@@ -311,6 +311,22 @@ Level 6: TimeoutError       — execution time limit exceeded
 
 ---
 
+## Runtime Self-Healing
+
+AXON features a native self-healing mechanism for **L3 Semantic Gates**. When
+the LLM output violates a hard constraint (`AnchorBreachError`) or fails
+structural semantic validation (`ValidationError`), the AXON `RetryEngine`
+automatically intercepts the failure.
+
+Instead of crashing or silently failing, the engine re-injects the exact
+`failure_context` (e.g., _"Anchor breach detected: Hedging without citation"_)
+back into the LLM's next prompt using Continuation-Passing Style (CPS)
+evaluating closures. This enables the model to adaptively correct its logic and
+structurally self-heal in real-time, retrying up to the permitted `refine`
+limits.
+
+---
+
 ## Roadmap
 
 | Phase | What                             | Status         |
