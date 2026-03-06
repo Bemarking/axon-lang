@@ -102,20 +102,37 @@ flow AnalyzeContract(doc: Document) -> StructuredReport {
 | Probe     | `probe`    | Directed information extraction        |
 | Weave     | `weave`    | Semantic synthesis of multiple outputs |
 
-### Semantic Type System
+### Epistemic Type System (Partial Order Lattice)
 
-Types represent **meaning**, not data structures:
+Types represent **meaning** and cognitive state, not just data structures. AXON
+implements an epistemic type system based on a partial order lattice (T, ≤),
+representing formal subsumption relationships:
+
+```text
+⊤ (Any)
+    │
+    ├── FactualClaim
+    │   └── CitedFact
+    │       └── HighConfidenceFact
+    │
+    ├── Opinion
+    ├── Uncertainty   ← propagates upwards (taint)
+    └── Speculation
+⊥ (Never)
+```
+
+**Rule of Subsumption:** If T₁ ≤ T₂, then T₁ can be used where T₂ is expected.
+For instance, a `CitedFact` can naturally satisfy a `FactualClaim` dependency,
+but an `Opinion` **never** can. Furthermore, computations involving
+`Uncertainty` structurally taint the result, propagating `Uncertainty` forwards
+to guarantee epistemic honesty throughout the execution flow.
 
 ```
-Epistemic:    FactualClaim · Opinion · Uncertainty · Speculation
 Content:      Document · Chunk · EntityMap · Summary · Translation
 Analysis:     RiskScore(0..1) · ConfidenceScore(0..1) · SentimentScore(-1..1)
 Structural:   Party · Obligation · Risk (user-defined)
 Compound:     StructuredReport
 ```
-
-`Opinion` can **never** satisfy a `FactualClaim` slot. `Uncertainty` propagates
-— any computation with `Uncertainty` produces `Uncertainty`.
 
 ---
 
@@ -335,6 +352,21 @@ model adaptively corrects its logic and structurally self-heals in real-time.
   but ambiguous or poorly defined constraints may cause the model to optimize
   for passing validation syntactically while failing semantically. Clear,
   logical Anchors are required.
+
+### Phase 4: Logic & Epistemic Anchors
+
+AXON includes specialized standard library anchors (Phase 4) explicitly designed
+to work with the Self-Healing engine to enforce logical structures and epistemic
+honesty:
+
+- `SyllogismChecker`: Enforces explicit logical formats using `Premise:` and
+  `Conclusion:` markers to guarantee structurally parseable arguments.
+- `ChainOfThoughtValidator`: Requires explicit sequence step markers before
+  resolving a prompt.
+- `RequiresCitation`: Deep verification enforcing academic-style inline
+  citations/URLs blocking unverifiable claims.
+- `AgnosticFallback`: Penalizes unwarranted speculation, forcing the model to
+  explicitly state a lack of information when sufficient data is unavailable.
 
 ---
 
