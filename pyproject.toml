@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-lang"
-version = "0.1.0"
+version = "0.4.0a0"
 description = "A programming language for AI cognition — compiles to prompts, not machine code."
 readme = "README.md"
 license = "MIT"
