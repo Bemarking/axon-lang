@@ -28,6 +28,7 @@ from axon.compiler.ir_nodes import (
     IRAnchor,
     IRConditional,
     IRContext,
+    IRDataEdge,
     IRFlow,
     IRImport,
     IRIntent,
@@ -311,7 +312,11 @@ class IRGenerator:
         )
 
         # Compile flow body (steps, probes, reasons, etc.)
-        steps = tuple(self._visit(child) for child in node.body)
+        raw_steps = tuple(self._visit(child) for child in node.body)
+
+        sorted_steps, edges, execution_levels = self._calculate_execution_dag(
+            raw_steps, node.line, node.column
+        )
 
         ir_flow = IRFlow(
             source_line=node.line,
@@ -325,10 +330,130 @@ class IRGenerator:
             return_type_optional=(
                 node.return_type.optional if node.return_type else False
             ),
-            steps=steps,
+            steps=sorted_steps,
+            edges=edges,
+            execution_levels=execution_levels,
         )
         self._flows[node.name] = ir_flow
         return ir_flow
+
+    def _calculate_execution_dag(
+        self,
+        steps: tuple[IRNode, ...],
+        flow_line: int,
+        flow_column: int
+    ) -> tuple[tuple[IRNode, ...], tuple[IRDataEdge, ...], tuple[tuple[str, ...], ...]]:
+        import re
+
+        def _extract_dependencies(node: IRNode) -> set[str]:
+            deps = set()
+            def _parse_expr(expr: str):
+                if not expr: return
+                matches = re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\.output\b', expr)
+                for m in matches:
+                    deps.add(m)
+                tags = re.findall(r'\{\{\s*([A-Za-z_][A-Za-z0-9_]*(?:\.output)?)\s*\}\}', expr)
+                for t in tags:
+                    if t.endswith('.output'):
+                        deps.add(t[:-7])
+                    else:
+                        deps.add(t)
+
+            if isinstance(node, IRStep):
+                _parse_expr(node.given)
+                _parse_expr(node.ask)
+                for child in node.body:
+                    deps.update(_extract_dependencies(child))
+            elif isinstance(node, IRIntent):
+                _parse_expr(node.given)
+                _parse_expr(node.ask)
+            elif isinstance(node, IRProbe):
+                _parse_expr(node.target)
+            elif isinstance(node, IRReason):
+                for g in node.given:
+                    _parse_expr(g)
+                _parse_expr(node.ask)
+            elif isinstance(node, IRWeave):
+                for s in node.sources:
+                    _parse_expr(s)
+            elif isinstance(node, IRValidate):
+                _parse_expr(node.target)
+                for r in node.rules:
+                    _parse_expr(r.condition)
+                    _parse_expr(r.comparison_value)
+            elif isinstance(node, IRUseTool):
+                _parse_expr(node.argument)
+            elif isinstance(node, IRRemember):
+                _parse_expr(node.expression)
+            elif isinstance(node, IRRecall):
+                _parse_expr(node.query)
+            elif isinstance(node, IRConditional):
+                _parse_expr(node.condition)
+                _parse_expr(node.comparison_value)
+                if node.then_branch:
+                    deps.update(_extract_dependencies(node.then_branch))
+                if node.else_branch:
+                    deps.update(_extract_dependencies(node.else_branch))
+            return deps
+
+        name_to_idx = {}
+        idx_to_node = {}
+        for i, node in enumerate(steps):
+            idx_to_node[i] = node
+            if getattr(node, "name", ""):
+                name_to_idx[node.name] = i
+        
+        in_degree = {i: 0 for i in range(len(steps))}
+        out_edges = {i: [] for i in range(len(steps))}
+        edges = []
+        
+        for i, node in enumerate(steps):
+            raw_deps = _extract_dependencies(node)
+            valid_deps = {dep for dep in raw_deps if dep in name_to_idx}
+            
+            target_name = getattr(node, "name", f"__anonymous_{i}__")
+            
+            for dep in valid_deps:
+                if dep == target_name: continue  # Avoid self edges if any
+                dep_idx = name_to_idx[dep]
+                out_edges[dep_idx].append(i)
+                in_degree[i] += 1
+                
+                edge = IRDataEdge(
+                    source_line=node.source_line,
+                    source_column=node.source_column,
+                    source_step=dep,
+                    target_step=target_name,
+                    type_name="Any"
+                )
+                edges.append(edge)
+                
+        # topological sort via Kahn's algorithm
+        queue = [i for i in range(len(steps)) if in_degree[i] == 0]
+        sorted_indices = []
+        levels = []
+        
+        while queue:
+            levels.append(tuple(getattr(idx_to_node[i], "name", f"__anonymous_{i}__") for i in queue))
+            
+            next_queue = []
+            for u in queue:
+                sorted_indices.append(u)
+                for v in out_edges[u]:
+                    in_degree[v] -= 1
+                    if in_degree[v] == 0:
+                        next_queue.append(v)
+            queue = next_queue
+            
+        if len(sorted_indices) != len(steps):
+            raise AxonIRError(
+                "Cycle detected in flow step dependencies",
+                line=flow_line,
+                column=flow_column
+            )
+            
+        sorted_steps = tuple(idx_to_node[i] for i in sorted_indices)
+        return sorted_steps, tuple(edges), tuple(levels)
 
     def _visit_step(self, node: ast.StepNode) -> IRStep:
         return IRStep(

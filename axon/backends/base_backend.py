@@ -109,6 +109,7 @@ class CompiledExecutionUnit:
     steps: list[CompiledStep] = field(default_factory=list)
     tool_declarations: list[dict[str, Any]] = field(default_factory=list)
     anchor_instructions: list[str] = field(default_factory=list)
+    active_anchors: list[dict[str, Any]] = field(default_factory=list)
     effort: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -127,6 +128,8 @@ class CompiledExecutionUnit:
             result["tool_declarations"] = self.tool_declarations
         if self.anchor_instructions:
             result["anchor_instructions"] = self.anchor_instructions
+        if self.active_anchors:
+            result["active_anchors"] = self.active_anchors
         if self.effort:
             result["effort"] = self.effort
         if self.metadata:
@@ -230,6 +233,11 @@ class BaseBackend(ABC):
                     step.name if isinstance(step, IRStep) else ""
                 )
 
+            active_anchors = [
+                {"name": anchor.name, "require": anchor.require, "reject": anchor.reject}
+                for anchor in run.resolved_anchors
+            ]
+
             unit = CompiledExecutionUnit(
                 flow_name=run.flow_name,
                 persona_name=run.persona_name,
@@ -238,6 +246,7 @@ class BaseBackend(ABC):
                 steps=compiled_steps,
                 tool_declarations=tool_declarations,
                 anchor_instructions=anchor_instructions,
+                active_anchors=active_anchors,
                 effort=run.effort,
             )
             execution_units.append(unit)

@@ -1144,3 +1144,67 @@ class TestFullProgramGeneration:
         assert d["node_type"] == "program"
         assert isinstance(d["personas"], tuple)
         assert isinstance(d["flows"], tuple)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  DAG & EXECUTION LEVELS VISITORS
+# ═══════════════════════════════════════════════════════════════════
+
+class TestIRGeneratorDAG:
+    """Tests Kahn's topological sort and DAG generation."""
+
+    def test_linear_dependencies(self):
+        gen = IRGenerator()
+        steps = [
+            _step("Step1", output_type="T1"),
+            _step("Step2", given="Step1.output", output_type="T2"),
+            _step("Step3", given="{{Step2.output}}", output_type="T3"),
+        ]
+        # Mix them up to verify sorting
+        flow = _flow(steps=[steps[2], steps[1], steps[0]])
+        prog = gen.generate(_program(flow))
+        f = prog.flows[0]
+        
+        # Check order
+        assert len(f.steps) == 3
+        assert f.steps[0].name == "Step1"
+        assert f.steps[1].name == "Step2"
+        assert f.steps[2].name == "Step3"
+        
+        # Check edges
+        assert len(f.edges) == 2
+        edges = {(e.source_step, e.target_step) for e in f.edges}
+        assert edges == {("Step1", "Step2"), ("Step2", "Step3")}
+        
+        # Check levels
+        assert f.execution_levels == (("Step1",), ("Step2",), ("Step3",))
+
+    def test_parallel_dependencies(self):
+        gen = IRGenerator()
+        steps = [
+            _step("FetchA", output_type="A"),
+            _step("FetchB", output_type="B"),
+            _step("Combine", given="FetchA.output and FetchB", ask="{{FetchB.output}}", output_type="C"),
+        ]
+        flow = _flow(steps=steps)
+        prog = gen.generate(_program(flow))
+        f = prog.flows[0]
+        
+        assert len(f.edges) == 2
+        edges = {(e.source_step, e.target_step) for e in f.edges}
+        assert edges == {("FetchA", "Combine"), ("FetchB", "Combine")}
+        
+        assert len(f.execution_levels) == 2
+        # First level can be FetchA, FetchB in any order
+        assert set(f.execution_levels[0]) == {"FetchA", "FetchB"}
+        assert f.execution_levels[1] == ("Combine",)
+
+    def test_cycle_detection(self):
+        gen = IRGenerator()
+        steps = [
+            _step("A", given="B.output"),
+            _step("B", given="A.output"),
+        ]
+        flow = _flow(steps=steps)
+        with pytest.raises(AxonIRError, match="Cycle detected"):
+            gen.generate(_program(flow))

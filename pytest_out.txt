@@ -1,0 +1,39 @@
+........................................................................ [  9%]
+........................................................................ [ 19%]
+........................................................................ [ 28%]
+........................................................................ [ 38%]
+........................................................................ [ 47%]
+........................................................................ [ 57%]
+..................................................F.......F...........F. [ 66%]
+.................F...................................................... [ 76%]
+........................................................................ [ 85%]
+........................................................................ [ 95%]
+....................................                                     [100%]
+================================== FAILURES ===================================
+__________ TestFullProgramGeneration.test_program_ir_is_serializable __________
+tests\test_ir_generator.py:1145: in test_program_ir_is_serializable
+    assert isinstance(d["personas"], tuple)
+E   AssertionError: assert False
+E    +  where False = isinstance([{'cite_sources': None, 'confidence_threshold': 0.85, 'description': '', 'domain': ['AI'], ...}], tuple)
+_____________________ TestIRPersona.test_persona_to_dict ______________________
+tests\test_ir_nodes.py:95: in test_persona_to_dict
+    assert d["domain"] == ("AI",)
+E   AssertionError: assert ['AI'] == ('AI',)
+E     
+E     Use -v to get more diff
+_______________ TestIRType.test_type_to_dict_with_nested_fields _______________
+tests\test_ir_nodes.py:233: in test_type_to_dict_with_nested_fields
+    assert isinstance(d["fields"], tuple)
+E   AssertionError: assert False
+E    +  where False = isinstance([{'generic_param': '', 'name': 'name', 'node_type': 'type_field', 'optional': False, ...}], tuple)
+__________________ TestIRProgram.test_program_serialization ___________________
+tests\test_ir_nodes.py:484: in test_program_serialization
+    assert isinstance(d["personas"], tuple)
+E   AssertionError: assert False
+E    +  where False = isinstance([{'cite_sources': None, 'confidence_threshold': None, 'description': '', 'domain': [], ...}], tuple)
+=========================== short test summary info ===========================
+FAILED tests/test_ir_generator.py::TestFullProgramGeneration::test_program_ir_is_serializable
+FAILED tests/test_ir_nodes.py::TestIRPersona::test_persona_to_dict - Assertio...
+FAILED tests/test_ir_nodes.py::TestIRType::test_type_to_dict_with_nested_fields
+FAILED tests/test_ir_nodes.py::TestIRProgram::test_program_serialization - As...
+4 failed, 752 passed in 6.94s

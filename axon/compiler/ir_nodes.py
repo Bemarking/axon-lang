@@ -58,6 +58,8 @@ def _serialize_value(value: Any) -> Any:
         return value.to_dict()
     if isinstance(value, list):
         return [_serialize_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_serialize_value(item) for item in value)
     if isinstance(value, dict):
         return {k: _serialize_value(v) for k, v in value.items()}
     return value
@@ -240,6 +242,15 @@ class IRParameter(IRNode):
 
 
 @dataclass(frozen=True)
+class IRDataEdge(IRNode):
+    """A typed data dependency between two steps."""
+    node_type: str = "data_edge"
+    source_step: str = ""
+    target_step: str = ""
+    type_name: str = ""
+
+
+@dataclass(frozen=True)
 class IRFlow(IRNode):
     """
     Compiled flow — an ordered cognitive pipeline.
@@ -254,6 +265,8 @@ class IRFlow(IRNode):
     return_type_generic: str = ""
     return_type_optional: bool = False
     steps: tuple[IRNode, ...] = ()  # ordered: IRStep, IRProbe, IRReason, etc.
+    edges: tuple[IRDataEdge, ...] = ()
+    execution_levels: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True)

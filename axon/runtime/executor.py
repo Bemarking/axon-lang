@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from axon.runtime.tools.dispatcher import ToolDispatcher
@@ -51,6 +51,7 @@ from axon.runtime.runtime_errors import (
     ErrorContext,
     ExecutionTimeoutError,
     ModelCallError,
+    ValidationError,
 )
 from axon.runtime.semantic_validator import SemanticValidator, ValidationResult
 from axon.runtime.tracer import ExecutionTrace, Tracer, TraceEventType
@@ -463,8 +464,8 @@ class Executor:
         refine_config = self._extract_refine_config(step)
 
         # Build the step callable
-        async def run_step(failure_context: str = "") -> ModelResponse:
-            return await self._call_model(
+        async def run_step(failure_context: str = "") -> StepResult:
+            response = await self._call_model(
                 step=step,
                 unit=unit,
                 ctx=ctx,
@@ -472,53 +473,91 @@ class Executor:
                 failure_context=failure_context,
             )
 
+            # We extract Semantic validation and Anchor checking into CPS callbacks
+            def on_validation_success(validation: ValidationResult) -> StepResult:
+                step_duration = (time.perf_counter() - step_start) * 1000
+                tracer.emit(
+                    TraceEventType.STEP_END,
+                    step_name=step_name,
+                    data={"success": True},
+                    duration_ms=step_duration,
+                )
+                return StepResult(
+                    step_name=step_name,
+                    response=response,
+                    validation=validation,
+                    retry_info=None,
+                    duration_ms=step_duration,
+                )
+                
+            def on_validation_error(violations: list[str]) -> StepResult:
+                error_msgs = "\n".join(violations)
+                raise ValidationError(
+                    message=f"Semantic validation failed:\n{error_msgs}",
+                    context=ErrorContext(
+                        step_name=step_name,
+                        flow_name=unit.flow_name,
+                        details=error_msgs,
+                    ),
+                )
+
+            def on_anchor_success() -> StepResult:
+                return self._validate_response_cps(
+                    response=response,
+                    step=step,
+                    step_name=step_name,
+                    tracer=tracer,
+                    on_success=on_validation_success,
+                    on_failure=on_validation_error,
+                )
+                
+            def on_anchor_error(violations: list[str]) -> StepResult:
+                error_msgs = "\n".join(violations)
+                raise AnchorBreachError(
+                    message=f"L3 Anchor breach detected:\n{error_msgs}",
+                    context=ErrorContext(
+                        step_name=step_name,
+                        flow_name=unit.flow_name,
+                        details=error_msgs,
+                    ),
+                )
+
+            # Start the CPS chain
+            return self._check_anchors_cps(
+                response=response,
+                unit=unit,
+                step_name=step_name,
+                tracer=tracer,
+                on_success=on_anchor_success,
+                on_failure=on_anchor_error,
+            )
+
         # Execute (with or without retry)
         retry_result: RetryResult | None = None
-        response: ModelResponse
+        final_step_result: StepResult
 
-        if refine_config and refine_config.max_attempts > 1:
-            retry_result = await self._retry_engine.execute_with_retry(
-                fn=run_step,
-                config=refine_config,
-                tracer=tracer,
-                step_name=step_name,
-                flow_name=unit.flow_name,
-            )
-            response = retry_result.result
-        else:
-            response = await run_step()
-
-        # Post-response anchor enforcement
-        self._check_anchors(
-            response=response,
-            unit=unit,
-            step_name=step_name,
+        # Always route through retry engine to leverage built-in exception catching,
+        # but if no refine config is present, it will default to max_attempts = 1.
+        # But if we want self-healing on Anchor and Validation errors, maybe we 
+        # auto-supply a default config if absent? For now, we use existing config.
+        default_config = refine_config or RefineConfig(max_attempts=3, backoff="linear", pass_failure_context=True)
+        
+        retry_result = await self._retry_engine.execute_with_retry(
+            fn=run_step,
+            config=default_config,
             tracer=tracer,
-        )
-
-        # Semantic validation
-        validation = self._validate_response(
-            response=response,
-            step=step,
             step_name=step_name,
-            tracer=tracer,
+            flow_name=unit.flow_name,
         )
-
-        step_duration = (time.perf_counter() - step_start) * 1000
-
-        tracer.emit(
-            TraceEventType.STEP_END,
-            step_name=step_name,
-            data={"success": True},
-            duration_ms=step_duration,
-        )
-
+        final_step_result = retry_result.result
+        
+        # Inject retry info back into the returned step result
         return StepResult(
-            step_name=step_name,
-            response=response,
-            validation=validation,
+            step_name=final_step_result.step_name,
+            response=final_step_result.response,
+            validation=final_step_result.validation,
             retry_info=retry_result,
-            duration_ms=step_duration,
+            duration_ms=final_step_result.duration_ms,
         )
 
     async def _execute_tool_step(
@@ -728,46 +767,56 @@ class Executor:
 
         return prompt
 
-    def _check_anchors(
+    def _check_anchors_cps(
         self,
         response: ModelResponse,
         unit: CompiledExecutionUnit,
         step_name: str,
         tracer: Tracer,
-    ) -> None:
-        """Check anchor constraints against the model response.
+        on_success: Callable[[], Any],
+        on_failure: Callable[[list[str]], Any],
+    ) -> Any:
+        """Check anchor constraints against the model response using CPS.
 
-        Iterates through the unit's anchor instructions and
-        performs string-level constraint matching. Full semantic
-        anchor enforcement (Phase 4+) will use dedicated NLI
-        models for entailment checking.
+        Iterates through the unit's active anchors and evaluates their
+        checker functions. Uses Continuation-Passing Style to either
+        proceed or abort with violations.
 
         Args:
             response:   The model response to check.
             unit:       The execution unit with anchor instructions.
             step_name:  The current step name for tracing.
             tracer:     The active tracer.
+            on_success: Continuation to call if all anchors pass.
+            on_failure: Continuation to call if any anchor fails.
 
-        Raises:
-            AnchorBreachError: If a hard constraint is violated.
+        Returns:
+            The result of the invoked continuation.
         """
-        if not unit.anchor_instructions:
-            return
+        if not unit.active_anchors:
+            return on_success()
 
-        content = response.content.lower()
+        content = response.content
+        from axon.stdlib.anchors.definitions import ALL_ANCHORS
+        # Create map of known standard library anchors
+        anchor_map = {a.ir.name: a for a in ALL_ANCHORS}
+        
+        all_violations: list[str] = []
 
-        for idx, instruction in enumerate(unit.anchor_instructions):
-            anchor_name = f"anchor_{idx}"
+        for anchor_data in unit.active_anchors:
+            anchor_name = anchor_data.get("name")
+            if not anchor_name or anchor_name not in anchor_map:
+                continue
+                
+            stdlib_anchor = anchor_map[anchor_name]
 
             tracer.emit_anchor_check(
                 anchor_name=anchor_name,
                 step_name=step_name,
-                data={"instruction": instruction},
+                data={"instruction": stdlib_anchor.description},
             )
 
-            # Phase 3 anchor check: lightweight keyword matching
-            # Full NLI-based enforcement is planned for Phase 4
-            passed = True  # default: pass unless violation detected
+            passed, violations = stdlib_anchor.checker_fn(content)
 
             tracer.emit(
                 TraceEventType.ANCHOR_PASS if passed
@@ -775,15 +824,25 @@ class Executor:
                 step_name=step_name,
                 data={"anchor": anchor_name, "passed": passed},
             )
+            
+            if not passed:
+                all_violations.extend(violations)
 
-    def _validate_response(
+        if all_violations:
+            return on_failure(all_violations)
+            
+        return on_success()
+
+    def _validate_response_cps(
         self,
         response: ModelResponse,
         step: CompiledStep,
         step_name: str,
         tracer: Tracer,
-    ) -> ValidationResult | None:
-        """Validate a model response against the step's type contract.
+        on_success: Callable[[ValidationResult], Any],
+        on_failure: Callable[[list[str]], Any],
+    ) -> Any:
+        """Validate a model response against the step's type contract using CPS.
 
         Uses the SemanticValidator to check the response content
         against expected types, confidence floors, and structured
@@ -794,12 +853,14 @@ class Executor:
             step:       The compiled step with type expectations.
             step_name:  The current step name.
             tracer:     The active tracer.
+            on_success: Continuation to call if validation passes.
+            on_failure: Continuation to call if validation fails.
 
         Returns:
-            A ``ValidationResult`` if validation was run, else None.
+            The result of the invoked continuation.
         """
         if not step.output_schema and not step.metadata.get("output_type"):
-            return None
+            return on_success(ValidationResult())
 
         output = response.structured or response.content
         expected_type = step.metadata.get("output_type", "")
@@ -819,7 +880,11 @@ class Executor:
             violations=[v.message for v in result.violations],
         )
 
-        return result
+        if not result.is_valid:
+            violations_msgs = [v.message for v in result.violations]
+            return on_failure(violations_msgs)
+
+        return on_success(result)
 
     @staticmethod
     def _extract_refine_config(step: CompiledStep) -> RefineConfig | None:

@@ -1,0 +1,53 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.3, pytest-8.4.1, pluggy-1.6.0 -- C:\Users\home\AppData\Local\Programs\Python\Python313\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\home\Documents\Proyectos\axxon-constructor
+configfile: pyproject.toml
+plugins: anyio-4.10.0, langsmith-0.4.31, asyncio-1.1.0, cov-6.2.1, mock-3.14.1
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 1 item
+
+tests/test_self_healing.py::test_self_healing_validation_error FAILED    [100%]
+
+================================== FAILURES ===================================
+_____________________ test_self_healing_validation_error ______________________
+
+    @pytest.mark.asyncio
+    async def test_self_healing_validation_error():
+        tracer = Tracer()
+    
+        # The step expects a RiskScore containing a score.
+        # The initial response gives string, which fails validation.
+    
+        mock_client = SelfHealingMockClient(
+            initial_response="Not an integer",
+            corrected_response={"score": 0.8},
+        )
+        executor = Executor(mock_client)
+    
+        step = CompiledStep(
+            step_name="GetNumber",
+            user_prompt="Give me a score",
+            system_prompt="Just the score",
+            output_schema={"type": "object", "properties": {"score": {"type": "number"}}},
+            metadata={"refine": {"max_attempts": 3, "backoff": "none"}, "required_fields": ["score"]},
+        )
+    
+        unit = CompiledExecutionUnit(
+            flow_name="TestFlow",
+            steps=(step,),
+            active_anchors=[],
+        )
+    
+        result = await executor._execute_unit(unit, tracer=tracer)
+    
+        assert not result.error, f"Execution failed: {result.error}"
+        assert mock_client.call_count == 2
+        assert mock_client.failure_contexts[0] == ""
+>       assert "Expected dict" in mock_client.failure_contexts[1]
+E       assert 'Expected dict' in "[L1] ValidationError: Semantic validation failed:\nExpected structured output (dict) with fields ['score'], but got str.\n  step: GetNumber\n  flow: TestFlow\n  details: Expected structured output (dict) with fields ['score'], but got str."
+
+tests\test_self_healing.py:140: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_self_healing.py::test_self_healing_validation_error - asser...
+============================== 1 failed in 0.31s ==============================

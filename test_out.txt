@@ -1,0 +1,103 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.3, pytest-8.4.1, pluggy-1.6.0 -- C:\Users\home\AppData\Local\Programs\Python\Python313\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\home\Documents\Proyectos\axxon-constructor
+configfile: pyproject.toml
+plugins: anyio-4.10.0, langsmith-0.4.31, asyncio-1.1.0, cov-6.2.1, mock-3.14.1
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 2 items
+
+tests/test_self_healing.py::test_self_healing_anchor_breach FAILED
+tests/test_self_healing.py::test_self_healing_validation_error FAILED
+
+================================== FAILURES ===================================
+_______________________ test_self_healing_anchor_breach _______________________
+
+    @pytest.mark.asyncio
+    async def test_self_healing_anchor_breach():
+        tracer = Tracer()
+    
+        # The step uses the NoHallucination anchor.
+        # We simulate an initial hallucinated response, which fails the
+        # anchor check. The engine should retry the step with the
+        # AnchorBreachError passed in failure_context, yielding the correct response.
+    
+        mock_client = SelfHealingMockClient(
+            initial_response="I am hallucinating facts that are not grounded.",
+            corrected_response="Based on the source: The sky is blue.",
+        )
+        executor = Executor(mock_client)
+    
+        step = CompiledStep(
+            step_name="ExtractData",
+            user_prompt="Extract data",
+            system_prompt="Be accurate",
+            output_schema={"type": "string"},
+            metadata={"refine": {"max_attempts": 3, "backoff": "none"}},
+        )
+    
+        # Note: NoHallucination anchor uses regular expressions to check for
+        # phrases like "Based on the source: ...".
+        unit = CompiledExecutionUnit(
+            flow_name="TestFlow",
+            steps=(step,),
+            active_anchors=[{"name": "NoHallucination"}],
+        )
+    
+        result = await executor._execute_unit(unit, tracer=tracer)
+    
+>       assert not result.error, f"Execution failed: {result.error}"
+E       AssertionError: Execution failed: [L4] RefineExhaustedError: All 3 refine attempts exhausted for step 'ExtractData'.
+E           step: ExtractData
+E           flow: TestFlow
+E           attempt: 3
+E           details: 'NoneType' object has no attribute 'content'
+E       assert not "[L4] RefineExhaustedError: All 3 refine attempts exhausted for step 'ExtractData'.\n  step: ExtractData\n  flow: TestFlow\n  attempt: 3\n  details: 'NoneType' object has no attribute 'content'"
+E        +  where "[L4] RefineExhaustedError: All 3 refine attempts exhausted for step 'ExtractData'.\n  step: ExtractData\n  flow: TestFlow\n  attempt: 3\n  details: 'NoneType' object has no attribute 'content'" = UnitResult(flow_name='TestFlow', step_results=(), success=False, error="[L4] RefineExhaustedError: All 3 refine attempts exhausted for step 'ExtractData'.\n  step: ExtractData\n  flow: TestFlow\n  attempt: 3\n  details: 'NoneType' object has no attribute 'content'", duration_ms=0.4552999744191766).error
+
+tests\test_self_healing.py:87: AssertionError
+_____________________ test_self_healing_validation_error ______________________
+
+    @pytest.mark.asyncio
+    async def test_self_healing_validation_error():
+        tracer = Tracer()
+    
+        # The step expects an Integer.
+        # The initial response gives string, which fails validation.
+    
+        mock_client = SelfHealingMockClient(
+            initial_response="Not an integer",
+            corrected_response="42",
+        )
+        executor = Executor(mock_client)
+    
+        step = CompiledStep(
+            step_name="GetNumber",
+            user_prompt="Give me a number",
+            system_prompt="Just the number",
+            output_schema={"type": "integer"},
+            metadata={"refine": {"max_attempts": 3, "backoff": "none"}},
+        )
+    
+        unit = CompiledExecutionUnit(
+            flow_name="TestFlow",
+            steps=(step,),
+            active_anchors=[],
+        )
+    
+        result = await executor._execute_unit(unit, tracer=tracer)
+    
+>       assert not result.error, f"Execution failed: {result.error}"
+E       AssertionError: Execution failed: [L4] RefineExhaustedError: All 3 refine attempts exhausted for step 'GetNumber'.
+E           step: GetNumber
+E           flow: TestFlow
+E           attempt: 3
+E           details: 'NoneType' object has no attribute 'content'
+E       assert not "[L4] RefineExhaustedError: All 3 refine attempts exhausted for step 'GetNumber'.\n  step: GetNumber\n  flow: TestFlow\n  attempt: 3\n  details: 'NoneType' object has no attribute 'content'"
+E        +  where "[L4] RefineExhaustedError: All 3 refine attempts exhausted for step 'GetNumber'.\n  step: GetNumber\n  flow: TestFlow\n  attempt: 3\n  details: 'NoneType' object has no attribute 'content'" = UnitResult(flow_name='TestFlow', step_results=(), success=False, error="[L4] RefineExhaustedError: All 3 refine attempts exhausted for step 'GetNumber'.\n  step: GetNumber\n  flow: TestFlow\n  attempt: 3\n  details: 'NoneType' object has no attribute 'content'", duration_ms=0.10880001354962587).error
+
+tests\test_self_healing.py:137: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_self_healing.py::test_self_healing_anchor_breach - Assertio...
+FAILED tests/test_self_healing.py::test_self_healing_validation_error - Asser...
+============================== 2 failed in 0.31s ==============================

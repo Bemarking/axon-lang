@@ -79,21 +79,153 @@ RANGED_TYPES = {
     "SentimentScore": (-1.0, 1.0),
 }
 
-# Compatibility: source → set of valid targets it can substitute
-TYPE_COMPATIBILITY: dict[str, frozenset[str]] = {
-    "FactualClaim": frozenset({"String", "CitedFact"}),
-    "RiskScore":    frozenset({"Float"}),
-    "ConfidenceScore": frozenset({"Float"}),
-    "SentimentScore":  frozenset({"Float"}),
-    "StructuredReport": frozenset(),  # satisfies any output contract (special handling)
-}
+class EpistemicLattice:
+    """
+    Partial Order Lattice for AXON epistemic types.
+    Defines the subsumption relationship (<=), join (supremum), and meet (infimum).
+    """
+    
+    # Hierarchy dictionary: child -> parent
+    _parents = {
+        "HighConfidenceFact": "CitedFact",
+        "CitedFact": "FactualClaim",
+        "FactualClaim": "Any",
+        "Opinion": "Any",
+        "Speculation": "Any",
+        "Uncertainty": "Any",
+        "Any": None,
+        "Never": None,
+    }
 
-# Hard incompatibility: source → set of targets it can NEVER substitute
-TYPE_INCOMPATIBILITY: dict[str, frozenset[str]] = {
-    "Opinion":     frozenset({"FactualClaim", "CitedFact"}),
-    "Speculation": frozenset({"FactualClaim", "CitedFact"}),
-    "Float":       frozenset({"RiskScore", "ConfidenceScore", "SentimentScore"}),
-}
+    @classmethod
+    def is_subtype(cls, t1: str, t2: str) -> bool:
+        """True if t1 <= t2 (t1 can be used where t2 is expected)"""
+        if t1 == "Never" or t2 == "Any":
+            return True
+        if t1 == "Any" or t2 == "Never":
+            return False
+            
+        t1_base, t1_inner, t1_prob = cls.parse_monad(t1)
+        t2_base, t2_inner, t2_prob = cls.parse_monad(t2)
+        
+        # Uncertainty taint propagates: it can be passed anywhere, tainting the result
+        if t1_base == "Uncertainty":
+            return True
+            
+        inner1 = t1_inner if t1_inner else t1_base
+        inner2 = t2_inner if t2_inner else t2_base
+
+        if not cls._is_nominal_subtype(inner1, inner2):
+            return False
+
+        # Graded Monad probability check: t1 must be at least as confident as t2 expects
+        if t2_prob is not None:
+            if t1_prob is None or t1_prob < t2_prob:
+                return False
+                
+        return True
+
+    @classmethod
+    def _is_nominal_subtype(cls, t1: str, t2: str) -> bool:
+        if t1 == t2:
+            return True
+        curr = t1
+        while curr in cls._parents and cls._parents[curr] is not None:
+            curr = cls._parents[curr]
+            if curr == t2:
+                return True
+        # Special compatibilities
+        if (t1 == "FactualClaim" or t1 == "CitedFact") and t2 == "String":
+            return True
+        if t1 in ("RiskScore", "ConfidenceScore", "SentimentScore") and t2 == "Float":
+            return True
+        if t1 == "StructuredReport":
+            return True # Satisfies any output contract
+        return False
+
+    @classmethod
+    def join(cls, t1: str, t2: str) -> str:
+        """Supremum (∨): The most specific type that can accept both t1 and t2 (Degradación Epistémica)."""
+        if t1 == t2:
+            return t1
+        
+        t1_b, t1_i, p1 = cls.parse_monad(t1)
+        t2_b, t2_i, p2 = cls.parse_monad(t2)
+        
+        is_uncertain = t1_b == "Uncertainty" or t2_b == "Uncertainty"
+        
+        inner1 = t1_i if t1_i else t1_b
+        inner2 = t2_i if t2_i else t2_b
+        
+        # Lowest Common Ancestor
+        ancestors1 = [inner1]
+        curr = inner1
+        while curr in cls._parents and cls._parents[curr] is not None:
+            curr = cls._parents[curr]
+            ancestors1.append(curr)
+            
+        joined_inner = "Any"
+        curr = inner2
+        while curr is not None:
+            if curr in ancestors1:
+                joined_inner = curr
+                break
+            curr = cls._parents.get(curr)
+            
+        # Fallback to Any if disjoint and no common ancestor in epistemic tree
+        if joined_inner == "Any" and not cls._is_nominal_subtype(inner1, "Any") and not cls._is_nominal_subtype(inner2, "Any"):
+             # If they are totally custom disjoint types
+             if cls._is_nominal_subtype(inner1, inner2): return inner2
+             if cls._is_nominal_subtype(inner2, inner1): return inner1
+             joined_inner = "Any"
+            
+        if is_uncertain:
+            p = min(p1, p2) if (p1 is not None and p2 is not None) else None
+            if p is not None:
+                return f"Uncertain[{p}, {joined_inner}]"
+            return f"Uncertain[{joined_inner}]"
+            
+        return joined_inner
+
+    @classmethod
+    def meet(cls, t1: str, t2: str) -> str:
+        """Infimum (∧): The least specific type that is a subtype of both."""
+        if cls.is_subtype(t1, t2): return t1
+        if cls.is_subtype(t2, t1): return t2
+        return "Never"
+
+    @classmethod
+    def parse_monad(cls, type_name: str) -> tuple[str, str|None, float|None]:
+        """Parses a graded monad type string.
+        Returns (BaseType, InnerType, Probability)"""
+        import re
+        if type_name.startswith("Uncertain[") and type_name.endswith("]"):
+            inner = type_name[10:-1]
+            parts = [p.strip() for p in inner.split(",")]
+            if len(parts) == 2:
+                try:
+                    return ("Uncertainty", parts[1], float(parts[0]))
+                except ValueError:
+                    pass
+            return ("Uncertainty", parts[0], None)
+        elif type_name == "Uncertainty":
+            return ("Uncertainty", "Any", None)
+        return (type_name, None, None)
+        
+    @classmethod
+    def lift(cls, type_name: str, probability: float | None = None) -> str:
+        """Lifts a type into the Uncertainty monad (Unit operation)."""
+        base, inner, prob = cls.parse_monad(type_name)
+        if base == "Uncertainty":
+            # Just lower the probability if needed
+            new_p = min(prob, probability) if prob is not None and probability is not None else (probability or prob)
+            if new_p is not None:
+                return f"Uncertain[{new_p}, {inner or 'Any'}]"
+            return type_name
+            
+        if probability is not None:
+            return f"Uncertain[{probability}, {type_name}]"
+        return f"Uncertain[{type_name}]"
 
 # Valid values for specific AXON fields
 VALID_TONES = frozenset({
@@ -580,48 +712,30 @@ class TypeChecker:
     def check_type_compatible(self, source: str, target: str) -> bool:
         """
         Check if `source` type can be used where `target` type is expected.
-
-        Epistemic rules:
-          • Opinion CANNOT substitute for FactualClaim
-          • Speculation CANNOT substitute for FactualClaim
-          • Float CANNOT substitute for RiskScore / ConfidenceScore
-          • FactualClaim CAN substitute for String
-          • RiskScore CAN substitute for Float
-          • Uncertainty propagates (always compatible but taints result)
+        Utilizes the formal EpistemicLattice for evaluation.
         """
-        # Identity: always compatible
-        if source == target:
-            return True
+        # User-defined types fallback
+        if source not in BUILTIN_TYPES and target not in BUILTIN_TYPES and source != target:
+            # Fallback to checking nominal user types if not in lattice
+            pass
 
-        # Uncertainty propagates everywhere (it's compatible but taints)
-        if source == "Uncertainty":
-            return True
+        return EpistemicLattice.is_subtype(source, target)
 
-        # Check hard incompatibility
-        if source in TYPE_INCOMPATIBILITY:
-            if target in TYPE_INCOMPATIBILITY[source]:
-                return False
-
-        # Check explicit compatibility
-        if source in TYPE_COMPATIBILITY:
-            if target in TYPE_COMPATIBILITY[source]:
-                return True
-
-        # StructuredReport satisfies any output contract
-        if source == "StructuredReport":
-            return True
-
-        # User-defined types are checked by name only (nominal typing)
-        return False
-
-    def check_uncertainty_propagation(self, type_name: str) -> str:
+    def check_uncertainty_propagation(self, types: list[str] | str) -> str:
         """
-        If any input includes Uncertainty, the output is Uncertainty.
-        This is the core epistemic rule: unreliable data taints results.
+        Applies Supreme (Join) operation across all inputs to find the
+        resulting generic type and taint output with Uncertainty.
         """
-        if type_name == "Uncertainty":
-            return "Uncertainty"
-        return type_name
+        if isinstance(types, str):
+            types = [types]
+            
+        if not types:
+            return "Any"
+            
+        result = types[0]
+        for t in types[1:]:
+            result = EpistemicLattice.join(result, t)
+        return result
 
     # ── HELPERS ────────────────────────────────────────────────────
 
