@@ -320,10 +320,21 @@ automatically intercepts the failure.
 
 Instead of crashing or silently failing, the engine re-injects the exact
 `failure_context` (e.g., _"Anchor breach detected: Hedging without citation"_)
-back into the LLM's next prompt using Continuation-Passing Style (CPS)
-evaluating closures. This enables the model to adaptively correct its logic and
-structurally self-heal in real-time, retrying up to the permitted `refine`
-limits.
+back into the LLM's next prompt. This creates a closed feedback loop where the
+model adaptively corrects its logic and structurally self-heals in real-time.
+
+**Production Guarantees:**
+
+- **Strict Boundaries:** The correction loop strictly respects the `refine`
+  limits explicitly defined in the execution configuration. If the model fails
+  to heal within the permitted attempts, AXON deterministically raises a
+  `RefineExhaustedError` (containing the last failed state) to escalate the
+  failure, preventing infinite execution loops.
+- **Anchor Dependency:** The healing capability is directly proportional to the
+  precision of the defined Anchors. AXON provides the robust recovery mechanism,
+  but ambiguous or poorly defined constraints may cause the model to optimize
+  for passing validation syntactically while failing semantically. Clear,
+  logical Anchors are required.
 
 ---
 
