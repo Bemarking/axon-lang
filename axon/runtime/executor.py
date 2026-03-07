@@ -811,16 +811,44 @@ class Executor:
         from axon.stdlib.anchors.definitions import ALL_ANCHORS
         # Create map of known standard library anchors
         anchor_map = {a.ir.name: a for a in ALL_ANCHORS}
-        
+
         all_violations: list[str] = []
+
+        # ── Anchor Priority Resolution ────────────────────────────
+        # If AgnosticFallback is active AND passes (honest ignorance),
+        # citation-requiring anchors are structurally bypassed.
+        # Rationale: "I do not know" is epistemically valid and must
+        # not be penalized for the absence of citations.
+        agnostic_passed = False
+        anchor_names = {
+            a.get("name") for a in unit.active_anchors if a.get("name")
+        }
+        if "AgnosticFallback" in anchor_names and "AgnosticFallback" in anchor_map:
+            agnostic_anchor = anchor_map["AgnosticFallback"]
+            passed, _ = agnostic_anchor.checker_fn(content)
+            agnostic_passed = passed
+
+        # Anchors that require evidence — skipped when honest ignorance
+        evidence_anchors = frozenset({"RequiresCitation", "NoHallucination"})
 
         for anchor_data in unit.active_anchors:
             anchor_name = anchor_data.get("name")
-            print(f"DEBUG: Processing anchor {anchor_name} against {anchor_map.keys()}")
             if not anchor_name or anchor_name not in anchor_map:
-                print(f"DEBUG: Skipping {anchor_name}")
                 continue
-                
+
+            # Priority bypass: honest ignorance supersedes evidence demands
+            if agnostic_passed and anchor_name in evidence_anchors:
+                tracer.emit(
+                    TraceEventType.ANCHOR_PASS,
+                    step_name=step_name,
+                    data={
+                        "anchor": anchor_name,
+                        "passed": True,
+                        "reason": "bypassed_by_agnostic_fallback",
+                    },
+                )
+                continue
+
             stdlib_anchor = anchor_map[anchor_name]
 
             tracer.emit_anchor_check(
@@ -830,7 +858,6 @@ class Executor:
             )
 
             passed, violations = stdlib_anchor.checker_fn(content)
-            print(f"DEBUG: Result of {anchor_name} check: {passed}, {violations}")
 
             tracer.emit(
                 TraceEventType.ANCHOR_PASS if passed
@@ -838,14 +865,14 @@ class Executor:
                 step_name=step_name,
                 data={"anchor": anchor_name, "passed": passed},
             )
-            
+
             if not passed:
                 all_violations.extend(violations)
 
-        print(f"DEBUG: Violations: {all_violations}")
+
         if all_violations:
             return on_failure(all_violations)
-            
+
         return on_success()
 
     def _validate_response_cps(
@@ -857,10 +884,7 @@ class Executor:
         on_success: Callable[[ValidationResult], Any],
         on_failure: Callable[[list[str]], Any],
     ) -> Any:
-        # Debug
-        print(f"DEBUG VAL: output_schema={step.output_schema}, output_type={step.metadata.get('output_type')}")
         if not step.output_schema and not step.metadata.get("output_type"):
-            print("DEBUG VAL: Skipping validation!")
             return on_success(ValidationResult())
 
         output = response.structured or response.content
@@ -868,7 +892,7 @@ class Executor:
         confidence_floor = step.metadata.get("confidence_floor")
         required_fields = step.metadata.get("required_fields")
 
-        print(f"DEBUG VAL: Calling validate with output={type(output)}")
+
         result = self._validator.validate(
             output=output,
             expected_type=expected_type,

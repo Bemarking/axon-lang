@@ -1,7 +1,7 @@
 """
 AXON Standard Library — Built-in Anchors
 ==========================================
-8 pre-defined hard constraints from the AXON spec §8.3.
+12 pre-defined hard constraints: 8 core (spec §8.3) + 4 Logic & Epistemic (Phase 4).
 """
 
 from __future__ import annotations

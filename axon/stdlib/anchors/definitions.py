@@ -1,12 +1,12 @@
 """
 AXON Standard Library — Anchor Definitions
 ============================================
-All 8 built-in anchors from the AXON spec §8.3.
+All 12 built-in anchors from the AXON language.
 
 Each anchor is an ``IRAnchor`` wrapped in ``StdlibAnchor``
 with a checker function for runtime enforcement.
 
-Anchors available::
+Core Anchors (spec §8.3)::
 
     NoHallucination  — Requires cited sources
     FactualOnly      — No opinions unless declared
@@ -16,6 +16,13 @@ Anchors available::
     ChildSafe        — Appropriate for minors
     NoCodeExecution  — Prevents runaway code
     AuditTrail       — Forces full reasoning trace
+
+Logic & Epistemic Anchors (Phase 4)::
+
+    SyllogismChecker         — Enforces Premise:/Conclusion: structure
+    ChainOfThoughtValidator  — Requires step-by-step reasoning
+    RequiresCitation         — Demands inline academic citations
+    AgnosticFallback         — Enforces epistemic honesty over guessing
 """
 
 from __future__ import annotations
@@ -30,6 +37,11 @@ from axon.stdlib.anchors.checkers import (
     check_no_hallucination,
     check_privacy_guard,
     check_safe_output,
+    # Phase 4
+    check_syllogism,
+    check_chain_of_thought,
+    check_requires_citation,
+    check_agnostic_fallback,
 )
 from axon.stdlib.base import StdlibAnchor
 
@@ -160,6 +172,73 @@ AuditTrail = StdlibAnchor(
 )
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  LOGIC & EPISTEMIC ANCHORS (PHASE 4)
+# ═══════════════════════════════════════════════════════════════════
+
+SyllogismChecker = StdlibAnchor(
+    ir=IRAnchor(
+        name="SyllogismChecker",
+        require="logical_structure",
+        on_violation="raise",
+        on_violation_target="AnchorBreachError",
+    ),
+    checker_fn=check_syllogism,
+    description=(
+        "Syntactically enforces a standard logical format using 'Premise:' "
+        "and 'Conclusion:' identifiers. Useful for structured parsing."
+    ),
+    severity="error",
+)
+
+ChainOfThoughtValidator = StdlibAnchor(
+    ir=IRAnchor(
+        name="ChainOfThoughtValidator",
+        require="step_by_step",
+        on_violation="raise",
+        on_violation_target="AnchorBreachError",
+    ),
+    checker_fn=check_chain_of_thought,
+    description=(
+        "Forces the model to explicitly write out step sequences "
+        "before producing a final answer, aiding reasoning quality."
+    ),
+    severity="error",
+)
+
+RequiresCitation = StdlibAnchor(
+    ir=IRAnchor(
+        name="RequiresCitation",
+        require="inline_citation",
+        reject=("unverifiable_claim",),
+        confidence_floor=0.90,
+        on_violation="raise",
+        on_violation_target="AnchorBreachError",
+    ),
+    checker_fn=check_requires_citation,
+    description=(
+        "Strict verification enforcing explicit academic-style inline citations "
+        "or external URLs for factual claims."
+    ),
+    severity="error",
+)
+
+AgnosticFallback = StdlibAnchor(
+    ir=IRAnchor(
+        name="AgnosticFallback",
+        require="epistemic_honesty",
+        reject=("unwarranted_speculation",),
+        on_violation="raise",
+        on_violation_target="AnchorBreachError",
+    ),
+    checker_fn=check_agnostic_fallback,
+    description=(
+        "Requires the model to explicitly state a lack of information instead "
+        "of speculating or guessing when sufficient data is unavailable."
+    ),
+    severity="error",
+)
+
 # ── Canonical list for registration ──────────────────────────────
 
 ALL_ANCHORS: tuple[StdlibAnchor, ...] = (
@@ -171,4 +250,9 @@ ALL_ANCHORS: tuple[StdlibAnchor, ...] = (
     ChildSafe,
     NoCodeExecution,
     AuditTrail,
+    # Phase 4
+    SyllogismChecker,
+    ChainOfThoughtValidator,
+    RequiresCitation,
+    AgnosticFallback,
 )

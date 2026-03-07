@@ -35,7 +35,7 @@ class TestAnchorDefinitions:
     """Verify all 8 anchors have correct IR structure."""
 
     def test_count(self):
-        assert len(ALL_ANCHORS) == 8
+        assert len(ALL_ANCHORS) == 12
 
     def test_unique_names(self):
         names = [a.name for a in ALL_ANCHORS]
