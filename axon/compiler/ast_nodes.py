@@ -508,6 +508,83 @@ class HibernateNode(ASTNode):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  DATA SCIENCE NODES — the associative engine
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class DataSpaceDefinition(ASTNode):
+    """
+    dataspace SalesAnalysis { ... }
+
+    Defines an in-memory associative data container.
+    """
+    name: str = ""
+    body: list[ASTNode] = field(default_factory=list)
+
+
+@dataclass
+class IngestNode(ASTNode):
+    """
+    ingest "sales.csv" into SalesData
+    ingest SalesAPI into SalesData
+
+    Loads external data into a DataSpace.
+    Source can be a string literal (file path) or an identifier (variable/API).
+    """
+    source: str = ""       # file path string or identifier
+    target: str = ""       # DataSpace identifier (after "into")
+
+
+@dataclass
+class FocusNode(ASTNode):
+    """
+    focus on Sales.Region == "LATAM"
+    focus on Revenue > 1000
+
+    Sets the selection context — filters the associative engine.
+    """
+    expression: str = ""   # the filtering expression
+
+
+@dataclass
+class AssociateNode(ASTNode):
+    """
+    associate Sales with Products
+    associate Sales with Products using ProductID
+
+    Explicitly links two tables/dataspaces.
+    """
+    left: str = ""         # first table/space identifier
+    right: str = ""        # second table/space identifier (after "with")
+    using_field: str = ""  # optional linking field (after "using")
+
+
+@dataclass
+class AggregateNode(ASTNode):
+    """
+    aggregate Revenue by Region
+    aggregate Revenue by Region, Year as AnnualReport
+
+    Performs summary reduction on data.
+    """
+    target: str = ""                            # column to aggregate
+    group_by: list[str] = field(default_factory=list)  # grouping columns
+    alias: str = ""                             # optional result name (after "as")
+
+
+@dataclass
+class ExploreNode(ASTNode):
+    """
+    explore SalesData
+    explore SalesData limit 100
+
+    Interactive data exploration/display.
+    """
+    target: str = ""       # DataSpace or table to explore
+    limit: int | None = None  # optional row limit
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  EXECUTION NODE
 # ═══════════════════════════════════════════════════════════════════
 

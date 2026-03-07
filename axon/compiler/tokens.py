@@ -4,7 +4,7 @@ AXON Compiler — Token Definitions
 Every token the lexer can produce. Derived directly from the AXON EBNF grammar.
 
 Categories:
-  - KEYWORDS: 42 cognitive keywords (persona, context, flow, anchor, …)
+  - KEYWORDS: 48 cognitive keywords (persona, context, flow, anchor, dataspace, …)
   - LITERALS: STRING, INTEGER, FLOAT, BOOL, DURATION, IDENTIFIER
   - SYMBOLS:  braces, parens, brackets, colon, comma, arrow, range, etc.
   - COMPARISON: <, >, <=, >=, ==, !=
@@ -52,6 +52,14 @@ class TokenType(Enum):
     PAR = auto()
     CONSOLIDATE = auto()
     HIBERNATE = auto()
+
+    # ── DATA SCIENCE KEYWORDS ────────────────────────────────────
+    DATASPACE = auto()
+    INGEST = auto()
+    FOCUS = auto()
+    ASSOCIATE = auto()
+    AGGREGATE = auto()
+    EXPLORE = auto()
 
     # ── MODIFIERS (run statement modifiers) ───────────────────────
     AS = auto()
@@ -160,6 +168,13 @@ KEYWORDS: dict[str, TokenType] = {
     "output": TokenType.OUTPUT,
     "true": TokenType.BOOL,
     "false": TokenType.BOOL,
+    # Data Science
+    "dataspace": TokenType.DATASPACE,
+    "ingest": TokenType.INGEST,
+    "focus": TokenType.FOCUS,
+    "associate": TokenType.ASSOCIATE,
+    "aggregate": TokenType.AGGREGATE,
+    "explore": TokenType.EXPLORE,
 }
 
 # Duration suffixes recognized by the lexer

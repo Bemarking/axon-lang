@@ -510,6 +510,71 @@ class IRHibernate(IRNode):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  DATA SCIENCE IR NODES — associative engine operations
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRDataSpace(IRNode):
+    """
+    Compiled dataspace declaration — creates an in-memory associative space.
+    """
+    node_type: str = "dataspace"
+    name: str = ""
+    body: tuple[IRNode, ...] = ()
+
+
+@dataclass(frozen=True)
+class IRIngest(IRNode):
+    """
+    Compiled ingest command — loads external data into a DataSpace.
+    """
+    node_type: str = "ingest"
+    source: str = ""           # file path or identifier
+    target: str = ""           # target DataSpace name
+
+
+@dataclass(frozen=True)
+class IRFocus(IRNode):
+    """
+    Compiled focus command — sets selection filter on the associative engine.
+    """
+    node_type: str = "focus"
+    expression: str = ""
+
+
+@dataclass(frozen=True)
+class IRAssociate(IRNode):
+    """
+    Compiled associate command — links two tables/dataspaces.
+    """
+    node_type: str = "associate"
+    left: str = ""
+    right: str = ""
+    using_field: str = ""
+
+
+@dataclass(frozen=True)
+class IRAggregate(IRNode):
+    """
+    Compiled aggregate command — performs summary reduction.
+    """
+    node_type: str = "aggregate"
+    target: str = ""
+    group_by: tuple[str, ...] = ()
+    alias: str = ""
+
+
+@dataclass(frozen=True)
+class IRExplore(IRNode):
+    """
+    Compiled explore command — interactive data display.
+    """
+    node_type: str = "explore"
+    target: str = ""
+    limit: int | None = None
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  EXECUTION IR NODE — the complete wiring
 # ═══════════════════════════════════════════════════════════════════
 

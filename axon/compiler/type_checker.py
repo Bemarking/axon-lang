@@ -22,13 +22,19 @@ from dataclasses import dataclass, field
 
 from .ast_nodes import (
     ASTNode,
+    AggregateNode,
     AnchorConstraint,
+    AssociateNode,
     ConditionalNode,
     ContextDefinition,
+    DataSpaceDefinition,
     EpistemicBlock,
+    ExploreNode,
     FlowDefinition,
+    FocusNode,
     HibernateNode,
     ImportNode,
+    IngestNode,
     IntentNode,
     MemoryDefinition,
     ParallelBlock,
@@ -365,6 +371,12 @@ class TypeChecker:
                                 self._register(name, "intent", inner_decl, type_name=ret)
                             case _:
                                 pass  # other inner declarations handled recursively
+                case DataSpaceDefinition(name=name):
+                    self._register(name, "dataspace", decl)
+                case IngestNode():
+                    pass  # ingest is a command, not a declaration
+                case FocusNode() | AssociateNode() | AggregateNode() | ExploreNode():
+                    pass  # flow-level commands, not declarations
 
     def _register(self, name: str, kind: str, node: ASTNode, type_name: str = "") -> None:
         err = self._symbols.declare(name, kind, node, type_name=type_name)
@@ -401,6 +413,12 @@ class TypeChecker:
                 self._check_par_block(decl)
             case HibernateNode():
                 self._check_hibernate(decl)
+            case DataSpaceDefinition():
+                self._check_dataspace(decl)
+            case IngestNode():
+                pass  # validated at runtime
+            case FocusNode() | AssociateNode() | AggregateNode() | ExploreNode():
+                pass  # validated at runtime
 
     # ── PERSONA validation ────────────────────────────────────────
 
@@ -796,6 +814,15 @@ class TypeChecker:
                 "hibernate requires an event name: hibernate until \"event_name\"",
                 node,
             )
+
+    # ── DATASPACE validation ──────────────────────────────────────
+
+    def _check_dataspace(self, node: DataSpaceDefinition) -> None:
+        if not node.name:
+            self._emit("dataspace requires a name", node)
+        # Recursively check inner body statements
+        for stmt in node.body:
+            self._check_declaration(stmt)
 
     # ── HELPERS ────────────────────────────────────────────────────
 

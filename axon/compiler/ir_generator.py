@@ -27,14 +27,20 @@ import hashlib
 from axon.compiler import ast_nodes as ast
 from axon.compiler.errors import AxonError
 from axon.compiler.ir_nodes import (
+    IRAggregate,
     IRAnchor,
+    IRAssociate,
     IRConditional,
     IRContext,
     IRDataEdge,
+    IRDataSpace,
     IREpistemicBlock,
+    IRExplore,
     IRFlow,
+    IRFocus,
     IRHibernate,
     IRImport,
+    IRIngest,
     IRIntent,
     IRMemory,
     IRNode,
@@ -154,6 +160,13 @@ class IRGenerator:
         ast.EpistemicBlock: "_visit_epistemic_block",
         ast.ParallelBlock: "_visit_par_block",
         ast.HibernateNode: "_visit_hibernate",
+        # Data Science
+        ast.DataSpaceDefinition: "_visit_dataspace",
+        ast.IngestNode: "_visit_ingest",
+        ast.FocusNode: "_visit_focus",
+        ast.AssociateNode: "_visit_associate",
+        ast.AggregateNode: "_visit_aggregate",
+        ast.ExploreNode: "_visit_explore",
     }
 
     def _visit(self, node: ast.ASTNode) -> IRNode:
@@ -687,6 +700,60 @@ class IRGenerator:
             event_name=node.event_name,
             timeout=node.timeout,
             continuation_id=continuation_id,
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  DATA SCIENCE VISITORS
+    # ═══════════════════════════════════════════════════════════════
+
+    def _visit_dataspace(self, node: ast.DataSpaceDefinition) -> IRDataSpace:
+        body = tuple(self._visit(stmt) for stmt in node.body)
+        return IRDataSpace(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            body=body,
+        )
+
+    def _visit_ingest(self, node: ast.IngestNode) -> IRIngest:
+        return IRIngest(
+            source_line=node.line,
+            source_column=node.column,
+            source=node.source,
+            target=node.target,
+        )
+
+    def _visit_focus(self, node: ast.FocusNode) -> IRFocus:
+        return IRFocus(
+            source_line=node.line,
+            source_column=node.column,
+            expression=node.expression,
+        )
+
+    def _visit_associate(self, node: ast.AssociateNode) -> IRAssociate:
+        return IRAssociate(
+            source_line=node.line,
+            source_column=node.column,
+            left=node.left,
+            right=node.right,
+            using_field=node.using_field,
+        )
+
+    def _visit_aggregate(self, node: ast.AggregateNode) -> IRAggregate:
+        return IRAggregate(
+            source_line=node.line,
+            source_column=node.column,
+            target=node.target,
+            group_by=tuple(node.group_by),
+            alias=node.alias,
+        )
+
+    def _visit_explore(self, node: ast.ExploreNode) -> IRExplore:
+        return IRExplore(
+            source_line=node.line,
+            source_column=node.column,
+            target=node.target,
+            limit=node.limit,
         )
 
     # ═══════════════════════════════════════════════════════════════

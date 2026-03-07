@@ -27,8 +27,14 @@ from typing import Any
 
 from axon.compiler.ir_nodes import (
     IRAnchor,
+    IRAggregate,
+    IRAssociate,
     IRContext,
+    IRDataSpace,
+    IRExplore,
     IRFlow,
+    IRFocus,
+    IRIngest,
     IRNode,
     IRPersona,
     IRProgram,
@@ -36,6 +42,9 @@ from axon.compiler.ir_nodes import (
     IRStep,
     IRToolSpec,
 )
+
+# IR types that represent Data Science operations
+_DATA_SCIENCE_IR_TYPES = (IRDataSpace, IRIngest, IRFocus, IRAssociate, IRAggregate, IRExplore)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -227,8 +236,15 @@ class BaseBackend(ABC):
             # Phase 4: Compile each step in the flow
             compiled_steps: list[CompiledStep] = []
             for step in run.resolved_flow.steps:
-                compiled = self.compile_step(step, ctx)
-                compiled_steps.append(compiled)
+                # Data Science IR nodes bypass the model — compile as
+                # metadata-only steps that the executor routes to the
+                # DataScienceDispatcher.
+                if isinstance(step, _DATA_SCIENCE_IR_TYPES):
+                    ds_step = self._compile_data_science_step(step)
+                    compiled_steps.append(ds_step)
+                else:
+                    compiled = self.compile_step(step, ctx)
+                    compiled_steps.append(compiled)
                 ctx.prior_step_names.append(
                     step.name if isinstance(step, IRStep) else ""
                 )
@@ -254,6 +270,56 @@ class BaseBackend(ABC):
         return CompiledProgram(
             backend_name=self.name,
             execution_units=execution_units,
+        )
+
+    @staticmethod
+    def _compile_data_science_step(step: IRNode) -> CompiledStep:
+        """Compile a Data Science IR node into a metadata-only step.
+
+        These steps bypass the model — the executor routes them
+        directly to the ``DataScienceDispatcher``.
+        """
+        from axon.compiler.ir_nodes import (
+            IRAggregate,
+            IRAssociate,
+            IRDataSpace,
+            IRExplore,
+            IRFocus,
+            IRIngest,
+        )
+
+        op: str = "unknown"
+        args: dict[str, Any] = {}
+
+        match step:
+            case IRDataSpace(name=name):
+                op = "dataspace"
+                args = {"name": name}
+            case IRIngest(source=src, target=tgt):
+                op = "ingest"
+                args = {"source": src, "target": tgt}
+            case IRFocus(expression=expr):
+                op = "focus"
+                args = {"expression": expr}
+            case IRAssociate(left=l, right=r, using_field=f):
+                op = "associate"
+                args = {"left": l, "right": r, "using_field": f}
+            case IRAggregate(target=tgt, group_by=gb, alias=alias):
+                op = "aggregate"
+                args = {"target": tgt, "group_by": list(gb), "alias": alias}
+            case IRExplore(target=tgt, limit=lim):
+                op = "explore"
+                args = {"target": tgt, "limit": lim}
+
+        return CompiledStep(
+            step_name=f"ds:{op}",
+            user_prompt="",
+            metadata={
+                "data_science": {
+                    "operation": op,
+                    "args": args,
+                },
+            },
         )
 
     @abstractmethod

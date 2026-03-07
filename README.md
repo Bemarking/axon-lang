@@ -5,14 +5,15 @@
 
 <p align="center">
   <code>persona</code> · <code>intent</code> · <code>flow</code> · <code>reason</code> · <code>anchor</code> · <code>refine</code> · <code>memory</code> · <code>tool</code> · <code>probe</code> · <code>weave</code> · <code>validate</code> · <code>context</code><br>
-  <code>know</code> · <code>believe</code> · <code>speculate</code> · <code>doubt</code> · <code>par</code> · <code>hibernate</code>
+  <code>know</code> · <code>believe</code> · <code>speculate</code> · <code>doubt</code> · <code>par</code> · <code>hibernate</code><br>
+  <code>dataspace</code> · <code>ingest</code> · <code>focus</code> · <code>associate</code> · <code>aggregate</code> · <code>explore</code>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-878%20passing-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/paradigms-3%20shifts-blueviolet" alt="Paradigm Shifts">
+  <img src="https://img.shields.io/badge/tests-947%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/paradigms-4%20shifts-blueviolet" alt="Paradigm Shifts">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
   <img src="https://img.shields.io/badge/pypi-axon--lang-blue" alt="PyPI">
 </p>
@@ -281,7 +282,7 @@ flow HandleTicket(ticket: String) -> Resolution {
                               Typed Output (validated, traced result)
 ```
 
-### 18 Cognitive Primitives
+### 24 Cognitive Primitives
 
 | Primitive | Keyword     | What it represents                       |
 | --------- | ----------- | ---------------------------------------- |
@@ -303,6 +304,12 @@ flow HandleTicket(ticket: String) -> Resolution {
 | Doubt     | `doubt`     | Epistemic scope — adversarial validation |
 | Par       | `par`       | Parallel cognitive dispatch              |
 | Hibernate | `hibernate` | Dynamic state yielding / CPS checkpoint  |
+| DataSpace | `dataspace` | In-memory associative data container     |
+| Ingest    | `ingest`    | Load external data into a DataSpace      |
+| Focus     | `focus`     | Select data — propagate associations     |
+| Associate | `associate` | Link tables via shared fields            |
+| Aggregate | `aggregate` | Group-by aggregation on selections       |
+| Explore   | `explore`   | Snapshot current associative state       |
 
 ### Epistemic Type System (Partial Order Lattice)
 
@@ -345,7 +352,7 @@ axon-constructor/
 ├── axon/
 │   ├── compiler/
 │   │   ├── lexer.py              # Source → Token stream
-│   │   ├── tokens.py             # Token type enum
+│   │   ├── tokens.py             # Token type enum (48 keywords)
 │   │   ├── parser.py             # Tokens → AST (recursive descent)
 │   │   ├── ast_nodes.py          # AST node class hierarchy
 │   │   ├── type_checker.py       # Semantic type validation
@@ -357,8 +364,15 @@ axon-constructor/
 │   │   ├── openai.py             # GPT
 │   │   ├── gemini.py             # Gemini
 │   │   └── ollama.py             # Local models
+│   ├── engine/                   # In-memory associative data engine
+│   │   ├── symbol_table.py       # Dictionary encoding
+│   │   ├── data_column.py        # Columnar storage + inverted index
+│   │   ├── association_index.py  # Cross-table link graph
+│   │   ├── selection_state.py    # Selection propagation engine
+│   │   └── dataspace.py          # Top-level data container
 │   ├── runtime/
 │   │   ├── executor.py           # Flow execution engine
+│   │   ├── data_dispatcher.py    # Data Science IR → engine bridge
 │   │   ├── context_mgr.py        # Mutable state between steps
 │   │   ├── semantic_validator.py # Output type validation
 │   │   ├── retry_engine.py       # Backoff + failure context
@@ -373,7 +387,7 @@ axon-constructor/
 │   │       ├── stubs/            # 8 tools (6 stubs + 2 real)
 │   │       └── backends/         # 3 production backends
 │   └── stdlib/                   # Built-in personas, flows, anchors
-└── tests/                        # 878 tests
+└── tests/                        # 947 tests
 ```
 
 ---
@@ -480,7 +494,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 ### Current Status
 
 ```
-878 passed, 0 failures ✅
+947 passed, 0 failures ✅
 ```
 
 | Phase | Tests | What's covered                              |
@@ -490,7 +504,8 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 | 3     | 115   | Executor, Context, Retry, Tracer, Validator |
 | 4     | 88    | Tool infra (53) + Real backends (35)        |
 | 7     | 56    | Paradigm Shifts (epistemic, par, hibernate) |
-| misc  | 281   | Stdlib, integration, edge cases             |
+| 8     | 69    | Data Science Engine (core)                  |
+| misc  | 372   | Stdlib, integration, edge cases             |
 
 ---
 
@@ -595,7 +610,8 @@ honesty:
 | 5     | CLI, REPL, Inspect                         | ✅ Done |
 | 6     | Test Suite, Hardening, Docs                | ✅ Done |
 | 7     | Paradigm Shifts (epistemic/par/hibernate)  | ✅ Done |
-| 8     | Executor integration + production backends | 🔧 Next |
+| 8     | Data Science Engine + Runtime Integration  | ✅ Done |
+| 9     | Executor integration + production backends | 🔧 Next |
 
 ---
 

@@ -13,13 +13,19 @@ from __future__ import annotations
 
 from .ast_nodes import (
     ASTNode,
+    AggregateNode,
     AnchorConstraint,
+    AssociateNode,
     ConditionalNode,
     ContextDefinition,
+    DataSpaceDefinition,
     EpistemicBlock,
+    ExploreNode,
     FlowDefinition,
+    FocusNode,
     HibernateNode,
     ImportNode,
+    IngestNode,
     IntentNode,
     MemoryDefinition,
     ParallelBlock,
@@ -95,6 +101,10 @@ class Parser:
                 return self._parse_run()
             case TokenType.KNOW | TokenType.BELIEVE | TokenType.SPECULATE | TokenType.DOUBT:
                 return self._parse_epistemic_block()
+            case TokenType.DATASPACE:
+                return self._parse_dataspace()
+            case TokenType.INGEST:
+                return self._parse_ingest()
             case _:
                 raise AxonParseError(
                     f"Unexpected token at top level",
@@ -518,12 +528,22 @@ class Parser:
                 return self._parse_par_block()
             case TokenType.HIBERNATE:
                 return self._parse_hibernate()
+            case TokenType.FOCUS:
+                return self._parse_focus()
+            case TokenType.ASSOCIATE:
+                return self._parse_associate()
+            case TokenType.AGGREGATE:
+                return self._parse_aggregate()
+            case TokenType.EXPLORE:
+                return self._parse_explore()
+            case TokenType.INGEST:
+                return self._parse_ingest()
             case _:
                 raise AxonParseError(
                     "Unexpected token in flow body",
                     line=tok.line,
                     column=tok.column,
-                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate",
+                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, focus, associate, aggregate, explore, ingest",
                     found=tok.value,
                 )
 
@@ -1175,5 +1195,178 @@ class Parser:
             TokenType.PERSONA, TokenType.CONTEXT, TokenType.ANCHOR,
             TokenType.MEMORY, TokenType.TOOL, TokenType.TYPE,
             TokenType.FLOW, TokenType.INTENT, TokenType.RUN,
-            TokenType.IMPORT, TokenType.EOF,
+            TokenType.IMPORT, TokenType.DATASPACE, TokenType.INGEST,
+            TokenType.EOF,
         )
+
+    # ── DATA SCIENCE PARSERS ─────────────────────────────────────
+
+    def _parse_dataspace(self) -> DataSpaceDefinition:
+        """Parse: dataspace SalesAnalysis { ... }"""
+        tok = self._consume(TokenType.DATASPACE)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = DataSpaceDefinition(
+            name=name.value, line=tok.line, column=tok.column
+        )
+
+        # Optional body
+        if self._check(TokenType.LBRACE):
+            self._advance()
+            while not self._check(TokenType.RBRACE):
+                inner = self._parse_flow_step()
+                if inner is not None:
+                    node.body.append(inner)
+            self._consume(TokenType.RBRACE)
+
+        return node
+
+    def _parse_ingest(self) -> IngestNode:
+        """Parse: ingest (string | identifier) into identifier"""
+        tok = self._consume(TokenType.INGEST)
+        node = IngestNode(line=tok.line, column=tok.column)
+
+        # Source: string literal or identifier
+        src_tok = self._current()
+        if src_tok.type == TokenType.STRING:
+            node.source = self._advance().value
+        elif src_tok.type == TokenType.IDENTIFIER:
+            node.source = self._parse_dotted_identifier()
+        else:
+            raise AxonParseError(
+                "Expected source (string or identifier) after 'ingest'",
+                line=src_tok.line, column=src_tok.column,
+                expected="string or identifier", found=src_tok.value,
+            )
+
+        # "into" keyword (contextual — parsed as IDENTIFIER with value "into")
+        into_tok = self._current()
+        if into_tok.type == TokenType.INTO:
+            self._advance()
+        elif into_tok.type == TokenType.IDENTIFIER and into_tok.value == "into":
+            self._advance()
+        else:
+            raise AxonParseError(
+                "Expected 'into' after source in ingest",
+                line=into_tok.line, column=into_tok.column,
+                expected="into", found=into_tok.value,
+            )
+
+        node.target = self._consume(TokenType.IDENTIFIER).value
+        return node
+
+    def _parse_focus(self) -> FocusNode:
+        """Parse: focus on <expression>"""
+        tok = self._consume(TokenType.FOCUS)
+        node = FocusNode(line=tok.line, column=tok.column)
+
+        # "on" keyword (contextual)
+        on_tok = self._current()
+        if on_tok.type == TokenType.IDENTIFIER and on_tok.value == "on":
+            self._advance()
+        else:
+            raise AxonParseError(
+                "Expected 'on' after 'focus'",
+                line=on_tok.line, column=on_tok.column,
+                expected="on", found=on_tok.value,
+            )
+
+        # Collect expression tokens until we hit a flow step keyword or RBRACE
+        expr_parts: list[str] = []
+        while not self._check(TokenType.RBRACE) and not self._check(TokenType.EOF):
+            cur = self._current()
+            # Stop if we see a flow-step keyword (next statement)
+            if cur.type in (
+                TokenType.STEP, TokenType.PROBE, TokenType.REASON,
+                TokenType.VALIDATE, TokenType.REFINE, TokenType.WEAVE,
+                TokenType.USE, TokenType.REMEMBER, TokenType.RECALL,
+                TokenType.IF, TokenType.PAR, TokenType.HIBERNATE,
+                TokenType.FOCUS, TokenType.ASSOCIATE, TokenType.AGGREGATE,
+                TokenType.EXPLORE, TokenType.INGEST, TokenType.DATASPACE,
+            ):
+                break
+            expr_parts.append(self._advance().value)
+
+        node.expression = " ".join(expr_parts)
+        return node
+
+    def _parse_associate(self) -> AssociateNode:
+        """Parse: associate X with Y [using Z]"""
+        tok = self._consume(TokenType.ASSOCIATE)
+        node = AssociateNode(line=tok.line, column=tok.column)
+
+        node.left = self._consume(TokenType.IDENTIFIER).value
+
+        # "with" keyword (contextual)
+        with_tok = self._current()
+        if with_tok.type == TokenType.IDENTIFIER and with_tok.value == "with":
+            self._advance()
+        elif with_tok.type == TokenType.WITHIN:
+            # 'within' is close but not right — raise helpful error
+            raise AxonParseError(
+                "Expected 'with' after table name in associate",
+                line=with_tok.line, column=with_tok.column,
+                expected="with", found="within",
+            )
+        else:
+            raise AxonParseError(
+                "Expected 'with' after table name in associate",
+                line=with_tok.line, column=with_tok.column,
+                expected="with", found=with_tok.value,
+            )
+
+        node.right = self._consume(TokenType.IDENTIFIER).value
+
+        # Optional "using field_name"
+        if (self._current().type == TokenType.IDENTIFIER
+                and self._current().value == "using"):
+            self._advance()
+            node.using_field = self._consume(TokenType.IDENTIFIER).value
+
+        return node
+
+    def _parse_aggregate(self) -> AggregateNode:
+        """Parse: aggregate X by Y, Z [as alias]"""
+        tok = self._consume(TokenType.AGGREGATE)
+        node = AggregateNode(line=tok.line, column=tok.column)
+
+        node.target = self._parse_dotted_identifier()
+
+        # "by" keyword (contextual)
+        by_tok = self._current()
+        if by_tok.type == TokenType.IDENTIFIER and by_tok.value == "by":
+            self._advance()
+        else:
+            raise AxonParseError(
+                "Expected 'by' after target in aggregate",
+                line=by_tok.line, column=by_tok.column,
+                expected="by", found=by_tok.value,
+            )
+
+        # identifier_list: at least one identifier, comma-separated
+        node.group_by.append(self._consume(TokenType.IDENTIFIER).value)
+        while self._check(TokenType.COMMA):
+            self._advance()
+            node.group_by.append(self._consume(TokenType.IDENTIFIER).value)
+
+        # Optional "as alias"
+        if (self._current().type == TokenType.AS):
+            self._advance()
+            node.alias = self._consume(TokenType.IDENTIFIER).value
+
+        return node
+
+    def _parse_explore(self) -> ExploreNode:
+        """Parse: explore X [limit N]"""
+        tok = self._consume(TokenType.EXPLORE)
+        node = ExploreNode(line=tok.line, column=tok.column)
+
+        node.target = self._parse_dotted_identifier()
+
+        # Optional "limit N"
+        if (self._current().type == TokenType.IDENTIFIER
+                and self._current().value == "limit"):
+            self._advance()
+            limit_tok = self._consume(TokenType.INTEGER)
+            node.limit = int(limit_tok.value)
+
+        return node

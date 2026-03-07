@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from axon.runtime.data_dispatcher import DataScienceDispatcher
     from axon.runtime.tools.dispatcher import ToolDispatcher
 
 from axon.backends.base_backend import (
@@ -302,6 +303,7 @@ class Executor:
         self._retry_engine = retry_engine or RetryEngine()
         self._memory = memory or InMemoryBackend()
         self._tool_dispatcher = tool_dispatcher
+        self._data_dispatcher: DataScienceDispatcher | None = None
 
     async def execute(self, program: CompiledProgram) -> ExecutionResult:
         """Execute a complete compiled AXON program.
@@ -457,6 +459,14 @@ class Executor:
         # ToolDispatcher instead of the model client.
         if step.metadata.get("use_tool"):
             return await self._execute_tool_step(
+                step=step, ctx=ctx, tracer=tracer,
+            )
+
+        # ── Data Science step shortcut ───────────────────────────
+        # If the step carries a data_science operation, route through
+        # the DataScienceDispatcher instead of the model client.
+        if step.metadata.get("data_science"):
+            return await self._execute_data_step(
                 step=step, ctx=ctx, tracer=tracer,
             )
 
@@ -672,6 +682,161 @@ class Executor:
             response=response,
             duration_ms=step_duration,
         )
+
+    async def _execute_data_step(
+        self,
+        step: CompiledStep,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a Data Science step (via DataScienceDispatcher).
+
+        When a compiled step's metadata contains ``data_science``, this
+        method is called instead of the normal model → validate path.
+        The ``DataScienceDispatcher`` resolves the operation and
+        executes it directly against the in-memory engine.
+
+        Args:
+            step:    The compiled step with ``data_science`` metadata.
+            ctx:     The active context manager.
+            tracer:  The active tracer.
+
+        Returns:
+            A ``StepResult`` with the engine result.
+        """
+        import json
+
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        ds_meta = step.metadata["data_science"]
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={"data_science_op": ds_meta.get("operation", "unknown")},
+        )
+
+        # Lazy-init dispatcher
+        if self._data_dispatcher is None:
+            from axon.runtime.data_dispatcher import DataScienceDispatcher
+            self._data_dispatcher = DataScienceDispatcher()
+
+        # Reconstruct the IR node from step metadata
+        ir_node = self._reconstruct_data_ir(ds_meta)
+
+        if ir_node is None:
+            from axon.runtime.runtime_errors import AxonRuntimeError, ErrorContext
+            raise AxonRuntimeError(
+                message=(
+                    f"Step '{step_name}' has data_science metadata but "
+                    f"unknown operation: '{ds_meta.get('operation')}'"
+                ),
+                error_type="data_science",
+                context=ErrorContext(
+                    flow_name="",
+                    step_name=step_name,
+                ),
+            )
+
+        ds_result = await self._data_dispatcher.dispatch(
+            ir_node, context={"step_name": step_name},
+        )
+
+        # Convert DataScienceResult → ModelResponse
+        response = ModelResponse(
+            content=json.dumps(ds_result.data) if ds_result.data else "",
+            structured=ds_result.data if isinstance(ds_result.data, dict) else None,
+        )
+
+        if not ds_result.success:
+            from axon.runtime.runtime_errors import AxonRuntimeError, ErrorContext
+            raise AxonRuntimeError(
+                message=(
+                    f"Data Science operation '{ds_result.operation}' failed: "
+                    f"{ds_result.error}"
+                ),
+                error_type="data_science",
+                context=ErrorContext(
+                    flow_name="",
+                    step_name=step_name,
+                ),
+            )
+
+        # Store result in context for downstream steps
+        ctx.set_step_result(step_name, response.content)
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "data_science_op": ds_result.operation,
+            },
+            duration_ms=step_duration,
+        )
+
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=step_duration,
+        )
+
+    @staticmethod
+    def _reconstruct_data_ir(
+        meta: dict[str, Any],
+    ) -> Any | None:
+        """Reconstruct a Data Science IR node from step metadata.
+
+        Args:
+            meta: The ``data_science`` metadata dict.
+
+        Returns:
+            The reconstructed IR node, or None if unknown.
+        """
+        from axon.compiler.ir_nodes import (
+            IRAggregate,
+            IRAssociate,
+            IRDataSpace,
+            IRExplore,
+            IRFocus,
+            IRIngest,
+        )
+
+        op = meta.get("operation")
+        args = meta.get("args", {})
+
+        constructors = {
+            "dataspace": lambda: IRDataSpace(
+                name=args.get("name", ""),
+                body=tuple(),
+            ),
+            "ingest": lambda: IRIngest(
+                source=args.get("source", ""),
+                target=args.get("target", ""),
+            ),
+            "focus": lambda: IRFocus(
+                expression=args.get("expression", ""),
+            ),
+            "associate": lambda: IRAssociate(
+                left=args.get("left", ""),
+                right=args.get("right", ""),
+                using_field=args.get("using_field", ""),
+            ),
+            "aggregate": lambda: IRAggregate(
+                target=args.get("target", ""),
+                group_by=tuple(args.get("group_by", ())),
+                alias=args.get("alias", ""),
+            ),
+            "explore": lambda: IRExplore(
+                target=args.get("target", ""),
+                limit=args.get("limit"),
+            ),
+        }
+
+        factory = constructors.get(op)
+        return factory() if factory else None
 
     async def _call_model(
         self,
