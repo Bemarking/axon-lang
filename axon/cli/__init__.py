@@ -108,6 +108,29 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── axon version ──────────────────────────────────────────
     sub.add_parser("version", help="Show axon-lang version")
 
+    # ── axon repl ─────────────────────────────────────────────
+    sub.add_parser(
+        "repl",
+        help="Start an interactive AXON REPL session.",
+    )
+
+    # ── axon inspect ──────────────────────────────────────────
+    inspect_cmd = sub.add_parser(
+        "inspect",
+        help="Introspect the AXON standard library.",
+    )
+    inspect_cmd.add_argument(
+        "target",
+        nargs="?",
+        default="anchors",
+        help="Namespace (anchors|personas|flows|tools) or component name",
+    )
+    inspect_cmd.add_argument(
+        "--all",
+        action="store_true",
+        help="List all stdlib components across all namespaces",
+    )
+
     return parser
 
 
@@ -146,6 +169,16 @@ def main(argv: list[str] | None = None) -> int:
         from axon.cli.version_cmd import cmd_version
 
         return cmd_version(args)
+
+    if args.command == "repl":
+        from axon.cli.repl_cmd import cmd_repl
+
+        return cmd_repl(args)
+
+    if args.command == "inspect":
+        from axon.cli.inspect_cmd import cmd_inspect
+
+        return cmd_inspect(args)
 
     parser.print_help()
     return 1

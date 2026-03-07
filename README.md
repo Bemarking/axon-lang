@@ -10,7 +10,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-731%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-800%20passing-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
   <img src="https://img.shields.io/pypi/v/axon-lang" alt="PyPI">
 </p>
@@ -234,6 +234,15 @@ axon trace program.trace.json
 
 # Version
 axon version
+
+# Interactive REPL
+axon repl
+
+# Introspect stdlib
+axon inspect anchors                       # list all anchors
+axon inspect personas                      # list all personas
+axon inspect NoHallucination               # detail for a component
+axon inspect --all                         # list everything
 ```
 
 ### Python API
@@ -268,7 +277,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 ### Current Status
 
 ```
-731 passed, 2 known failures (IR serialization edge cases)
+800 passed, 20 known failures (CLI subprocess + IR edge cases)
 ```
 
 | Phase | Tests | What's covered                              |
@@ -378,8 +387,8 @@ honesty:
 | 1     | Lexer, Parser, AST, Type Checker | ✅ Done        |
 | 2     | IR Generator, Compiler Backends  | ✅ Done        |
 | 3     | Runtime (7 modules)              | ✅ Done        |
-| 4     | Standard Library                 | 🔧 In progress |
-| 5     | CLI, REPL, VSCode Extension      | 🔧 In progress |
+| 4     | Standard Library                 | ✅ Done        |
+| 5     | CLI, REPL, Inspect               | 🔧 In progress |
 | 6     | Test Suite, Hardening, Docs      | ⬜ Planned     |
 
 ---

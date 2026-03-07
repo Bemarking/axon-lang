@@ -1,7 +1,7 @@
 """
 AXON CLI — Unit Tests
 =======================
-Tests all five CLI subcommands: check, compile, run, trace, version.
+Tests all seven CLI subcommands: check, compile, run, trace, version, repl, inspect.
 Uses the real compiler pipeline with the bundled example file.
 """
 
@@ -225,3 +225,50 @@ class TestRunSmoke:
         bad.write_text("42 + garbage", encoding="utf-8")
         r = _run("run", str(bad), check=False)
         assert r.returncode == 1
+
+
+# ══════════════════════════════════════════════════════════════════
+#  axon inspect
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestInspect:
+    """``axon inspect`` introspects the stdlib."""
+
+    def test_inspect_anchors(self):
+        r = _run("inspect", "anchors")
+        assert r.returncode == 0
+        assert "ANCHORS" in r.stdout
+        assert "NoHallucination" in r.stdout
+
+    def test_inspect_personas(self):
+        r = _run("inspect", "personas")
+        assert r.returncode == 0
+        assert "PERSONAS" in r.stdout
+
+    def test_inspect_tools(self):
+        r = _run("inspect", "tools")
+        assert r.returncode == 0
+        assert "TOOLS" in r.stdout
+
+    def test_inspect_flows(self):
+        r = _run("inspect", "flows")
+        assert r.returncode == 0
+        assert "FLOWS" in r.stdout
+
+    def test_inspect_all(self):
+        r = _run("inspect", "--all")
+        assert r.returncode == 0
+        assert "ANCHORS" in r.stdout
+        assert "PERSONAS" in r.stdout
+
+    def test_inspect_specific_anchor(self):
+        r = _run("inspect", "NoHallucination")
+        assert r.returncode == 0
+        assert "NoHallucination" in r.stdout
+        assert "anchors" in r.stdout.lower()
+
+    def test_inspect_not_found(self):
+        r = _run("inspect", "NonexistentThing", check=False)
+        assert r.returncode == 1
+        assert "not found" in r.stdout

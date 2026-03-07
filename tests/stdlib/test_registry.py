@@ -76,9 +76,9 @@ class TestStdlibRegistry:
         assert names == sorted(names)  # sorted
 
     def test_list_names_anchors(self):
-        """list_names returns 8 anchor names."""
+        """list_names returns 12 anchor names."""
         reg = StdlibRegistry()
-        assert len(reg.list_names("anchors")) == 8
+        assert len(reg.list_names("anchors")) == 12
 
     def test_list_names_flows(self):
         """list_names returns 8 flow names."""
@@ -91,9 +91,9 @@ class TestStdlibRegistry:
         assert len(reg.list_names("tools")) == 8
 
     def test_total_count(self):
-        """Total count is 32 (8 × 4 namespaces)."""
+        """Total count is 36 (12 anchors + 8×3 others)."""
         reg = StdlibRegistry()
-        assert reg.total_count == 32
+        assert reg.total_count == 36
 
     def test_has_positive(self):
         """has() returns True for registered components."""
@@ -121,7 +121,7 @@ class TestStdlibRegistry:
         """list_all returns StdlibEntry instances."""
         reg = StdlibRegistry()
         entries = reg.list_all("anchors")
-        assert len(entries) == 8
+        assert len(entries) == 12
         assert all(isinstance(e, StdlibAnchor) for e in entries)
 
     def test_namespaces_property(self):
