@@ -470,6 +470,22 @@ class Executor:
                 step=step, ctx=ctx, tracer=tracer,
             )
 
+        # ── Deliberate step shortcut ───────────────────────────────
+        # If the step carries a deliberate config, route through
+        # _execute_deliberate_step which overrides effort/budget.
+        if step.metadata.get("deliberate"):
+            return await self._execute_deliberate_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
+        # ── Consensus step shortcut ────────────────────────────────
+        # If the step carries a consensus config, route through
+        # _execute_consensus_step which runs N parallel branches.
+        if step.metadata.get("consensus"):
+            return await self._execute_consensus_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
         # Extract refine config from step metadata (if present)
         refine_config = self._extract_refine_config(step)
 
@@ -1104,4 +1120,242 @@ class Executor:
             on_exhaustion_target=refine_data.get(
                 "on_exhaustion_target", ""
             ),
+        )
+
+    # ── DELIBERATE EXECUTION ────────────────────────────────────────
+
+    # Strategy → model effort mapping
+    _DELIBERATE_EFFORT_MAP: dict[str, str] = {
+        "quick": "low",
+        "balanced": "medium",
+        "thorough": "high",
+        "exhaustive": "max",
+    }
+
+    async def _execute_deliberate_step(
+        self,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a deliberate step.
+
+        Overrides the execution unit's effort level based on the
+        deliberate strategy, then executes each child step with
+        the modified effort.
+
+        Args:
+            step:    The compiled step with ``deliberate`` metadata.
+            unit:    The parent execution unit.
+            ctx:     The active context manager.
+            tracer:  The active tracer.
+
+        Returns:
+            A ``StepResult`` wrapping the collected child results.
+        """
+        import json
+
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        delib_meta = step.metadata["deliberate"]
+        strategy = delib_meta.get("strategy", "balanced")
+        effort = self._DELIBERATE_EFFORT_MAP.get(strategy, "medium")
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "deliberate_strategy": strategy,
+                "deliberate_budget": delib_meta.get("budget", 0),
+                "deliberate_depth": delib_meta.get("depth", 1),
+            },
+        )
+
+        # Execute child steps with overridden effort
+        child_results: list[dict[str, Any]] = []
+        original_effort = unit.effort
+        unit.effort = effort
+
+        child_step_dicts = delib_meta.get("child_steps", [])
+        for child_dict in child_step_dicts:
+            child_compiled = CompiledStep(
+                step_name=child_dict.get("step_name", ""),
+                user_prompt=child_dict.get("user_prompt", ""),
+                system_prompt=child_dict.get("system_prompt", ""),
+                metadata=child_dict.get("metadata", {}),
+            )
+            child_result = await self._execute_step(
+                step=child_compiled, unit=unit,
+                ctx=ctx, tracer=tracer,
+            )
+            child_results.append(child_result.to_dict())
+
+        unit.effort = original_effort
+
+        response = ModelResponse(
+            content=json.dumps({
+                "deliberate": {
+                    "strategy": strategy,
+                    "effort": effort,
+                    "child_count": len(child_results),
+                    "results": child_results,
+                }
+            }),
+        )
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={"success": True, "strategy": strategy},
+            duration_ms=step_duration,
+        )
+
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=step_duration,
+        )
+
+    # ── CONSENSUS EXECUTION ─────────────────────────────────────────
+
+    async def _execute_consensus_step(
+        self,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a consensus step (Best-of-N selection).
+
+        Runs the inner child steps N times in parallel (under
+        speculative mode / high temperature), then selects the best
+        result based on response length heuristic (reward anchor
+        evaluation will be integrated when the anchor engine is
+        fully connected).
+
+        Args:
+            step:    The compiled step with ``consensus`` metadata.
+            unit:    The parent execution unit.
+            ctx:     The active context manager.
+            tracer:  The active tracer.
+
+        Returns:
+            A ``StepResult`` with the selected best response.
+        """
+        import asyncio
+        import json
+
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        cons_meta = step.metadata["consensus"]
+        n_branches = cons_meta.get("n_branches", 3)
+        selection = cons_meta.get("selection", "best")
+        reward_anchor = cons_meta.get("reward_anchor", "")
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "consensus_branches": n_branches,
+                "consensus_selection": selection,
+                "consensus_reward": reward_anchor,
+            },
+        )
+
+        child_step_dicts = cons_meta.get("child_steps", [])
+
+        async def _run_branch(branch_id: int) -> list[StepResult]:
+            """Execute all child steps once (one branch)."""
+            branch_results: list[StepResult] = []
+            for child_dict in child_step_dicts:
+                child_compiled = CompiledStep(
+                    step_name=f"{child_dict.get('step_name', '')}:b{branch_id}",
+                    user_prompt=child_dict.get("user_prompt", ""),
+                    system_prompt=child_dict.get("system_prompt", ""),
+                    metadata=child_dict.get("metadata", {}),
+                )
+                result = await self._execute_step(
+                    step=child_compiled, unit=unit,
+                    ctx=ctx, tracer=tracer,
+                )
+                branch_results.append(result)
+            return branch_results
+
+        # Run N branches in parallel
+        all_branches = await asyncio.gather(
+            *[_run_branch(i) for i in range(n_branches)],
+            return_exceptions=True,
+        )
+
+        # Collect successful branches
+        successful: list[tuple[int, list[StepResult]]] = []
+        for i, branch in enumerate(all_branches):
+            if not isinstance(branch, Exception):
+                successful.append((i, branch))
+
+        # Selection: pick the best branch
+        best_branch_id = 0
+        best_results: list[StepResult] = []
+
+        if successful:
+            if selection == "majority":
+                # Majority: pick the branch whose final response
+                # content is most common among branches
+                from collections import Counter
+                final_contents = [
+                    branch[-1].response.content if branch and branch[-1].response else ""
+                    for _, branch in successful
+                ]
+                most_common = Counter(final_contents).most_common(1)[0][0]
+                for idx, branch in successful:
+                    if branch and branch[-1].response and branch[-1].response.content == most_common:
+                        best_branch_id = idx
+                        best_results = branch
+                        break
+            else:
+                # Best: pick the branch with the longest final response
+                # (heuristic for quality — real reward anchor scoring
+                # will replace this when the anchor engine is connected)
+                best_score = -1
+                for idx, branch in successful:
+                    if branch and branch[-1].response:
+                        score = len(branch[-1].response.content)
+                        if score > best_score:
+                            best_score = score
+                            best_branch_id = idx
+                            best_results = branch
+
+        response = ModelResponse(
+            content=json.dumps({
+                "consensus": {
+                    "selection": selection,
+                    "total_branches": n_branches,
+                    "successful_branches": len(successful),
+                    "selected_branch": best_branch_id,
+                    "reward_anchor": reward_anchor,
+                    "results": [
+                        r.to_dict() for r in best_results
+                    ],
+                }
+            }),
+        )
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "selected_branch": best_branch_id,
+                "total_branches": n_branches,
+            },
+            duration_ms=step_duration,
+        )
+
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=step_duration,
         )

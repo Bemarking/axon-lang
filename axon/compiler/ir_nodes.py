@@ -509,6 +509,49 @@ class IRHibernate(IRNode):
     continuation_id: str = ""                   # compiler-generated unique ID
 
 
+@dataclass(frozen=True)
+class IRDeliberate(IRNode):
+    """
+    Compiled deliberate block — compute budget envelope.
+
+    Maps from AST DeliberateBlock. Wraps inner IR steps with
+    a computational budget that controls reasoning effort,
+    token allocation, and iteration depth.
+
+    The strategy field maps to LLM parameter sets:
+      quick      → reasoning_effort=low,    budget_factor=0.25
+      balanced   → reasoning_effort=medium, budget_factor=0.5
+      thorough   → reasoning_effort=high,   budget_factor=1.0
+      exhaustive → reasoning_effort=max,    budget_factor=1.0
+    """
+    node_type: str = "deliberate"
+    budget: int = 0                              # max tokens for reasoning
+    depth: int = 1                               # max reasoning iterations
+    strategy: str = "balanced"                   # quick|balanced|thorough|exhaustive
+    children: tuple[IRNode, ...] = ()            # compiled inner steps
+
+
+@dataclass(frozen=True)
+class IRConsensus(IRNode):
+    """
+    Compiled consensus block — Best-of-N selection.
+
+    Maps from AST ConsensusBlock. Runs inner steps N times under
+    speculative mode (high temperature) and selects the best result
+    via the referenced reward anchor.
+
+    Fields:
+      n_branches:     number of parallel evaluation runs (>= 2)
+      reward_anchor:  name of the anchor used as reward function
+      selection:      "best" (highest score) or "majority" (most common)
+    """
+    node_type: str = "consensus"
+    n_branches: int = 3                          # parallel evaluation count
+    reward_anchor: str = ""                      # reward function anchor name
+    selection: str = "best"                      # best | majority
+    children: tuple[IRNode, ...] = ()            # compiled inner steps
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  DATA SCIENCE IR NODES — associative engine operations
 # ═══════════════════════════════════════════════════════════════════

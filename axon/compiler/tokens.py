@@ -52,6 +52,8 @@ class TokenType(Enum):
     PAR = auto()
     CONSOLIDATE = auto()
     HIBERNATE = auto()
+    DELIBERATE = auto()
+    CONSENSUS = auto()
 
     # ── DATA SCIENCE KEYWORDS ────────────────────────────────────
     DATASPACE = auto()
@@ -151,6 +153,9 @@ KEYWORDS: dict[str, TokenType] = {
     "par": TokenType.PAR,
     "consolidate": TokenType.CONSOLIDATE,
     "hibernate": TokenType.HIBERNATE,
+    # Compute budget & consensus
+    "deliberate": TokenType.DELIBERATE,
+    "consensus": TokenType.CONSENSUS,
     "as": TokenType.AS,
     "within": TokenType.WITHIN,
     "constrained_by": TokenType.CONSTRAINED_BY,

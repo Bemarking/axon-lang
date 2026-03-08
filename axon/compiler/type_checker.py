@@ -26,8 +26,10 @@ from .ast_nodes import (
     AnchorConstraint,
     AssociateNode,
     ConditionalNode,
+    ConsensusBlock,
     ContextDefinition,
     DataSpaceDefinition,
+    DeliberateBlock,
     EpistemicBlock,
     ExploreNode,
     FlowDefinition,
@@ -413,6 +415,10 @@ class TypeChecker:
                 self._check_par_block(decl)
             case HibernateNode():
                 self._check_hibernate(decl)
+            case DeliberateBlock():
+                self._check_deliberate(decl)
+            case ConsensusBlock():
+                self._check_consensus(decl)
             case DataSpaceDefinition():
                 self._check_dataspace(decl)
             case IngestNode():
@@ -588,6 +594,10 @@ class TypeChecker:
                 self._check_par_block(step)
             case HibernateNode():
                 self._check_hibernate(step)
+            case DeliberateBlock():
+                self._check_deliberate(step)
+            case ConsensusBlock():
+                self._check_consensus(step)
 
     def _check_step(self, node: StepNode, step_names: set[str], flow_name: str) -> None:
         if node.name in step_names:
@@ -823,6 +833,60 @@ class TypeChecker:
         # Recursively check inner body statements
         for stmt in node.body:
             self._check_declaration(stmt)
+
+    # ── DELIBERATE validation ─────────────────────────────────────────
+
+    _VALID_DELIBERATE_STRATEGIES = frozenset({
+        "quick", "balanced", "thorough", "exhaustive",
+    })
+
+    def _check_deliberate(self, node: DeliberateBlock) -> None:
+        if node.budget < 0:
+            self._emit("deliberate budget must be >= 0", node)
+        if node.depth < 1:
+            self._emit(
+                f"deliberate depth must be >= 1, got {node.depth}", node,
+            )
+        if node.strategy and node.strategy not in self._VALID_DELIBERATE_STRATEGIES:
+            self._emit(
+                f"Unknown deliberate strategy '{node.strategy}'. "
+                f"Valid: {', '.join(sorted(self._VALID_DELIBERATE_STRATEGIES))}",
+                node,
+            )
+        for child in node.body:
+            self._check_declaration(child)
+
+    # ── CONSENSUS validation ──────────────────────────────────────────
+
+    _VALID_CONSENSUS_SELECTIONS = frozenset({"best", "majority"})
+
+    def _check_consensus(self, node: ConsensusBlock) -> None:
+        if node.branches < 2:
+            self._emit("consensus requires at least 2 branches", node)
+        if not node.reward_anchor:
+            self._emit(
+                "consensus requires a 'reward' anchor for selection", node,
+            )
+        else:
+            sym = self._symbols.lookup(node.reward_anchor)
+            if sym is None:
+                self._emit(
+                    f"Undefined anchor '{node.reward_anchor}' in consensus",
+                    node,
+                )
+            elif sym.kind != "anchor":
+                self._emit(
+                    f"'{node.reward_anchor}' is a {sym.kind}, not an anchor",
+                    node,
+                )
+        if node.selection and node.selection not in self._VALID_CONSENSUS_SELECTIONS:
+            self._emit(
+                f"Unknown consensus selection '{node.selection}'. "
+                f"Valid: {', '.join(sorted(self._VALID_CONSENSUS_SELECTIONS))}",
+                node,
+            )
+        for child in node.body:
+            self._check_declaration(child)
 
     # ── HELPERS ────────────────────────────────────────────────────
 

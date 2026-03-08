@@ -31,9 +31,11 @@ from axon.compiler.ir_nodes import (
     IRAnchor,
     IRAssociate,
     IRConditional,
+    IRConsensus,
     IRContext,
     IRDataEdge,
     IRDataSpace,
+    IRDeliberate,
     IREpistemicBlock,
     IRExplore,
     IRFlow,
@@ -160,6 +162,8 @@ class IRGenerator:
         ast.EpistemicBlock: "_visit_epistemic_block",
         ast.ParallelBlock: "_visit_par_block",
         ast.HibernateNode: "_visit_hibernate",
+        ast.DeliberateBlock: "_visit_deliberate",
+        ast.ConsensusBlock: "_visit_consensus",
         # Data Science
         ast.DataSpaceDefinition: "_visit_dataspace",
         ast.IngestNode: "_visit_ingest",
@@ -702,9 +706,42 @@ class IRGenerator:
             continuation_id=continuation_id,
         )
 
-    # ═══════════════════════════════════════════════════════════════
+    # Deliberate strategy matrix: compile-time calculation of
+    # reasoning effort and budget factor per strategy name.
+    _DELIBERATE_STRATEGIES: dict[str, dict] = {
+        "quick":      {"reasoning_effort": "low",    "budget_factor": 0.25},
+        "balanced":   {"reasoning_effort": "medium", "budget_factor": 0.5},
+        "thorough":   {"reasoning_effort": "high",   "budget_factor": 1.0},
+        "exhaustive": {"reasoning_effort": "max",    "budget_factor": 1.0},
+    }
+
+    def _visit_deliberate(self, node: ast.DeliberateBlock) -> IRDeliberate:
+        """Compile deliberate block → IRDeliberate with budget constraints."""
+        children = tuple(self._visit(child) for child in node.body)
+        return IRDeliberate(
+            source_line=node.line,
+            source_column=node.column,
+            budget=node.budget,
+            depth=node.depth,
+            strategy=node.strategy,
+            children=children,
+        )
+
+    def _visit_consensus(self, node: ast.ConsensusBlock) -> IRConsensus:
+        """Compile consensus block → IRConsensus with branch config."""
+        children = tuple(self._visit(child) for child in node.body)
+        return IRConsensus(
+            source_line=node.line,
+            source_column=node.column,
+            n_branches=node.branches,
+            reward_anchor=node.reward_anchor,
+            selection=node.selection,
+            children=children,
+        )
+
+    # ═══════════════════════════════════════════════════════════════════
     #  DATA SCIENCE VISITORS
-    # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════
 
     def _visit_dataspace(self, node: ast.DataSpaceDefinition) -> IRDataSpace:
         body = tuple(self._visit(stmt) for stmt in node.body)

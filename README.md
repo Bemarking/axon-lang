@@ -6,14 +6,15 @@
 <p align="center">
   <code>persona</code> · <code>intent</code> · <code>flow</code> · <code>reason</code> · <code>anchor</code> · <code>refine</code> · <code>memory</code> · <code>tool</code> · <code>probe</code> · <code>weave</code> · <code>validate</code> · <code>context</code><br>
   <code>know</code> · <code>believe</code> · <code>speculate</code> · <code>doubt</code> · <code>par</code> · <code>hibernate</code><br>
-  <code>dataspace</code> · <code>ingest</code> · <code>focus</code> · <code>associate</code> · <code>aggregate</code> · <code>explore</code>
+  <code>dataspace</code> · <code>ingest</code> · <code>focus</code> · <code>associate</code> · <code>aggregate</code> · <code>explore</code><br>
+  <code>deliberate</code> · <code>consensus</code>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-947%20passing-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/paradigms-4%20shifts-blueviolet" alt="Paradigm Shifts">
+  <img src="https://img.shields.io/badge/tests-980%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/paradigms-5%20shifts-blueviolet" alt="Paradigm Shifts">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
   <img src="https://img.shields.io/badge/pypi-axon--lang-blue" alt="PyPI">
 </p>

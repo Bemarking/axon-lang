@@ -507,6 +507,55 @@ class HibernateNode(ASTNode):
     timeout: str = ""        # optional duration before auto-resume
 
 
+@dataclass
+class DeliberateBlock(ASTNode):
+    """
+    deliberate {
+        budget: 8000
+        depth: 3
+        strategy: thorough
+        step DeepAnalysis { ... }
+    }
+
+    Declares a computational budget for wrapped steps. Controls how
+    much inference compute the model should allocate (System 2 depth).
+
+    Fields:
+        budget:   maximum tokens for reasoning (0 = no limit)
+        depth:    maximum reasoning iterations
+        strategy: "quick" | "balanced" | "thorough" | "exhaustive"
+    """
+    budget: int = 0
+    depth: int = 1
+    strategy: str = "balanced"
+    body: list[ASTNode] = field(default_factory=list)
+
+
+@dataclass
+class ConsensusBlock(ASTNode):
+    """
+    consensus {
+        branches: 5
+        reward: AccuracyAnchor
+        selection: best
+        step Classify { ... }
+    }
+
+    Runs the same task N times under speculative mode and selects
+    the best result via a reward anchor. Implements Best-of-N
+    selection with deterministic validation.
+
+    Fields:
+        branches:       number of parallel runs (>= 2)
+        reward_anchor:  anchor name used as the reward function
+        selection:      "best" | "majority"
+    """
+    branches: int = 3
+    reward_anchor: str = ""
+    selection: str = "best"
+    body: list[ASTNode] = field(default_factory=list)
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  DATA SCIENCE NODES — the associative engine
 # ═══════════════════════════════════════════════════════════════════

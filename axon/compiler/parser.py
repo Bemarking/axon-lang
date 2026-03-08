@@ -17,8 +17,10 @@ from .ast_nodes import (
     AnchorConstraint,
     AssociateNode,
     ConditionalNode,
+    ConsensusBlock,
     ContextDefinition,
     DataSpaceDefinition,
+    DeliberateBlock,
     EpistemicBlock,
     ExploreNode,
     FlowDefinition,
@@ -528,6 +530,10 @@ class Parser:
                 return self._parse_par_block()
             case TokenType.HIBERNATE:
                 return self._parse_hibernate()
+            case TokenType.DELIBERATE:
+                return self._parse_deliberate()
+            case TokenType.CONSENSUS:
+                return self._parse_consensus()
             case TokenType.FOCUS:
                 return self._parse_focus()
             case TokenType.ASSOCIATE:
@@ -895,6 +901,72 @@ class Parser:
             self._advance()
             node.timeout = self._consume(TokenType.DURATION).value
 
+        return node
+
+    # ── DELIBERATE BLOCK ──────────────────────────────────────────
+
+    def _parse_deliberate(self) -> DeliberateBlock:
+        """Parse: deliberate { budget: N  depth: M  strategy: S  ... steps ... }"""
+        tok = self._consume(TokenType.DELIBERATE)
+        node = DeliberateBlock(line=tok.line, column=tok.column)
+        self._consume(TokenType.LBRACE)
+
+        while not self._check(TokenType.RBRACE):
+            cur = self._current()
+            # Config fields: budget, depth, strategy
+            if cur.type == TokenType.IDENTIFIER and cur.value in (
+                "budget", "depth", "strategy",
+            ):
+                field_name = cur.value
+                self._advance()
+                self._consume(TokenType.COLON)
+                match field_name:
+                    case "budget":
+                        node.budget = int(self._consume(TokenType.INTEGER).value)
+                    case "depth":
+                        node.depth = int(self._consume(TokenType.INTEGER).value)
+                    case "strategy":
+                        node.strategy = self._consume_any_identifier_or_keyword().value
+            else:
+                # Nested flow step
+                step = self._parse_flow_step()
+                if step is not None:
+                    node.body.append(step)
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    # ── CONSENSUS BLOCK ───────────────────────────────────────────
+
+    def _parse_consensus(self) -> ConsensusBlock:
+        """Parse: consensus { branches: N  reward: Anchor  selection: S  ... steps ... }"""
+        tok = self._consume(TokenType.CONSENSUS)
+        node = ConsensusBlock(line=tok.line, column=tok.column)
+        self._consume(TokenType.LBRACE)
+
+        while not self._check(TokenType.RBRACE):
+            cur = self._current()
+            # Config fields: branches, reward, selection
+            if cur.type == TokenType.IDENTIFIER and cur.value in (
+                "branches", "reward", "selection",
+            ):
+                field_name = cur.value
+                self._advance()
+                self._consume(TokenType.COLON)
+                match field_name:
+                    case "branches":
+                        node.branches = int(self._consume(TokenType.INTEGER).value)
+                    case "reward":
+                        node.reward_anchor = self._consume(TokenType.IDENTIFIER).value
+                    case "selection":
+                        node.selection = self._consume_any_identifier_or_keyword().value
+            else:
+                # Nested flow step
+                step = self._parse_flow_step()
+                if step is not None:
+                    node.body.append(step)
+
+        self._consume(TokenType.RBRACE)
         return node
 
     # ── IF / CONDITIONAL ──────────────────────────────────────────

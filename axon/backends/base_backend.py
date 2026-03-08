@@ -29,8 +29,10 @@ from axon.compiler.ir_nodes import (
     IRAnchor,
     IRAggregate,
     IRAssociate,
+    IRConsensus,
     IRContext,
     IRDataSpace,
+    IRDeliberate,
     IRExplore,
     IRFlow,
     IRFocus,
@@ -45,6 +47,9 @@ from axon.compiler.ir_nodes import (
 
 # IR types that represent Data Science operations
 _DATA_SCIENCE_IR_TYPES = (IRDataSpace, IRIngest, IRFocus, IRAssociate, IRAggregate, IRExplore)
+
+# IR types that represent compute budget / consensus operations
+_BUDGET_IR_TYPES = (IRDeliberate, IRConsensus)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -242,6 +247,9 @@ class BaseBackend(ABC):
                 if isinstance(step, _DATA_SCIENCE_IR_TYPES):
                     ds_step = self._compile_data_science_step(step)
                     compiled_steps.append(ds_step)
+                elif isinstance(step, _BUDGET_IR_TYPES):
+                    budget_step = self._compile_budget_step(step, ctx)
+                    compiled_steps.append(budget_step)
                 else:
                     compiled = self.compile_step(step, ctx)
                     compiled_steps.append(compiled)
@@ -321,6 +329,68 @@ class BaseBackend(ABC):
                 },
             },
         )
+
+    def _compile_budget_step(
+        self, step: IRNode, ctx: CompilationContext,
+    ) -> CompiledStep:
+        """Compile a deliberate/consensus IR node into a metadata step.
+
+        Unlike data science steps, budget steps may contain child
+        IR nodes that need recursive compilation.
+        """
+        match step:
+            case IRDeliberate(
+                budget=budget, depth=depth,
+                strategy=strategy, children=children,
+            ):
+                child_steps = [
+                    self.compile_step(child, ctx)
+                    for child in children
+                ] if children else []
+                return CompiledStep(
+                    step_name="budget:deliberate",
+                    user_prompt="",
+                    metadata={
+                        "deliberate": {
+                            "budget": budget,
+                            "depth": depth,
+                            "strategy": strategy,
+                            "child_steps": [
+                                cs.to_dict() for cs in child_steps
+                            ],
+                        },
+                    },
+                )
+
+            case IRConsensus(
+                n_branches=n_branches, reward_anchor=reward_anchor,
+                selection=selection, children=children,
+            ):
+                child_steps = [
+                    self.compile_step(child, ctx)
+                    for child in children
+                ] if children else []
+                return CompiledStep(
+                    step_name="budget:consensus",
+                    user_prompt="",
+                    metadata={
+                        "consensus": {
+                            "n_branches": n_branches,
+                            "reward_anchor": reward_anchor,
+                            "selection": selection,
+                            "child_steps": [
+                                cs.to_dict() for cs in child_steps
+                            ],
+                        },
+                    },
+                )
+
+            case _:
+                return CompiledStep(
+                    step_name="budget:unknown",
+                    user_prompt="",
+                    metadata={},
+                )
 
     @abstractmethod
     def compile_step(

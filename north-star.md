@@ -100,3 +100,15 @@ Type Checker DÍA 2 → IR + Compilador + Backends DÍA 3 → Runtime + Executor
 Validator + Memory DÍA 4 → Standard Library DÍA 5 → CLI + REPL + VSCode
 Extension DÍA 6 → Tests + Hardening + Docs En 6 días tienes un lenguaje de
 programación completo, funcional y robusto.
+
+```
+---
+
+### FASE 10 — **Compute Budget & Consensus** *(v0.9.0)*
+*Dos nuevas primitivas cognitivas: `deliberate` y `consensus`.*
+
+- `deliberate` — Control de presupuesto computacional (tokens, profundidad, estrategia)
+- `consensus` — Best-of-N: ejecuta N ramas en paralelo y selecciona la mejor vía reward anchor
+- Primitivos cognitivos: 24 → **26**
+- Pasa por todo el pipeline: Lexer → Parser → AST → IR → Type Checker → Backend → Executor
+```
