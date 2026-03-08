@@ -283,34 +283,36 @@ flow HandleTicket(ticket: String) -> Resolution {
                               Typed Output (validated, traced result)
 ```
 
-### 24 Cognitive Primitives
+### 26 Cognitive Primitives
 
-| Primitive | Keyword     | What it represents                       |
-| --------- | ----------- | ---------------------------------------- |
-| Persona   | `persona`   | Cognitive identity of the model          |
-| Context   | `context`   | Working memory / session config          |
-| Intent    | `intent`    | Atomic semantic instruction              |
-| Flow      | `flow`      | Composable pipeline of cognitive steps   |
-| Reason    | `reason`    | Explicit chain-of-thought                |
-| Anchor    | `anchor`    | Hard constraint (never violable)         |
-| Validate  | `validate`  | Semantic validation gate                 |
-| Refine    | `refine`    | Adaptive retry with failure context      |
-| Memory    | `memory`    | Persistent semantic storage              |
-| Tool      | `tool`      | External invocable capability            |
-| Probe     | `probe`     | Directed information extraction          |
-| Weave     | `weave`     | Semantic synthesis of multiple outputs   |
-| Know      | `know`      | Epistemic scope — maximum factual rigor  |
-| Believe   | `believe`   | Epistemic scope — moderate confidence    |
-| Speculate | `speculate` | Epistemic scope — creative freedom       |
-| Doubt     | `doubt`     | Epistemic scope — adversarial validation |
-| Par       | `par`       | Parallel cognitive dispatch              |
-| Hibernate | `hibernate` | Dynamic state yielding / CPS checkpoint  |
-| DataSpace | `dataspace` | In-memory associative data container     |
-| Ingest    | `ingest`    | Load external data into a DataSpace      |
-| Focus     | `focus`     | Select data — propagate associations     |
-| Associate | `associate` | Link tables via shared fields            |
-| Aggregate | `aggregate` | Group-by aggregation on selections       |
-| Explore   | `explore`   | Snapshot current associative state       |
+| Primitive  | Keyword      | What it represents                             |
+| ---------- | ------------ | ---------------------------------------------- |
+| Persona    | `persona`    | Cognitive identity of the model                |
+| Context    | `context`    | Working memory / session config                |
+| Intent     | `intent`     | Atomic semantic instruction                    |
+| Flow       | `flow`       | Composable pipeline of cognitive steps         |
+| Reason     | `reason`     | Explicit chain-of-thought                      |
+| Anchor     | `anchor`     | Hard constraint (never violable)               |
+| Validate   | `validate`   | Semantic validation gate                       |
+| Refine     | `refine`     | Adaptive retry with failure context            |
+| Memory     | `memory`     | Persistent semantic storage                    |
+| Tool       | `tool`       | External invocable capability                  |
+| Probe      | `probe`      | Directed information extraction                |
+| Weave      | `weave`      | Semantic synthesis of multiple outputs         |
+| Know       | `know`       | Epistemic scope — maximum factual rigor        |
+| Believe    | `believe`    | Epistemic scope — moderate confidence          |
+| Speculate  | `speculate`  | Epistemic scope — creative freedom             |
+| Doubt      | `doubt`      | Epistemic scope — adversarial validation       |
+| Par        | `par`        | Parallel cognitive dispatch                    |
+| Hibernate  | `hibernate`  | Dynamic state yielding / CPS checkpoint        |
+| DataSpace  | `dataspace`  | In-memory associative data container           |
+| Ingest     | `ingest`     | Load external data into a DataSpace            |
+| Focus      | `focus`      | Select data — propagate associations           |
+| Associate  | `associate`  | Link tables via shared fields                  |
+| Aggregate  | `aggregate`  | Group-by aggregation on selections             |
+| Explore    | `explore`    | Snapshot current associative state             |
+| Deliberate | `deliberate` | Compute budget control (tokens/depth/strategy) |
+| Consensus  | `consensus`  | Best-of-N parallel evaluation & selection      |
 
 ### Epistemic Type System (Partial Order Lattice)
 
