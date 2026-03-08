@@ -603,18 +603,19 @@ honesty:
 
 ## Roadmap
 
-| Phase | What                                       | Status  |
-| ----- | ------------------------------------------ | ------- |
-| 0     | Spec, grammar, type system                 | ✅ Done |
-| 1     | Lexer, Parser, AST, Type Checker           | ✅ Done |
-| 2     | IR Generator, Compiler Backends            | ✅ Done |
-| 3     | Runtime (7 modules)                        | ✅ Done |
-| 4     | Standard Library                           | ✅ Done |
-| 5     | CLI, REPL, Inspect                         | ✅ Done |
-| 6     | Test Suite, Hardening, Docs                | ✅ Done |
-| 7     | Paradigm Shifts (epistemic/par/hibernate)  | ✅ Done |
-| 8     | Data Science Engine + Runtime Integration  | ✅ Done |
-| 9     | Executor integration + production backends | 🔧 Next |
+| Phase | What                                              | Status  |
+| ----- | ------------------------------------------------- | ------- |
+| 0     | Spec, grammar, type system                        | ✅ Done |
+| 1     | Lexer, Parser, AST, Type Checker                  | ✅ Done |
+| 2     | IR Generator, Compiler Backends                   | ✅ Done |
+| 3     | Runtime (7 modules)                               | ✅ Done |
+| 4     | Standard Library                                  | ✅ Done |
+| 5     | CLI, REPL, Inspect                                | ✅ Done |
+| 6     | Test Suite, Hardening, Docs                       | ✅ Done |
+| 7     | Paradigm Shifts (epistemic/par/hibernate)         | ✅ Done |
+| 8     | Data Science Engine + Runtime Integration         | ✅ Done |
+| 9     | Executor integration + production backends        | ✅ Done |
+| 10    | Compute Budget & Consensus (deliberate/consensus) | ✅ Done |
 
 ---
 
@@ -641,6 +642,8 @@ honesty:
 | Epistemic directives     | ❌        | ❌      | ❌       | ✅       |
 | Native parallel dispatch | ❌        | ❌      | ❌       | ✅       |
 | State yielding / CPS     | ❌        | ❌      | ❌       | ✅       |
+| Compute budget control   | ❌        | ❌      | ❌       | ✅       |
+| Best-of-N consensus      | ❌        | ❌      | ❌       | ✅       |
 
 ---
 
