@@ -34,6 +34,7 @@ from .ast_nodes import (
     ExploreNode,
     FlowDefinition,
     FocusNode,
+    ForgeBlock,
     HibernateNode,
     ImportNode,
     IngestNode,
@@ -419,6 +420,8 @@ class TypeChecker:
                 self._check_deliberate(decl)
             case ConsensusBlock():
                 self._check_consensus(decl)
+            case ForgeBlock():
+                self._check_forge(decl)
             case DataSpaceDefinition():
                 self._check_dataspace(decl)
             case IngestNode():
@@ -598,6 +601,8 @@ class TypeChecker:
                 self._check_deliberate(step)
             case ConsensusBlock():
                 self._check_consensus(step)
+            case ForgeBlock():
+                self._check_forge(step)
 
     def _check_step(self, node: StepNode, step_names: set[str], flow_name: str) -> None:
         if node.name in step_names:
@@ -885,6 +890,47 @@ class TypeChecker:
                 f"Valid: {', '.join(sorted(self._VALID_CONSENSUS_SELECTIONS))}",
                 node,
             )
+        for child in node.body:
+            self._check_declaration(child)
+
+    # ── FORGE validation ───────────────────────────────────────────
+
+    _VALID_FORGE_MODES = frozenset({
+        "combinatory", "exploratory", "transformational",
+    })
+
+    def _check_forge(self, node: ForgeBlock) -> None:
+        if not node.name:
+            self._emit("forge requires a name", node)
+        if node.mode and node.mode not in self._VALID_FORGE_MODES:
+            self._emit(
+                f"Unknown forge mode '{node.mode}'. "
+                f"Valid: {', '.join(sorted(self._VALID_FORGE_MODES))}",
+                node,
+            )
+        if node.novelty < 0.0 or node.novelty > 1.0:
+            self._emit(
+                f"forge novelty must be between 0.0 and 1.0, got {node.novelty}",
+                node,
+            )
+        if node.branches < 2:
+            self._emit("forge requires at least 2 branches", node)
+        if node.depth < 1:
+            self._emit(
+                f"forge depth must be >= 1, got {node.depth}", node,
+            )
+        if node.constraints:
+            sym = self._symbols.lookup(node.constraints)
+            if sym is None:
+                self._emit(
+                    f"Undefined anchor '{node.constraints}' in forge",
+                    node,
+                )
+            elif sym.kind != "anchor":
+                self._emit(
+                    f"'{node.constraints}' is a {sym.kind}, not an anchor",
+                    node,
+                )
         for child in node.body:
             self._check_declaration(child)
 

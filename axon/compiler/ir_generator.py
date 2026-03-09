@@ -40,6 +40,7 @@ from axon.compiler.ir_nodes import (
     IRExplore,
     IRFlow,
     IRFocus,
+    IRForge,
     IRHibernate,
     IRImport,
     IRIngest,
@@ -164,6 +165,8 @@ class IRGenerator:
         ast.HibernateNode: "_visit_hibernate",
         ast.DeliberateBlock: "_visit_deliberate",
         ast.ConsensusBlock: "_visit_consensus",
+        # Creative synthesis
+        ast.ForgeBlock: "_visit_forge",
         # Data Science
         ast.DataSpaceDefinition: "_visit_dataspace",
         ast.IngestNode: "_visit_ingest",
@@ -736,6 +739,32 @@ class IRGenerator:
             n_branches=node.branches,
             reward_anchor=node.reward_anchor,
             selection=node.selection,
+            children=children,
+        )
+
+    # ── FORGE (creative synthesis) ────────────────────────────────
+
+    # Boden's creativity taxonomy → LLM parameter mapping
+    _FORGE_MODES: dict[str, dict[str, object]] = {
+        "combinatory":      {"temperature": 0.9, "freedom": "high",    "rule_flex": "none"},
+        "exploratory":      {"temperature": 0.7, "freedom": "medium",  "rule_flex": "none"},
+        "transformational": {"temperature": 1.2, "freedom": "maximum", "rule_flex": "allowed"},
+    }
+
+    def _visit_forge(self, node: ast.ForgeBlock) -> IRForge:
+        """Compile forge block → IRForge with Poincaré pipeline metadata."""
+        children = tuple(self._visit(child) for child in node.body)
+        return IRForge(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            seed=node.seed,
+            output_type=node.output_type,
+            mode=node.mode,
+            novelty=node.novelty,
+            constraints=node.constraints,
+            depth=node.depth,
+            branches=node.branches,
             children=children,
         )
 

@@ -55,6 +55,9 @@ class TokenType(Enum):
     DELIBERATE = auto()
     CONSENSUS = auto()
 
+    # ── CREATIVE SYNTHESIS KEYWORDS ──────────────────────────────
+    FORGE = auto()
+
     # ── DATA SCIENCE KEYWORDS ────────────────────────────────────
     DATASPACE = auto()
     INGEST = auto()
@@ -156,6 +159,8 @@ KEYWORDS: dict[str, TokenType] = {
     # Compute budget & consensus
     "deliberate": TokenType.DELIBERATE,
     "consensus": TokenType.CONSENSUS,
+    # Creative synthesis
+    "forge": TokenType.FORGE,
     "as": TokenType.AS,
     "within": TokenType.WITHIN,
     "constrained_by": TokenType.CONSTRAINED_BY,

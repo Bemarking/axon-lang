@@ -557,6 +557,52 @@ class ConsensusBlock(ASTNode):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  CREATIVE SYNTHESIS NODES — the forge engine
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class ForgeBlock(ASTNode):
+    """
+    forge Painting(seed: "aurora boreal") -> Visual {
+        mode: combinatory
+        novelty: 0.8
+        constraints: GoldenRatio
+        depth: 3
+        branches: 5
+        step Compose { ... }
+    }
+
+    Directed creative synthesis — orchestrates the full Poincaré
+    pipeline (Preparation → Incubation → Illumination → Verification)
+    with mathematical control of the novelty-utility tradeoff (Boden).
+
+    The forge primitive does NOT claim imagination. It formalizes
+    the mathematical operation of directed movement through a
+    conceptual space, maximizing compression and novelty — exactly
+    what human creativity does (Friston, Schmidhuber, Bennett).
+
+    Fields:
+        name:         identifier for the forge block
+        seed:         input seed concept (string expression)
+        output_type:  declared output type name
+        mode:         "combinatory" | "exploratory" | "transformational"
+        novelty:      0.0..1.0 — creative freedom vs constraint adherence
+        constraints:  anchor name for quality/beauty/coherence criteria
+        depth:        incubation depth (Poincaré phase 2 iterations)
+        branches:     Best-of-N branch count for illumination (phase 3)
+    """
+    name: str = ""
+    seed: str = ""
+    output_type: str = ""
+    mode: str = "combinatory"
+    novelty: float = 0.7
+    constraints: str = ""
+    depth: int = 3
+    branches: int = 5
+    body: list[ASTNode] = field(default_factory=list)
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  DATA SCIENCE NODES — the associative engine
 # ═══════════════════════════════════════════════════════════════════
 

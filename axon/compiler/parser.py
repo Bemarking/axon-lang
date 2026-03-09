@@ -25,6 +25,7 @@ from .ast_nodes import (
     ExploreNode,
     FlowDefinition,
     FocusNode,
+    ForgeBlock,
     HibernateNode,
     ImportNode,
     IngestNode,
@@ -534,6 +535,8 @@ class Parser:
                 return self._parse_deliberate()
             case TokenType.CONSENSUS:
                 return self._parse_consensus()
+            case TokenType.FORGE:
+                return self._parse_forge()
             case TokenType.FOCUS:
                 return self._parse_focus()
             case TokenType.ASSOCIATE:
@@ -960,6 +963,63 @@ class Parser:
                         node.reward_anchor = self._consume(TokenType.IDENTIFIER).value
                     case "selection":
                         node.selection = self._consume_any_identifier_or_keyword().value
+            else:
+                # Nested flow step
+                step = self._parse_flow_step()
+                if step is not None:
+                    node.body.append(step)
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    # ── FORGE BLOCK ───────────────────────────────────────────────────
+
+    def _parse_forge(self) -> ForgeBlock:
+        """Parse: forge Name(seed: "...") -> OutputType { config... steps... }"""
+        tok = self._consume(TokenType.FORGE)
+        node = ForgeBlock(line=tok.line, column=tok.column)
+
+        # Name
+        if self._check(TokenType.IDENTIFIER):
+            node.name = self._advance().value
+
+        # Optional (seed: "...")
+        if self._check(TokenType.LPAREN):
+            self._advance()
+            if self._check(TokenType.IDENTIFIER) and self._current().value == "seed":
+                self._advance()  # skip 'seed'
+                self._consume(TokenType.COLON)
+                node.seed = self._consume(TokenType.STRING).value
+            self._consume(TokenType.RPAREN)
+
+        # Optional -> OutputType
+        if self._check(TokenType.ARROW):
+            self._advance()
+            node.output_type = self._consume(TokenType.IDENTIFIER).value
+
+        self._consume(TokenType.LBRACE)
+
+        while not self._check(TokenType.RBRACE):
+            cur = self._current()
+            # Config fields: mode, novelty, constraints, depth, branches
+            if cur.type == TokenType.IDENTIFIER and cur.value in (
+                "mode", "novelty", "constraints", "depth", "branches",
+            ):
+                field_name = cur.value
+                self._advance()
+                self._consume(TokenType.COLON)
+                match field_name:
+                    case "mode":
+                        node.mode = self._consume_any_identifier_or_keyword().value
+                    case "novelty":
+                        val_tok = self._advance()
+                        node.novelty = float(val_tok.value)
+                    case "constraints":
+                        node.constraints = self._consume(TokenType.IDENTIFIER).value
+                    case "depth":
+                        node.depth = int(self._consume(TokenType.INTEGER).value)
+                    case "branches":
+                        node.branches = int(self._consume(TokenType.INTEGER).value)
             else:
                 # Nested flow step
                 step = self._parse_flow_step()

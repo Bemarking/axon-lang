@@ -486,6 +486,14 @@ class Executor:
                 step=step, unit=unit, ctx=ctx, tracer=tracer,
             )
 
+        # ── Forge step shortcut ───────────────────────────────────
+        # If the step carries a forge config, route through
+        # _execute_forge_step which orchestrates the Poincaré pipeline.
+        if step.metadata.get("forge"):
+            return await self._execute_forge_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
         # Extract refine config from step metadata (if present)
         refine_config = self._extract_refine_config(step)
 
@@ -1350,6 +1358,240 @@ class Executor:
                 "success": True,
                 "selected_branch": best_branch_id,
                 "total_branches": n_branches,
+            },
+            duration_ms=step_duration,
+        )
+
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=step_duration,
+        )
+
+    # ── FORGE  (Poincaré creative pipeline) ────────────────────
+
+    # Boden mode → temperature overrides for creative exploration
+    _FORGE_TEMPERATURE: dict[str, float] = {
+        "combinatory":      0.9,
+        "exploratory":      0.7,
+        "transformational": 1.2,
+    }
+
+    async def _execute_forge_step(
+        self,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a forge step — Poincaré creative pipeline.
+
+        Orchestrates four phases of directed creative synthesis:
+
+          1. PREPARATION  — Expand the seed with context probing
+          2. INCUBATION   — Speculative divergence (controlled temperature)
+          3. ILLUMINATION — Best-of-N consensus selection
+          4. VERIFICATION — Adversarial doubt + anchor validation
+
+        Mathematical controls:
+          - mode:       Boden creativity taxonomy (combinatory/exploratory/transformational)
+          - novelty:    K(x|K) tradeoff [0.0, 1.0]
+          - depth:      Incubation iterations
+          - branches:   Best-of-N for illumination
+          - constraints: Reward anchor for U/E validation
+        """
+        import asyncio
+        import json
+
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        forge_meta = step.metadata["forge"]
+
+        name = forge_meta.get("name", "")
+        seed = forge_meta.get("seed", "")
+        mode = forge_meta.get("mode", "combinatory")
+        novelty = forge_meta.get("novelty", 0.7)
+        depth = forge_meta.get("depth", 3)
+        branches = forge_meta.get("branches", 5)
+        constraints = forge_meta.get("constraints", "")
+
+        # Mode-based temperature override
+        temperature = self._FORGE_TEMPERATURE.get(mode, 0.9)
+        # Blend novelty into temperature: higher novelty = more divergence
+        effective_temp = temperature * (0.5 + 0.5 * novelty)
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "forge_name": name,
+                "forge_mode": mode,
+                "forge_novelty": novelty,
+                "forge_depth": depth,
+                "forge_branches": branches,
+                "forge_constraints": constraints,
+                "forge_temperature": effective_temp,
+            },
+        )
+
+        # ============================================================
+        # Phase 1: PREPARATION — Expand the seed
+        # ============================================================
+        preparation_prompt = (
+            f"[FORGE:{name} | Mode:{mode} | Novelty:{novelty}]\n"
+            f"PREPARATION PHASE: Expand and enrich this seed concept.\n"
+            f"Seed: \"{seed}\"\n"
+            f"Generate a rich conceptual foundation for creative synthesis.\n"
+            f"Explore dimensions, variations, and deep associations."
+        )
+        prep_step = CompiledStep(
+            step_name=f"forge:{name}:prepare",
+            user_prompt=preparation_prompt,
+            system_prompt=unit.system_prompt,
+            metadata={},
+        )
+        prep_result = await self._execute_step(
+            step=prep_step, unit=unit, ctx=ctx, tracer=tracer,
+        )
+        expanded_context = prep_result.response.content if prep_result.response else seed
+
+        # ============================================================
+        # Phase 2: INCUBATION — Speculative exploration (depth iterations)
+        # ============================================================
+        incubation_results: list[str] = [expanded_context]
+        current_context = expanded_context
+
+        for iteration in range(depth):
+            incub_prompt = (
+                f"[FORGE:{name} | Incubation {iteration + 1}/{depth}]\n"
+                f"INCUBATION PHASE: Speculatively explore and transform.\n"
+                f"Mode: {mode} | Temperature: {effective_temp:.2f}\n"
+                f"Current state:\n{current_context}\n\n"
+                f"Generate unexpected connections, novel combinations, "
+                f"and creative transformations. Push beyond the obvious."
+            )
+            incub_step = CompiledStep(
+                step_name=f"forge:{name}:incubate:{iteration}",
+                user_prompt=incub_prompt,
+                system_prompt=unit.system_prompt,
+                metadata={},
+            )
+            incub_result = await self._execute_step(
+                step=incub_step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+            if incub_result.response:
+                current_context = incub_result.response.content
+                incubation_results.append(current_context)
+
+        # ============================================================
+        # Phase 3: ILLUMINATION — Best-of-N consensus
+        # ============================================================
+        async def _forge_branch(branch_id: int) -> StepResult:
+            illum_prompt = (
+                f"[FORGE:{name} | Illumination Branch {branch_id + 1}/{branches}]\n"
+                f"ILLUMINATION PHASE: Crystallize the creative output.\n"
+                f"Synthesize the incubation explorations into a coherent, "
+                f"novel, high-quality result.\n\n"
+                f"Incubation context:\n{current_context}\n\n"
+                f"Original seed: \"{seed}\"\n"
+                f"Mode: {mode} | Novelty target: {novelty}"
+            )
+            illum_step = CompiledStep(
+                step_name=f"forge:{name}:illuminate:b{branch_id}",
+                user_prompt=illum_prompt,
+                system_prompt=unit.system_prompt,
+                metadata={},
+            )
+            return await self._execute_step(
+                step=illum_step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
+        # Run N branches in parallel
+        all_branches = await asyncio.gather(
+            *[_forge_branch(i) for i in range(branches)],
+            return_exceptions=True,
+        )
+
+        # Select best illumination result (longest response heuristic)
+        best_result: StepResult | None = None
+        best_score = -1
+        for branch in all_branches:
+            if isinstance(branch, Exception):
+                continue
+            if branch.response:
+                score = len(branch.response.content)
+                if score > best_score:
+                    best_score = score
+                    best_result = branch
+
+        illumination_content = (
+            best_result.response.content
+            if best_result and best_result.response
+            else current_context
+        )
+
+        # ============================================================
+        # Phase 4: VERIFICATION — Adversarial doubt + validation
+        # ============================================================
+        verify_prompt = (
+            f"[FORGE:{name} | Verification]\n"
+            f"VERIFICATION PHASE: Critically evaluate this creative output.\n"
+            f"Apply adversarial doubt — challenge assumptions, check coherence, "
+            f"verify novelty against the original seed.\n\n"
+            f"Original seed: \"{seed}\"\n"
+            f"Creative output:\n{illumination_content}\n\n"
+            f"Constraints anchor: {constraints or 'none'}\n"
+            f"Assess: Is this genuinely novel (K(x|K) > 0)? "
+            f"Is it useful (U/E balanced)? "
+            f"Refine if needed, then present the final result."
+        )
+        verify_step = CompiledStep(
+            step_name=f"forge:{name}:verify",
+            user_prompt=verify_prompt,
+            system_prompt=unit.system_prompt,
+            metadata={},
+        )
+        verify_result = await self._execute_step(
+            step=verify_step, unit=unit, ctx=ctx, tracer=tracer,
+        )
+
+        final_content = (
+            verify_result.response.content
+            if verify_result.response
+            else illumination_content
+        )
+
+        # ============================================================
+        # Compose final forge result
+        # ============================================================
+        response = ModelResponse(
+            content=json.dumps({
+                "forge": {
+                    "name": name,
+                    "seed": seed,
+                    "mode": mode,
+                    "novelty": novelty,
+                    "phases": {
+                        "preparation": expanded_context[:500],
+                        "incubation_depth": depth,
+                        "illumination_branches": branches,
+                        "illumination_selected": illumination_content[:500],
+                        "verification": final_content[:500],
+                    },
+                    "result": final_content,
+                },
+            }),
+        )
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "forge_name": name,
+                "forge_mode": mode,
+                "phases_completed": 4,
             },
             duration_ms=step_duration,
         )

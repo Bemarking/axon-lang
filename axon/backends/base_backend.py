@@ -36,6 +36,7 @@ from axon.compiler.ir_nodes import (
     IRExplore,
     IRFlow,
     IRFocus,
+    IRForge,
     IRIngest,
     IRNode,
     IRPersona,
@@ -48,8 +49,8 @@ from axon.compiler.ir_nodes import (
 # IR types that represent Data Science operations
 _DATA_SCIENCE_IR_TYPES = (IRDataSpace, IRIngest, IRFocus, IRAssociate, IRAggregate, IRExplore)
 
-# IR types that represent compute budget / consensus operations
-_BUDGET_IR_TYPES = (IRDeliberate, IRConsensus)
+# IR types that represent compute budget / consensus / forge operations
+_BUDGET_IR_TYPES = (IRDeliberate, IRConsensus, IRForge)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -378,6 +379,35 @@ class BaseBackend(ABC):
                             "n_branches": n_branches,
                             "reward_anchor": reward_anchor,
                             "selection": selection,
+                            "child_steps": [
+                                cs.to_dict() for cs in child_steps
+                            ],
+                        },
+                    },
+                )
+
+            case IRForge(
+                name=name, seed=seed, output_type=output_type,
+                mode=mode, novelty=novelty, constraints=constraints,
+                depth=depth, branches=branches, children=children,
+            ):
+                child_steps = [
+                    self.compile_step(child, ctx)
+                    for child in children
+                ] if children else []
+                return CompiledStep(
+                    step_name=f"forge:{name}",
+                    user_prompt="",
+                    metadata={
+                        "forge": {
+                            "name": name,
+                            "seed": seed,
+                            "output_type": output_type,
+                            "mode": mode,
+                            "novelty": novelty,
+                            "constraints": constraints,
+                            "depth": depth,
+                            "branches": branches,
                             "child_steps": [
                                 cs.to_dict() for cs in child_steps
                             ],

@@ -552,6 +552,34 @@ class IRConsensus(IRNode):
     children: tuple[IRNode, ...] = ()            # compiled inner steps
 
 
+@dataclass(frozen=True)
+class IRForge(IRNode):
+    """
+    Compiled forge block — directed creative synthesis.
+
+    Maps from AST ForgeBlock. Orchestrates the full Poincaré pipeline:
+      1. Preparation:  expand seed with context probing
+      2. Incubation:   speculative divergence with novelty control
+      3. Illumination:  Best-of-N consensus selection
+      4. Verification:  adversarial doubt + anchor validation
+
+    Boden modes map to internal parameters:
+      combinatory      → recombination of existing elements (interpolation)
+      exploratory      → search within rules of conceptual space
+      transformational → restructuring the rules of the space itself
+    """
+    node_type: str = "forge"
+    name: str = ""
+    seed: str = ""
+    output_type: str = ""
+    mode: str = "combinatory"           # combinatory|exploratory|transformational
+    novelty: float = 0.7                # novelty-utility tradeoff [0.0, 1.0]
+    constraints: str = ""               # reward anchor for quality/beauty
+    depth: int = 3                      # incubation iterations (Poincaré phase 2)
+    branches: int = 5                   # Best-of-N for illumination (phase 3)
+    children: tuple[IRNode, ...] = ()   # compiled inner steps
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  DATA SCIENCE IR NODES — associative engine operations
 # ═══════════════════════════════════════════════════════════════════
