@@ -112,3 +112,21 @@ programación completo, funcional y robusto.
 - Primitivos cognitivos: 24 → **26**
 - Pasa por todo el pipeline: Lexer → Parser → AST → IR → Type Checker → Backend → Executor
 ```
+
+### FASE 11 — **Directed Creative Synthesis** _(v0.10.0)_
+
+_Síntesis creativa dirigida: la primitiva `forge`._
+
+- `forge` — Pipeline Poincaré-Hadamard para creación dirigida:
+  - **Preparación** — Expansión del seed via context probing
+  - **Incubación** — Exploración especulativa con temperatura controlada (depth
+    iteraciones)
+  - **Iluminación** — Cristalización Best-of-N (branches paralelas)
+  - **Verificación** — Duda adversarial + validación contra anchor
+- Taxonomía de Boden: `combinatory` / `exploratory` / `transformational`
+- Operador de novedad K(x|K): control [0.0, 1.0] del tradeoff utilidad/sorpresa
+- Fórmula de temperatura: `τ_eff = τ_base × (0.5 + 0.5 × novelty)`
+- Primitivos cognitivos: 26 → **27**
+- Pipeline completo: Lexer → Parser → AST → IR → Type Checker → Backend →
+  Executor
+- 22 tests nuevos, suite total: **1002 tests**

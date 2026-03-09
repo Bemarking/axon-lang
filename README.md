@@ -7,14 +7,14 @@
   <code>persona</code> · <code>intent</code> · <code>flow</code> · <code>reason</code> · <code>anchor</code> · <code>refine</code> · <code>memory</code> · <code>tool</code> · <code>probe</code> · <code>weave</code> · <code>validate</code> · <code>context</code><br>
   <code>know</code> · <code>believe</code> · <code>speculate</code> · <code>doubt</code> · <code>par</code> · <code>hibernate</code><br>
   <code>dataspace</code> · <code>ingest</code> · <code>focus</code> · <code>associate</code> · <code>aggregate</code> · <code>explore</code><br>
-  <code>deliberate</code> · <code>consensus</code>
+  <code>deliberate</code> · <code>consensus</code> · <code>forge</code>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-980%20passing-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/paradigms-5%20shifts-blueviolet" alt="Paradigm Shifts">
+  <img src="https://img.shields.io/badge/tests-1002%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/paradigms-6%20shifts-blueviolet" alt="Paradigm Shifts">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
   <img src="https://img.shields.io/badge/pypi-axon--lang-blue" alt="PyPI">
 </p>
@@ -265,6 +265,87 @@ flow HandleTicket(ticket: String) -> Resolution {
 - Low confidence triggers `hibernate` — agent sleeps until a human reviews
 - Zero compute cost during human review; resumes with full context
 
+### IV. Directed Creative Synthesis — the `forge` Primitive
+
+> AXON v0.10 introduces a sixth paradigm shift: **mathematical formalization of
+> the creative process** inside LLMs.
+
+The industry suffers from a structural limitation: LLMs can interpolate, but
+they struggle to _create_. `forge` addresses this by implementing a
+compiler-level **Poincaré pipeline** — the same 4-phase process mathematicians
+and scientists use when producing genuinely novel work.
+
+**Poincaré-Hadamard Creative Pipeline.** A `forge` block orchestrates four
+sequential phases, each mapped to a distinct LLM configuration:
+
+```text
+forge(seed, mode, novelty, depth, branches) → result
+
+Phase 1: PREPARATION   — Expand the seed via context probing
+Phase 2: INCUBATION    — Speculative exploration (depth iterations)
+Phase 3: ILLUMINATION  — Best-of-N consensus crystallization
+Phase 4: VERIFICATION  — Adversarial doubt + anchor validation
+```
+
+**Boden Creativity Taxonomy.** The `mode` parameter maps Margaret Boden's three
+creativity types to concrete LLM parameter overrides at compile time:
+
+```text
+B : Mode → (τ, freedom, rule_flexibility)
+
+B(combinatory)      = (0.9,  0.8, 0.3)   — novel recombination of known ideas
+B(exploratory)      = (0.7,  0.6, 0.5)   — structured navigation of possibility spaces
+B(transformational) = (1.2,  1.0, 0.9)   — rule-breaking synthesis, new paradigms
+```
+
+**Novelty Operator K(x|K).** The `novelty` parameter (0.0–1.0) controls the
+Kolmogorov-inspired tradeoff between utility and surprise. It blends into the
+effective temperature used during incubation:
+
+```text
+τ_eff = τ_base × (0.5 + 0.5 × novelty)
+
+novelty = 0.0 → τ_eff = 0.5 × τ_base  (conservative, high utility)
+novelty = 1.0 → τ_eff = 1.0 × τ_base  (maximum divergence, high surprise)
+```
+
+**Usage example — Directed Creative Synthesis:**
+
+```axon
+anchor GoldenRatio {
+    require: aesthetic_harmony
+    confidence_floor: 0.70
+}
+
+flow CreateVisualConcept(brief: String) -> Visual {
+    forge Artwork(seed: "aurora borealis over ancient ruins") -> Visual {
+        mode:        transformational
+        novelty:     0.85
+        constraints: GoldenRatio
+        depth:       4
+        branches:    7
+    }
+}
+
+run CreateVisualConcept("Create a visual concept for a film poster")
+```
+
+What the compiler does:
+
+1. **Preparation** — expands "aurora borealis over ancient ruins" into a rich
+   conceptual foundation via context probing
+2. **Incubation** — runs 4 iterations of speculative exploration at
+   `τ_eff = 1.2 × 0.925 = 1.11`, pushing beyond obvious associations
+3. **Illumination** — launches 7 parallel branches, each crystallizing the
+   incubated ideas, then selects the most coherent output (Best-of-N)
+4. **Verification** — applies adversarial doubt against the `GoldenRatio`
+   anchor, validating that the result is genuinely novel (`K(x|K) > 0`) and
+   aesthetically balanced
+
+This is **not** a prompt template. The `forge` primitive compiles to structured
+IR metadata that the runtime executes as an orchestrated pipeline — the same
+precision AXON applies to every other cognitive primitive.
+
 ---
 
 ## Architecture
@@ -283,36 +364,37 @@ flow HandleTicket(ticket: String) -> Resolution {
                               Typed Output (validated, traced result)
 ```
 
-### 26 Cognitive Primitives
+### 27 Cognitive Primitives
 
-| Primitive  | Keyword      | What it represents                             |
-| ---------- | ------------ | ---------------------------------------------- |
-| Persona    | `persona`    | Cognitive identity of the model                |
-| Context    | `context`    | Working memory / session config                |
-| Intent     | `intent`     | Atomic semantic instruction                    |
-| Flow       | `flow`       | Composable pipeline of cognitive steps         |
-| Reason     | `reason`     | Explicit chain-of-thought                      |
-| Anchor     | `anchor`     | Hard constraint (never violable)               |
-| Validate   | `validate`   | Semantic validation gate                       |
-| Refine     | `refine`     | Adaptive retry with failure context            |
-| Memory     | `memory`     | Persistent semantic storage                    |
-| Tool       | `tool`       | External invocable capability                  |
-| Probe      | `probe`      | Directed information extraction                |
-| Weave      | `weave`      | Semantic synthesis of multiple outputs         |
-| Know       | `know`       | Epistemic scope — maximum factual rigor        |
-| Believe    | `believe`    | Epistemic scope — moderate confidence          |
-| Speculate  | `speculate`  | Epistemic scope — creative freedom             |
-| Doubt      | `doubt`      | Epistemic scope — adversarial validation       |
-| Par        | `par`        | Parallel cognitive dispatch                    |
-| Hibernate  | `hibernate`  | Dynamic state yielding / CPS checkpoint        |
-| DataSpace  | `dataspace`  | In-memory associative data container           |
-| Ingest     | `ingest`     | Load external data into a DataSpace            |
-| Focus      | `focus`      | Select data — propagate associations           |
-| Associate  | `associate`  | Link tables via shared fields                  |
-| Aggregate  | `aggregate`  | Group-by aggregation on selections             |
-| Explore    | `explore`    | Snapshot current associative state             |
-| Deliberate | `deliberate` | Compute budget control (tokens/depth/strategy) |
-| Consensus  | `consensus`  | Best-of-N parallel evaluation & selection      |
+| Primitive  | Keyword      | What it represents                              |
+| ---------- | ------------ | ----------------------------------------------- |
+| Persona    | `persona`    | Cognitive identity of the model                 |
+| Context    | `context`    | Working memory / session config                 |
+| Intent     | `intent`     | Atomic semantic instruction                     |
+| Flow       | `flow`       | Composable pipeline of cognitive steps          |
+| Reason     | `reason`     | Explicit chain-of-thought                       |
+| Anchor     | `anchor`     | Hard constraint (never violable)                |
+| Validate   | `validate`   | Semantic validation gate                        |
+| Refine     | `refine`     | Adaptive retry with failure context             |
+| Memory     | `memory`     | Persistent semantic storage                     |
+| Tool       | `tool`       | External invocable capability                   |
+| Probe      | `probe`      | Directed information extraction                 |
+| Weave      | `weave`      | Semantic synthesis of multiple outputs          |
+| Know       | `know`       | Epistemic scope — maximum factual rigor         |
+| Believe    | `believe`    | Epistemic scope — moderate confidence           |
+| Speculate  | `speculate`  | Epistemic scope — creative freedom              |
+| Doubt      | `doubt`      | Epistemic scope — adversarial validation        |
+| Par        | `par`        | Parallel cognitive dispatch                     |
+| Hibernate  | `hibernate`  | Dynamic state yielding / CPS checkpoint         |
+| DataSpace  | `dataspace`  | In-memory associative data container            |
+| Ingest     | `ingest`     | Load external data into a DataSpace             |
+| Focus      | `focus`      | Select data — propagate associations            |
+| Associate  | `associate`  | Link tables via shared fields                   |
+| Aggregate  | `aggregate`  | Group-by aggregation on selections              |
+| Explore    | `explore`    | Snapshot current associative state              |
+| Deliberate | `deliberate` | Compute budget control (tokens/depth/strategy)  |
+| Consensus  | `consensus`  | Best-of-N parallel evaluation & selection       |
+| Forge      | `forge`      | Directed creative synthesis (Poincaré pipeline) |
 
 ### Epistemic Type System (Partial Order Lattice)
 
@@ -390,7 +472,7 @@ axon-constructor/
 │   │       ├── stubs/            # 8 tools (6 stubs + 2 real)
 │   │       └── backends/         # 3 production backends
 │   └── stdlib/                   # Built-in personas, flows, anchors
-└── tests/                        # 947 tests
+└── tests/                        # 1002 tests
 ```
 
 ---
@@ -497,7 +579,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 ### Current Status
 
 ```
-947 passed, 0 failures ✅
+1002 passed, 0 failures ✅
 ```
 
 | Phase | Tests | What's covered                              |
@@ -508,7 +590,8 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 | 4     | 88    | Tool infra (53) + Real backends (35)        |
 | 7     | 56    | Paradigm Shifts (epistemic, par, hibernate) |
 | 8     | 69    | Data Science Engine (core)                  |
-| misc  | 372   | Stdlib, integration, edge cases             |
+| 11    | 22    | Forge (creative synthesis pipeline)         |
+| misc  | 405   | Stdlib, integration, edge cases             |
 
 ---
 
@@ -616,6 +699,7 @@ honesty:
 | 8     | Data Science Engine + Runtime Integration         | ✅ Done |
 | 9     | Executor integration + production backends        | ✅ Done |
 | 10    | Compute Budget & Consensus (deliberate/consensus) | ✅ Done |
+| 11    | Directed Creative Synthesis (`forge`)             | ✅ Done |
 
 ---
 
@@ -631,19 +715,20 @@ honesty:
 
 ## How it Compares
 
-|                          | LangChain | DSPy    | Guidance | **AXON** |
-| ------------------------ | --------- | ------- | -------- | -------- |
-| Own language + grammar   | ❌        | ❌      | ❌       | ✅       |
-| Semantic type system     | ❌        | Partial | ❌       | ✅       |
-| Formal anchors           | ❌        | ❌      | ❌       | ✅       |
-| Persona as type          | ❌        | ❌      | ❌       | ✅       |
-| Reasoning as primitive   | ❌        | Partial | ❌       | ✅       |
-| Native multi-model       | Partial   | Partial | ❌       | ✅       |
-| Epistemic directives     | ❌        | ❌      | ❌       | ✅       |
-| Native parallel dispatch | ❌        | ❌      | ❌       | ✅       |
-| State yielding / CPS     | ❌        | ❌      | ❌       | ✅       |
-| Compute budget control   | ❌        | ❌      | ❌       | ✅       |
-| Best-of-N consensus      | ❌        | ❌      | ❌       | ✅       |
+|                           | LangChain | DSPy    | Guidance | **AXON** |
+| ------------------------- | --------- | ------- | -------- | -------- |
+| Own language + grammar    | ❌        | ❌      | ❌       | ✅       |
+| Semantic type system      | ❌        | Partial | ❌       | ✅       |
+| Formal anchors            | ❌        | ❌      | ❌       | ✅       |
+| Persona as type           | ❌        | ❌      | ❌       | ✅       |
+| Reasoning as primitive    | ❌        | Partial | ❌       | ✅       |
+| Native multi-model        | Partial   | Partial | ❌       | ✅       |
+| Epistemic directives      | ❌        | ❌      | ❌       | ✅       |
+| Native parallel dispatch  | ❌        | ❌      | ❌       | ✅       |
+| State yielding / CPS      | ❌        | ❌      | ❌       | ✅       |
+| Compute budget control    | ❌        | ❌      | ❌       | ✅       |
+| Best-of-N consensus       | ❌        | ❌      | ❌       | ✅       |
+| Creative synthesis engine | ❌        | ❌      | ❌       | ✅       |
 
 ---
 
