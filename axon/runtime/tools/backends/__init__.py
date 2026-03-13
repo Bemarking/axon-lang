@@ -83,6 +83,34 @@ def register_all_backends(
     registry.register(CodeExecutorSubprocess)
     logger.info("Registered backend: CodeExecutor (subprocess)")
 
+    # ── APICall: httpx (v0.11.0 — W9) ───────────────────────
+    try:
+        from axon.runtime.tools.backends.api_call_httpx import (
+            APICallHTTPX,
+        )
+
+        registry.register(APICallHTTPX)
+        logger.info("Registered backend: APICall (httpx)")
+    except ImportError:
+        logger.info(
+            "APICall backend skipped — install httpx: "
+            "pip install httpx"
+        )
+
+    # ── PDFExtractor: PyMuPDF (v0.11.0 — W9) ────────────────
+    try:
+        from axon.runtime.tools.backends.pdf_extractor_pymupdf import (
+            PDFExtractorPyMuPDF,
+        )
+
+        registry.register(PDFExtractorPyMuPDF)
+        logger.info("Registered backend: PDFExtractor (PyMuPDF)")
+    except ImportError:
+        logger.info(
+            "PDFExtractor backend skipped — install PyMuPDF: "
+            "pip install PyMuPDF"
+        )
+
     # ── Calculator & DateTime stay from stubs (already real) ─
     # CalculatorTool (IS_STUB=False) and DateTimeTool (IS_STUB=False)
     # are pre-registered by register_all_stubs() and are NOT

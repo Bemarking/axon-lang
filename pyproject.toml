@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-lang"
-version = "0.10.0"
+version = "0.11.0"
 description = "A programming language for AI cognition — compiles to prompts, not machine code."
 readme = "README.md"
 license = "MIT"
@@ -68,6 +68,7 @@ axon = "axon.cli:main"
 [project.optional-dependencies]
 tools = [
     "httpx>=0.27",
+    "PyMuPDF>=1.24",
 ]
 anthropic = [
     "anthropic>=0.40",

@@ -1,79 +1,93 @@
 """
-AXON Runtime — Tools Package
-==============================
-Runtime tool execution system.
+AXON Runtime — Tools Package (v0.11.0)
+========================================
+Public API for the AXON tool system.
 
-Provides:
+This package provides:
 
-* ``BaseTool``             — abstract base for all tool implementations.
-* ``ToolResult``           — standardised return type.
-* ``RuntimeToolRegistry``  — instance-based registry.
-* ``ToolDispatcher``       — bridge from ``IRUseTool`` to execution.
+**Core Types (v0.10):**
+- ``BaseTool``               — Abstract base class for all tools.
+- ``ToolResult``             — Standardised execution result.
+- ``RuntimeToolRegistry``    — Tool registration and lookup.
+- ``ToolDispatcher``         — Bridge between IR and runtime tools.
 
-Quick start::
+**v0.11.0 Additions:**
+- ``TypedToolResult``        — Extended result with epistemic metadata (W5).
+- ``ToolSchema``             — Formal tool contracts (W1, W2).
+- ``ToolParameter``          — Schema parameter specification (W2).
+- ``ToolChain``              — Sequential tool composition (W4).
+- ``ToolChainStep``          — Individual step in a chain (W4).
+- ``ToolMetrics``            — Per-execution observation (W3).
+- ``ToolMetricsCollector``   — Aggregation & feedback loop (W3, W7).
 
-    from axon.runtime.tools import create_default_registry, ToolDispatcher
-
-    registry = create_default_registry()  # loads all stubs
-    dispatcher = ToolDispatcher(registry)
-
-    result = await dispatcher.dispatch(ir_use_tool)
+Factory:
+- ``create_default_registry(mode)`` — Quick setup with stubs, backends,
+  or hybrid registration.
 """
 
 from __future__ import annotations
 
-from axon.runtime.tools.base_tool import BaseTool, ToolResult
+from typing import Any
+
+from axon.runtime.tools.base_tool import BaseTool, ToolResult, TypedToolResult
 from axon.runtime.tools.dispatcher import ToolDispatcher
 from axon.runtime.tools.registry import RuntimeToolRegistry
-
-__all__ = [
-    "BaseTool",
-    "RuntimeToolRegistry",
-    "ToolDispatcher",
-    "ToolResult",
-    "create_default_registry",
-]
+from axon.runtime.tools.tool_chain import ToolChain, ToolChainStep
+from axon.runtime.tools.tool_metrics import ToolMetrics, ToolMetricsCollector
+from axon.runtime.tools.tool_schema import ToolParameter, ToolSchema
 
 
 def create_default_registry(
-    *, mode: str = "stub",
+    *,
+    mode: str = "hybrid",
+    config: dict[str, Any] | None = None,
 ) -> RuntimeToolRegistry:
-    """Create a registry pre-loaded with tool implementations.
+    """Create a ``RuntimeToolRegistry`` with sensible defaults.
 
     Args:
-        mode: ``"stub"`` — Phase 4 fakes (default).
-              ``"real"`` — Production backends (Phase 5/6).
-              ``"hybrid"`` — Stubs first, real backends override
-              where available (recommended for development).
+        mode: One of ``"stub"``, ``"real"``, or ``"hybrid"``.
+
+            * ``stub``   — all stubs, no real backends.
+            * ``real``   — stubs first, then overwrite with real backends.
+            * ``hybrid`` — stubs first, then only backends whose deps
+                           are satisfied.
+
+        config: Optional config dict passed to ``register_all_backends()``.
 
     Returns:
-        A ``RuntimeToolRegistry`` ready for use.
+        A populated ``RuntimeToolRegistry``.
     """
+    from axon.runtime.tools.stubs import register_all_stubs
+
     registry = RuntimeToolRegistry()
 
     if mode == "stub":
-        from axon.runtime.tools.stubs import register_all_stubs
-
         register_all_stubs(registry)
-
-    elif mode == "real":
-        from axon.runtime.tools.backends import register_all_backends
-
-        register_all_backends(registry)
-
-    elif mode == "hybrid":
-        # Load stubs first, then override with real backends
-        # where dependencies / API keys are available.
-        from axon.runtime.tools.backends import register_all_backends
-        from axon.runtime.tools.stubs import register_all_stubs
-
+    elif mode in ("real", "hybrid"):
         register_all_stubs(registry)
-        register_all_backends(registry)
-
+        from axon.runtime.tools.backends import register_all_backends
+        register_all_backends(registry, config=config)
     else:
         raise ValueError(
-            f"Unknown mode '{mode}'. "
-            "Supported: 'stub', 'real', 'hybrid'."
+            f"Unknown mode: {mode!r}. Use 'stub', 'real', or 'hybrid'."
         )
 
     return registry
+
+
+__all__ = [
+    # Core (v0.10)
+    "BaseTool",
+    "ToolResult",
+    "RuntimeToolRegistry",
+    "ToolDispatcher",
+    "create_default_registry",
+    # v0.11.0 additions
+    "TypedToolResult",
+    "ToolSchema",
+    "ToolParameter",
+    "ToolChain",
+    "ToolChainStep",
+    "ToolMetrics",
+    "ToolMetricsCollector",
+]

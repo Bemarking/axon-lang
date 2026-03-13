@@ -1,12 +1,17 @@
 """
-AXON Runtime — Base Tool Interface
-====================================
-Abstract base class and result type for all runtime tools.
+AXON Runtime — Base Tool Interface (v0.11.0)
+==============================================
+Abstract base class and result types for all runtime tools.
 
 Every tool in the AXON runtime implements ``BaseTool``, whether
 it's a Phase 4 stub or a Phase 5/6 real backend. The interface
 is async from the ground up so real backends can make I/O calls
 without blocking the event loop.
+
+v0.11.0 additions:
+- ``TypedToolResult`` — extends ``ToolResult`` with epistemic type
+  information (confidence, semantic type, provenance).
+- ``BaseTool.SCHEMA`` — optional ``ToolSchema`` for formal contracts.
 
 Architecture::
 
@@ -60,6 +65,66 @@ class ToolResult:
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  TYPED TOOL RESULT — extended result with epistemic metadata
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class TypedToolResult(ToolResult):
+    """Extended tool result with epistemic type information.
+
+    Maps directly to the epistemic lattice from §5 (Lattice Theory)
+    of the mathematical prompt optimization research.  The
+    ``to_epistemic_type()`` method converts confidence + mode into
+    one of the lattice nodes for taint propagation.
+
+    Attributes:
+        semantic_type:    Logical type of the data (e.g. ``"list[dict]"``).
+        confidence:       0.0–1.0 confidence score of the result.
+        epistemic_mode:   ``"know"``, ``"believe"``, or ``"speculate"``.
+        provenance:       Source attribution (e.g. ``"serper.dev"``).
+        execution_time_ms: Wall-clock execution time in milliseconds.
+    """
+
+    semantic_type: str = "Any"
+    confidence: float = 1.0
+    epistemic_mode: str = "know"  # know | believe | speculate
+    provenance: str = ""
+    execution_time_ms: float = 0.0
+
+    def to_epistemic_type(self) -> str:
+        """Map to epistemic lattice node.
+
+        Returns one of:
+        - ``"CitedFact"``    — high confidence, know-mode
+        - ``"Uncertainty"``  — low confidence (any mode)
+        - ``"Speculation"``  — mid confidence, non-know mode
+        - ``"Belief"``       — mid confidence, believe mode
+        """
+        if self.confidence >= 0.8 and self.epistemic_mode == "know":
+            return "CitedFact"
+        if self.confidence < 0.4:
+            return "Uncertainty"
+        if self.epistemic_mode == "speculate":
+            return "Speculation"
+        if self.epistemic_mode == "believe":
+            return "Belief"
+        return "CitedFact"  # default for know-mode + mid confidence
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize including epistemic fields."""
+        result = super().to_dict()
+        result["semantic_type"] = self.semantic_type
+        result["confidence"] = self.confidence
+        result["epistemic_mode"] = self.epistemic_mode
+        if self.provenance:
+            result["provenance"] = self.provenance
+        if self.execution_time_ms > 0:
+            result["execution_time_ms"] = self.execution_time_ms
+        return result
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  BASE TOOL — abstract contract for all runtime tools
 # ═══════════════════════════════════════════════════════════════════
 
@@ -97,6 +162,7 @@ class BaseTool(ABC):
     TOOL_NAME: ClassVar[str] = ""
     IS_STUB: ClassVar[bool] = False
     DEFAULT_TIMEOUT: ClassVar[float] = 30.0
+    SCHEMA: ClassVar[Any] = None  # Optional ToolSchema (v0.11.0)
 
     # ── Instance lifecycle ───────────────────────────────────────
 

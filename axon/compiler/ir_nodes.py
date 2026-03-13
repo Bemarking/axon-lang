@@ -178,6 +178,9 @@ class IRToolSpec(IRNode):
     timeout: str = ""
     runtime: str = ""
     sandbox: bool | None = None
+    # v0.11.0 expansions (W1)
+    input_schema: tuple[tuple[str, str, bool], ...] = ()  # (name, type, required)
+    output_schema: str = ""
 
 
 @dataclass(frozen=True)
@@ -411,6 +414,9 @@ class IRUseTool(IRNode):
     node_type: str = "use_tool"
     tool_name: str = ""
     argument: str = ""
+    # v0.11.0 expansions (W1)
+    parameters: tuple[tuple[str, str], ...] = ()  # (param_name, value)
+    expected_output_type: str = ""
 
 
 @dataclass(frozen=True)

@@ -42,9 +42,11 @@ class TestDefaultRegistry:
         # Real implementations
         assert listing["Calculator"] is False
         assert listing["DateTimeTool"] is False
+        assert listing["CodeExecutor"] is False  # subprocess backend
+        # v0.11.0: real backends (may stay stub if deps missing)
+        # PDFExtractor and APICall are real if deps are installed
         # Stubs
-        for name in ("WebSearch", "CodeExecutor", "FileReader",
-                      "PDFExtractor", "ImageAnalyzer", "APICall"):
+        for name in ("WebSearch", "ImageAnalyzer"):
             assert listing[name] is True, f"{name} should be a stub"
 
 
