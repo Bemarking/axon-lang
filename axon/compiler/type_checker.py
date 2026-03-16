@@ -51,6 +51,8 @@ from .ast_nodes import (
     RefineBlock,
     RememberNode,
     RunStatement,
+    ShieldApplyNode,
+    ShieldDefinition,
     StepNode,
     ToolDefinition,
     TypeDefinition,
@@ -381,6 +383,8 @@ class TypeChecker:
                 case AgentDefinition(name=name):
                     ret = decl.return_type.name if decl.return_type else ""
                     self._register(name, "agent", decl, type_name=ret)
+                case ShieldDefinition(name=name):
+                    self._register(name, "shield", decl)
                 case IngestNode():
                     pass  # ingest is a command, not a declaration
                 case FocusNode() | AssociateNode() | AggregateNode() | ExploreNode():
@@ -429,6 +433,10 @@ class TypeChecker:
                 self._check_forge(decl)
             case AgentDefinition():
                 self._check_agent(decl)
+            case ShieldDefinition():
+                self._check_shield(decl)
+            case ShieldApplyNode():
+                self._check_shield_apply(decl)
             case DataSpaceDefinition():
                 self._check_dataspace(decl)
             case IngestNode():
@@ -612,6 +620,8 @@ class TypeChecker:
                 self._check_forge(step)
             case AgentDefinition():
                 self._check_agent(step)
+            case ShieldApplyNode():
+                self._check_shield_apply(step)
 
     def _check_step(self, node: StepNode, step_names: set[str], flow_name: str) -> None:
         if node.name in step_names:
@@ -1046,6 +1056,135 @@ class TypeChecker:
         step_names: set[str] = set()
         for step in node.body:
             self._check_flow_step(step, step_names, node.name)
+
+        # 10. Shield reference validation
+        if node.shield_ref:
+            sym = self._symbols.lookup(node.shield_ref)
+            if sym is not None and sym.kind != "shield":
+                self._emit(
+                    f"Agent '{node.name}' shield reference '{node.shield_ref}' is "
+                    f"a {sym.kind}, not a shield",
+                    node,
+                )
+            elif sym is not None and sym.kind == "shield":
+                # Capability enforcement: agent tools ⊆ shield allow_tools
+                shield_node = sym.node
+                if hasattr(shield_node, 'allow_tools') and shield_node.allow_tools:
+                    allowed = set(shield_node.allow_tools)
+                    for tool_name in node.tools:
+                        if tool_name not in allowed:
+                            self._emit(
+                                f"Agent '{node.name}' uses tool '{tool_name}' not "
+                                f"permitted by shield '{node.shield_ref}' — "
+                                f"allowed: {', '.join(sorted(allowed))}",
+                                node,
+                            )
+
+    # ── SHIELD validation ──────────────────────────────────────────
+
+    _VALID_SCAN_CATEGORIES = frozenset({
+        "prompt_injection", "jailbreak", "data_exfil", "pii_leak",
+        "toxicity", "bias", "hallucination", "code_injection",
+        "social_engineering", "model_theft", "training_poisoning",
+    })
+
+    _VALID_SHIELD_STRATEGIES = frozenset({
+        "pattern", "classifier", "dual_llm", "canary",
+        "perplexity", "ensemble",
+    })
+
+    _VALID_ON_BREACH_POLICIES = frozenset({
+        "halt", "sanitize_and_retry", "escalate", "quarantine", "deflect",
+    })
+
+    _VALID_SEVERITY_LEVELS = frozenset({
+        "low", "medium", "high", "critical",
+    })
+
+    def _check_shield(self, node: ShieldDefinition) -> None:
+        """
+        Semantic validation for the shield primitive.
+
+        Validates:
+          1. Scan categories are from the known threat taxonomy
+          2. Strategy is valid
+          3. on_breach policy is valid
+          4. Severity level is valid
+          5. max_retries is non-negative
+          6. confidence_threshold is in [0.0, 1.0]
+          7. allow/deny lists don't overlap
+        """
+        # 1. Scan categories
+        for cat in node.scan:
+            if cat not in self._VALID_SCAN_CATEGORIES:
+                self._emit(
+                    f"Unknown scan category '{cat}' in shield '{node.name}'. "
+                    f"Valid: {', '.join(sorted(self._VALID_SCAN_CATEGORIES))}",
+                    node,
+                )
+
+        # 2. Strategy
+        if node.strategy and node.strategy not in self._VALID_SHIELD_STRATEGIES:
+            self._emit(
+                f"Unknown strategy '{node.strategy}' for shield '{node.name}'. "
+                f"Valid: {', '.join(sorted(self._VALID_SHIELD_STRATEGIES))}",
+                node,
+            )
+
+        # 3. on_breach policy
+        if node.on_breach and node.on_breach not in self._VALID_ON_BREACH_POLICIES:
+            self._emit(
+                f"Unknown on_breach policy '{node.on_breach}' for shield '{node.name}'. "
+                f"Valid: {', '.join(sorted(self._VALID_ON_BREACH_POLICIES))}",
+                node,
+            )
+
+        # 4. Severity
+        if node.severity and node.severity not in self._VALID_SEVERITY_LEVELS:
+            self._emit(
+                f"Unknown severity '{node.severity}' for shield '{node.name}'. "
+                f"Valid: {', '.join(sorted(self._VALID_SEVERITY_LEVELS))}",
+                node,
+            )
+
+        # 5. max_retries
+        if node.max_retries < 0:
+            self._emit(
+                f"Shield '{node.name}' max_retries cannot be negative, "
+                f"got {node.max_retries}",
+                node,
+            )
+
+        # 6. confidence_threshold
+        if node.confidence_threshold is not None:
+            self._check_range(
+                node.confidence_threshold, 0.0, 1.0,
+                f"shield '{node.name}' confidence_threshold", node,
+            )
+
+        # 7. allow/deny overlap
+        if node.allow_tools and node.deny_tools:
+            overlap = set(node.allow_tools) & set(node.deny_tools)
+            if overlap:
+                self._emit(
+                    f"Shield '{node.name}' has tools in both allow and deny: "
+                    f"{', '.join(sorted(overlap))}",
+                    node,
+                )
+
+    def _check_shield_apply(self, node: ShieldApplyNode) -> None:
+        """
+        Validate shield application in a flow step.
+
+        Ensures the referenced shield is declared.
+        """
+        sym = self._symbols.lookup(node.shield_name)
+        if sym is not None and sym.kind != "shield":
+            self._emit(
+                f"'{node.shield_name}' in shield apply is a {sym.kind}, "
+                "not a shield",
+                node,
+            )
 
     # ── HELPERS ────────────────────────────────────────────────────
 

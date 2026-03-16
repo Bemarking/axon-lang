@@ -278,3 +278,64 @@ class AgentStuckError(AxonRuntimeError):
 
     level: int = 8
 
+
+# ═══════════════════════════════════════════════════════════════════
+#  LEVEL 9 — SHIELD BREACH ERROR
+# ═══════════════════════════════════════════════════════════════════
+
+
+class ShieldBreachError(AxonRuntimeError):
+    """Shield detected a security threat in input or output.
+
+    Raised when a shield's scanner detects a threat category
+    (prompt injection, jailbreak, data exfiltration, etc.)
+    and the configured on_breach policy is 'halt'.
+
+    The error carries the threat category, confidence score,
+    and the shield's deflect_message for safe user-facing output.
+
+    Example:
+        Shield ``InputGuard`` detected 'prompt_injection' with
+        confidence 0.95 — on_breach policy: halt.
+    """
+
+    level: int = 9
+
+
+class TaintViolationError(AxonRuntimeError):
+    """Untrusted data reached a trusted sink without sanitization.
+
+    Raised when the taint analysis engine detects that data
+    from an untrusted source bypassed all shield application
+    points and reached a trusted computation context.
+
+    This implements the Noninterference property from the
+    Denning Lattice Model: Untrusted data must pass through
+    a shield (Untrusted → Sanitized) before reaching any
+    trusted output channel.
+
+    Example:
+        Variable ``user_input`` (taint: Untrusted) was passed
+        directly to ``LLM.prompt()`` (requires: Sanitized).
+    """
+
+    level: int = 10
+
+
+class CapabilityViolationError(AxonRuntimeError):
+    """Agent attempted to use a tool not permitted by its shield.
+
+    Raised when a shielded agent tries to invoke a tool
+    that is either in the shield's deny list or outside
+    the shield's allow list (capability-based security).
+
+    This enforces the principle of least privilege:
+    agents only access tools explicitly granted by their
+    shield configuration.
+
+    Example:
+        Agent ``Assistant`` (shield: InputGuard) attempted
+        to use tool 'CodeExecutor' — not in allow list.
+    """
+
+    level: int = 11

@@ -43,6 +43,8 @@ from axon.compiler.ir_nodes import (
     IRPersona,
     IRProgram,
     IRRun,
+    IRShield,
+    IRShieldApply,
     IRStep,
     IRToolSpec,
 )
@@ -52,6 +54,9 @@ _DATA_SCIENCE_IR_TYPES = (IRDataSpace, IRIngest, IRFocus, IRAssociate, IRAggrega
 
 # IR types that represent compute budget / consensus / forge operations
 _BUDGET_IR_TYPES = (IRDeliberate, IRConsensus, IRForge, IRAgent)
+
+# IR types that represent Shield operations (security boundaries)
+_SHIELD_IR_TYPES = (IRShieldApply,)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -252,6 +257,9 @@ class BaseBackend(ABC):
                 elif isinstance(step, _BUDGET_IR_TYPES):
                     budget_step = self._compile_budget_step(step, ctx)
                     compiled_steps.append(budget_step)
+                elif isinstance(step, _SHIELD_IR_TYPES):
+                    shield_step = self._compile_shield_step(step, ir)
+                    compiled_steps.append(shield_step)
                 else:
                     compiled = self.compile_step(step, ctx)
                     compiled_steps.append(compiled)
@@ -444,6 +452,7 @@ class BaseBackend(ABC):
                             "strategy": strategy,
                             "on_stuck": on_stuck,
                             "return_type": return_type,
+                            "shield_ref": step.shield_ref if hasattr(step, 'shield_ref') else "",
                             "child_steps": [
                                 cs.to_dict() for cs in child_steps
                             ],
@@ -457,6 +466,54 @@ class BaseBackend(ABC):
                     user_prompt="",
                     metadata={},
                 )
+
+    @staticmethod
+    def _compile_shield_step(
+        step: IRShieldApply, ir: IRProgram,
+    ) -> CompiledStep:
+        """Compile a shield application into a metadata-only step.
+
+        Shield steps don't go to the model — the runtime's
+        SecurityExecutor processes them inline, performing:
+          1. Taint analysis (Untrusted → Sanitized)
+          2. Pattern/classifier scanning
+          3. Capability enforcement
+          4. PII redaction
+        """
+        # Resolve the shield definition from the program
+        shield_def: dict[str, Any] = {}
+        for shield in ir.shields:
+            if shield.name == step.shield_name:
+                shield_def = {
+                    "name": shield.name,
+                    "scan": list(shield.scan),
+                    "strategy": shield.strategy,
+                    "on_breach": shield.on_breach,
+                    "severity": shield.severity,
+                    "quarantine": shield.quarantine,
+                    "max_retries": shield.max_retries,
+                    "confidence_threshold": shield.confidence_threshold,
+                    "allow_tools": list(shield.allow_tools),
+                    "deny_tools": list(shield.deny_tools),
+                    "sandbox": shield.sandbox,
+                    "redact": list(shield.redact),
+                    "log": shield.log,
+                    "deflect_message": shield.deflect_message,
+                }
+                break
+
+        return CompiledStep(
+            step_name=f"shield:{step.shield_name}",
+            user_prompt="",
+            metadata={
+                "shield_apply": {
+                    "shield_name": step.shield_name,
+                    "target": step.target,
+                    "output_type": step.output_type,
+                    "shield_definition": shield_def,
+                },
+            },
+        )
 
     @abstractmethod
     def compile_step(

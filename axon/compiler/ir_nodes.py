@@ -88,6 +88,7 @@ class IRProgram(IRNode):
     runs: tuple[IRRun, ...] = ()
     imports: tuple[IRImport, ...] = ()
     agents: tuple['IRAgent', ...] = ()
+    shields: tuple['IRShield', ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -651,7 +652,62 @@ class IRAgent(IRNode):
     strategy: str = "react"                     # deliberation strategy
     on_stuck: str = "escalate"                  # STIT recovery policy
     return_type: str = ""                       # expected output type name
+    shield_ref: str = ""                        # reference to declared shield
     children: tuple[IRNode, ...] = ()           # compiled plan library steps
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  SHIELD IR NODES — compiler-level LLM security boundaries
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRShield(IRNode):
+    """
+    Compiled shield declaration — a security boundary in the
+    Denning Lattice Model for information flow control.
+
+    Represents the compile-time verified, runtime-enforced security
+    policy. The type checker ensures all data paths from untrusted
+    sources pass through a shield before reaching trusted sinks.
+
+    Trust Lattice:
+      Untrusted → Quarantined → Sanitized → Validated → Trusted
+
+    Shield levels:
+      1. Input shields  — scan/sanitize before LLM context
+      2. Output shields — validate LLM responses
+      3. Capability shields — restrict tool access (WASI/OCM)
+    """
+    node_type: str = "shield"
+    name: str = ""
+    scan: tuple[str, ...] = ()                  # threat categories
+    strategy: str = "pattern"                   # detection mechanism
+    on_breach: str = "halt"                     # breach handler
+    severity: str = "critical"                  # severity level
+    quarantine: str = ""                        # quarantine label
+    max_retries: int = 0                        # for sanitize_and_retry
+    confidence_threshold: float = 0.0           # min confidence
+    allow_tools: tuple[str, ...] = ()           # capability allow list
+    deny_tools: tuple[str, ...] = ()            # capability deny list
+    sandbox: bool = False                       # sandbox tool execution
+    redact: tuple[str, ...] = ()                # PII fields to redact
+    log: str = ""                               # logging directive
+    deflect_message: str = ""                   # canned deflection
+
+
+@dataclass(frozen=True)
+class IRShieldApply(IRNode):
+    """
+    Compiled shield application point — the taint analysis insertion.
+
+    Transforms data from Untrusted to Sanitized in the trust lattice.
+    The compiler verifies this node exists on every path from
+    untrusted sources to trusted sinks.
+    """
+    node_type: str = "shield_apply"
+    shield_name: str = ""                       # reference to declared shield
+    target: str = ""                            # expression being shielded
+    output_type: str = ""                       # result type after shielding
 
 
 # ═══════════════════════════════════════════════════════════════════

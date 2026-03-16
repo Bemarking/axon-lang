@@ -4,7 +4,7 @@ AXON Compiler — Token Definitions
 Every token the lexer can produce. Derived directly from the AXON EBNF grammar.
 
 Categories:
-  - KEYWORDS: 54 cognitive keywords (persona, context, flow, anchor, agent, dataspace, …)
+  - KEYWORDS: 63 cognitive keywords (persona, context, flow, anchor, agent, shield, dataspace, …)
   - LITERALS: STRING, INTEGER, FLOAT, BOOL, DURATION, IDENTIFIER
   - SYMBOLS:  braces, parens, brackets, colon, comma, arrow, range, etc.
   - COMPARISON: <, >, <=, >=, ==, !=
@@ -65,6 +65,17 @@ class TokenType(Enum):
     BUDGET = auto()
     STRATEGY = auto()
     ON_STUCK = auto()
+
+    # ── SHIELD KEYWORDS (security primitive) ─────────────────────
+    SHIELD = auto()
+    SCAN = auto()
+    ON_BREACH = auto()
+    SEVERITY = auto()
+    ALLOW = auto()
+    DENY = auto()
+    SANDBOX = auto()
+    QUARANTINE = auto()
+    REDACT = auto()
 
     # ── DATA SCIENCE KEYWORDS ────────────────────────────────────
     DATASPACE = auto()
@@ -193,6 +204,16 @@ KEYWORDS: dict[str, TokenType] = {
     "output": TokenType.OUTPUT,
     "true": TokenType.BOOL,
     "false": TokenType.BOOL,
+    # Shield primitive
+    "shield": TokenType.SHIELD,
+    "scan": TokenType.SCAN,
+    "on_breach": TokenType.ON_BREACH,
+    "severity": TokenType.SEVERITY,
+    "allow": TokenType.ALLOW,
+    "deny": TokenType.DENY,
+    "sandbox": TokenType.SANDBOX,
+    "quarantine": TokenType.QUARANTINE,
+    "redact": TokenType.REDACT,
     # Data Science
     "dataspace": TokenType.DATASPACE,
     "ingest": TokenType.INGEST,

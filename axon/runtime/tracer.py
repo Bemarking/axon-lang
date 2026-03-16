@@ -78,6 +78,13 @@ class TraceEventType(str, Enum):
     AGENT_GOAL_CHECK = "agent_goal_check"
     AGENT_STUCK = "agent_stuck"
 
+    # — Shield security —
+    SHIELD_SCAN_START = "shield_scan_start"
+    SHIELD_SCAN_PASS = "shield_scan_pass"
+    SHIELD_SCAN_BREACH = "shield_scan_breach"
+    SHIELD_TAINT_CHECK = "shield_taint_check"
+    SHIELD_CAPABILITY_CHECK = "shield_capability_check"
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  TRACE EVENT — a single atomic observation

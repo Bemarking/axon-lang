@@ -53,6 +53,9 @@ class TestTraceEvent:
             "confidence_check",
             "agent_cycle_start", "agent_cycle_end",
             "agent_goal_check", "agent_stuck",
+            # Shield security events
+            "shield_scan_start", "shield_scan_pass", "shield_scan_breach",
+            "shield_taint_check", "shield_capability_check",
         }
         actual = {e.value for e in TraceEventType}
         assert actual == expected

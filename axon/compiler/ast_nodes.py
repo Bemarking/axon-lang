@@ -711,7 +711,124 @@ class AgentDefinition(ASTNode):
     memory_ref: str = ""                   # reference to a memory {} block
     strategy: str = "react"                # react | reflexion | plan_and_execute | custom
     on_stuck: str = "escalate"             # forge | hibernate | escalate | retry
+    shield_ref: str = ""                   # reference to a declared shield
     body: list[ASTNode] = field(default_factory=list)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  SHIELD NODES — compiler-level LLM security
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class ShieldDefinition(ASTNode):
+    """
+    shield InputGuard {
+        scan:     [prompt_injection, jailbreak, data_exfil, pii_leak]
+        strategy: dual_llm
+        quarantine: untrusted_input
+        on_breach: halt
+        severity: critical
+    }
+
+    shield ToolPolicy {
+        allow: [WebSearch, Calculator]
+        deny:  [CodeExecutor, FileWriter]
+        sandbox: true
+    }
+
+    A **compiled security boundary** that the AXON compiler verifies
+    and the runtime enforces.
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  THEORETICAL FOUNDATIONS                                     ║
+    ╠══════════════════════════════════════════════════════════════╣
+    ║                                                              ║
+    ║  Information Flow Control (Denning, 1976):                   ║
+    ║    Trust Lattice (SC, →, ⊕):                                ║
+    ║    Untrusted → Quarantined → Sanitized → Validated → Trusted ║
+    ║    Legal flow: data may only flow UP the lattice.            ║
+    ║                                                              ║
+    ║  Noninterference (Goguen & Meseguer, 1982):                  ║
+    ║    Untrusted variations cannot change Trusted execution.     ║
+    ║    ∀ u,u' ∈ Untrusted : P(s|u) = P(s|u')                   ║
+    ║                                                              ║
+    ║  Taint Analysis:                                             ║
+    ║    Source → Propagation → Sink                               ║
+    ║    Vulnerability ≡ ∃ path from Source to Sink with no shield ║
+    ║    Shield = type transformer: Untrusted → Sanitized          ║
+    ║                                                              ║
+    ║  Capability-Based Security (WASI/OCM):                       ║
+    ║    Principle of Least Privilege — agents only access          ║
+    ║    tools explicitly granted by their shield's allow list.    ║
+    ║                                                              ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+    Shield operates at three levels:
+      1. Input shields  — sanitize data before LLM context
+      2. Output shields — validate LLM responses before consumption
+      3. Capability shields — restrict tool access to declared permissions
+
+    Strategies:
+      pattern     — regex/heuristic scan (fast, low cost)
+      classifier  — fine-tuned classifier model (Llama Guard style)
+      dual_llm    — privileged/quarantined model architecture
+      canary      — inject traceable tokens, detect if leaked
+      perplexity  — statistical anomaly detection
+      ensemble    — multiple strategies with majority voting
+
+    Fields:
+        name:                 shield identifier
+        scan:                 list of threat categories to scan for
+        strategy:             detection mechanism
+        on_breach:            action on threat detection
+        severity:             severity level for logging/alerting
+        quarantine:           label for quarantined data
+        max_retries:          retry count for sanitize_and_retry
+        confidence_threshold: minimum confidence for pass decision
+        allow_tools:          permitted tools (capability shield)
+        deny_tools:           forbidden tools (capability shield)
+        sandbox:              whether to sandbox tool execution
+        redact:               PII fields to auto-redact before LLM
+        log:                  logging directive
+        deflect_message:      canned response for deflect on_breach
+        budget:               optional resource constraints
+    """
+    name: str = ""
+    scan: list[str] = field(default_factory=list)
+    strategy: str = "pattern"          # pattern|classifier|dual_llm|canary|perplexity|ensemble
+    on_breach: str = "halt"            # halt|sanitize_and_retry|escalate|quarantine|deflect
+    severity: str = "critical"         # low|medium|high|critical
+    quarantine: str = ""               # quarantine label
+    max_retries: int = 0               # for sanitize_and_retry
+    confidence_threshold: float | None = None
+    allow_tools: list[str] = field(default_factory=list)
+    deny_tools: list[str] = field(default_factory=list)
+    sandbox: bool | None = None
+    redact: list[str] = field(default_factory=list)
+    log: str = ""                      # logging directive
+    deflect_message: str = ""          # canned response for deflect
+    budget: AgentBudget | None = None  # optional resource constraints
+
+
+@dataclass
+class ShieldApplyNode(ASTNode):
+    """
+    shield InputGuard on user_input
+
+    Applies a declared shield to a target expression within a flow step.
+    This is the in-flow application point — the source → sink sanitizer.
+
+    The compiler verifies that this node exists on every path from
+    untrusted sources to trusted sinks (taint analysis).
+
+    Fields:
+        shield_name:   reference to a declared shield
+        target:        expression/identifier to shield
+        output_type:   optional explicit output type after shielding
+    """
+    shield_name: str = ""
+    target: str = ""
+    output_type: str = ""
 
 
 # ═══════════════════════════════════════════════════════════════════

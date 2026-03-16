@@ -44,6 +44,8 @@ from .ast_nodes import (
     RefineBlock,
     RememberNode,
     RunStatement,
+    ShieldApplyNode,
+    ShieldDefinition,
     StepNode,
     ToolDefinition,
     TypeDefinition,
@@ -112,12 +114,14 @@ class Parser:
                 return self._parse_ingest()
             case TokenType.AGENT:
                 return self._parse_agent()
+            case TokenType.SHIELD:
+                return self._parse_shield()
             case _:
                 raise AxonParseError(
                     f"Unexpected token at top level",
                     line=tok.line,
                     column=tok.column,
-                    expected="declaration (persona, context, anchor, flow, agent, run, know, speculate, ...)",
+                    expected="declaration (persona, context, anchor, flow, agent, shield, run, know, speculate, ...)",
                     found=tok.value,
                 )
 
@@ -551,12 +555,14 @@ class Parser:
                 return self._parse_explore()
             case TokenType.INGEST:
                 return self._parse_ingest()
+            case TokenType.SHIELD:
+                return self._parse_shield_apply()
             case _:
                 raise AxonParseError(
                     "Unexpected token in flow body",
                     line=tok.line,
                     column=tok.column,
-                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, focus, associate, aggregate, explore, ingest",
+                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, focus, associate, aggregate, explore, ingest",
                     found=tok.value,
                 )
 
@@ -1602,6 +1608,12 @@ class Parser:
                     self._consume(TokenType.COLON)
                     node.on_stuck = self._consume_any_identifier_or_keyword().value
 
+                # ── Shield binding ────────────────────────────────
+                case TokenType.SHIELD:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.shield_ref = self._consume_any_identifier_or_keyword().value
+
                 # ── Delegate to flow step parser for body ────────
                 case _:
                     step = self._parse_flow_step()
@@ -1652,4 +1664,175 @@ class Parser:
                     self._skip_value()
 
         self._consume(TokenType.RBRACE)
+        return node
+
+    # ── SHIELD ─────────────────────────────────────────────────────
+
+    def _parse_shield(self) -> ShieldDefinition:
+        """
+        Parse a top-level shield definition:
+
+          shield InputGuard {
+              scan:     [prompt_injection, jailbreak, data_exfil]
+              strategy: dual_llm
+              on_breach: halt
+              severity: critical
+              quarantine: untrusted_input
+              max_retries: 3
+              confidence_threshold: 0.85
+              allow: [WebSearch, Calculator]
+              deny:  [CodeExecutor]
+              sandbox: true
+              redact: [ssn, credit_card, email]
+              log: verbose
+              deflect_message: "I cannot help with that request."
+          }
+
+        Grounded in Denning's Lattice Model for Information Flow:
+          Untrusted → Quarantined → Sanitized → Validated → Trusted
+
+        The shield block declares the security boundary — the compiler
+        ensures completeness, the runtime enforces it.
+        """
+        tok = self._consume(TokenType.SHIELD)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = ShieldDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            inner = self._current()
+
+            match inner.type:
+                case TokenType.SCAN:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    self._consume(TokenType.LBRACKET)
+                    if self._check(TokenType.RBRACKET):
+                        self._advance()
+                        node.scan = []
+                    else:
+                        node.scan = self._parse_extended_identifier_list()
+                        self._consume(TokenType.RBRACKET)
+
+                case TokenType.STRATEGY:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.strategy = self._consume_any_identifier_or_keyword().value
+
+                case TokenType.ON_BREACH:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.on_breach = self._consume_any_identifier_or_keyword().value
+
+                case TokenType.SEVERITY:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.severity = self._consume_any_identifier_or_keyword().value
+
+                case TokenType.QUARANTINE:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.quarantine = self._consume_any_identifier_or_keyword().value
+
+                case TokenType.ALLOW:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    self._consume(TokenType.LBRACKET)
+                    if self._check(TokenType.RBRACKET):
+                        self._advance()
+                        node.allow_tools = []
+                    else:
+                        node.allow_tools = self._parse_extended_identifier_list()
+                        self._consume(TokenType.RBRACKET)
+
+                case TokenType.DENY:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    self._consume(TokenType.LBRACKET)
+                    if self._check(TokenType.RBRACKET):
+                        self._advance()
+                        node.deny_tools = []
+                    else:
+                        node.deny_tools = self._parse_extended_identifier_list()
+                        self._consume(TokenType.RBRACKET)
+
+                case TokenType.SANDBOX:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.sandbox = self._consume(TokenType.BOOL).value == "true"
+
+                case TokenType.REDACT:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    self._consume(TokenType.LBRACKET)
+                    if self._check(TokenType.RBRACKET):
+                        self._advance()
+                        node.redact = []
+                    else:
+                        node.redact = self._parse_extended_identifier_list()
+                        self._consume(TokenType.RBRACKET)
+
+                case _:
+                    # Identifier-based fields: max_retries, confidence_threshold, log, deflect_message
+                    field_name = inner.value
+                    self._advance()
+                    self._consume(TokenType.COLON)
+
+                    match field_name:
+                        case "max_retries":
+                            node.max_retries = int(self._consume(TokenType.INTEGER).value)
+                        case "confidence_threshold":
+                            ct = self._current()
+                            if ct.type == TokenType.FLOAT:
+                                node.confidence_threshold = float(self._advance().value)
+                            else:
+                                node.confidence_threshold = float(self._consume(TokenType.INTEGER).value)
+                        case "log":
+                            node.log = self._consume_any_identifier_or_keyword().value
+                        case "deflect_message":
+                            node.deflect_message = self._consume(TokenType.STRING).value
+                        case _:
+                            self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_shield_apply(self) -> ShieldApplyNode:
+        """
+        Parse an in-flow shield application:
+
+          shield InputGuard on user_input
+          shield InputGuard on user_input -> SanitizedInput
+
+        This is the taint analysis insertion point: the shield node
+        transforms data from Untrusted to Sanitized in the trust lattice.
+        """
+        tok = self._consume(TokenType.SHIELD)
+        shield_name = self._consume(TokenType.IDENTIFIER).value
+
+        # "on" keyword expected (parsed as identifier since it's not reserved)
+        on_tok = self._consume_any_identifier_or_keyword()
+        if on_tok.value != "on":
+            raise AxonParseError(
+                "Expected 'on' after shield name in flow step",
+                line=on_tok.line,
+                column=on_tok.column,
+                expected="on",
+                found=on_tok.value,
+            )
+
+        target = self._consume_any_identifier_or_keyword().value
+
+        node = ShieldApplyNode(
+            shield_name=shield_name,
+            target=target,
+            line=tok.line,
+            column=tok.column,
+        )
+
+        # optional -> OutputType
+        if self._check(TokenType.ARROW):
+            self._advance()
+            node.output_type = self._consume(TokenType.IDENTIFIER).value
+
         return node

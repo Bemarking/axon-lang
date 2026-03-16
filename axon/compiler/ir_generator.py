@@ -59,6 +59,8 @@ from axon.compiler.ir_nodes import (
     IRRemember,
     IRRun,
     IRStep,
+    IRShield,
+    IRShieldApply,
     IRToolSpec,
     IRType,
     IRTypeField,
@@ -98,6 +100,7 @@ class IRGenerator:
         self._imports: list[IRImport] = []
         self._runs: list[IRRun] = []
         self._agents: dict[str, IRAgent] = {}
+        self._shields: dict[str, IRShield] = {}
 
     def generate(self, program: ast.ProgramNode) -> IRProgram:
         """
@@ -136,6 +139,7 @@ class IRGenerator:
             runs=resolved_runs,
             imports=tuple(self._imports),
             agents=tuple(self._agents.values()),
+            shields=tuple(self._shields.values()),
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -172,6 +176,9 @@ class IRGenerator:
         ast.ForgeBlock: "_visit_forge",
         # Agent (BDI autonomous)
         ast.AgentDefinition: "_visit_agent",
+        # Shield (security primitive)
+        ast.ShieldDefinition: "_visit_shield",
+        ast.ShieldApplyNode: "_visit_shield_apply",
         # Data Science
         ast.DataSpaceDefinition: "_visit_dataspace",
         ast.IngestNode: "_visit_ingest",
@@ -812,10 +819,58 @@ class IRGenerator:
             strategy=node.strategy,
             on_stuck=node.on_stuck,
             return_type=node.return_type.name if node.return_type else "",
+            shield_ref=node.shield_ref,
             children=children,
         )
         self._agents[node.name] = ir_agent
         return ir_agent
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  SHIELD VISITORS
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _visit_shield(self, node: ast.ShieldDefinition) -> IRShield:
+        """
+        Compile ShieldDefinition → IRShield.
+
+        Lowers the shield declaration into an IR node with
+        all configuration fields preserved as tuples for immutability.
+        """
+        ir_shield = IRShield(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            scan=tuple(node.scan),
+            strategy=node.strategy,
+            on_breach=node.on_breach,
+            severity=node.severity,
+            quarantine=node.quarantine,
+            max_retries=node.max_retries,
+            confidence_threshold=node.confidence_threshold if node.confidence_threshold is not None else 0.0,
+            allow_tools=tuple(node.allow_tools),
+            deny_tools=tuple(node.deny_tools),
+            sandbox=node.sandbox if node.sandbox is not None else False,
+            redact=tuple(node.redact),
+            log=node.log,
+            deflect_message=node.deflect_message,
+        )
+        self._shields[node.name] = ir_shield
+        return ir_shield
+
+    def _visit_shield_apply(self, node: ast.ShieldApplyNode) -> IRShieldApply:
+        """
+        Compile ShieldApplyNode → IRShieldApply.
+
+        The application point where taint analysis inserts
+        the Untrusted → Sanitized type transformation.
+        """
+        return IRShieldApply(
+            source_line=node.line,
+            source_column=node.column,
+            shield_name=node.shield_name,
+            target=node.target,
+            output_type=node.output_type,
+        )
 
     # ═══════════════════════════════════════════════════════════════════
     #  DATA SCIENCE VISITORS

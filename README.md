@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v0.12.0</em><br>
+  <strong>AXON</strong> <em>v0.13.0</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -7,15 +7,15 @@
   <code>persona</code> · <code>intent</code> · <code>flow</code> · <code>reason</code> · <code>anchor</code> · <code>refine</code> · <code>memory</code> · <code>tool</code> · <code>probe</code> · <code>weave</code> · <code>validate</code> · <code>context</code><br>
   <code>know</code> · <code>believe</code> · <code>speculate</code> · <code>doubt</code> · <code>par</code> · <code>hibernate</code><br>
   <code>dataspace</code> · <code>ingest</code> · <code>focus</code> · <code>associate</code> · <code>aggregate</code> · <code>explore</code><br>
-  <code>deliberate</code> · <code>consensus</code> · <code>forge</code> · <code>agent</code>
+  <code>deliberate</code> · <code>consensus</code> · <code>forge</code> · <code>agent</code> · <code>shield</code>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.12.0-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v0.13.0-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-1030%20passing-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/paradigms-7%20shifts-blueviolet" alt="Paradigm Shifts">
+  <img src="https://img.shields.io/badge/tests-1306%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/paradigms-8%20shifts-blueviolet" alt="Paradigm Shifts">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
   <img src="https://img.shields.io/badge/pypi-axon--lang-blue" alt="PyPI">
 </p>
@@ -360,6 +360,7 @@ checked, or budget-bounded at compile time. AXON's `agent` primitive makes
 autonomous goal-seeking a **first-class compiled construct** with mathematical
 semantics.
 
+
 **BDI Coinductive Semantics.** An `agent` declaration compiles to a coinductive
 BDI system — a state machine whose behavior is defined by an infinite
 observation/transition pair over the epistemic lattice:
@@ -590,6 +591,180 @@ agent OnboardingGuide {
 - The `return: OnboardingReport` type is validated by the semantic type checker
   — the agent must produce a structurally valid report, not just free text
 
+### VI. Compile-Time Security — the `shield` Primitive
+
+> AXON v0.13 introduces an eighth paradigm shift: **Information Flow Control
+> (IFC) as a first-class compiled construct**, providing compile-time security
+> guarantees against LLM-specific attack vectors.
+
+Every LLM framework treats security as an afterthought — runtime guardrails
+bolted on top of applications. AXON's `shield` primitive makes security a
+**compiler-verified property** of your program, grounded in taint analysis and
+Information Flow Control theory.
+
+**Trust Lattice (Denning-style IFC).** The shield system operates over a trust
+lattice where data flows from untrusted sources through shield application
+points to trusted sinks. The compiler statically verifies that every path from
+an untrusted source to a trusted sink passes through at least one shield:
+
+```text
+U : DataLabel → TrustLevel
+
+TrustLevel = Untrusted < Scanned < Sanitized < Trusted
+
+∀ path(source, sink) ∈ Flow :
+  label(source) = Untrusted ∧ label(sink) = Trusted
+  → ∃ shield ∈ path : label(shield.output) ≥ Sanitized
+```
+
+**Threat Taxonomy.** The `scan` field declares which threats the shield detects,
+drawn from a formal taxonomy of 11 LLM attack categories:
+
+```text
+T = { prompt_injection, jailbreak, data_exfil, pii_leak, toxicity,
+      bias, hallucination, code_injection, social_engineering,
+      model_theft, training_poisoning }
+```
+
+**Detection Strategies.** The `strategy` parameter selects the detection
+mechanism, each with different cost/accuracy tradeoffs:
+
+```text
+Σ : Strategy → (Cost, Accuracy, Latency)
+
+Σ(pattern)     = (low,    medium, fast)     — regex/heuristic scan
+Σ(classifier)  = (medium, high,   medium)   — fine-tuned classifier (Llama Guard)
+Σ(dual_llm)    = (high,   highest, slow)    — privileged/quarantined model pair
+Σ(canary)      = (low,    medium, fast)     — traceable token injection
+Σ(perplexity)  = (medium, high,   medium)   — statistical anomaly detection
+Σ(ensemble)    = (high,   highest, slow)    — majority voting across multiple strategies
+```
+
+**Capability Enforcement.** The compiler statically verifies that agent tool
+access is a subset of the shield's allow list — preventing privilege escalation
+at compile time:
+
+```text
+∀ agent A with shield S :
+  tools(A) ⊆ allow_tools(S)    — verified at compile time
+  tools(A) ∩ deny_tools(S) = ∅  — also verified
+```
+
+**Usage example — LLM Input Shield:**
+
+```axon
+shield InputGuard {
+    scan: [prompt_injection, jailbreak, pii_leak]
+    strategy: dual_llm
+    on_breach: halt
+    severity: critical
+    allow: [web_search, calculator]
+    deny: [code_executor]
+    sandbox: true
+    redact: [email, phone]
+    confidence_threshold: 0.85
+}
+
+persona SecureAssistant {
+    domain: ["customer support"]
+    tone: professional
+    confidence_threshold: 0.80
+}
+
+agent SecureBot {
+    goal: "Answer customer queries safely"
+    tools: [web_search, calculator]
+    shield: InputGuard
+    strategy: react
+    max_iterations: 10
+    return: SafeResponse
+}
+
+flow SecureSupport(query: String) -> SafeResponse {
+    shield InputGuard on query -> SanitizedQuery
+    step Process {
+        SecureBot(SanitizedQuery)
+        output: SafeResponse
+    }
+}
+
+run SecureSupport("Help me with my account")
+    with SecureAssistant
+```
+
+What the compiler does:
+
+1. **Type Checking** — validates all scan categories, strategies, breach
+   policies, severity levels, and confidence thresholds. Detects allow/deny
+   overlaps and invalid configurations at compile time.
+2. **Capability Enforcement** — verifies that `SecureBot` only uses
+   `[web_search, calculator]` which are in `InputGuard.allow`, and that
+   neither appears in `deny`. If `SecureBot` tried to use `code_executor`,
+   the compiler would reject the program.
+3. **Taint Analysis** — verifies that `query` (untrusted) passes through
+   `shield InputGuard on query` before reaching the agent's trusted context.
+4. **Runtime Execution** — the shield step emits `SHIELD_SCAN_START`,
+   scans for prompt injection/jailbreak/PII, and either passes
+   (`SHIELD_SCAN_PASS`) or raises `ShieldBreachError` (`SHIELD_SCAN_BREACH`).
+
+#### Shield Use Case 1: Financial Data Pipeline with PII Redaction
+
+```axon
+shield DataShield {
+    scan: [pii_leak, data_exfil]
+    strategy: classifier
+    on_breach: sanitize_and_retry
+    max_retries: 3
+    severity: high
+    redact: [ssn, credit_card, bank_account]
+}
+
+flow ProcessFinancialQuery(input: String) -> Report {
+    shield DataShield on input -> CleanInput
+    step Analyze {
+        given: CleanInput
+        ask: "Analyze the financial data"
+        output: Report
+    }
+}
+```
+
+- PII fields (SSN, credit card, bank account) are auto-redacted **before** the
+  LLM sees the data
+- `sanitize_and_retry` means detected threats are cleaned and re-scanned up to
+  3 times, not just blocked
+- The compiler guarantees the LLM never processes raw PII
+
+#### Shield Use Case 2: Multi-Agent System with Capability Isolation
+
+```axon
+shield ResearchShield {
+    scan: [data_exfil, model_theft]
+    strategy: ensemble
+    on_breach: quarantine
+    allow: [web_search, file_reader]
+    deny: [code_executor, api_call]
+    sandbox: true
+}
+
+agent Researcher {
+    goal: "Gather market intelligence from public sources"
+    tools: [web_search, file_reader]
+    shield: ResearchShield
+    strategy: reflexion
+    max_iterations: 15
+    return: IntelligenceReport
+}
+```
+
+- `ensemble` strategy runs multiple detectors with majority voting — highest
+  accuracy for sensitive operations
+- `sandbox: true` runs tool execution in an isolated environment
+- Capability enforcement: the compiler rejects any agent that tries to use
+  `code_executor` or `api_call` — preventing privilege escalation by design
+- `quarantine` breach policy isolates suspicious data for human review instead
+  of blocking operations
+
 ---
 
 ## Architecture
@@ -608,7 +783,7 @@ agent OnboardingGuide {
                               Typed Output (validated, traced result)
 ```
 
-### 28 Cognitive Primitives
+### 29 Cognitive Primitives
 
 | Primitive  | Keyword      | What it represents                                   |
 | ---------- | ------------ | ---------------------------------------------------- |
@@ -640,6 +815,7 @@ agent OnboardingGuide {
 | Consensus  | `consensus`  | Best-of-N parallel evaluation & selection            |
 | Forge      | `forge`      | Directed creative synthesis (Poincaré pipeline)      |
 | Agent      | `agent`      | Autonomous goal-seeking BDI cognitive system         |
+| Shield     | `shield`     | Compile-time IFC security (taint + capability)       |
 
 ### Epistemic Type System (Partial Order Lattice)
 
@@ -708,8 +884,8 @@ axon-constructor/
 │   │   ├── retry_engine.py       # Backoff + failure context
 │   │   ├── memory_backend.py     # Abstract + InMemoryBackend
 │   │   ├── state_backend.py      # CPS persistence (hibernate/resume)
-│   │   ├── tracer.py             # 14 event types, JSON trace
-│   │   ├── runtime_errors.py     # 6-level error hierarchy
+│   │   ├── tracer.py             # 23 event types, JSON trace
+│   │   ├── runtime_errors.py     # 11-level error hierarchy
 │   │   └── tools/
 │   │       ├── base_tool.py      # BaseTool ABC + ToolResult
 │   │       ├── registry.py       # RuntimeToolRegistry (cached)
@@ -717,7 +893,7 @@ axon-constructor/
 │   │       ├── stubs/            # 8 tools (6 stubs + 2 real)
 │   │       └── backends/         # 3 production backends
 │   └── stdlib/                   # Built-in personas, flows, anchors
-└── tests/                        # 1030 tests
+└── tests/                        # 1306 tests
 ```
 
 ---
@@ -824,7 +1000,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 ### Current Status
 
 ```
-1030 passed, 0 failures ✅
+1306 passed, 0 failures ✅
 ```
 
 | Phase | Tests | What's covered                              |
@@ -837,7 +1013,8 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 | 8     | 69    | Data Science Engine (core)                  |
 | 11    | 22    | Forge (creative synthesis pipeline)         |
 | 12    | 28    | Agent (BDI pipeline + integration)          |
-| misc  | 405   | Stdlib, integration, edge cases             |
+| 13    | 70    | Shield (compiler + runtime + integration)   |
+| misc  | 611   | Stdlib, integration, edge cases             |
 
 ---
 
@@ -878,12 +1055,17 @@ registry = create_default_registry(mode="real")
 ## Error Hierarchy
 
 ```
-Level 1: ValidationError    — output type mismatch
-Level 2: ConfidenceError    — confidence below floor
-Level 3: AnchorBreachError  — anchor constraint violated
-Level 4: RefineExhausted    — max retry attempts exceeded
-Level 5: RuntimeError       — model call failed
-Level 6: TimeoutError       — execution time limit exceeded
+Level  1: ValidationError         — output type mismatch
+Level  2: ConfidenceError         — confidence below floor
+Level  3: AnchorBreachError       — anchor constraint violated
+Level  4: RefineExhausted         — max retry attempts exceeded
+Level  5: RuntimeError            — model call failed
+Level  6: TimeoutError            — execution time limit exceeded
+Level  7: ToolExecutionError      — tool invocation failed
+Level  8: AgentStuckError         — agent stagnation detected
+Level  9: ShieldBreachError       — shield detected security threat
+Level 10: TaintViolationError     — untrusted data reached trusted sink
+Level 11: CapabilityViolationError — tool access outside shield allow list
 ```
 
 ---
@@ -947,6 +1129,7 @@ honesty:
 | 10    | Compute Budget & Consensus (deliberate/consensus) | ✅ Done |
 | 11    | Directed Creative Synthesis (`forge`)             | ✅ Done |
 | 12    | Autonomous Agents (`agent` BDI primitive)         | ✅ Done |
+| 13    | Security Shields (`shield` IFC primitive)         | ✅ Done |
 
 ---
 
@@ -979,6 +1162,9 @@ honesty:
 | Compiled autonomous agents    | ❌        | ❌      | ❌       | ✅       |
 | Formal BDI convergence        | ❌        | ❌      | ❌       | ✅       |
 | Budget-bounded agent loops    | ❌        | ❌      | ❌       | ✅       |
+| Compile-time taint analysis   | ❌        | ❌      | ❌       | ✅       |
+| Capability enforcement        | ❌        | ❌      | ❌       | ✅       |
+| LLM attack surface shielding  | ❌        | ❌      | Partial  | ✅       |
 
 ---
 
