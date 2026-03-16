@@ -981,3 +981,348 @@ class TestBackendDifferentiation:
             IRProbe(target="x", fields=("f",)), _ctx(),
         )
         assert result.output_schema["type"] == "OBJECT"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  AGENT BDI SYSTEM PROMPT COMPILATION — Phase 4
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestAnthropicAgentSystemPrompt:
+    """Claude-optimized agent BDI system prompt compilation."""
+
+    def _build(self, **kw) -> str:
+        defaults = dict(
+            agent_name="SalesAgent",
+            goal="Qualify leads and schedule meetings",
+            strategy="react",
+            tools=["WebSearch", "CRMSync"],
+            epistemic_state="doubt",
+            iteration=0,
+            max_iterations=10,
+        )
+        defaults.update(kw)
+        return AnthropicBackend().compile_agent_system_prompt(**defaults)
+
+    def test_agent_identity_framing(self):
+        prompt = self._build()
+        assert "You are Agent SalesAgent" in prompt
+        assert "BDI" in prompt
+
+    def test_goal_inclusion(self):
+        prompt = self._build(goal="Close the deal")
+        assert "Close the deal" in prompt
+
+    def test_epistemic_state_doubt(self):
+        prompt = self._build(epistemic_state="doubt")
+        assert "[EPISTEMIC STATE]" in prompt
+        assert "doubt" in prompt
+        assert "LOW CONFIDENCE" in prompt
+
+    def test_epistemic_state_know(self):
+        prompt = self._build(epistemic_state="know")
+        assert "TERMINAL" in prompt
+
+    def test_react_strategy(self):
+        prompt = self._build(strategy="react")
+        assert "[STRATEGY: ReAct]" in prompt
+        assert "THOUGHT" in prompt
+        assert "ACTION" in prompt
+        assert "OBSERVATION" in prompt
+
+    def test_reflexion_strategy(self):
+        prompt = self._build(strategy="reflexion")
+        assert "[STRATEGY: Reflexion]" in prompt
+        assert "CRITIQUE" in prompt
+        assert "REVISION" in prompt
+
+    def test_plan_and_execute_strategy(self):
+        prompt = self._build(strategy="plan_and_execute")
+        assert "[STRATEGY: Plan-and-Execute]" in prompt
+        assert "PHASE 1" in prompt
+        assert "PHASE 2" in prompt
+
+    def test_custom_strategy_fallback(self):
+        prompt = self._build(strategy="tree_of_thought")
+        assert "[STRATEGY: tree_of_thought]" in prompt
+
+    def test_tool_listing(self):
+        prompt = self._build(tools=["WebSearch", "CRMSync", "Calendar"])
+        assert "[AVAILABLE TOOLS]" in prompt
+        assert "WebSearch" in prompt
+        assert "CRMSync" in prompt
+        assert "Calendar" in prompt
+
+    def test_no_tools_omits_section(self):
+        prompt = self._build(tools=[])
+        assert "[AVAILABLE TOOLS]" not in prompt
+
+    def test_budget_display(self):
+        prompt = self._build(iteration=3, max_iterations=10)
+        assert "[CONVERGENCE BUDGET]" in prompt
+        assert "4 of 10" in prompt
+        assert "7" in prompt  # remaining
+
+    def test_budget_final_cycle(self):
+        prompt = self._build(iteration=9, max_iterations=10)
+        assert "10 of 10" in prompt
+        assert "Remaining cycles: 1" in prompt
+
+
+class TestGeminiAgentSystemPrompt:
+    """Gemini-optimized agent BDI system prompt compilation."""
+
+    def _build(self, **kw) -> str:
+        defaults = dict(
+            agent_name="ResearchAgent",
+            goal="Gather comprehensive market intelligence",
+            strategy="react",
+            tools=["WebSearch"],
+            epistemic_state="speculate",
+            iteration=2,
+            max_iterations=8,
+        )
+        defaults.update(kw)
+        return GeminiBackend().compile_agent_system_prompt(**defaults)
+
+    def test_agent_identity_markdown(self):
+        prompt = self._build()
+        assert "# Agent: ResearchAgent" in prompt
+        assert "Your identity is Agent ResearchAgent" in prompt
+
+    def test_goal_inclusion(self):
+        prompt = self._build(goal="Analyze competitor pricing")
+        assert "Analyze competitor pricing" in prompt
+
+    def test_epistemic_state_speculate(self):
+        prompt = self._build(epistemic_state="speculate")
+        assert "## Current Epistemic State" in prompt
+        assert "`speculate`" in prompt
+        assert "Emerging" in prompt
+
+    def test_epistemic_state_believe(self):
+        prompt = self._build(epistemic_state="believe")
+        assert "`believe`" in prompt
+        assert "Convergent" in prompt
+
+    def test_react_strategy_markdown(self):
+        prompt = self._build(strategy="react")
+        assert "## Strategy: ReAct" in prompt
+        assert "**Thought:**" in prompt
+        assert "**Action:**" in prompt
+        assert "**Observation:**" in prompt
+
+    def test_reflexion_strategy_markdown(self):
+        prompt = self._build(strategy="reflexion")
+        assert "## Strategy: Reflexion" in prompt
+        assert "**Critique:**" in prompt
+        assert "**mandatory**" in prompt
+
+    def test_plan_and_execute_markdown(self):
+        prompt = self._build(strategy="plan_and_execute")
+        assert "## Strategy: Plan-and-Execute" in prompt
+        assert "### Phase 1" in prompt
+        assert "### Phase 2" in prompt
+
+    def test_tool_listing_markdown(self):
+        prompt = self._build(tools=["WebSearch", "EmailSend"])
+        assert "## Available Tools" in prompt
+        assert "- `WebSearch`" in prompt
+        assert "- `EmailSend`" in prompt
+
+    def test_no_tools_omits_section(self):
+        prompt = self._build(tools=[])
+        assert "## Available Tools" not in prompt
+
+    def test_budget_table(self):
+        prompt = self._build(iteration=2, max_iterations=8)
+        assert "## Convergence Budget" in prompt
+        assert "3 of 8" in prompt
+        assert "6 cycles" in prompt
+
+    def test_budget_uses_table_format(self):
+        prompt = self._build()
+        assert "| Parameter | Value |" in prompt
+        assert "|-----------|-------|" in prompt
+
+
+class TestBaseBackendAgentToolBinding:
+    """Default tool binding resolution (inherited by all backends)."""
+
+    def test_resolves_matching_tools(self):
+        backend = AnthropicBackend()
+        tools = {"WebSearch": _tool(), "CRM": _tool(name="CRM")}
+        result = backend.compile_agent_tool_binding(
+            ["WebSearch", "CRM"], tools,
+        )
+        assert len(result) == 2
+        assert result[0]["name"] == "WebSearch"
+        assert result[1]["name"] == "CRM"
+
+    def test_skips_missing_tools(self):
+        backend = GeminiBackend()
+        tools = {"WebSearch": _tool()}
+        result = backend.compile_agent_tool_binding(
+            ["WebSearch", "NonExistent"], tools,
+        )
+        assert len(result) == 1
+        assert result[0]["name"] == "WebSearch"
+
+    def test_empty_tool_list(self):
+        backend = AnthropicBackend()
+        result = backend.compile_agent_tool_binding([], {"X": _tool()})
+        assert result == []
+
+    def test_empty_registry(self):
+        backend = GeminiBackend()
+        result = backend.compile_agent_tool_binding(["WebSearch"], {})
+        assert result == []
+
+
+class TestCrossBackendAgentParity:
+    """Both backends produce structurally equivalent agent prompts."""
+
+    @pytest.fixture(params=["anthropic", "gemini"])
+    def backend(self, request) -> BaseBackend:
+        if request.param == "anthropic":
+            return AnthropicBackend()
+        return GeminiBackend()
+
+    def test_both_produce_string(self, backend):
+        prompt = backend.compile_agent_system_prompt(
+            agent_name="TestAgent",
+            goal="Test goal",
+            strategy="react",
+            tools=["WebSearch"],
+            epistemic_state="doubt",
+            iteration=0,
+            max_iterations=5,
+        )
+        assert isinstance(prompt, str)
+        assert len(prompt) > 100
+
+    def test_both_include_agent_name(self, backend):
+        prompt = backend.compile_agent_system_prompt(
+            agent_name="AlphaAgent",
+            goal="Do something",
+            strategy="react",
+            tools=[],
+            epistemic_state="doubt",
+            iteration=0,
+            max_iterations=5,
+        )
+        assert "AlphaAgent" in prompt
+
+    def test_both_include_goal(self, backend):
+        prompt = backend.compile_agent_system_prompt(
+            agent_name="A",
+            goal="Find the answer to everything",
+            strategy="react",
+            tools=[],
+            epistemic_state="doubt",
+            iteration=0,
+            max_iterations=5,
+        )
+        assert "Find the answer to everything" in prompt
+
+    def test_both_include_budget_info(self, backend):
+        prompt = backend.compile_agent_system_prompt(
+            agent_name="A",
+            goal="G",
+            strategy="react",
+            tools=[],
+            epistemic_state="doubt",
+            iteration=4,
+            max_iterations=10,
+        )
+        assert "5 of 10" in prompt  # cycle display
+
+    def test_both_handle_all_strategies(self, backend):
+        for strategy in ("react", "reflexion", "plan_and_execute", "custom"):
+            prompt = backend.compile_agent_system_prompt(
+                agent_name="A", goal="G", strategy=strategy,
+                tools=[], epistemic_state="doubt",
+                iteration=0, max_iterations=5,
+            )
+            assert strategy in prompt.lower() or strategy.replace("_", "-").lower() in prompt.lower()
+
+    def test_tool_binding_produces_native_format(self, backend):
+        tools = {"WebSearch": _tool()}
+        result = backend.compile_agent_tool_binding(["WebSearch"], tools)
+        assert len(result) == 1
+        assert result[0]["name"] == "WebSearch"
+        # Anthropic uses input_schema, Gemini uses parameters
+        if backend.name == "anthropic":
+            assert "input_schema" in result[0]
+        else:
+            assert "parameters" in result[0]
+
+
+class TestFullProgramAgentCompilation:
+    """IRAgent within a flow compiles correctly through full pipeline."""
+
+    @pytest.fixture(params=["anthropic", "gemini"])
+    def backend(self, request) -> BaseBackend:
+        if request.param == "anthropic":
+            return AnthropicBackend()
+        return GeminiBackend()
+
+    def _agent_flow(self):
+        """Build a flow containing an IRAgent as one of its steps."""
+        from axon.compiler.ir_nodes import IRAgent
+        agent = IRAgent(
+            name="SalesBot",
+            goal="Qualify the lead",
+            tools=("WebSearch",),
+            max_iterations=5,
+            strategy="react",
+            on_stuck="forge",
+            return_type="SalesOutcome",
+            children=(_step(name="Greet"), _step(name="Discover")),
+        )
+        return IRFlow(name="SalesFlow", steps=(agent,))
+
+    def test_agent_compiled_as_budget_step(self, backend):
+        flow = self._agent_flow()
+        run = _run(flow_name="SalesFlow", resolved_flow=flow)
+        ir = IRProgram(
+            personas=(_persona(),), contexts=(_context(),),
+            anchors=(_anchor(),), tools=(_tool(),),
+            flows=(flow,), runs=(run,),
+        )
+        result = backend.compile_program(ir)
+        unit = result.execution_units[0]
+        assert len(unit.steps) == 1
+        agent_step = unit.steps[0]
+        assert agent_step.step_name == "agent:SalesBot"
+
+    def test_agent_metadata_complete(self, backend):
+        flow = self._agent_flow()
+        run = _run(flow_name="SalesFlow", resolved_flow=flow)
+        ir = IRProgram(
+            personas=(_persona(),), contexts=(_context(),),
+            anchors=(_anchor(),), tools=(_tool(),),
+            flows=(flow,), runs=(run,),
+        )
+        result = backend.compile_program(ir)
+        meta = result.execution_units[0].steps[0].metadata["agent"]
+        assert meta["name"] == "SalesBot"
+        assert meta["goal"] == "Qualify the lead"
+        assert meta["strategy"] == "react"
+        assert meta["on_stuck"] == "forge"
+        assert meta["max_iterations"] == 5
+        assert "WebSearch" in meta["tools"]
+        assert len(meta["child_steps"]) == 2
+
+    def test_agent_child_steps_compiled(self, backend):
+        flow = self._agent_flow()
+        run = _run(flow_name="SalesFlow", resolved_flow=flow)
+        ir = IRProgram(
+            personas=(_persona(),), contexts=(_context(),),
+            anchors=(_anchor(),), tools=(_tool(),),
+            flows=(flow,), runs=(run,),
+        )
+        result = backend.compile_program(ir)
+        children = result.execution_units[0].steps[0].metadata["agent"]["child_steps"]
+        assert children[0]["step_name"] == "Greet"
+        assert children[1]["step_name"] == "Discover"

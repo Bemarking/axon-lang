@@ -87,6 +87,7 @@ class IRProgram(IRNode):
     flows: tuple[IRFlow, ...] = ()
     runs: tuple[IRRun, ...] = ()
     imports: tuple[IRImport, ...] = ()
+    agents: tuple['IRAgent', ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -584,6 +585,73 @@ class IRForge(IRNode):
     depth: int = 3                      # incubation iterations (Poincaré phase 2)
     branches: int = 5                   # Best-of-N for illumination (phase 3)
     children: tuple[IRNode, ...] = ()   # compiled inner steps
+
+# ═══════════════════════════════════════════════════════════════════
+#  AGENT IR NODE — compiled BDI autonomous agent
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRAgent(IRNode):
+    """
+    Compiled agent block — BDI autonomous agent.
+
+    Maps from AST AgentDefinition. Orchestrates the full BDI
+    deliberation cycle:
+      1. Observe   — gather beliefs from inputs + memory + tool results
+      2. Deliberate — evaluate goal satisfaction (epistemic assessment)
+      3. Plan      — select next action from plan library (body steps)
+      4. Act       — execute step or tool call (parallel if independent)
+      5. Reflect   — update beliefs, advance epistemic state
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  FORMAL SEMANTICS                                            ║
+    ╠══════════════════════════════════════════════════════════════╣
+    ║                                                              ║
+    ║  Coalgebraic transition system:                              ║
+    ║    Agent = (S, O, step: S × Action → S, obs: S → O)         ║
+    ║    where S = cognitive state (beliefs, goals, plans)         ║
+    ║          O = observations (tool outputs, LLM responses)      ║
+    ║                                                              ║
+    ║  Convergence (Tarski fixed-point):                           ║
+    ║    T(σ*) = σ* on epistemic lattice                           ║
+    ║    doubt ⊏ speculate ⊏ believe ⊏ know                       ║
+    ║    Agent terminates when σ reaches 'believe' or 'know' for   ║
+    ║    the goal, OR when budget is exhausted.                    ║
+    ║                                                              ║
+    ║  Concurrency (π-calculus):                                   ║
+    ║    Agent ≡ goal.( ν ch )( tool₁⟨ch⟩ | tool₂⟨ch⟩ | … )     ║
+    ║    Independent tools execute in parallel via channels.       ║
+    ║                                                              ║
+    ║  Resource management (linear logic):                         ║
+    ║    Each iteration consumes: tokens ⊗ time ⊗ cost             ║
+    ║    Budget guards ensure ∀i: Σ(cost_i) ≤ max_cost            ║
+    ║                                                              ║
+    ║  Recovery (STIT logic):                                      ║
+    ║    When ¬◇φ (no option achieves goal), on_stuck fires:       ║
+    ║    forge → creative synthesis, hibernate → suspend,           ║
+    ║    escalate → human operator, retry → modified params.       ║
+    ║                                                              ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+    Strategies:
+      react             — Thought → Action → Observation loop
+      reflexion         — ReAct + self-critique after each cycle
+      plan_and_execute  — full plan generation before execution
+      custom            — user-defined via body steps only
+    """
+    node_type: str = "agent"
+    name: str = ""
+    goal: str = ""                              # Davidson's pro-attitude
+    tools: tuple[str, ...] = ()                 # available tool references
+    max_iterations: int = 10                    # budget: iteration cap
+    max_tokens: int = 0                         # budget: token cap (0=unlimited)
+    max_time: str = ""                          # budget: time cap (duration)
+    max_cost: float = 0.0                       # budget: cost cap (0.0=unlimited)
+    memory_ref: str = ""                        # reference to declared memory
+    strategy: str = "react"                     # deliberation strategy
+    on_stuck: str = "escalate"                  # STIT recovery policy
+    return_type: str = ""                       # expected output type name
+    children: tuple[IRNode, ...] = ()           # compiled plan library steps
 
 
 # ═══════════════════════════════════════════════════════════════════

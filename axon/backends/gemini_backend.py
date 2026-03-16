@@ -464,6 +464,129 @@ class GeminiBackend(BaseBackend):
         }
 
     # ═══════════════════════════════════════════════════════════════
+    #  AGENT BDI SYSTEM PROMPT — Gemini-Optimized
+    # ═══════════════════════════════════════════════════════════════
+
+    def compile_agent_system_prompt(
+        self,
+        agent_name: str,
+        goal: str,
+        strategy: str,
+        tools: list[str],
+        epistemic_state: str,
+        iteration: int,
+        max_iterations: int,
+    ) -> str:
+        """
+        Build a Gemini-optimized system prompt for agent BDI cycles.
+
+        Uses Gemini's preferred instruction style:
+          - Markdown-formatted sections (##, **bold**, `code`)
+          - First-person identity framing ("Your identity is Agent {name}")
+          - Structured parameter blocks
+          - Step-by-step reasoning via CoT markers
+
+        The prompt adapts per strategy to leverage Gemini's strengths
+        with structured markdown and explicit section demarcation.
+        """
+        parts: list[str] = []
+
+        # ── Agent Identity ──────────────────────────────────────
+        parts.append(
+            f"# Agent: {agent_name}\n\n"
+            f"Your identity is Agent {agent_name}. You are an autonomous "
+            f"cognitive entity using BDI (Belief-Desire-Intention) architecture."
+        )
+        parts.append(f"\n**Objective:** {goal}")
+
+        # ── Epistemic State ─────────────────────────────────────
+        lattice_map = {
+            "doubt": "Low confidence — verify all information before acting",
+            "speculate": "Emerging — evidence gathering in progress, hypotheses forming",
+            "believe": "Convergent — strong evidence supports conclusions",
+            "know": "Terminal — certainty achieved, ready for final output",
+        }
+        state_desc = lattice_map.get(
+            epistemic_state, f"Unknown ({epistemic_state})"
+        )
+        parts.append(
+            f"\n## Current Epistemic State\n\n"
+            f"- **State:** `{epistemic_state}` — {state_desc}\n"
+            f"- **Lattice:** `doubt` → `speculate` → `believe` → `know`\n"
+            f"- **Directive:** Advance along this lattice toward convergence."
+        )
+
+        # ── Strategy-Specific Protocol ──────────────────────────
+        parts.append(self._compile_strategy_protocol_gemini(strategy))
+
+        # ── Available Tools ─────────────────────────────────────
+        if tools:
+            tool_items = "\n".join(f"- `{t}`" for t in tools)
+            parts.append(
+                f"\n## Available Tools\n\n"
+                f"{tool_items}\n\n"
+                f"Use tools deliberately. Each invocation consumes budget "
+                f"resources. Select the most direct tool for the current sub-goal."
+            )
+
+        # ── Budget Constraints ──────────────────────────────────
+        remaining = max_iterations - iteration
+        parts.append(
+            f"\n## Convergence Budget\n\n"
+            f"| Parameter | Value |\n"
+            f"|-----------|-------|\n"
+            f"| Current cycle | {iteration + 1} of {max_iterations} |\n"
+            f"| Remaining | {remaining} cycles |\n\n"
+            f"You **must** converge within the remaining budget. "
+            f"If progress is blocked, report it explicitly rather "
+            f"than consuming cycles without advancement."
+        )
+
+        return "\n".join(parts)
+
+    def _compile_strategy_protocol_gemini(self, strategy: str) -> str:
+        """Compile strategy-specific BDI reasoning instructions for Gemini."""
+        if strategy == "react":
+            return (
+                "\n## Strategy: ReAct\n\n"
+                "Follow the **Thought → Action → Observation** loop:\n\n"
+                "1. **Thought:** Analyze current beliefs, determine next action\n"
+                "2. **Action:** Execute a tool call or produce reasoning\n"
+                "3. **Observation:** Process results, update beliefs\n\n"
+                "Repeat until epistemic state reaches `believe` or `know`."
+            )
+        elif strategy == "reflexion":
+            return (
+                "\n## Strategy: Reflexion\n\n"
+                "Follow the ReAct loop with mandatory self-critique:\n\n"
+                "1. **Thought:** Analyze beliefs, determine next action\n"
+                "2. **Action:** Execute tool call or reasoning step\n"
+                "3. **Observation:** Process the result\n"
+                "4. **Critique:** Evaluate your own reasoning — identify "
+                "gaps, contradictions, or missed alternatives\n"
+                "5. **Revision:** Adjust approach based on self-critique\n\n"
+                "The critique step is **mandatory** before advancing epistemic state."
+            )
+        elif strategy == "plan_and_execute":
+            return (
+                "\n## Strategy: Plan-and-Execute\n\n"
+                "Two-phase deliberation:\n\n"
+                "### Phase 1 — Planning\n"
+                "Generate a complete action plan with numbered steps "
+                "before executing. Each step needs a clear sub-goal "
+                "and expected output.\n\n"
+                "### Phase 2 — Execution\n"
+                "Execute sequentially. After each step, verify success. "
+                "If reality diverges from plan, re-plan from current state."
+            )
+        else:
+            return (
+                f"\n## Strategy: {strategy}\n\n"
+                f"Execute using the `{strategy}` deliberation protocol. "
+                f"Follow the body steps defined in the agent block."
+            )
+
+    # ═══════════════════════════════════════════════════════════════
     #  INTERNAL FORMATTING HELPERS
     # ═══════════════════════════════════════════════════════════════
 

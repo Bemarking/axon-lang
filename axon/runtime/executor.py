@@ -47,6 +47,8 @@ from axon.runtime.context_mgr import ContextManager
 from axon.runtime.memory_backend import InMemoryBackend, MemoryBackend
 from axon.runtime.retry_engine import RefineConfig, RetryEngine, RetryResult
 from axon.runtime.runtime_errors import (
+    AgentBudgetExhaustedError,
+    AgentStuckError,
     AnchorBreachError,
     AxonRuntimeError,
     ErrorContext,
@@ -182,6 +184,74 @@ class StepResult:
         if self.retry_info:
             result["retry_info"] = self.retry_info.to_dict()
         result["duration_ms"] = round(self.duration_ms, 2)
+        return result
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  AGENT RESULT — output of a complete BDI agent cycle
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class AgentResult:
+    """Result of a complete BDI agent execution.
+
+    Coalgebraic state representation:
+      Agent = (S, O, step: S × Action → S, obs: S → O)
+      where S = cognitive state (beliefs, goals, plans)
+            O = observations (tool outputs, LLM responses)
+
+    The epistemic_state tracks convergence on the Tarski lattice:
+      doubt ⊏ speculate ⊏ believe ⊏ know
+
+    Attributes:
+        agent_name:       Agent identifier.
+        goal:             The goal the agent was pursuing.
+        strategy:         Deliberation strategy used.
+        iterations_used:  Number of BDI cycles completed.
+        max_iterations:   Budget cap for iterations.
+        epistemic_state:  Final position on epistemic lattice.
+        goal_achieved:    Whether the agent reached 'believe' or 'know'.
+        on_stuck_fired:   Whether recovery policy activated.
+        on_stuck_policy:  Which recovery policy was configured.
+        cycle_results:    Ordered results from each BDI cycle.
+        final_response:   The agent's synthesized final output.
+        total_tokens:     Accumulated token usage across all cycles.
+    """
+
+    agent_name: str = ""
+    goal: str = ""
+    strategy: str = "react"
+    iterations_used: int = 0
+    max_iterations: int = 10
+    epistemic_state: str = "doubt"
+    goal_achieved: bool = False
+    on_stuck_fired: bool = False
+    on_stuck_policy: str = "escalate"
+    cycle_results: tuple[StepResult, ...] = ()
+    final_response: ModelResponse | None = None
+    total_tokens: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dictionary."""
+        result: dict[str, Any] = {
+            "agent_name": self.agent_name,
+            "goal": self.goal,
+            "strategy": self.strategy,
+            "iterations_used": self.iterations_used,
+            "max_iterations": self.max_iterations,
+            "epistemic_state": self.epistemic_state,
+            "goal_achieved": self.goal_achieved,
+            "on_stuck_fired": self.on_stuck_fired,
+        }
+        if self.cycle_results:
+            result["cycle_results"] = [
+                cr.to_dict() for cr in self.cycle_results
+            ]
+        if self.final_response:
+            result["final_response"] = self.final_response.to_dict()
+        if self.total_tokens:
+            result["total_tokens"] = self.total_tokens
         return result
 
 
@@ -491,6 +561,14 @@ class Executor:
         # _execute_forge_step which orchestrates the Poincaré pipeline.
         if step.metadata.get("forge"):
             return await self._execute_forge_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
+        # ── Agent step shortcut ───────────────────────────────────
+        # If the step carries an agent config, route through
+        # _execute_agent_step which runs the BDI deliberation loop.
+        if step.metadata.get("agent"):
+            return await self._execute_agent_step(
                 step=step, unit=unit, ctx=ctx, tracer=tracer,
             )
 
@@ -1601,3 +1679,755 @@ class Executor:
             response=response,
             duration_ms=step_duration,
         )
+
+    # ── AGENT  (BDI autonomous deliberation loop) ──────────────
+
+    # Strategy → effort mapping (higher effort = deeper reasoning)
+    _AGENT_STRATEGY_EFFORT: dict[str, str] = {
+        "react":             "high",
+        "reflexion":         "max",
+        "plan_and_execute":  "high",
+        "custom":            "medium",
+    }
+
+    # Epistemic lattice ordering (Tarski fixed-point)
+    _EPISTEMIC_LATTICE: tuple[str, ...] = (
+        "doubt", "speculate", "believe", "know",
+    )
+
+    # Threshold for stuck detection: consecutive cycles with no progress
+    _STUCK_THRESHOLD: int = 3
+
+    async def _execute_agent_step(
+        self,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute an agent step — BDI autonomous deliberation loop.
+
+        Implements the full Belief-Desire-Intention architecture:
+
+          1. OBSERVE    — Gather beliefs from context + memory + prior results
+          2. DELIBERATE — Assess goal satisfaction (epistemic lattice check)
+          3. PLAN       — Select next action (strategy-dependent)
+          4. ACT        — Execute selected child step or tool call
+          5. REFLECT    — Update beliefs, advance epistemic state
+
+        Convergence criterion (Tarski fixed-point):
+          The loop terminates when the epistemic state for the goal
+          reaches 'believe' or 'know', OR when the budget is exhausted.
+
+        Strategy modes:
+          react            — Thought → Action → Observation per cycle
+          reflexion        — ReAct + self-critique after each action
+          plan_and_execute — Full plan on first cycle, then sequential execution
+          custom           — Body steps only, user controls the flow
+
+        Budget guards (linear logic resource consumption):
+          Each iteration consumes: tokens ⊗ time ⊗ cost
+          ∀i: Σ(resource_i) ≤ max_resource
+
+        Recovery (STIT logic):
+          When ¬◇φ (no option achieves goal), on_stuck fires:
+          forge → creative synthesis, hibernate → partial result,
+          escalate → hard error, retry → reset and retry.
+        """
+        import json
+        import re
+
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        agent_meta = step.metadata["agent"]
+
+        # ── Extract agent configuration ──────────────────────────
+        name = agent_meta.get("name", "")
+        goal = agent_meta.get("goal", "")
+        tools = agent_meta.get("tools", [])
+        max_iterations = agent_meta.get("max_iterations", 10)
+        max_tokens = agent_meta.get("max_tokens", 0)
+        max_time = agent_meta.get("max_time", "")
+        max_cost = agent_meta.get("max_cost", 0.0)
+        strategy = agent_meta.get("strategy", "react")
+        on_stuck = agent_meta.get("on_stuck", "escalate")
+        return_type = agent_meta.get("return_type", "")
+        child_steps_meta = agent_meta.get("child_steps", [])
+
+        # Strategy → effort mapping
+        effort = self._AGENT_STRATEGY_EFFORT.get(strategy, "medium")
+
+        # Parse max_time duration to seconds (e.g., "5m" → 300)
+        max_time_seconds = self._parse_duration(max_time) if max_time else 0
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "agent_name": name,
+                "agent_goal": goal,
+                "agent_strategy": strategy,
+                "agent_max_iterations": max_iterations,
+                "agent_on_stuck": on_stuck,
+                "agent_tools": tools,
+            },
+        )
+
+        # ── BDI State ───────────────────────────────────────────
+        epistemic_state = "doubt"
+        cycle_results: list[StepResult] = []
+        accumulated_tokens = 0
+        accumulated_cost = 0.0
+        stagnation_counter = 0
+        previous_epistemic = "doubt"
+        goal_achieved = False
+        on_stuck_fired = False
+        execution_plan: list[str] = []  # For plan_and_execute strategy
+        observation_history: list[str] = []
+
+        # ── BDI Main Loop ───────────────────────────────────────
+        for iteration in range(max_iterations):
+            cycle_start = time.perf_counter()
+
+            tracer.emit(
+                TraceEventType.AGENT_CYCLE_START,
+                step_name=f"agent:{name}:cycle:{iteration}",
+                data={
+                    "iteration": iteration,
+                    "epistemic_state": epistemic_state,
+                    "accumulated_tokens": accumulated_tokens,
+                    "stagnation_counter": stagnation_counter,
+                },
+            )
+
+            # ════════════════════════════════════════════════════
+            # Phase 1: OBSERVE — Gather beliefs
+            # ════════════════════════════════════════════════════
+            observation_context = self._build_observation_prompt(
+                name=name,
+                goal=goal,
+                strategy=strategy,
+                iteration=iteration,
+                epistemic_state=epistemic_state,
+                observation_history=observation_history,
+                execution_plan=execution_plan,
+            )
+
+            # ════════════════════════════════════════════════════
+            # Phase 2: DELIBERATE — Assess goal satisfaction
+            # ════════════════════════════════════════════════════
+            deliberation_prompt = (
+                f"{observation_context}\n\n"
+                f"--- DELIBERATION ---\n"
+                f"Given the current observations and progress, assess:\n"
+                f"1. Has the goal '{goal}' been achieved? "
+                f"(epistemic_state: doubt/speculate/believe/know)\n"
+                f"2. What information or action is still needed?\n"
+                f"3. Confidence level in goal achievement (0.0 to 1.0)\n\n"
+                f"Respond with a JSON object:\n"
+                f'{{"epistemic_state": "...", "goal_achieved": true/false, '
+                f'"confidence": 0.0, "reasoning": "...", '
+                f'"next_action": "..."}}'
+            )
+
+            deliberation_response = await self._client.call(
+                system_prompt=unit.system_prompt,
+                user_prompt=deliberation_prompt,
+                effort=effort,
+            )
+
+            # Track token consumption
+            delib_tokens = sum(deliberation_response.usage.values())
+            accumulated_tokens += delib_tokens
+
+            tracer.emit(
+                TraceEventType.AGENT_GOAL_CHECK,
+                step_name=f"agent:{name}:deliberate:{iteration}",
+                data={
+                    "epistemic_state_before": epistemic_state,
+                    "deliberation_response": deliberation_response.content[:500],
+                    "tokens_used": delib_tokens,
+                },
+            )
+
+            # Parse epistemic state from deliberation response
+            new_epistemic = self._extract_epistemic_state(
+                deliberation_response.content, epistemic_state,
+            )
+
+            # Monotonic advancement on epistemic lattice
+            epistemic_state = self._advance_epistemic(
+                current=epistemic_state, proposed=new_epistemic,
+            )
+
+            # Check goal achievement
+            goal_achieved = self._check_goal_achieved(
+                deliberation_response.content, epistemic_state,
+            )
+
+            if goal_achieved:
+                # ════════════════════════════════════════════════
+                # GOAL ACHIEVED — Synthesize final response
+                # ════════════════════════════════════════════════
+                cycle_duration = (time.perf_counter() - cycle_start) * 1000
+                cycle_results.append(StepResult(
+                    step_name=f"agent:{name}:cycle:{iteration}",
+                    response=deliberation_response,
+                    duration_ms=cycle_duration,
+                ))
+
+                tracer.emit(
+                    TraceEventType.AGENT_CYCLE_END,
+                    step_name=f"agent:{name}:cycle:{iteration}",
+                    data={
+                        "goal_achieved": True,
+                        "epistemic_state": epistemic_state,
+                        "iteration": iteration,
+                    },
+                    duration_ms=cycle_duration,
+                )
+                break
+
+            # ════════════════════════════════════════════════════
+            # Phase 3: PLAN — Select next action
+            # ════════════════════════════════════════════════════
+            action_prompt = self._build_action_prompt(
+                name=name,
+                goal=goal,
+                strategy=strategy,
+                iteration=iteration,
+                child_steps_meta=child_steps_meta,
+                tools=tools,
+                deliberation_content=deliberation_response.content,
+                execution_plan=execution_plan,
+            )
+
+            action_response = await self._client.call(
+                system_prompt=unit.system_prompt,
+                user_prompt=action_prompt,
+                effort=effort,
+            )
+
+            act_tokens = sum(action_response.usage.values())
+            accumulated_tokens += act_tokens
+
+            # ════════════════════════════════════════════════════
+            # Phase 4: ACT — Execute the selected action
+            # ════════════════════════════════════════════════════
+            # For plan_and_execute, on first iteration capture the plan
+            if strategy == "plan_and_execute" and iteration == 0:
+                execution_plan = self._extract_execution_plan(
+                    action_response.content,
+                )
+
+            act_result = StepResult(
+                step_name=f"agent:{name}:act:{iteration}",
+                response=action_response,
+                duration_ms=(time.perf_counter() - cycle_start) * 1000,
+            )
+
+            # ════════════════════════════════════════════════════
+            # Phase 5: REFLECT — Update beliefs
+            # ════════════════════════════════════════════════════
+            if strategy == "reflexion":
+                # Reflexion adds a self-critique step after each action
+                critique_prompt = (
+                    f"You are an agent executing goal: '{goal}'\n\n"
+                    f"Your last action produced:\n"
+                    f"{action_response.content[:1000]}\n\n"
+                    f"Self-critique: What was good about this action? "
+                    f"What could be improved? Should the approach change?"
+                )
+                critique_response = await self._client.call(
+                    system_prompt=unit.system_prompt,
+                    user_prompt=critique_prompt,
+                    effort="max",
+                )
+                critique_tokens = sum(critique_response.usage.values())
+                accumulated_tokens += critique_tokens
+                observation_history.append(
+                    f"[critique:{iteration}] {critique_response.content[:500]}"
+                )
+
+            # Update observation history
+            observation_history.append(
+                f"[act:{iteration}] {action_response.content[:500]}"
+            )
+
+            # Track stagnation (stuck detection)
+            if epistemic_state == previous_epistemic:
+                stagnation_counter += 1
+            else:
+                stagnation_counter = 0
+            previous_epistemic = epistemic_state
+
+            cycle_duration = (time.perf_counter() - cycle_start) * 1000
+            cycle_results.append(act_result)
+
+            tracer.emit(
+                TraceEventType.AGENT_CYCLE_END,
+                step_name=f"agent:{name}:cycle:{iteration}",
+                data={
+                    "goal_achieved": False,
+                    "epistemic_state": epistemic_state,
+                    "stagnation_counter": stagnation_counter,
+                    "accumulated_tokens": accumulated_tokens,
+                },
+                duration_ms=cycle_duration,
+            )
+
+            # ── Budget guards ────────────────────────────────────
+            if self._check_budget_exceeded(
+                max_tokens=max_tokens,
+                max_time_seconds=max_time_seconds,
+                max_cost=max_cost,
+                accumulated_tokens=accumulated_tokens,
+                accumulated_cost=accumulated_cost,
+                step_start=step_start,
+            ):
+                tracer.emit(
+                    TraceEventType.AGENT_STUCK,
+                    step_name=f"agent:{name}",
+                    data={
+                        "reason": "budget_exhausted",
+                        "accumulated_tokens": accumulated_tokens,
+                        "iteration": iteration,
+                    },
+                )
+                break
+
+            # ── Stuck detection ──────────────────────────────────
+            if stagnation_counter >= self._STUCK_THRESHOLD:
+                on_stuck_fired = True
+                tracer.emit(
+                    TraceEventType.AGENT_STUCK,
+                    step_name=f"agent:{name}",
+                    data={
+                        "reason": "stagnation",
+                        "policy": on_stuck,
+                        "stagnation_counter": stagnation_counter,
+                        "iteration": iteration,
+                    },
+                )
+
+                recovery_result = await self._handle_on_stuck(
+                    name=name,
+                    goal=goal,
+                    on_stuck=on_stuck,
+                    unit=unit,
+                    ctx=ctx,
+                    tracer=tracer,
+                    observation_history=observation_history,
+                    iteration=iteration,
+                )
+
+                if recovery_result is not None:
+                    cycle_results.append(recovery_result)
+                    # Reset stagnation after recovery attempt
+                    stagnation_counter = 0
+                    observation_history.append(
+                        f"[recovery:{iteration}] "
+                        f"{recovery_result.response.content[:500] if recovery_result.response else 'hibernate'}"
+                    )
+                else:
+                    # hibernate or escalate — exit the loop
+                    break
+
+        # ── Synthesize final agent output ────────────────────────
+        final_synthesis_prompt = (
+            f"You are agent '{name}' that has been pursuing the goal: '{goal}'\n\n"
+            f"After {len(cycle_results)} BDI cycles, your final epistemic state "
+            f"is '{epistemic_state}'.\n\n"
+            f"Synthesize your final answer based on all accumulated observations.\n\n"
+            f"Observations:\n"
+            + "\n".join(observation_history[-10:])  # Last 10 observations
+        )
+
+        final_response = await self._client.call(
+            system_prompt=unit.system_prompt,
+            user_prompt=final_synthesis_prompt,
+            effort=effort,
+        )
+        final_tokens = sum(final_response.usage.values())
+        accumulated_tokens += final_tokens
+
+        # Build the AgentResult and embed it in the StepResult
+        agent_result = AgentResult(
+            agent_name=name,
+            goal=goal,
+            strategy=strategy,
+            iterations_used=len(cycle_results),
+            max_iterations=max_iterations,
+            epistemic_state=epistemic_state,
+            goal_achieved=goal_achieved,
+            on_stuck_fired=on_stuck_fired,
+            on_stuck_policy=on_stuck,
+            cycle_results=tuple(cycle_results),
+            final_response=final_response,
+            total_tokens=accumulated_tokens,
+        )
+
+        # Compose the final ModelResponse with agent metadata
+        composed_response = ModelResponse(
+            content=json.dumps({
+                "agent": agent_result.to_dict(),
+                "result": final_response.content,
+            }),
+            usage={"total_tokens": accumulated_tokens},
+        )
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": goal_achieved,
+                "agent_name": name,
+                "iterations_used": len(cycle_results),
+                "epistemic_state": epistemic_state,
+                "goal_achieved": goal_achieved,
+                "on_stuck_fired": on_stuck_fired,
+                "total_tokens": accumulated_tokens,
+            },
+            duration_ms=step_duration,
+        )
+
+        return StepResult(
+            step_name=step_name,
+            response=composed_response,
+            duration_ms=step_duration,
+        )
+
+    # ── Agent helper methods ────────────────────────────────────
+
+    @staticmethod
+    def _build_observation_prompt(
+        *,
+        name: str,
+        goal: str,
+        strategy: str,
+        iteration: int,
+        epistemic_state: str,
+        observation_history: list[str],
+        execution_plan: list[str],
+    ) -> str:
+        """Build the observation context for a BDI cycle.
+
+        Phase 1 of the BDI loop: constructs the belief state from
+        accumulated observations, current epistemic position, and
+        any existing execution plan.
+        """
+        parts = [
+            f"=== AGENT '{name}' — BDI Cycle {iteration} ===",
+            f"Goal: {goal}",
+            f"Strategy: {strategy}",
+            f"Epistemic State: {epistemic_state}",
+        ]
+
+        if execution_plan:
+            parts.append("\n--- Execution Plan ---")
+            for i, plan_step in enumerate(execution_plan):
+                marker = "✓" if i < iteration else "→" if i == iteration else " "
+                parts.append(f"  [{marker}] {plan_step}")
+
+        if observation_history:
+            parts.append("\n--- Observation History (recent) ---")
+            # Show last 5 observations to keep context manageable
+            for obs in observation_history[-5:]:
+                parts.append(f"  {obs}")
+
+        return "\n".join(parts)
+
+    @staticmethod
+    def _build_action_prompt(
+        *,
+        name: str,
+        goal: str,
+        strategy: str,
+        iteration: int,
+        child_steps_meta: list[dict[str, Any]],
+        tools: list[str],
+        deliberation_content: str,
+        execution_plan: list[str],
+    ) -> str:
+        """Build the action selection prompt based on strategy.
+
+        Phase 3 of the BDI loop: prompts the model to select and
+        execute the next action toward the goal.
+
+        Strategy-specific behavior:
+          react:            Choose next action directly
+          plan_and_execute: On iteration 0, generate full plan;
+                            thereafter, execute next planned step
+          reflexion:        Choose action with self-critique awareness
+          custom:           Execute body steps in sequence
+        """
+        if strategy == "plan_and_execute" and iteration == 0:
+            return (
+                f"You are agent '{name}' pursuing: '{goal}'\n\n"
+                f"Generate a complete execution plan. List each step:\n"
+                f"Available tools: {', '.join(tools) if tools else 'none'}\n"
+                f"Available body steps: {len(child_steps_meta)}\n\n"
+                f"Respond with a numbered list of concrete actions."
+            )
+
+        if strategy == "plan_and_execute" and execution_plan:
+            current_step_idx = min(iteration, len(execution_plan) - 1)
+            current_plan_step = execution_plan[current_step_idx]
+            return (
+                f"You are agent '{name}' pursuing: '{goal}'\n\n"
+                f"Execute step {iteration + 1} of the plan:\n"
+                f"  → {current_plan_step}\n\n"
+                f"Deliberation assessment:\n{deliberation_content[:500]}\n\n"
+                f"Execute this step and provide the result."
+            )
+
+        # react / reflexion / custom / fallback
+        action_context = (
+            f"You are agent '{name}' pursuing: '{goal}'\n\n"
+            f"Deliberation assessment:\n{deliberation_content[:500]}\n\n"
+        )
+
+        if tools:
+            action_context += f"Available tools: {', '.join(tools)}\n"
+        if child_steps_meta:
+            action_context += f"Available body steps: {len(child_steps_meta)}\n"
+
+        action_context += (
+            "\nChoose and execute the most appropriate next action "
+            "to advance toward the goal. Provide your reasoning and result."
+        )
+
+        return action_context
+
+    def _extract_epistemic_state(
+        self, content: str, current: str,
+    ) -> str:
+        """Extract epistemic state from deliberation response.
+
+        Searches for epistemic_state keywords in the model's
+        response to determine the current position on the
+        Tarski lattice: doubt ⊏ speculate ⊏ believe ⊏ know.
+        """
+        import re
+
+        content_lower = content.lower()
+
+        # Try JSON extraction first
+        json_match = re.search(
+            r'"epistemic_state"\s*:\s*"(\w+)"', content_lower,
+        )
+        if json_match:
+            candidate = json_match.group(1)
+            if candidate in self._EPISTEMIC_LATTICE:
+                return candidate
+
+        # Fallback: look for keywords
+        for state in reversed(self._EPISTEMIC_LATTICE):
+            if state in content_lower:
+                return state
+
+        return current
+
+    def _advance_epistemic(self, current: str, proposed: str) -> str:
+        """Advance epistemic state monotonically on the lattice.
+
+        The epistemic state can only move forward (toward 'know'),
+        never backward. This ensures convergence.
+
+        doubt → speculate → believe → know
+        """
+        current_idx = (
+            self._EPISTEMIC_LATTICE.index(current)
+            if current in self._EPISTEMIC_LATTICE else 0
+        )
+        proposed_idx = (
+            self._EPISTEMIC_LATTICE.index(proposed)
+            if proposed in self._EPISTEMIC_LATTICE else 0
+        )
+        return self._EPISTEMIC_LATTICE[max(current_idx, proposed_idx)]
+
+    @staticmethod
+    def _check_goal_achieved(content: str, epistemic_state: str) -> bool:
+        """Check if the goal has been achieved based on epistemic state.
+
+        The agent considers the goal achieved when:
+          1. Epistemic state reaches 'believe' or 'know', OR
+          2. The model explicitly reports goal_achieved: true
+        """
+        if epistemic_state in ("believe", "know"):
+            return True
+
+        # Check explicit goal_achieved in response
+        content_lower = content.lower()
+        if '"goal_achieved": true' in content_lower:
+            return True
+        if '"goal_achieved":true' in content_lower:
+            return True
+
+        return False
+
+    @staticmethod
+    def _extract_execution_plan(content: str) -> list[str]:
+        """Extract a numbered execution plan from model output.
+
+        Parses numbered lists (1. Step, 2. Step, etc.) from
+        the plan_and_execute strategy's planning phase output.
+        """
+        import re
+
+        lines = content.strip().split("\n")
+        plan: list[str] = []
+        for line in lines:
+            # Match numbered items: "1. ...", "1) ...", "- ..."
+            match = re.match(r'^\s*(?:\d+[\.\)]\s*|-\s*)(.*)', line)
+            if match:
+                step_text = match.group(1).strip()
+                if step_text:
+                    plan.append(step_text)
+
+        return plan if plan else [content.strip()[:200]]
+
+    @staticmethod
+    def _check_budget_exceeded(
+        *,
+        max_tokens: int,
+        max_time_seconds: float,
+        max_cost: float,
+        accumulated_tokens: int,
+        accumulated_cost: float,
+        step_start: float,
+    ) -> bool:
+        """Check if any budget constraint has been exceeded.
+
+        Linear logic resource tracking:
+          Each iteration consumes: tokens ⊗ time ⊗ cost
+          Budget guards ensure ∀i: Σ(resource_i) ≤ max_resource
+        """
+        if max_tokens > 0 and accumulated_tokens >= max_tokens:
+            return True
+
+        if max_time_seconds > 0:
+            elapsed = time.perf_counter() - step_start
+            if elapsed >= max_time_seconds:
+                return True
+
+        if max_cost > 0 and accumulated_cost >= max_cost:
+            return True
+
+        return False
+
+    @staticmethod
+    def _parse_duration(duration_str: str) -> float:
+        """Parse a duration string to seconds.
+
+        Supports formats: "30s", "5m", "1h", "1h30m"
+        Returns 0.0 for empty or unparseable strings.
+        """
+        import re
+
+        if not duration_str:
+            return 0.0
+
+        total = 0.0
+        # Match hours, minutes, seconds
+        hours = re.search(r'(\d+)h', duration_str)
+        minutes = re.search(r'(\d+)m', duration_str)
+        seconds = re.search(r'(\d+)s', duration_str)
+
+        if hours:
+            total += int(hours.group(1)) * 3600
+        if minutes:
+            total += int(minutes.group(1)) * 60
+        if seconds:
+            total += int(seconds.group(1))
+
+        return total if total > 0 else 0.0
+
+    async def _handle_on_stuck(
+        self,
+        *,
+        name: str,
+        goal: str,
+        on_stuck: str,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+        observation_history: list[str],
+        iteration: int,
+    ) -> StepResult | None:
+        """Handle the on_stuck recovery policy.
+
+        STIT logic: When ¬◇φ (no available option achieves the goal),
+        the recovery policy fires:
+
+          forge     — Creative synthesis to break the impasse.
+                      Uses divergent reasoning to reframe the problem.
+          hibernate — Suspend execution, return partial result.
+                      The agent can be resumed later.
+          escalate  — Raise AgentStuckError to the caller.
+                      Human intervention required.
+          retry     — Reset observation history and retry with
+                      modified parameters.
+
+        Returns:
+            A StepResult for forge/retry recovery, or None for
+            hibernate/escalate (which terminate the loop).
+        """
+        if on_stuck == "forge":
+            # Creative synthesis to break the impasse
+            forge_prompt = (
+                f"You are agent '{name}' that is STUCK trying to achieve: '{goal}'\n\n"
+                f"Previous observations:\n"
+                + "\n".join(observation_history[-5:]) +
+                "\n\nUse creative, divergent thinking to find a novel approach. "
+                "Reframe the problem, consider analogies, or combine ideas "
+                "in unexpected ways. Propose a breakthrough action."
+            )
+            forge_response = await self._client.call(
+                system_prompt=unit.system_prompt,
+                user_prompt=forge_prompt,
+                effort="max",
+            )
+            return StepResult(
+                step_name=f"agent:{name}:forge_recovery:{iteration}",
+                response=forge_response,
+            )
+
+        if on_stuck == "retry":
+            # Reset and retry with modified framing
+            retry_prompt = (
+                f"You are agent '{name}' retrying goal: '{goal}'\n\n"
+                f"Previous approach was not making progress. "
+                f"Try a fundamentally different strategy. "
+                f"What alternative approach could work?"
+            )
+            retry_response = await self._client.call(
+                system_prompt=unit.system_prompt,
+                user_prompt=retry_prompt,
+                effort="high",
+            )
+            return StepResult(
+                step_name=f"agent:{name}:retry_recovery:{iteration}",
+                response=retry_response,
+            )
+
+        if on_stuck == "hibernate":
+            # Return None to signal loop exit with partial result
+            return None
+
+        # escalate (default) — raise hard error
+        raise AgentStuckError(
+            message=(
+                f"Agent '{name}' is stuck after {iteration + 1} iterations. "
+                f"Goal '{goal}' not achievable with current approach."
+            ),
+            context=ErrorContext(
+                step_name=f"agent:{name}",
+                details=(
+                    f"strategy={on_stuck}, "
+                    f"last_observations={observation_history[-3:]}"
+                ),
+            ),
+        )
+

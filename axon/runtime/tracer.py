@@ -14,13 +14,14 @@ Architecture:
     ExecutionTrace    — The root container for a full program execution
     Tracer            — The recorder: start_span(), emit(), end_span()
 
-Event Types (14):
+Event Types (18):
     step_start, step_end, model_call, model_response,
     anchor_check, anchor_pass, anchor_breach,
     validation_pass, validation_fail,
     retry_attempt, refine_start,
     memory_read, memory_write,
-    confidence_check
+    confidence_check,
+    agent_cycle_start, agent_cycle_end, agent_goal_check, agent_stuck
 """
 
 from __future__ import annotations
@@ -70,6 +71,12 @@ class TraceEventType(str, Enum):
 
     # — Confidence —
     CONFIDENCE_CHECK = "confidence_check"
+
+    # — Agent BDI lifecycle —
+    AGENT_CYCLE_START = "agent_cycle_start"
+    AGENT_CYCLE_END = "agent_cycle_end"
+    AGENT_GOAL_CHECK = "agent_goal_check"
+    AGENT_STUCK = "agent_stuck"
 
 
 # ═══════════════════════════════════════════════════════════════════

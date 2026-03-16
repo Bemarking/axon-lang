@@ -71,3 +71,20 @@ class OllamaBackend(BaseBackend):
             "Should produce Ollama-compatible tool format or gracefully "
             "degrade for models without tool support."
         )
+
+    def compile_agent_system_prompt(
+        self,
+        agent_name: str,
+        goal: str,
+        strategy: str,
+        tools: list[str],
+        epistemic_state: str,
+        iteration: int,
+        max_iterations: int,
+    ) -> str:
+        raise NotImplementedError(
+            "Ollama agent system prompt is not yet implemented. "
+            "Should produce simplified BDI-cycle instructions suitable "
+            "for local models (Llama, Mistral, etc.) with smaller "
+            "context windows."
+        )

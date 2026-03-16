@@ -67,3 +67,19 @@ class OpenAIBackend(BaseBackend):
             "OpenAI tool spec compilation is not yet implemented. "
             "Should produce OpenAI function_call / tool_call format."
         )
+
+    def compile_agent_system_prompt(
+        self,
+        agent_name: str,
+        goal: str,
+        strategy: str,
+        tools: list[str],
+        epistemic_state: str,
+        iteration: int,
+        max_iterations: int,
+    ) -> str:
+        raise NotImplementedError(
+            "OpenAI agent system prompt is not yet implemented. "
+            "Should produce BDI-cycle system instructions for GPT. "
+            "See: anthropic_backend.py for reference implementation."
+        )

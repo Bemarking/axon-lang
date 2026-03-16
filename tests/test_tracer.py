@@ -51,6 +51,8 @@ class TestTraceEvent:
             "retry_attempt", "refine_start",
             "memory_read", "memory_write",
             "confidence_check",
+            "agent_cycle_start", "agent_cycle_end",
+            "agent_goal_check", "agent_stuck",
         }
         actual = {e.value for e in TraceEventType}
         assert actual == expected

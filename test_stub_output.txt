@@ -1,0 +1,35 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.3, pytest-8.4.1, pluggy-1.6.0 -- C:\Users\home\AppData\Local\Programs\Python\Python313\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\home\Documents\Proyectos\axxon-constructor
+configfile: pyproject.toml
+plugins: anyio-4.10.0, langsmith-0.4.31, logfire-4.26.0, asyncio-1.1.0, cov-6.2.1, mock-3.14.1
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 1 item
+
+tests/test_tool_stubs.py::TestDefaultRegistry::test_stubs_flagged FAILED [100%]
+
+================================== FAILURES ===================================
+___________________ TestDefaultRegistry.test_stubs_flagged ____________________
+
+self = <tests.test_tool_stubs.TestDefaultRegistry object at 0x0000026C75C19E50>
+
+    def test_stubs_flagged(self) -> None:
+        reg = create_default_registry()
+        listing = reg.list_tools()
+        # Real implementations
+        assert listing["Calculator"] is False
+        assert listing["DateTimeTool"] is False
+        assert listing["CodeExecutor"] is False  # subprocess backend
+        # v0.11.0: real backends (may stay stub if deps missing)
+        # PDFExtractor and APICall are real if deps are installed
+        # Stubs
+        for name in ("WebSearch", "FileReader", "ImageAnalyzer"):
+>           assert listing[name] is True, f"{name} should be a stub"
+E           AssertionError: FileReader should be a stub
+E           assert False is True
+
+tests\test_tool_stubs.py:50: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_tool_stubs.py::TestDefaultRegistry::test_stubs_flagged - As...
+============================== 1 failed in 0.50s ==============================

@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong><br>
+  <strong>AXON</strong> <em>v0.12.0</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -7,14 +7,15 @@
   <code>persona</code> · <code>intent</code> · <code>flow</code> · <code>reason</code> · <code>anchor</code> · <code>refine</code> · <code>memory</code> · <code>tool</code> · <code>probe</code> · <code>weave</code> · <code>validate</code> · <code>context</code><br>
   <code>know</code> · <code>believe</code> · <code>speculate</code> · <code>doubt</code> · <code>par</code> · <code>hibernate</code><br>
   <code>dataspace</code> · <code>ingest</code> · <code>focus</code> · <code>associate</code> · <code>aggregate</code> · <code>explore</code><br>
-  <code>deliberate</code> · <code>consensus</code> · <code>forge</code>
+  <code>deliberate</code> · <code>consensus</code> · <code>forge</code> · <code>agent</code>
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/version-v0.12.0-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-1002%20passing-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/paradigms-6%20shifts-blueviolet" alt="Paradigm Shifts">
+  <img src="https://img.shields.io/badge/tests-1030%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/paradigms-7%20shifts-blueviolet" alt="Paradigm Shifts">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
   <img src="https://img.shields.io/badge/pypi-axon--lang-blue" alt="PyPI">
 </p>
@@ -346,6 +347,249 @@ This is **not** a prompt template. The `forge` primitive compiles to structured
 IR metadata that the runtime executes as an orchestrated pipeline — the same
 precision AXON applies to every other cognitive primitive.
 
+### V. Autonomous Goal-Seeking — the `agent` Primitive
+
+> AXON v0.12 introduces a seventh paradigm shift: **compiler-verified autonomous
+> agents** grounded in the Belief-Desire-Intention (BDI) architecture, epistemic
+> logic, and coinductive semantics.
+
+Every existing LLM framework implements agents as Python classes with ad-hoc
+while-loops, hidden state machines, and zero formal guarantees. LangChain's
+`AgentExecutor` is a runtime artifact — it cannot be statically analyzed, type-
+checked, or budget-bounded at compile time. AXON's `agent` primitive makes
+autonomous goal-seeking a **first-class compiled construct** with mathematical
+semantics.
+
+**BDI Coinductive Semantics.** An `agent` declaration compiles to a coinductive
+BDI system — a state machine whose behavior is defined by an infinite
+observation/transition pair over the epistemic lattice:
+
+```text
+Agent ≅ ν X. (S × (Action → X))
+
+where
+  S        = Beliefs × Goals × Plans    — cognitive state
+  Action   = Observe | Deliberate | Act | Reflect
+  ν        = greatest fixpoint (coinduction — runs indefinitely)
+```
+
+The `ν` (nu) operator is the key: unlike inductive data (finite trees), a
+coinductive agent is a potentially infinite stream of state transitions,
+terminating only when the goal is achieved or a budget is exhausted. This
+formalization is not decorative — it determines the compiler's verification
+strategy and the executor's loop semantics.
+
+**Epistemic Lattice Convergence.** At each BDI cycle, the agent's epistemic
+state is projected onto the same lattice `(T, ≤)` used by epistemic directives.
+The deliberation phase produces a state `σ ∈ {know, believe, speculate, doubt}`
+and a boolean `goal_achieved`. The convergence criterion is:
+
+```text
+Converge(σ, g) = g = true ∧ σ ≥ believe
+
+Diverge(σ, i, n) = σ = doubt ∧ Δσ = 0 ∧ i ≥ n
+  where
+    Δσ       = σᵢ - σᵢ₋₁   — epistemic progress between cycles
+    i        = current iteration
+    n        = stuck_window  — consecutive stagnation threshold
+```
+
+When `Converge` fires, the agent terminates successfully. When `Diverge` fires,
+the `on_stuck` recovery policy activates — `escalate` raises `AgentStuckError`,
+`forge` triggers creative re-seeding via the Poincaré pipeline, `retry` resets
+and re-attempts.
+
+**Budget Composition.** Budget constraints compose from the IR into the runtime
+as a 4-tuple verified at compile time:
+
+```text
+B(agent) = (max_iter, max_tokens, max_time, max_cost)
+
+Terminate when: ∃ b ∈ B(agent) : consumed(b) ≥ limit(b)
+```
+
+The compiler rejects agents with unbounded budgets (`max_iterations = 0` without
+an explicit `on_stuck` policy), preventing runaway execution by construction.
+
+**Strategy Dispatch.** The `strategy` parameter selects the BDI loop variant at
+compile time. Each strategy maps to a specific deliberation/action sequence:
+
+```text
+Λ : Strategy → CycleShape
+
+Λ(react)            = Deliberate → Act → Observe
+Λ(reflexion)        = Deliberate → Act → Observe → Reflect
+Λ(plan_and_execute) = Plan → (Act → Observe)* → Verify
+Λ(custom)           = user-defined step sequence
+```
+
+**Usage example — Autonomous Research Agent:**
+
+```axon
+persona ResearchAnalyst {
+    domain: ["market research", "competitive analysis"]
+    tone: analytical
+    confidence_threshold: 0.85
+}
+
+tool WebSearch {
+    provider: serper
+    timeout: 10s
+}
+
+tool DataAnalyzer {
+    provider: internal
+    timeout: 30s
+}
+
+agent MarketResearcher {
+    goal: "Produce a comprehensive competitive analysis report
+           with verified data from at least 5 sources"
+    tools: [WebSearch, DataAnalyzer]
+    strategy: react
+    max_iterations: 15
+    max_tokens: 50000
+    max_cost: 2.50
+    on_stuck: forge
+    return: CompetitiveReport
+}
+
+flow CompetitiveIntelligence(sector: String) -> CompetitiveReport {
+    step Research {
+        MarketResearcher(sector)
+        output: CompetitiveReport
+    }
+}
+
+run CompetitiveIntelligence("electric vehicles")
+    with ResearchAnalyst
+```
+
+What the compiler does:
+
+1. **IR Generation** — the `agent` block compiles to an `IRAgent` node containing
+   goal, tools, budget (15 iter / 50k tokens / $2.50), strategy (`react`), and
+   recovery policy (`forge`). The `IRAgent` is embedded as a step inside
+   `IRFlow`, preserving compositional semantics.
+2. **Backend Compilation** — the backend (Anthropic, Gemini) generates a
+   `CompiledStep` with `step_name: "agent:MarketResearcher"` and full agent
+   metadata in its `metadata["agent"]` dictionary. The system prompt includes
+   persona traits, tool availability, and epistemic constraints.
+3. **Runtime Execution** — the executor detects `agent:` prefix and dispatches
+   to the BDI loop. Each cycle: deliberate (epistemic assessment via JSON),
+   act (execute step or invoke tool), observe (update beliefs). The loop
+   respects the budget 4-tuple and applies `on_stuck` when `Diverge` fires.
+4. **Trace Events** — every BDI cycle emits `STEP_START`, `MODEL_CALL`, and
+   `STEP_END` trace events, giving full observability into the agent's
+   reasoning trajectory.
+
+**Why this matters:** The agent is not a Python class that wraps `while True`.
+It is a **compiled cognitive primitive** — the compiler verifies its budget
+boundedness, the type checker validates its return type, the backend generates
+strategy-specific prompts, and the runtime executes a formally-defined BDI loop
+with epistemic convergence criteria. This is the difference between duct-taping
+an LLM into a loop and engineering an autonomous system with mathematical
+guarantees.
+
+#### Agent Use Case 1: Autonomous Legal Research Agent
+
+A law firm deploys an agent that autonomously researches case law until it finds
+sufficient precedent — or exhausts its budget and escalates to a human attorney:
+
+```axon
+agent CaseLawResearcher {
+    goal: "Find 3+ relevant precedents for the contract dispute
+           with verified court citations"
+    tools: [WebSearch, PDFExtractor]
+    strategy: reflexion
+    max_iterations: 20
+    max_cost: 5.00
+    on_stuck: escalate
+    return: CaseLawReport
+}
+```
+
+- `reflexion` strategy adds self-critique after each cycle — the agent evaluates
+  whether its found precedents are truly relevant, not just keyword matches
+- `on_stuck: escalate` means if the agent doubts its findings after 20 cycles,
+  it raises `AgentStuckError` with full context, so the human reviews exactly
+  where the agent got stuck
+- Budget cap of $5.00 prevents runaway API costs — the compiler guarantees
+  termination
+
+#### Agent Use Case 2: Multi-Agent Data Pipeline
+
+A BI platform chains two agents: one gathers data, the other analyzes it.
+Both execute within the same compiled flow:
+
+```axon
+agent DataGatherer {
+    goal: "Collect quarterly revenue data from public filings"
+    tools: [WebSearch, FileReader]
+    strategy: react
+    max_iterations: 10
+    on_stuck: retry
+    return: DataSet
+}
+
+agent TrendAnalyzer {
+    goal: "Identify year-over-year growth patterns and anomalies"
+    tools: [Calculator, DataAnalyzer]
+    strategy: plan_and_execute
+    max_iterations: 8
+    on_stuck: forge
+    return: TrendReport
+}
+
+flow QuarterlyIntelligence(sector: String) -> TrendReport {
+    step Gather { DataGatherer(sector) output: DataSet }
+    step Analyze { TrendAnalyzer(Gather.output) output: TrendReport }
+}
+```
+
+- Two agents, two strategies: `react` for data gathering (fast, tool-heavy),
+  `plan_and_execute` for analysis (structured, plan-then-verify)
+- Each agent has independent budget tracking — if `DataGatherer` costs $0.50,
+  `TrendAnalyzer` still has its full budget
+- If `TrendAnalyzer` gets stuck, `forge` triggers creative re-seeding via the
+  Poincaré pipeline, generating novel analytical angles
+
+#### Agent Use Case 3: Customer Onboarding Agent with Dynamic Recovery
+
+A SaaS platform uses an agent to guide new customers through a personalized
+onboarding flow, adapting when it gets stuck:
+
+```axon
+persona OnboardingSpecialist {
+    domain: ["product knowledge", "user experience"]
+    tone: warm
+    confidence_threshold: 0.80
+}
+
+agent OnboardingGuide {
+    goal: "Complete the customer's onboarding checklist with
+           personalized recommendations for their industry"
+    tools: [APICall, Calculator]
+    strategy: custom
+    max_iterations: 12
+    max_tokens: 30000
+    on_stuck: forge
+    return: OnboardingReport
+
+    step Greet { ask: "Welcome the user and assess their goals" }
+    step Configure { ask: "Recommend workspace configuration" }
+    step Train { ask: "Generate personalized tutorial sequence" }
+}
+```
+
+- `custom` strategy: the agent follows a user-defined step sequence (Greet →
+  Configure → Train), not a generic loop
+- `on_stuck: forge` — if the agent can't personalize recommendations (e.g.,
+  unknown industry), it triggers creative synthesis to propose novel onboarding
+  paths instead of failing
+- The `return: OnboardingReport` type is validated by the semantic type checker
+  — the agent must produce a structurally valid report, not just free text
+
 ---
 
 ## Architecture
@@ -364,37 +608,38 @@ precision AXON applies to every other cognitive primitive.
                               Typed Output (validated, traced result)
 ```
 
-### 27 Cognitive Primitives
+### 28 Cognitive Primitives
 
-| Primitive  | Keyword      | What it represents                              |
-| ---------- | ------------ | ----------------------------------------------- |
-| Persona    | `persona`    | Cognitive identity of the model                 |
-| Context    | `context`    | Working memory / session config                 |
-| Intent     | `intent`     | Atomic semantic instruction                     |
-| Flow       | `flow`       | Composable pipeline of cognitive steps          |
-| Reason     | `reason`     | Explicit chain-of-thought                       |
-| Anchor     | `anchor`     | Hard constraint (never violable)                |
-| Validate   | `validate`   | Semantic validation gate                        |
-| Refine     | `refine`     | Adaptive retry with failure context             |
-| Memory     | `memory`     | Persistent semantic storage                     |
-| Tool       | `tool`       | External invocable capability                   |
-| Probe      | `probe`      | Directed information extraction                 |
-| Weave      | `weave`      | Semantic synthesis of multiple outputs          |
-| Know       | `know`       | Epistemic scope — maximum factual rigor         |
-| Believe    | `believe`    | Epistemic scope — moderate confidence           |
-| Speculate  | `speculate`  | Epistemic scope — creative freedom              |
-| Doubt      | `doubt`      | Epistemic scope — adversarial validation        |
-| Par        | `par`        | Parallel cognitive dispatch                     |
-| Hibernate  | `hibernate`  | Dynamic state yielding / CPS checkpoint         |
-| DataSpace  | `dataspace`  | In-memory associative data container            |
-| Ingest     | `ingest`     | Load external data into a DataSpace             |
-| Focus      | `focus`      | Select data — propagate associations            |
-| Associate  | `associate`  | Link tables via shared fields                   |
-| Aggregate  | `aggregate`  | Group-by aggregation on selections              |
-| Explore    | `explore`    | Snapshot current associative state              |
-| Deliberate | `deliberate` | Compute budget control (tokens/depth/strategy)  |
-| Consensus  | `consensus`  | Best-of-N parallel evaluation & selection       |
-| Forge      | `forge`      | Directed creative synthesis (Poincaré pipeline) |
+| Primitive  | Keyword      | What it represents                                   |
+| ---------- | ------------ | ---------------------------------------------------- |
+| Persona    | `persona`    | Cognitive identity of the model                      |
+| Context    | `context`    | Working memory / session config                      |
+| Intent     | `intent`     | Atomic semantic instruction                          |
+| Flow       | `flow`       | Composable pipeline of cognitive steps               |
+| Reason     | `reason`     | Explicit chain-of-thought                            |
+| Anchor     | `anchor`     | Hard constraint (never violable)                     |
+| Validate   | `validate`   | Semantic validation gate                             |
+| Refine     | `refine`     | Adaptive retry with failure context                  |
+| Memory     | `memory`     | Persistent semantic storage                          |
+| Tool       | `tool`       | External invocable capability                        |
+| Probe      | `probe`      | Directed information extraction                      |
+| Weave      | `weave`      | Semantic synthesis of multiple outputs               |
+| Know       | `know`       | Epistemic scope — maximum factual rigor              |
+| Believe    | `believe`    | Epistemic scope — moderate confidence                |
+| Speculate  | `speculate`  | Epistemic scope — creative freedom                   |
+| Doubt      | `doubt`      | Epistemic scope — adversarial validation             |
+| Par        | `par`        | Parallel cognitive dispatch                          |
+| Hibernate  | `hibernate`  | Dynamic state yielding / CPS checkpoint              |
+| DataSpace  | `dataspace`  | In-memory associative data container                 |
+| Ingest     | `ingest`     | Load external data into a DataSpace                  |
+| Focus      | `focus`      | Select data — propagate associations                 |
+| Associate  | `associate`  | Link tables via shared fields                        |
+| Aggregate  | `aggregate`  | Group-by aggregation on selections                   |
+| Explore    | `explore`    | Snapshot current associative state                   |
+| Deliberate | `deliberate` | Compute budget control (tokens/depth/strategy)       |
+| Consensus  | `consensus`  | Best-of-N parallel evaluation & selection            |
+| Forge      | `forge`      | Directed creative synthesis (Poincaré pipeline)      |
+| Agent      | `agent`      | Autonomous goal-seeking BDI cognitive system         |
 
 ### Epistemic Type System (Partial Order Lattice)
 
@@ -472,7 +717,7 @@ axon-constructor/
 │   │       ├── stubs/            # 8 tools (6 stubs + 2 real)
 │   │       └── backends/         # 3 production backends
 │   └── stdlib/                   # Built-in personas, flows, anchors
-└── tests/                        # 1002 tests
+└── tests/                        # 1030 tests
 ```
 
 ---
@@ -579,7 +824,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 ### Current Status
 
 ```
-1002 passed, 0 failures ✅
+1030 passed, 0 failures ✅
 ```
 
 | Phase | Tests | What's covered                              |
@@ -591,6 +836,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 | 7     | 56    | Paradigm Shifts (epistemic, par, hibernate) |
 | 8     | 69    | Data Science Engine (core)                  |
 | 11    | 22    | Forge (creative synthesis pipeline)         |
+| 12    | 28    | Agent (BDI pipeline + integration)          |
 | misc  | 405   | Stdlib, integration, edge cases             |
 
 ---
@@ -700,6 +946,7 @@ honesty:
 | 9     | Executor integration + production backends        | ✅ Done |
 | 10    | Compute Budget & Consensus (deliberate/consensus) | ✅ Done |
 | 11    | Directed Creative Synthesis (`forge`)             | ✅ Done |
+| 12    | Autonomous Agents (`agent` BDI primitive)         | ✅ Done |
 
 ---
 
@@ -715,20 +962,23 @@ honesty:
 
 ## How it Compares
 
-|                           | LangChain | DSPy    | Guidance | **AXON** |
-| ------------------------- | --------- | ------- | -------- | -------- |
-| Own language + grammar    | ❌        | ❌      | ❌       | ✅       |
-| Semantic type system      | ❌        | Partial | ❌       | ✅       |
-| Formal anchors            | ❌        | ❌      | ❌       | ✅       |
-| Persona as type           | ❌        | ❌      | ❌       | ✅       |
-| Reasoning as primitive    | ❌        | Partial | ❌       | ✅       |
-| Native multi-model        | Partial   | Partial | ❌       | ✅       |
-| Epistemic directives      | ❌        | ❌      | ❌       | ✅       |
-| Native parallel dispatch  | ❌        | ❌      | ❌       | ✅       |
-| State yielding / CPS      | ❌        | ❌      | ❌       | ✅       |
-| Compute budget control    | ❌        | ❌      | ❌       | ✅       |
-| Best-of-N consensus       | ❌        | ❌      | ❌       | ✅       |
-| Creative synthesis engine | ❌        | ❌      | ❌       | ✅       |
+|                               | LangChain | DSPy    | Guidance | **AXON** |
+| ----------------------------- | --------- | ------- | -------- | -------- |
+| Own language + grammar        | ❌        | ❌      | ❌       | ✅       |
+| Semantic type system          | ❌        | Partial | ❌       | ✅       |
+| Formal anchors                | ❌        | ❌      | ❌       | ✅       |
+| Persona as type               | ❌        | ❌      | ❌       | ✅       |
+| Reasoning as primitive        | ❌        | Partial | ❌       | ✅       |
+| Native multi-model            | Partial   | Partial | ❌       | ✅       |
+| Epistemic directives          | ❌        | ❌      | ❌       | ✅       |
+| Native parallel dispatch      | ❌        | ❌      | ❌       | ✅       |
+| State yielding / CPS          | ❌        | ❌      | ❌       | ✅       |
+| Compute budget control        | ❌        | ❌      | ❌       | ✅       |
+| Best-of-N consensus           | ❌        | ❌      | ❌       | ✅       |
+| Creative synthesis engine     | ❌        | ❌      | ❌       | ✅       |
+| Compiled autonomous agents    | ❌        | ❌      | ❌       | ✅       |
+| Formal BDI convergence        | ❌        | ❌      | ❌       | ✅       |
+| Budget-bounded agent loops    | ❌        | ❌      | ❌       | ✅       |
 
 ---
 

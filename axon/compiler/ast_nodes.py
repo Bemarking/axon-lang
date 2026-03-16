@@ -603,6 +603,118 @@ class ForgeBlock(ASTNode):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  AGENT NODES — BDI autonomous agent primitive
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class AgentBudget(ASTNode):
+    """
+    budget: {
+        max_iterations: 10
+        max_tokens: 50000
+        max_time: 120s
+        max_cost: 0.50
+    }
+
+    Resource constraints for the agent's deliberation cycle.
+
+    Theoretical grounding — **Linear Logic** (Girard, 1987):
+      Each resource token is *consumed* by an action and cannot be
+      duplicated or discarded. This prevents unbounded computation
+      and guarantees termination (unlike LangChain's max_iterations
+      which is a soft cap with no formal resource semantics).
+
+    Formal invariant:
+      ∀ iteration i: Σ(cost_i) ≤ max_cost ∧ Σ(tokens_i) ≤ max_tokens
+    """
+    max_iterations: int = 10
+    max_tokens: int = 0          # 0 = unlimited
+    max_time: str = ""           # duration string (e.g., "120s", "5m")
+    max_cost: float = 0.0        # 0.0 = unlimited, in fractional currency
+
+
+@dataclass
+class AgentDefinition(ASTNode):
+    """
+    agent LeadQualifier(prospect: ProspectData) -> QualifiedLead {
+        goal: "Qualify and score the prospect using all available data"
+        tools: [WebSearch, CRMQuery, EmailVerifier]
+        budget: { max_iterations: 10, max_tokens: 50000 }
+        memory: ConversationMemory
+        strategy: react
+        on_stuck: forge
+        step GatherInfo { ... }
+        step ScoreLead { ... }
+    }
+
+    The **agent** primitive — a first-class BDI cognitive entity.
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  THEORETICAL FOUNDATIONS                                     ║
+    ╠══════════════════════════════════════════════════════════════╣
+    ║                                                              ║
+    ║  BDI Architecture (Bratman, 1987; Rao & Georgeff, 1995):     ║
+    ║    Agent = ⟨B, D, I, Plan_Library, Deliberation_Cycle⟩      ║
+    ║    • Beliefs  = working memory + tool results                ║
+    ║    • Desires  = goal string (Davidson's pro-attitude)        ║
+    ║    • Intentions = body steps (plan library)                  ║
+    ║                                                              ║
+    ║  Coalgebraic Semantics:                                      ║
+    ║    Agent = (S, O, step: S × Action → S, obs: S → O)         ║
+    ║    Bisimulation equivalence ensures compositionality.        ║
+    ║                                                              ║
+    ║  Convergence — Fixed-Point (Tarski/Knaster):                 ║
+    ║    T(σ*) = σ* on the epistemic lattice:                      ║
+    ║    doubt ⊏ speculate ⊏ believe ⊏ know                       ║
+    ║                                                              ║
+    ║  Concurrency — π-Calculus (Milner, 1999):                    ║
+    ║    Agent ≡ goal.( ν ch )( tool₁⟨ch⟩ | tool₂⟨ch⟩ | … )     ║
+    ║                                                              ║
+    ║  Self-Regulation — Ashby's Law of Requisite Variety:         ║
+    ║    V(regulator) ≥ V(disturbance)                             ║
+    ║    6+ regulatory mechanisms: anchors, validation, budget,    ║
+    ║    refine, forge, epistemic modes, on_stuck, deliberate.     ║
+    ║                                                              ║
+    ║  Recovery — STIT Logic (Belnap, Perloff, Xu, 2001):          ║
+    ║    [agent stit: φ] — "agent sees to it that φ"               ║
+    ║    When ¬◇φ (no available option achieves φ), invoke         ║
+    ║    on_stuck to escalate, forge, or hibernate.                ║
+    ║                                                              ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+    Fields:
+        name:        unique identifier for the agent definition
+        parameters:  typed inputs (reuses FlowDefinition's ParameterNode)
+        return_type: declared output type (optional)
+        goal:        natural-language objective — Davidson's pro-attitude
+        tools:       list of tool names available to the agent
+        budget:      resource constraints (AgentBudget)
+        memory_ref:  reference to a declared memory {} block
+        strategy:    deliberation strategy:
+                       "react"             — ReAct loop (Yao et al., 2023)
+                       "reflexion"         — Reflexion with self-critique
+                       "plan_and_execute"  — plan first, then execute
+                       "custom"            — user-defined via body steps
+        on_stuck:    recovery when no progress is detected:
+                       "forge"     — creative synthesis to find new angles
+                       "hibernate" — suspend and wait for external input
+                       "escalate"  — raise to human operator
+                       "retry"     — retry with modified parameters
+        body:        list of flow steps (the agent's plan library)
+    """
+    name: str = ""
+    parameters: list[ParameterNode] = field(default_factory=list)
+    return_type: TypeExprNode | None = None
+    goal: str = ""
+    tools: list[str] = field(default_factory=list)
+    budget: AgentBudget | None = None
+    memory_ref: str = ""                   # reference to a memory {} block
+    strategy: str = "react"                # react | reflexion | plan_and_execute | custom
+    on_stuck: str = "escalate"             # forge | hibernate | escalate | retry
+    body: list[ASTNode] = field(default_factory=list)
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  DATA SCIENCE NODES — the associative engine
 # ═══════════════════════════════════════════════════════════════════
 

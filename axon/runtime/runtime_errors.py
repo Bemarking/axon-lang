@@ -3,14 +3,16 @@ AXON Runtime — Error Hierarchy
 ================================
 All runtime errors for AXON program execution.
 
-Six severity levels, from least to most critical:
+Eight severity levels, from least to most critical:
 
-    Level 1: ValidationError      — output type does not match declaration
-    Level 2: ConfidenceError      — confidence score below configured floor
-    Level 3: AnchorBreachError    — hard constraint anchor violated
-    Level 4: RefineExhaustedError — max refine/retry attempts exhausted
-    Level 5: ModelCallError       — LLM API call failed
-    Level 6: ExecutionTimeoutError— execution exceeded time limit
+    Level 1: ValidationError           — output type does not match declaration
+    Level 2: ConfidenceError           — confidence score below configured floor
+    Level 3: AnchorBreachError         — hard constraint anchor violated
+    Level 4: RefineExhaustedError      — max refine/retry attempts exhausted
+    Level 5: ModelCallError            — LLM API call failed
+    Level 6: ExecutionTimeoutError     — execution exceeded time limit
+    Level 7: AgentBudgetExhaustedError — agent resource budget exhausted
+    Level 8: AgentStuckError           — agent stuck, no progress possible
 
 Every runtime error carries structured context through ``ErrorContext``
 for precise diagnostics and tracer integration.
@@ -225,3 +227,54 @@ class ExecutionTimeoutError(AxonRuntimeError):
     """
 
     level: int = 6
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  LEVEL 7 — AGENT BUDGET EXHAUSTED ERROR
+# ═══════════════════════════════════════════════════════════════════
+
+
+class AgentBudgetExhaustedError(AxonRuntimeError):
+    """Agent's BDI loop exhausted its resource budget.
+
+    Raised when a running agent (IRAgent) exceeds one of its
+    linear-logic resource constraints:
+      - max_iterations reached without goal satisfaction
+      - max_tokens consumed across all model calls
+      - max_time wall-clock duration exceeded
+      - max_cost accumulated API cost exceeded
+
+    The agent returns a partial result when this fires,
+    unless on_stuck='escalate' overrides to a hard error.
+
+    Example:
+        Agent ``Researcher`` configured with ``max_iterations: 10``
+        completed 10 BDI cycles without reaching 'believe' state.
+    """
+
+    level: int = 7
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  LEVEL 8 — AGENT STUCK ERROR
+# ═══════════════════════════════════════════════════════════════════
+
+
+class AgentStuckError(AxonRuntimeError):
+    """Agent detected it is stuck and cannot make progress.
+
+    Raised when an agent's deliberation cycle determines that
+    no available action can advance toward the goal (¬◇φ in
+    STIT logic). This triggers the on_stuck recovery policy:
+      - forge     → creative synthesis to break the impasse
+      - hibernate → suspend and return partial result
+      - escalate  → raise this error to the caller
+      - retry     → reset context and retry with modified params
+
+    Example:
+        Agent ``Analyzer`` returned the same epistemic state
+        for 3 consecutive iterations, triggering 'escalate'.
+    """
+
+    level: int = 8
+

@@ -27,6 +27,7 @@ import hashlib
 from axon.compiler import ast_nodes as ast
 from axon.compiler.errors import AxonError
 from axon.compiler.ir_nodes import (
+    IRAgent,
     IRAggregate,
     IRAnchor,
     IRAssociate,
@@ -96,6 +97,7 @@ class IRGenerator:
         self._flows: dict[str, IRFlow] = {}
         self._imports: list[IRImport] = []
         self._runs: list[IRRun] = []
+        self._agents: dict[str, IRAgent] = {}
 
     def generate(self, program: ast.ProgramNode) -> IRProgram:
         """
@@ -133,6 +135,7 @@ class IRGenerator:
             flows=tuple(self._flows.values()),
             runs=resolved_runs,
             imports=tuple(self._imports),
+            agents=tuple(self._agents.values()),
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -167,6 +170,8 @@ class IRGenerator:
         ast.ConsensusBlock: "_visit_consensus",
         # Creative synthesis
         ast.ForgeBlock: "_visit_forge",
+        # Agent (BDI autonomous)
+        ast.AgentDefinition: "_visit_agent",
         # Data Science
         ast.DataSpaceDefinition: "_visit_dataspace",
         ast.IngestNode: "_visit_ingest",
@@ -767,6 +772,50 @@ class IRGenerator:
             branches=node.branches,
             children=children,
         )
+
+    # ── AGENT (BDI autonomous agent) ──────────────────────────────
+
+    def _visit_agent(self, node: ast.AgentDefinition) -> IRAgent:
+        """
+        Compile AgentDefinition → IRAgent.
+
+        Resolves:
+        - parameters (reuses IRParameter from flow visitors)
+        - body steps (recursive _visit for each flow step)
+        - budget constraints (extracted from AgentBudget, with defaults)
+        - return type (name only, validated by type checker)
+
+        The agent's tool references are stored as names at this stage;
+        actual tool resolution occurs during run-time symbol lookup
+        (same pattern as flow + run cross-referencing).
+        """
+        children = tuple(self._visit(child) for child in node.body)
+
+        # Extract budget fields with defaults for absent budget block
+        budget = node.budget
+        max_iterations = budget.max_iterations if budget else 10
+        max_tokens = budget.max_tokens if budget else 0
+        max_time = budget.max_time if budget else ""
+        max_cost = budget.max_cost if budget else 0.0
+
+        ir_agent = IRAgent(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            goal=node.goal,
+            tools=tuple(node.tools),
+            max_iterations=max_iterations,
+            max_tokens=max_tokens,
+            max_time=max_time,
+            max_cost=max_cost,
+            memory_ref=node.memory_ref,
+            strategy=node.strategy,
+            on_stuck=node.on_stuck,
+            return_type=node.return_type.name if node.return_type else "",
+            children=children,
+        )
+        self._agents[node.name] = ir_agent
+        return ir_agent
 
     # ═══════════════════════════════════════════════════════════════════
     #  DATA SCIENCE VISITORS

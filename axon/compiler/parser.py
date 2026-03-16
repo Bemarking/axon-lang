@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from .ast_nodes import (
     ASTNode,
+    AgentBudget,
+    AgentDefinition,
     AggregateNode,
     AnchorConstraint,
     AssociateNode,
@@ -108,12 +110,14 @@ class Parser:
                 return self._parse_dataspace()
             case TokenType.INGEST:
                 return self._parse_ingest()
+            case TokenType.AGENT:
+                return self._parse_agent()
             case _:
                 raise AxonParseError(
                     f"Unexpected token at top level",
                     line=tok.line,
                     column=tok.column,
-                    expected="declaration (persona, context, anchor, flow, run, know, speculate, ...)",
+                    expected="declaration (persona, context, anchor, flow, agent, run, know, speculate, ...)",
                     found=tok.value,
                 )
 
@@ -917,10 +921,19 @@ class Parser:
         while not self._check(TokenType.RBRACE):
             cur = self._current()
             # Config fields: budget, depth, strategy
-            if cur.type == TokenType.IDENTIFIER and cur.value in (
-                "budget", "depth", "strategy",
-            ):
-                field_name = cur.value
+            # These field names may arrive as IDENTIFIER (pre-agent era) or
+            # as keyword tokens (BUDGET, STRATEGY) after the agent primitive
+            # was introduced. Map keyword tokens → canonical field names.
+            _KW_FIELD_MAP = {
+                TokenType.BUDGET: "budget",
+                TokenType.STRATEGY: "strategy",
+            }
+            is_ident_field = (cur.type == TokenType.IDENTIFIER
+                              and cur.value in ("budget", "depth", "strategy"))
+            is_kw_field = cur.type in _KW_FIELD_MAP
+
+            if is_ident_field or is_kw_field:
+                field_name = _KW_FIELD_MAP.get(cur.type, cur.value)
                 self._advance()
                 self._consume(TokenType.COLON)
                 match field_name:
@@ -1501,4 +1514,142 @@ class Parser:
             limit_tok = self._consume(TokenType.INTEGER)
             node.limit = int(limit_tok.value)
 
+        return node
+
+    # ── AGENT ─────────────────────────────────────────────────────
+
+    def _parse_agent(self) -> AgentDefinition:
+        """
+        Parse a BDI agent definition:
+
+          agent Name(params) -> ReturnType {
+              goal: "objective"
+              tools: [ToolA, ToolB]
+              budget: { max_iterations: 10, max_tokens: 50000 }
+              memory: MemoryRef
+              strategy: react
+              on_stuck: forge
+              step X { ... }
+              par { ... }
+          }
+
+        The agent body supports both agent-specific clauses (goal,
+        tools, budget, memory, strategy, on_stuck) and any valid
+        flow step (step, par, forge, deliberate, etc.).
+
+        Grammar follows the same pattern as flow() but adds the
+        BDI configuration clauses before delegating body parsing
+        to _parse_flow_step().
+        """
+        tok = self._consume(TokenType.AGENT)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = AgentDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        # parameters: (param: Type, ...)
+        self._consume(TokenType.LPAREN)
+        if not self._check(TokenType.RPAREN):
+            node.parameters = self._parse_param_list()
+        self._consume(TokenType.RPAREN)
+
+        # optional return type: -> ReturnType
+        if self._check(TokenType.ARROW):
+            self._advance()
+            node.return_type = self._parse_type_expr()
+
+        # body
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            inner = self._current()
+
+            match inner.type:
+                # ── Agent-specific clauses ────────────────────────
+                case TokenType.GOAL:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.goal = self._consume(TokenType.STRING).value
+
+                case TokenType.TOOLS:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    # Handle tools: [] (empty) and tools: [A, B]
+                    self._consume(TokenType.LBRACKET)
+                    if self._check(TokenType.RBRACKET):
+                        self._advance()
+                        node.tools = []
+                    else:
+                        node.tools = self._parse_extended_identifier_list()
+                        self._consume(TokenType.RBRACKET)
+
+                case TokenType.BUDGET:
+                    self._advance()
+                    # Accept both 'budget { ... }' and 'budget: { ... }'
+                    if self._check(TokenType.COLON):
+                        self._advance()
+                    node.budget = self._parse_agent_budget()
+
+                case TokenType.MEMORY:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.memory_ref = self._consume_any_identifier_or_keyword().value
+
+                case TokenType.STRATEGY:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.strategy = self._consume_any_identifier_or_keyword().value
+
+                case TokenType.ON_STUCK:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.on_stuck = self._consume_any_identifier_or_keyword().value
+
+                # ── Delegate to flow step parser for body ────────
+                case _:
+                    step = self._parse_flow_step()
+                    if step is not None:
+                        node.body.append(step)
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_agent_budget(self) -> AgentBudget:
+        """
+        Parse the resource budget block for an agent:
+
+          budget: {
+              max_iterations: 10
+              max_tokens: 50000
+              max_time: 120s
+              max_cost: 0.50
+          }
+
+        Grounded in Linear Logic — each field declares a consumable
+        resource that bounds the agent's deliberation cycle.
+        """
+        node = AgentBudget(line=self._current().line, column=self._current().column)
+        self._consume(TokenType.LBRACE)
+
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "max_iterations":
+                    node.max_iterations = int(self._consume(TokenType.INTEGER).value)
+                case "max_tokens":
+                    node.max_tokens = int(self._consume(TokenType.INTEGER).value)
+                case "max_time":
+                    node.max_time = self._consume(TokenType.DURATION).value
+                case "max_cost":
+                    # Accept both float (0.50) and integer (1) values
+                    cost_tok = self._current()
+                    if cost_tok.type == TokenType.FLOAT:
+                        node.max_cost = float(self._advance().value)
+                    else:
+                        node.max_cost = float(self._consume(TokenType.INTEGER).value)
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
         return node

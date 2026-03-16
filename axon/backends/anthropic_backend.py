@@ -460,6 +460,128 @@ class AnthropicBackend(BaseBackend):
         }
 
     # ═══════════════════════════════════════════════════════════════
+    #  AGENT BDI SYSTEM PROMPT — Claude-Optimized
+    # ═══════════════════════════════════════════════════════════════
+
+    def compile_agent_system_prompt(
+        self,
+        agent_name: str,
+        goal: str,
+        strategy: str,
+        tools: list[str],
+        epistemic_state: str,
+        iteration: int,
+        max_iterations: int,
+    ) -> str:
+        """
+        Build a Claude-optimized system prompt for agent BDI cycles.
+
+        Uses Claude's preferred imperative instruction style:
+          - Direct identity declaration ("You are Agent {name}")
+          - Structured sections with [SECTION] headers
+          - Explicit constraint enumeration
+          - Chain-of-thought encouragement via thinking blocks
+
+        The prompt adapts per strategy to leverage Claude's strengths:
+          - react: Thought/Action/Observation pattern
+          - reflexion: ReAct + self-critique block
+          - plan_and_execute: Upfront plan generation then sequential execution
+          - custom: Minimal framing, user-defined body steps only
+        """
+        parts: list[str] = []
+
+        # ── Agent Identity ──────────────────────────────────────
+        parts.append(
+            f"You are Agent {agent_name}, an autonomous cognitive entity "
+            f"operating on BDI (Belief-Desire-Intention) architecture."
+        )
+        parts.append(f"Your singular objective: {goal}")
+
+        # ── Epistemic State ─────────────────────────────────────
+        lattice_map = {
+            "doubt": "LOW CONFIDENCE — treat all information as uncertain, verify before acting",
+            "speculate": "EMERGING — some evidence gathered, hypotheses forming",
+            "believe": "CONVERGENT — strong evidence supports your conclusions",
+            "know": "TERMINAL — sufficient certainty achieved, ready to finalize",
+        }
+        state_desc = lattice_map.get(
+            epistemic_state, f"UNKNOWN ({epistemic_state})"
+        )
+        parts.append(
+            f"\n[EPISTEMIC STATE]\n"
+            f"Current state: {epistemic_state} — {state_desc}\n"
+            f"Tarski lattice: doubt ⊏ speculate ⊏ believe ⊏ know\n"
+            f"Your goal is to advance along this lattice toward convergence."
+        )
+
+        # ── Strategy-Specific Protocol ──────────────────────────
+        parts.append(self._compile_strategy_protocol(strategy))
+
+        # ── Available Tools ─────────────────────────────────────
+        if tools:
+            tool_list = ", ".join(tools)
+            parts.append(
+                f"\n[AVAILABLE TOOLS]\n"
+                f"You have access to: {tool_list}\n"
+                f"Use tools deliberately — each invocation consumes budget resources. "
+                f"Prefer the most direct tool for your current sub-goal."
+            )
+
+        # ── Budget Constraints ──────────────────────────────────
+        remaining = max_iterations - iteration
+        parts.append(
+            f"\n[CONVERGENCE BUDGET]\n"
+            f"Cycle: {iteration + 1} of {max_iterations}\n"
+            f"Remaining cycles: {remaining}\n"
+            f"You MUST converge within the remaining budget. "
+            f"If you cannot make progress, report that explicitly "
+            f"rather than consuming cycles without advancement."
+        )
+
+        return "\n".join(parts)
+
+    def _compile_strategy_protocol(self, strategy: str) -> str:
+        """Compile strategy-specific BDI reasoning instructions for Claude."""
+        if strategy == "react":
+            return (
+                "\n[STRATEGY: ReAct]\n"
+                "Follow the Thought → Action → Observation loop:\n"
+                "1. THOUGHT: Analyze current beliefs and determine next action\n"
+                "2. ACTION: Execute a tool call or produce intermediate reasoning\n"
+                "3. OBSERVATION: Process the result and update your beliefs\n"
+                "Repeat until your epistemic state reaches 'believe' or 'know'."
+            )
+        elif strategy == "reflexion":
+            return (
+                "\n[STRATEGY: Reflexion]\n"
+                "Follow the ReAct loop with self-critique:\n"
+                "1. THOUGHT: Analyze current beliefs and determine next action\n"
+                "2. ACTION: Execute a tool call or produce intermediate reasoning\n"
+                "3. OBSERVATION: Process the result\n"
+                "4. CRITIQUE: Evaluate your own reasoning — identify gaps, "
+                "contradictions, or missed alternatives\n"
+                "5. REVISION: Adjust your approach based on self-critique\n"
+                "The critique step is mandatory before advancing epistemic state."
+            )
+        elif strategy == "plan_and_execute":
+            return (
+                "\n[STRATEGY: Plan-and-Execute]\n"
+                "Two-phase deliberation:\n"
+                "PHASE 1 — PLANNING: Generate a complete action plan with "
+                "numbered steps before executing any action. "
+                "Each step should have a clear sub-goal and expected output.\n"
+                "PHASE 2 — EXECUTION: Execute the plan sequentially. "
+                "After each step, verify it succeeded. "
+                "If reality diverges from the plan, re-plan from the current state."
+            )
+        else:
+            return (
+                f"\n[STRATEGY: {strategy}]\n"
+                f"Execute using the '{strategy}' deliberation protocol. "
+                f"Follow the body steps defined in the agent block."
+            )
+
+    # ═══════════════════════════════════════════════════════════════
     #  INTERNAL FORMATTING HELPERS
     # ═══════════════════════════════════════════════════════════════
 

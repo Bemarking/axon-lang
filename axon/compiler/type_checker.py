@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 
 from .ast_nodes import (
     ASTNode,
+    AgentBudget,
+    AgentDefinition,
     AggregateNode,
     AnchorConstraint,
     AssociateNode,
@@ -376,6 +378,9 @@ class TypeChecker:
                                 pass  # other inner declarations handled recursively
                 case DataSpaceDefinition(name=name):
                     self._register(name, "dataspace", decl)
+                case AgentDefinition(name=name):
+                    ret = decl.return_type.name if decl.return_type else ""
+                    self._register(name, "agent", decl, type_name=ret)
                 case IngestNode():
                     pass  # ingest is a command, not a declaration
                 case FocusNode() | AssociateNode() | AggregateNode() | ExploreNode():
@@ -422,6 +427,8 @@ class TypeChecker:
                 self._check_consensus(decl)
             case ForgeBlock():
                 self._check_forge(decl)
+            case AgentDefinition():
+                self._check_agent(decl)
             case DataSpaceDefinition():
                 self._check_dataspace(decl)
             case IngestNode():
@@ -603,6 +610,8 @@ class TypeChecker:
                 self._check_consensus(step)
             case ForgeBlock():
                 self._check_forge(step)
+            case AgentDefinition():
+                self._check_agent(step)
 
     def _check_step(self, node: StepNode, step_names: set[str], flow_name: str) -> None:
         if node.name in step_names:
@@ -933,6 +942,110 @@ class TypeChecker:
                 )
         for child in node.body:
             self._check_declaration(child)
+
+    # ── AGENT validation ────────────────────────────────────────────
+
+    _VALID_AGENT_STRATEGIES = frozenset({
+        "react", "reflexion", "plan_and_execute", "custom",
+    })
+
+    _VALID_ON_STUCK_POLICIES = frozenset({
+        "forge", "hibernate", "escalate", "retry",
+    })
+
+    def _check_agent(self, node: AgentDefinition) -> None:
+        """
+        Semantic validation for the agent primitive.
+
+        Validates:
+          1. Goal is present (BDI requires at least one desire)
+          2. Tool references point to declared tools
+          3. Budget constraints are non-negative
+          4. Strategy is from the valid set
+          5. on_stuck policy is from the valid set
+          6. Memory reference exists (if provided)
+          7. Return type is declared (if provided)
+          8. Body steps are recursively valid
+        """
+        # 1. Goal validation (Davidson: every agent needs a pro-attitude)
+        if not node.goal:
+            self._emit(
+                f"Agent '{node.name}' is missing required 'goal' field — "
+                "every agent must declare a desired objective",
+                node,
+            )
+
+        # 2. Tool references
+        for tool_name in node.tools:
+            sym = self._symbols.lookup(tool_name)
+            if sym is not None and sym.kind != "tool":
+                self._emit(
+                    f"'{tool_name}' in agent '{node.name}' tools list is "
+                    f"a {sym.kind}, not a tool",
+                    node,
+                )
+
+        # 3. Budget constraints (linear logic: resources must be positive)
+        if node.budget:
+            b = node.budget
+            if b.max_iterations < 1:
+                self._emit(
+                    f"Agent '{node.name}' max_iterations must be >= 1, "
+                    f"got {b.max_iterations}",
+                    node,
+                )
+            if b.max_tokens < 0:
+                self._emit(
+                    f"Agent '{node.name}' max_tokens cannot be negative, "
+                    f"got {b.max_tokens}",
+                    node,
+                )
+            if b.max_cost < 0.0:
+                self._emit(
+                    f"Agent '{node.name}' max_cost cannot be negative, "
+                    f"got {b.max_cost}",
+                    node,
+                )
+
+        # 4. Strategy validation
+        if node.strategy and node.strategy not in self._VALID_AGENT_STRATEGIES:
+            self._emit(
+                f"Unknown strategy '{node.strategy}' for agent '{node.name}'. "
+                f"Valid: {', '.join(sorted(self._VALID_AGENT_STRATEGIES))}",
+                node,
+            )
+
+        # 5. on_stuck policy validation (STIT logic recovery)
+        if node.on_stuck and node.on_stuck not in self._VALID_ON_STUCK_POLICIES:
+            self._emit(
+                f"Unknown on_stuck policy '{node.on_stuck}' for agent '{node.name}'. "
+                f"Valid: {', '.join(sorted(self._VALID_ON_STUCK_POLICIES))}",
+                node,
+            )
+
+        # 6. Memory reference
+        if node.memory_ref:
+            sym = self._symbols.lookup(node.memory_ref)
+            if sym is not None and sym.kind != "memory":
+                self._emit(
+                    f"Agent '{node.name}' memory reference '{node.memory_ref}' is "
+                    f"a {sym.kind}, not a memory store",
+                    node,
+                )
+
+        # 7. Return type
+        if node.return_type:
+            self._check_type_reference(node.return_type.name, node)
+
+        # 8. Parameter types
+        for param in node.parameters:
+            if param.type_expr:
+                self._check_type_reference(param.type_expr.name, param)
+
+        # 9. Body steps (recursive validation)
+        step_names: set[str] = set()
+        for step in node.body:
+            self._check_flow_step(step, step_names, node.name)
 
     # ── HELPERS ────────────────────────────────────────────────────
 

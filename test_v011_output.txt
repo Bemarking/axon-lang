@@ -1,0 +1,79 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.3, pytest-8.4.1, pluggy-1.6.0 -- C:\Users\home\AppData\Local\Programs\Python\Python313\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\home\Documents\Proyectos\axxon-constructor
+configfile: pyproject.toml
+plugins: anyio-4.10.0, langsmith-0.4.31, logfire-4.26.0, asyncio-1.1.0, cov-6.2.1, mock-3.14.1
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 55 items
+
+tests/test_tools_v011.py::TestToolParameter::test_creation_defaults PASSED [  1%]
+tests/test_tools_v011.py::TestToolParameter::test_creation_full PASSED   [  3%]
+tests/test_tools_v011.py::TestToolParameter::test_to_dict PASSED         [  5%]
+tests/test_tools_v011.py::TestToolParameter::test_to_dict_with_default PASSED [  7%]
+tests/test_tools_v011.py::TestToolParameter::test_repr PASSED            [  9%]
+tests/test_tools_v011.py::TestToolSchema::test_creation PASSED           [ 10%]
+tests/test_tools_v011.py::TestToolSchema::test_validate_input_valid PASSED [ 12%]
+tests/test_tools_v011.py::TestToolSchema::test_validate_input_missing_required PASSED [ 14%]
+tests/test_tools_v011.py::TestToolSchema::test_validate_input_wrong_type PASSED [ 16%]
+tests/test_tools_v011.py::TestToolSchema::test_validate_input_unexpected_param PASSED [ 18%]
+tests/test_tools_v011.py::TestToolSchema::test_apply_defaults PASSED     [ 20%]
+tests/test_tools_v011.py::TestToolSchema::test_to_dict PASSED            [ 21%]
+tests/test_tools_v011.py::TestToolSchema::test_schema_on_basetool PASSED [ 23%]
+tests/test_tools_v011.py::TestTypedToolResult::test_creation_with_fields PASSED [ 25%]
+tests/test_tools_v011.py::TestTypedToolResult::test_epistemic_cited_fact PASSED [ 27%]
+tests/test_tools_v011.py::TestTypedToolResult::test_epistemic_uncertainty PASSED [ 29%]
+tests/test_tools_v011.py::TestTypedToolResult::test_epistemic_speculation PASSED [ 30%]
+tests/test_tools_v011.py::TestTypedToolResult::test_epistemic_belief PASSED [ 32%]
+tests/test_tools_v011.py::TestTypedToolResult::test_to_dict_includes_epistemic PASSED [ 34%]
+tests/test_tools_v011.py::TestTypedToolResult::test_backwards_compat_with_toolresult PASSED [ 36%]
+tests/test_tools_v011.py::TestToolChain::test_single_step_chain PASSED   [ 38%]
+tests/test_tools_v011.py::TestToolChain::test_two_step_chain PASSED      [ 40%]
+tests/test_tools_v011.py::TestToolChain::test_chain_fail_fast PASSED     [ 41%]
+tests/test_tools_v011.py::TestToolChain::test_empty_chain PASSED         [ 43%]
+tests/test_tools_v011.py::TestToolChain::test_repr PASSED                [ 45%]
+tests/test_tools_v011.py::TestToolMetrics::test_creation PASSED          [ 47%]
+tests/test_tools_v011.py::TestToolMetrics::test_to_dict PASSED           [ 49%]
+tests/test_tools_v011.py::TestToolMetricsCollector::test_record_and_summary PASSED [ 50%]
+tests/test_tools_v011.py::TestToolMetricsCollector::test_summary_all PASSED [ 52%]
+tests/test_tools_v011.py::TestToolMetricsCollector::test_recommend_best PASSED [ 54%]
+tests/test_tools_v011.py::TestToolMetricsCollector::test_recommend_no_data PASSED [ 56%]
+tests/test_tools_v011.py::TestToolMetricsCollector::test_to_dict PASSED  [ 58%]
+tests/test_tools_v011.py::TestToolMetricsCollector::test_tool_names PASSED [ 60%]
+tests/test_tools_v011.py::TestToolMetricsCollector::test_repr PASSED     [ 61%]
+tests/test_tools_v011.py::TestDispatchWithRetry::test_success_first_attempt PASSED [ 63%]
+tests/test_tools_v011.py::TestDispatchWithRetry::test_succeed_on_retry PASSED [ 65%]
+tests/test_tools_v011.py::TestDispatchWithRetry::test_exhaust_retries PASSED [ 67%]
+tests/test_tools_v011.py::TestDispatchWithRetry::test_timing_in_result PASSED [ 69%]
+tests/test_tools_v011.py::TestDispatchParallel::test_parallel_multiple_tools PASSED [ 70%]
+tests/test_tools_v011.py::TestDispatchParallel::test_parallel_faster_than_sequential PASSED [ 72%]
+tests/test_tools_v011.py::TestDispatchParallel::test_one_failure_doesnt_crash PASSED [ 74%]
+tests/test_tools_v011.py::TestDispatchParallel::test_empty_list PASSED   [ 76%]
+tests/test_tools_v011.py::TestDispatcherSchemaValidation::test_valid_params_pass PASSED [ 78%]
+tests/test_tools_v011.py::TestDispatcherSchemaValidation::test_no_schema_backwards_compat PASSED [ 80%]
+tests/test_tools_v011.py::TestAPICallHTTPXConstants::test_class_constants PASSED [ 81%]
+tests/test_tools_v011.py::TestAPICallHTTPXConstants::test_schema_has_query_param PASSED [ 83%]
+tests/test_tools_v011.py::TestAPICallHTTPXConstants::test_execute_mocked PASSED [ 85%]
+tests/test_tools_v011.py::TestPDFExtractorPyMuPDFConstants::test_class_constants PASSED [ 87%]
+tests/test_tools_v011.py::TestPDFExtractorPyMuPDFConstants::test_schema_has_query_param PASSED [ 89%]
+tests/test_tools_v011.py::TestPDFExtractorPyMuPDFConstants::test_file_not_found PASSED [ 90%]
+tests/test_tools_v011.py::TestIRExpanded::test_ir_use_tool_defaults PASSED [ 92%]
+tests/test_tools_v011.py::TestIRExpanded::test_ir_use_tool_with_params PASSED [ 94%]
+tests/test_tools_v011.py::TestIRExpanded::test_ir_use_tool_to_dict PASSED [ 96%]
+tests/test_tools_v011.py::TestIRExpanded::test_ir_tool_spec_defaults PASSED [ 98%]
+tests/test_tools_v011.py::TestIRExpanded::test_ir_tool_spec_with_schema PASSED [100%]
+
+============================== warnings summary ===============================
+tests/test_tools_v011.py::TestPDFExtractorPyMuPDFConstants::test_file_not_found
+tests/test_tools_v011.py::TestPDFExtractorPyMuPDFConstants::test_file_not_found
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+tests/test_tools_v011.py::TestPDFExtractorPyMuPDFConstants::test_file_not_found
+tests/test_tools_v011.py::TestPDFExtractorPyMuPDFConstants::test_file_not_found
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+tests/test_tools_v011.py::TestPDFExtractorPyMuPDFConstants::test_file_not_found
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 55 passed, 5 warnings in 0.71s ========================

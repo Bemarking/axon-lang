@@ -27,6 +27,7 @@ from typing import Any
 
 from axon.compiler.ir_nodes import (
     IRAnchor,
+    IRAgent,
     IRAggregate,
     IRAssociate,
     IRConsensus,
@@ -50,7 +51,7 @@ from axon.compiler.ir_nodes import (
 _DATA_SCIENCE_IR_TYPES = (IRDataSpace, IRIngest, IRFocus, IRAssociate, IRAggregate, IRExplore)
 
 # IR types that represent compute budget / consensus / forge operations
-_BUDGET_IR_TYPES = (IRDeliberate, IRConsensus, IRForge)
+_BUDGET_IR_TYPES = (IRDeliberate, IRConsensus, IRForge, IRAgent)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -415,6 +416,41 @@ class BaseBackend(ABC):
                     },
                 )
 
+            case IRAgent(
+                name=name, goal=goal, tools=tools,
+                max_iterations=max_iter, max_tokens=max_tok,
+                max_time=max_time, max_cost=max_cost,
+                memory_ref=memory_ref,
+                strategy=strategy, on_stuck=on_stuck,
+                return_type=return_type, children=children,
+            ):
+                child_steps = [
+                    self.compile_step(child, ctx)
+                    for child in children
+                ] if children else []
+                return CompiledStep(
+                    step_name=f"agent:{name}",
+                    user_prompt="",
+                    metadata={
+                        "agent": {
+                            "name": name,
+                            "goal": goal,
+                            "tools": list(tools),
+                            "max_iterations": max_iter,
+                            "max_tokens": max_tok,
+                            "max_time": max_time,
+                            "max_cost": max_cost,
+                            "memory_ref": memory_ref,
+                            "strategy": strategy,
+                            "on_stuck": on_stuck,
+                            "return_type": return_type,
+                            "child_steps": [
+                                cs.to_dict() for cs in child_steps
+                            ],
+                        },
+                    },
+                )
+
             case _:
                 return CompiledStep(
                     step_name="budget:unknown",
@@ -495,3 +531,92 @@ class BaseBackend(ABC):
             parts.append(f"  ON VIOLATION: {violation}")
 
         return "\n".join(parts)
+
+    # ═══════════════════════════════════════════════════════════════
+    #  AGENT-SPECIFIC COMPILATION — BDI Prompt Engineering
+    # ═══════════════════════════════════════════════════════════════
+
+    @abstractmethod
+    def compile_agent_system_prompt(
+        self,
+        agent_name: str,
+        goal: str,
+        strategy: str,
+        tools: list[str],
+        epistemic_state: str,
+        iteration: int,
+        max_iterations: int,
+    ) -> str:
+        """
+        Build a provider-optimized system prompt for agent BDI cycles.
+
+        This method is called by the executor during each BDI cycle
+        to generate the system-level instructions that configure the
+        LLM for the agent's current cognitive state.
+
+        ╔══════════════════════════════════════════════════════════╗
+        ║  FORMAL CONTRACT                                        ║
+        ╠══════════════════════════════════════════════════════════╣
+        ║  Input:                                                  ║
+        ║    agent_name — identifier for the BDI entity            ║
+        ║    goal — Davidson pro-attitude (desired state)          ║
+        ║    strategy ∈ {react, reflexion, plan_and_execute,       ║
+        ║               custom}                                    ║
+        ║    tools — available tool names from plan library        ║
+        ║    epistemic_state ∈ {doubt, speculate, believe, know}   ║
+        ║    iteration — current cycle index (0-based)             ║
+        ║    max_iterations — budget cap                           ║
+        ║                                                          ║
+        ║  Output:                                                 ║
+        ║    Provider-native system prompt string encoding:        ║
+        ║    - Agent identity and role framing                     ║
+        ║    - BDI cognitive cycle instructions                    ║
+        ║    - Strategy-specific reasoning protocol                ║
+        ║    - Available capabilities enumeration                  ║
+        ║    - Epistemic state awareness                           ║
+        ║    - Convergence budget constraints                      ║
+        ╚══════════════════════════════════════════════════════════╝
+
+        Args:
+            agent_name: The declared name of the agent.
+            goal: The agent's goal statement (desire).
+            strategy: The deliberation strategy to follow.
+            tools: List of available tool names.
+            epistemic_state: Current position on the Tarski lattice.
+            iteration: Current BDI cycle number (0-based).
+            max_iterations: Maximum cycles allowed by budget.
+
+        Returns:
+            A fully formatted system prompt string.
+        """
+        ...
+
+    def compile_agent_tool_binding(
+        self,
+        tool_names: list[str],
+        available_tools: dict[str, IRToolSpec],
+    ) -> list[dict[str, Any]]:
+        """
+        Resolve agent tool references to compiled tool declarations.
+
+        This default implementation iterates the agent's declared
+        tool names, resolves each against the program-level tool
+        registry, and compiles them using the backend's native
+        ``compile_tool_spec()`` method.
+
+        The resolution follows linear logic resource semantics:
+        each tool binding is a resource allocated to the agent's
+        plan library, available for consumption during BDI cycles.
+
+        Args:
+            tool_names: Tool names declared in the agent block.
+            available_tools: Program-level tool registry (name → IRToolSpec).
+
+        Returns:
+            List of provider-native tool declarations (dicts).
+        """
+        bound: list[dict[str, Any]] = []
+        for name in tool_names:
+            if name in available_tools:
+                bound.append(self.compile_tool_spec(available_tools[name]))
+        return bound

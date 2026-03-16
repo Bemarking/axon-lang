@@ -4,7 +4,7 @@ AXON Compiler — Token Definitions
 Every token the lexer can produce. Derived directly from the AXON EBNF grammar.
 
 Categories:
-  - KEYWORDS: 48 cognitive keywords (persona, context, flow, anchor, dataspace, …)
+  - KEYWORDS: 54 cognitive keywords (persona, context, flow, anchor, agent, dataspace, …)
   - LITERALS: STRING, INTEGER, FLOAT, BOOL, DURATION, IDENTIFIER
   - SYMBOLS:  braces, parens, brackets, colon, comma, arrow, range, etc.
   - COMPARISON: <, >, <=, >=, ==, !=
@@ -57,6 +57,14 @@ class TokenType(Enum):
 
     # ── CREATIVE SYNTHESIS KEYWORDS ──────────────────────────────
     FORGE = auto()
+
+    # ── AGENT KEYWORDS (BDI autonomous agent primitive) ──────────
+    AGENT = auto()
+    GOAL = auto()
+    TOOLS = auto()
+    BUDGET = auto()
+    STRATEGY = auto()
+    ON_STUCK = auto()
 
     # ── DATA SCIENCE KEYWORDS ────────────────────────────────────
     DATASPACE = auto()
@@ -161,6 +169,13 @@ KEYWORDS: dict[str, TokenType] = {
     "consensus": TokenType.CONSENSUS,
     # Creative synthesis
     "forge": TokenType.FORGE,
+    # Agent primitive
+    "agent": TokenType.AGENT,
+    "goal": TokenType.GOAL,
+    "tools": TokenType.TOOLS,
+    "budget": TokenType.BUDGET,
+    "strategy": TokenType.STRATEGY,
+    "on_stuck": TokenType.ON_STUCK,
     "as": TokenType.AS,
     "within": TokenType.WITHIN,
     "constrained_by": TokenType.CONSTRAINED_BY,
