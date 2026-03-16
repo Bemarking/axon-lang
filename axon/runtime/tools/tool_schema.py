@@ -129,6 +129,9 @@ class ToolSchema:
     timeout_default: float = 30.0
     retry_policy: str = "exponential"
     max_retries: int = 2
+    # v0.14.0 — Convergence Theorem 2: algebraic effect row
+    effect_row: tuple[str, ...] = ()       # ("io", "network", "pure")
+    epistemic_level: str = ""              # "know" | "believe" | "speculate" | "doubt"
 
     # ── validation ────────────────────────────────────────────
 
@@ -176,6 +179,28 @@ class ToolSchema:
                 result[param.name] = param.default
         return result
 
+    def validate_output(
+        self,
+        result: Any,
+    ) -> tuple[bool, list[str]]:
+        """Validate tool output against the schema's output_type.
+
+        v0.14.0 — Convergence Theorem 3: server-side blame attribution.
+        When this fails, blame is assigned to SERVER (the tool), not CALLER.
+
+        Returns:
+            A ``(valid, errors)`` tuple.
+        """
+        errors: list[str] = []
+        if self.output_type == "Any":
+            return (True, errors)
+        if not self._check_type(result, self.output_type):
+            errors.append(
+                f"Output expected type '{self.output_type}', "
+                f"got '{type(result).__name__}'"
+            )
+        return (len(errors) == 0, errors)
+
     # ── serialization ─────────────────────────────────────────
 
     def to_dict(self) -> dict[str, Any]:
@@ -190,6 +215,10 @@ class ToolSchema:
         }
         if self.constraints:
             d["constraints"] = list(self.constraints)
+        if self.effect_row:
+            d["effect_row"] = list(self.effect_row)
+        if self.epistemic_level:
+            d["epistemic_level"] = self.epistemic_level
         return d
 
     # ── internals ─────────────────────────────────────────────

@@ -58,6 +58,14 @@ class TokenType(Enum):
     # ── CREATIVE SYNTHESIS KEYWORDS ──────────────────────────────
     FORGE = auto()
 
+    # ── STREAMING & EFFECT KEYWORDS (Convergence Theorems 1 & 2) ─
+    STREAM = auto()           # stream<τ> semantic streaming
+    ON_CHUNK = auto()         # on_chunk handler (co-inductive eval)
+    ON_COMPLETE = auto()      # on_complete handler (epistemic promotion)
+    EFFECTS = auto()          # effects: <io, network, epistemic:E>
+    PURE = auto()             # pure effect (no side effects)
+    NETWORK = auto()          # network effect row element
+
     # ── AGENT KEYWORDS (BDI autonomous agent primitive) ──────────
     AGENT = auto()
     GOAL = auto()
@@ -180,6 +188,13 @@ KEYWORDS: dict[str, TokenType] = {
     "consensus": TokenType.CONSENSUS,
     # Creative synthesis
     "forge": TokenType.FORGE,
+    # Streaming & effects (Convergence Theorems 1 & 2)
+    "stream": TokenType.STREAM,
+    "on_chunk": TokenType.ON_CHUNK,
+    "on_complete": TokenType.ON_COMPLETE,
+    "effects": TokenType.EFFECTS,
+    "pure": TokenType.PURE,
+    "network": TokenType.NETWORK,
     # Agent primitive
     "agent": TokenType.AGENT,
     "goal": TokenType.GOAL,

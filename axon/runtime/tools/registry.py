@@ -24,6 +24,13 @@ from typing import Any
 
 from axon.runtime.tools.base_tool import BaseTool
 
+# Optionally import decorator tool types for registration
+try:
+    from axon.runtime.tools.contract_tool import AxonToolWrapper
+    _HAS_DECORATOR_TOOLS = True
+except ImportError:
+    _HAS_DECORATOR_TOOLS = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -173,11 +180,71 @@ class RuntimeToolRegistry:
     def __repr__(self) -> str:
         stubs = sum(1 for c in self._classes.values() if c.IS_STUB)
         real = len(self._classes) - stubs
+        decorators = len(self._decorator_tools) if hasattr(self, '_decorator_tools') else 0
         return (
             f"<RuntimeToolRegistry "
-            f"tools={len(self._classes)} "
-            f"(real={real}, stubs={stubs})>"
+            f"tools={len(self._classes) + decorators} "
+            f"(real={real}, stubs={stubs}, decorators={decorators})>"
         )
+
+    # ── Decorator tool registration (v0.14.0 — CT-3/CT-4) ────
+
+    def register_decorator_tool(self, wrapper: Any) -> None:
+        """Register a tool created via ``@contract_tool`` or ``@csp_tool``.
+
+        These tools have a different interface from ``BaseTool`` subclasses:
+        they are ``AxonToolWrapper`` instances, not class-based.
+
+        Args:
+            wrapper: An ``AxonToolWrapper`` from ``@contract_tool`` or ``@csp_tool``.
+
+        Raises:
+            ValueError: If the wrapper has no ``tool_name``.
+        """
+        if not hasattr(self, '_decorator_tools'):
+            self._decorator_tools: dict[str, Any] = {}
+
+        name = getattr(wrapper, 'tool_name', '')
+        if not name:
+            raise ValueError("Decorator tool has no tool_name set.")
+
+        if name in self._classes:
+            logger.warning(
+                "Decorator tool '%s' shadows a registered BaseTool class", name
+            )
+
+        self._decorator_tools[name] = wrapper
+        logger.debug(
+            "Registered decorator tool: %s (epistemic=%s, effects=%s)",
+            name,
+            getattr(wrapper, 'epistemic_level', 'unknown'),
+            getattr(wrapper, 'effect_row', ()),
+        )
+
+    def get_decorator_tool(self, name: str) -> Any:
+        """Get a registered decorator tool by name.
+
+        Raises:
+            KeyError: If no decorator tool is registered under *name*.
+        """
+        if not hasattr(self, '_decorator_tools'):
+            self._decorator_tools = {}
+        if name not in self._decorator_tools:
+            raise KeyError(f"Decorator tool '{name}' not registered.")
+        return self._decorator_tools[name]
+
+    def list_epistemic_tools(self) -> dict[str, str]:
+        """Return ``{tool_name: epistemic_level}`` for all tools.
+
+        Includes both BaseTool and decorator tools.
+        """
+        result: dict[str, str] = {}
+        for name, cls in self._classes.items():
+            result[name] = getattr(cls, 'EPISTEMIC_LEVEL', 'believe')
+        if hasattr(self, '_decorator_tools'):
+            for name, wrapper in self._decorator_tools.items():
+                result[name] = getattr(wrapper, 'epistemic_level', 'believe')
+        return result
 
 
 # ── Helpers ──────────────────────────────────────────────────────

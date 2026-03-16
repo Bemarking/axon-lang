@@ -23,6 +23,7 @@ from .ast_nodes import (
     ContextDefinition,
     DataSpaceDefinition,
     DeliberateBlock,
+    EffectRowNode,
     EpistemicBlock,
     ExploreNode,
     FlowDefinition,
@@ -47,6 +48,8 @@ from .ast_nodes import (
     ShieldApplyNode,
     ShieldDefinition,
     StepNode,
+    StreamDefinition,
+    StreamHandlerNode,
     ToolDefinition,
     TypeDefinition,
     TypeExprNode,
@@ -336,6 +339,9 @@ class Parser:
                     node.runtime = self._consume_any_identifier_or_keyword().value
                 case "sandbox":
                     node.sandbox = self._parse_bool()
+                case "effects":
+                    # v0.14.0 — CT-2: parse effect row <eff1, eff2, epistemic:level>
+                    node.effects = self._parse_effect_row()
                 case _:
                     self._skip_value()
 
@@ -557,12 +563,15 @@ class Parser:
                 return self._parse_ingest()
             case TokenType.SHIELD:
                 return self._parse_shield_apply()
+            case TokenType.STREAM:
+                # v0.14.0 — CT-1: stream<τ> definition
+                return self._parse_stream_definition()
             case _:
                 raise AxonParseError(
                     "Unexpected token in flow body",
                     line=tok.line,
                     column=tok.column,
-                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, focus, associate, aggregate, explore, ingest",
+                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, focus, associate, aggregate, explore, ingest",
                     found=tok.value,
                 )
 
@@ -598,6 +607,10 @@ class Parser:
                 case TokenType.WEAVE:
                     node.weave = self._parse_weave()
 
+                case TokenType.STREAM:
+                    # v0.14.0 — CT-1: stream<τ> inside step body
+                    node.body.append(self._parse_stream_definition())
+
                 case TokenType.OUTPUT:
                     self._advance()
                     self._consume(TokenType.COLON)
@@ -613,7 +626,7 @@ class Parser:
                         "Unexpected token in step body",
                         line=inner.line,
                         column=inner.column,
-                        expected="given, ask, use, probe, reason, weave, output, confidence_floor",
+                        expected="given, ask, use, probe, reason, weave, stream, output, confidence_floor",
                         found=inner.value,
                     )
 
@@ -824,6 +837,123 @@ class Parser:
             tool_name=tool_name.value, argument=arg,
             line=tok.line, column=tok.column,
         )
+
+    # ── EFFECT ROW (CT-2) ──────────────────────────────────────────
+
+    def _parse_effect_row(self) -> EffectRowNode:
+        """Parse: <eff1, eff2, epistemic:level>
+
+        Produces an EffectRowNode with a list of effect names and
+        an optional epistemic level annotation.
+        """
+        tok = self._consume(TokenType.LT)
+        effects: list[str] = []
+        epistemic_level: str = ""
+
+        while not self._check(TokenType.GT):
+            # Each entry is either a plain identifier or epistemic:level
+            name_tok = self._consume_any_identifier_or_keyword()
+            name = name_tok.value
+
+            if self._check(TokenType.COLON):
+                # epistemic:level syntax
+                self._advance()  # consume ':'
+                level_tok = self._consume_any_identifier_or_keyword()
+                if name == "epistemic":
+                    epistemic_level = level_tok.value
+                else:
+                    # Treat as composite effect name: name:qualifier
+                    effects.append(f"{name}:{level_tok.value}")
+            else:
+                effects.append(name)
+
+            # Consume comma separator if present
+            if self._check(TokenType.COMMA):
+                self._advance()
+
+        self._consume(TokenType.GT)
+
+        return EffectRowNode(
+            effects=effects,
+            epistemic_level=epistemic_level,
+            line=tok.line,
+            column=tok.column,
+        )
+
+    # ── STREAM DEFINITION (CT-1) ──────────────────────────────────
+
+    def _parse_stream_definition(self) -> StreamDefinition:
+        """Parse: stream<Type> { on_chunk: { ... } on_complete: { ... } }
+
+        Produces a StreamDefinition with an element type and
+        optional handler blocks.
+        """
+        tok = self._consume(TokenType.STREAM)
+
+        # Parse generic parameter: stream<Type>
+        element_type = ""
+        if self._check(TokenType.LT):
+            self._advance()  # consume '<'
+            element_type = self._consume_any_identifier_or_keyword().value
+            self._consume(TokenType.GT)
+
+        node = StreamDefinition(
+            element_type=element_type,
+            line=tok.line,
+            column=tok.column,
+        )
+
+        # Optional block body with handlers
+        if self._check(TokenType.LBRACE):
+            self._consume(TokenType.LBRACE)
+
+            while not self._check(TokenType.RBRACE):
+                cur = self._current()
+
+                if cur.type == TokenType.ON_CHUNK:
+                    handler_tok = self._advance()
+                    self._consume(TokenType.COLON)
+                    self._consume(TokenType.LBRACE)
+
+                    handler_body: list[ASTNode] = []
+                    while not self._check(TokenType.RBRACE):
+                        decl = self._parse_flow_step()
+                        if decl is not None:
+                            handler_body.append(decl)
+
+                    self._consume(TokenType.RBRACE)
+                    node.on_chunk = StreamHandlerNode(
+                        handler_type="on_chunk",
+                        body=handler_body,
+                        line=handler_tok.line,
+                        column=handler_tok.column,
+                    )
+
+                elif cur.type == TokenType.ON_COMPLETE:
+                    handler_tok = self._advance()
+                    self._consume(TokenType.COLON)
+                    self._consume(TokenType.LBRACE)
+
+                    handler_body = []
+                    while not self._check(TokenType.RBRACE):
+                        decl = self._parse_flow_step()
+                        if decl is not None:
+                            handler_body.append(decl)
+
+                    self._consume(TokenType.RBRACE)
+                    node.on_complete = StreamHandlerNode(
+                        handler_type="on_complete",
+                        body=handler_body,
+                        line=handler_tok.line,
+                        column=handler_tok.column,
+                    )
+                else:
+                    # Skip unknown fields inside stream block
+                    self._advance()
+
+            self._consume(TokenType.RBRACE)
+
+        return node
 
     # ── REMEMBER / RECALL ─────────────────────────────────────────
 

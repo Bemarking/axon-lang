@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v0.13.0</em><br>
+  <strong>AXON</strong> <em>v0.14.0</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -7,15 +7,16 @@
   <code>persona</code> · <code>intent</code> · <code>flow</code> · <code>reason</code> · <code>anchor</code> · <code>refine</code> · <code>memory</code> · <code>tool</code> · <code>probe</code> · <code>weave</code> · <code>validate</code> · <code>context</code><br>
   <code>know</code> · <code>believe</code> · <code>speculate</code> · <code>doubt</code> · <code>par</code> · <code>hibernate</code><br>
   <code>dataspace</code> · <code>ingest</code> · <code>focus</code> · <code>associate</code> · <code>aggregate</code> · <code>explore</code><br>
-  <code>deliberate</code> · <code>consensus</code> · <code>forge</code> · <code>agent</code> · <code>shield</code>
+  <code>deliberate</code> · <code>consensus</code> · <code>forge</code> · <code>agent</code> · <code>shield</code><br>
+  <code>stream</code> · <code>effects</code> · <code>@contract_tool</code> · <code>@csp_tool</code>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.13.0-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v0.14.0-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-1306%20passing-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/paradigms-8%20shifts-blueviolet" alt="Paradigm Shifts">
+  <img src="https://img.shields.io/badge/tests-1389%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/paradigms-9%20shifts-blueviolet" alt="Paradigm Shifts">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
   <img src="https://img.shields.io/badge/pypi-axon--lang-blue" alt="PyPI">
 </p>
@@ -765,6 +766,254 @@ agent Researcher {
 - `quarantine` breach policy isolates suspicious data for human review instead
   of blocking operations
 
+### VII. Epistemic Tool Fortification — Streaming, Effects & Blame Semantics
+
+> AXON v0.14 introduces a ninth paradigm shift: **formal epistemic control over
+> tool invocations, streaming outputs, and foreign-function interfaces** — backed
+> by algebraic effect theory, coinductive stream semantics, and Findler-Felleisen
+> blame calculus.
+
+Every LLM framework treats tool calls as black boxes: a function returns a
+string, and the framework trusts it unconditionally. Streaming is even worse —
+partial tokens arrive without any notion of confidence, reliability, or
+epistemic state. AXON v0.14 solves this by making **every interaction with the
+external world** subject to formal epistemic tracking.
+
+#### Formal Model — Four Convergence Theorems
+
+**CT-1: Coinductive Semantic Streaming.** A streaming response is a
+coinductive process — an infinite observation/transition pair that monotonically
+accumulates epistemic confidence as chunks arrive:
+
+```text
+Stream(τ) = νX. (StreamChunk × EpistemicState × X)
+
+where
+  StreamChunk    = (content: String, index: ℕ, timestamp: ℝ)
+  EpistemicState = (level ∈ {doubt, speculate, believe, know}, confidence ∈ [0,1])
+  ν              = greatest fixpoint (coinduction — process unfolds indefinitely)
+
+Monotonicity invariant:
+  ∀ i < j : gradient(chunkᵢ) ⊑ gradient(chunkⱼ)
+  (epistemic level can only rise, never degrade during streaming)
+```
+
+Streaming in AXON is **not** "tokens arriving". It is a formal epistemic
+process: each chunk carries its position on the lattice, and the system
+guarantees that confidence can only increase monotonically until convergence.
+
+**CT-2: Algebraic Effect Rows.** Every tool declares its computational effects
+using Plotkin & Pretnar's algebraic effect theory. The compiler statically
+verifies effect compatibility:
+
+```text
+EffectRow(tool) = ⟨ε₁, ε₂, ..., εₙ, epistemic:level⟩
+
+where
+  εᵢ ∈ {pure, io, network, storage, random}
+  level ∈ {know, believe, speculate, doubt}
+
+Composition rule:
+  EffectRow(A ∘ B) = EffectRow(A) ∪ EffectRow(B)
+  epistemic(A ∘ B) = min(epistemic(A), epistemic(B))   — meet on lattice
+```
+
+The composition rule means: if you chain a `network + speculate` tool with a
+`pure + know` tool, the combined effect is `network + speculate` — the system
+automatically tracks the **least trustworthy** component.
+
+**CT-3: Blame Semantics for FFI.** External tool calls are wrapped in
+Findler-Felleisen contract monitors that assign blame when pre/postconditions
+fail:
+
+```text
+ContractMonitor(tool) = (Pre, Post, Blame)
+
+where
+  Pre  : Input → Bool         — caller's obligation
+  Post : Output → Bool        — server's obligation
+  Blame : {CALLER, SERVER}    — who violated the contract
+
+Blame assignment:
+  ¬Pre(input)   → Blame = CALLER   (you sent bad data)
+  ¬Post(output) → Blame = SERVER   (tool returned bad data)
+```
+
+This is not error handling — this is **formal accountability**. When a tool
+fails, AXON tells you *who* broke the contract, not just *that* it broke.
+
+**CT-4: Epistemic Inference via CSP.** The `@csp_tool` decorator automatically
+infers the epistemic level of any Python function by analyzing its effect
+footprint using a constraint-satisfaction heuristic:
+
+```text
+Infer(f) : Function → EpistemicLevel
+
+  If ∄ io/network/random ∈ effects(f) → know
+  If ∃ network ∈ effects(f)           → speculate
+  If ∃ random ∈ effects(f)            → doubt
+  Otherwise                           → believe
+```
+
+#### What Makes This Revolutionary
+
+No LLM framework in existence tracks **what a tool does to your epistemic
+state**. LangChain, CrewAI, AutoGen — they all treat tool results as trusted
+strings. This means:
+
+- A web search result (unreliable) gets the same trust as a database query
+  (reliable)
+- A streaming response's first token gets the same trust as the final,
+  validated output
+- When a tool fails, you don't know if your input was wrong or the tool was
+  broken
+
+AXON solves all three. The compiler **guarantees** that:
+
+1. Every tool call is tagged with its effect signature and epistemic level
+2. Streaming outputs start at `doubt` and can only ascend monotonically
+3. Tool failures carry blame labels that identify the responsible party
+4. Data crossing the FFI boundary is **automatically tainted** — it cannot
+   reach `know` level without passing through a shield or anchor
+
+#### Use Case 1: Real-Time Financial Streaming with Epistemic Gradient
+
+A trading desk receives streaming market data and needs to distinguish between
+real-time quotes (speculative) and confirmed trades (factual):
+
+```axon
+tool MarketFeed {
+    provider: bloomberg
+    timeout: 5s
+    effects: <io, network, epistemic:speculate>
+}
+
+flow MonitorMarket(sector: String) -> MarketReport {
+    step Stream {
+        stream<QuoteData> {
+            on_chunk: {
+                probe chunk for [symbol, price, volume]
+                output: QuoteSnapshot
+            }
+            on_complete: {
+                validate QuoteSnapshot against: MarketSchema
+                output: VerifiedQuote
+            }
+        }
+    }
+    step Analyze {
+        reason {
+            given: Stream.output
+            ask: "Identify anomalous price movements"
+            depth: 2
+        }
+        output: MarketReport
+    }
+}
+```
+
+- Each streaming chunk starts at `doubt` — the system treats partial data as
+  unreliable by default
+- `on_complete` handler validates and promotes to `believe` — only complete,
+  schema-validated data upgrades
+- The `effects: <io, network, epistemic:speculate>` declaration means the
+  compiler knows this tool is **never** factual — preventing accidental
+  `know`-level assertions from market data
+
+#### Use Case 2: Multi-Tool Research Agent with Blame Tracking
+
+A research agent uses multiple tools with different reliability levels. When
+something fails, the system identifies exactly who broke the contract:
+
+```axon
+tool WebSearch {
+    provider: serper
+    timeout: 10s
+    effects: <network, epistemic:speculate>
+}
+
+tool DatabaseQuery {
+    provider: internal
+    timeout: 30s
+    effects: <io, epistemic:believe>
+}
+
+tool Calculator {
+    provider: stdlib
+    effects: <pure, epistemic:know>
+}
+
+flow DeepResearch(question: String) -> ResearchReport {
+    par {
+        step Web {
+            use_tool WebSearch with query: question
+            output: WebResults
+        }
+        step DB {
+            use_tool DatabaseQuery with query: question
+            output: DBResults
+        }
+    }
+    step Synthesize {
+        weave [Web.output, DB.output]
+        output: ResearchReport
+    }
+}
+```
+
+- `WebSearch` is `epistemic:speculate` — the compiler knows web results are
+  unreliable and automatically taints downstream data
+- `DatabaseQuery` is `epistemic:believe` — more reliable, but still not `know`
+  because external I/O is involved
+- `Calculator` is `pure + epistemic:know` — no side effects, deterministic,
+  fully trustworthy
+- When `weave` combines them, the result's epistemic level is
+  `min(speculate, believe) = speculate` — the weakest link determines trust
+- If `WebSearch` returns garbage, the `ContractMonitor` issues
+  `Blame = SERVER` with full diagnostic context
+
+#### Use Case 3: Safe External API Integration with @contract_tool
+
+A production system integrates a third-party payment API. The `@contract_tool`
+decorator wraps it with pre/postcondition contracts and automatic epistemic
+downgrade:
+
+```python
+from axon.runtime.tools import contract_tool
+
+@contract_tool(
+    pre=lambda amount, currency: amount > 0 and currency in ["USD", "EUR"],
+    post=lambda result: "transaction_id" in result,
+    effect_row=("network", "io"),
+    epistemic_level="speculate"
+)
+async def process_payment(amount: float, currency: str) -> dict:
+    return await stripe_api.charge(amount, currency)
+```
+
+```axon
+flow ProcessOrder(order: Order) -> Receipt {
+    step Charge {
+        use_tool process_payment with amount: order.total, currency: "USD"
+        output: PaymentResult
+    }
+    step Verify {
+        validate Charge.output against: PaymentSchema
+        if confidence < 0.9 -> refine(max_attempts: 2)
+        output: Receipt
+    }
+}
+```
+
+- `pre` contract: AXON validates that `amount > 0` and `currency` is valid
+  **before** calling Stripe. If violated → `Blame = CALLER`
+- `post` contract: AXON validates that the response contains a
+  `transaction_id`. If violated → `Blame = SERVER` (Stripe returned bad data)
+- All payment results are automatically `tainted = True` — they cannot reach
+  `know` level without explicit anchor validation
+- The `effects: <network, io>` declaration prevents this tool from being used
+  inside a `pure` context — a compile-time error
+
 ---
 
 ## Architecture
@@ -816,6 +1065,8 @@ agent Researcher {
 | Forge      | `forge`      | Directed creative synthesis (Poincaré pipeline)      |
 | Agent      | `agent`      | Autonomous goal-seeking BDI cognitive system         |
 | Shield     | `shield`     | Compile-time IFC security (taint + capability)       |
+| Stream     | `stream`     | Coinductive semantic streaming with epistemic gradient|
+| Effects    | `effects`    | Algebraic effect rows for tool declarations          |
 
 ### Epistemic Type System (Partial Order Lattice)
 
@@ -890,10 +1141,16 @@ axon-constructor/
 │   │       ├── base_tool.py      # BaseTool ABC + ToolResult
 │   │       ├── registry.py       # RuntimeToolRegistry (cached)
 │   │       ├── dispatcher.py     # IR → runtime tool bridge
+│   │       ├── contract_tool.py  # @contract_tool FFI decorator
+│   │       ├── csp_tool.py       # @csp_tool auto-inference decorator
+│   │       ├── blame.py          # Blame semantics (CT-3)
+│   │       ├── epistemic_inference.py  # CSP heuristic engine (CT-4)
 │   │       ├── stubs/            # 8 tools (6 stubs + 2 real)
 │   │       └── backends/         # 3 production backends
+│   ├── runtime/
+│   │   └── streaming.py          # Coinductive streaming engine (CT-1)
 │   └── stdlib/                   # Built-in personas, flows, anchors
-└── tests/                        # 1306 tests
+└── tests/                        # 1389 tests
 ```
 
 ---
@@ -1000,7 +1257,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 ### Current Status
 
 ```
-1306 passed, 0 failures ✅
+1389 passed, 0 failures ✅
 ```
 
 | Phase | Tests | What's covered                              |
@@ -1014,6 +1271,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 | 11    | 22    | Forge (creative synthesis pipeline)         |
 | 12    | 28    | Agent (BDI pipeline + integration)          |
 | 13    | 70    | Shield (compiler + runtime + integration)   |
+| 14    | 83    | Streaming, Effects, Contract, CSP (CT-1–4)  |
 | misc  | 611   | Stdlib, integration, edge cases             |
 
 ---
@@ -1130,6 +1388,7 @@ honesty:
 | 11    | Directed Creative Synthesis (`forge`)             | ✅ Done |
 | 12    | Autonomous Agents (`agent` BDI primitive)         | ✅ Done |
 | 13    | Security Shields (`shield` IFC primitive)         | ✅ Done |
+| 14    | Epistemic Tool Fortification (stream/effects/FFI) | ✅ Done |
 
 ---
 
@@ -1165,6 +1424,10 @@ honesty:
 | Compile-time taint analysis   | ❌        | ❌      | ❌       | ✅       |
 | Capability enforcement        | ❌        | ❌      | ❌       | ✅       |
 | LLM attack surface shielding  | ❌        | ❌      | Partial  | ✅       |
+| Algebraic effect rows         | ❌        | ❌      | ❌       | ✅       |
+| Coinductive streaming         | ❌        | ❌      | ❌       | ✅       |
+| FFI blame semantics           | ❌        | ❌      | ❌       | ✅       |
+| Epistemic tool inference      | ❌        | ❌      | ❌       | ✅       |
 
 ---
 

@@ -31,6 +31,7 @@ from typing import Any
 
 from axon.compiler.ir_nodes import IRUseTool
 from axon.runtime.tools.base_tool import BaseTool, ToolResult, TypedToolResult
+from axon.runtime.tools.blame import ContractMonitor, BlameLabel
 from axon.runtime.tools.registry import RuntimeToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -53,15 +54,22 @@ class ToolDispatcher:
         registry: RuntimeToolRegistry,
         *,
         default_config: dict[str, Any] | None = None,
+        handler_mode: str = "direct",
     ) -> None:
         """
         Args:
             registry:       The tool registry to look up implementations.
             default_config: Fallback config dict passed to tools that
                             don't have step-level config overrides.
+            handler_mode:   Effect handler mode (v0.14.0 — CT-2):
+                            "direct" = real execution (default)
+                            "mock"   = testing/deterministic mode
         """
         self._registry = registry
         self._default_config = default_config or {}
+        self._handler_mode = handler_mode
+        # v0.14.0 — CT-3: Contract monitor for FFI blame attribution
+        self._contract_monitor = ContractMonitor()
 
     # ── Main dispatch ────────────────────────────────────────────
 
@@ -100,24 +108,9 @@ class ToolDispatcher:
             )
 
         # ── Schema validation (v0.11.0 — W2) ────────────────
-        if tool.SCHEMA is not None:
-            ctx_args = context or {}
-            valid, errors = tool.SCHEMA.validate_input(
-                {"query": query, **ctx_args}
-            )
-            if not valid:
-                return ToolResult(
-                    success=False,
-                    data=None,
-                    error=(
-                        f"Schema validation failed for '{tool_name}': "
-                        + "; ".join(errors)
-                    ),
-                    metadata={
-                        "tool_name": tool_name,
-                        "validation_errors": errors,
-                    },
-                )
+        schema_error = self._validate_schema(tool, tool_name, query, context)
+        if schema_error is not None:
+            return schema_error
 
         # Warn if stub
         if tool.IS_STUB:
@@ -178,7 +171,44 @@ class ToolDispatcher:
         result.metadata.setdefault("tool_name", tool_name)
         result.metadata.setdefault("is_stub", tool.IS_STUB)
 
+        # v0.14.0 — CT-3: Mandatory epistemic downgrade for FFI boundary
+        # Any data crossing Python→Axon is tainted and downgraded to believe
+        if isinstance(result, TypedToolResult):
+            result.tainted = True
+            result.epistemic_source = getattr(tool, "EPISTEMIC_LEVEL", "believe")
+
         return result
+
+    # ── Helpers ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _validate_schema(
+        tool: BaseTool,
+        tool_name: str,
+        query: str,
+        context: dict[str, Any] | None,
+    ) -> ToolResult | None:
+        """Validate input against tool schema. Returns error result or None."""
+        if tool.SCHEMA is None:
+            return None
+        ctx_args = context or {}
+        valid, errors = tool.SCHEMA.validate_input(
+            {"query": query, **ctx_args}
+        )
+        if valid:
+            return None
+        return ToolResult(
+            success=False,
+            data=None,
+            error=(
+                f"Schema validation failed for '{tool_name}': "
+                + "; ".join(errors)
+            ),
+            metadata={
+                "tool_name": tool_name,
+                "validation_errors": errors,
+            },
+        )
 
     # ── Retry dispatch (v0.11.0 — W6) ───────────────────────────
 

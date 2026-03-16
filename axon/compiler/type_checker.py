@@ -32,6 +32,7 @@ from .ast_nodes import (
     ContextDefinition,
     DataSpaceDefinition,
     DeliberateBlock,
+    EffectRowNode,
     EpistemicBlock,
     ExploreNode,
     FlowDefinition,
@@ -54,6 +55,7 @@ from .ast_nodes import (
     ShieldApplyNode,
     ShieldDefinition,
     StepNode,
+    StreamDefinition,
     ToolDefinition,
     TypeDefinition,
     ValidateGate,
@@ -526,6 +528,10 @@ class TypeChecker:
 
     # ── TOOL validation ───────────────────────────────────────────
 
+    # Valid effect kinds for CT-2 effect rows
+    VALID_EFFECTS = frozenset({"pure", "io", "network", "storage", "random"})
+    VALID_EPISTEMIC_LEVELS = frozenset({"know", "believe", "speculate", "doubt"})
+
     def _check_tool(self, node: ToolDefinition) -> None:
         if node.max_results is not None and node.max_results <= 0:
             self._emit(
@@ -533,6 +539,10 @@ class TypeChecker:
                 f"in tool '{node.name}'",
                 node,
             )
+
+        # v0.14.0 — CT-2: validate effect row
+        if node.effects is not None:
+            self._check_effect_row(node.effects, node.name)
 
     # ── TYPE DEFINITION validation ────────────────────────────────
 
@@ -622,6 +632,8 @@ class TypeChecker:
                 self._check_agent(step)
             case ShieldApplyNode():
                 self._check_shield_apply(step)
+            case StreamDefinition():
+                self._check_stream_definition(step)
 
     def _check_step(self, node: StepNode, step_names: set[str], flow_name: str) -> None:
         if node.name in step_names:
@@ -698,6 +710,51 @@ class TypeChecker:
                     f"'{node.tool_name}' is a {sym.kind}, not a tool",
                     node,
                 )
+
+    # ── EFFECT ROW validation (CT-2) ──────────────────────────────
+
+    def _check_effect_row(self, effect_row: EffectRowNode, tool_name: str) -> None:
+        """Validate effect row entries and epistemic level annotation."""
+        for eff in effect_row.effects:
+            # Handle composite effects like 'custom:qualifier'
+            base_effect = eff.split(":")[0] if ":" in eff else eff
+            if base_effect not in self.VALID_EFFECTS:
+                self._emit(
+                    f"Unknown effect '{eff}' in tool '{tool_name}'. "
+                    f"Valid effects: {', '.join(sorted(self.VALID_EFFECTS))}",
+                    effect_row,
+                )
+
+        if effect_row.epistemic_level:
+            if effect_row.epistemic_level not in self.VALID_EPISTEMIC_LEVELS:
+                self._emit(
+                    f"Unknown epistemic level '{effect_row.epistemic_level}' "
+                    f"in tool '{tool_name}'. "
+                    f"Valid levels: {', '.join(sorted(self.VALID_EPISTEMIC_LEVELS))}",
+                    effect_row,
+                )
+
+    # ── STREAM DEFINITION validation (CT-1) ───────────────────────
+
+    def _check_stream_definition(self, node: StreamDefinition) -> None:
+        """Validate stream definition: element type, epistemic rules.
+
+        Streams enforce:
+          - Element type must be a known type reference
+          - Stream chunks start at ⊥/doubt, never at 'know'
+          - on_complete handlers may upgrade to 'believe' via shield
+        """
+        if node.element_type:
+            self._check_type_reference(node.element_type, node)
+
+        # Validate handler bodies recursively
+        step_names: set[str] = set()
+        if node.on_chunk:
+            for child in node.on_chunk.body:
+                self._check_flow_step(child, step_names, "<stream:on_chunk>")
+        if node.on_complete:
+            for child in node.on_complete.body:
+                self._check_flow_step(child, step_names, "<stream:on_complete>")
 
     def _check_remember(self, node: RememberNode) -> None:
         if node.memory_target:

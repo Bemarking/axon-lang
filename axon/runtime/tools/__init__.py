@@ -1,5 +1,5 @@
 """
-AXON Runtime — Tools Package (v0.11.0)
+AXON Runtime — Tools Package (v0.14.0)
 ========================================
 Public API for the AXON tool system.
 
@@ -20,6 +20,12 @@ This package provides:
 - ``ToolMetrics``            — Per-execution observation (W3).
 - ``ToolMetricsCollector``   — Aggregation & feedback loop (W3, W7).
 
+**v0.14.0 Additions (Convergence Theorems 1-4):**
+- ``contract_tool``          — FFI decorator with blame semantics (CT-3).
+- ``csp_tool``               — Auto-inferring CSP decorator (CT-4).
+- ``BlameLabel``             — Blame attribution enum (CT-3).
+- ``ContractMonitor``        — Pre/postcondition enforcement (CT-3).
+
 Factory:
 - ``create_default_registry(mode)`` — Quick setup with stubs, backends,
   or hybrid registration.
@@ -35,6 +41,11 @@ from axon.runtime.tools.registry import RuntimeToolRegistry
 from axon.runtime.tools.tool_chain import ToolChain, ToolChainStep
 from axon.runtime.tools.tool_metrics import ToolMetrics, ToolMetricsCollector
 from axon.runtime.tools.tool_schema import ToolParameter, ToolSchema
+
+# v0.14.0 — Convergence Theorems 3 & 4
+from axon.runtime.tools.blame import BlameLabel, ContractMonitor
+from axon.runtime.tools.contract_tool import contract_tool
+from axon.runtime.tools.csp_tool import csp_tool
 
 
 def create_default_registry(
@@ -90,4 +101,9 @@ __all__ = [
     "ToolChainStep",
     "ToolMetrics",
     "ToolMetricsCollector",
+    # v0.14.0 additions (Convergence Theorems 1-4)
+    "BlameLabel",
+    "ContractMonitor",
+    "contract_tool",
+    "csp_tool",
 ]

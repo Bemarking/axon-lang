@@ -183,6 +183,8 @@ class IRToolSpec(IRNode):
     # v0.11.0 expansions (W1)
     input_schema: tuple[tuple[str, str, bool], ...] = ()  # (name, type, required)
     output_schema: str = ""
+    # v0.14.0 — Convergence Theorem 2: algebraic effect row
+    effect_row: IREffectRow | None = None
 
 
 @dataclass(frozen=True)
@@ -807,3 +809,61 @@ class IRRun(IRNode):
     resolved_persona: IRPersona | None = None
     resolved_context: IRContext | None = None
     resolved_anchors: tuple[IRAnchor, ...] = ()
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  STREAMING & EFFECT IR NODES — Convergence Theorems 1 & 2
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IREffectRow(IRNode):
+    """
+    Compiled algebraic effect row — Koka-style effect annotation.
+
+    Theoretical basis — Convergence Theorem 2:
+      effect ToolCall[E: EpistemicLevel] where
+        invoke : (tool: ToolSpec, args: Dict) →[E] ToolResult<E>
+
+    The effect row declares side-effect categories and epistemic
+    classification for a tool or step. The type checker uses this
+    to verify epistemic compatibility at tool-use sites.
+
+    Examples:
+      <pure, epistemic:know>         — deterministic, no I/O
+      <io, network, epistemic:speculate> — network I/O, unverified
+    """
+    node_type: str = "effect_row"
+    effects: tuple[str, ...] = ()          # ("io", "network", "pure")
+    epistemic_level: str = ""              # "know" | "believe" | "speculate" | "doubt"
+
+
+@dataclass(frozen=True)
+class IRStreamSpec(IRNode):
+    """
+    Compiled stream specification — coinductive semantic stream.
+
+    Theoretical basis — Convergence Theorem 1:
+      Stream(τ) = νX. (StreamChunk × EpistemicState × X)
+
+    Maps from AST StreamDefinition. Embeds the epistemic gradient
+    and shield reference for co-inductive evaluation at runtime.
+
+    The gradient is a monotonic path on the epistemic lattice:
+      ⊥ ⊑ doubt ⊑ speculate ⊑ believe ⊑ know
+
+    Transition from believe→know requires:
+      1. Stream convergence (complete response)
+      2. Anchor validation against ground truth
+      3. All contracts satisfied
+    """
+    node_type: str = "stream_spec"
+    name: str = ""                                  # stream element type name
+    element_type: str = ""                          # resolved type name
+    element_type_generic: str = ""                  # generic parameter if any
+    initial_gradient: str = "doubt"                 # starting epistemic level
+    epistemic_gradient: tuple[str, ...] = ()        # ("doubt", "speculate", "believe", "know")
+    on_chunk_handler: str = ""                      # serialized handler reference
+    on_complete_handler: str = ""                   # serialized handler reference
+    on_chunk_body: tuple = ()                       # compiled on_chunk handler IR nodes
+    on_complete_body: tuple = ()                    # compiled on_complete handler IR nodes
+    shield_ref: str = ""                            # shield for co-inductive eval

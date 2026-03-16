@@ -91,6 +91,9 @@ class TypedToolResult(ToolResult):
     epistemic_mode: str = "know"  # know | believe | speculate
     provenance: str = ""
     execution_time_ms: float = 0.0
+    # v0.14.0 — Convergence Theorems 2 & 3: effect tracking
+    tainted: bool = False              # True if data crossed FFI boundary
+    epistemic_source: str = ""         # effect row epistemic level of source tool
 
     def to_epistemic_type(self) -> str:
         """Map to epistemic lattice node.
@@ -163,6 +166,11 @@ class BaseTool(ABC):
     IS_STUB: ClassVar[bool] = False
     DEFAULT_TIMEOUT: ClassVar[float] = 30.0
     SCHEMA: ClassVar[Any] = None  # Optional ToolSchema (v0.11.0)
+    # v0.14.0 — Convergence Theorem 2: algebraic effect row
+    # Declares the side-effects and epistemic level of this tool.
+    # Example: ("io", "network"), epistemic="speculate"
+    EFFECT_ROW: ClassVar[tuple[str, ...]] = ()       # ("io", "network", "pure")
+    EPISTEMIC_LEVEL: ClassVar[str] = "believe"        # default: FFI = believe
 
     # ── Instance lifecycle ───────────────────────────────────────
 

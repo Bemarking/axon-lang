@@ -37,6 +37,7 @@ from axon.compiler.ir_nodes import (
     IRDataEdge,
     IRDataSpace,
     IRDeliberate,
+    IREffectRow,
     IREpistemicBlock,
     IRExplore,
     IRFlow,
@@ -61,6 +62,7 @@ from axon.compiler.ir_nodes import (
     IRStep,
     IRShield,
     IRShieldApply,
+    IRStreamSpec,
     IRToolSpec,
     IRType,
     IRTypeField,
@@ -186,6 +188,8 @@ class IRGenerator:
         ast.AssociateNode: "_visit_associate",
         ast.AggregateNode: "_visit_aggregate",
         ast.ExploreNode: "_visit_explore",
+        # v0.14.0 — CT-1: Semantic streaming
+        ast.StreamDefinition: "_visit_stream_definition",
     }
 
     def _visit(self, node: ast.ASTNode) -> IRNode:
@@ -268,6 +272,14 @@ class IRGenerator:
         return ir_anchor
 
     def _visit_tool(self, node: ast.ToolDefinition) -> IRToolSpec:
+        # v0.14.0 — CT-2: extract effect row if present
+        effect_row: tuple[str, ...] = ()
+        if node.effects is not None:
+            effect_row = tuple(node.effects.effects)
+            # Append epistemic level as metadata if specified
+            if node.effects.epistemic_level:
+                effect_row = effect_row + (f"epistemic:{node.effects.epistemic_level}",)
+
         ir_tool = IRToolSpec(
             source_line=node.line,
             source_column=node.column,
@@ -278,6 +290,7 @@ class IRGenerator:
             timeout=node.timeout,
             runtime=node.runtime,
             sandbox=node.sandbox,
+            effect_row=effect_row,
         )
         self._tools[node.name] = ir_tool
         return ir_tool
@@ -657,6 +670,39 @@ class IRGenerator:
             comparison_value=node.comparison_value,
             then_branch=then_branch,
             else_branch=else_branch,
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  STREAM VISITOR (CT-1)
+    # ═══════════════════════════════════════════════════════════════
+
+    def _visit_stream_definition(self, node: ast.StreamDefinition) -> IRStreamSpec:
+        """Compile StreamDefinition → IRStreamSpec.
+
+        Maps the AST stream declaration to its IR form with:
+        - element_type: the generic type parameter (e.g. Document)
+        - initial_gradient: always starts at 'doubt' per CT-1 monotonicity
+        - on_chunk_body / on_complete_body: compiled handler steps
+        """
+        on_chunk_body: tuple[IRNode, ...] = ()
+        on_complete_body: tuple[IRNode, ...] = ()
+
+        if node.on_chunk:
+            on_chunk_body = tuple(
+                self._visit(child) for child in node.on_chunk.body
+            )
+        if node.on_complete:
+            on_complete_body = tuple(
+                self._visit(child) for child in node.on_complete.body
+            )
+
+        return IRStreamSpec(
+            source_line=node.line,
+            source_column=node.column,
+            element_type=node.element_type,
+            initial_gradient="doubt",  # CT-1: streams start at ⊥
+            on_chunk_body=on_chunk_body,
+            on_complete_body=on_complete_body,
         )
 
     # ═══════════════════════════════════════════════════════════════

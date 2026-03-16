@@ -150,9 +150,16 @@ class ToolDefinition(ASTNode):
       max_results: 5
       filter: recent(days: 30)
       timeout: 10s
+      effects: <io, network, epistemic:speculate>
     }
 
     An external capability the model can invoke.
+
+    Convergence Theorem 2 extension:
+      The ``effects`` field declares the algebraic effect row for this tool.
+      This enables the type checker to verify epistemic compatibility
+      between tools and anchors (e.g., a ``require: source_citation``
+      anchor rejects tools with ``epistemic:speculate`` without shield).
     """
     name: str = ""
     provider: str = ""
@@ -161,6 +168,85 @@ class ToolDefinition(ASTNode):
     timeout: str = ""  # duration string
     runtime: str = ""
     sandbox: bool | None = None
+    effects: EffectRowNode | None = None  # Convergence Theorem 2
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  STREAMING & EFFECT NODES — Convergence Theorems 1 & 2
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class EffectRowNode(ASTNode):
+    """
+    effects: <io, network, epistemic:speculate>
+
+    An algebraic effect row declaration for a tool or step.
+
+    Theoretical basis — Convergence Theorem 2:
+      Effects are first-class citizens with epistemic signatures.
+      The effect row is a Koka-style row type that declares:
+        - Side-effect categories: io, network, pure
+        - Epistemic classification: know, believe, speculate, doubt
+
+    The type checker uses effect rows to enforce:
+      1. Anchors requiring citations reject speculate-level tools
+      2. Taint propagation follows the Denning security lattice
+      3. Pure tools (no I/O) are statically verified as deterministic
+    """
+    effects: list[str] = field(default_factory=list)  # ["io", "network"]
+    epistemic_level: str = ""  # "know" | "believe" | "speculate" | "doubt"
+
+
+@dataclass
+class StreamHandlerNode(ASTNode):
+    """
+    on_chunk(chunk) { shield.scan_incremental(chunk) }
+    on_complete(full_response) { promote(believe → know) }
+
+    Handler for co-inductive stream evaluation.
+
+    Theoretical basis — Convergence Theorem 1:
+      Streams are coinductive structures (νX. StreamChunk × X).
+      Handlers evaluate the stream co-inductively: the safety
+      property holds for the head AND recursively for the tail.
+    """
+    handler_type: str = ""  # "on_chunk" | "on_complete"
+    param_name: str = ""    # parameter name for the handler
+    body: list[ASTNode] = field(default_factory=list)
+
+
+@dataclass
+class StreamDefinition(ASTNode):
+    """
+    stream<Diagnosis> {
+      epistemic_gradient: doubt → speculate → believe → know
+
+      on_chunk(chunk) {
+        shield.scan_incremental(chunk)
+      }
+
+      on_complete(full_response) {
+        if anchor.validate(full_response) and contracts.satisfied():
+          promote(believe → know)
+      }
+    }
+
+    A semantic streaming declaration with epistemic gradient.
+
+    Theoretical basis — Convergence Theorem 1:
+      Stream(τ) = νX. (StreamChunk × EpistemicState × X)
+      where EpistemicState ∈ {⊥, doubt, speculate, believe, know}
+      and the transition is monotonic on the epistemic lattice.
+
+      The gradient defines the valid progression path for epistemic
+      state during streaming. Backpressure is modeled as a linear
+      type: Budget(n) ⊸ Stream(τ) → (Chunk × Budget(n-1)).
+    """
+    name: str = ""                                          # element type name
+    element_type: TypeExprNode | None = None                # generic parameter
+    epistemic_gradient: list[str] = field(default_factory=list)  # ["doubt", "speculate", ...]
+    handlers: list[StreamHandlerNode] = field(default_factory=list)
+    shield_ref: str = ""                                    # optional shield for co-inductive eval
 
 
 # ═══════════════════════════════════════════════════════════════════
