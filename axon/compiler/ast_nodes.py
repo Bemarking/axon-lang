@@ -995,6 +995,95 @@ class ExploreNode(ASTNode):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  PIX NODES — Structured Cognitive Retrieval
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class PixDefinition(ASTNode):
+    """
+    pix ContractIndex {
+        source: "contracts/master_agreement.pdf"
+        depth: 4
+        branching: 3
+        model: fast
+    }
+
+    The **pix** primitive — structured cognitive retrieval via
+    navigational semantics.
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  THEORETICAL FOUNDATIONS                                     ║
+    ╠══════════════════════════════════════════════════════════════╣
+    ║                                                              ║
+    ║  Document Tree: D = (N, E, ρ, κ)                            ║
+    ║    Properties: acyclicity, exhaustive coverage,             ║
+    ║    controlled disjunction between siblings.                 ║
+    ║                                                              ║
+    ║  Monotonic Entropy Reduction:                                ║
+    ║    H(R|Q, n₁..nₜ) ≤ H(R|Q, n₁..nₜ₋₁)                    ║
+    ║    Each navigation step reduces answer uncertainty.         ║
+    ║                                                              ║
+    ║  Bayesian Navigation:                                        ║
+    ║    P(nᵢ relevant|Q, evidence) ∝                             ║
+    ║      P(Q|nᵢ relevant) · P(nᵢ relevant|evidence)            ║
+    ║                                                              ║
+    ║  Information Foraging (Pirolli & Card, 1999):               ║
+    ║    LLM follows information scent through summaries.         ║
+    ║                                                              ║
+    ╚══════════════════════════════════════════════════════════════╝
+    """
+    name: str = ""
+    source: str = ""
+    depth: int = 4
+    branching: int = 3
+    model: str = "fast"
+    effects: EffectRowNode | None = None  # optional effect declaration
+
+
+@dataclass
+class NavigateNode(ASTNode):
+    """
+    navigate ContractIndex with query: question
+    trail: enabled
+
+    LLM-guided tree traversal — the core PIX retrieval primitive.
+    Produces a set of relevant leaf nodes and a reasoning path (trail).
+
+    Epistemic level: output is always 'believe' (external I/O involved).
+    """
+    pix_name: str = ""         # reference to declared pix definition
+    query_expr: str = ""       # query expression (string or reference)
+    trail_enabled: bool = False  # whether to record reasoning path
+    output_name: str = ""      # named output
+
+
+@dataclass
+class DrillNode(ASTNode):
+    """
+    drill ContractIndex into "Section3.Liabilities" with query: question
+
+    Explicit descent into a named subtree — bypasses root navigation.
+    Useful when the user knows which section is relevant.
+    """
+    pix_name: str = ""         # reference to declared pix definition
+    subtree_path: str = ""     # node ID or title path to drill into
+    query_expr: str = ""       # query expression
+    output_name: str = ""      # named output
+
+
+@dataclass
+class TrailNode(ASTNode):
+    """
+    trail Navigate.reasoning_path
+
+    Access the reasoning path — the explainability backbone.
+    Every PIX retrieval produces a complete trace of navigational
+    decisions, enabling 'why was this retrieved?' auditing.
+    """
+    navigate_ref: str = ""     # reference to a navigate step's output
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  EXECUTION NODE
 # ═══════════════════════════════════════════════════════════════════
 

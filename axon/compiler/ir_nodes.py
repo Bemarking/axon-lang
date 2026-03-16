@@ -867,3 +867,78 @@ class IRStreamSpec(IRNode):
     on_chunk_body: tuple = ()                       # compiled on_chunk handler IR nodes
     on_complete_body: tuple = ()                    # compiled on_complete handler IR nodes
     shield_ref: str = ""                            # shield for co-inductive eval
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  PIX IR NODES — Structured Cognitive Retrieval
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRPixSpec(IRNode):
+    """
+    Compiled PIX index specification — structured document tree retrieval.
+
+    Theoretical basis — PIX Retrieval Theorem:
+      PIX(D, q) = argmax_{n ∈ N} P(relevant(n, q) | path(root, n))
+
+    Maps from AST PixDefinition. Encodes the bounded search parameters
+    and source reference for tree-based navigation at runtime.
+    """
+    node_type: str = "pix_spec"
+    name: str = ""                                  # PIX index name
+    source: str = ""                                # document source reference
+    max_depth: int = 4                              # tree search depth bound
+    max_branching: int = 3                          # branching factor limit
+    model: str = ""                                 # LLM model for scoring
+    effect_row: IREffectRow | None = None           # effect annotations
+
+
+@dataclass(frozen=True)
+class IRNavigate(IRNode):
+    """
+    Compiled navigate operation — PIX tree traversal with LLM scoring.
+
+    At runtime, performs bounded BFS/DFS on the document tree with
+    heuristic pruning based on the LLM's information scent scoring.
+
+    The epistemic level of the result is always 'believe' (external I/O),
+    matching the formal specification:
+      navigate : (PIX, Query) →[believe] NavigationResult
+    """
+    node_type: str = "navigate"
+    pix_ref: str = ""                               # reference to a PIX spec
+    query: str = ""                                  # search query text
+    trail_enabled: bool = True                       # whether to capture reasoning path
+    output_name: str = ""                            # optional binding name
+
+
+@dataclass(frozen=True)
+class IRDrill(IRNode):
+    """
+    Compiled drill operation — subtree descent within a PIX tree.
+
+    Focuses navigation on a specific subtree path, enabling targeted
+    information retrieval within a previously navigated region.
+
+    Formal semantics:
+      drill : (PIX, Path, Query) →[believe] NavigationResult
+    """
+    node_type: str = "drill"
+    pix_ref: str = ""                               # reference to a PIX spec
+    subtree_path: str = ""                          # dot-separated path to subtree root
+    query: str = ""                                  # search query text
+    output_name: str = ""                            # optional binding name
+
+
+@dataclass(frozen=True)
+class IRTrail(IRNode):
+    """
+    Compiled trail access — retrieves the reasoning path from a navigate/drill.
+
+    The trail is a sequence of NavigationStep records documenting
+    which nodes the LLM scored, why, and what it selected—providing
+    full explainability of the retrieval process.
+    """
+    node_type: str = "trail"
+    navigate_ref: str = ""                          # reference to a navigate/drill result
+

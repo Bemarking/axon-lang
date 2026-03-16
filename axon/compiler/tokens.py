@@ -85,6 +85,12 @@ class TokenType(Enum):
     QUARANTINE = auto()
     REDACT = auto()
 
+    # ── PIX KEYWORDS (structured cognitive retrieval) ─────────────
+    PIX = auto()              # pix declaration
+    NAVIGATE = auto()         # navigate pix_name with query: Q
+    DRILL = auto()            # drill into subtree
+    TRAIL = auto()            # reasoning path access
+
     # ── DATA SCIENCE KEYWORDS ────────────────────────────────────
     DATASPACE = auto()
     INGEST = auto()
@@ -229,6 +235,11 @@ KEYWORDS: dict[str, TokenType] = {
     "sandbox": TokenType.SANDBOX,
     "quarantine": TokenType.QUARANTINE,
     "redact": TokenType.REDACT,
+    # PIX (structured cognitive retrieval)
+    "pix": TokenType.PIX,
+    "navigate": TokenType.NAVIGATE,
+    "drill": TokenType.DRILL,
+    "trail": TokenType.TRAIL,
     # Data Science
     "dataspace": TokenType.DATASPACE,
     "ingest": TokenType.INGEST,

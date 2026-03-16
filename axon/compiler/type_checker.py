@@ -32,6 +32,7 @@ from .ast_nodes import (
     ContextDefinition,
     DataSpaceDefinition,
     DeliberateBlock,
+    DrillNode,
     EffectRowNode,
     EpistemicBlock,
     ExploreNode,
@@ -43,8 +44,10 @@ from .ast_nodes import (
     IngestNode,
     IntentNode,
     MemoryDefinition,
+    NavigateNode,
     ParallelBlock,
     PersonaDefinition,
+    PixDefinition,
     ProbeDirective,
     ProgramNode,
     ReasonChain,
@@ -57,6 +60,7 @@ from .ast_nodes import (
     StepNode,
     StreamDefinition,
     ToolDefinition,
+    TrailNode,
     TypeDefinition,
     ValidateGate,
     WeaveNode,
@@ -387,10 +391,14 @@ class TypeChecker:
                     self._register(name, "agent", decl, type_name=ret)
                 case ShieldDefinition(name=name):
                     self._register(name, "shield", decl)
+                case PixDefinition(name=name):
+                    self._register(name, "pix", decl)
                 case IngestNode():
                     pass  # ingest is a command, not a declaration
                 case FocusNode() | AssociateNode() | AggregateNode() | ExploreNode():
                     pass  # flow-level commands, not declarations
+                case NavigateNode() | DrillNode() | TrailNode():
+                    pass  # PIX flow-level commands, not declarations
 
     def _register(self, name: str, kind: str, node: ASTNode, type_name: str = "") -> None:
         err = self._symbols.declare(name, kind, node, type_name=type_name)
@@ -441,10 +449,14 @@ class TypeChecker:
                 self._check_shield_apply(decl)
             case DataSpaceDefinition():
                 self._check_dataspace(decl)
+            case PixDefinition():
+                self._check_pix_definition(decl)
             case IngestNode():
                 pass  # validated at runtime
             case FocusNode() | AssociateNode() | AggregateNode() | ExploreNode():
                 pass  # validated at runtime
+            case NavigateNode() | DrillNode() | TrailNode():
+                pass  # PIX flow commands validated in flow step context
 
     # ── PERSONA validation ────────────────────────────────────────
 
@@ -634,6 +646,12 @@ class TypeChecker:
                 self._check_shield_apply(step)
             case StreamDefinition():
                 self._check_stream_definition(step)
+            case NavigateNode():
+                self._check_navigate(step)
+            case DrillNode():
+                self._check_drill(step)
+            case TrailNode():
+                self._check_trail(step)
 
     def _check_step(self, node: StepNode, step_names: set[str], flow_name: str) -> None:
         if node.name in step_names:
@@ -1240,6 +1258,81 @@ class TypeChecker:
             self._emit(
                 f"'{node.shield_name}' in shield apply is a {sym.kind}, "
                 "not a shield",
+                node,
+            )
+
+    # ── PIX validation ─────────────────────────────────────────────
+
+    def _check_pix_definition(self, node: PixDefinition) -> None:
+        """
+        Validate pix definition — structured cognitive retrieval index.
+
+        Rules:
+          1. Source must be non-empty
+          2. Depth must be in [1, 8]
+          3. Branching must be in [1, 10]
+          4. Model must be non-empty
+          5. Effect row (if present) must be valid
+        """
+        if not node.source:
+            self._emit(
+                f"PIX '{node.name}' requires a 'source' field",
+                node,
+            )
+
+        if not (1 <= node.depth <= 8):
+            self._emit(
+                f"PIX '{node.name}' depth must be between 1 and 8, got {node.depth}",
+                node,
+            )
+
+        if not (1 <= node.branching <= 10):
+            self._emit(
+                f"PIX '{node.name}' branching must be between 1 and 10, got {node.branching}",
+                node,
+            )
+
+    def _check_navigate(self, node: NavigateNode) -> None:
+        """Validate navigate statement — PIX retrieval."""
+        sym = self._symbols.lookup(node.pix_name)
+        if sym is not None and sym.kind != "pix":
+            self._emit(
+                f"'{node.pix_name}' in navigate is a {sym.kind}, not a pix",
+                node,
+            )
+
+        if not node.query_expr:
+            self._emit(
+                f"navigate '{node.pix_name}' requires a query expression",
+                node,
+            )
+
+    def _check_drill(self, node: DrillNode) -> None:
+        """Validate drill statement — PIX subtree descent."""
+        sym = self._symbols.lookup(node.pix_name)
+        if sym is not None and sym.kind != "pix":
+            self._emit(
+                f"'{node.pix_name}' in drill is a {sym.kind}, not a pix",
+                node,
+            )
+
+        if not node.subtree_path:
+            self._emit(
+                f"drill '{node.pix_name}' requires a subtree path (into \"...\")",
+                node,
+            )
+
+        if not node.query_expr:
+            self._emit(
+                f"drill '{node.pix_name}' requires a query expression",
+                node,
+            )
+
+    def _check_trail(self, node: TrailNode) -> None:
+        """Validate trail statement — reasoning path access."""
+        if not node.navigate_ref:
+            self._emit(
+                "trail requires a reference to a navigate step",
                 node,
             )
 

@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v0.14.0</em><br>
+  <strong>AXON</strong> <em>v0.15.0</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -8,15 +8,16 @@
   <code>know</code> · <code>believe</code> · <code>speculate</code> · <code>doubt</code> · <code>par</code> · <code>hibernate</code><br>
   <code>dataspace</code> · <code>ingest</code> · <code>focus</code> · <code>associate</code> · <code>aggregate</code> · <code>explore</code><br>
   <code>deliberate</code> · <code>consensus</code> · <code>forge</code> · <code>agent</code> · <code>shield</code><br>
-  <code>stream</code> · <code>effects</code> · <code>@contract_tool</code> · <code>@csp_tool</code>
+  <code>stream</code> · <code>effects</code> · <code>@contract_tool</code> · <code>@csp_tool</code><br>
+  <code>pix</code> · <code>navigate</code> · <code>drill</code> · <code>trail</code>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.14.0-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v0.15.0-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-1389%20passing-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/paradigms-9%20shifts-blueviolet" alt="Paradigm Shifts">
+  <img src="https://img.shields.io/badge/tests-1513%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/paradigms-10%20shifts-blueviolet" alt="Paradigm Shifts">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
   <img src="https://img.shields.io/badge/pypi-axon--lang-blue" alt="PyPI">
 </p>
@@ -1016,6 +1017,276 @@ flow ProcessOrder(order: Order) -> Receipt {
 
 ---
 
+### VIII. Structured Cognitive Retrieval — the `pix` Primitive
+
+> AXON v0.15 introduces a tenth paradigm shift: **intent-driven tree navigation
+> as a formally grounded alternative to vector-similarity retrieval (RAG)**,
+> built on information foraging theory, bounded rational search, and full
+> explainability via reasoning trails.
+
+Every RAG system in existence makes the same assumption: *semantically close
+embeddings imply relevance*. This works for keyword-style queries, but fails
+catastrophically for structured documents — legal contracts, technical manuals,
+medical records — where the answer lives at a specific structural location, not
+in the nearest embedding vector.
+
+AXON's `pix` primitive rejects the "embed everything, retrieve by cosine"
+paradigm. Instead, it treats documents as **navigable trees** and retrieval as
+a **bounded cognitive search** — the same process a human expert uses when
+consulting a complex document: start at the table of contents, follow the most
+promising branches, prune irrelevant paths, and explain every decision.
+
+#### Formal Model — Rooted Directed Acyclic Tree (DAG→Tree)
+
+**Document Tree.** A PIX-indexed document `D` is a rooted tree:
+
+```text
+D = (N, E, n₀)
+
+where
+  N  = {n₀, n₁, ..., nₖ}    — nodes (sections, subsections, paragraphs)
+  E  ⊆ N × N               — directed edges (parent → child)
+  n₀ ∈ N                    — root (document-level summary)
+
+Properties:
+  ∀ nᵢ ∈ N \ {n₀} : ∃! nⱼ : (nⱼ, nᵢ) ∈ E    — unique parent
+  height(D) = h                                — maximum depth
+  |leaves(D)| = content nodes with full text
+```
+
+Each node carries a **summary** (generated at index time) and optionally the
+full section **content**. Internal nodes hold structure; leaf nodes hold
+answers.
+
+**Information Scent Navigation.** Navigation follows Pirolli & Card's
+Information Foraging Theory. At each tree level, a scoring function `S`
+evaluates the "information scent" of every child relative to the query:
+
+```text
+S : (query, title, summary) → [0, 1]
+
+Navigation rule at depth d:
+  children_d = {nᵢ : (current, nᵢ) ∈ E}
+  scored     = {(nᵢ, S(q, nᵢ.title, nᵢ.summary)) : nᵢ ∈ children_d}
+  selected   = top_k(scored, k=max_branch) ∩ {(n, s) : s ≥ threshold}
+
+Fallback (no child meets threshold):
+  selected = {argmax(scored)} if max(scored) > 0 else ∅
+```
+
+The key insight: **the scorer replaces embedding similarity**. In production it
+is an LLM call; in tests a keyword-overlap heuristic suffices. Either way, the
+navigator uses the same bounded-search algorithm.
+
+**Bounded Rational Search.** Navigation terminates via a budget 4-tuple
+verified at compile time:
+
+```text
+Config(pix) = (max_depth, max_branch, threshold, timeout)
+
+Termination:
+  depth ≥ max_depth  ∨  node.is_leaf  ∨  elapsed ≥ timeout
+  → append to result leaves
+```
+
+This prevents unbounded traversal — the same principle behind AXON's agent
+budget enforcement.
+
+**Reasoning Trail (Explainability).** Every navigation produces a
+`ReasoningPath` — an ordered sequence of `NavigationStep` records documenting
+*why* each branch was selected or pruned:
+
+```text
+Trail = [Step₁, Step₂, ..., Stepₙ]
+
+Stepᵢ = (node_id, title, score, reasoning, depth)
+
+Properties:
+  |Trail| = total nodes evaluated
+  depth(Trail) = max(Stepᵢ.depth)
+```
+
+This is not logging — it is **formal explainability**. The trail is a
+first-class data structure accessible via the `trail` keyword.
+
+#### What Makes PIX Different from RAG
+
+| Property | RAG | PIX |
+|----------|-----|-----|
+| Index structure | Flat vector store | Hierarchical tree |
+| Retrieval method | Cosine similarity | Bounded tree navigation |
+| Granularity | Fixed chunks | Structural sections |
+| Explainability | None (black-box) | Full reasoning trail |
+| Query type | Keyword/semantic | Intent-driven |
+| Relevance model | "Closest vector" | "Most scented path" |
+| Compile-time verification | ❌ | ✅ (depth, branching bounds) |
+
+**PIX principle:** *"Lo estructuralmente navegado con intención es lo
+relevante"* — what matters is not what is semantically close, but what a
+rational agent would navigate to when consulting the document with purpose.
+
+#### Usage Example — PIX-Navigated Legal Analysis
+
+```axon
+pix ContractIndex {
+    source: "contracts/master_agreement.md"
+    depth: 4
+    branching: 3
+    model: "fast"
+}
+
+flow AnalyzeContract(question: String) -> LegalAnalysis {
+    step Search {
+        navigate ContractIndex
+            query: question
+            trail: enabled
+            as: relevant_sections
+    }
+    step Drill {
+        drill ContractIndex
+            into "Liabilities"
+            query: question
+            as: liability_detail
+    }
+    step Explain {
+        trail relevant_sections
+    }
+    step Synthesize {
+        weave [relevant_sections, liability_detail]
+        format: LegalAnalysis
+        include: [answer, sources, reasoning_trail]
+    }
+}
+```
+
+What the compiler does:
+
+1. **Type Checking** — validates `pix` parameters (depth ≤ 10, branching ≤ 10),
+   verifies that `navigate` and `drill` reference a declared `pix` (not a
+   `persona` or `flow`), and guarantees output bindings are unique
+2. **IR Generation** — compiles to `IRPixSpec`, `IRNavigate`, `IRDrill`, and
+   `IRTrail` nodes carrying the full configuration (source, depth, branching,
+   model, effects)
+3. **Runtime Execution** — the PIX engine indexes the source document into a
+   `DocumentTree`, then the navigator performs bounded tree search guided by the
+   scoring function, recording every decision in the `ReasoningPath`
+4. **Trail Output** — the `trail` step exposes the full reasoning path — every
+   node evaluated, its score, and why it was selected or pruned
+
+#### PIX Use Case 1: Medical Document Navigation
+
+A hospital system needs to find specific clinical guidelines within a 200-page
+protocol manual. RAG would chunk the document into 512-token fragments and
+return the 5 closest embeddings — potentially mixing guidelines from different
+sections. PIX navigates structurally:
+
+```axon
+pix ClinicalProtocol {
+    source: "protocols/surgical_guidelines_v12.md"
+    depth: 5
+    branching: 2
+    model: "precise"
+}
+
+flow FindGuideline(procedure: String) -> ClinicalGuideline {
+    step Navigate {
+        navigate ClinicalProtocol
+            query: procedure
+            trail: enabled
+            as: guideline
+    }
+    step Verify {
+        validate guideline against: ClinicalSchema
+        if confidence < 0.9 -> refine(max_attempts: 2)
+        output: ClinicalGuideline
+    }
+}
+```
+
+- `depth: 5` allows reaching deeply nested subsections (Chapter → Section →
+  Subsection → Paragraph → Note)
+- `branching: 2` limits exploration to the 2 most relevant children per level
+  — fast, focused retrieval
+- The trail documents *exactly* which sections were evaluated and why, which is
+  required for medical audit compliance
+
+#### PIX Use Case 2: Technical Documentation Q&A
+
+A developer needs to find the exact API method for a specific task in a large
+SDK documentation. RAG returns 5 chunks that all mention the API but none
+answer the precise question. PIX drills directly:
+
+```axon
+pix SDKDocs {
+    source: "docs/sdk_reference_v3.md"
+    depth: 6
+    branching: 3
+}
+
+flow AnswerDevQuestion(question: String) -> DevAnswer {
+    step Browse {
+        navigate SDKDocs query: question as: overview
+    }
+    step Deep {
+        drill SDKDocs into "API Reference" query: question as: api_detail
+    }
+    step Respond {
+        weave [overview, api_detail]
+        format: DevAnswer
+        include: [answer, code_examples, see_also]
+    }
+}
+```
+
+- `navigate` finds the general area; `drill` goes directly into "API Reference"
+- Combined result gives both context (overview) and precision (api_detail)
+- No embedding database needed — the document's own structure is the index
+
+#### PIX Use Case 3: Regulatory Compliance Audit with Full Trail
+
+A compliance team audits whether a company's data practices satisfy GDPR
+requirements. The trail provides the auditable decision chain:
+
+```axon
+pix GDPRRegulation {
+    source: "regulations/gdpr_full_text.md"
+    depth: 4
+    branching: 3
+    model: "precise"
+}
+
+know {
+    flow AuditCompliance(practice: String) -> ComplianceReport {
+        step Find {
+            navigate GDPRRegulation
+                query: practice
+                trail: enabled
+                as: articles
+        }
+        step ShowTrail {
+            trail articles
+        }
+        step Assess {
+            reason {
+                given: articles
+                ask: "Does the practice comply with these articles?"
+                depth: 3
+            }
+            output: ComplianceReport
+        }
+    }
+}
+```
+
+- `know` block ensures maximum factual rigor — no speculation about regulations
+- The `trail` provides a complete record of which GDPR articles were considered
+  and why, satisfying regulatory audit requirements
+- No vector database, no embedding model, no chunking strategy to tune — the
+  regulation's own hierarchical structure (Part → Chapter → Section → Article)
+  is the retrieval mechanism
+
+---
+
 ## Architecture
 
 ```
@@ -1032,7 +1303,7 @@ flow ProcessOrder(order: Order) -> Receipt {
                               Typed Output (validated, traced result)
 ```
 
-### 29 Cognitive Primitives
+### 33 Cognitive Primitives
 
 | Primitive  | Keyword      | What it represents                                   |
 | ---------- | ------------ | ---------------------------------------------------- |
@@ -1067,6 +1338,10 @@ flow ProcessOrder(order: Order) -> Receipt {
 | Shield     | `shield`     | Compile-time IFC security (taint + capability)       |
 | Stream     | `stream`     | Coinductive semantic streaming with epistemic gradient|
 | Effects    | `effects`    | Algebraic effect rows for tool declarations          |
+| PIX        | `pix`        | Structured document index (navigable tree)           |
+| Navigate   | `navigate`   | Intent-driven tree retrieval with reasoning trail    |
+| Drill      | `drill`      | Subtree-scoped navigation for targeted retrieval     |
+| Trail      | `trail`      | Explainability path — formal reasoning audit         |
 
 ### Epistemic Type System (Partial Order Lattice)
 
@@ -1126,7 +1401,11 @@ axon-constructor/
 │   │   ├── data_column.py        # Columnar storage + inverted index
 │   │   ├── association_index.py  # Cross-table link graph
 │   │   ├── selection_state.py    # Selection propagation engine
-│   │   └── dataspace.py          # Top-level data container
+│   │   ├── dataspace.py          # Top-level data container
+│   │   └── pix/                  # PIX retrieval engine
+│   │       ├── document_tree.py  # PixNode + DocumentTree (navigable tree)
+│   │       ├── navigator.py      # PixNavigator (bounded tree search)
+│   │       └── indexer.py        # PixIndexer (document → tree)
 │   ├── runtime/
 │   │   ├── executor.py           # Flow execution engine
 │   │   ├── data_dispatcher.py    # Data Science IR → engine bridge
@@ -1150,7 +1429,7 @@ axon-constructor/
 │   ├── runtime/
 │   │   └── streaming.py          # Coinductive streaming engine (CT-1)
 │   └── stdlib/                   # Built-in personas, flows, anchors
-└── tests/                        # 1389 tests
+└── tests/                        # 1513 tests
 ```
 
 ---
@@ -1257,7 +1536,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 ### Current Status
 
 ```
-1389 passed, 0 failures ✅
+1513 passed, 0 failures ✅
 ```
 
 | Phase | Tests | What's covered                              |
@@ -1272,6 +1551,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 | 12    | 28    | Agent (BDI pipeline + integration)          |
 | 13    | 70    | Shield (compiler + runtime + integration)   |
 | 14    | 83    | Streaming, Effects, Contract, CSP (CT-1–4)  |
+| 15    | 124   | PIX (engine + compiler + integration)       |
 | misc  | 611   | Stdlib, integration, edge cases             |
 
 ---
@@ -1389,6 +1669,7 @@ honesty:
 | 12    | Autonomous Agents (`agent` BDI primitive)         | ✅ Done |
 | 13    | Security Shields (`shield` IFC primitive)         | ✅ Done |
 | 14    | Epistemic Tool Fortification (stream/effects/FFI) | ✅ Done |
+| 15    | Structured Cognitive Retrieval (`pix`)            | ✅ Done |
 
 ---
 
@@ -1428,6 +1709,9 @@ honesty:
 | Coinductive streaming         | ❌        | ❌      | ❌       | ✅       |
 | FFI blame semantics           | ❌        | ❌      | ❌       | ✅       |
 | Epistemic tool inference      | ❌        | ❌      | ❌       | ✅       |
+| Structured tree retrieval     | ❌        | ❌      | ❌       | ✅       |
+| Explainable retrieval trail   | ❌        | ❌      | ❌       | ✅       |
+| Compile-time retrieval bounds | ❌        | ❌      | ❌       | ✅       |
 
 ---
 

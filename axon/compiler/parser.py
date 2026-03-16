@@ -23,6 +23,7 @@ from .ast_nodes import (
     ContextDefinition,
     DataSpaceDefinition,
     DeliberateBlock,
+    DrillNode,
     EffectRowNode,
     EpistemicBlock,
     ExploreNode,
@@ -34,9 +35,11 @@ from .ast_nodes import (
     IngestNode,
     IntentNode,
     MemoryDefinition,
+    NavigateNode,
     ParallelBlock,
     ParameterNode,
     PersonaDefinition,
+    PixDefinition,
     ProbeDirective,
     ProgramNode,
     RangeConstraint,
@@ -51,6 +54,7 @@ from .ast_nodes import (
     StreamDefinition,
     StreamHandlerNode,
     ToolDefinition,
+    TrailNode,
     TypeDefinition,
     TypeExprNode,
     TypeFieldNode,
@@ -119,12 +123,14 @@ class Parser:
                 return self._parse_agent()
             case TokenType.SHIELD:
                 return self._parse_shield()
+            case TokenType.PIX:
+                return self._parse_pix_definition()
             case _:
                 raise AxonParseError(
                     f"Unexpected token at top level",
                     line=tok.line,
                     column=tok.column,
-                    expected="declaration (persona, context, anchor, flow, agent, shield, run, know, speculate, ...)",
+                    expected="declaration (persona, context, anchor, flow, agent, shield, pix, run, know, speculate, ...)",
                     found=tok.value,
                 )
 
@@ -566,12 +572,18 @@ class Parser:
             case TokenType.STREAM:
                 # v0.14.0 — CT-1: stream<τ> definition
                 return self._parse_stream_definition()
+            case TokenType.NAVIGATE:
+                return self._parse_navigate()
+            case TokenType.DRILL:
+                return self._parse_drill()
+            case TokenType.TRAIL:
+                return self._parse_trail()
             case _:
                 raise AxonParseError(
                     "Unexpected token in flow body",
                     line=tok.line,
                     column=tok.column,
-                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, focus, associate, aggregate, explore, ingest",
+                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, focus, associate, aggregate, explore, ingest",
                     found=tok.value,
                 )
 
@@ -954,6 +966,130 @@ class Parser:
             self._consume(TokenType.RBRACE)
 
         return node
+
+    # ── PIX DEFINITION ────────────────────────────────────────────
+
+    def _parse_pix_definition(self) -> PixDefinition:
+        """Parse: pix Name { source: "...", depth: N, branching: N, model: M }
+
+        Produces a PixDefinition node.
+        """
+        tok = self._consume(TokenType.PIX)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = PixDefinition(name=name.value, line=tok.line, column=tok.column)
+        self._consume(TokenType.LBRACE)
+
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "source":
+                    node.source = self._consume(TokenType.STRING).value
+                case "depth":
+                    node.depth = int(self._consume(TokenType.INTEGER).value)
+                case "branching":
+                    node.branching = int(self._consume(TokenType.INTEGER).value)
+                case "model":
+                    node.model = self._consume_any_identifier_or_keyword().value
+                case "effects":
+                    node.effects = self._parse_effect_row()
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    # ── NAVIGATE (PIX retrieval) ──────────────────────────────────
+
+    def _parse_navigate(self) -> NavigateNode:
+        """Parse: navigate PixName with query: "..." trail: enabled
+
+        Produces a NavigateNode.
+        """
+        tok = self._consume(TokenType.NAVIGATE)
+        pix_name = self._consume(TokenType.IDENTIFIER).value
+        node = NavigateNode(pix_name=pix_name, line=tok.line, column=tok.column)
+
+        # Expect 'with' keyword (parsed as identifier)
+        if self._current().value == "with":
+            self._advance()
+
+        # Parse key-value pairs
+        while self._current().type in (
+            TokenType.IDENTIFIER, TokenType.TRAIL, TokenType.AS,
+        ):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "query":
+                    node.query_expr = self._consume(TokenType.STRING).value
+                case "trail":
+                    val = self._consume_any_identifier_or_keyword().value
+                    node.trail_enabled = val.lower() in ("enabled", "true", "yes")
+                case "as":
+                    node.output_name = self._consume(TokenType.IDENTIFIER).value
+                case _:
+                    self._skip_value()
+
+        return node
+
+    # ── DRILL (PIX subtree descent) ───────────────────────────────
+
+    def _parse_drill(self) -> DrillNode:
+        """Parse: drill PixName into "subtree.path" with query: "..."
+
+        Produces a DrillNode.
+        """
+        tok = self._consume(TokenType.DRILL)
+        pix_name = self._consume(TokenType.IDENTIFIER).value
+        node = DrillNode(pix_name=pix_name, line=tok.line, column=tok.column)
+
+        # Expect 'into' keyword (parsed as identifier)
+        if self._current().value == "into":
+            self._advance()
+            node.subtree_path = self._consume(TokenType.STRING).value
+
+        # Expect 'with' keyword
+        if self._current().value == "with":
+            self._advance()
+
+        # Parse key-value pairs
+        while self._current().type in (TokenType.IDENTIFIER, TokenType.AS):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "query":
+                    node.query_expr = self._consume(TokenType.STRING).value
+                case "as":
+                    node.output_name = self._consume(TokenType.IDENTIFIER).value
+                case _:
+                    self._skip_value()
+
+        return node
+
+    # ── TRAIL (PIX reasoning path) ────────────────────────────────
+
+    def _parse_trail(self) -> TrailNode:
+        """Parse: trail NavigateRef
+
+        Produces a TrailNode — accesses the reasoning path.
+        """
+        tok = self._consume(TokenType.TRAIL)
+        ref = self._consume(TokenType.IDENTIFIER).value
+        return TrailNode(
+            navigate_ref=ref,
+            line=tok.line,
+            column=tok.column,
+        )
 
     # ── REMEMBER / RECALL ─────────────────────────────────────────
 

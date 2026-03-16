@@ -37,6 +37,7 @@ from axon.compiler.ir_nodes import (
     IRDataEdge,
     IRDataSpace,
     IRDeliberate,
+    IRDrill,
     IREffectRow,
     IREpistemicBlock,
     IRExplore,
@@ -48,10 +49,12 @@ from axon.compiler.ir_nodes import (
     IRIngest,
     IRIntent,
     IRMemory,
+    IRNavigate,
     IRNode,
     IRParallelBlock,
     IRParameter,
     IRPersona,
+    IRPixSpec,
     IRProbe,
     IRProgram,
     IRReason,
@@ -64,6 +67,7 @@ from axon.compiler.ir_nodes import (
     IRShieldApply,
     IRStreamSpec,
     IRToolSpec,
+    IRTrail,
     IRType,
     IRTypeField,
     IRUseTool,
@@ -103,6 +107,7 @@ class IRGenerator:
         self._runs: list[IRRun] = []
         self._agents: dict[str, IRAgent] = {}
         self._shields: dict[str, IRShield] = {}
+        self._pix_specs: dict[str, IRPixSpec] = {}
 
     def generate(self, program: ast.ProgramNode) -> IRProgram:
         """
@@ -190,6 +195,11 @@ class IRGenerator:
         ast.ExploreNode: "_visit_explore",
         # v0.14.0 — CT-1: Semantic streaming
         ast.StreamDefinition: "_visit_stream_definition",
+        # PIX — Structured Cognitive Retrieval
+        ast.PixDefinition: "_visit_pix_definition",
+        ast.NavigateNode: "_visit_navigate",
+        ast.DrillNode: "_visit_drill",
+        ast.TrailNode: "_visit_trail",
     }
 
     def _visit(self, node: ast.ASTNode) -> IRNode:
@@ -1122,3 +1132,63 @@ class IRGenerator:
         self._flows.clear()
         self._imports.clear()
         self._runs.clear()
+        self._pix_specs.clear()
+
+    # ═════════════════════════════════════════════════════════════════
+    #  PIX VISITORS — Structured Cognitive Retrieval
+    # ═════════════════════════════════════════════════════════════════
+
+    def _visit_pix_definition(self, node: ast.PixDefinition) -> IRPixSpec:
+        """Lower a PIX definition into an IRPixSpec."""
+        effect_row = None
+        if node.effects:
+            effect_row = IREffectRow(
+                source_line=node.effects.line,
+                source_column=node.effects.column,
+                effects=tuple(node.effects.effects),
+                epistemic_level=node.effects.epistemic_level,
+            )
+
+        ir_pix = IRPixSpec(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            source=node.source,
+            max_depth=node.depth,
+            max_branching=node.branching,
+            model=node.model,
+            effect_row=effect_row,
+        )
+        self._pix_specs[node.name] = ir_pix
+        return ir_pix
+
+    def _visit_navigate(self, node: ast.NavigateNode) -> IRNavigate:
+        """Lower a navigate statement into an IRNavigate."""
+        return IRNavigate(
+            source_line=node.line,
+            source_column=node.column,
+            pix_ref=node.pix_name,
+            query=node.query_expr,
+            trail_enabled=node.trail_enabled,
+            output_name=node.output_name,
+        )
+
+    def _visit_drill(self, node: ast.DrillNode) -> IRDrill:
+        """Lower a drill statement into an IRDrill."""
+        return IRDrill(
+            source_line=node.line,
+            source_column=node.column,
+            pix_ref=node.pix_name,
+            subtree_path=node.subtree_path,
+            query=node.query_expr,
+            output_name=node.output_name,
+        )
+
+    def _visit_trail(self, node: ast.TrailNode) -> IRTrail:
+        """Lower a trail statement into an IRTrail."""
+        return IRTrail(
+            source_line=node.line,
+            source_column=node.column,
+            navigate_ref=node.navigate_ref,
+        )
+
