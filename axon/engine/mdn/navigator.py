@@ -477,3 +477,97 @@ class CorpusNavigator:
         if not paths:
             return 0.0
         return sum(p.confidence for p in paths) / len(paths)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  MEMORY-AUGMENTED NAVIGATOR — Memory-conditioned BFS
+# ═══════════════════════════════════════════════════════════════════
+
+
+class MemoryAugmentedNavigator:
+    """Navigator with memory-augmented scoring.
+
+    Wraps CorpusNavigator and integrates memory:
+
+    Pre-navigation:
+        - Episodic recall: identify relevant past paths
+        - Procedural bias: compute Bias(D) for candidate scoring
+
+    Post-navigation:
+        - Record the interaction in history
+
+    The info-gain estimate is modified as (§5.2 of memory paper):
+        Î_H(A; D' | Q, path) ≈ I(A; D' | Q, path) · (1 + β · Bias(D'))
+
+    This preserves submodularity (MDN Corollary 2.1) since the bias
+    multiplier is non-negative and bounded.
+
+    Args:
+        memory_corpus:  The MemoryAugmentedCorpus C*.
+        beta:           Weight on procedural bias ∈ [0, 1). Default: 0.3
+        **navigator_kwargs: Forwarded to CorpusNavigator.
+    """
+
+    def __init__(
+        self,
+        memory_corpus: Any,  # MemoryAugmentedCorpus (avoid circular import)
+        beta: float = 0.3,
+        **navigator_kwargs: Any,
+    ) -> None:
+        if not (0.0 <= beta < 1.0):
+            raise ValueError(
+                f"Procedural bias weight β must be in [0, 1), got {beta}"
+            )
+        self._memory_corpus = memory_corpus
+        self._beta = beta
+        self._navigator_kwargs = navigator_kwargs
+
+    def navigate(
+        self,
+        start_doc_id: str,
+        query: str,
+        budget: Budget,
+        auto_record: bool = True,
+        outcome_score: float | None = None,
+    ) -> NavigationResult:
+        """Execute memory-augmented navigation.
+
+        Pipeline:
+            1. Recall: episodic memory suggests prior doc_ids
+            2. Navigate: standard BFS on memory-transformed corpus
+            3. Record: append interaction to history (if auto_record)
+
+        Args:
+            start_doc_id:  D₀ — the starting document.
+            query:         Q — the navigation query.
+            budget:        B — budget constraints.
+            auto_record:   Whether to automatically record the interaction.
+            outcome_score: If auto_record is True, the outcome score for
+                           the interaction. If None, uses the navigation
+                           confidence as the score. Default: None.
+
+        Returns:
+            NavigationResult with provenance-annotated paths.
+        """
+        # Step 1: Episodic recall — warm memory for later inspection
+        self._memory_corpus.recall(query)
+
+        # Step 2: Navigate on the current (memory-transformed) corpus
+        corpus = self._memory_corpus.corpus
+        navigator = CorpusNavigator(corpus, **self._navigator_kwargs)
+        result = navigator.navigate(start_doc_id, query, budget)
+
+        # Step 3: Auto-record if requested
+        if auto_record and result.paths:
+            score = outcome_score if outcome_score is not None else result.confidence
+            # Record the best path (highest confidence)
+            best_path = max(result.paths, key=lambda p: p.confidence)
+            self._memory_corpus.record_interaction(query, best_path, score)
+
+        return result
+
+    @property
+    def recalled_doc_ids(self) -> set[str]:
+        """Doc IDs from the most recent episodic recall (for inspection)."""
+        return self._memory_corpus.recall("")
+

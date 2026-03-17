@@ -10,12 +10,18 @@ with provenance tracking, epistemic typing, and bounded traversal guarantees.
 Mathematical foundation: §2.1 Definition 1 (Document Corpus Graph)
   C = (D, R, τ, ω, σ)
 
+Memory-Augmented extension: §3 (Memory-Augmented MDN)
+  C* = (D, R, τ, ω, σ, H, μ)
+
 Public API:
     CorpusGraph, Document, Edge, RelationType, Budget
     ProvenancePath, NavigationResult
-    CorpusNavigator
+    CorpusNavigator, MemoryAugmentedNavigator
     EpistemicPageRank
     CorpusBuilder
+    InteractionRecord, History
+    EpisodicMemory, SemanticMemory, ProceduralMemory
+    MemoryOperator, MemoryAugmentedCorpus
 """
 
 from __future__ import annotations
@@ -29,7 +35,7 @@ from axon.engine.mdn.corpus_graph import (
     ProvenancePath,
     RelationType,
 )
-from axon.engine.mdn.navigator import CorpusNavigator
+from axon.engine.mdn.navigator import CorpusNavigator, MemoryAugmentedNavigator
 from axon.engine.mdn.epr import EpistemicPageRank
 from axon.engine.mdn.builder import CorpusBuilder
 from axon.engine.mdn.epistemic_types import (
@@ -38,6 +44,15 @@ from axon.engine.mdn.epistemic_types import (
     promote,
     demote,
     aggregate_levels,
+)
+from axon.engine.mdn.memory import (
+    InteractionRecord,
+    History,
+    EpisodicMemory,
+    SemanticMemory,
+    ProceduralMemory,
+    MemoryOperator,
+    MemoryAugmentedCorpus,
 )
 
 __all__ = [
@@ -51,6 +66,8 @@ __all__ = [
     "NavigationResult",
     # Navigator (§5.4)
     "CorpusNavigator",
+    # Memory-Augmented Navigator (§5.2, Memory Paper)
+    "MemoryAugmentedNavigator",
     # EPR (§2.3, Theorem 3)
     "EpistemicPageRank",
     # Builder
@@ -61,4 +78,13 @@ __all__ = [
     "promote",
     "demote",
     "aggregate_levels",
+    # Memory (Memory-Augmented MDN Paper)
+    "InteractionRecord",
+    "History",
+    "EpisodicMemory",
+    "SemanticMemory",
+    "ProceduralMemory",
+    "MemoryOperator",
+    "MemoryAugmentedCorpus",
 ]
+
