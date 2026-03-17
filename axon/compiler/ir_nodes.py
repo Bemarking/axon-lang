@@ -91,6 +91,7 @@ class IRProgram(IRNode):
     shields: tuple['IRShield', ...] = ()
     pix_specs: tuple['IRPixSpec', ...] = ()
     corpus_specs: tuple['IRCorpusSpec', ...] = ()
+    psyche_specs: tuple['IRPsycheSpec', ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1009,3 +1010,40 @@ class IRCorroborate(IRNode):
     node_type: str = "corroborate"
     navigate_ref: str = ""                          # reference to a navigate result
     output_name: str = ""                           # binding name for corroborated claims
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  PSYCHE IR NODES — Psychological-Epistemic Modeling (§PEM)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRPsycheSpec(IRNode):
+    """
+    Compiled psyche specification — psychological-epistemic model config.
+
+    Models mental states as epistemological objects with structured
+    uncertainty, grounded in 4 mathematical pillars:
+
+      §1  Riemannian Manifold — state dynamics with inertia
+      §2  Density Operators — quantum cognitive probability
+      §3  Active Inference — free energy minimization
+      §4  Dependent Types — NonDiagnostic safety constraint
+
+    Formal basis:
+      ψ ∈ M  (cognitive state on manifold M)
+      dψ_t = -∇U(ψ_t, I_t)dt + σ·dW_t
+      P(D|ψ) = Tr(Π_D · ρ_ψ · Π_D)
+      G(π,τ) = E_q[DKL[q||p] - ln p(o_τ|s_τ)]
+
+    Safety invariant (compile-time enforced):
+      ∀ output ∈ Results(q') : ¬IsClinicalDiagnosis(output)
+    """
+    node_type: str = "psyche_spec"
+    name: str = ""
+    dimensions: tuple[str, ...] = ()                # cognitive dimension names
+    manifold_curvature: tuple[tuple[str, float], ...] = ()  # per-dim curvature
+    manifold_noise: float = 0.05                    # σ — stochastic perturbation
+    manifold_momentum: float = 0.7                  # β — momentum decay
+    safety_constraints: tuple[str, ...] = ()        # e.g. ("non_diagnostic", "non_prescriptive")
+    quantum_enabled: bool = False                   # density matrix mode
+    inference_mode: str = ""                        # "active" | "passive"

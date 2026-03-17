@@ -46,6 +46,7 @@ from .ast_nodes import (
     PixDefinition,
     ProbeDirective,
     ProgramNode,
+    PsycheDefinition,
     RangeConstraint,
     ReasonChain,
     RecallNode,
@@ -131,12 +132,14 @@ class Parser:
                 return self._parse_pix_definition()
             case TokenType.CORPUS:
                 return self._parse_corpus_definition()
+            case TokenType.PSYCHE:
+                return self._parse_psyche()
             case _:
                 raise AxonParseError(
                     f"Unexpected token at top level",
                     line=tok.line,
                     column=tok.column,
-                    expected="declaration (persona, context, anchor, flow, agent, shield, pix, run, know, speculate, ...)",
+                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, run, know, speculate, ...)",
                     found=tok.value,
                 )
 
@@ -2248,4 +2251,119 @@ class Parser:
             self._advance()
             node.output_type = self._consume(TokenType.IDENTIFIER).value
 
+        return node
+
+    # ── PSYCHE ─────────────────────────────────────────────────────
+
+    def _parse_psyche(self) -> PsycheDefinition:
+        """
+        Parse a top-level psyche definition:
+
+          psyche TherapeuticProfile {
+              dimensions: [affect, cognitive_load, certainty, openness, trust]
+              manifold: {
+                  curvature: { certainty: 0.8, trust: 0.9 }
+                  noise: 0.05
+                  momentum: 0.7
+              }
+              safety: [non_diagnostic, non_prescriptive]
+              quantum: enabled
+              inference: active
+          }
+
+        Grounded in the PEM formal framework:
+          §1  Riemannian Manifold — ψ ∈ M with metric tensor g
+          §2  Density Operators — ρ_ψ ∈ ℝ^{k×k}, P(D|ψ) = Tr(Π·ρ·Π)
+          §3  Active Inference — G(π,τ) = epistemic + pragmatic value
+          §4  Dependent Types — NonDiagnostic safety constraint
+
+        The psyche block declares the psychological-epistemic model —
+        the compiler validates completeness, the runtime executes it.
+        """
+        tok = self._consume(TokenType.PSYCHE)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = PsycheDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            inner = self._current()
+
+            match inner.type:
+                case TokenType.DIMENSIONS:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    self._consume(TokenType.LBRACKET)
+                    if self._check(TokenType.RBRACKET):
+                        self._advance()
+                        node.dimensions = []
+                    else:
+                        node.dimensions = self._parse_extended_identifier_list()
+                        self._consume(TokenType.RBRACKET)
+
+                case TokenType.MANIFOLD:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    self._consume(TokenType.LBRACE)
+                    while not self._check(TokenType.RBRACE):
+                        field_tok = self._current()
+                        field_name = field_tok.value
+                        self._advance()
+                        self._consume(TokenType.COLON)
+
+                        match field_name:
+                            case "curvature":
+                                # curvature: { dim_name: float, ... }
+                                self._consume(TokenType.LBRACE)
+                                while not self._check(TokenType.RBRACE):
+                                    dim_name = self._consume_any_identifier_or_keyword().value
+                                    self._consume(TokenType.COLON)
+                                    val_tok = self._current()
+                                    if val_tok.type == TokenType.FLOAT:
+                                        node.manifold_curvature[dim_name] = float(self._advance().value)
+                                    else:
+                                        node.manifold_curvature[dim_name] = float(self._consume(TokenType.INTEGER).value)
+                                    # optional comma
+                                    if self._check(TokenType.COMMA):
+                                        self._advance()
+                                self._consume(TokenType.RBRACE)
+                            case "noise":
+                                val_tok = self._current()
+                                if val_tok.type == TokenType.FLOAT:
+                                    node.manifold_noise = float(self._advance().value)
+                                else:
+                                    node.manifold_noise = float(self._consume(TokenType.INTEGER).value)
+                            case "momentum":
+                                val_tok = self._current()
+                                if val_tok.type == TokenType.FLOAT:
+                                    node.manifold_momentum = float(self._advance().value)
+                                else:
+                                    node.manifold_momentum = float(self._consume(TokenType.INTEGER).value)
+                            case _:
+                                self._skip_value()
+                    self._consume(TokenType.RBRACE)
+
+                case _:
+                    # Identifier-based fields: safety, quantum, inference
+                    field_name = inner.value
+                    self._advance()
+                    self._consume(TokenType.COLON)
+
+                    match field_name:
+                        case "safety":
+                            self._consume(TokenType.LBRACKET)
+                            if self._check(TokenType.RBRACKET):
+                                self._advance()
+                                node.safety_constraints = []
+                            else:
+                                node.safety_constraints = self._parse_extended_identifier_list()
+                                self._consume(TokenType.RBRACKET)
+                        case "quantum":
+                            val = self._consume_any_identifier_or_keyword().value
+                            node.quantum_enabled = val in ("enabled", "true")
+                        case "inference":
+                            node.inference_mode = self._consume_any_identifier_or_keyword().value
+                        case _:
+                            self._skip_value()
+
+        self._consume(TokenType.RBRACE)
         return node

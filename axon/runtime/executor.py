@@ -2927,3 +2927,117 @@ class Executor:
             ),
         )
 
+    # ── PEM (Psychological-Epistemic Modeling) ─────────────────────
+
+    async def _execute_psyche_step(
+        self,
+        *,
+        step: CompiledStep,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a psyche specification step.
+
+        Psyche steps don't call the model — they initialize the
+        PEM (Psychological-Epistemic Modeling) engine:
+
+          1. Emit PSYCHE_INIT with manifold configuration (§1)
+          2. Emit PSYCHE_DIMENSION_MAP for each cognitive dimension (§2)
+          3. Emit PSYCHE_SAFETY_CHECK enforcing NonDiagnostic (§4)
+          4. Emit PSYCHE_INFERENCE_START for the inference loop (§3)
+          5. Return metadata-only StepResult
+
+        The actual PsycheEngine integration (SDE stepping,
+        density matrix operations, free energy minimization)
+        will be connected when the engine is wired to the
+        runtime in a future phase.
+        """
+        step_start = time.perf_counter()
+        psyche_meta = step.metadata.get("psyche_spec", {})
+        psyche_name = psyche_meta.get("name", "")
+        dimensions = psyche_meta.get("dimensions", [])
+        manifold = psyche_meta.get("manifold", {})
+        safety = psyche_meta.get("safety_constraints", [])
+        quantum = psyche_meta.get("quantum_enabled", False)
+        inference = psyche_meta.get("inference_mode", "")
+
+        step_name = f"psyche:{psyche_name}"
+
+        # §1 — Manifold construction + §2 Density matrix allocation
+        tracer.emit_psyche_init(
+            step_name=step_name,
+            psyche_name=psyche_name,
+            dimensions=dimensions,
+            manifold_noise=manifold.get("noise", 0.0),
+            manifold_momentum=manifold.get("momentum", 0.0),
+            quantum_enabled=quantum,
+            inference_mode=inference,
+        )
+
+        # §1 — Map each cognitive dimension to the manifold
+        for dim in dimensions:
+            curvature = manifold.get("curvature", {}).get(dim, 1.0)
+            tracer.emit(
+                TraceEventType.PSYCHE_DIMENSION_MAP,
+                step_name=step_name,
+                data={
+                    "dimension": dim,
+                    "curvature": curvature,
+                    "noise": manifold.get("noise", 0.0),
+                },
+            )
+
+        # §4 — NonDiagnostic safety enforcement
+        non_diagnostic = "non_diagnostic" in safety
+        tracer.emit_psyche_safety_check(
+            step_name=step_name,
+            constraints=safety,
+            non_diagnostic_enforced=non_diagnostic,
+            passed=non_diagnostic,  # passes only if constraint present
+        )
+
+        # §3 — Active inference loop initialization
+        tracer.emit(
+            TraceEventType.PSYCHE_INFERENCE_START,
+            step_name=step_name,
+            data={
+                "mode": inference,
+                "quantum_enabled": quantum,
+                "dimensions_count": len(dimensions),
+            },
+        )
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+
+        # Store psyche config in context for downstream steps
+        ctx.set_step_result(step_name, {
+            "psyche_name": psyche_name,
+            "dimensions": dimensions,
+            "manifold": manifold,
+            "quantum_enabled": quantum,
+            "inference_mode": inference,
+            "safety_constraints": safety,
+        })
+
+        return StepResult(
+            step_name=step_name,
+            response=ModelResponse(
+                content=(
+                    f"[psyche:{psyche_name}] initialized — "
+                    f"{len(dimensions)} dimensions, "
+                    f"inference={inference}, "
+                    f"quantum={'on' if quantum else 'off'}"
+                ),
+                structured={
+                    "psyche_name": psyche_name,
+                    "dimensions": dimensions,
+                    "manifold": manifold,
+                    "quantum_enabled": quantum,
+                    "inference_mode": inference,
+                    "non_diagnostic_enforced": non_diagnostic,
+                },
+                usage={},
+            ),
+            duration_ms=step_duration,
+        )
+

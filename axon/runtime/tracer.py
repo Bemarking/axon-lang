@@ -14,7 +14,7 @@ Architecture:
     ExecutionTrace    — The root container for a full program execution
     Tracer            — The recorder: start_span(), emit(), end_span()
 
-Event Types (23):
+Event Types (28):
     step_start, step_end, model_call, model_response,
     anchor_check, anchor_pass, anchor_breach,
     validation_pass, validation_fail,
@@ -23,7 +23,9 @@ Event Types (23):
     confidence_check,
     agent_cycle_start, agent_cycle_end, agent_goal_check, agent_stuck,
     mdn_navigate_start, mdn_navigate_step, mdn_navigate_end,
-    mdn_corroborate, mdn_contradiction_detected
+    mdn_corroborate, mdn_contradiction_detected,
+    psyche_init, psyche_dimension_map, psyche_safety_check,
+    psyche_inference_start, psyche_state_update
 """
 
 from __future__ import annotations
@@ -93,6 +95,13 @@ class TraceEventType(str, Enum):
     MDN_NAVIGATE_END = "mdn_navigate_end"
     MDN_CORROBORATE = "mdn_corroborate"
     MDN_CONTRADICTION_DETECTED = "mdn_contradiction_detected"
+
+    # — PEM (Psychological-Epistemic Modeling) —
+    PSYCHE_INIT = "psyche_init"
+    PSYCHE_DIMENSION_MAP = "psyche_dimension_map"
+    PSYCHE_SAFETY_CHECK = "psyche_safety_check"
+    PSYCHE_INFERENCE_START = "psyche_inference_start"
+    PSYCHE_STATE_UPDATE = "psyche_state_update"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -586,4 +595,54 @@ class Tracer:
         payload["contradictions"] = contradictions
         return self.emit(
             TraceEventType.MDN_CORROBORATE, step_name=step_name, data=payload
+        )
+
+    # — PEM convenience emitters —
+
+    def emit_psyche_init(
+        self,
+        step_name: str,
+        psyche_name: str = "",
+        dimensions: list[str] | None = None,
+        manifold_noise: float = 0.0,
+        manifold_momentum: float = 0.0,
+        quantum_enabled: bool = False,
+        inference_mode: str = "",
+        data: dict[str, Any] | None = None,
+    ) -> TraceEvent:
+        """Convenience: emit a PSYCHE_INIT event.
+
+        Fired once when the PsycheEngine is constructed —
+        §1 manifold allocation + §2 density matrix init.
+        """
+        payload = data or {}
+        payload["psyche_name"] = psyche_name
+        payload["dimensions"] = dimensions or []
+        payload["manifold_noise"] = manifold_noise
+        payload["manifold_momentum"] = manifold_momentum
+        payload["quantum_enabled"] = quantum_enabled
+        payload["inference_mode"] = inference_mode
+        return self.emit(
+            TraceEventType.PSYCHE_INIT, step_name=step_name, data=payload
+        )
+
+    def emit_psyche_safety_check(
+        self,
+        step_name: str,
+        constraints: list[str] | None = None,
+        non_diagnostic_enforced: bool = True,
+        passed: bool = True,
+        data: dict[str, Any] | None = None,
+    ) -> TraceEvent:
+        """Convenience: emit a PSYCHE_SAFETY_CHECK event.
+
+        §4 NonDiagnostic runtime enforcement — verifies that
+        no clinical-diagnostic output is generated.
+        """
+        payload = data or {}
+        payload["constraints"] = constraints or []
+        payload["non_diagnostic_enforced"] = non_diagnostic_enforced
+        payload["passed"] = passed
+        return self.emit(
+            TraceEventType.PSYCHE_SAFETY_CHECK, step_name=step_name, data=payload
         )

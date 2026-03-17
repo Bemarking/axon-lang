@@ -44,6 +44,7 @@ from axon.compiler.ir_nodes import (
     IRNode,
     IRPersona,
     IRProgram,
+    IRPsycheSpec,
     IRRun,
     IRShield,
     IRShieldApply,
@@ -62,6 +63,9 @@ _SHIELD_IR_TYPES = (IRShieldApply,)
 
 # IR types that represent MDN operations (multi-document navigation)
 _MDN_IR_TYPES = (IRNavigate, IRCorroborate)
+
+# IR types that represent Psyche operations (psychological-epistemic modeling)
+_PSYCHE_IR_TYPES = (IRPsycheSpec,)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -268,6 +272,9 @@ class BaseBackend(ABC):
                 elif isinstance(step, _MDN_IR_TYPES):
                     mdn_step = self._compile_mdn_step(step, ir)
                     compiled_steps.append(mdn_step)
+                elif isinstance(step, _PSYCHE_IR_TYPES):
+                    psyche_step = self._compile_psyche_step(step, ir)
+                    compiled_steps.append(psyche_step)
                 else:
                     compiled = self.compile_step(step, ctx)
                     compiled_steps.append(compiled)
@@ -614,6 +621,41 @@ class BaseBackend(ABC):
                     user_prompt="",
                     metadata={},
                 )
+
+    @staticmethod
+    def _compile_psyche_step(
+        step: IRPsycheSpec, ir: IRProgram,
+    ) -> CompiledStep:
+        """Compile a psyche spec into a metadata-only step.
+
+        Psyche steps don't go to the model directly — the runtime's
+        PsycheExecutor processes them to initialize the PEM engine:
+          1. Cognitive manifold construction (§1 — Riemannian dynamics)
+          2. Density matrix allocation (§2 — quantum cognitive probability)
+          3. Active inference loop setup (§3 — free energy minimization)
+          4. Safety type enforcement (§4 — NonDiagnostic constraint)
+
+        The compiled metadata carries all configuration needed to
+        instantiate the PsycheEngine at runtime.
+        """
+        return CompiledStep(
+            step_name=f"psyche:{step.name}",
+            user_prompt="",
+            metadata={
+                "psyche_spec": {
+                    "name": step.name,
+                    "dimensions": list(step.dimensions),
+                    "manifold": {
+                        "curvature": dict(step.manifold_curvature),
+                        "noise": step.manifold_noise,
+                        "momentum": step.manifold_momentum,
+                    },
+                    "safety_constraints": list(step.safety_constraints),
+                    "quantum_enabled": step.quantum_enabled,
+                    "inference_mode": step.inference_mode,
+                },
+            },
+        )
 
     @abstractmethod
     def compile_step(

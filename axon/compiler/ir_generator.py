@@ -61,6 +61,7 @@ from axon.compiler.ir_nodes import (
     IRPixSpec,
     IRProbe,
     IRProgram,
+    IRPsycheSpec,
     IRReason,
     IRRecall,
     IRRefine,
@@ -113,6 +114,7 @@ class IRGenerator:
         self._shields: dict[str, IRShield] = {}
         self._pix_specs: dict[str, IRPixSpec] = {}
         self._corpus_specs: dict[str, IRCorpusSpec] = {}
+        self._psyche_specs: dict[str, IRPsycheSpec] = {}
 
     def generate(self, program: ast.ProgramNode) -> IRProgram:
         """
@@ -154,6 +156,7 @@ class IRGenerator:
             shields=tuple(self._shields.values()),
             pix_specs=tuple(self._pix_specs.values()),
             corpus_specs=tuple(self._corpus_specs.values()),
+            psyche_specs=tuple(self._psyche_specs.values()),
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -210,6 +213,8 @@ class IRGenerator:
         # MDN — Multi-Document Navigation
         ast.CorpusDefinition: "_visit_corpus_definition",
         ast.CorroborateNode: "_visit_corroborate",
+        # PEM — Psychological-Epistemic Modeling
+        ast.PsycheDefinition: "_visit_psyche",
     }
 
     def _visit(self, node: ast.ASTNode) -> IRNode:
@@ -1144,6 +1149,7 @@ class IRGenerator:
         self._runs.clear()
         self._pix_specs.clear()
         self._corpus_specs.clear()
+        self._psyche_specs.clear()
 
     # ═════════════════════════════════════════════════════════════════
     #  PIX VISITORS — Structured Cognitive Retrieval
@@ -1263,4 +1269,35 @@ class IRGenerator:
             navigate_ref=node.navigate_ref,
             output_name=node.output_name,
         )
+
+    # ═════════════════════════════════════════════════════════════════
+    #  PSYCHE VISITORS — Psychological-Epistemic Modeling (§PEM)
+    # ═════════════════════════════════════════════════════════════════
+
+    def _visit_psyche(self, node: ast.PsycheDefinition) -> IRPsycheSpec:
+        """
+        Lower a PsycheDefinition AST into an IRPsycheSpec.
+
+        Formal basis — the 4 PEM pillars:
+          §1  ψ ∈ M               → dimensions + manifold config
+          §2  ρ_ψ ∈ ℝ^{k×k}      → quantum_enabled
+          §3  G(π,τ)              → inference_mode
+          §4  NonDiagnostic(q')   → safety_constraints
+        """
+        ir_psyche = IRPsycheSpec(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            dimensions=tuple(node.dimensions),
+            manifold_curvature=tuple(
+                (dim, kappa) for dim, kappa in node.manifold_curvature.items()
+            ),
+            manifold_noise=node.manifold_noise,
+            manifold_momentum=node.manifold_momentum,
+            safety_constraints=tuple(node.safety_constraints),
+            quantum_enabled=node.quantum_enabled,
+            inference_mode=node.inference_mode,
+        )
+        self._psyche_specs[node.name] = ir_psyche
+        return ir_psyche
 

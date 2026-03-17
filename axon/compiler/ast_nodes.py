@@ -1172,6 +1172,55 @@ class CorroborateNode(ASTNode):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  PSYCHE PRIMITIVE — Psychological-Epistemic Modeling (§PEM)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class PsycheDefinition(ASTNode):
+    """
+    psyche TherapeuticProfile {
+        dimensions: [affect, cognitive_load, certainty, openness, trust]
+        manifold: {
+            curvature: { certainty: 0.8, trust: 0.9 }
+            noise: 0.05
+            momentum: 0.7
+        }
+        safety: [non_diagnostic, non_prescriptive]
+        quantum: enabled
+        inference: active
+    }
+
+    The **psyche** primitive — Psychological-Epistemic Modeling.
+
+    Models mental states as epistemological objects with structured
+    uncertainty, grounded in 4 mathematical pillars:
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  §1  Riemannian Manifold — state dynamics with inertia      ║
+    ║  §2  Density Operators — quantum cognitive probability       ║
+    ║  §3  Active Inference — free energy minimization             ║
+    ║  §4  Dependent Types — NonDiagnostic safety constraint       ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+    Formal basis:
+      ψ ∈ M  (cognitive state on Riemannian manifold)
+      dψ_t = -∇U(ψ_t, I_t)dt + σ·dW_t  (SDE dynamics)
+      P(D|ψ) = Tr(Π_D · ρ_ψ · Π_D)    (Born's rule projection)
+      G(π,τ) = E_q[DKL[q||p] - ln p(o_τ|s_τ)]  (expected free energy)
+
+    Safety invariant: ∀ output ∈ Results(q') : ¬IsClinicalDiagnosis(output)
+    """
+    name: str = ""
+    dimensions: list[str] = field(default_factory=list)
+    manifold_curvature: dict[str, float] = field(default_factory=dict)
+    manifold_noise: float = 0.05
+    manifold_momentum: float = 0.7
+    safety_constraints: list[str] = field(default_factory=list)
+    quantum_enabled: bool = False
+    inference_mode: str = ""  # "active" | "passive" | ""
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  EXECUTION NODE
 # ═══════════════════════════════════════════════════════════════════
 

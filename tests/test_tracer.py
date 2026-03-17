@@ -59,6 +59,9 @@ class TestTraceEvent:
             # MDN (Multi-Document Navigation) events
             "mdn_navigate_start", "mdn_navigate_step", "mdn_navigate_end",
             "mdn_corroborate", "mdn_contradiction_detected",
+            # PEM (Psychological-Epistemic Modeling) events
+            "psyche_init", "psyche_dimension_map", "psyche_safety_check",
+            "psyche_inference_start", "psyche_state_update",
         }
         actual = {e.value for e in TraceEventType}
         assert actual == expected

@@ -52,6 +52,7 @@ from .ast_nodes import (
     PixDefinition,
     ProbeDirective,
     ProgramNode,
+    PsycheDefinition,
     ReasonChain,
     RecallNode,
     RefineBlock,
@@ -455,6 +456,8 @@ class TypeChecker:
                 self._check_pix_definition(decl)
             case CorpusDefinition():
                 self._check_corpus_definition(decl)
+            case PsycheDefinition():
+                self._check_psyche(decl)
             case IngestNode():
                 pass  # validated at runtime
             case FocusNode() | AssociateNode() | AggregateNode() | ExploreNode():
@@ -1413,6 +1416,105 @@ class TypeChecker:
         if not node.navigate_ref:
             self._emit(
                 "corroborate requires a reference to a navigate result",
+                node,
+            )
+
+    # ── PSYCHE validation (§PEM) ──────────────────────────────────
+
+    def _check_psyche(self, node: PsycheDefinition) -> None:
+        """
+        Validate psyche definition — psychological-epistemic modeling.
+
+        Enforces formal constraints from the PEM framework:
+          §1  Manifold validity: σ ∈ (0, 1], β ∈ [0, 1], κ > 0
+          §2  Dimension completeness: |D| ≥ 1
+          §4  Safety: NonDiagnostic dependent type constraint
+        """
+        # Unique name in symbol table
+        if node.name in self._symbol_table:
+            self._emit(
+                f"Duplicate psyche definition: '{node.name}' already defined "
+                f"(line {self._symbol_table[node.name]})",
+                node,
+            )
+        else:
+            self._symbol_table[node.name] = node.line
+
+        # §2 — dimension completeness: |D| ≥ 1
+        if not node.dimensions:
+            self._emit(
+                f"psyche '{node.name}' requires at least one cognitive dimension "
+                f"(§1: ψ ∈ M requires dim(M) ≥ 1)",
+                node,
+            )
+
+        # Check for duplicate dimensions
+        seen_dims: set[str] = set()
+        for dim in node.dimensions:
+            if dim in seen_dims:
+                self._emit(
+                    f"Duplicate dimension '{dim}' in psyche '{node.name}'",
+                    node,
+                )
+            seen_dims.add(dim)
+
+        # §1 — manifold parameter validation
+        # σ — noise: must be in (0, 1]
+        if node.manifold_noise <= 0.0 or node.manifold_noise > 1.0:
+            self._emit(
+                f"Manifold noise σ must be in (0, 1], got {node.manifold_noise} "
+                f"(psyche '{node.name}', §1: stochastic perturbation bound)",
+                node,
+            )
+
+        # β — momentum decay: must be in [0, 1]
+        if node.manifold_momentum < 0.0 or node.manifold_momentum > 1.0:
+            self._emit(
+                f"Manifold momentum β must be in [0, 1], got {node.manifold_momentum} "
+                f"(psyche '{node.name}', §1: exponential decay factor)",
+                node,
+            )
+
+        # κ — curvature: must be positive for all dimensions
+        for dim_name, kappa in node.manifold_curvature.items():
+            if kappa <= 0.0:
+                self._emit(
+                    f"Curvature κ for dimension '{dim_name}' must be > 0, "
+                    f"got {kappa} (psyche '{node.name}', §1: Riemannian metric)",
+                    node,
+                )
+            # Curvature dimension must be declared in dimensions list
+            if dim_name not in seen_dims:
+                self._emit(
+                    f"Curvature references undeclared dimension '{dim_name}' "
+                    f"in psyche '{node.name}' (not in dimensions list)",
+                    node,
+                )
+
+        # §4 — safety: NonDiagnostic dependent type constraint
+        # The safety list MUST include 'non_diagnostic' — this is the
+        # core invariant from the PEM paper:
+        #   ∀ output ∈ Results(q') : ¬IsClinicalDiagnosis(output)
+        if not node.safety_constraints:
+            self._emit(
+                f"psyche '{node.name}' must declare at least one safety constraint "
+                f"(§4: dependent type safety — 'non_diagnostic' is mandatory)",
+                node,
+            )
+        elif 'non_diagnostic' not in node.safety_constraints:
+            self._emit(
+                f"psyche '{node.name}' missing mandatory 'non_diagnostic' safety "
+                f"constraint (§4: ∀ output ∈ Results(q') : ¬IsClinicalDiagnosis(output))",
+                node,
+            )
+
+        # Inference mode validation
+        valid_modes = {'active', 'passive', ''}
+        if node.inference_mode not in valid_modes:
+            self._emit(
+                f"Invalid inference mode '{node.inference_mode}' in psyche "
+                f"'{node.name}' — must be 'active' or 'passive' "
+                f"(§3: free energy minimization)",
                 node,
             )
 

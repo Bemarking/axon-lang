@@ -4,7 +4,7 @@ AXON Compiler — Token Definitions
 Every token the lexer can produce. Derived directly from the AXON EBNF grammar.
 
 Categories:
-  - KEYWORDS: 63 cognitive keywords (persona, context, flow, anchor, agent, shield, dataspace, …)
+  - KEYWORDS: 68 cognitive keywords (persona, context, flow, anchor, agent, shield, psyche, dataspace, …)
   - LITERALS: STRING, INTEGER, FLOAT, BOOL, DURATION, IDENTIFIER
   - SYMBOLS:  braces, parens, brackets, colon, comma, arrow, range, etc.
   - COMPARISON: <, >, <=, >=, ==, !=
@@ -90,6 +90,13 @@ class TokenType(Enum):
     NAVIGATE = auto()         # navigate pix_name with query: Q
     DRILL = auto()            # drill into subtree
     TRAIL = auto()            # reasoning path access
+
+    # ── PSYCHE KEYWORDS (psychological-epistemic modeling §PEM) ────
+    PSYCHE = auto()           # psyche definition
+    DIMENSIONS = auto()       # dimensions: [...]
+    MANIFOLD = auto()         # manifold: { ... }
+    QUANTUM = auto()          # quantum: enabled
+    INFERENCE = auto()        # inference: active
 
     # ── MDN KEYWORDS (multi-document navigation §5.3) ─────────────
     CORPUS = auto()           # corpus definition
@@ -245,6 +252,12 @@ KEYWORDS: dict[str, TokenType] = {
     "navigate": TokenType.NAVIGATE,
     "drill": TokenType.DRILL,
     "trail": TokenType.TRAIL,
+    # Psyche (psychological-epistemic modeling §PEM)
+    "psyche": TokenType.PSYCHE,
+    "dimensions": TokenType.DIMENSIONS,
+    "manifold": TokenType.MANIFOLD,
+    "quantum": TokenType.QUANTUM,
+    "inference": TokenType.INFERENCE,
     # MDN (multi-document navigation §5.3)
     "corpus": TokenType.CORPUS,
     "corroborate": TokenType.CORROBORATE,
