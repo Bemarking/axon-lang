@@ -14,14 +14,16 @@ Architecture:
     ExecutionTrace    — The root container for a full program execution
     Tracer            — The recorder: start_span(), emit(), end_span()
 
-Event Types (18):
+Event Types (23):
     step_start, step_end, model_call, model_response,
     anchor_check, anchor_pass, anchor_breach,
     validation_pass, validation_fail,
     retry_attempt, refine_start,
     memory_read, memory_write,
     confidence_check,
-    agent_cycle_start, agent_cycle_end, agent_goal_check, agent_stuck
+    agent_cycle_start, agent_cycle_end, agent_goal_check, agent_stuck,
+    mdn_navigate_start, mdn_navigate_step, mdn_navigate_end,
+    mdn_corroborate, mdn_contradiction_detected
 """
 
 from __future__ import annotations
@@ -84,6 +86,13 @@ class TraceEventType(str, Enum):
     SHIELD_SCAN_BREACH = "shield_scan_breach"
     SHIELD_TAINT_CHECK = "shield_taint_check"
     SHIELD_CAPABILITY_CHECK = "shield_capability_check"
+
+    # — MDN (Multi-Document Navigation) —
+    MDN_NAVIGATE_START = "mdn_navigate_start"
+    MDN_NAVIGATE_STEP = "mdn_navigate_step"
+    MDN_NAVIGATE_END = "mdn_navigate_end"
+    MDN_CORROBORATE = "mdn_corroborate"
+    MDN_CONTRADICTION_DETECTED = "mdn_contradiction_detected"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -532,4 +541,49 @@ class Tracer:
         payload["passed"] = passed
         return self.emit(
             TraceEventType.CONFIDENCE_CHECK, step_name=step_name, data=payload
+        )
+
+    # — MDN convenience emitters —
+
+    def emit_mdn_navigate_start(
+        self,
+        step_name: str,
+        corpus_ref: str = "",
+        query: str = "",
+        budget_depth: int | None = None,
+        budget_nodes: int | None = None,
+        edge_filter: list[str] | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> TraceEvent:
+        """Convenience: emit an MDN_NAVIGATE_START event."""
+        payload = data or {}
+        payload["corpus_ref"] = corpus_ref
+        payload["query"] = query
+        if budget_depth is not None:
+            payload["budget_depth"] = budget_depth
+        if budget_nodes is not None:
+            payload["budget_nodes"] = budget_nodes
+        if edge_filter:
+            payload["edge_filter"] = edge_filter
+        return self.emit(
+            TraceEventType.MDN_NAVIGATE_START, step_name=step_name, data=payload
+        )
+
+    def emit_mdn_corroborate(
+        self,
+        step_name: str,
+        navigate_ref: str = "",
+        paths_checked: int = 0,
+        corroborated: bool = False,
+        contradictions: int = 0,
+        data: dict[str, Any] | None = None,
+    ) -> TraceEvent:
+        """Convenience: emit an MDN_CORROBORATE event."""
+        payload = data or {}
+        payload["navigate_ref"] = navigate_ref
+        payload["paths_checked"] = paths_checked
+        payload["corroborated"] = corroborated
+        payload["contradictions"] = contradictions
+        return self.emit(
+            TraceEventType.MDN_CORROBORATE, step_name=step_name, data=payload
         )

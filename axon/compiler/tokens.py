@@ -91,6 +91,11 @@ class TokenType(Enum):
     DRILL = auto()            # drill into subtree
     TRAIL = auto()            # reasoning path access
 
+    # ── MDN KEYWORDS (multi-document navigation §5.3) ─────────────
+    CORPUS = auto()           # corpus definition
+    CORROBORATE = auto()      # corroborate operation (§4.2)
+    EDGE_FILTER = auto()      # edge_filter budget parameter
+
     # ── DATA SCIENCE KEYWORDS ────────────────────────────────────
     DATASPACE = auto()
     INGEST = auto()
@@ -240,6 +245,10 @@ KEYWORDS: dict[str, TokenType] = {
     "navigate": TokenType.NAVIGATE,
     "drill": TokenType.DRILL,
     "trail": TokenType.TRAIL,
+    # MDN (multi-document navigation §5.3)
+    "corpus": TokenType.CORPUS,
+    "corroborate": TokenType.CORROBORATE,
+    "edge_filter": TokenType.EDGE_FILTER,
     # Data Science
     "dataspace": TokenType.DATASPACE,
     "ingest": TokenType.INGEST,

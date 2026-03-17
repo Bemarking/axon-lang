@@ -21,6 +21,10 @@ from .ast_nodes import (
     ConditionalNode,
     ConsensusBlock,
     ContextDefinition,
+    CorpusDefinition,
+    CorpusDocEntry,
+    CorpusEdgeEntry,
+    CorroborateNode,
     DataSpaceDefinition,
     DeliberateBlock,
     DrillNode,
@@ -125,6 +129,8 @@ class Parser:
                 return self._parse_shield()
             case TokenType.PIX:
                 return self._parse_pix_definition()
+            case TokenType.CORPUS:
+                return self._parse_corpus_definition()
             case _:
                 raise AxonParseError(
                     f"Unexpected token at top level",
@@ -578,12 +584,14 @@ class Parser:
                 return self._parse_drill()
             case TokenType.TRAIL:
                 return self._parse_trail()
+            case TokenType.CORROBORATE:
+                return self._parse_corroborate()
             case _:
                 raise AxonParseError(
                     "Unexpected token in flow body",
                     line=tok.line,
                     column=tok.column,
-                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, focus, associate, aggregate, explore, ingest",
+                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, focus, associate, aggregate, explore, ingest",
                     found=tok.value,
                 )
 
@@ -1006,12 +1014,14 @@ class Parser:
 
     def _parse_navigate(self) -> NavigateNode:
         """Parse: navigate PixName with query: "..." trail: enabled
+        or:    navigate CorpusName with query: "..." budget_depth: N budget_nodes: N edge_filter: [cite, implement]
 
-        Produces a NavigateNode.
+        Produces a NavigateNode. The corpus_name / pix_name
+        ambiguity is resolved at type-check time (§5.3).
         """
         tok = self._consume(TokenType.NAVIGATE)
-        pix_name = self._consume(TokenType.IDENTIFIER).value
-        node = NavigateNode(pix_name=pix_name, line=tok.line, column=tok.column)
+        ref_name = self._consume(TokenType.IDENTIFIER).value
+        node = NavigateNode(pix_name=ref_name, line=tok.line, column=tok.column)
 
         # Expect 'with' keyword (parsed as identifier)
         if self._current().value == "with":
@@ -1020,6 +1030,7 @@ class Parser:
         # Parse key-value pairs
         while self._current().type in (
             TokenType.IDENTIFIER, TokenType.TRAIL, TokenType.AS,
+            TokenType.EDGE_FILTER,
         ):
             field_tok = self._current()
             field_name = field_tok.value
@@ -1034,6 +1045,16 @@ class Parser:
                     node.trail_enabled = val.lower() in ("enabled", "true", "yes")
                 case "as":
                     node.output_name = self._consume(TokenType.IDENTIFIER).value
+                case "corpus":
+                    # Reclassify: the ref is a corpus, not a pix
+                    node.corpus_name = ref_name
+                    node.pix_name = ""
+                case "budget_depth":
+                    node.budget_depth = int(self._consume(TokenType.INTEGER).value)
+                case "budget_nodes":
+                    node.budget_nodes = int(self._consume(TokenType.INTEGER).value)
+                case "edge_filter":
+                    node.edge_filter = self._parse_bracketed_identifiers()
                 case _:
                     self._skip_value()
 
@@ -1090,6 +1111,132 @@ class Parser:
             line=tok.line,
             column=tok.column,
         )
+
+    # ── CORPUS DEFINITION (MDN §5.3) ────────────────────────────────
+
+    def _parse_corpus_definition(self) -> CorpusDefinition:
+        """Parse:
+        corpus LegalCorpus {
+            documents: [statute_A, case_law_B]
+            relationships: [
+                (case_law_B, statute_A, cite)
+            ]
+            weights: {
+                (case_law_B, statute_A, cite): 0.9
+            }
+        }
+
+        Produces a CorpusDefinition node — C = (D, R, τ, ω, σ) from §2.1.
+        """
+        tok = self._consume(TokenType.CORPUS)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = CorpusDefinition(name=name.value, line=tok.line, column=tok.column)
+        self._consume(TokenType.LBRACE)
+
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "documents":
+                    node.documents = self._parse_corpus_doc_list()
+                case "relationships":
+                    node.edges = self._parse_corpus_edge_list()
+                case "weights":
+                    node.weights = self._parse_corpus_weight_map()
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_corpus_doc_list(self) -> list[CorpusDocEntry]:
+        """Parse: [doc_a, doc_b, doc_c] as CorpusDocEntry list."""
+        docs: list[CorpusDocEntry] = []
+        self._consume(TokenType.LBRACKET)
+        while not self._check(TokenType.RBRACKET):
+            ref_tok = self._consume(TokenType.IDENTIFIER)
+            entry = CorpusDocEntry(
+                pix_ref=ref_tok.value,
+                line=ref_tok.line,
+                column=ref_tok.column,
+            )
+            docs.append(entry)
+            if self._check(TokenType.COMMA):
+                self._advance()
+        self._consume(TokenType.RBRACKET)
+        return docs
+
+    def _parse_corpus_edge_list(self) -> list[CorpusEdgeEntry]:
+        """Parse: [(source, target, relation_type), ...]"""
+        edges: list[CorpusEdgeEntry] = []
+        self._consume(TokenType.LBRACKET)
+        while not self._check(TokenType.RBRACKET):
+            self._consume(TokenType.LPAREN)
+            src_tok = self._consume(TokenType.IDENTIFIER)
+            self._consume(TokenType.COMMA)
+            tgt = self._consume(TokenType.IDENTIFIER).value
+            self._consume(TokenType.COMMA)
+            rel = self._consume_any_identifier_or_keyword().value
+            self._consume(TokenType.RPAREN)
+            edges.append(CorpusEdgeEntry(
+                source_ref=src_tok.value,
+                target_ref=tgt,
+                relation_type=rel,
+                line=src_tok.line,
+                column=src_tok.column,
+            ))
+            if self._check(TokenType.COMMA):
+                self._advance()
+        self._consume(TokenType.RBRACKET)
+        return edges
+
+    def _parse_corpus_weight_map(self) -> dict[str, float]:
+        """Parse: { (source, target, rel): 0.9, ... }"""
+        weights: dict[str, float] = {}
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            self._consume(TokenType.LPAREN)
+            src = self._consume(TokenType.IDENTIFIER).value
+            self._consume(TokenType.COMMA)
+            tgt = self._consume(TokenType.IDENTIFIER).value
+            self._consume(TokenType.COMMA)
+            rel = self._consume_any_identifier_or_keyword().value
+            self._consume(TokenType.RPAREN)
+            self._consume(TokenType.COLON)
+            weight_tok = self._current()
+            weight = float(weight_tok.value)
+            self._advance()
+            key = f"{src},{tgt},{rel}"
+            weights[key] = weight
+            if self._check(TokenType.COMMA):
+                self._advance()
+        self._consume(TokenType.RBRACE)
+        return weights
+
+    # ── CORROBORATE (MDN §4.2) ─────────────────────────────────────
+
+    def _parse_corroborate(self) -> CorroborateNode:
+        """Parse: corroborate nav_result as: verified_claims
+
+        Cross-path verification — Proposition 6 (§4.1).
+        """
+        tok = self._consume(TokenType.CORROBORATE)
+        ref = self._consume(TokenType.IDENTIFIER).value
+        node = CorroborateNode(
+            navigate_ref=ref,
+            line=tok.line,
+            column=tok.column,
+        )
+        # Optional 'as:' output name
+        if self._current().type == TokenType.AS:
+            self._advance()
+            self._consume(TokenType.COLON)
+            node.output_name = self._consume(TokenType.IDENTIFIER).value
+
+        return node
 
     # ── REMEMBER / RECALL ─────────────────────────────────────────
 

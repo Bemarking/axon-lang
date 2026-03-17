@@ -582,6 +582,22 @@ class Executor:
                 step=step, ctx=ctx, tracer=tracer,
             )
 
+        # ── Corpus Navigate step shortcut ──────────────────────────────
+        # If the step carries a corpus_navigate config, route through
+        # _execute_corpus_navigate_step for multi-document graph traversal.
+        if step.metadata.get("corpus_navigate"):
+            return await self._execute_corpus_navigate_step(
+                step=step, ctx=ctx, tracer=tracer,
+            )
+
+        # ── Corroborate step shortcut ──────────────────────────────────
+        # If the step carries a corroborate config, route through
+        # _execute_corroborate_step for cross-path verification.
+        if step.metadata.get("corroborate"):
+            return await self._execute_corroborate_step(
+                step=step, ctx=ctx, tracer=tracer,
+            )
+
         # Extract refine config from step metadata (if present)
         refine_config = self._extract_refine_config(step)
 
@@ -949,6 +965,349 @@ class Executor:
 
         factory = constructors.get(op)
         return factory() if factory else None
+
+    # ── MDN EXECUTION ──────────────────────────────────────────────
+
+    async def _execute_corpus_navigate_step(
+        self,
+        step: CompiledStep,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a corpus navigate step — multi-document graph traversal.
+
+        Initiates bounded BFS on a CorpusGraph using the CorpusNavigator,
+        producing provenance paths with epistemic typing and confidence
+        scoring per Explore(C, D₀, Q, B) from §5.4.
+
+        The handler:
+          1. Reconstructs a CorpusGraph from the compiled corpus definition
+          2. Configures navigation budget from metadata
+          3. Invokes CorpusNavigator.navigate()
+          4. Emits MDN tracer events for each path and contradiction
+          5. Stores NavigationResult as JSON in context
+
+        Args:
+            step:    The compiled step with ``corpus_navigate`` metadata.
+            ctx:     The active context manager.
+            tracer:  The active tracer.
+
+        Returns:
+            A ``StepResult`` with the navigation result.
+        """
+        import json
+
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        nav_meta = step.metadata["corpus_navigate"]
+
+        corpus_ref = nav_meta.get("corpus_ref", "")
+        query = nav_meta.get("query", "")
+        trail_enabled = nav_meta.get("trail_enabled", True)
+        output_name = nav_meta.get("output_name", "")
+        budget_depth = nav_meta.get("budget_depth")
+        budget_nodes = nav_meta.get("budget_nodes")
+        edge_filter = nav_meta.get("edge_filter", [])
+        corpus_def = nav_meta.get("corpus_definition", {})
+
+        tracer.emit_mdn_navigate_start(
+            step_name=step_name,
+            corpus_ref=corpus_ref,
+            query=query,
+            budget_depth=budget_depth,
+            budget_nodes=budget_nodes,
+            edge_filter=edge_filter or None,
+        )
+
+        # Build CorpusGraph from compiled definition
+        from axon.engine.mdn.corpus_graph import (
+            CorpusGraph,
+            Document,
+            Edge,
+            RelationType,
+            Budget,
+        )
+        from axon.engine.mdn.navigator import CorpusNavigator
+
+        corpus = CorpusGraph()
+
+        # Add documents
+        for doc_entry in corpus_def.get("documents", []):
+            doc = Document(
+                doc_id=doc_entry.get("pix_ref", ""),
+                title=doc_entry.get("pix_ref", ""),
+                doc_type=doc_entry.get("doc_type", "document"),
+                metadata={"role": doc_entry.get("role", "")},
+            )
+            corpus.add_document(doc)
+
+        # Add edges
+        weights = corpus_def.get("weights", {})
+        for edge_entry in corpus_def.get("edges", []):
+            rel_type = RelationType(
+                name=edge_entry.get("relation_type", "references"),
+            )
+            edge_weight = weights.get(
+                edge_entry.get("relation_type", ""), 1.0,
+            )
+            edge = Edge(
+                source_id=edge_entry.get("source_ref", ""),
+                target_id=edge_entry.get("target_ref", ""),
+                relation=rel_type,
+                weight=float(edge_weight),
+            )
+            corpus.add_edge(edge)
+
+        # Configure budget
+        budget = Budget(
+            max_depth=budget_depth if budget_depth is not None else 5,
+            max_nodes=budget_nodes if budget_nodes is not None else 50,
+            edge_filter=frozenset(edge_filter) if edge_filter else None,
+        )
+
+        # Execute navigation (guard: skip if corpus is empty)
+        doc_ids = list(corpus.documents.keys())
+        if not doc_ids:
+            # Empty corpus → return empty result
+            result_data = {
+                "corpus_ref": corpus_ref,
+                "query": query,
+                "paths_found": 0,
+                "contradictions": 0,
+                "visited_count": 0,
+                "confidence": 0.0,
+                "paths": [],
+            }
+            response = ModelResponse(
+                content=json.dumps(result_data),
+                structured=result_data,
+            )
+            result_key = output_name or step_name
+            ctx.set_step_result(result_key, response.content)
+            step_duration = (time.perf_counter() - step_start) * 1000
+            tracer.emit(
+                TraceEventType.MDN_NAVIGATE_END,
+                step_name=step_name,
+                data={"success": True, "paths_found": 0, "contradictions": 0, "confidence": 0.0},
+                duration_ms=step_duration,
+            )
+            return StepResult(step_name=step_name, response=response, duration_ms=step_duration)
+
+        navigator = CorpusNavigator(corpus=corpus)
+        start_doc = doc_ids[0]
+
+        nav_result = navigator.navigate(
+            start_doc_id=start_doc,
+            query=query,
+            budget=budget,
+        )
+
+        # Emit per-path tracer events
+        for i, path in enumerate(nav_result.paths):
+            tracer.emit(
+                TraceEventType.MDN_NAVIGATE_STEP,
+                step_name=step_name,
+                data={
+                    "path_index": i,
+                    "claim": path.claim,
+                    "confidence": path.confidence,
+                    "edge_count": len(path.edges),
+                    "epistemic_type": path.epistemic_type,
+                },
+            )
+
+        # Emit contradiction events
+        for d_i, d_j, claim in nav_result.contradictions:
+            tracer.emit(
+                TraceEventType.MDN_CONTRADICTION_DETECTED,
+                step_name=step_name,
+                data={
+                    "source_doc": d_i,
+                    "target_doc": d_j,
+                    "claim": claim,
+                },
+            )
+
+        # Build result response
+        result_data = {
+            "corpus_ref": corpus_ref,
+            "query": query,
+            "paths_found": len(nav_result.paths),
+            "contradictions": len(nav_result.contradictions),
+            "visited_count": len(nav_result.visited),
+            "confidence": nav_result.confidence,
+            "paths": [
+                {
+                    "claim": p.claim,
+                    "confidence": p.confidence,
+                    "epistemic_type": p.epistemic_type,
+                    "edge_count": len(p.edges),
+                }
+                for p in nav_result.paths
+            ],
+        }
+
+        response = ModelResponse(
+            content=json.dumps(result_data),
+            structured=result_data,
+        )
+
+        # Store in context under output_name or step_name
+        result_key = output_name or step_name
+        ctx.set_step_result(result_key, response.content)
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+
+        tracer.emit(
+            TraceEventType.MDN_NAVIGATE_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "paths_found": len(nav_result.paths),
+                "contradictions": len(nav_result.contradictions),
+                "confidence": nav_result.confidence,
+            },
+            duration_ms=step_duration,
+        )
+
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=step_duration,
+        )
+
+    async def _execute_corroborate_step(
+        self,
+        step: CompiledStep,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a corroborate step — cross-path verification.
+
+        Implements the Principle of Epistemic Corroboration (§4.2):
+          C(D₀, φ, π) = ∏ᵢ ω(rᵢ) · EPR(D_last)
+
+        Checks that navigation results have independent provenance
+        paths supporting the same claims, detecting contradictions
+        and computing aggregate corroboration confidence.
+
+        Args:
+            step:    The compiled step with ``corroborate`` metadata.
+            ctx:     The active context manager.
+            tracer:  The active tracer.
+
+        Returns:
+            A ``StepResult`` with the corroboration outcome.
+        """
+        import json
+
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        corr_meta = step.metadata["corroborate"]
+
+        navigate_ref = corr_meta.get("navigate_ref", "")
+        output_name = corr_meta.get("output_name", "")
+
+        # Retrieve the navigation result from context
+        nav_result_raw = ctx.get_step_result(navigate_ref) or "{}"
+        try:
+            nav_data = json.loads(nav_result_raw) if isinstance(nav_result_raw, str) else nav_result_raw
+        except (json.JSONDecodeError, TypeError):
+            nav_data = {}
+
+        paths = nav_data.get("paths", [])
+        contradictions = nav_data.get("contradictions", 0)
+        nav_confidence = nav_data.get("confidence", 0.0)
+
+        # Corroboration logic:
+        # 1. Group paths by claim
+        # 2. Claims supported by multiple independent paths are corroborated
+        # 3. Contradictions reduce overall confidence
+        claim_groups: dict[str, list[dict]] = {}
+        for path in paths:
+            claim = path.get("claim", "unknown")
+            claim_groups.setdefault(claim, []).append(path)
+
+        corroborated_claims: list[dict[str, Any]] = []
+        uncorroborated_claims: list[dict[str, Any]] = []
+
+        for claim, supporting_paths in claim_groups.items():
+            if len(supporting_paths) >= 2:
+                # Multiple independent paths → corroborated
+                avg_confidence = sum(
+                    p.get("confidence", 0.0) for p in supporting_paths
+                ) / len(supporting_paths)
+                corroborated_claims.append({
+                    "claim": claim,
+                    "supporting_paths": len(supporting_paths),
+                    "confidence": avg_confidence,
+                    "epistemic_type": "CorroboratedFact",
+                })
+            else:
+                # Single path → uncorroborated (remains CitedFact)
+                uncorroborated_claims.append({
+                    "claim": claim,
+                    "supporting_paths": 1,
+                    "confidence": supporting_paths[0].get("confidence", 0.0),
+                    "epistemic_type": "CitedFact",
+                })
+
+        # Aggregate confidence with contradiction penalty
+        total_claims = len(corroborated_claims) + len(uncorroborated_claims)
+        corroboration_ratio = (
+            len(corroborated_claims) / total_claims if total_claims > 0 else 0.0
+        )
+        contradiction_penalty = min(1.0, contradictions * 0.15)
+        aggregate_confidence = max(
+            0.0,
+            nav_confidence * corroboration_ratio * (1.0 - contradiction_penalty),
+        )
+
+        tracer.emit_mdn_corroborate(
+            step_name=step_name,
+            navigate_ref=navigate_ref,
+            paths_checked=len(paths),
+            corroborated=len(corroborated_claims) > 0,
+            contradictions=contradictions if isinstance(contradictions, int) else 0,
+        )
+
+        result_data = {
+            "navigate_ref": navigate_ref,
+            "corroborated_claims": corroborated_claims,
+            "uncorroborated_claims": uncorroborated_claims,
+            "total_claims": total_claims,
+            "corroboration_ratio": round(corroboration_ratio, 4),
+            "aggregate_confidence": round(aggregate_confidence, 4),
+            "contradictions": contradictions,
+        }
+
+        response = ModelResponse(
+            content=json.dumps(result_data),
+            structured=result_data,
+        )
+
+        result_key = output_name or step_name
+        ctx.set_step_result(result_key, response.content)
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "corroborated_count": len(corroborated_claims),
+                "uncorroborated_count": len(uncorroborated_claims),
+                "aggregate_confidence": round(aggregate_confidence, 4),
+            },
+            duration_ms=step_duration,
+        )
+
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=step_duration,
+        )
 
     async def _call_model(
         self,

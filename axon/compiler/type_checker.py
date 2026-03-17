@@ -30,6 +30,8 @@ from .ast_nodes import (
     ConditionalNode,
     ConsensusBlock,
     ContextDefinition,
+    CorpusDefinition,
+    CorroborateNode,
     DataSpaceDefinition,
     DeliberateBlock,
     DrillNode,
@@ -451,12 +453,14 @@ class TypeChecker:
                 self._check_dataspace(decl)
             case PixDefinition():
                 self._check_pix_definition(decl)
+            case CorpusDefinition():
+                self._check_corpus_definition(decl)
             case IngestNode():
                 pass  # validated at runtime
             case FocusNode() | AssociateNode() | AggregateNode() | ExploreNode():
                 pass  # validated at runtime
-            case NavigateNode() | DrillNode() | TrailNode():
-                pass  # PIX flow commands validated in flow step context
+            case NavigateNode() | DrillNode() | TrailNode() | CorroborateNode():
+                pass  # PIX/MDN flow commands validated in flow step context
 
     # ── PERSONA validation ────────────────────────────────────────
 
@@ -652,6 +656,8 @@ class TypeChecker:
                 self._check_drill(step)
             case TrailNode():
                 self._check_trail(step)
+            case CorroborateNode():
+                self._check_corroborate(step)
 
     def _check_step(self, node: StepNode, step_names: set[str], flow_name: str) -> None:
         if node.name in step_names:
@@ -1333,6 +1339,80 @@ class TypeChecker:
         if not node.navigate_ref:
             self._emit(
                 "trail requires a reference to a navigate step",
+                node,
+            )
+
+    # ── MDN CORPUS validation (§5.3) ───────────────────────────────
+
+    _VALID_RELATION_TYPES = frozenset({
+        "cite", "implement", "contradict", "amend", "extend",
+        "support", "derive", "reference", "supersede",
+    })
+
+    def _check_corpus_definition(self, node: CorpusDefinition) -> None:
+        """Validate corpus definition — invariants G1–G4 from §2.1.
+
+        Rules:
+          1. Corpus must have a name
+          2. At least one document required (G1: D ≠ ∅)
+          3. Edge source/target must reference declared documents
+          4. Edge weights must be in (0, 1] (G3: ω positivity)
+          5. Document PIX references must be declared (soft check)
+        """
+        if not node.name:
+            self._emit("corpus requires a name", node)
+
+        # G1: D ≠ ∅
+        if not node.documents:
+            self._emit(
+                f"Corpus '{node.name}' requires at least one document "
+                "(invariant G1: D ≠ ∅)",
+                node,
+            )
+
+        # Collect declared document identifiers
+        doc_names = {doc.pix_ref for doc in node.documents}
+
+        # Validate document PIX references exist in symbol table
+        for doc in node.documents:
+            if doc.pix_ref:
+                sym = self._symbols.lookup(doc.pix_ref)
+                if sym is not None and sym.kind != "pix":
+                    self._emit(
+                        f"Document '{doc.pix_ref}' in corpus '{node.name}' is "
+                        f"a {sym.kind}, not a pix",
+                        doc,
+                    )
+
+        # Validate edges reference declared documents
+        for edge in node.edges:
+            if edge.source_ref not in doc_names:
+                self._emit(
+                    f"Edge source '{edge.source_ref}' in corpus '{node.name}' "
+                    f"not in declared documents: {', '.join(sorted(doc_names))}",
+                    edge,
+                )
+            if edge.target_ref not in doc_names:
+                self._emit(
+                    f"Edge target '{edge.target_ref}' in corpus '{node.name}' "
+                    f"not in declared documents: {', '.join(sorted(doc_names))}",
+                    edge,
+                )
+
+        # G3: ω positivity — weights in (0, 1]
+        for key, weight in node.weights.items():
+            if weight <= 0.0 or weight > 1.0:
+                self._emit(
+                    f"Weight for edge '{key}' in corpus '{node.name}' must be in "
+                    f"(0, 1], got {weight} (invariant G3: ω positivity)",
+                    node,
+                )
+
+    def _check_corroborate(self, node: CorroborateNode) -> None:
+        """Validate corroborate — cross-path verification (§4.2)."""
+        if not node.navigate_ref:
+            self._emit(
+                "corroborate requires a reference to a navigate result",
                 node,
             )
 

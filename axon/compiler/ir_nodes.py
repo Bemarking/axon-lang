@@ -89,6 +89,8 @@ class IRProgram(IRNode):
     imports: tuple[IRImport, ...] = ()
     agents: tuple['IRAgent', ...] = ()
     shields: tuple['IRShield', ...] = ()
+    pix_specs: tuple['IRPixSpec', ...] = ()
+    corpus_specs: tuple['IRCorpusSpec', ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -907,9 +909,13 @@ class IRNavigate(IRNode):
     """
     node_type: str = "navigate"
     pix_ref: str = ""                               # reference to a PIX spec
+    corpus_ref: str = ""                             # MDN: reference to a corpus spec
     query: str = ""                                  # search query text
     trail_enabled: bool = True                       # whether to capture reasoning path
     output_name: str = ""                            # optional binding name
+    budget_depth: int | None = None                  # MDN: override max_depth
+    budget_nodes: int | None = None                  # MDN: override max_nodes
+    edge_filter: tuple[str, ...] = ()                # MDN: relation type filter
 
 
 @dataclass(frozen=True)
@@ -942,3 +948,64 @@ class IRTrail(IRNode):
     node_type: str = "trail"
     navigate_ref: str = ""                          # reference to a navigate/drill result
 
+
+# ═══════════════════════════════════════════════════════════════════
+#  MDN IR NODES — Multi-Document Navigation (§5.3)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRCorpusDocSpec(IRNode):
+    """Compiled document entry in a corpus spec."""
+    node_type: str = "corpus_doc_spec"
+    pix_ref: str = ""                               # PIX index reference
+    doc_type: str = ""                              # document classification
+    role: str = ""                                  # optional role
+
+
+@dataclass(frozen=True)
+class IRCorpusEdgeSpec(IRNode):
+    """Compiled edge entry in a corpus spec."""
+    node_type: str = "corpus_edge_spec"
+    source_ref: str = ""                            # source document ID
+    target_ref: str = ""                            # target document ID
+    relation_type: str = ""                         # edge label
+
+
+@dataclass(frozen=True)
+class IRCorpusSpec(IRNode):
+    """
+    Compiled corpus specification — multi-document knowledge graph.
+
+    Formal basis — Definition 1 (§2.1):
+      C = (D, R, τ, ω, σ)
+      D = finite set of documents
+      R ⊆ D × D × L = typed, directed edges
+      τ : R → L = edge type assignment
+      ω : R → (0, 1] = edge weight function
+      σ : D → R^m = summary embedding
+
+    Maps from AST CorpusDefinition. Invariants G1–G4 are enforced
+    at type-check time; this node is the compiled output.
+    """
+    node_type: str = "corpus_spec"
+    name: str = ""                                  # corpus name
+    documents: tuple[IRCorpusDocSpec, ...] = ()      # compiled document list
+    edges: tuple[IRCorpusEdgeSpec, ...] = ()          # compiled edge list
+    weights: tuple[tuple[str, float], ...] = ()      # compiled weight map
+
+
+@dataclass(frozen=True)
+class IRCorroborate(IRNode):
+    """
+    Compiled corroboration operation — cross-path verification.
+
+    Formal basis — Proposition 6 (§4.1):
+      C(D₀, φ, π) = ∏ᵢ ω(rᵢ) · EPR(D_last)
+
+    At runtime, checks independent provenance paths for claim
+    confirmation, implementing the Principle of Epistemic
+    Corroboration from §4.2.
+    """
+    node_type: str = "corroborate"
+    navigate_ref: str = ""                          # reference to a navigate result
+    output_name: str = ""                           # binding name for corroborated claims

@@ -32,6 +32,7 @@ from axon.compiler.ir_nodes import (
     IRAssociate,
     IRConsensus,
     IRContext,
+    IRCorroborate,
     IRDataSpace,
     IRDeliberate,
     IRExplore,
@@ -39,6 +40,7 @@ from axon.compiler.ir_nodes import (
     IRFocus,
     IRForge,
     IRIngest,
+    IRNavigate,
     IRNode,
     IRPersona,
     IRProgram,
@@ -57,6 +59,9 @@ _BUDGET_IR_TYPES = (IRDeliberate, IRConsensus, IRForge, IRAgent)
 
 # IR types that represent Shield operations (security boundaries)
 _SHIELD_IR_TYPES = (IRShieldApply,)
+
+# IR types that represent MDN operations (multi-document navigation)
+_MDN_IR_TYPES = (IRNavigate, IRCorroborate)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -260,6 +265,9 @@ class BaseBackend(ABC):
                 elif isinstance(step, _SHIELD_IR_TYPES):
                     shield_step = self._compile_shield_step(step, ir)
                     compiled_steps.append(shield_step)
+                elif isinstance(step, _MDN_IR_TYPES):
+                    mdn_step = self._compile_mdn_step(step, ir)
+                    compiled_steps.append(mdn_step)
                 else:
                     compiled = self.compile_step(step, ctx)
                     compiled_steps.append(compiled)
@@ -514,6 +522,98 @@ class BaseBackend(ABC):
                 },
             },
         )
+
+    @staticmethod
+    def _compile_mdn_step(
+        step: IRNode, ir: IRProgram,
+    ) -> CompiledStep:
+        """Compile an MDN IR node into a metadata-only step.
+
+        MDN steps bypass the model — the executor routes them
+        to the corpus navigator engine for graph-based retrieval
+        and corroboration.
+
+        Handles two IR types:
+          - ``IRNavigate`` with ``corpus_ref`` — corpus-level navigation
+          - ``IRCorroborate``                  — cross-path verification
+        """
+        # Helper: resolve corpus spec from program
+        def _resolve_corpus(name: str) -> dict[str, Any]:
+            for spec in ir.corpus_specs:
+                if spec.name == name:
+                    return {
+                        "name": spec.name,
+                        "documents": [
+                            {
+                                "pix_ref": d.pix_ref,
+                                "doc_type": d.doc_type,
+                                "role": d.role,
+                            }
+                            for d in spec.documents
+                        ],
+                        "edges": [
+                            {
+                                "source_ref": e.source_ref,
+                                "target_ref": e.target_ref,
+                                "relation_type": e.relation_type,
+                            }
+                            for e in spec.edges
+                        ],
+                        "weights": dict(spec.weights),
+                    }
+            return {}
+
+        match step:
+            case IRNavigate(
+                corpus_ref=corpus_ref,
+                query=query,
+                trail_enabled=trail,
+                output_name=out_name,
+                budget_depth=depth,
+                budget_nodes=nodes,
+                edge_filter=edge_f,
+            ) if corpus_ref:
+                corpus_def = _resolve_corpus(corpus_ref)
+                return CompiledStep(
+                    step_name=f"mdn:navigate:{corpus_ref}",
+                    user_prompt="",
+                    metadata={
+                        "corpus_navigate": {
+                            "corpus_ref": corpus_ref,
+                            "corpus_definition": corpus_def,
+                            "query": query,
+                            "trail_enabled": trail,
+                            "output_name": out_name,
+                            "budget_depth": depth,
+                            "budget_nodes": nodes,
+                            "edge_filter": list(edge_f) if edge_f else [],
+                        },
+                    },
+                )
+
+            case IRCorroborate(
+                navigate_ref=nav_ref,
+                output_name=out_name,
+            ):
+                return CompiledStep(
+                    step_name=f"mdn:corroborate:{nav_ref}",
+                    user_prompt="",
+                    metadata={
+                        "corroborate": {
+                            "navigate_ref": nav_ref,
+                            "output_name": out_name,
+                        },
+                    },
+                )
+
+            case _:
+                # IRNavigate without corpus_ref (single-doc PIX mode)
+                # falls through to regular step compilation
+                return CompiledStep(
+                    step_name="mdn:unknown",
+                    user_prompt="",
+                    metadata={},
+                )
 
     @abstractmethod
     def compile_step(

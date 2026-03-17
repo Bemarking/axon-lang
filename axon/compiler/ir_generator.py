@@ -34,6 +34,10 @@ from axon.compiler.ir_nodes import (
     IRConditional,
     IRConsensus,
     IRContext,
+    IRCorpusDocSpec,
+    IRCorpusEdgeSpec,
+    IRCorpusSpec,
+    IRCorroborate,
     IRDataEdge,
     IRDataSpace,
     IRDeliberate,
@@ -108,6 +112,7 @@ class IRGenerator:
         self._agents: dict[str, IRAgent] = {}
         self._shields: dict[str, IRShield] = {}
         self._pix_specs: dict[str, IRPixSpec] = {}
+        self._corpus_specs: dict[str, IRCorpusSpec] = {}
 
     def generate(self, program: ast.ProgramNode) -> IRProgram:
         """
@@ -147,6 +152,8 @@ class IRGenerator:
             imports=tuple(self._imports),
             agents=tuple(self._agents.values()),
             shields=tuple(self._shields.values()),
+            pix_specs=tuple(self._pix_specs.values()),
+            corpus_specs=tuple(self._corpus_specs.values()),
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -200,6 +207,9 @@ class IRGenerator:
         ast.NavigateNode: "_visit_navigate",
         ast.DrillNode: "_visit_drill",
         ast.TrailNode: "_visit_trail",
+        # MDN — Multi-Document Navigation
+        ast.CorpusDefinition: "_visit_corpus_definition",
+        ast.CorroborateNode: "_visit_corroborate",
     }
 
     def _visit(self, node: ast.ASTNode) -> IRNode:
@@ -1133,6 +1143,7 @@ class IRGenerator:
         self._imports.clear()
         self._runs.clear()
         self._pix_specs.clear()
+        self._corpus_specs.clear()
 
     # ═════════════════════════════════════════════════════════════════
     #  PIX VISITORS — Structured Cognitive Retrieval
@@ -1163,14 +1174,21 @@ class IRGenerator:
         return ir_pix
 
     def _visit_navigate(self, node: ast.NavigateNode) -> IRNavigate:
-        """Lower a navigate statement into an IRNavigate."""
+        """Lower a navigate statement into an IRNavigate.
+
+        Handles both PIX single-doc and MDN corpus navigation.
+        """
         return IRNavigate(
             source_line=node.line,
             source_column=node.column,
             pix_ref=node.pix_name,
+            corpus_ref=node.corpus_name,
             query=node.query_expr,
             trail_enabled=node.trail_enabled,
             output_name=node.output_name,
+            budget_depth=node.budget_depth,
+            budget_nodes=node.budget_nodes,
+            edge_filter=tuple(node.edge_filter),
         )
 
     def _visit_drill(self, node: ast.DrillNode) -> IRDrill:
@@ -1190,5 +1208,59 @@ class IRGenerator:
             source_line=node.line,
             source_column=node.column,
             navigate_ref=node.navigate_ref,
+        )
+
+    # ═════════════════════════════════════════════════════════════════
+    #  MDN VISITORS — Multi-Document Navigation (§5.3)
+    # ═════════════════════════════════════════════════════════════════
+
+    def _visit_corpus_definition(self, node: ast.CorpusDefinition) -> IRCorpusSpec:
+        """Lower a corpus definition into an IRCorpusSpec.
+
+        Maps C = (D, R, τ, ω, σ) from §2.1 to its IR form.
+        """
+        documents = tuple(
+            IRCorpusDocSpec(
+                source_line=doc.line,
+                source_column=doc.column,
+                pix_ref=doc.pix_ref,
+                doc_type=doc.doc_type,
+                role=doc.role,
+            )
+            for doc in node.documents
+        )
+        edges = tuple(
+            IRCorpusEdgeSpec(
+                source_line=edge.line,
+                source_column=edge.column,
+                source_ref=edge.source_ref,
+                target_ref=edge.target_ref,
+                relation_type=edge.relation_type,
+            )
+            for edge in node.edges
+        )
+        weights = tuple(node.weights.items())
+
+        ir_corpus = IRCorpusSpec(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            documents=documents,
+            edges=edges,
+            weights=weights,
+        )
+        self._corpus_specs[node.name] = ir_corpus
+        return ir_corpus
+
+    def _visit_corroborate(self, node: ast.CorroborateNode) -> IRCorroborate:
+        """Lower a corroborate statement into an IRCorroborate.
+
+        Cross-path verification — Proposition 6 (§4.1).
+        """
+        return IRCorroborate(
+            source_line=node.line,
+            source_column=node.column,
+            navigate_ref=node.navigate_ref,
+            output_name=node.output_name,
         )
 

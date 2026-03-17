@@ -56,6 +56,9 @@ class TestTraceEvent:
             # Shield security events
             "shield_scan_start", "shield_scan_pass", "shield_scan_breach",
             "shield_taint_check", "shield_capability_check",
+            # MDN (Multi-Document Navigation) events
+            "mdn_navigate_start", "mdn_navigate_step", "mdn_navigate_end",
+            "mdn_corroborate", "mdn_contradiction_detected",
         }
         actual = {e.value for e in TraceEventType}
         assert actual == expected

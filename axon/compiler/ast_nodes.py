@@ -1052,9 +1052,13 @@ class NavigateNode(ASTNode):
     Epistemic level: output is always 'believe' (external I/O involved).
     """
     pix_name: str = ""         # reference to declared pix definition
+    corpus_name: str = ""      # NEW: corpus reference (multi-doc mode, §5.3)
     query_expr: str = ""       # query expression (string or reference)
     trail_enabled: bool = False  # whether to record reasoning path
     output_name: str = ""      # named output
+    budget_depth: int | None = None    # NEW: override budget max_depth
+    budget_nodes: int | None = None    # NEW: override budget max_nodes
+    edge_filter: list[str] = field(default_factory=list)  # NEW: relation type filter
 
 
 @dataclass
@@ -1081,6 +1085,90 @@ class TrailNode(ASTNode):
     decisions, enabling 'why was this retrieved?' auditing.
     """
     navigate_ref: str = ""     # reference to a navigate step's output
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  MDN NODES — Multi-Document Navigation (§5.3)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class CorpusDocEntry(ASTNode):
+    """
+    A document entry in a corpus definition.
+
+    References a previously declared PIX index and annotates it
+    with a document type and optional role within the corpus.
+    """
+    pix_ref: str = ""          # reference to declared pix definition
+    doc_type: str = ""         # document classification (e.g., "Statute", "CaseLaw")
+    role: str = ""             # optional role (e.g., "primary", "supporting")
+
+
+@dataclass
+class CorpusEdgeEntry(ASTNode):
+    """
+    An edge definition in a corpus — (source, target, relation_type).
+
+    Represents a typed, directed edge: r ∈ R ⊆ D × D × L
+    from Definition 1 (§2.1).
+    """
+    source_ref: str = ""       # source document identifier
+    target_ref: str = ""       # target document identifier
+    relation_type: str = ""    # edge label (e.g., "cite", "implement", "contradict")
+
+
+@dataclass
+class CorpusDefinition(ASTNode):
+    """
+    corpus LegalCorpus {
+        documents: [statute_A, case_law_B, regulation_C]
+        relationships: [
+            (case_law_B, statute_A, cite)
+            (regulation_C, statute_A, implement)
+        ]
+        weights: {
+            (case_law_B, statute_A, cite): 0.9
+        }
+    }
+
+    The **corpus** primitive — multi-document knowledge graph
+    construction. Maps to C = (D, R, τ, ω, σ) from §2.1.
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  FORMAL BASIS                                                ║
+    ╠══════════════════════════════════════════════════════════════╣
+    ║                                                              ║
+    ║  Definition 1 (§2.1): C = (D, R, τ, ω, σ)                  ║
+    ║    D = finite set of documents                               ║
+    ║    R ⊆ D × D × L = typed, directed edges                   ║
+    ║    τ : R → L = edge type assignment                          ║
+    ║    ω : R → (0, 1] = edge weight function                    ║
+    ║    σ : D → R^m = summary embedding                          ║
+    ║                                                              ║
+    ║  Invariants G1–G4 enforced at build time.                    ║
+    ║                                                              ║
+    ╚══════════════════════════════════════════════════════════════╝
+    """
+    name: str = ""
+    documents: list[CorpusDocEntry] = field(default_factory=list)
+    edges: list[CorpusEdgeEntry] = field(default_factory=list)
+    weights: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class CorroborateNode(ASTNode):
+    """
+    corroborate nav_result as: verified_claims
+
+    Cross-path verification — implements the Principle of Epistemic
+    Corroboration from §4.2. Checks independent provenance paths
+    for claim confirmation.
+
+    Formal basis (Proposition 6, §4.1):
+      C(D₀, φ, π) = ∏ᵢ ω(rᵢ) · EPR(D_last)
+    """
+    navigate_ref: str = ""     # reference to a navigate result
+    output_name: str = ""      # named output for corroborated claims
 
 
 # ═══════════════════════════════════════════════════════════════════
