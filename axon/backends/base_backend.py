@@ -50,6 +50,7 @@ from axon.compiler.ir_nodes import (
     IRShieldApply,
     IRStep,
     IRToolSpec,
+    IROtsApply,
 )
 
 # IR types that represent Data Science operations
@@ -66,6 +67,9 @@ _MDN_IR_TYPES = (IRNavigate, IRCorroborate)
 
 # IR types that represent Psyche operations (psychological-epistemic modeling)
 _PSYCHE_IR_TYPES = (IRPsycheSpec,)
+
+# IR types that represent OTS operations (ontological tool synthesis)
+_OTS_IR_TYPES = (IROtsApply,)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -275,6 +279,9 @@ class BaseBackend(ABC):
                 elif isinstance(step, _PSYCHE_IR_TYPES):
                     psyche_step = self._compile_psyche_step(step, ir)
                     compiled_steps.append(psyche_step)
+                elif isinstance(step, _OTS_IR_TYPES):
+                    ots_step = self._compile_ots_step(step, ir)
+                    compiled_steps.append(ots_step)
                 else:
                     compiled = self.compile_step(step, ctx)
                     compiled_steps.append(compiled)
@@ -653,6 +660,42 @@ class BaseBackend(ABC):
                     "safety_constraints": list(step.safety_constraints),
                     "quantum_enabled": step.quantum_enabled,
                     "inference_mode": step.inference_mode,
+                },
+            },
+        )
+
+    @staticmethod
+    def _compile_ots_step(
+        step: IROtsApply, ir: IRProgram,
+    ) -> CompiledStep:
+        """Compile an OTS application into a metadata-only step.
+
+        OTS steps don't go to the model directly during standard execution —
+        the runtime's OtsDispatcher processes them via Just-In-Time synthesis.
+        """
+        # Resolve the OTS definition from the program
+        ots_def: dict[str, Any] = {}
+        for spec in ir.ots_specs:
+            if spec.name == step.ots_name:
+                ots_def = {
+                    "name": spec.name,
+                    "types": list(spec.types),
+                    "teleology": spec.teleology,
+                    "homotopy_search": spec.homotopy_search,
+                    "linear_constraints": list(spec.linear_constraints),
+                    "loss_function": spec.loss_function,
+                }
+                break
+
+        return CompiledStep(
+            step_name=f"ots:{step.ots_name}",
+            user_prompt="",
+            metadata={
+                "ots_apply": {
+                    "ots_name": step.ots_name,
+                    "target": step.target,
+                    "output_type": step.output_type,
+                    "ots_definition": ots_def,
                 },
             },
         )

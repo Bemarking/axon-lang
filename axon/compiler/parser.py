@@ -40,6 +40,8 @@ from .ast_nodes import (
     IntentNode,
     MemoryDefinition,
     NavigateNode,
+    OtsApplyNode,
+    OtsDefinition,
     ParallelBlock,
     ParameterNode,
     PersonaDefinition,
@@ -134,12 +136,14 @@ class Parser:
                 return self._parse_corpus_definition()
             case TokenType.PSYCHE:
                 return self._parse_psyche()
+            case TokenType.OTS:
+                return self._parse_ots_definition()
             case _:
                 raise AxonParseError(
                     f"Unexpected token at top level",
                     line=tok.line,
                     column=tok.column,
-                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, run, know, speculate, ...)",
+                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, ots, run, know, speculate, ...)",
                     found=tok.value,
                 )
 
@@ -589,12 +593,14 @@ class Parser:
                 return self._parse_trail()
             case TokenType.CORROBORATE:
                 return self._parse_corroborate()
+            case TokenType.OTS:
+                return self._parse_ots_apply()
             case _:
                 raise AxonParseError(
                     "Unexpected token in flow body",
                     line=tok.line,
                     column=tok.column,
-                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, focus, associate, aggregate, explore, ingest",
+                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, focus, associate, aggregate, explore, ingest",
                     found=tok.value,
                 )
 
@@ -1462,6 +1468,93 @@ class Parser:
                     node.body.append(step)
 
         self._consume(TokenType.RBRACE)
+        return node
+
+    # ── OTS (Ontological Tool Synthesis) ──────────────────────────────
+
+    def _parse_ots_definition(self) -> OtsDefinition:
+        """Parse: ots Name<In, Out> { teleology: "...", homotopy_search: deep, linear_constraints: {...}, loss_function: "..." }"""
+        tok = self._consume(TokenType.OTS)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = OtsDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        if self._check(TokenType.LT):
+            self._advance()
+            node.input_type = self._parse_type_expr()
+            self._consume(TokenType.COMMA)
+            node.output_type = self._parse_type_expr()
+            self._consume(TokenType.GT)
+
+        self._consume(TokenType.LBRACE)
+
+        while not self._check(TokenType.RBRACE):
+            cur = self._current()
+            is_valid_field = (
+                cur.type == TokenType.IDENTIFIER or 
+                cur.type in (TokenType.TELEOLOGY, TokenType.HOMOTOPY_SEARCH, TokenType.LINEAR_CONSTRAINTS, TokenType.LOSS_FUNCTION)
+            )
+            
+            if is_valid_field and cur.value in ("teleology", "homotopy_search", "linear_constraints", "loss_function"):
+                field_name = cur.value
+                self._advance()
+                self._consume(TokenType.COLON)
+                match field_name:
+                    case "teleology":
+                        node.teleology = self._consume(TokenType.STRING).value
+                    case "homotopy_search":
+                        node.homotopy_search = self._consume_any_identifier_or_keyword().value
+                    case "linear_constraints":
+                        node.linear_constraints = self._parse_linear_constraints_dict()
+                    case "loss_function":
+                        node.loss_function = self._parse_loss_function_expr()
+            else:
+                step = self._parse_flow_step()
+                if step is not None:
+                    node.body.append(step)
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_linear_constraints_dict(self) -> dict[str, str]:
+        """Parse: { Consumption: strictly_once }"""
+        constraints: dict[str, str] = {}
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            key = self._consume_any_identifier_or_keyword().value
+            self._consume(TokenType.COLON)
+            val = self._consume_any_identifier_or_keyword().value
+            constraints[key] = val
+            if self._check(TokenType.COMMA):
+                self._advance()
+        self._consume(TokenType.RBRACE)
+        return constraints
+
+    def _parse_loss_function_expr(self) -> str:
+        """Parse a loss function expression: 'L_accuracy + 0.1 * L_complexity'"""
+        expr_parts = []
+        # Consume tokens until we see the start of the next field '}' or an identifier followed by ':' 
+        while not self._check(TokenType.RBRACE):
+            if self._check(TokenType.IDENTIFIER) and self._peek_next_token().type == TokenType.COLON:
+                break
+            if self._check(TokenType.STEP):
+                break
+            expr_parts.append(self._advance().value)
+        return " ".join(expr_parts)
+
+    def _parse_ots_apply(self) -> OtsApplyNode:
+        """Parse: ots DataExtractor(invoice_data) -> SqlInserts"""
+        tok = self._consume(TokenType.OTS)
+        name = self._consume(TokenType.IDENTIFIER).value
+        node = OtsApplyNode(ots_name=name, line=tok.line, column=tok.column)
+        
+        self._consume(TokenType.LPAREN)
+        node.target = self._consume(TokenType.IDENTIFIER).value
+        self._consume(TokenType.RPAREN)
+        
+        if self._check(TokenType.ARROW):
+            self._advance()
+            node.output_type = self._consume(TokenType.IDENTIFIER).value
+            
         return node
 
     # ── IF / CONDITIONAL ──────────────────────────────────────────

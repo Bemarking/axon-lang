@@ -598,6 +598,14 @@ class Executor:
                 step=step, ctx=ctx, tracer=tracer,
             )
 
+        # ── OTS Synthesis step shortcut ────────────────────────────────
+        # If the step carries an ots_apply config, route through
+        # _execute_ots_step for Just-In-Time tool synthesis.
+        if step.metadata.get("ots_apply"):
+            return await self._execute_ots_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
         # Extract refine config from step metadata (if present)
         refine_config = self._extract_refine_config(step)
 
@@ -707,6 +715,97 @@ class Executor:
             validation=final_step_result.validation,
             retry_info=retry_result,
             duration_ms=final_step_result.duration_ms,
+        )
+
+    async def _execute_ots_step(
+        self,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute an OTS (Ontological Tool Synthesis) step.
+        
+        Performs Just-In-Time synthesis of a capability based on
+        the OTS definition and applies it to the target context.
+        """
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        
+        ots_meta = step.metadata["ots_apply"]
+        ots_name = ots_meta.get("ots_name", "")
+        target = ots_meta.get("target", "")
+        definition = ots_meta.get("ots_definition", {})
+        
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "type": "ots_synthesis",
+                "ots_name": ots_name,
+                "target": target,
+                "teleology": definition.get("teleology", ""),
+            },
+        )
+        
+        teleology = definition.get("teleology", "")
+        linear_constraints = definition.get("linear_constraints", [])
+        constraints_str = "\\n".join([f"- {k}: {v}" for k, v in linear_constraints])
+        
+        # Resolve target expression via prompt building (handles `_` interpolation)
+        target_val = self._build_user_prompt(
+            CompiledStep(user_prompt=target), ctx
+        )
+        
+        synthesis_prompt = (
+            f"You are synthesizing a specialized capability on-the-fly: {ots_name}.\\n"
+            f"Teleological purpose: {teleology}\\n\\n"
+            f"Constraints:\\n{constraints_str}\\n\\n"
+            f"Input target data:\\n{target_val}\\n\\n"
+            f"Process the input according to the teleology and constraints "
+            f"and return the result formatted as {definition.get('output_type', 'requested type')}."
+        )
+        
+        # Create a dynamic step to leverage _call_model logic
+        ots_step = CompiledStep(
+            step_name=f"{step_name}_synthesis",
+            system_prompt=(
+                "You are an Ontological Tool Synthesizer (OTS). "
+                "You dynamically generate and execute capabilities "
+                "based on formal teleological specifications."
+            ),
+            user_prompt=synthesis_prompt,
+        )
+        # Create a dynamic unit to ensure the OTS system prompt is used by _call_model
+        from axon.backends.base_backend import CompiledExecutionUnit
+        synthesis_unit = CompiledExecutionUnit(
+            flow_name=f"{unit.flow_name}_ots",
+            system_prompt=ots_step.system_prompt,
+            steps=[ots_step],
+        )
+
+        response = await self._call_model(
+            step=ots_step,
+            unit=synthesis_unit,
+            ctx=ctx,
+            tracer=tracer,
+        )
+        
+        # Store result in context
+        ctx.set_step_result(step_name, response.content)
+        
+        step_duration = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={"success": True},
+            duration_ms=step_duration,
+        )
+        
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=step_duration,
         )
 
     async def _execute_tool_step(

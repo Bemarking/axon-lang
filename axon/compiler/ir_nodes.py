@@ -89,6 +89,7 @@ class IRProgram(IRNode):
     imports: tuple[IRImport, ...] = ()
     agents: tuple['IRAgent', ...] = ()
     shields: tuple['IRShield', ...] = ()
+    ots_specs: tuple['IROtsDefinition', ...] = ()
     pix_specs: tuple['IRPixSpec', ...] = ()
     corpus_specs: tuple['IRCorpusSpec', ...] = ()
     psyche_specs: tuple['IRPsycheSpec', ...] = ()
@@ -591,6 +592,33 @@ class IRForge(IRNode):
     depth: int = 3                      # incubation iterations (Poincaré phase 2)
     branches: int = 5                   # Best-of-N for illumination (phase 3)
     children: tuple[IRNode, ...] = ()   # compiled inner steps
+
+
+@dataclass(frozen=True)
+class IROtsDefinition(IRNode):
+    """
+    Compiled OTS definition - a synthesized continual capability.
+    """
+    node_type: str = "ots"
+    name: str = ""
+    types: tuple[str, ...] = ()
+    teleology: str = ""
+    homotopy_search: str = "shallow"
+    linear_constraints: tuple[tuple[str, str], ...] = ()
+    loss_function: str = ""
+    children: tuple[IRNode, ...] = ()
+
+
+@dataclass(frozen=True)
+class IROtsApply(IRNode):
+    """
+    Compiled OTS application point.
+    """
+    node_type: str = "ots_apply"
+    ots_name: str = ""
+    target: str = ""
+    output_type: str = ""
+    output_type: str = ""
 
 # ═══════════════════════════════════════════════════════════════════
 #  AGENT IR NODE — compiled BDI autonomous agent

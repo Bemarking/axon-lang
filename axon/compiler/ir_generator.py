@@ -79,6 +79,8 @@ from axon.compiler.ir_nodes import (
     IRValidate,
     IRValidateRule,
     IRWeave,
+    IROtsDefinition,
+    IROtsApply,
 )
 
 
@@ -115,6 +117,7 @@ class IRGenerator:
         self._pix_specs: dict[str, IRPixSpec] = {}
         self._corpus_specs: dict[str, IRCorpusSpec] = {}
         self._psyche_specs: dict[str, IRPsycheSpec] = {}
+        self._ots_specs: dict[str, IROtsDefinition] = {}
 
     def generate(self, program: ast.ProgramNode) -> IRProgram:
         """
@@ -157,6 +160,7 @@ class IRGenerator:
             pix_specs=tuple(self._pix_specs.values()),
             corpus_specs=tuple(self._corpus_specs.values()),
             psyche_specs=tuple(self._psyche_specs.values()),
+            ots_specs=tuple(self._ots_specs.values()),
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -215,6 +219,9 @@ class IRGenerator:
         ast.CorroborateNode: "_visit_corroborate",
         # PEM — Psychological-Epistemic Modeling
         ast.PsycheDefinition: "_visit_psyche",
+        # OTS - Ontological Tool Synthesis
+        ast.OtsDefinition: "_visit_ots_definition",
+        ast.OtsApplyNode: "_visit_ots_apply",
     }
 
     def _visit(self, node: ast.ASTNode) -> IRNode:
@@ -1150,6 +1157,7 @@ class IRGenerator:
         self._pix_specs.clear()
         self._corpus_specs.clear()
         self._psyche_specs.clear()
+        self._ots_specs.clear()
 
     # ═════════════════════════════════════════════════════════════════
     #  PIX VISITORS — Structured Cognitive Retrieval
@@ -1300,4 +1308,37 @@ class IRGenerator:
         )
         self._psyche_specs[node.name] = ir_psyche
         return ir_psyche
+
+    # ═════════════════════════════════════════════════════════════════
+    #  OTS VISITORS — Ontological Tool Synthesis
+    # ═════════════════════════════════════════════════════════════════
+
+    def _visit_ots_definition(self, node: ast.OtsDefinition) -> IROtsDefinition:
+        """Lower an OTS definition into an IROtsDefinition."""
+        ir_ots = IROtsDefinition(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            types=(
+                node.input_type.name if node.input_type else "",
+                node.output_type.name if node.output_type else "",
+            ),
+            teleology=node.teleology,
+            homotopy_search=node.homotopy_search,
+            linear_constraints=tuple(node.linear_constraints.items()),
+            loss_function=node.loss_function,
+            children=tuple(self._visit(child) for child in node.body),
+        )
+        self._ots_specs[node.name] = ir_ots
+        return ir_ots
+
+    def _visit_ots_apply(self, node: ast.OtsApplyNode) -> IROtsApply:
+        """Lower an OTS application into an IROtsApply."""
+        return IROtsApply(
+            source_line=node.line,
+            source_column=node.column,
+            ots_name=node.ots_name,
+            target=node.target,
+            output_type=node.output_type,
+        )
 

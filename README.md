@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v0.18.0</em><br>
+  <strong>AXON</strong> <em>v0.19.0</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -10,15 +10,15 @@
   <code>deliberate</code> · <code>consensus</code> · <code>forge</code> · <code>agent</code> · <code>shield</code><br>
   <code>stream</code> · <code>effects</code> · <code>@contract_tool</code> · <code>@csp_tool</code><br>
   <code>pix</code> · <code>navigate</code> · <code>drill</code> · <code>trail</code> · <code>corpus</code><br>
-  <code>psyche</code>
+  <code>psyche</code> · <code>ots</code>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.18.0-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v0.19.0-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-1905%20passing-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/paradigms-13%20shifts-blueviolet" alt="Paradigm Shifts">
+  <img src="https://img.shields.io/badge/tests-1918%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/paradigms-14%20shifts-blueviolet" alt="Paradigm Shifts">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
   <img src="https://img.shields.io/badge/pypi-axon--lang-blue" alt="PyPI">
 </p>
@@ -2083,6 +2083,55 @@ epistemic uncertainty.
 
 ---
 
+## XII. Ontological Tool Synthesis — the `ots` Primitive
+
+AXON introduces **Ontological Tool Synthesis (OTS)**, replacing dynamic tool binding with formal, continuous tool generation. Synthesizing tools at runtime rather than selecting them from a static set.
+
+### 1. The Hard Argument: Topological Tool Spaces
+In traditional orchestrators, the capability space $\mathcal{C}$ is a discrete, finite set of predefined APIs $\mathcal{T} = \{t_1, t_2, \dots, t_n\}$. Tool routing becomes a discrete classification map $f: X \to \mathcal{T}$. OTS fundamentally redefines this by modeling tools as **morphisms in a category** embedded in a differentiable manifold. 
+Instead of selecting a tool $t \in \mathcal{T}$, OTS traverses a continuous topological space of computational structures to synthesize a morphism $m: X \to Y$ that optimally satisfies the agent's objective function. Given a teleology (goal) and constraints, OTS executes a *homotopy search* across the capability manifold, compiling an ephemeral tool $t'$ precise to the immediate context.
+
+### 2. The Sweet Argument: Beyond the API Straitjacket
+Imagine your agent isn't constrained by the APIs you wrote yesterday. "Dynamic Tool Binding" is like giving an agent a Swiss Army Knife and hoping one of the blades fits the screw. **OTS is giving the agent a portable forge.** 
+When a problem arises that no existing tool can perfectly solve, OTS allows the agent to synthesize a custom, hyper-specialized tool on the fly, use it, and discard it. It transforms capabilities from static, brittle endpoints into fluid, intention-driven cognitive extensions, unlocking true open-ended autonomy.
+
+### 3. Real-World Use Cases
+
+#### A. Zero-Day Vulnerability Patch Synthesis
+When discovering an unknown threat structure, pre-written remediation scripts fail. `ots` synthesizes a bespoke AST-transformation tool to safely sanitize the specific vulnerability pattern in memory.
+```axon
+ots ThreatPatcher<VulnGraph, ASTPatch> {
+    teleology: "Given a specific AST vulnerability, generate an isolated AST transformation tool"
+    loss_function: SemanticPreservation
+    linear_constraints: { max_mutations: 5, runtime_overhead: "<1ms" }
+    homotopy_search: A_Star
+}
+```
+
+#### B. Ephemeral Data Protocol Bridging
+Two microservices communicate using disparate, undocumented legacy protocols. Instead of hardcoding adapters, `ots` synthesizes an ephemeral serializer/deserializer tool precisely matching the inferred schemas at runtime.
+```axon
+ots ProtocolAdapter<StreamA, StreamB> {
+    teleology: "Synthesize an impedance-matching adapter mapping fields mathematically"
+    loss_function: Contrastive
+    linear_constraints: { latency: "<5ms", drop_rate: 0 }
+    homotopy_search: GradientDescent
+}
+```
+
+#### C. Ad-Hoc Statistical Operator Generation
+A data science agent encounters a novel distribution requirement not present in the standard math libraries. `ots` synthesizes a custom, optimized mathematical operator compiled down to low-level execution logic just-in-time.
+```axon
+ots MathOperator<Tensor, Tensor> {
+    teleology: "Generate an optimized projection operator converging to target distribution"
+    loss_function: L2
+    linear_constraints: { vectorizable: true, precision: 64 }
+    homotopy_search: Shallow
+}
+```
+
+---
+
 ## Architecture
 
 ```
@@ -2099,7 +2148,7 @@ epistemic uncertainty.
                               Typed Output (validated, traced result)
 ```
 
-### 35 Cognitive Primitives
+### 36 Cognitive Primitives
 
 | Primitive  | Keyword      | What it represents                                   |
 | ---------- | ------------ | ---------------------------------------------------- |
@@ -2141,6 +2190,7 @@ epistemic uncertainty.
 | Corpus     | `corpus`     | Multi-document graph with typed edges + epistemic σ  |
 | Recall     | `recall`     | Memory-augmented episodic recall from interaction H  |
 | Psyche     | `psyche`     | Psychological-epistemic modeling on Riemannian manifold |
+| OTS        | `ots`        | Ontological Tool Synthesis for open-ended teleological generation |
 
 ### Epistemic Type System (Partial Order Lattice)
 
@@ -2341,7 +2391,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 ### Current Status
 
 ```
-1800 passed, 0 failures ✅
+1918 passed, 0 failures ✅
 ```
 
 | Phase | Tests | What's covered                              |
@@ -2359,6 +2409,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 | 15    | 124   | PIX (engine + compiler + integration)       |
 | 16    | 208   | MDN (graph + navigator + EPR + epistemic)   |
 | 17    | 70    | Memory (μ operator + 5 formal properties)   |
+| 18    | 12    | OTS (compiler + runtime execution)          |
 | misc  | 541   | Stdlib, integration, edge cases             |
 
 ---
@@ -2479,6 +2530,7 @@ honesty:
 | 15    | Structured Cognitive Retrieval (`pix`)            | ✅ Done |
 | 16    | Multi-Document Navigation (`corpus` MDN framework)| ✅ Done |
 | 17    | Memory-Augmented MDN (structural learning via μ)  | ✅ Done |
+| 18    | Ontological Tool Synthesis (`ots` primitive)      | ✅ Done |
 
 ---
 

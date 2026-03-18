@@ -58,6 +58,13 @@ class TokenType(Enum):
     # ── CREATIVE SYNTHESIS KEYWORDS ──────────────────────────────
     FORGE = auto()
 
+    # ── OTS KEYWORDS (Ontological Tool Synthesis) ────────────────
+    OTS = auto()
+    TELEOLOGY = auto()
+    HOMOTOPY_SEARCH = auto()
+    LINEAR_CONSTRAINTS = auto()
+    LOSS_FUNCTION = auto()
+
     # ── STREAMING & EFFECT KEYWORDS (Convergence Theorems 1 & 2) ─
     STREAM = auto()           # stream<τ> semantic streaming
     ON_CHUNK = auto()         # on_chunk handler (co-inductive eval)
@@ -206,6 +213,12 @@ KEYWORDS: dict[str, TokenType] = {
     "consensus": TokenType.CONSENSUS,
     # Creative synthesis
     "forge": TokenType.FORGE,
+    # OTS (Ontological Tool Synthesis)
+    "ots": TokenType.OTS,
+    "teleology": TokenType.TELEOLOGY,
+    "homotopy_search": TokenType.HOMOTOPY_SEARCH,
+    "linear_constraints": TokenType.LINEAR_CONSTRAINTS,
+    "loss_function": TokenType.LOSS_FUNCTION,
     # Streaming & effects (Convergence Theorems 1 & 2)
     "stream": TokenType.STREAM,
     "on_chunk": TokenType.ON_CHUNK,

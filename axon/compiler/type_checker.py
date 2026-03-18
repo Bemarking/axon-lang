@@ -47,6 +47,8 @@ from .ast_nodes import (
     IntentNode,
     MemoryDefinition,
     NavigateNode,
+    OtsApplyNode,
+    OtsDefinition,
     ParallelBlock,
     PersonaDefinition,
     PixDefinition,
@@ -400,6 +402,10 @@ class TypeChecker:
                     pass  # ingest is a command, not a declaration
                 case FocusNode() | AssociateNode() | AggregateNode() | ExploreNode():
                     pass  # flow-level commands, not declarations
+                case OtsDefinition(name=name):
+                    self._register(name, "ots", decl)
+                case OtsApplyNode():
+                    pass
                 case NavigateNode() | DrillNode() | TrailNode():
                     pass  # PIX flow-level commands, not declarations
 
@@ -444,6 +450,10 @@ class TypeChecker:
                 self._check_consensus(decl)
             case ForgeBlock():
                 self._check_forge(decl)
+            case OtsDefinition():
+                self._check_ots_definition(decl)
+            case OtsApplyNode():
+                self._check_ots_apply(decl)
             case AgentDefinition():
                 self._check_agent(decl)
             case ShieldDefinition():
@@ -647,6 +657,8 @@ class TypeChecker:
                 self._check_consensus(step)
             case ForgeBlock():
                 self._check_forge(step)
+            case OtsApplyNode():
+                self._check_ots_apply(step)
             case AgentDefinition():
                 self._check_agent(step)
             case ShieldApplyNode():
@@ -1036,6 +1048,54 @@ class TypeChecker:
                 )
         for child in node.body:
             self._check_declaration(child)
+
+    # ── OTS validation ─────────────────────────────────────────────
+
+    _VALID_OTS_HOMOTOPY = frozenset({"shallow", "deep", "speculative"})
+    _VALID_OTS_CONSTRAINTS = frozenset({"strictly_once", "at_most_once", "at_least_once"})
+
+    def _check_ots_definition(self, node: OtsDefinition) -> None:
+        if not node.name:
+            self._emit("ots requires a name", node)
+            
+        if node.input_type:
+            self._check_type_reference(node.input_type.name, node)
+        if node.output_type:
+            self._check_type_reference(node.output_type.name, node)
+            
+        if not node.teleology:
+            self._emit("ots requires a teleology goal", node)
+            
+        if node.homotopy_search not in self._VALID_OTS_HOMOTOPY:
+            self._emit(
+                f"Unknown homotopy_search '{node.homotopy_search}'. "
+                f"Valid: {', '.join(sorted(self._VALID_OTS_HOMOTOPY))}",
+                node,
+            )
+            
+        for k, v in node.linear_constraints.items():
+            if v not in self._VALID_OTS_CONSTRAINTS:
+                self._emit(
+                    f"Unknown linear constraint '{v}' for '{k}'. "
+                    f"Valid: {', '.join(sorted(self._VALID_OTS_CONSTRAINTS))}",
+                    node,
+                )
+                
+        for child in node.body:
+            self._check_declaration(child)
+
+    def _check_ots_apply(self, node: OtsApplyNode) -> None:
+        if not node.ots_name:
+            self._emit("ots application requires a tool name", node)
+        else:
+            sym = self._symbols.lookup(node.ots_name)
+            if sym is None:
+                self._emit(f"Undefined ots tool '{node.ots_name}'", node)
+            elif sym.kind != "ots":
+                self._emit(f"'{node.ots_name}' is a {sym.kind}, not an ots tool", node)
+
+        if node.output_type:
+            self._check_type_reference(node.output_type, node)
 
     # ── AGENT validation ────────────────────────────────────────────
 
