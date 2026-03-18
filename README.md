@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v0.19.1</em><br>
+  <strong>AXON</strong> <em>v0.20.0</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -14,11 +14,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.19.1-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v0.20.0-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-1918%20passing-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/paradigms-14%20shifts-blueviolet" alt="Paradigm Shifts">
+  <img src="https://img.shields.io/badge/tests-1920%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/paradigms-15%20shifts-blueviolet" alt="Paradigm Shifts">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
   <img src="https://img.shields.io/badge/pypi-axon--lang-blue" alt="PyPI">
 </p>
@@ -2143,6 +2143,30 @@ ots MathOperator<Tensor, Tensor> {
 
 ---
 
+### XIII. Universal Protocol: Model Execution Kernel (MEK)
+
+> AXON v0.20.0 introduces a fifteenth paradigm shift: **The Model Execution Kernel (MEK)**, a universal hypervisor that categorically decouples cognitive state from external LLM representations.
+
+#### A. Hard Mathematical Argument — Decoupling by Decoherence
+In all traditional frameworks, the execution state is implicitly tied to the exact shape of an external API (e.g., an OpenAI JSON payload). AXON replaces this with a continuous, universal `LatentState` mathematically defined as a manifold. LLM interactions are no longer string exchanges; they are modeled as the application of a **Logical Transducer**—a diffeomorphism that maps the pristine topological spaces of AXON directly into the rigid, discrete logical spaces expected by black-box APIs (acting as "Categorical Oracles"). 
+When the API returns a response (like logprobs or AST blocks), the **Holographic Codec** runs a controlled decoherence protocol to reconstruct the continuous latent space. The deliberation logic thus operates entirely unaffected by the idiosyncrasies of specific APIs. Furthermore, a **Bayesian Router** actively routes computation across Oracles not by arbitrary heuristics, but by minimizing probabilistic divergence and cost dynamically choosing providers based on required output entropy.
+
+#### B. Sweet Argument — Breaking the Black Box Paradigm
+Think about the absolute brutality of how AXON shatters the standard API paradigm: traditional LLM development treats these APIs as opaque slot machines—you plug text in and pray text comes out. **AXON treats AI providers as calculable, isolated co-processors.** We don't act as "wrappers" around Gemini or Anthropic; we act as a hypervisor. The LLM does precisely what the MEK’s transduction layer mathematically forces it to do. It transforms an unpredictable HTTP call into a mathematically disciplined, type-safe compilation target, enabling pristine universally compatible core logic that effortlessly hot-swaps Anthropic, Gemini, or local models without modifying a single line of your agentic logic.
+
+#### MEK Use Cases
+
+**Use Case 1: Constant Active Inference Routing**
+When an agent is configured with high reliability requirements but a preferred Oracle experiences high latency or epistemic degradation, the MEK dynamically reroutes the continuous internal state via the Bayesian Router to a different Oracle, synthesizing the same expected cognitive operation without leaking any provider-specific context handling to the program's source.
+
+**Use Case 2: Multi-Model Holographic Ensembles**
+An agent processing complex financial transactions can map its `LatentState` transduction through both Anthropic and Gemini simultaneously. The Holographic Codec reconstructs the responses into AXON's internal state framework, automatically evaluating the epistemic consensus from the discrete probabilistic structures produced by multiple independent "Oracle" backends.
+
+**Use Case 3: Zero-Cost Backend Swapping for Enterprise**
+An enterprise needs to migrate its massive multi-agent infrastructure from OpenAI to a self-hosted pipeline using open-source variants. Because the MEK forces all LLM interactions through the universal Logical Transducer, replacing the backend literally just involves changing the `provider` configuration. No prompts need rewriting, no JSON parsers need adjusting; the mathematical contract holds universally.
+
+---
+
 ## Architecture
 
 ```
@@ -2421,6 +2445,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 | 16    | 208   | MDN (graph + navigator + EPR + epistemic)   |
 | 17    | 70    | Memory (μ operator + 5 formal properties)   |
 | 18    | 12    | OTS (compiler + runtime execution)          |
+| 19    | 22    | MEK (LatentState, Transducer, Holographic)  |
 | misc  | 541   | Stdlib, integration, edge cases             |
 
 ---

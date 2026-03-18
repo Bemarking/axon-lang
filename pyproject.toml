@@ -7,8 +7,8 @@ build-backend = "hatchling.build"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-lang"
-version = "0.19.1"
-description = "A programming language for AI cognition — compiles to prompts, not machine code."
+version = "0.20.0"
+description = "A domain-specific language for defining AI agent behaviors with deterministic control"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
