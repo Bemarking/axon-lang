@@ -1,0 +1,289 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.3, pytest-8.4.1, pluggy-1.6.0
+rootdir: C:\Users\home\Documents\Proyectos\axxon-constructor
+configfile: pyproject.toml
+plugins: anyio-4.10.0, langsmith-0.4.31, logfire-4.26.0, asyncio-1.1.0, cov-6.2.1, mock-3.14.1
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 12 items
+
+tests\test_ots.py ......FFFFFF                                           [100%]
+
+================================== FAILURES ===================================
+_______________________ TestOtsParser.test_ots_minimal ________________________
+
+self = <tests.test_ots.TestOtsParser object at 0x000001AE1CBDC410>
+
+    def test_ots_minimal(self):
+>       tree = _parse('ots Processor(Input -> Output) { teleology: "Process" }')
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_ots.py:99: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_ots.py:26: in _parse
+    return Parser(tokens).parse()
+           ^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:91: in parse
+    decl = self._parse_declaration()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:140: in _parse_declaration
+    return self._parse_ots_definition()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:1488: in _parse_ots_definition
+    self._consume(TokenType.LBRACE)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <axon.compiler.parser.Parser object at 0x000001AE1CC04440>
+expected = <TokenType.LBRACE: 97>
+
+    def _consume(self, expected: TokenType) -> Token:
+        tok = self._current()
+        if tok.type != expected:
+>           raise AxonParseError(
+                f"Unexpected token",
+                line=tok.line,
+                column=tok.column,
+                expected=expected.name,
+                found=f"{tok.type.name}({tok.value!r})",
+            )
+E           axon.compiler.errors.AxonParseError: AxonParseError [line 1, col 14]: Unexpected token (expected LBRACE, found LPAREN('('))
+
+axon\compiler\parser.py:1685: AxonParseError
+_________________________ TestOtsParser.test_ots_full _________________________
+
+self = <tests.test_ots.TestOtsParser object at 0x000001AE1CBDC690>
+
+        def test_ots_full(self):
+            source = '''ots ContentSynthesizer(Raw -> Structured) {
+        teleology: "Mute noise"
+        linear_constraints: [
+            complexity < 0.5,
+            verbosity < 0.2
+        ]
+        homotopy_search: { alpha: 0.1, radius: 2.5 }
+        loss_function: "L2"
+        children: [Parser, Formatter]
+    }'''
+>           tree = _parse(source)
+                   ^^^^^^^^^^^^^^
+
+tests\test_ots.py:121: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_ots.py:26: in _parse
+    return Parser(tokens).parse()
+           ^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:91: in parse
+    decl = self._parse_declaration()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:140: in _parse_declaration
+    return self._parse_ots_definition()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:1488: in _parse_ots_definition
+    self._consume(TokenType.LBRACE)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <axon.compiler.parser.Parser object at 0x000001AE1CA20CD0>
+expected = <TokenType.LBRACE: 97>
+
+    def _consume(self, expected: TokenType) -> Token:
+        tok = self._current()
+        if tok.type != expected:
+>           raise AxonParseError(
+                f"Unexpected token",
+                line=tok.line,
+                column=tok.column,
+                expected=expected.name,
+                found=f"{tok.type.name}({tok.value!r})",
+            )
+E           axon.compiler.errors.AxonParseError: AxonParseError [line 1, col 23]: Unexpected token (expected LBRACE, found LPAREN('('))
+
+axon\compiler\parser.py:1685: AxonParseError
+___________________ TestOtsApplyParser.test_ots_apply_basic ___________________
+
+self = <tests.test_ots.TestOtsApplyParser object at 0x000001AE1CBDC7D0>
+
+        def test_ots_apply_basic(self):
+            source = '''flow Test() -> Result {
+        ots Processor on input -> OutputType
+    }'''
+>           tree = _parse(source)
+                   ^^^^^^^^^^^^^^
+
+tests\test_ots.py:145: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_ots.py:26: in _parse
+    return Parser(tokens).parse()
+           ^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:91: in parse
+    decl = self._parse_declaration()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:118: in _parse_declaration
+    return self._parse_flow()
+           ^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:507: in _parse_flow
+    step = self._parse_flow_step()
+           ^^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:597: in _parse_flow_step
+    return self._parse_ots_apply()
+           ^^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:1550: in _parse_ots_apply
+    self._consume(TokenType.LPAREN)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <axon.compiler.parser.Parser object at 0x000001AE1CBDD590>
+expected = <TokenType.LPAREN: 99>
+
+    def _consume(self, expected: TokenType) -> Token:
+        tok = self._current()
+        if tok.type != expected:
+>           raise AxonParseError(
+                f"Unexpected token",
+                line=tok.line,
+                column=tok.column,
+                expected=expected.name,
+                found=f"{tok.type.name}({tok.value!r})",
+            )
+E           axon.compiler.errors.AxonParseError: AxonParseError [line 2, col 19]: Unexpected token (expected LPAREN, found IDENTIFIER('on'))
+
+axon\compiler\parser.py:1685: AxonParseError
+__________________ TestOtsTypeChecker.test_valid_ots_passes ___________________
+
+self = <tests.test_ots.TestOtsTypeChecker object at 0x000001AE1CBDC910>
+
+        def test_valid_ots_passes(self):
+            source = '''ots Synthesizer(A -> B) {
+        teleology: "Teleological goal"
+    }'''
+>           errors = _check(source)
+                     ^^^^^^^^^^^^^^
+
+tests\test_ots.py:164: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_ots.py:31: in _check
+    tree = Parser(tokens).parse()
+           ^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:91: in parse
+    decl = self._parse_declaration()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:140: in _parse_declaration
+    return self._parse_ots_definition()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:1488: in _parse_ots_definition
+    self._consume(TokenType.LBRACE)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <axon.compiler.parser.Parser object at 0x000001AE1CC74B00>
+expected = <TokenType.LBRACE: 97>
+
+    def _consume(self, expected: TokenType) -> Token:
+        tok = self._current()
+        if tok.type != expected:
+>           raise AxonParseError(
+                f"Unexpected token",
+                line=tok.line,
+                column=tok.column,
+                expected=expected.name,
+                found=f"{tok.type.name}({tok.value!r})",
+            )
+E           axon.compiler.errors.AxonParseError: AxonParseError [line 1, col 16]: Unexpected token (expected LBRACE, found LPAREN('('))
+
+axon\compiler\parser.py:1685: AxonParseError
+__________________ TestOtsTypeChecker.test_missing_teleology __________________
+
+self = <tests.test_ots.TestOtsTypeChecker object at 0x000001AE1CBDCA50>
+
+        def test_missing_teleology(self):
+            source = '''ots Synthesizer(A -> B) {
+        loss_function: "L2"
+    }'''
+>           errors = _check(source)
+                     ^^^^^^^^^^^^^^
+
+tests\test_ots.py:171: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_ots.py:31: in _check
+    tree = Parser(tokens).parse()
+           ^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:91: in parse
+    decl = self._parse_declaration()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:140: in _parse_declaration
+    return self._parse_ots_definition()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:1488: in _parse_ots_definition
+    self._consume(TokenType.LBRACE)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <axon.compiler.parser.Parser object at 0x000001AE1CC74E90>
+expected = <TokenType.LBRACE: 97>
+
+    def _consume(self, expected: TokenType) -> Token:
+        tok = self._current()
+        if tok.type != expected:
+>           raise AxonParseError(
+                f"Unexpected token",
+                line=tok.line,
+                column=tok.column,
+                expected=expected.name,
+                found=f"{tok.type.name}({tok.value!r})",
+            )
+E           axon.compiler.errors.AxonParseError: AxonParseError [line 1, col 16]: Unexpected token (expected LBRACE, found LPAREN('('))
+
+axon\compiler\parser.py:1685: AxonParseError
+______________ TestOtsIRGenerator.test_ots_produces_ir_and_apply ______________
+
+self = <tests.test_ots.TestOtsIRGenerator object at 0x000001AE1CBDCB90>
+
+        def test_ots_produces_ir_and_apply(self):
+            source = '''ots Synthesizer(InputType -> OutputType) {
+        teleology: "Do something"
+        linear_constraints: [ a < 1 ]
+        homotopy_search: { r: 1.0 }
+        loss_function: "L1"
+        children: [ChildA]
+    }
+    
+    flow TestFlow() -> OutputType {
+        ots Synthesizer on data -> OutputType
+    }'''
+>           prog = _generate(source)
+                   ^^^^^^^^^^^^^^^^^
+
+tests\test_ots.py:194: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_ots.py:37: in _generate
+    tree = Parser(tokens).parse()
+           ^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:91: in parse
+    decl = self._parse_declaration()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:140: in _parse_declaration
+    return self._parse_ots_definition()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+axon\compiler\parser.py:1488: in _parse_ots_definition
+    self._consume(TokenType.LBRACE)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <axon.compiler.parser.Parser object at 0x000001AE1CB428D0>
+expected = <TokenType.LBRACE: 97>
+
+    def _consume(self, expected: TokenType) -> Token:
+        tok = self._current()
+        if tok.type != expected:
+>           raise AxonParseError(
+                f"Unexpected token",
+                line=tok.line,
+                column=tok.column,
+                expected=expected.name,
+                found=f"{tok.type.name}({tok.value!r})",
+            )
+E           axon.compiler.errors.AxonParseError: AxonParseError [line 1, col 16]: Unexpected token (expected LBRACE, found LPAREN('('))
+
+axon\compiler\parser.py:1685: AxonParseError
+=========================== short test summary info ===========================
+FAILED tests/test_ots.py::TestOtsParser::test_ots_minimal - axon.compiler.err...
+FAILED tests/test_ots.py::TestOtsParser::test_ots_full - axon.compiler.errors...
+FAILED tests/test_ots.py::TestOtsApplyParser::test_ots_apply_basic - axon.com...
+FAILED tests/test_ots.py::TestOtsTypeChecker::test_valid_ots_passes - axon.co...
+FAILED tests/test_ots.py::TestOtsTypeChecker::test_missing_teleology - axon.c...
+FAILED tests/test_ots.py::TestOtsIRGenerator::test_ots_produces_ir_and_apply
+========================= 6 failed, 6 passed in 0.92s =========================

@@ -46,7 +46,9 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, AsyncGenerator
+
+from axon.runtime.effects import EmitEvent, handle_stream_effects
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -547,3 +549,32 @@ class SemanticStream:
             "budget_remaining": self._budget,
             "accumulated_length": len(self.accumulated_data),
         }
+
+# ═══════════════════════════════════════════════════════════════════
+#  ALGEBRAIC EFFECTS BOUNDARY (SSE STREAMING)
+# ═══════════════════════════════════════════════════════════════════
+
+async def sse_event_stream(
+    execution_coro: Awaitable[Any]
+) -> AsyncGenerator[str, None]:
+    """
+    Boundary handler that maps internal pure algebraic effects (EmitEvent)
+    into Server-Sent Events (SSE) format.
+
+    This acts as the phenomenological envelope for the pure evaluation
+    happening inside `execution_coro`.
+
+    Yields:
+        Formatted SSE string packets ready for HTTP transmission.
+    """
+    import json
+
+    # We evaluate the coroutine inside the Delimited Continuation boundary
+    async for effect in handle_stream_effects(execution_coro):
+        if isinstance(effect, EmitEvent):
+            payload = {
+                "event": effect.event_type,
+                "data": effect.data,
+            }
+            # Standard SSE packet format
+            yield f"data: {json.dumps(payload)}\n\n"

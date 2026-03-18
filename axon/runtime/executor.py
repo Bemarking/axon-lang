@@ -44,6 +44,7 @@ from axon.backends.base_backend import (
     CompiledStep,
 )
 from axon.runtime.context_mgr import ContextManager
+from axon.runtime.effects import EmitEvent, perform
 from axon.runtime.memory_backend import InMemoryBackend, MemoryBackend
 from axon.runtime.retry_engine import RefineConfig, RetryEngine, RetryResult
 from axon.runtime.runtime_errors import (
@@ -1468,6 +1469,15 @@ class Executor:
 
         call_duration = (time.perf_counter() - call_start) * 1000
 
+        perform(EmitEvent(
+            event_type="ModelCall",
+            data={
+                "step_name": step_name,
+                "content": response.content,
+                "has_tool_calls": bool(response.tool_calls),
+            }
+        ))
+
         tracer.emit(
             TraceEventType.MODEL_RESPONSE,
             step_name=step_name,
@@ -2271,6 +2281,15 @@ class Executor:
             # ════════════════════════════════════════════════════
             # Phase 1: OBSERVE — Gather beliefs
             # ════════════════════════════════════════════════════
+            perform(EmitEvent(
+                event_type="AgentCycleStart",
+                data={
+                    "agent_name": name,
+                    "iteration": iteration,
+                    "epistemic_state": epistemic_state,
+                }
+            ))
+
             observation_context = self._build_observation_prompt(
                 name=name,
                 goal=goal,
@@ -2322,6 +2341,15 @@ class Executor:
             new_epistemic = self._extract_epistemic_state(
                 deliberation_response.content, epistemic_state,
             )
+
+            perform(EmitEvent(
+                event_type="ModelReasoning",
+                data={
+                    "phase": "deliberate",
+                    "content": deliberation_response.content,
+                    "epistemic_proposed": new_epistemic,
+                }
+            ))
 
             # Monotonic advancement on epistemic lattice
             epistemic_state = self._advance_epistemic(
@@ -2382,6 +2410,14 @@ class Executor:
             # ════════════════════════════════════════════════════
             # Phase 4: ACT — Execute the selected action
             # ════════════════════════════════════════════════════
+            perform(EmitEvent(
+                event_type="ModelReasoning",
+                data={
+                    "phase": "act",
+                    "content": action_response.content,
+                }
+            ))
+
             # For plan_and_execute, on first iteration capture the plan
             if strategy == "plan_and_execute" and iteration == 0:
                 execution_plan = self._extract_execution_plan(

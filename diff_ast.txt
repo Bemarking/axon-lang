@@ -1,0 +1,52 @@
+diff --git a/axon/compiler/ast_nodes.py b/axon/compiler/ast_nodes.py
+index 1040d62..db62e4c 100644
+--- a/axon/compiler/ast_nodes.py
++++ b/axon/compiler/ast_nodes.py
+@@ -688,6 +688,47 @@ class ForgeBlock(ASTNode):
+     body: list[ASTNode] = field(default_factory=list)
+ 
+ 
++# ═══════════════════════════════════════════════════════════════════
++#  ONTOLOGICAL TOOL SYNTHESIS (OTS) NODES
++# ═══════════════════════════════════════════════════════════════════
++
++@dataclass
++class OtsDefinition(ASTNode):
++    """
++    ots DataExtractor<InputType, OutputType> {
++        teleology: "Consume fragmented PDF invoice files to strictly emit normalized SQL inserts"
++        homotopy_search: deep
++        linear_constraints: {
++            Consumption: strictly_once
++        }
++        loss_function: L_accuracy + 0.1 * L_complexity
++    }
++
++    The **ots** primitive — Ontological Tool Synthesis.
++    Moves beyond static/dynamic tool binding to a continual capability space.
++    """
++    name: str = ""
++    input_type: TypeExprNode | None = None
++    output_type: TypeExprNode | None = None
++    teleology: str = ""
++    homotopy_search: str = "shallow"  # shallow | deep | speculative
++    linear_constraints: dict[str, str] = field(default_factory=dict)
++    loss_function: str = ""
++    body: list[ASTNode] = field(default_factory=list)
++
++
++@dataclass
++class OtsApplyNode(ASTNode):
++    """
++    ots DataExtractor(invoice_data) -> SqlInserts
++
++    Application of a synthesized tool with ephemeral execution.
++    """
++    ots_name: str = ""
++    target: str = ""
++    output_type: str = ""
++
++
+ # ═══════════════════════════════════════════════════════════════════
+ #  AGENT NODES — BDI autonomous agent primitive
+ # ═══════════════════════════════════════════════════════════════════

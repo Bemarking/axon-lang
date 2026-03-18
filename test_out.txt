@@ -1,0 +1,59 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.3, pytest-8.4.1, pluggy-1.6.0
+rootdir: C:\Users\home\Documents\Proyectos\axxon-constructor
+configfile: pyproject.toml
+plugins: anyio-4.10.0, langsmith-0.4.31, logfire-4.26.0, asyncio-1.1.0, cov-6.2.1, mock-3.14.1
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 12 items
+
+tests\test_ots.py ..........FF                                           [100%]
+
+================================== FAILURES ===================================
+__________________ TestOtsTypeChecker.test_missing_teleology __________________
+
+self = <tests.test_ots.TestOtsTypeChecker object at 0x0000020BB8BEC910>
+
+        def test_missing_teleology(self):
+            source = '''ots Synthesizer<A, B> {
+        loss_function: L2
+    }'''
+>           with pytest.raises(AxonParseError):
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           Failed: DID NOT RAISE <class 'axon.compiler.errors.AxonParseError'>
+
+tests\test_ots.py:164: Failed
+______________ TestOtsIRGenerator.test_ots_produces_ir_and_apply ______________
+
+self = <tests.test_ots.TestOtsIRGenerator object at 0x0000020BB8BECA50>
+
+        def test_ots_produces_ir_and_apply(self):
+            source = '''ots Synthesizer<InputType, OutputType> {
+        teleology: "Do something"
+        linear_constraints: { a: strictly_once }
+        homotopy_search: deep
+        loss_function: L1
+    }
+    
+    flow TestFlow() -> OutputType {
+        ots Synthesizer(data) -> OutputType
+    }'''
+            prog = _generate(source)
+            assert len(prog.ots_specs) == 1
+            ir_ots = prog.ots_specs[0]
+            assert isinstance(ir_ots, IROtsDefinition)
+            assert ir_ots.name == "Synthesizer"
+            assert ir_ots.types == ("InputType", "OutputType")
+            assert ir_ots.teleology == "Do something"
+            assert ir_ots.linear_constraints == (("a", "strictly_once"),)
+            assert ir_ots.homotopy_search == "deep"
+            assert ir_ots.loss_function == "L1"
+>           assert ir_ots.children == []
+E           assert () == []
+E             
+E             Use -v to get more diff
+
+tests\test_ots.py:195: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_ots.py::TestOtsTypeChecker::test_missing_teleology - Failed...
+FAILED tests/test_ots.py::TestOtsIRGenerator::test_ots_produces_ir_and_apply
+======================== 2 failed, 10 passed in 0.35s =========================
