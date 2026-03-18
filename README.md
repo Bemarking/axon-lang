@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v0.19.0</em><br>
+  <strong>AXON</strong> <em>v0.19.1</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.19.0-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v0.19.1-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/tests-1918%20passing-brightgreen" alt="Tests">
@@ -770,10 +770,21 @@ agent Researcher {
 
 ### VII. Epistemic Tool Fortification — Streaming, Effects & Blame Semantics
 
-> AXON v0.14 introduces a ninth paradigm shift: **formal epistemic control over
+> AXON v0.14 and v0.19.1 introduce a ninth paradigm shift: **formal epistemic control over
 > tool invocations, streaming outputs, and foreign-function interfaces** — backed
 > by algebraic effect theory, coinductive stream semantics, and Findler-Felleisen
-> blame calculus.
+> blame calculus. The v0.19.1 release renews the `stream` primitive by decoupling pure deliberation from the I/O mechanism.
+
+#### The Hard Argument (Computational Decoupling)
+In pragmatic software engineering, Python generators (`yield` and `async for`) have become the standard for data streaming. However, under the rigor of formal language theory and category mathematics, this approach has a structural flaw: it inextricably couples "deliberation" (data generation) with the "I/O mechanism" (transmission). AXON v0.19.1 resolves this by applying **Algebraic Effects and Handlers** to streaming. The `stream` primitive no longer executes I/O; it yields a pure effect (`YieldChunk(data)`), suspending the continuation `k`. An external Handler (e.g., `SSEHandler`) intercepts the effect, executes the I/O side-effect, and then resumes `k`. This mathematical decoupling ensures the generative core remains functionally pure and independently testable.
+
+#### The Sweet Argument (Why it's awesome)
+Imagine writing streaming logic without ever worrying about the HTTP connection! With the renewed `stream` primitive, your AI agents don't "push bytes"—they express pure conceptual intentions. You just write your LLM generation logic in the cleanest way possible. Want to switch from Server-Sent Events (SSE) to WebSockets, or maybe just log to a file? The agent code doesn't change a single character! You simply swap the Handler. Your codebase becomes incredibly pristine, blazingly fast to test, and theoretically invincible. It makes streaming feel like pure magic backed by hardcore category theory.
+
+#### Real-World Use Cases
+1. **Agentic Server-Sent Events (SSE)**: Stream an agent's intermediate "thoughts" and reasoning steps directly to a React frontend in real-time. If the client drops the connection, the handler manages the disconnection gracefully without crashing the agent's pure deliberation cycle.
+2. **Multi-Channel Orchestration**: A single `stream` computation can be intercepted by a composite handler that simultaneously prints chunks to a CLI, broadcasts to an SSE channel, and persists the flow to a Redis database—all while the business logic remains fully unaware of these I/O burdens.
+3. **Deterministic Testing Pipelines**: In your CI/CD pipelines, the I/O handler can be instantly swapped out for a `MockHandler` that accumulates chunks synchronously in memory. This eliminates flaky network-bound streaming tests entirely, allowing you to test complex LLM streaming flows in microseconds.
 
 Every LLM framework treats tool calls as black boxes: a function returns a
 string, and the framework trusts it unconditionally. Streaming is even worse —
@@ -2181,7 +2192,7 @@ ots MathOperator<Tensor, Tensor> {
 | Forge      | `forge`      | Directed creative synthesis (Poincaré pipeline)      |
 | Agent      | `agent`      | Autonomous goal-seeking BDI cognitive system         |
 | Shield     | `shield`     | Compile-time IFC security (taint + capability)       |
-| Stream     | `stream`     | Coinductive semantic streaming with epistemic gradient|
+| Stream     | `stream`     | Algebraic Effects and Free Monads                     |
 | Effects    | `effects`    | Algebraic effect rows for tool declarations          |
 | PIX        | `pix`        | Structured document index (navigable tree)           |
 | Navigate   | `navigate`   | Intent-driven tree retrieval with reasoning trail    |
