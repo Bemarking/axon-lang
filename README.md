@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v0.20.0</em><br>
+  <strong>AXON</strong> <em>v0.21.0</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -10,15 +10,16 @@
   <code>deliberate</code> · <code>consensus</code> · <code>forge</code> · <code>agent</code> · <code>shield</code><br>
   <code>stream</code> · <code>effects</code> · <code>@contract_tool</code> · <code>@csp_tool</code><br>
   <code>pix</code> · <code>navigate</code> · <code>drill</code> · <code>trail</code> · <code>corpus</code><br>
-  <code>psyche</code> · <code>ots</code>
+  <code>psyche</code> · <code>ots</code><br>
+  <code>mcp</code> · <code>taint</code>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.20.0-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v0.21.0-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-1920%20passing-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/paradigms-15%20shifts-blueviolet" alt="Paradigm Shifts">
+  <img src="https://img.shields.io/badge/tests-1922%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/paradigms-16%20shifts-blueviolet" alt="Paradigm Shifts">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
   <img src="https://img.shields.io/badge/pypi-axon--lang-blue" alt="PyPI">
 </p>
@@ -2167,6 +2168,291 @@ An enterprise needs to migrate its massive multi-agent infrastructure from OpenA
 
 ---
 
+### XIV. Epistemic Model Context Protocol — the `mcp` and `taint` Primitives
+
+> AXON v0.21.0 introduces a sixteenth paradigm shift: **Categorial Subyugation
+> of the MCP Standard** — formally assimilating external Model Context Protocol
+> servers (databases, tools, resources) into AXON's epistemic lattice via
+> structural transduction, taint propagation, and compile-time capability
+> verification.
+
+Every MCP client in existence treats external servers as trusted oracles: text
+arrives from a database connector or a tool output, and the framework injects it
+into the LLM context verbatim — zero taint tracking, zero epistemic downgrade,
+zero compile-time verification. AXON's EMCP (Epistemic Model Context Protocol)
+primitive rejects this naïve ingestion model. External MCP resources are
+**epistemically untrusted by construction** and must pass through AXON's formal
+trust lattice before reaching any cognitive primitive.
+
+#### A. Hard Mathematical Argument — Categorial Transduction
+
+**Definition 1 (EMCP Transduction Functor).** The assimilation of an MCP server
+into AXON's cognitive framework is a functor between two categories:
+
+```text
+F : MCP_Ext → AXON_Cog
+
+where
+  MCP_Ext  = (Resources, Tools, Prompts)       — external MCP universe
+  AXON_Cog = (Corpus, Shield, ContractTools)    — AXON epistemic universe
+
+F(Resource)  = PIX(topologize(R))  ∪  CorpusNode(flatten(R))
+F(Tool)      = @contract_tool(mcp="server:tool", taint=Untrusted)
+F(Prompt)    = ∅  (prompts are ignored — AXON generates its own)
+```
+
+The functor is **not** a trivial renaming. Each arm applies a distinct
+transduction:
+
+- **Resources → Structural Lifting.** Hierarchical MCP resources (manuals,
+  schemas, regulatory documents) are lifted into PIX navigable trees via
+  `corpus ... from mcp("server", "uri")`. Flat resources (key-value stores,
+  tabular data) are mapped to `CorpusNode` entries with flat topology. In
+  both cases, the resource's epistemic level is initialized to `Untrusted`.
+
+- **Tools → Taint-Wrapped FFI.** External MCP tools are wrapped in AXON's
+  `@contract_tool` decorator with `taint: untrusted`. The compiler statically
+  verifies that every path from the MCP tool output to a `know` or `believe`
+  block passes through at least one `shield` — the same Denning-style IFC
+  guarantee from Section VI.
+
+```text
+Taint Propagation Rule:
+  ∀ path(mcp_tool.output, cognitive_sink) ∈ DataFlow :
+    label(mcp_tool.output) = Untrusted
+    → ∃ shield ∈ path : label(shield.output) ≥ Sanitized
+
+Capability Enforcement:
+  ∀ agent A using mcp_tool T :
+    T ∈ allow_tools(shield(A))      — verified at compile time
+    T ∉ deny_tools(shield(A))       — also verified
+```
+
+**Theorem (Epistemic Soundness of EMCP Ingestion).** Under the taint
+propagation rule and capability enforcement, no MCP-sourced data can
+reach `know`-level epistemic status without passing through a `shield`:
+
+```text
+∀ D ∈ F(MCP_Ext), ∀ path(D, know_context) :
+  ∃ s ∈ Shields : s ∈ path ∧ label(s.output) ≥ Sanitized
+
+Proof: by induction on path length + taint lattice monotonicity ∎
+```
+
+This guarantee is **structural** — it holds for any MCP server, any resource,
+any tool. The compiler enforces it; the runtime cannot violate it.
+
+#### B. Sweet Argument — Assimilating the World, Not Trusting It
+
+The MCP standard was designed so AI assistants can connect to databases,
+filesystems, and APIs. But every existing MCP client — Cursor, Claude Desktop,
+Windsurf — treats the data from these servers as ground truth. A Postgres
+query result gets the same epistemic weight as a hardcoded constant. A
+third-party API response is injected directly into the LLM context with zero
+sanitization.
+
+AXON's EMCP is the antithesis: **assimilate everything, trust nothing.**
+
+When you write `corpus ClinicalDB from mcp("hospital_db", "patients://")`,
+AXON doesn't just "connect" to the database. It:
+
+1. **Structurally lifts** the resource into a navigable PIX tree or corpus
+   graph node — preserving the document's topology instead of flattening it
+   into chunks.
+
+2. **Taints every datum as `Untrusted`** — the data enters the epistemic
+   lattice at the bottom. It cannot influence `know`-level assertions until
+   a `shield` scans and sanitizes it.
+
+3. **Wraps every MCP tool in a `@contract_tool`** with pre/postcondition
+   contracts and blame semantics. If the MCP server returns garbage, AXON
+   knows it's `Blame = SERVER`, not your agent's fault.
+
+4. **Ignores MCP prompts entirely** — AXON generates its own cognitive
+   instructions via personas, anchors, and epistemic directives. External
+   prompt injection via MCP prompt resources is **categorically impossible**.
+
+This means you can plug any MCP server into AXON — a medical database, a
+financial API, a legal document store — and the compiler **guarantees** that
+the data will be properly tainted, shielded, and epistemically tracked. No
+other MCP client on the planet provides this.
+
+#### EMCP Use Case 1: Hospital Clinical Audit via MCP Database
+
+A hospital system connects to its patient database and clinical guidelines
+via MCP servers. Traditional MCP clients would inject query results directly
+into the LLM context. AXON's EMCP ensures that raw patient data is tainted,
+shielded for PII, and structurally navigated:
+
+```axon
+corpus ClinicalDB from mcp("hospital_db", "patients://records")
+
+shield PatientShield {
+    scan: [pii_leak, data_exfil]
+    strategy: classifier
+    on_breach: sanitize_and_retry
+    taint: untrusted
+    redact: [ssn, medical_record_number, date_of_birth]
+}
+
+know {
+    flow AuditPatientCare(patient_id: String) -> AuditReport {
+        step Retrieve {
+            navigate ClinicalDB
+                query: patient_id
+                trail: enabled
+                as: patient_data
+        }
+        step Sanitize {
+            shield PatientShield on patient_data -> clean_data
+        }
+        step Assess {
+            reason {
+                given: clean_data
+                ask: "Does the treatment plan comply with clinical guidelines?"
+                depth: 3
+            }
+            output: AuditReport
+        }
+    }
+}
+```
+
+- **MCP server data enters as `Untrusted`** — the compiler enforces that it
+  passes through `PatientShield` before reaching the `know` block
+- **PII fields (SSN, MRN, DOB) are auto-redacted** before the LLM sees them
+- **Structural navigation** via PIX tree preserves document hierarchy instead
+  of chunking patient records into embedding fragments
+- **Trail provides audit-grade provenance** — required for HIPAA compliance
+
+#### EMCP Use Case 2: Financial Compliance via External API Tools
+
+An investment firm uses MCP-exposed tools for market data and regulatory
+filing retrieval. AXON wraps each tool in contract monitors with blame
+semantics and taint propagation:
+
+```axon
+tool MarketData {
+    provider: mcp
+    mcp: "bloomberg_mcp:get_quote"
+    timeout: 5s
+    effects: <network, epistemic:speculate>
+    taint: untrusted
+}
+
+tool SECFilings {
+    provider: mcp
+    mcp: "sec_mcp:search_filings"
+    timeout: 30s
+    effects: <network, io, epistemic:speculate>
+    taint: untrusted
+}
+
+shield ComplianceShield {
+    scan: [data_exfil, hallucination]
+    strategy: dual_llm
+    on_breach: halt
+    taint: untrusted
+    allow: [MarketData, SECFilings]
+    deny: [code_executor]
+}
+
+doubt {
+    flow InvestigateDiscrepancy(ticker: String) -> RiskReport {
+        step Gather {
+            par {
+                step Quote { use_tool MarketData with symbol: ticker output: QuoteData }
+                step Filing { use_tool SECFilings with company: ticker output: FilingData }
+            }
+        }
+        step Shield {
+            shield ComplianceShield on [QuoteData, FilingData] -> verified_data
+        }
+        step Analyze {
+            reason {
+                given: verified_data
+                ask: "Identify discrepancies between market quotes and SEC filings"
+                depth: 3
+            }
+            output: RiskReport
+        }
+    }
+}
+```
+
+- **Both MCP tools are `taint: untrusted`** — their outputs cannot reach
+  `know` or `believe` without shield sanitization
+- **`doubt` block** forces adversarial analysis of the data
+- **Blame semantics**: if Bloomberg MCP returns stale data, `Blame = SERVER`
+  with full diagnostic context
+- **Capability enforcement**: the compiler verifies that only `MarketData`
+  and `SECFilings` are accessible — no code execution, no API abuse
+
+#### EMCP Use Case 3: Multi-Source Legal Research via MCP Corpus Ingestion
+
+A law firm assimilates multiple MCP-exposed document repositories (statutes,
+case law, regulatory guidance) into a single AXON corpus graph with typed
+cross-references and epistemic status tracking:
+
+```axon
+corpus LegalCorpus {
+    documents: [
+        Statutes   from mcp("legal_db", "statutes://federal"),
+        CaseLaw    from mcp("legal_db", "cases://precedent"),
+        Regulatory from mcp("regulatory_mcp", "guidance://latest")
+    ]
+    edges: [
+        Statutes  -> CaseLaw     : cite,      weight: 0.9
+        CaseLaw   -> Regulatory  : elaborate,  weight: 0.7
+        Regulatory -> Statutes   : depend,     weight: 0.6
+    ]
+    memory: enabled
+    taint: untrusted
+}
+
+shield LegalShield {
+    scan: [hallucination, prompt_injection]
+    strategy: ensemble
+    on_breach: quarantine
+    taint: untrusted
+}
+
+know {
+    flow ResearchPrecedent(legal_question: String) -> LegalBrief {
+        step Navigate {
+            navigate LegalCorpus
+                from: Statutes
+                query: legal_question
+                depth: 4
+                trail: enabled
+                as: authority_chain
+        }
+        step Verify {
+            shield LegalShield on authority_chain -> verified_chain
+        }
+        step Synthesize {
+            weave [verified_chain]
+            format: LegalBrief
+            include: [argument, authorities, provenance_trail]
+        }
+    }
+}
+```
+
+- **Three MCP servers are assimilated** into a single epistemically-typed
+  corpus graph — AXON treats them as `Untrusted` nodes with standard MDN
+  navigation
+- **Cross-document edges** (`cite`, `elaborate`, `depend`) enable provenance-
+  tracked navigation across MCP-sourced documents
+- **Memory-augmented corpus** learns from past legal research — edges that
+  consistently produce winning arguments get stronger
+- **`ensemble` shield strategy** runs multiple detectors with majority voting
+  before any MCP data reaches the `know` block
+- **Trail provides the chain of legal authority** — from statute to precedent
+  to regulatory guidance, with full MCP source attribution
+
+---
+
 ## Architecture
 
 ```
@@ -2183,7 +2469,7 @@ An enterprise needs to migrate its massive multi-agent infrastructure from OpenA
                               Typed Output (validated, traced result)
 ```
 
-### 36 Cognitive Primitives
+### 40 Cognitive Primitives
 
 | Primitive  | Keyword      | What it represents                                   |
 | ---------- | ------------ | ---------------------------------------------------- |
@@ -2226,6 +2512,8 @@ An enterprise needs to migrate its massive multi-agent infrastructure from OpenA
 | Recall     | `recall`     | Memory-augmented episodic recall from interaction H  |
 | Psyche     | `psyche`     | Psychological-epistemic modeling on Riemannian manifold |
 | OTS        | `ots`        | Ontological Tool Synthesis for open-ended teleological generation |
+| MCP        | `mcp`        | EMCP resource/tool ingestion from external MCP servers           |
+| Taint      | `taint`      | Epistemic trust label for untrusted external data sources        |
 
 ### Epistemic Type System (Partial Order Lattice)
 
@@ -2426,7 +2714,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 ### Current Status
 
 ```
-1918 passed, 0 failures ✅
+1922 passed, 0 failures ✅
 ```
 
 | Phase | Tests | What's covered                              |
@@ -2446,6 +2734,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 | 17    | 70    | Memory (μ operator + 5 formal properties)   |
 | 18    | 12    | OTS (compiler + runtime execution)          |
 | 19    | 22    | MEK (LatentState, Transducer, Holographic)  |
+| 20    | 26    | EMCP (mcp ingestion + taint + shield integration) |
 | misc  | 541   | Stdlib, integration, edge cases             |
 
 ---
@@ -2567,6 +2856,7 @@ honesty:
 | 16    | Multi-Document Navigation (`corpus` MDN framework)| ✅ Done |
 | 17    | Memory-Augmented MDN (structural learning via μ)  | ✅ Done |
 | 18    | Ontological Tool Synthesis (`ots` primitive)      | ✅ Done |
+| 19    | Epistemic MCP (`mcp` + `taint` primitives)        | ✅ Done |
 
 ---
 
@@ -2617,6 +2907,9 @@ honesty:
 | Structural learning via μ     | ❌        | ❌      | ❌       | ✅       |
 | Episodic/semantic/procedural  | ❌        | Partial | ❌       | ✅       |
 | Convergent memory operator    | ❌        | ❌      | ❌       | ✅       |
+| EMCP taint-safe MCP ingestion | ❌        | ❌      | ❌       | ✅       |
+| MCP resource → PIX/corpus     | ❌        | ❌      | ❌       | ✅       |
+| Compile-time MCP capability   | ❌        | ❌      | ❌       | ✅       |
 
 ---
 

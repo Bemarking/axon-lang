@@ -935,6 +935,7 @@ class ShieldDefinition(ASTNode):
     log: str = ""                      # logging directive
     deflect_message: str = ""          # canned response for deflect
     budget: AgentBudget | None = None  # optional resource constraints
+    taint: str = ""                    # EMCP: expected taint label
 
 
 @dataclass
@@ -1194,6 +1195,8 @@ class CorpusDefinition(ASTNode):
     documents: list[CorpusDocEntry] = field(default_factory=list)
     edges: list[CorpusEdgeEntry] = field(default_factory=list)
     weights: dict[str, float] = field(default_factory=dict)
+    mcp_server: str = ""
+    mcp_resource_uri: str = ""
 
 
 @dataclass

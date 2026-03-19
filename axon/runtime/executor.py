@@ -749,65 +749,65 @@ class Executor:
             },
         )
         
-        teleology = definition.get("teleology", "")
-        linear_constraints = definition.get("linear_constraints", [])
-        constraints_str = "\\n".join([f"- {k}: {v}" for k, v in linear_constraints])
-        
         # Resolve target expression via prompt building (handles `_` interpolation)
         target_val = self._build_user_prompt(
             CompiledStep(user_prompt=target), ctx
         )
         
-        synthesis_prompt = (
-            f"You are synthesizing a specialized capability on-the-fly: {ots_name}.\\n"
-            f"Teleological purpose: {teleology}\\n\\n"
-            f"Constraints:\\n{constraints_str}\\n\\n"
-            f"Input target data:\\n{target_val}\\n\\n"
-            f"Process the input according to the teleology and constraints "
-            f"and return the result formatted as {definition.get('output_type', 'requested type')}."
-        )
-        
-        # Create a dynamic step to leverage _call_model logic
-        ots_step = CompiledStep(
-            step_name=f"{step_name}_synthesis",
-            system_prompt=(
-                "You are an Ontological Tool Synthesizer (OTS). "
-                "You dynamically generate and execute capabilities "
-                "based on formal teleological specifications."
-            ),
-            user_prompt=synthesis_prompt,
-        )
-        # Create a dynamic unit to ensure the OTS system prompt is used by _call_model
-        from axon.backends.base_backend import CompiledExecutionUnit
-        synthesis_unit = CompiledExecutionUnit(
-            flow_name=f"{unit.flow_name}_ots",
-            system_prompt=ots_step.system_prompt,
-            steps=[ots_step],
-        )
+        # Create an instance of AutopoieticSynthesizer
+        from axon.runtime.ots_engine import AutopoieticSynthesizer
+        ots_engine = AutopoieticSynthesizer(self._client, getattr(self, "_retry_engine", None))
 
-        response = await self._call_model(
-            step=ots_step,
-            unit=synthesis_unit,
-            ctx=ctx,
-            tracer=tracer,
-        )
-        
-        # Store result in context
-        ctx.set_step_result(step_name, response.content)
-        
-        step_duration = (time.perf_counter() - step_start) * 1000
-        tracer.emit(
-            TraceEventType.STEP_END,
-            step_name=step_name,
-            data={"success": True},
-            duration_ms=step_duration,
-        )
-        
-        return StepResult(
-            step_name=step_name,
-            response=response,
-            duration_ms=step_duration,
-        )
+        try:
+            # Step 1: Synthesize the ephemeral tool
+            ephemeral_tool = await ots_engine.synthesize(
+                ots_name=ots_name,
+                teleology=definition.get("teleology", ""),
+                linear_constraints=definition.get("linear_constraints", []),
+                tracer=tracer
+            )
+
+            # Step 2: Execute the synthesized tool
+            tool_kwargs = {}
+            if hasattr(ephemeral_tool, "schema") and ephemeral_tool.schema.input_params:
+                first_arg_name = ephemeral_tool.schema.input_params[0].name
+                tool_kwargs[first_arg_name] = target_val
+                    
+            result = await ephemeral_tool.execute(**tool_kwargs)
+            
+            if not result.success:
+                raise RuntimeError(f"Tool execution failed: {result.error}")
+            
+            response = ModelResponse(
+                content=str(result.data),
+                tool_calls=[],
+                raw=result
+            )
+            
+            # Store result in context
+            ctx.set_step_result(step_name, response.content)
+            
+            step_duration = (time.perf_counter() - step_start) * 1000
+            tracer.emit(
+                TraceEventType.STEP_END,
+                step_name=step_name,
+                data={"success": True, "tool": ephemeral_tool.tool_name},
+                duration_ms=step_duration,
+            )
+            
+            return StepResult(
+                step_name=step_name,
+                response=response,
+                duration_ms=step_duration,
+            )
+            
+        except Exception as e:
+            tracer.emit(
+                TraceEventType.STEP_END,
+                step_name=step_name,
+                data={"success": False, "error": str(e), "type": type(e).__name__},
+            )
+            raise AxonRuntimeError(f"OTS Execution Failed: {str(e)}") from e
 
     async def _execute_tool_step(
         self,

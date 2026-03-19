@@ -1140,6 +1140,17 @@ class Parser:
         tok = self._consume(TokenType.CORPUS)
         name = self._consume(TokenType.IDENTIFIER)
         node = CorpusDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        if self._check(TokenType.FROM):
+            self._advance()
+            self._consume(TokenType.MCP)
+            self._consume(TokenType.LPAREN)
+            node.mcp_server = self._consume(TokenType.STRING).value
+            self._consume(TokenType.COMMA)
+            node.mcp_resource_uri = self._consume(TokenType.STRING).value
+            self._consume(TokenType.RPAREN)
+            return node
+
         self._consume(TokenType.LBRACE)
 
         while not self._check(TokenType.RBRACE):
@@ -2212,6 +2223,11 @@ class Parser:
             inner = self._current()
 
             match inner.type:
+                case TokenType.TAINT:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.taint = self._consume_any_identifier_or_keyword().value
+
                 case TokenType.SCAN:
                     self._advance()
                     self._consume(TokenType.COLON)

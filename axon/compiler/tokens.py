@@ -118,6 +118,10 @@ class TokenType(Enum):
     AGGREGATE = auto()
     EXPLORE = auto()
 
+    # ── EMCP KEYWORDS (Epistemic MCP §6) ─────────────────────────
+    MCP = auto()              # mcp("server", "resource")
+    TAINT = auto()            # taint: untrusted
+
     # ── MODIFIERS (run statement modifiers) ───────────────────────
     AS = auto()
     WITHIN = auto()
@@ -282,6 +286,9 @@ KEYWORDS: dict[str, TokenType] = {
     "associate": TokenType.ASSOCIATE,
     "aggregate": TokenType.AGGREGATE,
     "explore": TokenType.EXPLORE,
+    # EMCP (Epistemic MCP §6)
+    "mcp": TokenType.MCP,
+    "taint": TokenType.TAINT,
 }
 
 # Duration suffixes recognized by the lexer
