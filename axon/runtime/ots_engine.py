@@ -7,8 +7,15 @@ Implements the Sterile BDI Loop (Meta-Compiler Autopoietic) for JIT Tool Synthes
 import ast
 import inspect
 from typing import Any, Callable
-import structlog
+import logging
 import traceback
+
+# ── structlog with graceful fallback ──────────────────────────────
+try:
+    import structlog
+    _HAS_STRUCTLOG = True
+except ImportError:
+    _HAS_STRUCTLOG = False
 from dataclasses import dataclass
 
 from axon.runtime.tools.contract_tool import contract_tool
@@ -17,7 +24,7 @@ from axon.runtime.retry_engine import RetryEngine
 from axon.runtime.context_mgr import ContextManager
 from axon.runtime.tracer import Tracer, TraceEventType
 
-logger = structlog.get_logger(__name__)
+logger = structlog.get_logger(__name__) if _HAS_STRUCTLOG else logging.getLogger(__name__)
 
 class SandboxExecutionError(Exception):
     """Raised when the synthesized AST contains errors or unsafe operations."""
