@@ -1,5 +1,9 @@
 import os
 import sys
+import pytest  # noqa: F401 — guard for CI
+
+pytest.importorskip("torch", reason="torch not installed (integration test)")
+pytest.importorskip("dotenv", reason="python-dotenv not installed (integration test)")
 import torch
 from dotenv import load_dotenv
 

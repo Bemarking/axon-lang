@@ -3,6 +3,9 @@ import sys
 import json
 import urllib.request
 import urllib.error
+import pytest  # noqa: F401 — guard for CI
+
+pytest.importorskip("dotenv", reason="python-dotenv not installed (integration test)")
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
