@@ -1265,6 +1265,76 @@ class PsycheDefinition(ASTNode):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  MANDATE PRIMITIVE — Cybernetic Refinement Calculus (§CRC)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class MandateDefinition(ASTNode):
+    """
+    mandate StrictJSON {
+        constraint: "Output must be valid JSON with keys: name, score, reasoning"
+        kp: 10.0
+        ki: 0.1
+        kd: 0.05
+        tolerance: 0.01
+        max_steps: 50
+        on_violation: coerce
+    }
+
+    The **mandate** primitive — Cybernetic Refinement Calculus.
+
+    Operationalizes the CRC framework (paper_mandate.md) by embedding
+    deterministic control of LLM outputs directly in the compiler.
+    Unifies three mathematical pillars:
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  Vía C — Refinement Type (Curry-Howard Isomorphism):        ║
+    ║    T_M = { x ∈ Σ* | M(x) ⊢ ⊤ }                           ║
+    ║    Γ ⊢ generate(prompt) : T_M                               ║
+    ║    Inference: (Γ ⊢ e : Σ*)  ∧  (M(e) ⇓ ⊤)                 ║
+    ║             ――――――――――――――――――――――――――――                    ║
+    ║                  Γ ⊢ e : T_M                                ║
+    ║                                                              ║
+    ║  Vía A — Lyapunov Stability (PID Control):                   ║
+    ║    u(t) = Kp·e(t) + Ki·∫e(τ)dτ + Kd·de/dt                  ║
+    ║    V(e) = ½e²  →  V̇(e) ≈ -λe² < 0  (asymptotic conv.)     ║
+    ║                                                              ║
+    ║  Vía B — Thermodynamic Logit Bias:                           ║
+    ║    ΔL_t collapses violating token probability mass           ║
+    ║    before Softmax via negative logit injection.              ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+    Theorem 1 (Convergence): Under Kp,Ki,Kd > 0 and
+    L-Lipschitz error function, V̇(e) < 0 ∀ e ≠ 0,
+    guaranteeing asymptotic convergence to mandate setpoint.
+    """
+    name: str = ""
+    constraint: str = ""           # M(x) — the semantic constraint predicate
+    kp: float = 10.0               # Kp — proportional gain
+    ki: float = 0.1                # Ki — integral gain
+    kd: float = 0.05               # Kd — derivative gain
+    tolerance: float = 0.01        # convergence tolerance ε
+    max_steps: int = 50            # max PID correction steps N
+    on_violation: str = "coerce"   # policy: coerce | halt | retry
+
+
+@dataclass
+class MandateApplyNode(ASTNode):
+    """
+    mandate StrictJSON on llm_output
+    mandate StrictJSON on raw_data -> ValidatedData
+
+    Applies a declared mandate to constrain a target expression
+    within a flow body. The compiler verifies the refinement type
+    T_M at compile time, and the runtime applies PID control
+    at inference time to enforce convergence.
+    """
+    mandate_name: str = ""
+    target: str = ""
+    output_type: str = ""
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  EXECUTION NODE
 # ═══════════════════════════════════════════════════════════════════
 

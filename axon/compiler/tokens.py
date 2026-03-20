@@ -4,7 +4,7 @@ AXON Compiler — Token Definitions
 Every token the lexer can produce. Derived directly from the AXON EBNF grammar.
 
 Categories:
-  - KEYWORDS: 68 cognitive keywords (persona, context, flow, anchor, agent, shield, psyche, dataspace, …)
+  - KEYWORDS: 76 cognitive keywords (persona, context, flow, anchor, agent, shield, psyche, mandate, dataspace, …)
   - LITERALS: STRING, INTEGER, FLOAT, BOOL, DURATION, IDENTIFIER
   - SYMBOLS:  braces, parens, brackets, colon, comma, arrow, range, etc.
   - COMPARISON: <, >, <=, >=, ==, !=
@@ -121,6 +121,16 @@ class TokenType(Enum):
     # ── EMCP KEYWORDS (Epistemic MCP §6) ─────────────────────────
     MCP = auto()              # mcp("server", "resource")
     TAINT = auto()            # taint: untrusted
+
+    # ── MANDATE KEYWORDS (Cybernetic Refinement Calculus §CRC) ────
+    MANDATE = auto()          # mandate definition / apply
+    CONSTRAINT = auto()       # constraint: "..."
+    KP = auto()               # kp: 10.0  (proportional gain)
+    KI = auto()               # ki: 0.1   (integral gain)
+    KD = auto()               # kd: 0.05  (derivative gain)
+    TOLERANCE = auto()        # tolerance: 0.01
+    MAX_STEPS = auto()        # max_steps: 50
+    ON_VIOLATION = auto()     # on_violation: halt|retry|coerce
 
     # ── MODIFIERS (run statement modifiers) ───────────────────────
     AS = auto()
@@ -289,6 +299,15 @@ KEYWORDS: dict[str, TokenType] = {
     # EMCP (Epistemic MCP §6)
     "mcp": TokenType.MCP,
     "taint": TokenType.TAINT,
+    # Mandate (Cybernetic Refinement Calculus §CRC)
+    "mandate": TokenType.MANDATE,
+    "constraint": TokenType.CONSTRAINT,
+    "kp": TokenType.KP,
+    "ki": TokenType.KI,
+    "kd": TokenType.KD,
+    "tolerance": TokenType.TOLERANCE,
+    "max_steps": TokenType.MAX_STEPS,
+    "on_violation": TokenType.ON_VIOLATION,
 }
 
 # Duration suffixes recognized by the lexer

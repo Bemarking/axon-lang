@@ -52,6 +52,8 @@ from axon.compiler.ir_nodes import (
     IRImport,
     IRIngest,
     IRIntent,
+    IRMandate,
+    IRMandateApply,
     IRMemory,
     IRNavigate,
     IRNode,
@@ -118,6 +120,7 @@ class IRGenerator:
         self._corpus_specs: dict[str, IRCorpusSpec] = {}
         self._psyche_specs: dict[str, IRPsycheSpec] = {}
         self._ots_specs: dict[str, IROtsDefinition] = {}
+        self._mandate_specs: dict[str, IRMandate] = {}
 
     def generate(self, program: ast.ProgramNode) -> IRProgram:
         """
@@ -161,6 +164,7 @@ class IRGenerator:
             corpus_specs=tuple(self._corpus_specs.values()),
             psyche_specs=tuple(self._psyche_specs.values()),
             ots_specs=tuple(self._ots_specs.values()),
+            mandate_specs=tuple(self._mandate_specs.values()),
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -222,6 +226,9 @@ class IRGenerator:
         # OTS - Ontological Tool Synthesis
         ast.OtsDefinition: "_visit_ots_definition",
         ast.OtsApplyNode: "_visit_ots_apply",
+        # CRC — Cybernetic Refinement Calculus (mandate)
+        ast.MandateDefinition: "_visit_mandate",
+        ast.MandateApplyNode: "_visit_mandate_apply",
     }
 
     def _visit(self, node: ast.ASTNode) -> IRNode:
@@ -1158,6 +1165,7 @@ class IRGenerator:
         self._corpus_specs.clear()
         self._psyche_specs.clear()
         self._ots_specs.clear()
+        self._mandate_specs.clear()
 
     # ═════════════════════════════════════════════════════════════════
     #  PIX VISITORS — Structured Cognitive Retrieval
@@ -1342,3 +1350,45 @@ class IRGenerator:
             output_type=node.output_type,
         )
 
+    # ═════════════════════════════════════════════════════════════════
+    #  MANDATE VISITORS — Cybernetic Refinement Calculus (§CRC)
+    # ═════════════════════════════════════════════════════════════════
+
+    def _visit_mandate(self, node: ast.MandateDefinition) -> IRMandate:
+        """
+        Lower a MandateDefinition AST into an IRMandate.
+
+        Formal basis — the 3 CRC vías:
+          Vía C  T_M = { x ∈ Σ* | M(x) ⊢ ⊤ }  → constraint
+          Vía A  u(t) = Kp·e + Ki·∫e·dτ + Kd·de/dt  → kp, ki, kd
+          Vía B  ΔL_t collapses tokens  → on_violation policy
+        """
+        ir_mandate = IRMandate(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            constraint=node.constraint,
+            kp=node.kp,
+            ki=node.ki,
+            kd=node.kd,
+            tolerance=node.tolerance,
+            max_steps=node.max_steps,
+            on_violation=node.on_violation,
+        )
+        self._mandate_specs[node.name] = ir_mandate
+        return ir_mandate
+
+    def _visit_mandate_apply(self, node: ast.MandateApplyNode) -> IRMandateApply:
+        """
+        Lower a MandateApplyNode AST into an IRMandateApply.
+
+        The PID control insertion point where the closed-loop
+        controller activates at runtime.
+        """
+        return IRMandateApply(
+            source_line=node.line,
+            source_column=node.column,
+            mandate_name=node.mandate_name,
+            target=node.target,
+            output_type=node.output_type,
+        )

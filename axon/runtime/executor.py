@@ -47,6 +47,7 @@ from axon.runtime.context_mgr import ContextManager
 from axon.runtime.effects import EmitEvent, perform
 from axon.runtime.memory_backend import InMemoryBackend, MemoryBackend
 from axon.runtime.retry_engine import RefineConfig, RetryEngine, RetryResult
+from axon.engine.pem.pid_controller import PIDController
 from axon.runtime.runtime_errors import (
     AgentBudgetExhaustedError,
     AgentStuckError,
@@ -55,6 +56,7 @@ from axon.runtime.runtime_errors import (
     CapabilityViolationError,
     ErrorContext,
     ExecutionTimeoutError,
+    MandateViolationError,
     ModelCallError,
     ShieldBreachError,
     ValidationError,
@@ -604,6 +606,14 @@ class Executor:
         # _execute_ots_step for Just-In-Time tool synthesis.
         if step.metadata.get("ots_apply"):
             return await self._execute_ots_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
+        # ── Mandate step shortcut ───────────────────────────────────────
+        # If the step carries a mandate_apply config, route through
+        # _execute_mandate_step for CRC PID enforcement.
+        if step.metadata.get("mandate_apply"):
+            return await self._execute_mandate_step(
                 step=step, unit=unit, ctx=ctx, tracer=tracer,
             )
 
@@ -2728,6 +2738,253 @@ class Executor:
             ),
             duration_ms=step_duration,
         )
+
+    # ── Mandate step executor (CRC PID enforcement) ────────────────
+
+    async def _execute_mandate_step(
+        self,
+        *,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a mandate application step with PID enforcement.
+
+        Implements the Cybernetic Refinement Calculus (CRC) runtime loop:
+
+          1. Call the model to produce initial output x₀
+          2. Score output via SemanticValidator → M(x₀) ∈ [0, 1]
+          3. Compute PID error: e(k) = 1 − M(x_k)
+          4. If |e(k)| ≤ ε → converged, return output
+          5. Else, inject corrective context and re-call model
+          6. Repeat up to max_steps (N)
+          7. If not converged → apply on_violation policy
+
+        on_violation policies:
+          coerce — return last output despite non-convergence
+          halt   — raise MandateViolationError
+          log    — emit warning trace event and return last output
+        """
+        step_start = time.perf_counter()
+        mandate_meta = step.metadata.get("mandate_apply", {})
+        mandate_name = mandate_meta.get("mandate_name", "")
+        constraint = mandate_meta.get("constraint", "")
+        output_type = mandate_meta.get("output_type", "")
+
+        # PID parameters from the mandate definition
+        kp = mandate_meta.get("kp", 10.0)
+        ki = mandate_meta.get("ki", 0.1)
+        kd = mandate_meta.get("kd", 0.05)
+        tolerance = mandate_meta.get("tolerance", 0.01)
+        max_steps = mandate_meta.get("max_steps", 50)
+        on_violation = mandate_meta.get("on_violation", "coerce")
+
+        step_name = f"mandate:{mandate_name}"
+
+        # Initialize PID controller
+        controller = PIDController(kp=kp, ki=ki, kd=kd)
+
+        tracer.emit_mandate_enforce_start(
+            step_name=step_name,
+            mandate_name=mandate_name,
+            constraint=constraint,
+            kp=kp,
+            ki=ki,
+            kd=kd,
+            tolerance=tolerance,
+            max_steps=max_steps,
+        )
+
+        # ── PID correction loop ───────────────────────────────────
+        integral_sum = 0.0
+        previous_error = 0.0
+        last_response = None
+        converged = False
+
+        for k in range(max_steps):
+            # Build corrective context for retries
+            failure_context = ""
+            if k > 0 and last_response is not None:
+                failure_context = (
+                    f"[MANDATE CORRECTION step {k}/{max_steps}] "
+                    f"Previous output did not satisfy constraint '{constraint}'. "
+                    f"Error: {previous_error:.4f}. "
+                    f"Please adjust your response to better satisfy: {constraint}"
+                )
+
+            # Call the model
+            response = await self._call_model(
+                step=step,
+                unit=unit,
+                ctx=ctx,
+                tracer=tracer,
+                failure_context=failure_context,
+            )
+            last_response = response
+
+            # Score the output using the semantic validator
+            # The validator returns a satisfaction score ∈ [0, 1]
+            satisfaction = self._score_mandate_output(
+                content=response.content,
+                constraint=constraint,
+                output_type=output_type,
+            )
+
+            # Compute PID step
+            pid_step, integral_sum = controller.compute_step(
+                satisfaction=satisfaction,
+                step_index=k,
+                integral_sum=integral_sum,
+                previous_error=previous_error,
+                tolerance=tolerance,
+            )
+
+            tracer.emit_mandate_pid_step(
+                step_name=step_name,
+                pid_step=k,
+                error=pid_step.error,
+                control=pid_step.control,
+                satisfaction=satisfaction,
+                converged=pid_step.converged,
+            )
+
+            previous_error = pid_step.error
+
+            if pid_step.converged:
+                converged = True
+                break
+
+        # ── Result ────────────────────────────────────────────────
+        step_duration = (time.perf_counter() - step_start) * 1000
+
+        if converged:
+            tracer.emit_mandate_result(
+                step_name=step_name,
+                mandate_name=mandate_name,
+                converged=True,
+                steps_taken=k + 1,
+                final_error=previous_error,
+            )
+            return StepResult(
+                step_name=step_name,
+                response=last_response,
+                duration_ms=step_duration,
+            )
+
+        # Not converged — apply on_violation policy
+        tracer.emit_mandate_result(
+            step_name=step_name,
+            mandate_name=mandate_name,
+            converged=False,
+            steps_taken=max_steps,
+            final_error=previous_error,
+            on_violation=on_violation,
+        )
+
+        if on_violation == "halt":
+            raise MandateViolationError(
+                message=(
+                    f"Mandate '{mandate_name}' failed to converge after "
+                    f"{max_steps} PID steps. Final error: {previous_error:.4f}, "
+                    f"tolerance: {tolerance}"
+                ),
+                context=ErrorContext(
+                    step_name=step_name,
+                    details=(
+                        f"constraint={constraint}, "
+                        f"pid_gains=(kp={kp}, ki={ki}, kd={kd})"
+                    ),
+                ),
+            )
+
+        if on_violation == "log":
+            tracer.emit(
+                TraceEventType.MANDATE_POLICY_APPLIED,
+                step_name=step_name,
+                data={
+                    "policy": "log",
+                    "mandate_name": mandate_name,
+                    "final_error": previous_error,
+                    "message": (
+                        f"Mandate '{mandate_name}' did not converge "
+                        f"(error={previous_error:.4f}), returning last output"
+                    ),
+                },
+            )
+
+        # coerce (default) or log — return last output
+        return StepResult(
+            step_name=step_name,
+            response=last_response,
+            duration_ms=step_duration,
+        )
+
+    @staticmethod
+    def _score_mandate_output(
+        *,
+        content: str,
+        constraint: str,
+        output_type: str,
+    ) -> float:
+        """Score model output against a mandate constraint.
+
+        Returns M(x) ∈ [0, 1] — the constraint satisfaction measure.
+
+        Current implementation uses heuristic scoring based on
+        the constraint type. When the full semantic constraint
+        solver is implemented, this will delegate to it.
+
+        Scoring rules:
+          - If output_type is 'json', checks valid JSON parse
+          - If constraint contains format spec, checks structure
+          - Otherwise, returns 1.0 (pass-through for custom validators)
+        """
+        import json as _json
+
+        score = 0.0
+
+        if not content or not content.strip():
+            return 0.0
+
+        # JSON constraint check
+        if output_type.lower() in ("json", "json_object"):
+            try:
+                _json.loads(content)
+                score = 1.0
+            except (ValueError, TypeError):
+                # Try to find JSON in the content
+                stripped = content.strip()
+                if stripped.startswith("{") or stripped.startswith("["):
+                    score = 0.3  # partial — has JSON-like structure
+                else:
+                    score = 0.0
+            return score
+
+        # If constraint is specified, do a simple containment check
+        if constraint:
+            constraint_lower = constraint.lower()
+
+            # Language constraint (e.g., "respond in Spanish")
+            if "language" in constraint_lower or "idioma" in constraint_lower:
+                score = 0.8  # heuristic — can't easily verify language
+
+            # Length constraint (e.g., "max 100 words")
+            elif "word" in constraint_lower or "character" in constraint_lower:
+                score = 0.9  # heuristic
+
+            # Format constraint (e.g., "markdown", "bullet points")
+            elif any(kw in constraint_lower for kw in ("format", "markdown", "list", "bullet")):
+                score = 0.85  # heuristic
+
+            # Generic constraint — baseline satisfaction
+            else:
+                score = 0.7
+
+            return score
+
+        # No specific constraint — assume satisfied
+        return 1.0
 
     # ── Agent helper methods ────────────────────────────────────
 

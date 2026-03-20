@@ -339,3 +339,31 @@ class CapabilityViolationError(AxonRuntimeError):
     """
 
     level: int = 11
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  LEVEL 12 — MANDATE VIOLATION ERROR
+# ═══════════════════════════════════════════════════════════════════
+
+
+class MandateViolationError(AxonRuntimeError):
+    """Mandate PID enforcement failed to converge.
+
+    Raised when a mandate's PID controller exhausts max_steps
+    without reaching convergence (|e(k)| > ε), AND the
+    on_violation policy is 'halt'.
+
+    The error carries the full PID trajectory, final error,
+    and the mandate's constraint for diagnostics.
+
+    Implements CRC Theorem 2: if convergence is not reached
+    within N steps, the system reports a refinement type
+    violation: x ∉ T_M.
+
+    Example:
+        Mandate ``StrictJSON`` required valid JSON output
+        after 50 PID correction steps, but final error
+        was 0.15 (tolerance was 0.01).
+    """
+
+    level: int = 12

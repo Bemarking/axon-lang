@@ -103,6 +103,16 @@ from axon.engine.pem.psyche_engine import (
 )
 
 # ═══════════════════════════════════════════════════════════════════
+#  §5 — PID Controller (Cybernetic Refinement Calculus)
+# ═══════════════════════════════════════════════════════════════════
+
+from axon.engine.pem.pid_controller import (
+    PIDController,
+    PIDResult,
+    PIDStep,
+)
+
+# ═══════════════════════════════════════════════════════════════════
 
 __all__ = [
     # §1 — Cognitive State
@@ -142,4 +152,8 @@ __all__ = [
     "create_therapeutic_engine",
     "create_research_engine",
     "create_sales_engine",
+    # §5 — PID Controller (CRC)
+    "PIDController",
+    "PIDResult",
+    "PIDStep",
 ]

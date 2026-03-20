@@ -93,6 +93,7 @@ class IRProgram(IRNode):
     pix_specs: tuple['IRPixSpec', ...] = ()
     corpus_specs: tuple['IRCorpusSpec', ...] = ()
     psyche_specs: tuple['IRPsycheSpec', ...] = ()
+    mandate_specs: tuple['IRMandate', ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1075,3 +1076,48 @@ class IRPsycheSpec(IRNode):
     safety_constraints: tuple[str, ...] = ()        # e.g. ("non_diagnostic", "non_prescriptive")
     quantum_enabled: bool = False                   # density matrix mode
     inference_mode: str = ""                        # "active" | "passive"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  MANDATE IR NODES — Cybernetic Refinement Calculus (§CRC)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRMandate(IRNode):
+    """
+    Compiled mandate specification — deterministic LLM control.
+
+    Operationalizes the Cybernetic Refinement Calculus (CRC):
+
+      Vía C (Static): Refinement type T_M = { x ∈ Σ* | M(x) ⊢ ⊤ }
+      Vía A (Dynamic): PID control u(t) = Kp·e + Ki·∫e·dτ + Kd·de/dt
+      Vía B (Empirical): Logit bias ΔL_t collapses violating tokens
+
+    Convergence guarantee (Theorem 1):
+      V(e) = ½e²  →  V̇(e) ≈ -λe² < 0  ∀ e ≠ 0
+      ⟹ asymptotic stability to mandate setpoint.
+    """
+    node_type: str = "mandate"
+    name: str = ""
+    constraint: str = ""                            # M(x) semantic predicate
+    kp: float = 10.0                                # proportional gain
+    ki: float = 0.1                                 # integral gain
+    kd: float = 0.05                                # derivative gain
+    tolerance: float = 0.01                         # convergence threshold ε
+    max_steps: int = 50                             # PID iteration budget N
+    on_violation: str = "coerce"                    # coerce | halt | retry
+
+
+@dataclass(frozen=True)
+class IRMandateApply(IRNode):
+    """
+    Compiled mandate application point — PID enforcement insertion.
+
+    At runtime, the executor instantiates MandatePIDController
+    with the referenced mandate's gains and runs the closed-loop
+    control until convergence or budget exhaustion.
+    """
+    node_type: str = "mandate_apply"
+    mandate_name: str = ""                          # reference to declared mandate
+    target: str = ""                                # expression being mandated
+    output_type: str = ""                           # result type after mandate

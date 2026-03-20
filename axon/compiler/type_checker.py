@@ -45,6 +45,8 @@ from .ast_nodes import (
     ImportNode,
     IngestNode,
     IntentNode,
+    MandateApplyNode,
+    MandateDefinition,
     MemoryDefinition,
     NavigateNode,
     OtsApplyNode,
@@ -406,6 +408,10 @@ class TypeChecker:
                     self._register(name, "ots", decl)
                 case OtsApplyNode():
                     pass
+                case MandateDefinition(name=name):
+                    self._register(name, "mandate", decl)
+                case MandateApplyNode():
+                    pass  # mandate apply is a flow-level command
                 case NavigateNode() | DrillNode() | TrailNode():
                     pass  # PIX flow-level commands, not declarations
 
@@ -468,6 +474,10 @@ class TypeChecker:
                 self._check_corpus_definition(decl)
             case PsycheDefinition():
                 self._check_psyche(decl)
+            case MandateDefinition():
+                self._check_mandate(decl)
+            case MandateApplyNode():
+                self._check_mandate_apply(decl)
             case IngestNode():
                 pass  # validated at runtime
             case FocusNode() | AssociateNode() | AggregateNode() | ExploreNode():
@@ -673,6 +683,8 @@ class TypeChecker:
                 self._check_trail(step)
             case CorroborateNode():
                 self._check_corroborate(step)
+            case MandateApplyNode():
+                self._check_mandate_apply(step)
 
     def _check_step(self, node: StepNode, step_names: set[str], flow_name: str) -> None:
         if node.name in step_names:
@@ -1578,7 +1590,90 @@ class TypeChecker:
                 node,
             )
 
-    # ── HELPERS ────────────────────────────────────────────────────
+    # ── MANDATE validation ─────────────────────────────────────────────────
+
+    # Valid on_violation policies for mandates (CRC Vía B)
+    _VALID_MANDATE_POLICIES = frozenset({"coerce", "halt", "retry"})
+
+    def _check_mandate(self, node: MandateDefinition) -> None:
+        """
+        Validate mandate definition — Cybernetic Refinement Calculus.
+
+        Enforces formal constraints from the CRC paper:
+          Vía C — constraint predicate M(x) is required
+          Vía A — PID gains must be positive: Kp, Ki, Kd > 0
+          Vía A — tolerance ε must be in (0, 1]
+          Vía A — max_steps N must be ≥ 1
+          Vía B — on_violation must be a valid policy
+        """
+        # Vía C — constraint is mandatory
+        if not node.constraint:
+            self._emit(
+                f"mandate '{node.name}' requires a 'constraint' field "
+                f"(Vía C: refinement type T_M = {{ x ∈ Σ* | M(x) ⊢ ⊤ }})",
+                node,
+            )
+
+        # Vía A — PID gains must be positive
+        if node.kp <= 0.0:
+            self._emit(
+                f"PID proportional gain Kp must be > 0, got {node.kp} "
+                f"(mandate '{node.name}', Vía A: control law)",
+                node,
+            )
+        if node.ki < 0.0:
+            self._emit(
+                f"PID integral gain Ki must be ≥ 0, got {node.ki} "
+                f"(mandate '{node.name}', Vía A: accumulated error)",
+                node,
+            )
+        if node.kd < 0.0:
+            self._emit(
+                f"PID derivative gain Kd must be ≥ 0, got {node.kd} "
+                f"(mandate '{node.name}', Vía A: error rate damping)",
+                node,
+            )
+
+        # Vía A — tolerance must be in (0, 1]
+        if node.tolerance <= 0.0 or node.tolerance > 1.0:
+            self._emit(
+                f"Tolerance ε must be in (0, 1], got {node.tolerance} "
+                f"(mandate '{node.name}', convergence threshold)",
+                node,
+            )
+
+        # Vía A — max_steps must be ≥ 1
+        if node.max_steps < 1:
+            self._emit(
+                f"max_steps N must be ≥ 1, got {node.max_steps} "
+                f"(mandate '{node.name}', PID iteration budget)",
+                node,
+            )
+
+        # Vía B — on_violation policy
+        if node.on_violation and node.on_violation not in self._VALID_MANDATE_POLICIES:
+            self._emit(
+                f"Unknown on_violation policy '{node.on_violation}' for "
+                f"mandate '{node.name}'. "
+                f"Valid: {', '.join(sorted(self._VALID_MANDATE_POLICIES))}",
+                node,
+            )
+
+    def _check_mandate_apply(self, node: MandateApplyNode) -> None:
+        """
+        Validate mandate application in a flow step.
+
+        Ensures the referenced mandate is declared.
+        """
+        sym = self._symbols.lookup(node.mandate_name)
+        if sym is not None and sym.kind != "mandate":
+            self._emit(
+                f"'{node.mandate_name}' in mandate apply is a {sym.kind}, "
+                "not a mandate",
+                node,
+            )
+
+    # ── HELPERS ─────────────────────────────────────────────────────────
 
     def _check_type_reference(self, type_name: str, node: ASTNode) -> None:
         """Verify that a referenced type name is either built-in or user-defined."""

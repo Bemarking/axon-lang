@@ -62,6 +62,9 @@ class TestTraceEvent:
             # PEM (Psychological-Epistemic Modeling) events
             "psyche_init", "psyche_dimension_map", "psyche_safety_check",
             "psyche_inference_start", "psyche_state_update",
+            # Mandate CRC enforcement events
+            "mandate_enforce_start", "mandate_pid_step", "mandate_converged",
+            "mandate_violation", "mandate_policy_applied",
         }
         actual = {e.value for e in TraceEventType}
         assert actual == expected

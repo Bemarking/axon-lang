@@ -38,6 +38,8 @@ from .ast_nodes import (
     ImportNode,
     IngestNode,
     IntentNode,
+    MandateApplyNode,
+    MandateDefinition,
     MemoryDefinition,
     NavigateNode,
     OtsApplyNode,
@@ -138,12 +140,14 @@ class Parser:
                 return self._parse_psyche()
             case TokenType.OTS:
                 return self._parse_ots_definition()
+            case TokenType.MANDATE:
+                return self._parse_mandate()
             case _:
                 raise AxonParseError(
                     f"Unexpected token at top level",
                     line=tok.line,
                     column=tok.column,
-                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, ots, run, know, speculate, ...)",
+                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, ots, mandate, run, know, speculate, ...)",
                     found=tok.value,
                 )
 
@@ -595,12 +599,14 @@ class Parser:
                 return self._parse_corroborate()
             case TokenType.OTS:
                 return self._parse_ots_apply()
+            case TokenType.MANDATE:
+                return self._parse_mandate_apply()
             case _:
                 raise AxonParseError(
                     "Unexpected token in flow body",
                     line=tok.line,
                     column=tok.column,
-                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, focus, associate, aggregate, explore, ingest",
+                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, mandate, focus, associate, aggregate, explore, ingest",
                     found=tok.value,
                 )
 
@@ -1575,7 +1581,11 @@ class Parser:
         node = ConditionalNode(line=tok.line, column=tok.column)
 
         # condition
-        node.condition = self._consume_any_identifier_or_keyword().value
+        parts = [self._consume_any_identifier_or_keyword().value]
+        while self._check(TokenType.DOT):
+            self._advance()
+            parts.append(self._consume_any_identifier_or_keyword().value)
+        node.condition = ".".join(parts)
         if self._check_comparison():
             node.comparison_op = self._advance().value
             node.comparison_value = self._advance().value
@@ -2475,4 +2485,138 @@ class Parser:
                             self._skip_value()
 
         self._consume(TokenType.RBRACE)
+        return node
+
+    # ── MANDATE ─────────────────────────────────────────────────────
+
+    def _parse_mandate(self) -> MandateDefinition:
+        """
+        Parse a top-level mandate definition:
+
+          mandate StrictJSON {
+              constraint: "Output must be valid JSON with keys: name, score, reasoning"
+              kp: 10.0
+              ki: 0.1
+              kd: 0.05
+              tolerance: 0.01
+              max_steps: 50
+              on_violation: coerce
+          }
+
+        Grounded in the Cybernetic Refinement Calculus (CRC):
+          Vía C — Refinement type T_M = { x ∈ Σ* | M(x) ⊢ ⊤ }
+          Vía A — PID control  u(t) = Kp·e + Ki·∫e·dτ + Kd·de/dt
+          Vía B — Logit bias   ΔL_t collapses violating tokens
+
+        The mandate block declares deterministic constraints — the compiler
+        validates the PID gains and policy, the runtime enforces convergence.
+        """
+        tok = self._consume(TokenType.MANDATE)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = MandateDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            inner = self._current()
+
+            match inner.type:
+                case TokenType.CONSTRAINT:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.constraint = self._consume(TokenType.STRING).value
+
+                case TokenType.KP:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    val_tok = self._current()
+                    if val_tok.type == TokenType.FLOAT:
+                        node.kp = float(self._advance().value)
+                    else:
+                        node.kp = float(self._consume(TokenType.INTEGER).value)
+
+                case TokenType.KI:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    val_tok = self._current()
+                    if val_tok.type == TokenType.FLOAT:
+                        node.ki = float(self._advance().value)
+                    else:
+                        node.ki = float(self._consume(TokenType.INTEGER).value)
+
+                case TokenType.KD:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    val_tok = self._current()
+                    if val_tok.type == TokenType.FLOAT:
+                        node.kd = float(self._advance().value)
+                    else:
+                        node.kd = float(self._consume(TokenType.INTEGER).value)
+
+                case TokenType.TOLERANCE:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    val_tok = self._current()
+                    if val_tok.type == TokenType.FLOAT:
+                        node.tolerance = float(self._advance().value)
+                    else:
+                        node.tolerance = float(self._consume(TokenType.INTEGER).value)
+
+                case TokenType.MAX_STEPS:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.max_steps = int(self._consume(TokenType.INTEGER).value)
+
+                case TokenType.ON_VIOLATION:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.on_violation = self._consume_any_identifier_or_keyword().value
+
+                case _:
+                    # skip unknown fields gracefully
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_mandate_apply(self) -> MandateApplyNode:
+        """
+        Parse an in-flow mandate application:
+
+          mandate StrictJSON on llm_output
+          mandate StrictJSON on raw_data -> ValidatedData
+
+        This is the PID control insertion point: the mandate node
+        activates the closed-loop controller at runtime to enforce
+        convergence to the constraint setpoint.
+        """
+        tok = self._consume(TokenType.MANDATE)
+        mandate_name = self._consume(TokenType.IDENTIFIER).value
+
+        # "on" keyword expected (parsed as identifier since it's not reserved)
+        on_tok = self._consume_any_identifier_or_keyword()
+        if on_tok.value != "on":
+            raise AxonParseError(
+                "Expected 'on' after mandate name in flow step",
+                line=on_tok.line,
+                column=on_tok.column,
+                expected="on",
+                found=on_tok.value,
+            )
+
+        target = self._consume_any_identifier_or_keyword().value
+
+        node = MandateApplyNode(
+            mandate_name=mandate_name,
+            target=target,
+            line=tok.line,
+            column=tok.column,
+        )
+
+        # optional -> OutputType
+        if self._check(TokenType.ARROW):
+            self._advance()
+            node.output_type = self._consume(TokenType.IDENTIFIER).value
+
         return node

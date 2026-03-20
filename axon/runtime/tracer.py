@@ -103,6 +103,13 @@ class TraceEventType(str, Enum):
     PSYCHE_INFERENCE_START = "psyche_inference_start"
     PSYCHE_STATE_UPDATE = "psyche_state_update"
 
+    # — Mandate CRC enforcement —
+    MANDATE_ENFORCE_START = "mandate_enforce_start"
+    MANDATE_PID_STEP = "mandate_pid_step"
+    MANDATE_CONVERGED = "mandate_converged"
+    MANDATE_VIOLATION = "mandate_violation"
+    MANDATE_POLICY_APPLIED = "mandate_policy_applied"
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  TRACE EVENT — a single atomic observation
@@ -646,3 +653,85 @@ class Tracer:
         return self.emit(
             TraceEventType.PSYCHE_SAFETY_CHECK, step_name=step_name, data=payload
         )
+
+    # — Mandate CRC convenience emitters —
+
+    def emit_mandate_enforce_start(
+        self,
+        step_name: str,
+        mandate_name: str = "",
+        constraint: str = "",
+        kp: float = 0.0,
+        ki: float = 0.0,
+        kd: float = 0.0,
+        tolerance: float = 0.0,
+        max_steps: int = 0,
+        data: dict[str, Any] | None = None,
+    ) -> TraceEvent:
+        """Convenience: emit a MANDATE_ENFORCE_START event.
+
+        Fired when the executor begins PID enforcement for a mandate.
+        """
+        payload = data or {}
+        payload["mandate_name"] = mandate_name
+        payload["constraint"] = constraint
+        payload["pid_gains"] = {"kp": kp, "ki": ki, "kd": kd}
+        payload["tolerance"] = tolerance
+        payload["max_steps"] = max_steps
+        return self.emit(
+            TraceEventType.MANDATE_ENFORCE_START, step_name=step_name, data=payload
+        )
+
+    def emit_mandate_pid_step(
+        self,
+        step_name: str,
+        pid_step: int = 0,
+        error: float = 0.0,
+        control: float = 0.0,
+        satisfaction: float = 0.0,
+        converged: bool = False,
+        data: dict[str, Any] | None = None,
+    ) -> TraceEvent:
+        """Convenience: emit a MANDATE_PID_STEP event.
+
+        Fired for each PID correction iteration.
+        """
+        payload = data or {}
+        payload["pid_step"] = pid_step
+        payload["error"] = error
+        payload["control"] = control
+        payload["satisfaction"] = satisfaction
+        payload["converged"] = converged
+        return self.emit(
+            TraceEventType.MANDATE_PID_STEP, step_name=step_name, data=payload
+        )
+
+    def emit_mandate_result(
+        self,
+        step_name: str,
+        mandate_name: str = "",
+        converged: bool = False,
+        steps_taken: int = 0,
+        final_error: float = 0.0,
+        on_violation: str = "",
+        data: dict[str, Any] | None = None,
+    ) -> TraceEvent:
+        """Convenience: emit MANDATE_CONVERGED or MANDATE_VIOLATION.
+
+        Fired at the end of PID enforcement.
+        """
+        payload = data or {}
+        payload["mandate_name"] = mandate_name
+        payload["steps_taken"] = steps_taken
+        payload["final_error"] = final_error
+
+        if converged:
+            return self.emit(
+                TraceEventType.MANDATE_CONVERGED, step_name=step_name, data=payload
+            )
+
+        payload["on_violation"] = on_violation
+        return self.emit(
+            TraceEventType.MANDATE_VIOLATION, step_name=step_name, data=payload
+        )
+
