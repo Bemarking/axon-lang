@@ -26,6 +26,10 @@ import hashlib
 
 from axon.compiler import ast_nodes as ast
 from axon.compiler.errors import AxonError
+from axon.compiler.interface_generator import (
+    CognitiveInterface,
+    ModuleRegistry,
+)
 from axon.compiler.ir_nodes import (
     IRAgent,
     IRAggregate,
@@ -99,11 +103,19 @@ class IRGenerator:
         generator = IRGenerator()
         ir_program = generator.generate(ast_program)
 
+        # With module registry (EMS - cross-file resolution):
+        registry = ModuleRegistry(interfaces)
+        generator = IRGenerator(module_registry=registry)
+        ir_program = generator.generate(ast_program)
+
     The generated IRProgram contains all declarations resolved and
     cross-referenced, ready for backend compilation.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        module_registry: ModuleRegistry | None = None,
+    ) -> None:
         # Symbol tables for cross-reference resolution
         self._personas: dict[str, IRPersona] = {}
         self._contexts: dict[str, IRContext] = {}
@@ -121,6 +133,9 @@ class IRGenerator:
         self._psyche_specs: dict[str, IRPsycheSpec] = {}
         self._ots_specs: dict[str, IROtsDefinition] = {}
         self._mandate_specs: dict[str, IRMandate] = {}
+
+        # EMS: Module registry for cross-file symbol resolution
+        self._registry = module_registry
 
     def generate(self, program: ast.ProgramNode) -> IRProgram:
         """
@@ -254,14 +269,79 @@ class IRGenerator:
     # ═══════════════════════════════════════════════════════════════
 
     def _visit_import(self, node: ast.ImportNode) -> IRImport:
+        resolved = False
+        iface_hash = ""
+
+        # EMS Phase 2: Resolve imported symbols into local tables
+        if self._registry:
+            interface = self._registry.resolve(tuple(node.module_path))
+            if interface:
+                iface_hash = interface.interface_hash
+                for name in node.names:
+                    self._inject_imported_symbol(name, interface)
+                resolved = True
+
         ir_import = IRImport(
             source_line=node.line,
             source_column=node.column,
             module_path=tuple(node.module_path),
             names=tuple(node.names),
+            resolved=resolved,
+            interface_hash=iface_hash,
         )
         self._imports.append(ir_import)
         return ir_import
+
+    def _inject_imported_symbol(
+        self,
+        name: str,
+        interface: CognitiveInterface,
+    ) -> None:
+        """
+        Inject an imported symbol into the local symbol tables.
+
+        This is the Backpack-inspired mechanism: we look up the name
+        in the remote interface's signature registry, create a local
+        IR stub, and insert it into the appropriate symbol table.
+
+        The stub preserves the signature properties but is marked as
+        imported (not locally defined).
+        """
+        sig = interface.lookup(name)
+        if sig is None:
+            return  # Unknown symbol — type checker will catch this
+
+        # Dispatch by signature type to populate the correct table
+        from axon.compiler.interface_generator import (
+            PersonaSignature, AnchorSignature, FlowSignature,
+            ShieldSignature, MandateSignature, PsycheSignature,
+        )
+
+        if isinstance(sig, PersonaSignature) and name not in self._personas:
+            self._personas[name] = IRPersona(
+                name=sig.name, domain=sig.domain, tone=sig.tone,
+                confidence_threshold=sig.confidence_threshold,
+            )
+        elif isinstance(sig, AnchorSignature) and name not in self._anchors:
+            self._anchors[name] = IRAnchor(
+                name=sig.name, on_violation=sig.on_violation,
+            )
+        elif isinstance(sig, FlowSignature) and name not in self._flows:
+            self._flows[name] = IRFlow(
+                name=sig.name, output_type=sig.output_type,
+            )
+        elif isinstance(sig, ShieldSignature) and name not in self._shields:
+            self._shields[name] = IRShield(
+                name=sig.name, scan=sig.scan_categories,
+                on_breach=sig.on_breach,
+            )
+        elif isinstance(sig, MandateSignature) and name not in self._mandate_specs:
+            self._mandate_specs[name] = IRMandate(
+                name=sig.name, tolerance=sig.tolerance,
+                max_steps=sig.max_steps,
+            )
+        elif isinstance(sig, PsycheSignature) and name not in self._psyche_specs:
+            self._psyche_specs[name] = IRPsycheSpec(name=sig.name)
 
     def _visit_persona(self, node: ast.PersonaDefinition) -> IRPersona:
         ir_persona = IRPersona(

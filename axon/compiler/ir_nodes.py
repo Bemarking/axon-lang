@@ -107,10 +107,16 @@ class IRImport(IRNode):
 
     Example: import axon.anchors.{NoHallucination, NoBias}
     → module_path=("axon", "anchors"), names=("NoHallucination", "NoBias")
+
+    EMS (Epistemic Module System) fields:
+      resolved:       True when symbols have been injected into local tables
+      interface_hash: .axi interface hash for early cutoff (Nix/GHC-style)
     """
     node_type: str = "import"
     module_path: tuple[str, ...] = ()
     names: tuple[str, ...] = ()
+    resolved: bool = False
+    interface_hash: str = ""
 
 
 @dataclass(frozen=True)

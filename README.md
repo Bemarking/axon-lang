@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v0.22.0</em><br>
+  <strong>AXON</strong> <em>v0.23.0</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.22.0-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v0.23.0-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/tests-1969%20passing-brightgreen" alt="Tests">
@@ -2695,6 +2695,75 @@ flow DraftContract(terms: NegotiationTerms) -> ContractDocument {
 - **Moderate gains (`Kp: 1.5`)** — legal language has higher acceptable
   variance than medical or financial outputs, so the controller is less
   aggressive
+
+---
+
+### XVI. Epistemic Module System — Separate Compilation for Cognitive Languages
+
+Every mainstream module system (OCaml, Haskell, Rust, Zig) solves the same problem:
+compile files independently, then link them. But none of them operate on *cognitive
+primitives* — and none validate epistemic guarantees across module boundaries.
+
+AXON's **Epistemic Module System (EMS)** synthesizes seven state-of-the-art paradigms
+into a single system designed for cognitive compilation units:
+
+| Paradigm | Source | What AXON takes |
+|----------|--------|-----------------|
+| ML Signatures | OCaml (Leroy 2000) | **Cognitive Signatures** — interfaces that declare persona domains, anchor constraints, shield capabilities |
+| 1ML Unification | Rossberg (ICFP 2015) | **Unified namespace** — an imported persona IS a persona, no module-level wrappers |
+| Backpack Mixin Linking | Haskell (Kilpatrick et al. 2014) | **Two-phase compilation** — wiring diagram first, type-check against interfaces second |
+| `.hi` / `.cmi` Interface Files | GHC + OCaml | **`.axi` files** — compiled cognitive interfaces with content hashing for early cutoff |
+| Lazy Build DAG | Zig (Kelley 2024) | **Lazy resolution** — fast regex scan over `import` statements, no full parse needed |
+| Content-Addressed Cache | Nix (Dolstra 2006) + Bazel | **Hermetic builds** — `SHA-256(source + dependency_interfaces)` as cache key |
+| Crate Traits | Rust | **Cognitive behavioral contracts** — anchor sets as compile-time behavioral guarantees |
+
+#### The Novel Contribution: Epistemic Compatibility Checking (ECC)
+
+No existing module system validates *epistemic compatibility* across imports. EMS
+introduces the **Epistemic Floor** — each module carries a compile-time guarantee
+level (know > believe > doubt > speculate) derived from its content:
+
+```
+Module A (know-level: has anchors + factual constraints)
+  └── imports from Module B (speculate-level: creative personas)
+
+  → ❌ COMPILE ERROR: epistemic conflict
+    "Module 'A' operates at know-level but imports speculate-level
+     definitions from 'B'. Explicit @allow_downgrade required."
+```
+
+**Why this matters**: A medical diagnosis flow (`know`-level, anchored with
+`NoHallucination`) that silently imports from a creative writing module
+(`speculate`-level) would execute speculative reasoning where factual rigor was
+expected. No linter, test, or traditional type system catches this. EMS catches
+it at compile time.
+
+#### `.axi` Interface Files — The Cognitive `.cmi`
+
+Each `.axon` file compiles to a `.axi` (AXON Interface) containing only the
+public surface — names, types, and constraints — never prompt text or step logic:
+
+```json
+{
+  "module_path": ["axon", "security"],
+  "epistemic_floor": "know",
+  "personas": { "Guardian": { "domain": ["security"], "tone": "strict" } },
+  "anchors": { "NoHallucination": { "constraint_hash": "a7f3...", "on_violation": "raise" } }
+}
+```
+
+Two hashes enable GHC-style **early cutoff**:
+- `content_hash` = SHA-256(source) — changes on any edit
+- `interface_hash` = SHA-256(`.axi`) — changes only when the public surface changes
+
+If a developer adds a comment to `security.axon`, the `content_hash` changes but
+the `interface_hash` stays identical → downstream modules **skip recompilation**.
+
+#### Backwards Compatible: Zero Breaking Changes
+
+When no `ModuleRegistry` is provided, the compiler behaves identically to before.
+Single-file compilation is unchanged. EMS is additive — 151 existing tests pass
+without modification alongside 34 new EMS-specific tests (185 total).
 
 ---
 
