@@ -2714,7 +2714,7 @@ flow DraftContract(terms: NegotiationTerms) -> ContractDocument {
                               Typed Output (validated, traced result)
 ```
 
-### 40 Cognitive Primitives
+### 41 Cognitive Primitives
 
 | Primitive  | Keyword      | What it represents                                   |
 | ---------- | ------------ | ---------------------------------------------------- |
@@ -2759,6 +2759,7 @@ flow DraftContract(terms: NegotiationTerms) -> ContractDocument {
 | OTS        | `ots`        | Ontological Tool Synthesis for open-ended teleological generation |
 | MCP        | `mcp`        | EMCP resource/tool ingestion from external MCP servers           |
 | Taint      | `taint`      | Epistemic trust label for untrusted external data sources        |
+| Mandate    | `mandate`    | Cybernetic Refinement Calculus — PID control for deterministic LLM output |
 
 ### Epistemic Type System (Partial Order Lattice)
 
