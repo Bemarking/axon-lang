@@ -48,7 +48,14 @@ anchor NoHallucination {
     confidence_floor: 0.75
     unknown_response: "Insufficient information"
 }
+```
 
+> **⚠️ `enforce` is the behavioral carrier in anchors.** It is the ONLY anchor field
+> injected as a direct behavioral directive to the LLM. `require`/`reject` are
+> post-generation validation constraints. `description` is metadata-only — it does
+> NOT reach the model. Use `enforce` for text that must shape the model's behavior.
+
+```axon
 flow AnalyzeContract(doc: Document) -> StructuredReport {
     step Extract {
         probe doc for [parties, obligations, dates, penalties]

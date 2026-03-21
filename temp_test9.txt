@@ -1,0 +1,64 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.3, pytest-8.4.1, pluggy-1.6.0 -- C:\Users\home\AppData\Local\Programs\Python\Python313\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\home\Documents\Proyectos\axxon-constructor
+configfile: pyproject.toml
+plugins: anyio-4.10.0, langsmith-0.4.31, logfire-4.26.0, asyncio-1.1.0, cov-6.2.1, mock-3.14.1
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 1 item
+
+tests/test_ots_runtime.py::TestOtsRuntime::test_ots_synthesis_execution 2026-03-18 22:01:13 [info     ] OTS Synthesis successful.      teleology='Summarize briefly'
+FAILED
+
+================================== FAILURES ===================================
+_________________ TestOtsRuntime.test_ots_synthesis_execution _________________
+
+self = <tests.test_ots_runtime.TestOtsRuntime object at 0x00000208D1656490>
+
+        @pytest.mark.asyncio
+        async def test_ots_synthesis_execution(self):
+            dummy_tool_code = """
+    async def summarize_email(target: str) -> str:
+        return "Dummy Summary: " + target
+    """
+            client = OTSMockModelClient(responses={"default": dummy_tool_code})
+            executor = Executor(client=client)
+    
+            # Create a mock compiled step for OTS
+            ots_metadata = {
+                "ots_apply": {
+                    "ots_name": "EmailSummarizer",
+                    "target": "Raw Email Text",
+                    "ots_definition": {
+                        "teleology": "Summarize briefly",
+                        "linear_constraints": [("length", "stricly_once")],
+                        "homotopy_search": "deep",
+                        "loss_function": "L2",
+                        "output_type": "string"
+                    }
+                }
+            }
+    
+            step = CompiledStep(
+                step_name="summarize_email",
+                system_prompt="",
+                user_prompt="", # ots uses the metadata to derive the prompt
+                metadata=ots_metadata
+            )
+    
+            program = make_program([
+                make_unit("main_flow", [step])
+            ])
+    
+            result = await executor.execute(program)
+    
+            # Verify it succeeds
+>           assert result.success is True, result.unit_results[0].error
+E           AssertionError: [L5] AxonRuntimeError: OTS Execution Failed: 'ToolSchema' object has no attribute 'parameters'
+E           assert False is True
+E            +  where False = ExecutionResult(unit_results=(UnitResult(flow_name='main_flow', step_results=(), success=False, error="[L5] AxonRuntimeError: OTS Execution Failed: 'ToolSchema' object has no attribute 'parameters'", duration_ms=85.9972000180278),), trace=ExecutionTrace(program_name='', backend_name='mock', start_time=1773889273.2948709, end_time=1773889273.3808892, spans=[TraceSpan(name='unit:main_flow', start_time=1773889273.2948785, end_time=1773889273.3808815, events=[TraceEvent(event_type=<TraceEventType.STEP_START: 'step_start'>, timestamp=1773889273.2948897, step_name='summarize_email', data={'user_prompt_length': 0}, duration_ms=0.0), TraceEvent(event_type=<TraceEventType.STEP_START: 'step_start'>, timestamp=1773889273.294902, step_name='summarize_email', data={'type': 'ots_synthesis', 'ots_name': 'EmailSummarizer', 'target': 'Raw Email Text', 'teleology': 'Summarize briefly'}, duration_ms=0.0), TraceEvent(event_type=<TraceEventType.STEP_END: 'step_end'>, timestamp=1773889273.3806765, step_name='ots_synthesize_EmailSummarizer', data={'tool': 'EmailSummarizer_1481', 'attempt': 0}, duration_ms=0.0), TraceEvent(event_type=<TraceEventType.STEP_END: 'step_end'>, timestamp=1773889273.3808448, step_name='summarize_email', data={'success': False, 'error': "'ToolSchema' object has no attribute 'parameters'", 'type': 'AttributeError'}, duration_ms=0.0), TraceEvent(event_type=<TraceEventType.STEP_END: 'step_end'>, timestamp=1773889273.3808668, step_name='', data={'error': "[L5] AxonRuntimeError: OTS Execution Failed: 'ToolSchema' object has no attribute 'parameters'"}, duration_ms=0.0)], children=[], metadata={'persona': '', 'context': '', 'effort': '', 'duration_ms': 86.0})], metadata={}), success=False, duration_ms=86.01279999129474).success
+
+tests\test_ots_runtime.py:67: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_ots_runtime.py::TestOtsRuntime::test_ots_synthesis_execution
+============================== 1 failed in 0.50s ==============================

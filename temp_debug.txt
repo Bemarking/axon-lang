@@ -1,0 +1,6 @@
+SUCCESS: False
+ERROR: [L4] RefineExhaustedError: All 3 refine attempts exhausted for step 'summarize_email'.
+  step: summarize_email
+  flow: main_flow
+  attempt: 3
+  details: Message content must not be empty

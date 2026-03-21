@@ -1,0 +1,143 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.3, pytest-8.4.1, pluggy-1.6.0
+rootdir: C:\Users\home\Documents\Proyectos\axxon-constructor
+configfile: pyproject.toml
+plugins: anyio-4.10.0, langsmith-0.4.31, logfire-4.26.0, asyncio-1.1.0, cov-6.2.1, mock-3.14.1
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1922 items
+
+tests\stdlib\test_anchors.py ........................................... [  2%]
+............................                                             [  3%]
+tests\stdlib\test_flows.py ............................................. [  6%]
+.......................                                                  [  7%]
+tests\stdlib\test_personas.py .......................................... [  9%]
+........                                                                 [  9%]
+tests\stdlib\test_registry.py ......................                     [ 10%]
+tests\stdlib\test_tools.py ............................................. [ 13%]
+.......                                                                  [ 13%]
+tests\test_agent.py ...........................................          [ 15%]
+tests\test_agent_integration.py ............................             [ 17%]
+tests\test_agent_runtime.py ............................................ [ 19%]
+...................                                                      [ 20%]
+tests\test_backends.py ................................................. [ 23%]
+........................................................................ [ 26%]
+.......................                                                  [ 28%]
+tests\test_base_tool.py ...............                                  [ 28%]
+tests\test_cli.py ...........................                            [ 30%]
+tests\test_context_mgr.py ................                               [ 31%]
+tests\test_deliberate_consensus.py .................................     [ 32%]
+tests\test_dispatcher.py .....                                           [ 33%]
+tests\test_emcp.py ..                                                    [ 33%]
+tests\test_engine_core.py .............................................. [ 35%]
+.......................                                                  [ 36%]
+tests\test_executor.py ................                                  [ 37%]
+tests\test_forge.py ......................                               [ 38%]
+tests\test_ir_generator.py ............................................. [ 41%]
+.......................                                                  [ 42%]
+tests\test_ir_nodes.py ....................................              [ 44%]
+tests\test_lexer.py ...............................                      [ 45%]
+tests\test_logic_anchors.py ..........................                   [ 47%]
+tests\test_mdn_compiler.py ..............................                [ 48%]
+tests\test_mdn_engine.py ............................................... [ 51%]
+........................................................................ [ 54%]
+................................                                         [ 56%]
+tests\test_mdn_memory.py ............................................... [ 59%]
+.......................                                                  [ 60%]
+tests\test_mdn_runtime.py ....................................           [ 62%]
+tests\test_memory_backend.py .................                           [ 63%]
+tests\test_ots.py ............                                           [ 63%]
+tests\test_ots_runtime.py F                                              [ 63%]
+tests\test_p0_integration.py ........................                    [ 64%]
+tests\test_paradigm_shifts.py .......................................... [ 67%]
+..............                                                           [ 67%]
+tests\test_parser.py ......................                              [ 68%]
+tests\test_pem.py ...................................................... [ 71%]
+...................................................                      [ 74%]
+tests\test_pix_compiler.py ............................................. [ 76%]
+.                                                                        [ 76%]
+tests\test_pix_engine.py ............................................... [ 79%]
+...............................                                          [ 80%]
+tests\test_registry.py ............                                      [ 81%]
+tests\test_repl.py ...............                                       [ 82%]
+tests\test_retry_engine.py .................                             [ 83%]
+tests\test_runtime_errors.py ................                            [ 84%]
+tests\test_self_healing.py ..                                            [ 84%]
+tests\test_semantic_validator.py .................                       [ 85%]
+tests\test_shield.py ................................................    [ 87%]
+tests\test_shield_runtime.py ......................                      [ 88%]
+tests\test_stream_effects.py ..                                          [ 88%]
+tests\test_streaming_effects.py ........................................ [ 90%]
+...................                                                      [ 91%]
+tests\test_tool_backends.py ...................................          [ 93%]
+tests\test_tool_stubs.py .....................                           [ 94%]
+tests\test_tools_v011.py ............................................... [ 97%]
+........                                                                 [ 97%]
+tests\test_tracer.py ................                                    [ 98%]
+tests\test_type_checker.py ..............................                [100%]
+
+================================== FAILURES ===================================
+_________________ TestOtsRuntime.test_ots_synthesis_execution _________________
+
+self = <tests.test_ots_runtime.TestOtsRuntime object at 0x00000183CDA2B890>
+
+    @pytest.mark.asyncio
+    async def test_ots_synthesis_execution(self):
+        # We configure a MockModelClient that will respond to the synthesized prompt.
+        # The prompt will contain teleology, constraints, and the target value.
+        client = MockModelClient()
+        executor = Executor(client=client)
+    
+        # Create a mock compiled step for OTS
+        ots_metadata = {
+            "ots_apply": {
+                "ots_name": "EmailSummarizer",
+                "target": "Raw Email Text",
+                "ots_definition": {
+                    "teleology": "Summarize briefly",
+                    "linear_constraints": [("length", "stricly_once")],
+                    "homotopy_search": "deep",
+                    "loss_function": "L2",
+                    "output_type": "string"
+                }
+            }
+        }
+    
+        step = CompiledStep(
+            step_name="summarize_email",
+            system_prompt="",
+            user_prompt="", # ots uses the metadata to derive the prompt
+            metadata=ots_metadata
+        )
+    
+        program = make_program([
+            make_unit("main_flow", [step])
+        ])
+    
+        result = await executor.execute(program)
+    
+        # Verify it succeeds
+>       assert result.success is True
+E       AssertionError: assert False is True
+E        +  where False = ExecutionResult(unit_results=(UnitResult(flow_name='main_flow', step_results=(), success=False, error='[L5] AxonRuntim...: '', 'context': '', 'effort': '', 'duration_ms': 94.37})], metadata={}), success=False, duration_ms=94.38940000836737).success
+
+tests\test_ots_runtime.py:57: AssertionError
+============================== warnings summary ===============================
+tests/test_agent_integration.py::TestFullPipelineReact::test_system_prompt_from_backend
+  tests\test_agent_integration.py:331: PytestWarning: The test <Function test_system_prompt_from_backend> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    @pytest.mark.asyncio
+
+tests/test_tools_v011.py::TestPDFExtractorPyMuPDFConstants::test_file_not_found
+tests/test_tools_v011.py::TestPDFExtractorPyMuPDFConstants::test_file_not_found
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+tests/test_tools_v011.py::TestPDFExtractorPyMuPDFConstants::test_file_not_found
+tests/test_tools_v011.py::TestPDFExtractorPyMuPDFConstants::test_file_not_found
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+tests/test_tools_v011.py::TestPDFExtractorPyMuPDFConstants::test_file_not_found
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_ots_runtime.py::TestOtsRuntime::test_ots_synthesis_execution
+================= 1 failed, 1921 passed, 6 warnings in 18.55s =================

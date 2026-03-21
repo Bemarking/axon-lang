@@ -117,6 +117,7 @@ class AnchorConstraint(ASTNode):
     require: str = ""
     reject: list[str] = field(default_factory=list)
     enforce: str = ""
+    description: str = ""
     confidence_floor: float | None = None
     unknown_response: str = ""
     on_violation: str = ""

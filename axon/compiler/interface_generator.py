@@ -94,10 +94,12 @@ class PersonaSignature:
     domain: tuple[str, ...] = ()
     tone: str = ""
     confidence_threshold: float | None = None
+    description: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {"name": self.name, "domain": list(self.domain),
-                "tone": self.tone, "confidence_threshold": self.confidence_threshold}
+                "tone": self.tone, "confidence_threshold": self.confidence_threshold,
+                "description": self.description}
 
 
 @dataclass(frozen=True)
@@ -270,6 +272,7 @@ class CognitiveInterface:
                 name=sig["name"], domain=tuple(sig.get("domain", [])),
                 tone=sig.get("tone", ""),
                 confidence_threshold=sig.get("confidence_threshold"),
+                description=sig.get("description", ""),
             )
         for name, sig in data.get("anchors", {}).items():
             iface.anchors[name] = AnchorSignature(
@@ -343,6 +346,7 @@ class InterfaceGenerator:
                 domain=getattr(persona, "domain", ()),
                 tone=getattr(persona, "tone", ""),
                 confidence_threshold=getattr(persona, "confidence_threshold", None),
+                description=getattr(persona, "description", ""),
             )
 
         # Extract anchor signatures (hash the constraint, don't export it)

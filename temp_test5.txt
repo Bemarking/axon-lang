@@ -1,0 +1,64 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.3, pytest-8.4.1, pluggy-1.6.0
+rootdir: C:\Users\home\Documents\Proyectos\axxon-constructor
+configfile: pyproject.toml
+plugins: anyio-4.10.0, langsmith-0.4.31, logfire-4.26.0, asyncio-1.1.0, cov-6.2.1, mock-3.14.1
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests\test_ots_runtime.py F                                              [100%]
+
+================================== FAILURES ===================================
+_________________ TestOtsRuntime.test_ots_synthesis_execution _________________
+
+self = <tests.test_ots_runtime.TestOtsRuntime object at 0x000001E010536D50>
+
+        @pytest.mark.asyncio
+        async def test_ots_synthesis_execution(self):
+            dummy_tool_code = """
+    async def summarize_email(target: str) -> str:
+        return "Dummy Summary: " + target
+    """
+            client = OTSMockModelClient(responses={"default": dummy_tool_code})
+            executor = Executor(client=client)
+    
+            # Create a mock compiled step for OTS
+            ots_metadata = {
+                "ots_apply": {
+                    "ots_name": "EmailSummarizer",
+                    "target": "Raw Email Text",
+                    "ots_definition": {
+                        "teleology": "Summarize briefly",
+                        "linear_constraints": [("length", "stricly_once")],
+                        "homotopy_search": "deep",
+                        "loss_function": "L2",
+                        "output_type": "string"
+                    }
+                }
+            }
+    
+            step = CompiledStep(
+                step_name="summarize_email",
+                system_prompt="",
+                user_prompt="", # ots uses the metadata to derive the prompt
+                metadata=ots_metadata
+            )
+    
+            program = make_program([
+                make_unit("main_flow", [step])
+            ])
+    
+            result = await executor.execute(program)
+    
+            # Verify it succeeds
+>           assert result.success is True, result.unit_results[0].error
+E           AssertionError: [L5] AxonRuntimeError: OTS Execution Failed:\nname 'inspect' is not defined
+E           assert False is True
+E            +  where False = ExecutionResult(unit_results=(UnitResult(flow_name='main_flow', step_results=(), success=False, error="[L5] AxonRuntim...': '', 'context': '', 'effort': '', 'duration_ms': 88.3})], metadata={}), success=False, duration_ms=88.31859999918379).success
+
+tests\test_ots_runtime.py:67: AssertionError
+---------------------------- Captured stdout call -----------------------------
+2026-03-18 21:50:27 [info     ] OTS Synthesis successful.      teleology='Summarize briefly'
+=========================== short test summary info ===========================
+FAILED tests/test_ots_runtime.py::TestOtsRuntime::test_ots_synthesis_execution
+============================== 1 failed in 0.49s ==============================

@@ -264,6 +264,8 @@ class Parser:
             match field_name:
                 case "require":
                     node.require = self._consume_any_identifier_or_keyword().value
+                case "description":
+                    node.description = self._consume(TokenType.STRING).value
                 case "reject":
                     node.reject = self._parse_bracketed_identifiers()
                 case "enforce":

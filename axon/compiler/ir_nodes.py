@@ -166,6 +166,7 @@ class IRAnchor(IRNode):
     """
     node_type: str = "anchor"
     name: str = ""
+    description: str = ""
     require: str = ""
     reject: tuple[str, ...] = ()
     enforce: str = ""

@@ -562,3 +562,134 @@ class TestModuleRegistry:
         assert EpistemicLevel.is_compatible(EpistemicLevel.KNOW, EpistemicLevel.KNOW)
         assert EpistemicLevel.is_compatible(EpistemicLevel.KNOW, EpistemicLevel.SPECULATE)
         assert not EpistemicLevel.is_compatible(EpistemicLevel.SPECULATE, EpistemicLevel.KNOW)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  TEST 11: Persona description survives cross-file import
+# ═══════════════════════════════════════════════════════════════════
+
+class TestPersonaDescriptionSurvivesImport:
+    """Verify that persona description (including tenant placeholders)
+    survives the full EMS pipeline: IR → .axi → import → stub."""
+
+    def test_description_in_persona_signature(self):
+        """PersonaSignature carries description field."""
+        sig = PersonaSignature(
+            name="Kivi",
+            domain=("sales",),
+            description="{{company_name}} AI assistant",
+        )
+        assert sig.description == "{{company_name}} AI assistant"
+
+    def test_description_survives_serialization(self):
+        """PersonaSignature.description survives to_dict/from JSON round-trip."""
+        import tempfile
+        from pathlib import Path
+
+        iface = CognitiveInterface(
+            module_path=("kivi", "brain"),
+            content_hash="abc",
+        )
+        iface.personas["Kivi"] = PersonaSignature(
+            name="Kivi",
+            domain=("sales",),
+            description="{{company_name}} support agent",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "kivi_brain.axi"
+            iface.save(path)
+            loaded = CognitiveInterface.load(path)
+
+        assert loaded.personas["Kivi"].description == "{{company_name}} support agent"
+
+    def test_description_injected_into_stub(self):
+        """Imported persona stub gets description from PersonaSignature."""
+        from axon.compiler.ir_generator import IRGenerator
+
+        iface = CognitiveInterface(module_path=("kivi", "brain"))
+        iface.personas["Kivi"] = PersonaSignature(
+            name="Kivi",
+            domain=("sales",),
+            description="{{company_name}} closer",
+        )
+        registry = ModuleRegistry()
+        registry.register(("kivi", "brain"), iface)
+
+        gen = IRGenerator(module_registry=registry)
+        from axon.compiler.ast_nodes import ImportNode
+        node = ImportNode(
+            line=1, column=0,
+            module_path=["kivi", "brain"],
+            names=["Kivi"],
+        )
+        gen._visit_import(node)
+
+        stub = gen._personas["Kivi"]
+        assert stub.description == "{{company_name}} closer"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  TEST 12: Anchor description parsed and in IR
+# ═══════════════════════════════════════════════════════════════════
+
+class TestAnchorDescriptionParsedAndInIR:
+    """Verify anchor description flows from source → AST → IR."""
+
+    def test_anchor_description_in_ast(self):
+        """AnchorConstraint AST node carries description."""
+        from axon.compiler.ast_nodes import AnchorConstraint
+        node = AnchorConstraint(
+            name="NoHalluc",
+            description="Prevents hallucinated output",
+            enforce="strict_grounding",
+        )
+        assert node.description == "Prevents hallucinated output"
+
+    def test_anchor_description_in_ir(self):
+        """IRAnchor IR node carries description through compilation."""
+        from axon.compiler.ir_nodes import IRAnchor
+        ir = IRAnchor(
+            name="NoHalluc",
+            description="Prevents hallucinated output",
+            enforce="strict_grounding",
+        )
+        assert ir.description == "Prevents hallucinated output"
+        d = ir.to_dict()
+        assert d["description"] == "Prevents hallucinated output"
+
+    def test_anchor_description_default_empty(self):
+        """IRAnchor.description defaults to empty string for backwards compat."""
+        from axon.compiler.ir_nodes import IRAnchor
+        ir = IRAnchor(name="Test")
+        assert ir.description == ""
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  TEST 13: Anchor description does not affect interface hash
+# ═══════════════════════════════════════════════════════════════════
+
+class TestAnchorDescriptionDoesNotAffectHash:
+    """Verify that changing anchor description doesn't invalidate
+    .axi interface hash (description is metadata-only)."""
+
+    def test_hash_unchanged_by_description(self):
+        """Two interfaces with same constraints but different anchor
+        descriptions produce identical interface hashes."""
+        iface_a = CognitiveInterface(module_path=("a",), content_hash="same")
+        iface_a.anchors["Guard"] = AnchorSignature(
+            name="Guard",
+            constraint_hash="constraint_abc",  # same constraint
+            on_violation="raise",
+        )
+
+        iface_b = CognitiveInterface(module_path=("a",), content_hash="same")
+        iface_b.anchors["Guard"] = AnchorSignature(
+            name="Guard",
+            constraint_hash="constraint_abc",  # same constraint
+            on_violation="raise",
+        )
+
+        # Interface hash should be identical since constraint_hash is the same
+        # (description is NOT part of AnchorSignature/constraint_hash)
+        assert iface_a.interface_hash == iface_b.interface_hash

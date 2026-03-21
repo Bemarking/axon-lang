@@ -8,6 +8,7 @@
 
 ---
 "We present Multi-Document Navigation (MDN), the first retrieval framework with formal guarantees of soundness, termination, and provenance — properties that are not optional but essential in domains where precision is non-negotiable: law, medicine, and critical infrastructure."
+
 ## Abstract
 We present a formal framework for **multi-document navigation** (MDN) in
 AXON-lang, extending the single-document PIX primitive to operate over document

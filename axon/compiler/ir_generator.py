@@ -321,6 +321,7 @@ class IRGenerator:
             self._personas[name] = IRPersona(
                 name=sig.name, domain=sig.domain, tone=sig.tone,
                 confidence_threshold=sig.confidence_threshold,
+                description=sig.description,
             )
         elif isinstance(sig, AnchorSignature) and name not in self._anchors:
             self._anchors[name] = IRAnchor(
@@ -379,6 +380,7 @@ class IRGenerator:
             source_line=node.line,
             source_column=node.column,
             name=node.name,
+            description=node.description,
             require=node.require,
             reject=tuple(node.reject),
             enforce=node.enforce,
