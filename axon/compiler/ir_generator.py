@@ -56,6 +56,8 @@ from axon.compiler.ir_nodes import (
     IRImport,
     IRIngest,
     IRIntent,
+    IRLambdaData,
+    IRLambdaDataApply,
     IRMandate,
     IRMandateApply,
     IRMemory,
@@ -133,6 +135,7 @@ class IRGenerator:
         self._psyche_specs: dict[str, IRPsycheSpec] = {}
         self._ots_specs: dict[str, IROtsDefinition] = {}
         self._mandate_specs: dict[str, IRMandate] = {}
+        self._lambda_data_specs: dict[str, IRLambdaData] = {}
 
         # EMS: Module registry for cross-file symbol resolution
         self._registry = module_registry
@@ -180,6 +183,7 @@ class IRGenerator:
             psyche_specs=tuple(self._psyche_specs.values()),
             ots_specs=tuple(self._ots_specs.values()),
             mandate_specs=tuple(self._mandate_specs.values()),
+            lambda_data_specs=tuple(self._lambda_data_specs.values()),
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -244,6 +248,9 @@ class IRGenerator:
         # CRC — Cybernetic Refinement Calculus (mandate)
         ast.MandateDefinition: "_visit_mandate",
         ast.MandateApplyNode: "_visit_mandate_apply",
+        # ΛD — Lambda Data (epistemic data primitive)
+        ast.LambdaDataDefinition: "_visit_lambda_data",
+        ast.LambdaDataApplyNode: "_visit_lambda_data_apply",
     }
 
     def _visit(self, node: ast.ASTNode) -> IRNode:
@@ -1471,6 +1478,53 @@ class IRGenerator:
             source_line=node.line,
             source_column=node.column,
             mandate_name=node.mandate_name,
+            target=node.target,
+            output_type=node.output_type,
+        )
+
+    # ═════════════════════════════════════════════════════════════════
+    #  LAMBDA DATA VISITORS — Epistemic Data Primitive (§ΛD)
+    # ═════════════════════════════════════════════════════════════════
+
+    def _visit_lambda_data(self, node: ast.LambdaDataDefinition) -> IRLambdaData:
+        """
+        Lower a LambdaDataDefinition AST into an IRLambdaData.
+
+        Formal basis — the Lambda Data transform:
+          ΛD: V → (V × O × C × T)
+          ψ = ⟨T, V, E⟩  — Epistemic State Vector
+
+        Where:
+          O — Ontological classification (domain tag)
+          C — Certainty coefficient c ∈ [0, 1]
+          T — Temporal validity frame [t_start, t_end]
+          E — Epistemic provenance chain
+        """
+        ir_lambda = IRLambdaData(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            ontology=node.ontology,
+            certainty=node.certainty,
+            temporal_frame_start=node.temporal_frame_start,
+            temporal_frame_end=node.temporal_frame_end,
+            provenance=node.provenance,
+            derivation=node.derivation,
+        )
+        self._lambda_data_specs[node.name] = ir_lambda
+        return ir_lambda
+
+    def _visit_lambda_data_apply(self, node: ast.LambdaDataApplyNode) -> IRLambdaDataApply:
+        """
+        Lower a LambdaDataApplyNode AST into an IRLambdaDataApply.
+
+        The epistemic binding point where the ΛD specification
+        enriches a data target with the full state vector ψ.
+        """
+        return IRLambdaDataApply(
+            source_line=node.line,
+            source_column=node.column,
+            lambda_data_name=node.lambda_data_name,
             target=node.target,
             output_type=node.output_type,
         )

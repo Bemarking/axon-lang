@@ -38,6 +38,8 @@ from .ast_nodes import (
     ImportNode,
     IngestNode,
     IntentNode,
+    LambdaDataApplyNode,
+    LambdaDataDefinition,
     MandateApplyNode,
     MandateDefinition,
     MemoryDefinition,
@@ -142,12 +144,14 @@ class Parser:
                 return self._parse_ots_definition()
             case TokenType.MANDATE:
                 return self._parse_mandate()
+            case TokenType.LAMBDA:
+                return self._parse_lambda_data()
             case _:
                 raise AxonParseError(
                     f"Unexpected token at top level",
                     line=tok.line,
                     column=tok.column,
-                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, ots, mandate, run, know, speculate, ...)",
+                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, ots, mandate, lambda, run, know, speculate, ...)",
                     found=tok.value,
                 )
 
@@ -603,12 +607,14 @@ class Parser:
                 return self._parse_ots_apply()
             case TokenType.MANDATE:
                 return self._parse_mandate_apply()
+            case TokenType.LAMBDA:
+                return self._parse_lambda_data_apply()
             case _:
                 raise AxonParseError(
                     "Unexpected token in flow body",
                     line=tok.line,
                     column=tok.column,
-                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, mandate, focus, associate, aggregate, explore, ingest",
+                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, mandate, lambda, focus, associate, aggregate, explore, ingest",
                     found=tok.value,
                 )
 
@@ -2611,6 +2617,121 @@ class Parser:
 
         node = MandateApplyNode(
             mandate_name=mandate_name,
+            target=target,
+            line=tok.line,
+            column=tok.column,
+        )
+
+        # optional -> OutputType
+        if self._check(TokenType.ARROW):
+            self._advance()
+            node.output_type = self._consume(TokenType.IDENTIFIER).value
+
+        return node
+
+    # ── LAMBDA DATA (ΛD) ───────────────────────────────────────────
+
+    def _parse_lambda_data(self) -> LambdaDataDefinition:
+        """
+        Parse a top-level Lambda Data (ΛD) definition:
+
+          lambda SensorReading {
+              ontology: "measurement.temperature"
+              certainty: 0.95
+              temporal_frame: "2024-01-01/2024-12-31"
+              provenance: "IoT sensor array Alpha-7"
+              derivation: "raw"
+          }
+
+        Grounded in the Lambda Data formalism:
+          ΛD: V → (V × O × C × T)
+          ψ = ⟨T, V, E⟩  — Epistemic State Vector
+
+        Where:
+          O — Ontological tag (domain classification)
+          C — Certainty coefficient c ∈ [0, 1]
+          T — Temporal frame [t_start, t_end]
+          E — Epistemic provenance chain
+        """
+        tok = self._consume(TokenType.LAMBDA)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = LambdaDataDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            inner = self._current()
+
+            match inner.type:
+                case TokenType.ONTOLOGY:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.ontology = self._consume(TokenType.STRING).value
+
+                case TokenType.CERTAINTY:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    val_tok = self._current()
+                    if val_tok.type == TokenType.FLOAT:
+                        node.certainty = float(self._advance().value)
+                    else:
+                        node.certainty = float(self._consume(TokenType.INTEGER).value)
+
+                case TokenType.TEMPORAL_FRAME:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.temporal_frame_start = self._consume(TokenType.STRING).value
+                    # Optional end frame (second string)
+                    if self._check(TokenType.STRING):
+                        node.temporal_frame_end = self._consume(TokenType.STRING).value
+
+                case TokenType.PROVENANCE:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.provenance = self._consume(TokenType.STRING).value
+
+                case TokenType.DERIVATION:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.derivation = self._consume_any_identifier_or_keyword().value
+
+                case _:
+                    # Skip unknown fields gracefully
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_lambda_data_apply(self) -> LambdaDataApplyNode:
+        """
+        Parse an in-flow Lambda Data application:
+
+          lambda SensorReading on raw_data
+          lambda SensorReading on raw_data -> ValidatedReading
+
+        This is the epistemic binding point: the ΛD specification
+        is applied to a data target, enriching it with the full
+        epistemic state vector ψ = ⟨T, V, E⟩.
+        """
+        tok = self._consume(TokenType.LAMBDA)
+        lambda_data_name = self._consume(TokenType.IDENTIFIER).value
+
+        # "on" keyword expected (parsed as identifier since it's not reserved)
+        on_tok = self._consume_any_identifier_or_keyword()
+        if on_tok.value != "on":
+            raise AxonParseError(
+                "Expected 'on' after lambda data name in flow step",
+                line=on_tok.line,
+                column=on_tok.column,
+                expected="on",
+                found=on_tok.value,
+            )
+
+        target = self._consume_any_identifier_or_keyword().value
+
+        node = LambdaDataApplyNode(
+            lambda_data_name=lambda_data_name,
             target=target,
             line=tok.line,
             column=tok.column,

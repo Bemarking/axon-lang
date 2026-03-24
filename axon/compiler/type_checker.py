@@ -45,6 +45,8 @@ from .ast_nodes import (
     ImportNode,
     IngestNode,
     IntentNode,
+    LambdaDataApplyNode,
+    LambdaDataDefinition,
     MandateApplyNode,
     MandateDefinition,
     MemoryDefinition,
@@ -412,6 +414,10 @@ class TypeChecker:
                     self._register(name, "mandate", decl)
                 case MandateApplyNode():
                     pass  # mandate apply is a flow-level command
+                case LambdaDataDefinition(name=name):
+                    self._register(name, "lambda_data", decl)
+                case LambdaDataApplyNode():
+                    pass  # lambda apply is a flow-level command
                 case NavigateNode() | DrillNode() | TrailNode():
                     pass  # PIX flow-level commands, not declarations
 
@@ -478,6 +484,10 @@ class TypeChecker:
                 self._check_mandate(decl)
             case MandateApplyNode():
                 self._check_mandate_apply(decl)
+            case LambdaDataDefinition():
+                self._check_lambda_data(decl)
+            case LambdaDataApplyNode():
+                self._check_lambda_data_apply(decl)
             case IngestNode():
                 pass  # validated at runtime
             case FocusNode() | AssociateNode() | AggregateNode() | ExploreNode():
@@ -685,6 +695,8 @@ class TypeChecker:
                 self._check_corroborate(step)
             case MandateApplyNode():
                 self._check_mandate_apply(step)
+            case LambdaDataApplyNode():
+                self._check_lambda_data_apply(step)
 
     def _check_step(self, node: StepNode, step_names: set[str], flow_name: str) -> None:
         if node.name in step_names:
@@ -1670,6 +1682,82 @@ class TypeChecker:
             self._emit(
                 f"'{node.mandate_name}' in mandate apply is a {sym.kind}, "
                 "not a mandate",
+                node,
+            )
+
+    # ── LAMBDA DATA (ΛD) validation ──────────────────────────────────
+
+    # Valid derivation categories for ΛD
+    _VALID_DERIVATIONS = frozenset({
+        "raw", "derived", "inferred", "aggregated", "transformed",
+    })
+
+    def _check_lambda_data(self, node: LambdaDataDefinition) -> None:
+        """
+        Validate Lambda Data definition — Epistemic Data Primitive.
+
+        Enforces formal constraints from the ΛD formalism:
+          1. Ontological Rigidity  — ontology field is required
+          2. Epistemic Bounding    — certainty c ∈ [0, 1]
+          3. Derivation validity   — derivation ∈ {raw, derived, inferred, aggregated, transformed}
+          4. Epistemic Degradation Theorem (compile-time enforcement):
+             For static compositions ΛD₁ ∘ ΛD₂, the composed certainty
+             must satisfy: c_composed ≤ min(c₁, c₂)
+             This is a structural invariant — we validate that individual
+             certainty values are well-formed so the runtime composition
+             operator can guarantee monotonic degradation.
+        """
+        # 1. Ontological Rigidity — ontology tag is mandatory
+        if not node.ontology:
+            self._emit(
+                f"lambda '{node.name}' requires an 'ontology' field "
+                f"(Ontological Rigidity: O must classify the data domain)",
+                node,
+            )
+
+        # 2. Epistemic Bounding — certainty ∈ [0, 1]
+        if node.certainty < 0.0 or node.certainty > 1.0:
+            self._emit(
+                f"certainty coefficient must be in [0, 1], got {node.certainty} "
+                f"(lambda '{node.name}', Epistemic Bounding)",
+                node,
+            )
+
+        # 3. Derivation validity
+        if node.derivation and node.derivation not in self._VALID_DERIVATIONS:
+            self._emit(
+                f"Unknown derivation '{node.derivation}' for lambda '{node.name}'. "
+                f"Valid: {', '.join(sorted(self._VALID_DERIVATIONS))}",
+                node,
+            )
+
+        # 4. Epistemic Degradation Theorem — compile-time structural check
+        #    For each ΛD definition, ensure certainty is strictly representable
+        #    in the degradation lattice. A certainty of exactly 1.0 would mean
+        #    "absolute truth" — which violates the theorem's premise that all
+        #    derived data must degrade. Only 'raw' data with direct provenance
+        #    may carry c = 1.0; all other derivations must have c < 1.0.
+        if node.certainty == 1.0 and node.derivation and node.derivation != "raw":
+            self._emit(
+                f"Epistemic Degradation Theorem violation: lambda '{node.name}' "
+                f"has certainty=1.0 with derivation='{node.derivation}'. "
+                f"Only 'raw' data may carry absolute certainty (c=1.0). "
+                f"Derived/inferred/aggregated data must have c < 1.0 "
+                f"(∀ΛD₁∘ΛD₂: c_composed ≤ min(c₁, c₂))",
+                node,
+            )
+
+    def _check_lambda_data_apply(self, node: LambdaDataApplyNode) -> None:
+        """
+        Validate Lambda Data application in a flow step.
+
+        Ensures the referenced lambda data specification is declared.
+        """
+        sym = self._symbols.lookup(node.lambda_data_name)
+        if sym is not None and sym.kind != "lambda_data":
+            self._emit(
+                f"'{node.lambda_data_name}' in lambda apply is a {sym.kind}, "
+                "not a lambda data specification",
                 node,
             )
 

@@ -1336,6 +1336,83 @@ class MandateApplyNode(ASTNode):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  LAMBDA DATA NODES — Epistemic State Vectors (§ΛD)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class LambdaDataDefinition(ASTNode):
+    """
+    lambda Currency {
+        ontology: Measure
+        certainty: 0.95
+        temporal_frame: ["2024-01-01", "2024-12-31"]
+        provenance: "exchange_api_v2"
+        derivation: observed
+    }
+
+    Declares an Epistemic State Vector ψ = ⟨T, V, E⟩ where:
+      T — Ontological type from the type universe O  (Invariant 1)
+      V — Valid value domain (enforced at runtime)
+      E = ⟨c, τ, ρ, δ⟩ — Epistemic tensor encoding:
+          c — certainty scalar c ∈ [0,1]          (Invariant 4)
+          τ — temporal validity frame
+          ρ — provenance EntityRef (origin)
+          δ — derivation ∈ Δ = {axiomatic, observed, inferred, mutated}
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  Invariant 1 — Ontological Rigidity:                        ║
+    ║    ∀ ψ = ⟨T, V, E⟩ : T ∈ O ∧ T ≠ ⊥                       ║
+    ║                                                              ║
+    ║  Invariant 2 — Semantic Interpretation:                      ║
+    ║    V ∈ Domain(T) ⊂ Universe(O)                              ║
+    ║                                                              ║
+    ║  Invariant 3 — Semantic Conservation:                        ║
+    ║    f(ψ) ≠ ⊥ ⟹ T(f(ψ)) ⊇ T(ψ) ∨ explicit_cast            ║
+    ║                                                              ║
+    ║  Invariant 4 — Epistemic Bounding:                           ║
+    ║    c ∈ [0,1] ∧ |τ| ≥ 0 ∧ ρ ∈ EntityRef ∧ δ ∈ Δ            ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+    Theorem 5.1 (Epistemic Degradation):
+      For any transformation f operating on ΛD inputs,
+        c_out ≤ min(c_in₁, c_in₂, …, c_inₙ)
+      Output certainty cannot exceed the minimum input certainty.
+      This is enforced at compile time for static compositions.
+    """
+    name: str = ""
+    ontology: str = ""                     # T ∈ O — ontological type
+    certainty: float = 1.0                 # c ∈ [0,1] — epistemic certainty scalar
+    temporal_frame_start: str = ""         # τ_start — temporal validity window start
+    temporal_frame_end: str = ""           # τ_end — temporal validity window end
+    provenance: str = ""                   # ρ ∈ EntityRef — causal origin
+    derivation: str = ""                   # δ ∈ Δ = {raw, derived, inferred, aggregated, transformed}
+
+
+@dataclass
+class LambdaDataApplyNode(ASTNode):
+    """
+    lambda Currency on raw_amount
+    lambda Currency on raw_amount -> TypedAmount
+
+    Applies a declared ΛD epistemic projection to a target expression
+    within a flow body. This binds the epistemic state vector ψ to
+    the data flowing through the pipeline, enabling the compiler to:
+
+      1. Track certainty propagation (Theorem 5.1: Epistemic Degradation)
+      2. Enforce ontological consistency (Invariant 1)
+      3. Verify temporal validity windows (Invariant 4)
+      4. Preserve provenance chains across transformations (Invariant 3)
+
+    The resulting typed expression carries its full epistemic context,
+    enabling the runtime to project to JSON (lossy) or maintain
+    full ΛD fidelity internally.
+    """
+    lambda_data_name: str = ""             # reference to LambdaDataDefinition
+    target: str = ""                       # expression to bind
+    output_type: str = ""                  # result type after epistemic binding
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  EXECUTION NODE
 # ═══════════════════════════════════════════════════════════════════
 

@@ -4,7 +4,7 @@ AXON Compiler — Token Definitions
 Every token the lexer can produce. Derived directly from the AXON EBNF grammar.
 
 Categories:
-  - KEYWORDS: 76 cognitive keywords (persona, context, flow, anchor, agent, shield, psyche, mandate, dataspace, …)
+  - KEYWORDS: 82 cognitive keywords (persona, context, flow, anchor, agent, shield, psyche, mandate, lambda, dataspace, …)
   - LITERALS: STRING, INTEGER, FLOAT, BOOL, DURATION, IDENTIFIER
   - SYMBOLS:  braces, parens, brackets, colon, comma, arrow, range, etc.
   - COMPARISON: <, >, <=, >=, ==, !=
@@ -131,6 +131,14 @@ class TokenType(Enum):
     TOLERANCE = auto()        # tolerance: 0.01
     MAX_STEPS = auto()        # max_steps: 50
     ON_VIOLATION = auto()     # on_violation: halt|retry|coerce
+
+    # ── LAMBDA DATA KEYWORDS (ΛD — Epistemic State Vectors §ΛD) ──
+    LAMBDA = auto()           # lambda definition / apply
+    ONTOLOGY = auto()         # ontology: Measure | Chronon | Quantity | ...
+    CERTAINTY = auto()        # certainty: 0.95 (c ∈ [0,1])
+    TEMPORAL_FRAME = auto()   # temporal_frame: ["2024-01-01", "2024-12-31"]
+    PROVENANCE = auto()       # provenance: "sensor_x" | "llm_y" (EntityRef ρ)
+    DERIVATION = auto()       # derivation: axiomatic | observed | inferred | mutated (δ ∈ Δ)
 
     # ── MODIFIERS (run statement modifiers) ───────────────────────
     AS = auto()
@@ -308,6 +316,13 @@ KEYWORDS: dict[str, TokenType] = {
     "tolerance": TokenType.TOLERANCE,
     "max_steps": TokenType.MAX_STEPS,
     "on_violation": TokenType.ON_VIOLATION,
+    # Lambda Data (ΛD — Epistemic State Vectors §ΛD)
+    "lambda": TokenType.LAMBDA,
+    "ontology": TokenType.ONTOLOGY,
+    "certainty": TokenType.CERTAINTY,
+    "temporal_frame": TokenType.TEMPORAL_FRAME,
+    "provenance": TokenType.PROVENANCE,
+    "derivation": TokenType.DERIVATION,
 }
 
 # Duration suffixes recognized by the lexer

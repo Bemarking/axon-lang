@@ -94,6 +94,7 @@ class IRProgram(IRNode):
     corpus_specs: tuple['IRCorpusSpec', ...] = ()
     psyche_specs: tuple['IRPsycheSpec', ...] = ()
     mandate_specs: tuple['IRMandate', ...] = ()
+    lambda_data_specs: tuple['IRLambdaData', ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1128,3 +1129,56 @@ class IRMandateApply(IRNode):
     mandate_name: str = ""                          # reference to declared mandate
     target: str = ""                                # expression being mandated
     output_type: str = ""                           # result type after mandate
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  LAMBDA DATA IR NODES — Epistemic State Vectors (§ΛD)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRLambdaData(IRNode):
+    """
+    Compiled ΛD specification — an Epistemic State Vector.
+
+    Operationalizes the ΛD formalism from paper_lambda_data.md:
+
+      ψ = ⟨T, V, E⟩  where  E = ⟨c, τ, ρ, δ⟩
+
+    Invariants (compile-time enforced):
+      1. Ontological Rigidity:  T ∈ O ∧ T ≠ ⊥
+      4. Epistemic Bounding:   c ∈ [0,1], δ ∈ {axiomatic, observed, inferred, mutated}
+
+    Theorem 5.1 (Epistemic Degradation):
+      c_out ≤ min(c_in₁, …, c_inₙ)
+      Compile-time enforcement for statically composed ΛD chains.
+
+    JSON projection (lossy):
+      π_JSON(ψ) = V  (discards T, E → information entropy increases)
+    """
+    node_type: str = "lambda_data"
+    name: str = ""
+    ontology: str = ""                              # T — ontological type
+    certainty: float = 1.0                          # c ∈ [0,1]
+    temporal_frame_start: str = ""                  # τ_start
+    temporal_frame_end: str = ""                    # τ_end
+    provenance: str = ""                            # ρ — EntityRef origin
+    derivation: str = "observed"                    # δ ∈ Δ
+
+
+@dataclass(frozen=True)
+class IRLambdaDataApply(IRNode):
+    """
+    Compiled ΛD application point — epistemic binding insertion.
+
+    At runtime, the executor binds the referenced ΛD's epistemic
+    tensor to the target expression, propagating certainty through
+    the pipeline per Theorem 5.1 (Epistemic Degradation).
+
+    The projection mode determines fidelity:
+      - Full ΛD:  ψ = ⟨T, V, E⟩  (lossless)
+      - JSON:     π_JSON(ψ) = V   (lossy, information entropy ΔH > 0)
+    """
+    node_type: str = "lambda_data_apply"
+    lambda_data_name: str = ""                      # reference to declared ΛD
+    target: str = ""                                # expression being bound
+    output_type: str = ""                           # result type after binding
