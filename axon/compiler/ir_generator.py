@@ -322,6 +322,7 @@ class IRGenerator:
         from axon.compiler.interface_generator import (
             PersonaSignature, AnchorSignature, FlowSignature,
             ShieldSignature, MandateSignature, PsycheSignature,
+            LambdaDataSignature,
         )
 
         if isinstance(sig, PersonaSignature) and name not in self._personas:
@@ -350,6 +351,24 @@ class IRGenerator:
             )
         elif isinstance(sig, PsycheSignature) and name not in self._psyche_specs:
             self._psyche_specs[name] = IRPsycheSpec(name=sig.name)
+        elif isinstance(sig, LambdaDataSignature) and name not in self._lambda_data_specs:
+            # Parse temporal_frame back into start/end components
+            tf = sig.temporal_frame
+            tf_start, tf_end = "", ""
+            if tf and "/" in tf:
+                parts = tf.split("/", 1)
+                tf_start, tf_end = parts[0], parts[1]
+            elif tf:
+                tf_start = tf
+            self._lambda_data_specs[name] = IRLambdaData(
+                name=sig.name,
+                ontology=sig.ontology,
+                certainty=sig.certainty,
+                derivation=sig.derivation,
+                provenance=sig.provenance,
+                temporal_frame_start=tf_start,
+                temporal_frame_end=tf_end,
+            )
 
     def _visit_persona(self, node: ast.PersonaDefinition) -> IRPersona:
         ir_persona = IRPersona(

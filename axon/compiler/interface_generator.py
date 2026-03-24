@@ -160,6 +160,24 @@ class PsycheSignature:
         return {"name": self.name, "trait_count": self.trait_count}
 
 
+@dataclass(frozen=True)
+class LambdaDataSignature:
+    """Exported signature of a Lambda Data (ΛD) — epistemic state vector."""
+    name: str
+    ontology: str = ""
+    certainty: float = 1.0
+    derivation: str = "observed"
+    provenance: str = ""
+    temporal_frame: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name, "ontology": self.ontology,
+            "certainty": self.certainty, "derivation": self.derivation,
+            "provenance": self.provenance, "temporal_frame": self.temporal_frame,
+        }
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  COGNITIVE INTERFACE — the .axi file representation
 # ═══════════════════════════════════════════════════════════════════
@@ -187,6 +205,7 @@ class CognitiveInterface:
     shields: dict[str, ShieldSignature] = field(default_factory=dict)
     mandates: dict[str, MandateSignature] = field(default_factory=dict)
     psyches: dict[str, PsycheSignature] = field(default_factory=dict)
+    lambda_data: dict[str, LambdaDataSignature] = field(default_factory=dict)
 
     # Epistemic contract (axon-lang original)
     epistemic_floor: int = EpistemicLevel.UNSPECIFIED
@@ -214,7 +233,8 @@ class CognitiveInterface:
         Returns the signature object or None if not found.
         """
         for registry in (self.personas, self.anchors, self.flows,
-                         self.shields, self.mandates, self.psyches):
+                         self.shields, self.mandates, self.psyches,
+                         self.lambda_data):
             if name in registry:
                 return registry[name]
         return None
@@ -227,7 +247,8 @@ class CognitiveInterface:
         """Return all exported symbol names."""
         names: list[str] = []
         for registry in (self.personas, self.anchors, self.flows,
-                         self.shields, self.mandates, self.psyches):
+                         self.shields, self.mandates, self.psyches,
+                         self.lambda_data):
             names.extend(registry.keys())
         return names
 
@@ -245,6 +266,7 @@ class CognitiveInterface:
             "shields": {k: v.to_dict() for k, v in self.shields.items()},
             "mandates": {k: v.to_dict() for k, v in self.mandates.items()},
             "psyches": {k: v.to_dict() for k, v in self.psyches.items()},
+            "lambda_data": {k: v.to_dict() for k, v in self.lambda_data.items()},
         }
 
     def save(self, path: Path) -> None:
@@ -299,6 +321,16 @@ class CognitiveInterface:
         for name, sig in data.get("psyches", {}).items():
             iface.psyches[name] = PsycheSignature(
                 name=sig["name"], trait_count=sig.get("trait_count", 0),
+            )
+
+        for name, sig in data.get("lambda_data", {}).items():
+            iface.lambda_data[name] = LambdaDataSignature(
+                name=sig["name"],
+                ontology=sig.get("ontology", ""),
+                certainty=sig.get("certainty", 1.0),
+                derivation=sig.get("derivation", "observed"),
+                provenance=sig.get("provenance", ""),
+                temporal_frame=sig.get("temporal_frame", ""),
             )
 
         return iface
@@ -395,6 +427,22 @@ class InterfaceGenerator:
                 trait_count=len(getattr(psyche, "traits", ())),
             )
 
+        # Extract lambda data signatures
+        for ld in getattr(ir_program, "lambda_data_specs", ()):
+            temporal = ""
+            ts = getattr(ld, "temporal_frame_start", "")
+            te = getattr(ld, "temporal_frame_end", "")
+            if ts or te:
+                temporal = f"{ts}/{te}" if ts and te else (ts or te)
+            iface.lambda_data[ld.name] = LambdaDataSignature(
+                name=ld.name,
+                ontology=getattr(ld, "ontology", ""),
+                certainty=getattr(ld, "certainty", 1.0),
+                derivation=getattr(ld, "derivation", "observed"),
+                provenance=getattr(ld, "provenance", ""),
+                temporal_frame=temporal,
+            )
+
         # Compute epistemic floor from epistemic blocks
         iface.epistemic_floor = InterfaceGenerator._compute_epistemic_floor(
             ir_program
@@ -439,6 +487,15 @@ class InterfaceGenerator:
         # Check shields (shields imply security-aware = believe+)
         if getattr(ir_program, "shields", ()):
             max_level = max(max_level, EpistemicLevel.BELIEVE)
+
+        # Check lambda data (high-certainty raw data implies know-level)
+        for ld in getattr(ir_program, "lambda_data_specs", ()):
+            certainty = getattr(ld, "certainty", 0.0)
+            derivation = getattr(ld, "derivation", "")
+            if derivation == "raw" and certainty >= 0.8:
+                max_level = max(max_level, EpistemicLevel.KNOW)
+            elif certainty >= 0.5:
+                max_level = max(max_level, EpistemicLevel.BELIEVE)
 
         return max_level
 

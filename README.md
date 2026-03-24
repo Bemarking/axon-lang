@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v0.24.0</em><br>
+  <strong>AXON</strong> <em>v0.24.1</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.24.0-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v0.24.1-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/tests-2049%20passing-brightgreen" alt="Tests">
@@ -2776,7 +2776,7 @@ without modification alongside 34 new EMS-specific tests (185 total).
 
 ### XVII. Lambda Data (ΛD) — Epistemic State Vectors as First-Class Data
 
-> AXON v0.24.0 introduces an eighteenth paradigm shift: **formal epistemic
+> AXON v0.24.1 introduces an eighteenth paradigm shift: **formal epistemic
 > data primitives with compile-time degradation enforcement** — replacing
 > JSON's semantics-blind serialization with invariant epistemic state
 > vectors grounded in information thermodynamics and Peircean semiotics.

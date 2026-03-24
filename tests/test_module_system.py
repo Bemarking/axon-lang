@@ -26,6 +26,7 @@ from axon.compiler.interface_generator import (
     EpistemicLevel,
     FlowSignature,
     InterfaceGenerator,
+    LambdaDataSignature,
     MandateSignature,
     ModuleRegistry,
     PersonaSignature,
@@ -693,3 +694,271 @@ class TestAnchorDescriptionDoesNotAffectHash:
         # Interface hash should be identical since constraint_hash is the same
         # (description is NOT part of AnchorSignature/constraint_hash)
         assert iface_a.interface_hash == iface_b.interface_hash
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  TEST 14: Lambda Data signature creation
+# ═══════════════════════════════════════════════════════════════════
+
+class TestLambdaDataSignatureCreation:
+    """Verify LambdaDataSignature stores all epistemic fields."""
+
+    def test_fields_stored_correctly(self):
+        """All ΛD signature fields are accessible."""
+        sig = LambdaDataSignature(
+            name="SensorReading",
+            ontology="measurement.temperature.celsius",
+            certainty=0.95,
+            derivation="raw",
+            provenance="Sensor_X_Unit_7",
+            temporal_frame="2026-01-01T00:00:00Z/2026-12-31T23:59:59Z",
+        )
+        assert sig.name == "SensorReading"
+        assert sig.ontology == "measurement.temperature.celsius"
+        assert sig.certainty == 0.95
+        assert sig.derivation == "raw"
+        assert sig.provenance == "Sensor_X_Unit_7"
+        assert "2026-01-01" in sig.temporal_frame
+
+    def test_to_dict_complete(self):
+        """to_dict serializes all fields."""
+        sig = LambdaDataSignature(
+            name="Price", ontology="finance.price.usd",
+            certainty=0.8, derivation="derived",
+        )
+        d = sig.to_dict()
+        assert d["name"] == "Price"
+        assert d["ontology"] == "finance.price.usd"
+        assert d["certainty"] == 0.8
+        assert d["derivation"] == "derived"
+        assert "provenance" in d
+        assert "temporal_frame" in d
+
+    def test_default_values(self):
+        """Defaults are backwards-compatible."""
+        sig = LambdaDataSignature(name="Minimal")
+        assert sig.ontology == ""
+        assert sig.certainty == 1.0
+        assert sig.derivation == "observed"
+        assert sig.provenance == ""
+        assert sig.temporal_frame == ""
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  TEST 15: Lambda Data .axi serialization roundtrip
+# ═══════════════════════════════════════════════════════════════════
+
+class TestLambdaDataSerializationRoundtrip:
+    """Verify ΛD signatures survive .axi JSON save/load cycle."""
+
+    def test_roundtrip_preserves_all_fields(self):
+        """Lambda Data signature survives CognitiveInterface save/load."""
+        import tempfile
+        from pathlib import Path
+
+        iface = CognitiveInterface(
+            module_path=("sensors", "readings"),
+            content_hash="def456",
+        )
+        iface.lambda_data["TempReading"] = LambdaDataSignature(
+            name="TempReading",
+            ontology="measurement.temperature.celsius",
+            certainty=0.92,
+            derivation="raw",
+            provenance="Station_Alpha",
+            temporal_frame="2026-03-01/2026-03-31",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "sensors_readings.axi"
+            iface.save(path)
+            loaded = CognitiveInterface.load(path)
+
+        assert "TempReading" in loaded.lambda_data
+        ld = loaded.lambda_data["TempReading"]
+        assert ld.name == "TempReading"
+        assert ld.ontology == "measurement.temperature.celsius"
+        assert ld.certainty == 0.92
+        assert ld.derivation == "raw"
+        assert ld.provenance == "Station_Alpha"
+        assert ld.temporal_frame == "2026-03-01/2026-03-31"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  TEST 16: Lambda Data import resolution from registry
+# ═══════════════════════════════════════════════════════════════════
+
+class TestLambdaDataImportResolution:
+    """Verify ΛD imports inject into _lambda_data_specs via registry."""
+
+    def test_import_lambda_data_from_registry(self):
+        """Imported ΛD definition populates _lambda_data_specs."""
+        from axon.compiler.ir_generator import IRGenerator
+
+        iface = CognitiveInterface(module_path=("data", "sensors"))
+        iface.lambda_data["SensorData"] = LambdaDataSignature(
+            name="SensorData",
+            ontology="iot.sensor.generic",
+            certainty=0.88,
+            derivation="raw",
+            provenance="EdgeNode_3",
+            temporal_frame="2026-01-01/2026-06-30",
+        )
+        registry = ModuleRegistry()
+        registry.register(("data", "sensors"), iface)
+
+        gen = IRGenerator(module_registry=registry)
+        from axon.compiler.ast_nodes import ImportNode
+        node = ImportNode(
+            line=1, column=0,
+            module_path=["data", "sensors"],
+            names=["SensorData"],
+        )
+        ir_import = gen._visit_import(node)
+
+        assert ir_import.resolved is True
+        assert "SensorData" in gen._lambda_data_specs
+        stub = gen._lambda_data_specs["SensorData"]
+        assert stub.name == "SensorData"
+        assert stub.ontology == "iot.sensor.generic"
+        assert stub.certainty == 0.88
+        assert stub.derivation == "raw"
+        assert stub.provenance == "EdgeNode_3"
+        assert stub.temporal_frame_start == "2026-01-01"
+        assert stub.temporal_frame_end == "2026-06-30"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  TEST 17: Lambda Data in interface exports
+# ═══════════════════════════════════════════════════════════════════
+
+class TestLambdaDataInterfaceExports:
+    """Verify lookup() and all_exports() include ΛD entries."""
+
+    def test_lookup_finds_lambda_data(self):
+        """CognitiveInterface.lookup() finds ΛD by name."""
+        iface = CognitiveInterface(module_path=("test",))
+        iface.lambda_data["PriceData"] = LambdaDataSignature(
+            name="PriceData", ontology="finance.price",
+        )
+        result = iface.lookup("PriceData")
+        assert result is not None
+        assert isinstance(result, LambdaDataSignature)
+        assert result.name == "PriceData"
+
+    def test_all_exports_includes_lambda_data(self):
+        """all_exports() includes ΛD names alongside other primitives."""
+        iface = CognitiveInterface(module_path=("test",))
+        iface.personas["Expert"] = PersonaSignature(name="Expert")
+        iface.lambda_data["DataSpec"] = LambdaDataSignature(name="DataSpec")
+        exports = iface.all_exports()
+        assert "Expert" in exports
+        assert "DataSpec" in exports
+
+    def test_has_export_for_lambda_data(self):
+        """has_export() returns True for registered ΛD."""
+        iface = CognitiveInterface(module_path=("test",))
+        iface.lambda_data["MyLD"] = LambdaDataSignature(name="MyLD")
+        assert iface.has_export("MyLD")
+        assert not iface.has_export("NonExistent")
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  TEST 18: Lambda Data interface hash determinism
+# ═══════════════════════════════════════════════════════════════════
+
+class TestLambdaDataInterfaceHash:
+    """Verify ΛD presence produces deterministic interface hashes."""
+
+    def test_same_lambda_data_same_hash(self):
+        """Identical ΛD signatures produce identical interface hashes."""
+        iface_a = CognitiveInterface(module_path=("a",), content_hash="x")
+        iface_a.lambda_data["LD"] = LambdaDataSignature(
+            name="LD", ontology="test", certainty=0.9,
+        )
+        iface_b = CognitiveInterface(module_path=("a",), content_hash="x")
+        iface_b.lambda_data["LD"] = LambdaDataSignature(
+            name="LD", ontology="test", certainty=0.9,
+        )
+        assert iface_a.interface_hash == iface_b.interface_hash
+
+    def test_different_lambda_data_different_hash(self):
+        """Different ΛD signatures produce different interface hashes."""
+        iface_a = CognitiveInterface(module_path=("a",), content_hash="x")
+        iface_a.lambda_data["LD"] = LambdaDataSignature(
+            name="LD", certainty=0.9,
+        )
+        iface_b = CognitiveInterface(module_path=("a",), content_hash="x")
+        iface_b.lambda_data["LD"] = LambdaDataSignature(
+            name="LD", certainty=0.5,
+        )
+        assert iface_a.interface_hash != iface_b.interface_hash
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  TEST 19: Lambda Data epistemic floor contribution
+# ═══════════════════════════════════════════════════════════════════
+
+class TestLambdaDataEpistemicFloorContribution:
+    """Verify ΛD with high certainty raises the module epistemic floor."""
+
+    def test_raw_high_certainty_raises_to_know(self):
+        """ΛD with derivation=raw and certainty>=0.8 → KNOW floor."""
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockIR:
+            anchors: tuple = ()
+            runs: tuple = ()
+            shields: tuple = ()
+            lambda_data_specs: tuple = ()
+
+        @dataclass
+        class MockLD:
+            certainty: float = 0.95
+            derivation: str = "raw"
+
+        ir = MockIR(lambda_data_specs=(MockLD(),))
+        floor = InterfaceGenerator._compute_epistemic_floor(ir)
+        assert floor == EpistemicLevel.KNOW
+
+    def test_derived_moderate_certainty_raises_to_believe(self):
+        """ΛD with certainty>=0.5 but not raw → BELIEVE floor."""
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockIR:
+            anchors: tuple = ()
+            runs: tuple = ()
+            shields: tuple = ()
+            lambda_data_specs: tuple = ()
+
+        @dataclass
+        class MockLD:
+            certainty: float = 0.75
+            derivation: str = "derived"
+
+        ir = MockIR(lambda_data_specs=(MockLD(),))
+        floor = InterfaceGenerator._compute_epistemic_floor(ir)
+        assert floor == EpistemicLevel.BELIEVE
+
+    def test_low_certainty_no_floor_change(self):
+        """ΛD with certainty<0.5 does not raise epistemic floor."""
+        from dataclasses import dataclass
+
+        @dataclass
+        class MockIR:
+            anchors: tuple = ()
+            runs: tuple = ()
+            shields: tuple = ()
+            lambda_data_specs: tuple = ()
+
+        @dataclass
+        class MockLD:
+            certainty: float = 0.3
+            derivation: str = "inferred"
+
+        ir = MockIR(lambda_data_specs=(MockLD(),))
+        floor = InterfaceGenerator._compute_epistemic_floor(ir)
+        assert floor == EpistemicLevel.UNSPECIFIED
+
