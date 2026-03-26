@@ -402,6 +402,14 @@ class TypeChecker:
                     self._register(name, "shield", decl)
                 case PixDefinition(name=name):
                     self._register(name, "pix", decl)
+                # ── v0.24.3 FIX: PsycheDefinition was missing from Phase 1 ──
+                # Without this registration, psyche names never entered the
+                # SymbolTable, causing _check_psyche to use an ad-hoc
+                # self._symbol_table dict that was never initialized.
+                # Now psyche follows the same SymbolTable pattern as all
+                # other 15+ primitives (persona, anchor, flow, agent, etc.)
+                case PsycheDefinition(name=name):
+                    self._register(name, "psyche", decl)
                 case IngestNode():
                     pass  # ingest is a command, not a declaration
                 case FocusNode() | AssociateNode() | AggregateNode() | ExploreNode():
@@ -1514,15 +1522,17 @@ class TypeChecker:
           §2  Dimension completeness: |D| ≥ 1
           §4  Safety: NonDiagnostic dependent type constraint
         """
-        # Unique name in symbol table
-        if node.name in self._symbol_table:
-            self._emit(
-                f"Duplicate psyche definition: '{node.name}' already defined "
-                f"(line {self._symbol_table[node.name]})",
-                node,
-            )
-        else:
-            self._symbol_table[node.name] = node.line
+        # ── v0.24.3 FIX ──────────────────────────────────────────
+        # REMOVED: ad-hoc self._symbol_table duplicate check.
+        # Previously, _check_psyche used self._symbol_table (a plain
+        # dict that was NEVER initialized in __init__), causing:
+        #   AttributeError: 'TypeChecker' object has no attribute '_symbol_table'
+        # This crashed compilation of any deliberate{} block containing psyche.
+        #
+        # Duplicate detection is now handled by self._symbols.declare()
+        # in _register_declarations Phase 1, consistent with all other
+        # AXON primitives (persona, anchor, mandate, lambda, etc.).
+        # ─────────────────────────────────────────────────────────────
 
         # §2 — dimension completeness: |D| ≥ 1
         if not node.dimensions:
