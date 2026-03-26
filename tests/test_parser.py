@@ -391,3 +391,60 @@ run Analyze(myDoc)
         assert isinstance(tree.declarations[2], AnchorConstraint)
         assert isinstance(tree.declarations[3], FlowDefinition)
         assert isinstance(tree.declarations[4], RunStatement)
+
+
+class TestAtImport:
+    """Parser handles @-prefixed scoped import paths (v0.24.2)."""
+
+    def test_import_with_at_prefix(self):
+        """import @axon.anchors.{NoHallucination} parses correctly."""
+        tree = _parse("import @axon.anchors.{NoHallucination}")
+        node = tree.declarations[0]
+        assert isinstance(node, ImportNode)
+        assert node.module_path == ["@axon", "anchors"]
+        assert node.names == ["NoHallucination"]
+
+    def test_import_at_without_names(self):
+        """import @axon.stdlib parses correctly."""
+        tree = _parse("import @axon.stdlib")
+        node = tree.declarations[0]
+        assert isinstance(node, ImportNode)
+        assert node.module_path == ["@axon", "stdlib"]
+        assert node.names == []
+
+    def test_import_at_with_multiple_names(self):
+        """import @axon.anchors.{A, B, C} parses all names."""
+        tree = _parse("import @axon.anchors.{A, B, C}")
+        node = tree.declarations[0]
+        assert isinstance(node, ImportNode)
+        assert node.module_path == ["@axon", "anchors"]
+        assert node.names == ["A", "B", "C"]
+
+    def test_regular_import_still_works(self):
+        """Non-@ imports remain unchanged."""
+        tree = _parse("import axon.anchors.{NoHallucination}")
+        node = tree.declarations[0]
+        assert node.module_path == ["axon", "anchors"]
+
+
+class TestMultilineAsk:
+    """Parser handles multiline strings in ask fields (v0.24.2)."""
+
+    def test_intent_multiline_ask(self):
+        """intent block accepts multiline ask string."""
+        source = 'intent Extract {\n  given: Document\n  ask: "Identify all parties\nin the contract\nand their roles"\n  output: List<Party>\n}'
+        tree = _parse(source)
+        i = tree.declarations[0]
+        assert isinstance(i, IntentNode)
+        assert "parties\nin the contract\nand their roles" in i.ask
+
+    def test_step_multiline_ask(self):
+        """step block accepts multiline ask string."""
+        source = 'flow Test(doc: Document) -> Result {\n  step Extract {\n    given: doc\n    ask: "Extract key entities\nfrom the document"\n    output: EntityMap\n  }\n}'
+        tree = _parse(source)
+        f = tree.declarations[0]
+        assert isinstance(f, FlowDefinition)
+        step = f.body[0]
+        assert isinstance(step, StepNode)
+        assert "\n" in step.ask
+

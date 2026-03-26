@@ -182,6 +182,7 @@ class TokenType(Enum):
     ARROW = auto()        # ->
     DOTDOT = auto()       # ..
     QUESTION = auto()     # ?
+    AT = auto()           # @
 
     # ── COMPARISON ───────────────────────────────────────────────
     LT = auto()           # <

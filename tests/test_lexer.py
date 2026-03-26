@@ -206,7 +206,7 @@ class TestErrors:
 
     def test_unknown_character(self):
         with pytest.raises(AxonLexerError):
-            Lexer("@").tokenize()
+            Lexer("~").tokenize()
 
 
 class TestComplexInput:
@@ -241,3 +241,58 @@ class TestComplexInput:
         tokens = Lexer(source).tokenize()
         types = [t.type for t in tokens if t.type != TokenType.EOF]
         assert types[0] == TokenType.IMPORT
+
+
+class TestMultilineStrings:
+    """Lexer handles multiline string literals (v0.24.2)."""
+
+    def test_string_multiline(self):
+        """Strings with embedded newlines are valid tokens."""
+        source = '"line1\nline2\nline3"'
+        tokens = Lexer(source).tokenize()
+        assert tokens[0].type == TokenType.STRING
+        assert tokens[0].value == "line1\nline2\nline3"
+
+    def test_string_multiline_tracks_lines(self):
+        """Line counter advances correctly after multiline string."""
+        source = '"first\nsecond"\npersona'
+        tokens = Lexer(source).tokenize()
+        # String starts at L1, spans to L2
+        assert tokens[0].type == TokenType.STRING
+        assert tokens[0].line == 1
+        # "persona" is on L3 (after the string's newline + the real newline)
+        assert tokens[1].type == TokenType.PERSONA
+        assert tokens[1].line == 3
+
+    def test_string_multiline_with_escapes(self):
+        """Multiline strings can contain escape sequences."""
+        source = '"line1\\n still line1\nreal line2"'
+        tokens = Lexer(source).tokenize()
+        assert tokens[0].type == TokenType.STRING
+        # \\n becomes literal \n, \n is real newline
+        assert "\n" in tokens[0].value
+
+
+class TestAtSymbol:
+    """Lexer handles @ as AT token (v0.24.2)."""
+
+    def test_at_produces_token(self):
+        """@ character emits AT token."""
+        tokens = Lexer("@").tokenize()
+        assert tokens[0].type == TokenType.AT
+        assert tokens[0].value == "@"
+
+    def test_at_before_identifier(self):
+        """@ followed by identifier produces two tokens."""
+        tokens = Lexer("@axon").tokenize()
+        types = [t.type for t in tokens if t.type != TokenType.EOF]
+        assert types == [TokenType.AT, TokenType.IDENTIFIER]
+
+    def test_at_in_import_context(self):
+        """@ in import context produces correct token sequence."""
+        source = "import @axon.anchors.{NoHallucination}"
+        tokens = Lexer(source).tokenize()
+        types = [t.type for t in tokens if t.type != TokenType.EOF]
+        assert types[0] == TokenType.IMPORT
+        assert types[1] == TokenType.AT
+        assert types[2] == TokenType.IDENTIFIER  # axon

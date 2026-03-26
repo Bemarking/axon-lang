@@ -162,9 +162,14 @@ class Parser:
         tok = self._consume(TokenType.IMPORT)
         node = ImportNode(line=tok.line, column=tok.column)
 
-        # module path: IDENTIFIER { . IDENTIFIER }
-        first = self._consume(TokenType.IDENTIFIER)
-        path_parts = [first.value]
+        # module path: [@] IDENTIFIER { . IDENTIFIER }
+        if self._check(TokenType.AT):
+            self._advance()  # consume @ scope operator
+            first = self._consume(TokenType.IDENTIFIER)
+            path_parts = ["@" + first.value]
+        else:
+            first = self._consume(TokenType.IDENTIFIER)
+            path_parts = [first.value]
         while self._check(TokenType.DOT):
             self._advance()  # consume DOT
             # If the next token is '{', the DOT is a separator before named imports

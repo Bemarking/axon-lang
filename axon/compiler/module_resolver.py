@@ -86,7 +86,7 @@ class ModuleNotFoundError(Exception):
 # Groups:   1 = module path (dotted), 2 = named imports (optional)
 _IMPORT_RE = re.compile(
     r"^\s*import\s+"
-    r"([\w]+(?:\.[\w]+)*)"       # group 1: dotted module path
+    r"(@?[\w]+(?:\.[\w]+)*)"      # group 1: dotted module path (optional @ scope prefix)
     r"(?:\.\{([^}]+)\})?"        # group 2: optional {Name1, Name2}
     r"\s*$",
     re.MULTILINE,
@@ -290,7 +290,15 @@ class ModuleResolver:
           1. Relative to project root
           2. Relative to stdlib path
         """
-        relative = Path(*module_path[:-1]) / f"{module_path[-1]}.axon"
+        # Strip @ scope prefix for filesystem resolution
+        # The @ is a logical scope marker (topological functor), not a
+        # filesystem character. It signals EMS-root resolution.
+        fs_path = list(module_path)
+        if fs_path and fs_path[0].startswith("@"):
+            fs_path[0] = fs_path[0][1:]  # remove @ prefix
+        fs_path = tuple(fs_path)
+
+        relative = Path(*fs_path[:-1]) / f"{fs_path[-1]}.axon"
 
         # Search project root first
         candidate = self.project_root / relative

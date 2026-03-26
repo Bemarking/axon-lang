@@ -198,6 +198,10 @@ class Lexer:
             case '"':
                 self._scan_string(line, col)
 
+            # @ scope operator (topological functor for EMS imports)
+            case "@":
+                self._emit(TokenType.AT, "@", line, col)
+
             case _:
                 # numbers
                 if ch.isdigit():
@@ -219,11 +223,8 @@ class Lexer:
         chars: list[str] = []
         while not self._at_end() and self._peek() != '"':
             if self._peek() == "\n":
-                raise AxonLexerError(
-                    "Unterminated string (newline before closing quote)",
-                    line=start_line,
-                    column=start_col,
-                )
+                chars.append(self._advance())
+                continue
             if self._peek() == "\\":
                 self._advance()  # consume backslash
                 if self._at_end():
