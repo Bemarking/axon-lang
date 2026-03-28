@@ -60,6 +60,7 @@ from .ast_nodes import (
     RecallNode,
     RefineBlock,
     RememberNode,
+    ReturnStatement,
     RunStatement,
     ShieldApplyNode,
     ShieldDefinition,
@@ -622,12 +623,14 @@ class Parser:
                 return self._parse_for_in()
             case TokenType.LET:
                 return self._parse_let()
+            case TokenType.RETURN:
+                return self._parse_return()
             case _:
                 raise AxonParseError(
                     "Unexpected token in flow body",
                     line=tok.line,
                     column=tok.column,
-                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, mandate, lambda, focus, associate, aggregate, explore, ingest",
+                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, mandate, lambda, focus, associate, aggregate, explore, ingest, let, return",
                     found=tok.value,
                 )
 
@@ -635,6 +638,13 @@ class Parser:
         tok = self._consume(TokenType.STEP)
         name = self._consume(TokenType.IDENTIFIER)
         node = StepNode(name=name.value, line=tok.line, column=tok.column)
+
+        # v0.25.4 — Gap 1: step X use Persona { }
+        # LL(1) peek: if USE appears before LBRACE, it's persona binding
+        if self._check(TokenType.USE):
+            self._advance()  # consume USE
+            node.persona_ref = self._consume_any_identifier_or_keyword().value
+
         self._consume(TokenType.LBRACE)
 
         while not self._check(TokenType.RBRACE):
@@ -677,12 +687,23 @@ class Parser:
                     self._consume(TokenType.COLON)
                     node.confidence_floor = float(self._consume(TokenType.FLOAT).value)
 
+                # v0.25.4 — Gap 2: navigate: / apply: step fields
+                case TokenType.NAVIGATE:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.navigate_ref = self._parse_dotted_identifier()
+
+                case TokenType.IDENTIFIER if inner.value == "apply":
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.apply_ref = self._consume_any_identifier_or_keyword().value
+
                 case _:
                     raise AxonParseError(
                         "Unexpected token in step body",
                         line=inner.line,
                         column=inner.column,
-                        expected="given, ask, use, probe, reason, weave, stream, output, confidence_floor",
+                        expected="given, ask, use, probe, reason, weave, stream, output, confidence_floor, navigate, apply",
                         found=inner.value,
                     )
 
@@ -1601,7 +1622,7 @@ class Parser:
         tok = self._consume(TokenType.IF)
         node = ConditionalNode(line=tok.line, column=tok.column)
 
-        # condition
+        # Parse first condition
         parts = [self._consume_any_identifier_or_keyword().value]
         while self._check(TokenType.DOT):
             self._advance()
@@ -1609,15 +1630,56 @@ class Parser:
         node.condition = ".".join(parts)
         if self._check_comparison():
             node.comparison_op = self._advance().value
-            node.comparison_value = self._advance().value
+            # v0.25.4: accept STRING as comparison value (for == "word")
+            val_tok = self._current()
+            if val_tok.type == TokenType.STRING:
+                node.comparison_value = val_tok.value
+                self._advance()
+            else:
+                node.comparison_value = self._advance().value
 
-        self._consume(TokenType.ARROW)
-        node.then_step = self._parse_flow_step()
+        # v0.25.4 — Gap 4: compound conditions (or/and)
+        while self._check(TokenType.OR):
+            node.conjunctor = "or"
+            self._advance()  # consume 'or'
+            cond_parts = [self._consume_any_identifier_or_keyword().value]
+            while self._check(TokenType.DOT):
+                self._advance()
+                cond_parts.append(self._consume_any_identifier_or_keyword().value)
+            cond_str = ".".join(cond_parts)
+            cond_op = ""
+            cond_val = ""
+            if self._check_comparison():
+                cond_op = self._advance().value
+                val_tok = self._current()
+                if val_tok.type == TokenType.STRING:
+                    cond_val = val_tok.value
+                    self._advance()
+                else:
+                    cond_val = self._advance().value
+            node.conditions.append((cond_str, cond_op, cond_val))
+
+        # Dispatch: arrow form (legacy) vs block form (v0.25.4)
+        if self._check(TokenType.ARROW):
+            self._advance()
+            node.then_step = self._parse_flow_step()
+        elif self._check(TokenType.LBRACE):
+            # v0.25.4 — Gap 4: if cond { body }
+            self._advance()
+            while not self._check(TokenType.RBRACE):
+                node.then_body.append(self._parse_flow_step())
+            self._consume(TokenType.RBRACE)
 
         if self._check(TokenType.ELSE):
             self._advance()
-            self._consume(TokenType.ARROW)
-            node.else_step = self._parse_flow_step()
+            if self._check(TokenType.ARROW):
+                self._advance()
+                node.else_step = self._parse_flow_step()
+            elif self._check(TokenType.LBRACE):
+                self._advance()
+                while not self._check(TokenType.RBRACE):
+                    node.else_body.append(self._parse_flow_step())
+                self._consume(TokenType.RBRACE)
 
         return node
 
@@ -1738,6 +1800,28 @@ class Parser:
             found=tok.value,
         )
 
+
+    def _parse_return(self) -> ReturnStatement:
+        """Parse: return expression
+
+        Early Exit Sink — the flow collapses and projects its result.
+        The value_expr is parsed as a LetStatement-compatible sub-tree
+        (string, number, boolean, dotted path, or list literal).
+        """
+        tok = self._consume(TokenType.RETURN)
+        value = self._parse_let_value_expr()
+
+        # Wrap primitive value into a LetStatement-compatible node
+        # ReturnStatement.value_expr stores the raw parsed value
+        node = ReturnStatement(line=tok.line, column=tok.column)
+        # Store as a LetStatement node to keep AST consistency
+        node.value_expr = LetStatement(
+            identifier="__return__",
+            value_expr=value,
+            line=tok.line,
+            column=tok.column,
+        )
+        return node
 
     def _parse_let_list_literal(self) -> list:
         """Parse a list literal: [ value1, value2, ... ]"""

@@ -361,6 +361,7 @@ class StepNode(ASTNode):
     A named cognitive step inside a flow.
     """
     name: str = ""
+    persona_ref: str = ""                          # step X use Persona { }
     given: str = ""  # input expression
     ask: str = ""  # instruction string
     use_tool: UseToolNode | None = None
@@ -369,6 +370,8 @@ class StepNode(ASTNode):
     weave: WeaveNode | None = None
     output_type: str = ""
     confidence_floor: float | None = None
+    navigate_ref: str = ""                         # navigate: pix.document_tree
+    apply_ref: str = ""                            # apply: AnchorName
     body: list[ASTNode] = field(default_factory=list)  # sub-steps
 
 
@@ -542,6 +545,10 @@ class ConditionalNode(ASTNode):
     comparison_value: str = ""
     then_step: ASTNode | None = None
     else_step: ASTNode | None = None
+    then_body: list[ASTNode] = field(default_factory=list)  # block { }
+    else_body: list[ASTNode] = field(default_factory=list)
+    conditions: list[tuple[str, str, str]] = field(default_factory=list)  # compound
+    conjunctor: str = ""  # "or" | "and"
 
 
 
@@ -579,6 +586,17 @@ class LetStatement(ASTNode):
     """
     identifier: str = ""                            # binding name
     value_expr: str | int | float | bool | list = field(default_factory=str)
+
+
+@dataclass
+class ReturnStatement(ASTNode):
+    """return expr — Early Exit Sink in the cognitive DAG.
+
+    The flow collapses when epistemic certainty is achieved.
+    The value_expr is a sub-tree (ASTNode), not a primitive —
+    parsed via the expression method for structural integrity.
+    """
+    value_expr: ASTNode | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════

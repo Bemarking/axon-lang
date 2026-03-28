@@ -299,6 +299,7 @@ class IRStep(IRNode):
     """
     node_type: str = "step"
     name: str = ""
+    persona_ref: str = ""
     given: str = ""
     ask: str = ""
     use_tool: IRUseTool | None = None
@@ -307,6 +308,8 @@ class IRStep(IRNode):
     weave: IRWeave | None = None
     output_type: str = ""
     confidence_floor: float | None = None
+    navigate_ref: str = ""
+    apply_ref: str = ""
     body: tuple[IRNode, ...] = ()  # sub-steps
 
 
@@ -474,6 +477,10 @@ class IRConditional(IRNode):
     comparison_value: str = ""
     then_branch: IRNode | None = None
     else_branch: IRNode | None = None
+    then_body: tuple[IRNode, ...] = ()
+    else_body: tuple[IRNode, ...] = ()
+    conditions: tuple[tuple[str, str, str], ...] = ()
+    conjunctor: str = ""
 
 
 @dataclass(frozen=True)
@@ -511,6 +518,21 @@ class IRLetBinding(IRNode):
     node_type: str = "let_binding"
     target: str = ""                                 # binding identifier
     value: str | int | float | bool | list = ""      # resolved constant
+
+
+@dataclass(frozen=True)
+class IRReturn(IRNode):
+    """Compiled return — Early Exit Sink in the cognitive DAG.
+
+    The flow collapses when epistemic certainty is achieved and
+    projects its result.  Maps from AST ReturnStatement.
+
+    Example:
+      return "workspace/tesis_final.md"
+      → value_expr="workspace/tesis_final.md"
+    """
+    node_type: str = "return"
+    value_expr: str | int | float | bool | tuple = ""
 
 
 # ═══════════════════════════════════════════════════════════════════

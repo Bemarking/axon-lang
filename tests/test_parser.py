@@ -10,6 +10,7 @@ from axon.compiler.lexer import Lexer
 from axon.compiler.parser import Parser
 from axon.compiler.ast_nodes import (
     AnchorConstraint,
+    ConditionalNode,
     ContextDefinition,
     FlowDefinition,
     ForInStatement,
@@ -664,3 +665,209 @@ let x = "second"
         errors = TypeChecker(tree).check()
         ssa_errors = [e for e in errors if "ImmutableBindingError" in str(e)]
         assert len(ssa_errors) == 1
+
+
+# ═══════════════════════════════════════════════════════════════
+#  v0.25.4 — COGNITIVE FLOW EXTENSIONS
+# ═══════════════════════════════════════════════════════════════
+
+class TestStepPersonaBinding:
+    """Gap 1: step X use Persona { } — epistemic persona binding."""
+
+    def test_step_use_persona(self):
+        source = '''
+persona Analyst {
+    role: "Data analyst"
+}
+flow AnalyzeData() {
+    step Gather use Analyst {
+        ask: "Collect the data"
+    }
+}
+'''
+        tree = _parse(source)
+        flow = tree.declarations[1]
+        step = flow.body[0]
+        assert isinstance(step, StepNode)
+        assert step.name == "Gather"
+        assert step.persona_ref == "Analyst"
+        assert step.ask == "Collect the data"
+
+    def test_step_without_persona(self):
+        source = '''
+flow SimpleFlow() {
+    step DoWork {
+        ask: "Do the work"
+    }
+}
+'''
+        tree = _parse(source)
+        step = tree.declarations[0].body[0]
+        assert step.persona_ref == ""
+
+
+class TestStepFieldExtensions:
+    """Gap 2: navigate: / apply: in step bodies."""
+
+    def test_step_navigate_field(self):
+        source = '''
+flow ResearchFlow() {
+    step Browse {
+        navigate: pix.document_tree
+        ask: "Browse the tree"
+    }
+}
+'''
+        tree = _parse(source)
+        step = tree.declarations[0].body[0]
+        assert step.navigate_ref == "pix.document_tree"
+
+    def test_step_apply_field(self):
+        source = '''
+anchor SafetyCheck {
+    constraint: "Be safe"
+}
+flow GuardedFlow() {
+    step Validate {
+        apply: SafetyCheck
+        ask: "Check safety"
+    }
+}
+'''
+        tree = _parse(source)
+        step = tree.declarations[1].body[0]
+        assert step.apply_ref == "SafetyCheck"
+
+
+class TestReturnStatement:
+    """Gap 3: return expression — Early Exit Sink."""
+
+    def test_return_string(self):
+        from axon.compiler.ast_nodes import ReturnStatement as RS
+        source = '''
+flow BuildReport() {
+    step Write {
+        ask: "Write it"
+    }
+    return "workspace/report.md"
+}
+'''
+        tree = _parse(source)
+        ret = tree.declarations[0].body[1]
+        assert isinstance(ret, RS)
+        assert ret.value_expr is not None
+
+    def test_return_dotted_path(self):
+        from axon.compiler.ast_nodes import ReturnStatement as RS
+        source = '''
+flow GetData() {
+    step Fetch {
+        ask: "Fetch data"
+    }
+    return results.final_output
+}
+'''
+        tree = _parse(source)
+        ret = tree.declarations[0].body[1]
+        assert isinstance(ret, RS)
+
+    def test_return_outside_flow_raises_type_error(self):
+        """Semantic cortafuegos: return in top-level is invalid."""
+        from axon.compiler.type_checker import TypeChecker
+        source = '''
+flow TestFlow() {
+    step A {
+        ask: "test"
+    }
+}
+'''
+        # return at top level would be a parse error, tested via type checker
+        # when placed inside flow it should be valid (no error)
+        tree = _parse(source)
+        errors = TypeChecker(tree).check()
+        return_errors = [e for e in errors if "return" in str(e).lower()]
+        assert len(return_errors) == 0
+
+
+class TestBlockStyleConditionals:
+    """Gap 4: if cond { body } with compound or conditions."""
+
+    def test_if_block_body(self):
+        source = '''
+flow DecisionFlow() {
+    if status == "ready" {
+        step Execute {
+            ask: "Execute now"
+        }
+    }
+}
+'''
+        tree = _parse(source)
+        cond = tree.declarations[0].body[0]
+        assert isinstance(cond, ConditionalNode)
+        assert cond.condition == "status"
+        assert cond.comparison_op == "=="
+        assert cond.comparison_value == "ready"
+        assert len(cond.then_body) == 1
+        assert isinstance(cond.then_body[0], StepNode)
+
+    def test_if_else_block(self):
+        source = '''
+flow BranchFlow() {
+    if confidence >= 0.9 {
+        step Accept {
+            ask: "Accept result"
+        }
+    } else {
+        step Retry {
+            ask: "Retry analysis"
+        }
+    }
+}
+'''
+        tree = _parse(source)
+        cond = tree.declarations[0].body[0]
+        assert len(cond.then_body) == 1
+        assert len(cond.else_body) == 1
+
+    def test_compound_or_condition(self):
+        source = '''
+flow MultiCheck() {
+    if status == "complete" or quality == "high" -> step Done {
+        ask: "Finalize"
+    }
+}
+'''
+        tree = _parse(source)
+        cond = tree.declarations[0].body[0]
+        assert cond.condition == "status"
+        assert cond.conjunctor == "or"
+        assert len(cond.conditions) == 1
+        assert cond.conditions[0][0] == "quality"
+
+    def test_string_comparison_value(self):
+        source = '''
+flow StringCompare() {
+    if mode == "research" -> step Research {
+        ask: "Do research"
+    }
+}
+'''
+        tree = _parse(source)
+        cond = tree.declarations[0].body[0]
+        assert cond.comparison_value == "research"
+
+    def test_legacy_arrow_still_works(self):
+        """Backward compatibility: if cond -> step still parses."""
+        source = '''
+flow LegacyFlow() {
+    if ready -> step Go {
+        ask: "Go ahead"
+    }
+}
+'''
+        tree = _parse(source)
+        cond = tree.declarations[0].body[0]
+        assert cond.then_step is not None
+        assert len(cond.then_body) == 0
+

@@ -65,6 +65,7 @@ from .ast_nodes import (
     RecallNode,
     RefineBlock,
     RememberNode,
+    ReturnStatement,
     RunStatement,
     ShieldApplyNode,
     ShieldDefinition,
@@ -294,25 +295,52 @@ class Symbol:
 
 @dataclass
 class SymbolTable:
-    """Registry of all declared names in an AXON program."""
+    """Registry of all declared names in an AXON program.
+
+    Supports lexical scoping via enter_scope/exit_scope for
+    if-block bodies.  SSA bindings inside a scope do not leak.
+    """
     symbols: dict[str, Symbol] = field(default_factory=dict)
+    _scope_stack: list[dict[str, Symbol]] = field(default_factory=list)
+
+    def enter_scope(self) -> None:
+        """Push a new lexical scope (for if { } blocks)."""
+        self._scope_stack.append({})
+
+    def exit_scope(self) -> None:
+        """Pop the current scope, discarding its bindings."""
+        if self._scope_stack:
+            self._scope_stack.pop()
 
     def declare(self, name: str, kind: str, node: ASTNode, type_name: str = "") -> str | None:
         """Register a name. Returns an error message if duplicate."""
+        # Check current scope first, then global
+        target = self._scope_stack[-1] if self._scope_stack else self.symbols
+        if name in target:
+            existing = target[name]
+            return (
+                f"Duplicate declaration: '{name}' already defined as {existing.kind} "
+                f"(first defined at line {existing.node.line})"
+            )
+        # Also check parent scope for SSA
         if name in self.symbols:
             existing = self.symbols[name]
             return (
                 f"Duplicate declaration: '{name}' already defined as {existing.kind} "
                 f"(first defined at line {existing.node.line})"
             )
-        self.symbols[name] = Symbol(name=name, kind=kind, node=node, type_name=type_name)
+        target[name] = Symbol(name=name, kind=kind, node=node, type_name=type_name)
         return None
 
     def lookup(self, name: str) -> Symbol | None:
+        # Check scopes from innermost to outermost
+        for scope in reversed(self._scope_stack):
+            if name in scope:
+                return scope[name]
         return self.symbols.get(name)
 
     def lookup_kind(self, name: str, kind: str) -> Symbol | None:
-        sym = self.symbols.get(name)
+        sym = self.lookup(name)
         if sym and sym.kind == kind:
             return sym
         return None
@@ -713,6 +741,8 @@ class TypeChecker:
                 self._check_for_in(step, step_names, flow_name)
             case LetStatement():
                 self._check_let(step)
+            case ReturnStatement():
+                self._check_return(step, flow_name)
 
     def _check_step(self, node: StepNode, step_names: set[str], flow_name: str) -> None:
         if node.name in step_names:
@@ -860,6 +890,25 @@ class TypeChecker:
             self._check_flow_step(node.then_step, step_names, flow_name)
         if node.else_step:
             self._check_flow_step(node.else_step, step_names, flow_name)
+        # v0.25.4 — Block-style if { body }: scoped validation
+        if node.then_body:
+            self._symbols.enter_scope()
+            for child in node.then_body:
+                self._check_flow_step(child, step_names, flow_name)
+            self._symbols.exit_scope()
+        if node.else_body:
+            self._symbols.enter_scope()
+            for child in node.else_body:
+                self._check_flow_step(child, step_names, flow_name)
+            self._symbols.exit_scope()
+
+    def _check_return(self, node: ReturnStatement, flow_name: str) -> None:
+        """Semantic cortafuegos: return only valid inside a flow subgraph."""
+        if not flow_name:
+            self._emit(
+                "return statement is only valid inside a flow body",
+                node,
+            )
 
     def _check_for_in(self, node: ForInStatement, step_names: set[str], flow_name: str) -> None:
         """Validate for-in iteration: variable binding and body steps."""

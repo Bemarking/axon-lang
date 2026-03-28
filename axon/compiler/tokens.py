@@ -157,6 +157,8 @@ class TokenType(Enum):
     FROM = auto()
     WHERE = auto()
     LET = auto()       # let X = V (SSA immutable binding)
+    RETURN = auto()    # return expr (Early Exit Sink)
+    OR = auto()        # or (boolean connective)
 
     # ── FIELD KEYWORDS (inside blocks) ───────────────────────────
     GIVEN = auto()
@@ -268,6 +270,8 @@ KEYWORDS: dict[str, TokenType] = {
     "for": TokenType.FOR,
     "in": TokenType.IN,
     "let": TokenType.LET,
+    "return": TokenType.RETURN,
+    "or": TokenType.OR,
     "into": TokenType.INTO,
     "against": TokenType.AGAINST,
     "about": TokenType.ABOUT,

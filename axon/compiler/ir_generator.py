@@ -54,6 +54,7 @@ from axon.compiler.ir_nodes import (
     IRForIn,
     IRForge,
     IRLetBinding,
+    IRReturn,
     IRHibernate,
     IRImport,
     IRIngest,
@@ -214,6 +215,7 @@ class IRGenerator:
         ast.ConditionalNode: "_visit_conditional",
         ast.ForInStatement: "_visit_for_in",
         ast.LetStatement: "_visit_let",
+        ast.ReturnStatement: "_visit_return",
         ast.RunStatement: "_visit_run",
         ast.EpistemicBlock: "_visit_epistemic_block",
         ast.ParallelBlock: "_visit_par_block",
@@ -664,6 +666,7 @@ class IRGenerator:
             source_line=node.line,
             source_column=node.column,
             name=node.name,
+            persona_ref=node.persona_ref,
             given=node.given,
             ask=node.ask,
             use_tool=(
@@ -684,6 +687,8 @@ class IRGenerator:
             ),
             output_type=node.output_type,
             confidence_floor=node.confidence_floor,
+            navigate_ref=node.navigate_ref,
+            apply_ref=node.apply_ref,
             body=tuple(self._visit(child) for child in node.body),
         )
 
@@ -821,6 +826,10 @@ class IRGenerator:
             comparison_value=node.comparison_value,
             then_branch=then_branch,
             else_branch=else_branch,
+            then_body=tuple(self._visit(c) for c in node.then_body),
+            else_body=tuple(self._visit(c) for c in node.else_body),
+            conditions=tuple(node.conditions),
+            conjunctor=node.conjunctor,
         )
 
     def _visit_for_in(self, node: ast.ForInStatement) -> IRForIn:
@@ -851,6 +860,22 @@ class IRGenerator:
             source_column=node.column,
             target=node.identifier,
             value=node.value_expr,
+        )
+
+    def _visit_return(self, node: ast.ReturnStatement) -> IRReturn:
+        """Compile ReturnStatement → IRReturn.
+
+        The return value is extracted from the wrapped LetStatement
+        that stores the parsed expression.  This creates an Early
+        Exit Sink in the cognitive DAG.
+        """
+        value = ""
+        if node.value_expr and isinstance(node.value_expr, ast.LetStatement):
+            value = node.value_expr.value_expr
+        return IRReturn(
+            source_line=node.line,
+            source_column=node.column,
+            value_expr=value,
         )
 
     # ═══════════════════════════════════════════════════════════════
