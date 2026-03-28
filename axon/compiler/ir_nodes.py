@@ -476,6 +476,25 @@ class IRConditional(IRNode):
     else_branch: IRNode | None = None
 
 
+@dataclass(frozen=True)
+class IRForIn(IRNode):
+    """
+    Compiled for-in iteration — systematic traversal of a structured
+    collection within a cognitive flow.
+
+    Maps from AST ForInStatement.  The variable is bound sequentially
+    to each element of the iterable path at runtime.
+
+    Example:
+      for chapter in thesis.chapters { ... }
+      → variable="chapter", iterable="thesis.chapters", body=(...)
+    """
+    node_type: str = "for_in"
+    variable: str = ""                              # loop variable name
+    iterable: str = ""                              # dotted path expression
+    body: tuple[IRNode, ...] = ()                   # compiled body steps
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  PARADIGM SHIFT IR NODES — epistemic scoping, parallelism, yielding
 # ═══════════════════════════════════════════════════════════════════

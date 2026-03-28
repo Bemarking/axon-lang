@@ -51,6 +51,7 @@ from axon.compiler.ir_nodes import (
     IRExplore,
     IRFlow,
     IRFocus,
+    IRForIn,
     IRForge,
     IRHibernate,
     IRImport,
@@ -210,6 +211,7 @@ class IRGenerator:
         ast.RememberNode: "_visit_remember",
         ast.RecallNode: "_visit_recall",
         ast.ConditionalNode: "_visit_conditional",
+        ast.ForInStatement: "_visit_for_in",
         ast.RunStatement: "_visit_run",
         ast.EpistemicBlock: "_visit_epistemic_block",
         ast.ParallelBlock: "_visit_par_block",
@@ -817,6 +819,22 @@ class IRGenerator:
             comparison_value=node.comparison_value,
             then_branch=then_branch,
             else_branch=else_branch,
+        )
+
+    def _visit_for_in(self, node: ast.ForInStatement) -> IRForIn:
+        """Compile ForInStatement → IRForIn.
+
+        Recursively compiles the loop body steps into IR nodes.
+        The iterable path (dotted string) is preserved as-is for
+        runtime resolution.
+        """
+        body = tuple(self._visit(step) for step in node.body)
+        return IRForIn(
+            source_line=node.line,
+            source_column=node.column,
+            variable=node.variable,
+            iterable=node.iterable,
+            body=body,
         )
 
     # ═══════════════════════════════════════════════════════════════

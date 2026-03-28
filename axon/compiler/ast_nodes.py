@@ -544,6 +544,26 @@ class ConditionalNode(ASTNode):
     else_step: ASTNode | None = None
 
 
+
+@dataclass
+class ForInStatement(ASTNode):
+    """
+    for chapter in thesis.chapters {
+        step AnalyzeChapter { ... }
+    }
+
+    Cognitive iteration — systematic traversal of a structured
+    collection.  Each element is bound to `variable` and the
+    body steps are executed per-element.
+
+    The iterable is a dotted path expression resolved at runtime
+    (e.g. ``thesis.chapters``, ``corpus.documents``).
+    """
+    variable: str = ""                              # loop binding name
+    iterable: str = ""                              # dotted path expression
+    body: list[ASTNode] = field(default_factory=list)
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  PARADIGM SHIFT NODES — epistemic scoping, parallelism, yielding
 # ═══════════════════════════════════════════════════════════════════

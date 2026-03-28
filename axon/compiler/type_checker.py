@@ -40,6 +40,7 @@ from .ast_nodes import (
     ExploreNode,
     FlowDefinition,
     FocusNode,
+    ForInStatement,
     ForgeBlock,
     HibernateNode,
     ImportNode,
@@ -705,6 +706,8 @@ class TypeChecker:
                 self._check_mandate_apply(step)
             case LambdaDataApplyNode():
                 self._check_lambda_data_apply(step)
+            case ForInStatement():
+                self._check_for_in(step, step_names, flow_name)
 
     def _check_step(self, node: StepNode, step_names: set[str], flow_name: str) -> None:
         if node.name in step_names:
@@ -852,6 +855,15 @@ class TypeChecker:
             self._check_flow_step(node.then_step, step_names, flow_name)
         if node.else_step:
             self._check_flow_step(node.else_step, step_names, flow_name)
+
+    def _check_for_in(self, node: ForInStatement, step_names: set[str], flow_name: str) -> None:
+        """Validate for-in iteration: variable binding and body steps."""
+        if not node.variable:
+            self._emit("for-in loop requires a variable binding", node)
+        if not node.iterable:
+            self._emit("for-in loop requires an iterable expression", node)
+        for step in node.body:
+            self._check_flow_step(step, step_names, flow_name)
 
     # ── RUN STATEMENT validation ──────────────────────────────────
 

@@ -150,6 +150,7 @@ class TokenType(Enum):
 
     # ── CONTEXTUAL KEYWORDS ──────────────────────────────────────
     FOR = auto()
+    IN = auto()        # for X in Y
     INTO = auto()
     AGAINST = auto()
     ABOUT = auto()
@@ -263,6 +264,7 @@ KEYWORDS: dict[str, TokenType] = {
     "output_to": TokenType.OUTPUT_TO,
     "effort": TokenType.EFFORT,
     "for": TokenType.FOR,
+    "in": TokenType.IN,
     "into": TokenType.INTO,
     "against": TokenType.AGAINST,
     "about": TokenType.ABOUT,

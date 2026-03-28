@@ -33,6 +33,7 @@ from .ast_nodes import (
     ExploreNode,
     FlowDefinition,
     FocusNode,
+    ForInStatement,
     ForgeBlock,
     HibernateNode,
     ImportNode,
@@ -614,6 +615,8 @@ class Parser:
                 return self._parse_mandate_apply()
             case TokenType.LAMBDA:
                 return self._parse_lambda_data_apply()
+            case TokenType.FOR:
+                return self._parse_for_in()
             case _:
                 raise AxonParseError(
                     "Unexpected token in flow body",
@@ -1613,6 +1616,35 @@ class Parser:
 
         return node
 
+    # ── FOR-IN (cognitive iteration) ──────────────────────────────
+
+    def _parse_for_in(self) -> ForInStatement:
+        """Parse: for variable in iterable.path { body }
+
+        Cognitive iteration — systematic traversal of a structured
+        collection.  The iterable is a dotted path expression resolved
+        at runtime (e.g. ``thesis.chapters``, ``corpus.documents``).
+        """
+        tok = self._consume(TokenType.FOR)
+        var_name = self._consume(TokenType.IDENTIFIER).value
+        self._consume(TokenType.IN)
+        iterable = self._parse_dotted_identifier()
+
+        node = ForInStatement(
+            variable=var_name,
+            iterable=iterable,
+            line=tok.line,
+            column=tok.column,
+        )
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            step = self._parse_flow_step()
+            if step is not None:
+                node.body.append(step)
+        self._consume(TokenType.RBRACE)
+        return node
+
     # ── RUN ───────────────────────────────────────────────────────
 
     def _parse_run(self) -> RunStatement:
@@ -1860,7 +1892,7 @@ class Parser:
         return self._parse_dotted_identifier()
 
     def _skip_value(self) -> None:
-        """Skip a single value token (for unknown fields)."""
+        """Skip a single value token or dotted expression (for unknown fields)."""
         tok = self._current()
         if tok.type == TokenType.LBRACKET:
             self._advance()
@@ -1882,6 +1914,10 @@ class Parser:
                 self._advance()
         else:
             self._advance()
+            # Consume trailing dot-notation: ident.ident.ident
+            while self._check(TokenType.DOT):
+                self._advance()  # consume DOT
+                self._advance()  # consume following identifier
 
     def _at_declaration_start(self) -> bool:
         """Check if current token starts a new top-level declaration."""

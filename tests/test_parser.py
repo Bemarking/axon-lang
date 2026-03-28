@@ -12,6 +12,7 @@ from axon.compiler.ast_nodes import (
     AnchorConstraint,
     ContextDefinition,
     FlowDefinition,
+    ForInStatement,
     ImportNode,
     IntentNode,
     MemoryDefinition,
@@ -447,4 +448,122 @@ class TestMultilineAsk:
         step = f.body[0]
         assert isinstance(step, StepNode)
         assert "\n" in step.ask
+
+
+class TestForIn:
+    """Parser handles for-in iteration loops (v0.25.2)."""
+
+    def test_for_in_basic(self):
+        """for X in Y.Z { steps } parses correctly."""
+        source = '''flow ProcessThesis(thesis: Thesis) -> Report {
+  for chapter in thesis.chapters {
+    step Analyze {
+      given: chapter
+      ask: "Analyze this chapter"
+      output: ChapterAnalysis
+    }
+  }
+}'''
+        tree = _parse(source)
+        f = tree.declarations[0]
+        assert isinstance(f, FlowDefinition)
+        assert len(f.body) == 1
+
+        for_in = f.body[0]
+        assert isinstance(for_in, ForInStatement)
+        assert for_in.variable == "chapter"
+        assert for_in.iterable == "thesis.chapters"
+        assert len(for_in.body) == 1
+        assert isinstance(for_in.body[0], StepNode)
+        assert for_in.body[0].name == "Analyze"
+
+    def test_for_in_simple_iterable(self):
+        """for X in Y { steps } — single identifier iterable."""
+        source = '''flow Loop(items: List) -> Report {
+  for item in items {
+    step Process {
+      given: item
+      ask: "Process this item"
+      output: Result
+    }
+  }
+}'''
+        tree = _parse(source)
+        for_in = tree.declarations[0].body[0]
+        assert isinstance(for_in, ForInStatement)
+        assert for_in.variable == "item"
+        assert for_in.iterable == "items"
+
+    def test_for_in_deep_dotted_iterable(self):
+        """for X in A.B.C { } — deeply nested iterable path."""
+        source = '''flow DeepLoop(collection: Dataset) -> Report {
+  for doc in collection.sections.documents {
+    step Read {
+      given: doc
+      ask: "Read this document"
+      output: Summary
+    }
+  }
+}'''
+        tree = _parse(source)
+        for_in = tree.declarations[0].body[0]
+        assert isinstance(for_in, ForInStatement)
+        assert for_in.iterable == "collection.sections.documents"
+
+    def test_for_in_with_probe_coexistence(self):
+        """probe X for [...] still works when for-in is available."""
+        source = '''flow TestFlow(doc: Document) -> Result {
+  probe doc for [parties, dates]
+  for item in doc.sections {
+    step Process {
+      given: item
+      ask: "Process section"
+      output: Result
+    }
+  }
+}'''
+        tree = _parse(source)
+        f = tree.declarations[0]
+        assert len(f.body) == 2
+        assert isinstance(f.body[0], ProbeDirective)
+        assert isinstance(f.body[1], ForInStatement)
+
+    def test_for_in_multiple_steps(self):
+        """for-in body can have multiple steps."""
+        source = '''flow MultiStep(data: Data) -> Report {
+  for entry in data.entries {
+    step Read {
+      given: entry
+      ask: "Read entry"
+      output: Summary
+    }
+    step Evaluate {
+      given: Read.output
+      ask: "Evaluate the reading"
+      output: Evaluation
+    }
+  }
+}'''
+        tree = _parse(source)
+        for_in = tree.declarations[0].body[0]
+        assert isinstance(for_in, ForInStatement)
+        assert len(for_in.body) == 2
+        assert for_in.body[0].name == "Read"
+        assert for_in.body[1].name == "Evaluate"
+
+
+class TestDotNotationValues:
+    """Parser handles dot-notation values in property fields (v0.25.2)."""
+
+    def test_pix_with_dotted_value(self):
+        """pix block with navigate_strategy: pix.document_tree is skipped cleanly."""
+        source = '''pix ResearchCorpus {
+  navigate_strategy: pix.document_tree
+  max_depth: 5
+}'''
+        tree = _parse(source)
+        from axon.compiler.ast_nodes import PixDefinition
+        pix = tree.declarations[0]
+        assert isinstance(pix, PixDefinition)
+        assert pix.name == "ResearchCorpus"
 
