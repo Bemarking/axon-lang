@@ -1240,9 +1240,13 @@ class IRGenerator:
         if isinstance(node, IRStep):
             if node.use_tool is not None:
                 tool_name = node.use_tool.tool_name
-                if tool_name and tool_name not in self._tools:
+                if tool_name and not self._is_valid_use_ref(tool_name):
                     available = (
-                        ", ".join(sorted(self._tools.keys())) or "(none)"
+                        ", ".join(sorted(
+                            set(self._tools)
+                            | set(self._psyche_specs)
+                            | set(self._ots_specs)
+                        )) or "(none)"
                     )
                     raise AxonIRError(
                         f"Step '{node.name}' uses undefined tool "
@@ -1253,6 +1257,20 @@ class IRGenerator:
             # Check sub-steps recursively
             for child in node.body:
                 self._verify_step_tools(child, run)
+
+    def _is_valid_use_ref(self, name: str) -> bool:
+        """Check if a use-ref name exists in any cognitive namespace.
+
+        The 'use X()' syntax resolves against three namespaces:
+          1. _tools        — explicit tool declarations
+          2. _psyche_specs — psyche definitions (PEM)
+          3. _ots_specs    — ontological tool synthesis definitions
+        """
+        return (
+            name in self._tools
+            or name in self._psyche_specs
+            or name in self._ots_specs
+        )
 
     # ═══════════════════════════════════════════════════════════════
     #  INTERNAL HELPERS

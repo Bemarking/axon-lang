@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v0.25.0</em><br>
+  <strong>AXON</strong> <em>v0.25.1</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.25.0-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v0.25.1-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/tests-2073%20passing-brightgreen" alt="Tests">
@@ -1307,7 +1307,7 @@ know {
 
 #### Epistemic Vision — Visual Perception for PIX
 
-> AXON v0.25.0 extends PIX from document-only navigation to **deterministic
+> AXON v0.25.1 extends PIX from document-only navigation to **deterministic
 > visual perception**, treating images as structured data isomorphic to
 > documents. No neural networks. No GPUs. No stochastic outputs. Pure
 > mathematics — and it sees better than any "vision model" at structural tasks.

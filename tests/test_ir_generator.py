@@ -1029,6 +1029,67 @@ class TestToolVerification:
         # Should not raise — no tool usage
         assert len(prog.runs) == 1
 
+    def test_use_psyche_ref_passes_verification(self):
+        """use X() where X is a psyche spec should NOT raise (v0.25.1 fix)."""
+        gen = IRGenerator()
+        psyche = ast.PsycheDefinition(
+            line=1, column=0, name="UserStress",
+            dimensions=["affect", "cognitive_load"],
+        )
+        step = _step(use_tool=ast.UseToolNode(
+            line=11, column=8, tool_name="UserStress",
+            argument="session_data",
+        ))
+        prog = gen.generate(_program(
+            _persona(), _context(), _anchor(),
+            psyche, _flow(steps=[step]), _run(),
+        ))
+        assert prog.flows[0].steps[0].use_tool.tool_name == "UserStress"
+
+    def test_use_ots_ref_passes_verification(self):
+        """use X() where X is an OTS spec should NOT raise (v0.25.1 fix)."""
+        gen = IRGenerator()
+        ots = ast.OtsDefinition(
+            line=1, column=0, name="DataExtractor",
+            teleology="Extract structured data",
+        )
+        step = _step(use_tool=ast.UseToolNode(
+            line=11, column=8, tool_name="DataExtractor",
+            argument="raw_input",
+        ))
+        prog = gen.generate(_program(
+            _persona(), _context(), _anchor(),
+            ots, _flow(steps=[step]), _run(),
+        ))
+        assert prog.flows[0].steps[0].use_tool.tool_name == "DataExtractor"
+
+    def test_undefined_use_ref_error_lists_all_namespaces(self):
+        """Error message should list refs from tools + psyche + OTS."""
+        gen = IRGenerator()
+        psyche = ast.PsycheDefinition(
+            line=1, column=0, name="UserStress",
+            dimensions=["affect"],
+        )
+        ots = ast.OtsDefinition(
+            line=2, column=0, name="DataExtractor",
+            teleology="extract",
+        )
+        step = _step(use_tool=ast.UseToolNode(
+            line=11, column=8, tool_name="GhostRef",
+            argument="x",
+        ))
+        with pytest.raises(AxonIRError, match="DataExtractor") as exc_info:
+            gen.generate(_program(
+                _persona(), _context(), _anchor(),
+                _tool("WebSearch"), psyche, ots,
+                _flow(steps=[step]), _run(),
+            ))
+        # All 3 namespaces should appear in the error
+        err_msg = str(exc_info.value)
+        assert "WebSearch" in err_msg
+        assert "UserStress" in err_msg
+        assert "DataExtractor" in err_msg
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  VISITOR DISPATCH ERRORS
