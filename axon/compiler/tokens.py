@@ -156,6 +156,7 @@ class TokenType(Enum):
     ABOUT = auto()
     FROM = auto()
     WHERE = auto()
+    LET = auto()       # let X = V (SSA immutable binding)
 
     # ── FIELD KEYWORDS (inside blocks) ───────────────────────────
     GIVEN = auto()
@@ -185,13 +186,14 @@ class TokenType(Enum):
     QUESTION = auto()     # ?
     AT = auto()           # @
 
-    # ── COMPARISON ───────────────────────────────────────────────
+    # ── COMPARISON & ASSIGNMENT ───────────────────────────────────
     LT = auto()           # <
     GT = auto()           # >
     LTE = auto()          # <=
     GTE = auto()          # >=
     EQ = auto()           # ==
     NEQ = auto()          # !=
+    ASSIGN = auto()       # = (SSA binding operator)
 
     # ── SPECIAL ──────────────────────────────────────────────────
     EOF = auto()
@@ -265,6 +267,7 @@ KEYWORDS: dict[str, TokenType] = {
     "effort": TokenType.EFFORT,
     "for": TokenType.FOR,
     "in": TokenType.IN,
+    "let": TokenType.LET,
     "into": TokenType.INTO,
     "against": TokenType.AGAINST,
     "about": TokenType.ABOUT,

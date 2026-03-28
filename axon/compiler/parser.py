@@ -41,6 +41,7 @@ from .ast_nodes import (
     IntentNode,
     LambdaDataApplyNode,
     LambdaDataDefinition,
+    LetStatement,
     MandateApplyNode,
     MandateDefinition,
     MemoryDefinition,
@@ -147,6 +148,8 @@ class Parser:
                 return self._parse_mandate()
             case TokenType.LAMBDA:
                 return self._parse_lambda_data()
+            case TokenType.LET:
+                return self._parse_let()
             case _:
                 raise AxonParseError(
                     f"Unexpected token at top level",
@@ -617,6 +620,8 @@ class Parser:
                 return self._parse_lambda_data_apply()
             case TokenType.FOR:
                 return self._parse_for_in()
+            case TokenType.LET:
+                return self._parse_let()
             case _:
                 raise AxonParseError(
                     "Unexpected token in flow body",
@@ -1645,6 +1650,111 @@ class Parser:
         self._consume(TokenType.RBRACE)
         return node
 
+    # ── LET (SSA immutable binding) ──────────────────────────────
+
+    def _parse_let(self) -> LetStatement:
+        """Parse: let identifier = expression
+
+        SSA immutable binding — a lexical axiom that cannot
+        be rebound.  The right-hand side is a compile-time
+        constant (string, number, boolean, dotted path, or
+        list literal).
+
+        Grammar (EBNF)::
+
+            LetStatement ::= "let" IDENTIFIER "=" ValueExpr
+            ValueExpr    ::= STRING | INTEGER | FLOAT | BOOL
+                           | DottedIdentifier
+                           | "[" [ ValueExpr { "," ValueExpr } ] "]"
+        """
+        tok = self._consume(TokenType.LET)
+        # Accept IDENTIFIER or any keyword token as binding name
+        # (many common words like 'strategy', 'context' are Axon keywords)
+        name_tok = self._current()
+        if name_tok.type == TokenType.IDENTIFIER:
+            name = self._consume(TokenType.IDENTIFIER).value
+        elif name_tok.value and name_tok.type != TokenType.EOF:
+            name = name_tok.value
+            self._advance()
+        else:
+            raise AxonParseError(
+                "Expected identifier after 'let'",
+                line=name_tok.line,
+                column=name_tok.column,
+                expected="identifier",
+                found=name_tok.value,
+            )
+        self._consume(TokenType.ASSIGN)
+        value = self._parse_let_value_expr()
+
+        return LetStatement(
+            identifier=name,
+            value_expr=value,
+            line=tok.line,
+            column=tok.column,
+        )
+
+    def _parse_let_value_expr(self) -> str | int | float | bool | list:
+        """Parse a compile-time constant value expression for let bindings.
+
+        Returns the parsed value as a Python literal (str, int, float,
+        bool, list) or a dotted identifier string.
+        """
+        tok = self._current()
+
+        if tok.type == TokenType.STRING:
+            self._advance()
+            return tok.value
+
+        if tok.type == TokenType.INTEGER:
+            self._advance()
+            return int(tok.value)
+
+        if tok.type == TokenType.FLOAT:
+            self._advance()
+            return float(tok.value)
+
+        if tok.type == TokenType.BOOL:
+            self._advance()
+            return tok.value.lower() == "true"
+
+        if tok.type == TokenType.IDENTIFIER:
+            return self._parse_dotted_identifier()
+
+        # Keywords (pix, for, etc.) can start dotted-path values:
+        #   let strategy = pix.document_tree
+        if (self._pos + 1 < len(self._tokens)
+                and self._tokens[self._pos + 1].type == TokenType.DOT):
+            return self._parse_dotted_identifier()
+
+        if tok.type == TokenType.LBRACKET:
+            return self._parse_let_list_literal()
+
+        raise AxonParseError(
+            "Expected value expression for let binding",
+            line=tok.line,
+            column=tok.column,
+            expected="string, number, boolean, identifier, or list literal",
+            found=tok.value,
+        )
+
+
+    def _parse_let_list_literal(self) -> list:
+        """Parse a list literal: [ value1, value2, ... ]"""
+        self._consume(TokenType.LBRACKET)
+        items: list = []
+
+        if not self._check(TokenType.RBRACKET):
+            items.append(self._parse_let_value_expr())
+            while self._check(TokenType.COMMA):
+                self._advance()  # consume comma
+                if self._check(TokenType.RBRACKET):
+                    break  # trailing comma
+                items.append(self._parse_let_value_expr())
+
+        self._consume(TokenType.RBRACKET)
+        return items
+
     # ── RUN ───────────────────────────────────────────────────────
 
     def _parse_run(self) -> RunStatement:
@@ -1831,8 +1941,12 @@ class Parser:
         return items
 
     def _parse_dotted_identifier(self) -> str:
-        """Parse: Foo or Foo.bar"""
-        parts = [self._consume(TokenType.IDENTIFIER).value]
+        """Parse: Foo, Foo.bar, or keyword.bar (e.g. pix.document_tree).
+
+        Accepts both IDENTIFIER and keyword tokens as the first segment,
+        since many common words are reserved in AXON's grammar.
+        """
+        parts = [self._consume_any_identifier_or_keyword().value]
         while self._check(TokenType.DOT):
             self._advance()
             parts.append(self._consume_any_identifier_or_keyword().value)

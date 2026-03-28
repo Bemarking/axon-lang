@@ -14,6 +14,7 @@ from axon.compiler.ast_nodes import (
     FlowDefinition,
     ForInStatement,
     ImportNode,
+    LetStatement,
     IntentNode,
     MemoryDefinition,
     PersonaDefinition,
@@ -567,3 +568,99 @@ class TestDotNotationValues:
         assert isinstance(pix, PixDefinition)
         assert pix.name == "ResearchCorpus"
 
+
+class TestLetBindings:
+    """Parser handles SSA immutable let bindings (v0.25.3)."""
+
+    def test_let_string(self):
+        """let with string literal value."""
+        source = '''flow F() -> R {
+  let draft_path = "workspace/drafts/tesis.md"
+  step S { ask: "go" output: R }
+}'''
+        tree = _parse(source)
+        let_node = tree.declarations[0].body[0]
+        assert isinstance(let_node, LetStatement)
+        assert let_node.identifier == "draft_path"
+        assert let_node.value_expr == "workspace/drafts/tesis.md"
+
+    def test_let_integer(self):
+        """let with integer literal."""
+        source = '''flow F() -> R {
+  let max_retries = 5
+  step S { ask: "go" output: R }
+}'''
+        tree = _parse(source)
+        let_node = tree.declarations[0].body[0]
+        assert isinstance(let_node, LetStatement)
+        assert let_node.identifier == "max_retries"
+        assert let_node.value_expr == 5
+
+    def test_let_boolean(self):
+        """let with boolean literal."""
+        source = '''flow F() -> R {
+  let debug = true
+  step S { ask: "go" output: R }
+}'''
+        tree = _parse(source)
+        let_node = tree.declarations[0].body[0]
+        assert isinstance(let_node, LetStatement)
+        assert let_node.identifier == "debug"
+        assert let_node.value_expr is True
+
+    def test_let_dotted_path(self):
+        """let with dotted identifier value."""
+        source = '''flow F() -> R {
+  let strategy = pix.document_tree
+  step S { ask: "go" output: R }
+}'''
+        tree = _parse(source)
+        let_node = tree.declarations[0].body[0]
+        assert isinstance(let_node, LetStatement)
+        assert let_node.identifier == "strategy"
+        assert let_node.value_expr == "pix.document_tree"
+
+    def test_let_list_literal(self):
+        """let with list literal value."""
+        source = '''flow F() -> R {
+  let tags = ["alpha", "beta", "gamma"]
+  step S { ask: "go" output: R }
+}'''
+        tree = _parse(source)
+        let_node = tree.declarations[0].body[0]
+        assert isinstance(let_node, LetStatement)
+        assert let_node.identifier == "tags"
+        assert let_node.value_expr == ["alpha", "beta", "gamma"]
+
+    def test_let_empty_list(self):
+        """let with empty list literal."""
+        source = '''flow F() -> R {
+  let items = []
+  step S { ask: "go" output: R }
+}'''
+        tree = _parse(source)
+        let_node = tree.declarations[0].body[0]
+        assert isinstance(let_node, LetStatement)
+        assert let_node.identifier == "items"
+        assert let_node.value_expr == []
+
+    def test_let_top_level(self):
+        """let at top-level scope works."""
+        source = 'let base_path = "workspace/output"'
+        tree = _parse(source)
+        let_node = tree.declarations[0]
+        assert isinstance(let_node, LetStatement)
+        assert let_node.identifier == "base_path"
+        assert let_node.value_expr == "workspace/output"
+
+    def test_let_ssa_violation_detected_by_type_checker(self):
+        """Duplicate let binding is caught by the type checker (SSA)."""
+        from axon.compiler.type_checker import TypeChecker
+        source = '''
+let x = "first"
+let x = "second"
+'''
+        tree = _parse(source)
+        errors = TypeChecker(tree).check()
+        ssa_errors = [e for e in errors if "ImmutableBindingError" in str(e)]
+        assert len(ssa_errors) == 1

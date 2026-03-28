@@ -53,6 +53,7 @@ from axon.compiler.ir_nodes import (
     IRFocus,
     IRForIn,
     IRForge,
+    IRLetBinding,
     IRHibernate,
     IRImport,
     IRIngest,
@@ -212,6 +213,7 @@ class IRGenerator:
         ast.RecallNode: "_visit_recall",
         ast.ConditionalNode: "_visit_conditional",
         ast.ForInStatement: "_visit_for_in",
+        ast.LetStatement: "_visit_let",
         ast.RunStatement: "_visit_run",
         ast.EpistemicBlock: "_visit_epistemic_block",
         ast.ParallelBlock: "_visit_par_block",
@@ -835,6 +837,20 @@ class IRGenerator:
             variable=node.variable,
             iterable=node.iterable,
             body=body,
+        )
+
+    def _visit_let(self, node: ast.LetStatement) -> IRLetBinding:
+        """Compile LetStatement → IRLetBinding.
+
+        The value expression is a compile-time constant that passes
+        through directly to the IR as a deterministic, serializable
+        value for runtime macro substitution.
+        """
+        return IRLetBinding(
+            source_line=node.line,
+            source_column=node.column,
+            target=node.identifier,
+            value=node.value_expr,
         )
 
     # ═══════════════════════════════════════════════════════════════

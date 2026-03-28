@@ -48,6 +48,7 @@ from .ast_nodes import (
     IntentNode,
     LambdaDataApplyNode,
     LambdaDataDefinition,
+    LetStatement,
     MandateApplyNode,
     MandateDefinition,
     MemoryDefinition,
@@ -503,6 +504,8 @@ class TypeChecker:
                 pass  # validated at runtime
             case NavigateNode() | DrillNode() | TrailNode() | CorroborateNode():
                 pass  # PIX/MDN flow commands validated in flow step context
+            case LetStatement():
+                self._check_let(decl)
 
     # ── PERSONA validation ────────────────────────────────────────
 
@@ -708,6 +711,8 @@ class TypeChecker:
                 self._check_lambda_data_apply(step)
             case ForInStatement():
                 self._check_for_in(step, step_names, flow_name)
+            case LetStatement():
+                self._check_let(step)
 
     def _check_step(self, node: StepNode, step_names: set[str], flow_name: str) -> None:
         if node.name in step_names:
@@ -864,6 +869,33 @@ class TypeChecker:
             self._emit("for-in loop requires an iterable expression", node)
         for step in node.body:
             self._check_flow_step(step, step_names, flow_name)
+
+    def _check_let(self, node: LetStatement) -> None:
+        """Validate let binding — SSA immutability enforced via SymbolTable.
+
+        The SymbolTable.declare() method rejects duplicate names, which
+        provides compile-time Single Static Assignment enforcement:
+        any attempt to rebind an existing name produces a fatal
+        AxonTypeError ("ImmutableBindingError").
+        """
+        if not node.identifier:
+            self._emit("let binding requires an identifier", node)
+            return
+
+        # SSA enforcement: SymbolTable.declare() returns error if name exists
+        err = self._symbols.declare(node.identifier, "let", node)
+        if err:
+            self._emit(
+                f"ImmutableBindingError: Cannot rebind '{node.identifier}'. "
+                f"SSA axiom violated — {err}",
+                node,
+            )
+
+        if node.value_expr is None:
+            self._emit(
+                f"let binding '{node.identifier}' requires a value expression",
+                node,
+            )
 
     # ── RUN STATEMENT validation ──────────────────────────────────
 

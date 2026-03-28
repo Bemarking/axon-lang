@@ -179,11 +179,7 @@ class Lexer:
                 if self._match("="):
                     self._emit(TokenType.EQ, "==", line, col)
                 else:
-                    raise AxonLexerError(
-                        "Unexpected '='. Did you mean '=='?",
-                        line=line,
-                        column=col,
-                    )
+                    self._emit(TokenType.ASSIGN, "=", line, col)
             case "!":
                 if self._match("="):
                     self._emit(TokenType.NEQ, "!=", line, col)

@@ -495,6 +495,24 @@ class IRForIn(IRNode):
     body: tuple[IRNode, ...] = ()                   # compiled body steps
 
 
+@dataclass(frozen=True)
+class IRLetBinding(IRNode):
+    """
+    Compiled SSA immutable binding — a lexical axiom injected into
+    the cognitive state for static substitution at runtime.
+
+    Maps from AST LetStatement.  The target identifier is bound
+    once and cannot be rebound (Single Static Assignment).
+
+    Example:
+      let draft_path = "workspace/drafts/tesis.md"
+      → target="draft_path", value="workspace/drafts/tesis.md"
+    """
+    node_type: str = "let_binding"
+    target: str = ""                                 # binding identifier
+    value: str | int | float | bool | list = ""      # resolved constant
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  PARADIGM SHIFT IR NODES — epistemic scoping, parallelism, yielding
 # ═══════════════════════════════════════════════════════════════════

@@ -564,6 +564,23 @@ class ForInStatement(ASTNode):
     body: list[ASTNode] = field(default_factory=list)
 
 
+@dataclass
+class LetStatement(ASTNode):
+    """
+    let draft_path = "workspace/drafts/tesis_completa.md"
+
+    SSA immutable binding — a lexical axiom that cannot be rebound.
+    Equivalent to λ-calculus ``let x = v in E``: a static,
+    referentially transparent substitution.
+
+    The value_expr is a compile-time constant: a string literal,
+    numeric literal, boolean, dotted identifier path, or a list
+    literal of such values.
+    """
+    identifier: str = ""                            # binding name
+    value_expr: str | int | float | bool | list = field(default_factory=str)
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  PARADIGM SHIFT NODES — epistemic scoping, parallelism, yielding
 # ═══════════════════════════════════════════════════════════════════
