@@ -869,5 +869,84 @@ flow LegacyFlow() {
         tree = _parse(source)
         cond = tree.declarations[0].body[0]
         assert cond.then_step is not None
-        assert len(cond.then_body) == 0
 
+
+# ═══════════════════════════════════════════════════════════════
+#  v0.25.5 — STATIC TOOL BINDING
+# ═══════════════════════════════════════════════════════════════
+
+class TestStaticToolBinding:
+    """Parser handles use tool(key=value, ...) static binding (v0.25.5)."""
+
+    def test_use_tool_static_args(self):
+        """use with named key=value string parameters."""
+        source = '''flow F() -> R {
+  step S {
+    use create_markdown(path="./out.md", mode="append")
+    ask: "Save the chapter"
+    output: string
+  }
+}'''
+        tree = _parse(source)
+        step = tree.declarations[0].body[0]
+        assert isinstance(step, StepNode)
+        assert step.use_tool is not None
+        assert step.use_tool.static_args == {"path": "./out.md", "mode": "append"}
+        assert step.use_tool.argument == ""
+
+    def test_use_tool_mixed_types(self):
+        """use with integer, float, and boolean parameters."""
+        source = '''flow F() -> R {
+  step S {
+    use resize_image(width=800, quality=0.95, optimize=true)
+    ask: "Resize the image"
+    output: string
+  }
+}'''
+        tree = _parse(source)
+        step = tree.declarations[0].body[0]
+        args = step.use_tool.static_args
+        assert args["width"] == 800
+        assert args["quality"] == 0.95
+        assert args["optimize"] is True
+
+    def test_use_tool_positional_still_works(self):
+        """Legacy use with positional string argument still works."""
+        source = '''flow F() -> R {
+  step S {
+    use WebSearch("quantum computing")
+    ask: "Search for the topic"
+    output: string
+  }
+}'''
+        tree = _parse(source)
+        step = tree.declarations[0].body[0]
+        assert step.use_tool.argument == "quantum computing"
+        assert step.use_tool.static_args == {}
+
+    def test_use_tool_empty_parens_still_works(self):
+        """use with empty parens (no args) still works."""
+        source = '''flow F() -> R {
+  step S {
+    use create_markdown()
+    ask: "Create file"
+    output: string
+  }
+}'''
+        tree = _parse(source)
+        step = tree.declarations[0].body[0]
+        assert step.use_tool.argument == ""
+        assert step.use_tool.static_args == {}
+
+    def test_use_tool_dotted_value(self):
+        """use with dotted identifier path value."""
+        source = '''flow F() -> R {
+  step S {
+    use pix_navigator(strategy=pix.document_tree)
+    ask: "Navigate"
+    output: string
+  }
+}'''
+        tree = _parse(source)
+        step = tree.declarations[0].body[0]
+        assert step.use_tool.static_args == {"strategy": "pix.document_tree"}

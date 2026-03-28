@@ -796,6 +796,9 @@ class IRGenerator:
             source_column=node.column,
             tool_name=node.tool_name,
             argument=node.argument,
+            parameters=tuple(
+                (k, str(v)) for k, v in node.static_args.items()
+            ),
         )
 
     def _visit_remember(self, node: ast.RememberNode) -> IRRemember:

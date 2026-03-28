@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v0.25.4</em><br>
+  <strong>AXON</strong> <em>v0.25.5</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.25.4-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v0.25.5-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/tests-2166%20passing-brightgreen" alt="Tests">

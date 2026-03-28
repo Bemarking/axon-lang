@@ -904,14 +904,55 @@ class Parser:
         tok = self._consume(TokenType.USE)
         tool_name = self._consume(TokenType.IDENTIFIER)
         self._consume(TokenType.LPAREN)
+
         arg = ""
-        if self._check(TokenType.STRING):
-            arg = self._consume(TokenType.STRING).value
-        elif not self._check(TokenType.RPAREN):
-            arg = self._consume_any_identifier_or_keyword().value
+        static_args: dict[str, object] = {}
+
+        if not self._check(TokenType.RPAREN):
+            # Lookahead: if next token is ASSIGN → key=value mode
+            # (key can be IDENTIFIER or contextual keyword like 'strategy')
+            next_pos = self._pos + 1
+            is_named = (
+                next_pos < len(self._tokens)
+                and self._tokens[next_pos].type == TokenType.ASSIGN
+            )
+
+            if is_named:
+                # ── key=value parsing loop ────────────────────────
+                while not self._check(TokenType.RPAREN):
+                    key = self._consume_any_identifier_or_keyword().value
+                    self._consume(TokenType.ASSIGN)
+                    # Parse value: STRING | INTEGER | FLOAT | BOOL | dotted IDENTIFIER
+                    val_tok = self._current()
+                    if val_tok.type == TokenType.STRING:
+                        static_args[key] = self._advance().value
+                    elif val_tok.type == TokenType.INTEGER:
+                        static_args[key] = int(self._advance().value)
+                    elif val_tok.type == TokenType.FLOAT:
+                        static_args[key] = float(self._advance().value)
+                    elif val_tok.type == TokenType.BOOL:
+                        static_args[key] = self._advance().value == "true"
+                    else:
+                        # Dotted path: IDENTIFIER { . IDENTIFIER }
+                        parts = [self._consume_any_identifier_or_keyword().value]
+                        while self._check(TokenType.DOT):
+                            self._advance()
+                            parts.append(self._consume_any_identifier_or_keyword().value)
+                        static_args[key] = ".".join(parts)
+                    # Optional comma separator
+                    if self._check(TokenType.COMMA):
+                        self._advance()
+            else:
+                # ── Legacy positional argument ────────────────────
+                if self._check(TokenType.STRING):
+                    arg = self._consume(TokenType.STRING).value
+                else:
+                    arg = self._consume_any_identifier_or_keyword().value
+
         self._consume(TokenType.RPAREN)
         return UseToolNode(
             tool_name=tool_name.value, argument=arg,
+            static_args=static_args,
             line=tok.line, column=tok.column,
         )
 

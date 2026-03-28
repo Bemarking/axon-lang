@@ -118,12 +118,25 @@ class ToolDispatcher:
                 "⚠️  Using STUB for '%s' — data is simulated", tool_name
             )
 
+        # ── Static Binding Fast-Path (v0.25.5) ────────────────
+        # When parameters are explicitly bound, bypass LLM inference
+        # and call tool.execute() with structured kwargs directly.
+        if ir_use_tool.parameters:
+            static_params = dict(ir_use_tool.parameters)
+            logger.debug(
+                "Static binding for '%s' with params: %s",
+                tool_name, static_params,
+            )
+            merged_kwargs = {**static_params, **(context or {})}
+        else:
+            merged_kwargs = {"query": query, **(context or {})}
+
         # Execute with timeout and timing
         timeout = tool.DEFAULT_TIMEOUT
         t0 = time.perf_counter()
         try:
             result = await asyncio.wait_for(
-                tool.execute(query, **(context or {})),
+                tool.execute(**merged_kwargs),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:

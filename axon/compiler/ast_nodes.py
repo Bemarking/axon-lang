@@ -503,11 +503,15 @@ class WeaveNode(ASTNode):
 class UseToolNode(ASTNode):
     """
     use WebSearch("quantum computing 2025")
+    use create_markdown(path="./out.md", mode="append")
 
     Invoke an external tool capability.
+    Supports both positional (argument) and named (static_args) parameters.
+    When static_args is non-empty, the runtime bypasses LLM inference (v0.25.5).
     """
     tool_name: str = ""
     argument: str = ""
+    static_args: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass

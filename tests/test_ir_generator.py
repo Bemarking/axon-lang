@@ -596,6 +596,31 @@ class TestVisitStep:
         s = prog.flows[0].steps[0]
         assert s.confidence_floor == 0.92
 
+    def test_step_with_static_tool_binding(self):
+        """v0.25.5: static_args lowered to IRUseTool.parameters tuple."""
+        gen = IRGenerator()
+        step = _step(use_tool=ast.UseToolNode(
+            line=11, column=8, tool_name="create_md",
+            static_args={"path": "out.md", "mode": "append"},
+        ))
+        prog = gen.generate(_program(_flow(steps=[step])))
+        s = prog.flows[0].steps[0]
+        assert s.use_tool is not None
+        assert s.use_tool.parameters == (("path", "out.md"), ("mode", "append"))
+        assert s.use_tool.argument == ""
+
+    def test_step_with_tool_backward_compat(self):
+        """v0.25.5: positional argument still works, parameters stays empty."""
+        gen = IRGenerator()
+        step = _step(use_tool=ast.UseToolNode(
+            line=11, column=8, tool_name="WebSearch",
+            argument="quantum computing",
+        ))
+        prog = gen.generate(_program(_flow(steps=[step])))
+        s = prog.flows[0].steps[0]
+        assert s.use_tool.parameters == ()
+        assert s.use_tool.argument == "quantum computing"
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  COGNITIVE NODE VISITORS
