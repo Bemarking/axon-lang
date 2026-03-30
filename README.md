@@ -3530,7 +3530,7 @@ crafting a personalized response.
                               Typed Output (validated, traced result)
 ```
 
-### 42 Cognitive Primitives
+### 44 Cognitive Primitives
 
 | Primitive  | Keyword      | What it represents                                   |
 | ---------- | ------------ | ---------------------------------------------------- |
@@ -3577,6 +3577,8 @@ crafting a personalized response.
 | Taint      | `taint`      | Epistemic trust label for untrusted external data sources        |
 | Mandate    | `mandate`    | Cybernetic Refinement Calculus — PID control for deterministic LLM output |
 | Lambda     | `lambda`     | Epistemic State Vectors — compile-time degradation enforcement for data  |
+| Compute    | `compute`    | Deterministic muscle — native Fast-Path execution bypassing the LLM      |
+| Logic      | `logic`      | Compute body scope — arithmetic DSL for pure deterministic transforms    |
 
 ### Epistemic Type System (Partial Order Lattice)
 
@@ -3777,7 +3779,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 ### Current Status
 
 ```
-2049 passed, 0 failures ✅
+2204 passed, 0 failures ✅
 ```
 
 | Phase | Tests | What's covered                              |
@@ -3799,7 +3801,8 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 | 19    | 22    | MEK (LatentState, Transducer, Holographic)  |
 | 20    | 26    | EMCP (mcp ingestion + taint + shield integration) |
 | 21    | 38    | Lambda Data (ΛD — lexer + parser + type checker + IR + integration) |
-| misc  | 541   | Stdlib, integration, edge cases             |
+| 22    | 31    | Compute (lexer + parser + IR + dispatcher + backend + integration) |
+| misc  | 895   | Stdlib, integration, edge cases             |
 
 ---
 
