@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-lang"
-version = "0.25.5"
+version = "0.26.5"
 description = "A domain-specific language for defining AI agent behaviors with deterministic control"
 readme = "README.md"
 license = "MIT"

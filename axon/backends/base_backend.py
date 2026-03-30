@@ -30,6 +30,7 @@ from axon.compiler.ir_nodes import (
     IRAgent,
     IRAggregate,
     IRAssociate,
+    IRComputeApply,
     IRConsensus,
     IRContext,
     IRCorroborate,
@@ -70,6 +71,9 @@ _PSYCHE_IR_TYPES = (IRPsycheSpec,)
 
 # IR types that represent OTS operations (ontological tool synthesis)
 _OTS_IR_TYPES = (IROtsApply,)
+
+# IR types that represent Compute operations (deterministic muscle)
+_COMPUTE_IR_TYPES = (IRComputeApply,)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -282,6 +286,9 @@ class BaseBackend(ABC):
                 elif isinstance(step, _OTS_IR_TYPES):
                     ots_step = self._compile_ots_step(step, ir)
                     compiled_steps.append(ots_step)
+                elif isinstance(step, _COMPUTE_IR_TYPES):
+                    compute_step = self._compile_compute_step(step, ir)
+                    compiled_steps.append(compute_step)
                 else:
                     compiled = self.compile_step(step, ctx)
                     compiled_steps.append(compiled)
@@ -696,6 +703,45 @@ class BaseBackend(ABC):
                     "target": step.target,
                     "output_type": step.output_type,
                     "ots_definition": ots_def,
+                },
+            },
+        )
+
+    @staticmethod
+    def _compile_compute_step(
+        step: IRComputeApply, ir: IRProgram,
+    ) -> CompiledStep:
+        """Compile a compute application into a metadata-only step.
+
+        Compute steps bypass the model entirely — the runtime's
+        NativeComputeDispatcher executes them as deterministic
+        Fast-Path operations (System 1).
+        """
+        compute_def: dict[str, Any] = {}
+        for spec in ir.compute_specs:
+            if spec.name == step.compute_name:
+                compute_def = {
+                    "name": spec.name,
+                    "inputs": [
+                        {"name": p.name, "type": p.type_name}
+                        for p in spec.inputs
+                    ],
+                    "output_type": spec.output_type,
+                    "logic_source": spec.logic_source,
+                    "shield_ref": spec.shield_ref,
+                    "verified": spec.verified,
+                }
+                break
+
+        return CompiledStep(
+            step_name=f"compute:{step.compute_name}",
+            user_prompt="",
+            metadata={
+                "compute": {
+                    "compute_name": step.compute_name,
+                    "arguments": list(step.arguments),
+                    "output_name": step.output_name,
+                    "compute_definition": compute_def,
                 },
             },
         )

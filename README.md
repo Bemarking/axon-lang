@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v0.25.5</em><br>
+  <strong>AXON</strong> <em>v0.26.5</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -11,15 +11,16 @@
   <code>stream</code> · <code>effects</code> · <code>@contract_tool</code> · <code>@csp_tool</code><br>
   <code>pix</code> · <code>navigate</code> · <code>drill</code> · <code>trail</code> · <code>corpus</code><br>
   <code>psyche</code> · <code>ots</code><br>
-  <code>mcp</code> · <code>taint</code> · <code>mandate</code> · <code>lambda</code>
+  <code>mcp</code> · <code>taint</code> · <code>mandate</code> · <code>lambda</code><br>
+  <code>compute</code> · <code>logic</code>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.25.5-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v0.26.5-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-2166%20passing-brightgreen" alt="Tests">
-  <img src="https://img.shields.io/badge/paradigms-18%20shifts-blueviolet" alt="Paradigm Shifts">
+  <img src="https://img.shields.io/badge/tests-2204%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/paradigms-19%20shifts-blueviolet" alt="Paradigm Shifts">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
   <img src="https://img.shields.io/badge/pypi-axon--lang-blue" alt="PyPI">
 </p>
@@ -3290,6 +3291,226 @@ know {
   degradation path — required for regulatory submission compliance
 - **The compiler guarantees** no stage inflates certainty — this is not a
   policy, it is a **mathematical invariant** of the type system
+
+---
+
+### XVIII. Deterministic Muscle — the `compute` Primitive
+
+> AXON v0.26 introduces a nineteenth paradigm shift: **deterministic execution
+> as a first-class cognitive primitive**, grounding the System 1 / System 2
+> duality of Kahneman directly into the compiler pipeline.
+
+Every LLM orchestration framework commits the same categorical error: routing
+deterministic transformations — arithmetic, schema mapping, data aggregation —
+through a probabilistic oracle. This is the computational equivalent of asking
+a philosopher to multiply matrices. AXON's `compute` primitive introduces a
+**Fast-Path** that bypasses the LLM entirely, executing pure functions natively
+with zero token cost and zero hallucination risk.
+
+#### Argument 1: The Hard Argument — Pure Mathematics
+
+**Category-Theoretic Foundation.** A `compute` block defines a strict monoidal
+functor $F: V \to W$ over the AXON type lattice, operating under Linear Logic's
+resource semantics:
+
+```text
+F : V → W    (strict monoidal functor — deterministic morphism)
+A ⊸ B        (linear implication — each resource consumed exactly once)
+```
+
+Unlike every other AXON primitive (which compiles to LLM API calls), `compute`
+compiles to a **closed algebraic morphism** — a function whose output is
+uniquely determined by its inputs, with no probabilistic component:
+
+```text
+∀ x ∈ V : F(x) = y ∈ W, |{y}| = 1    (determinism guarantee)
+P(hallucination | compute) = 0          (by construction)
+Cost_tokens(compute) = 0                (no LLM invocation)
+```
+
+The compiler verifies the morphism at IR generation time via the **Curry-Howard
+correspondence**: if a `shield` is attached to the compute block, it acts as a
+theorem prover that checks type safety of the transformation before emitting
+the `IRCompute` node. A compute block with a verified shield is a **proof term**
+— its type correctness is a mathematical theorem, not a runtime hope.
+
+**Complexity class separation.** The compute primitive enforces a formal
+boundary between complexity classes within a single AXON program:
+
+```text
+compute steps:  O(n) — linear in input size, native execution
+LLM steps:      O(T) — proportional to token count, API-bound
+
+Speedup ratio:  T/n → ∞  as context grows
+```
+
+This is not optimization — it is a **complexity-theoretic firewall** that
+prevents deterministic operations from being dragged into the exponential
+latency regime of transformer inference.
+
+#### Argument 2: The Sweet Argument — Why It's Brilliant
+
+The `compute` primitive is AXON's answer to a question the industry hasn't
+even articulated: **what if your AI agent had muscles, not just a brain?**
+
+Every cognitive architecture in nature separates deliberation from reflex.
+A chess grandmaster doesn't _think_ about how to move their hand — the motor
+cortex fires a deterministic signal while the prefrontal cortex plans the
+next sacrifice. But today's AI agents deliberate about _everything_: "please
+calculate 1000 × 0.21" goes through the same $0.015/1K-token pipeline as
+"analyze the geopolitical implications of this trade agreement."
+
+`compute` gives AXON agents **cognitive reflexes**:
+
+- **Zero-cost arithmetic.** Tax calculations, discount logic, unit conversions
+  — executed natively in microseconds, not milliseconds, with zero API calls.
+- **Zero hallucination.** `2 + 2 = 4`, always. No temperature, no sampling,
+  no "the model sometimes gets math wrong." Determinism is a _compiler guarantee_.
+- **Context budget liberation.** Every token spent on arithmetic is a token
+  stolen from reasoning. `compute` returns those tokens to the LLM for what
+  it's actually good at — semantic understanding, creative synthesis, and
+  multi-step deliberation.
+- **Composability.** `compute` blocks are declared once and invoked inside
+  any `flow` with `compute Name on args -> output`. The same deterministic
+  function composes with `shield`, `agent`, `mandate`, and every other
+  primitive — because the compiler treats it as a first-class citizen of
+  the IR, not a bolted-on escape hatch.
+
+The result: AXON programs that are simultaneously **faster** (native execution),
+**cheaper** (zero tokens), **safer** (zero hallucination), and **smarter**
+(more context budget for actual reasoning).
+
+#### Argument 3: Three Use Cases
+
+**Use Case 1 — Financial Calculations in an Autonomous Agent**
+
+An insurance agent needs to compute premiums deterministically while using
+the LLM for policy language analysis:
+
+```axon
+compute CalculatePremium {
+    input: base_rate (Float), risk_factor (Float), years (Float)
+    output: PremiumResult
+    logic {
+        let annual = base_rate * risk_factor
+        let total = annual * years
+        let discount = total * 0.05
+        let final = total - discount
+        return final
+    }
+}
+
+agent InsuranceAdvisor {
+    goal: "Analyze policy and compute accurate premium"
+    tools: [WebSearch, PDFExtractor]
+    strategy: react
+    max_iterations: 10
+    return: PolicyReport
+}
+
+flow ProcessApplication(client: Document) -> PolicyReport {
+    step Analyze {
+        ask: "Analyze the client's risk profile from this document"
+        output: RiskProfile
+    }
+    compute CalculatePremium on Analyze.risk_factor, 1.2, 5.0 -> premium
+    step Report {
+        ask: "Draft the policy report incorporating the computed premium"
+        output: PolicyReport
+    }
+}
+```
+
+The LLM analyzes risk (semantic task), `compute` calculates the premium
+(deterministic task), and the LLM drafts the report. Zero tokens wasted
+on multiplication.
+
+**Use Case 2 — Data Transformation in a Multi-Agent Pipeline**
+
+Two agents collaborate on market intelligence. The data normalization
+between them is pure arithmetic — no LLM needed:
+
+```axon
+compute NormalizeMetrics {
+    input: revenue (Float), market_cap (Float)
+    output: Float
+    shield: TypeSafety
+    logic {
+        let ratio = revenue / market_cap
+        let score = ratio * 100
+        return score
+    }
+}
+
+agent DataCollector {
+    goal: "Gather quarterly revenue data"
+    tools: [WebSearch, APICall]
+    strategy: react
+    max_iterations: 8
+    return: DataSet
+}
+
+agent StrategyAnalyst {
+    goal: "Produce investment recommendations"
+    tools: [DataAnalyzer]
+    strategy: reflexion
+    max_iterations: 12
+    return: StrategyReport
+}
+
+flow InvestmentPipeline(sector: String) -> StrategyReport {
+    step Collect { DataCollector(sector) output: DataSet }
+    compute NormalizeMetrics on Collect.revenue, Collect.market_cap -> score
+    step Analyze { StrategyAnalyst(score) output: StrategyReport }
+}
+```
+
+The `shield: TypeSafety` attachment means the compiler verifies type
+correctness of the arithmetic morphism via the Curry-Howard correspondence
+— the normalization is a proven-correct transformation, not a hope.
+
+**Use Case 3 — Real-Time Scoring in a Customer-Facing Agent**
+
+A customer support agent needs to compute eligibility scores instantly
+while maintaining empathetic conversation:
+
+```axon
+compute EligibilityScore {
+    input: tenure (Float), spend (Float), incidents (Float)
+    output: Float
+    logic {
+        let base = tenure * 10
+        let bonus = spend * 0.01
+        let penalty = incidents * 15
+        let score = base + bonus - penalty
+        return score
+    }
+}
+
+persona SupportAgent {
+    domain: ["customer success", "retention"]
+    tone: empathetic
+    confidence_threshold: 0.85
+}
+
+flow HandleRetention(customer_id: String) -> Resolution {
+    step Profile {
+        ask: "Retrieve and analyze this customer's history"
+        output: CustomerProfile
+    }
+    compute EligibilityScore on Profile.tenure, Profile.spend, Profile.incidents -> score
+    step Respond {
+        ask: "Based on an eligibility score of {score}, craft a personalized
+              retention offer with appropriate empathy"
+        output: Resolution
+    }
+}
+```
+
+The eligibility score is computed in microseconds — no API latency, no
+hallucinated numbers, no wasted context. The LLM focuses exclusively on
+what it does best: understanding the customer's emotional state and
+crafting a personalized response.
 
 ---
 

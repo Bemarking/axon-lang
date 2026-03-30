@@ -95,6 +95,7 @@ class IRProgram(IRNode):
     psyche_specs: tuple['IRPsycheSpec', ...] = ()
     mandate_specs: tuple['IRMandate', ...] = ()
     lambda_data_specs: tuple['IRLambdaData', ...] = ()
+    compute_specs: tuple['IRCompute', ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1188,6 +1189,85 @@ class IRMandateApply(IRNode):
     mandate_name: str = ""                          # reference to declared mandate
     target: str = ""                                # expression being mandated
     output_type: str = ""                           # result type after mandate
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  COMPUTE IR NODES — Deterministic Muscle Primitive (§CM)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRCompute(IRNode):
+    """
+    Compiled compute definition — deterministic transformation functor.
+
+    Operationalizes the Muscle Primitive from paper_compute.md:
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  Category Theory — Strict Monoidal Functor:                  ║
+    ║    F: V → W  where F(f ∘ g) = F(f) ∘ F(g)                  ║
+    ║    Deterministic, identity-preserving, composable.           ║
+    ║                                                              ║
+    ║  Linear Logic (Girard, 1987):                                ║
+    ║    A ⊸ B — resources consumed exactly once.                  ║
+    ║    Typed via linear implication at compile time.              ║
+    ║                                                              ║
+    ║  Curry-Howard Isomorphism:                                   ║
+    ║    Shield acts as Theorem Prover — verified compute          ║
+    ║    produces Proof-Carrying Code (0% hallucination).          ║
+    ║                                                              ║
+    ║  Execution — Fast-Path (bypasses LLM entirely):              ║
+    ║    1. DSL logic transpiled to Rust source                    ║
+    ║    2. Compiled to native shared library via rustc             ║
+    ║    3. Loaded via CFFI (zero-copy on MEK buffers)             ║
+    ║    4. Executed in nanoseconds on CPU registers               ║
+    ║    5. Result returned as Latent Pointer to flow              ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+    The logic_source field contains the raw DSL source code from
+    the logic { } block, preserved for transpilation to Rust at
+    runtime by the NativeComputeDispatcher.
+
+    The logic_ir field contains the compiled sub-AST of the logic
+    body (let bindings, conditionals, return statements) lowered
+    to IR nodes for static analysis and shield verification.
+    """
+    node_type: str = "compute"
+    name: str = ""
+    inputs: tuple['IRParameter', ...] = ()
+    output_type: str = ""
+    output_type_generic: str = ""
+    output_type_optional: bool = False
+    logic_source: str = ""                          # raw DSL for Rust transpilation
+    logic_ir: tuple[IRNode, ...] = ()               # compiled logic body sub-AST
+    shield_ref: str = ""                            # optional shield theorem prover
+    verified: bool = False                          # True if shield proved the theorem
+
+
+@dataclass(frozen=True)
+class IRComputeApply(IRNode):
+    """
+    Compiled compute application point — Fast-Path insertion.
+
+    At runtime, the executor identifies this node and routes
+    execution to the NativeComputeDispatcher instead of the
+    ModelClient. The LLM is NEVER invoked for compute steps.
+
+    The dispatcher:
+      1. Resolves the referenced IRCompute definition
+      2. Transpiles logic_source to Rust
+      3. Compiles via rustc to shared library
+      4. Loads via CFFI and executes (zero-copy)
+      5. Returns result as context variable
+
+    Formal semantics:
+      compute_apply : (ComputeDef, Args) →[pure] Result
+      Effect row: <pure, epistemic:know>
+      (deterministic, no I/O, no uncertainty)
+    """
+    node_type: str = "compute_apply"
+    compute_name: str = ""                          # reference to declared compute
+    arguments: tuple[str, ...] = ()                 # input expressions
+    output_name: str = ""                           # result binding name
 
 
 # ═══════════════════════════════════════════════════════════════════

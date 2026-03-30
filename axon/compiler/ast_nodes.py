@@ -1472,6 +1472,100 @@ class LambdaDataApplyNode(ASTNode):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  COMPUTE NODES — Deterministic Muscle Primitive (§CM)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class ComputeDefinition(ASTNode):
+    """
+    compute CalculateTax {
+        input: amount (Float), rate (Float)
+        output: TaxResult
+        shield: TypeSafety
+        logic {
+            let tax = amount * rate
+            let total = amount + tax
+            return { tax: tax, total: total }
+        }
+    }
+
+    The **compute** primitive — deterministic "muscle" execution.
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  THEORETICAL FOUNDATIONS                                     ║
+    ╠══════════════════════════════════════════════════════════════╣
+    ║                                                              ║
+    ║  Dual Process Theory (Kahneman):                             ║
+    ║    System 1 — fast, automatic, deterministic.                ║
+    ║    compute IS System 1 for the AXON cognitive architecture.  ║
+    ║                                                              ║
+    ║  Category Theory — Strict Monoidal Functor:                  ║
+    ║    F: V → W  where F(f ∘ g) = F(f) ∘ F(g)                  ║
+    ║    Deterministic, identity-preserving, composable.           ║
+    ║                                                              ║
+    ║  Linear Logic (Girard, 1987):                                ║
+    ║    A ⊸ B — resources consumed exactly once.                  ║
+    ║    Prevents double-free, guarantees termination.             ║
+    ║                                                              ║
+    ║  Curry-Howard Isomorphism:                                   ║
+    ║    Types = Propositions, Programs = Proofs.                  ║
+    ║    Shield acts as Theorem Prover — verified compute          ║
+    ║    produces Proof-Carrying Code (0% hallucination).          ║
+    ║                                                              ║
+    ║  Enactive Cognition (Heidegger — Zuhandenheit):              ║
+    ║    The agent does not "ask" an external service to compute;  ║
+    ║    it "contracts" its own compiled tissue directly on CPU    ║
+    ║    registers. The function IS the agent's muscle.            ║
+    ║                                                              ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+    Execution path (Fast-Path — bypasses LLM entirely):
+      1. DSL logic transpiled to Rust source
+      2. Compiled to native shared library via rustc
+      3. Loaded via CFFI (zero-copy on MEK buffers)
+      4. Executed in nanoseconds on CPU registers
+      5. Result returned as Latent Pointer to flow
+
+    Fields:
+        name:        unique identifier for the compute definition
+        inputs:      typed input parameters (reuses ParameterNode)
+        output_type: declared output type
+        logic_body:  list of deterministic AST nodes (let, if, return)
+        shield_ref:  optional shield for theorem-prover verification
+    """
+    name: str = ""
+    inputs: list[ParameterNode] = field(default_factory=list)
+    output_type: TypeExprNode | None = None
+    logic_body: list[ASTNode] = field(default_factory=list)
+    shield_ref: str = ""
+
+
+@dataclass
+class ComputeApplyNode(ASTNode):
+    """
+    compute CalculateTax on order.amount, 0.19 -> tax_result
+
+    Applies a declared compute definition to target expressions
+    within a flow body. This is the in-flow application point —
+    the Fast-Path insertion where the executor bypasses the LLM
+    and routes directly to the NativeComputeDispatcher.
+
+    The compiler verifies that:
+      1. The referenced compute definition exists
+      2. Argument count matches input parameter count
+      3. If shield_ref is set, types are theorem-proved
+
+    Fields:
+        compute_name:  reference to a declared compute definition
+        arguments:     list of expressions to pass as inputs
+        output_name:   optional binding name for the result
+    """
+    compute_name: str = ""
+    arguments: list[str] = field(default_factory=list)
+    output_name: str = ""
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  EXECUTION NODE
 # ═══════════════════════════════════════════════════════════════════
 

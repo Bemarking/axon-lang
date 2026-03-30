@@ -617,6 +617,14 @@ class Executor:
                 step=step, unit=unit, ctx=ctx, tracer=tracer,
             )
 
+        # ── Compute step shortcut ──────────────────────────────────────
+        # If the step carries a compute config, route through
+        # _execute_compute_step — deterministic Fast-Path (no LLM).
+        if step.metadata.get("compute"):
+            return await self._execute_compute_step(
+                step=step, ctx=ctx, tracer=tracer,
+            )
+
         # Extract refine config from step metadata (if present)
         refine_config = self._extract_refine_config(step)
 
@@ -2917,6 +2925,75 @@ class Executor:
         return StepResult(
             step_name=step_name,
             response=last_response,
+            duration_ms=step_duration,
+        )
+
+    async def _execute_compute_step(
+        self,
+        *,
+        step: CompiledStep,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a compute step via the deterministic Fast-Path.
+
+        This is System 1 (Kahneman) for the AXON runtime:
+        NO model call is made. The NativeComputeDispatcher
+        evaluates the logic DSL directly in Python.
+        """
+        from axon.runtime.compute_dispatcher import NativeComputeDispatcher
+
+        step_start = time.perf_counter()
+        compute_meta = step.metadata.get("compute", {})
+        compute_name = compute_meta.get("compute_name", "")
+        step_name = f"compute:{compute_name}"
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={"fast_path": True, "compute_name": compute_name},
+        )
+
+        # Build context from prior step outputs
+        context_dict: dict[str, Any] = {}
+        context_dict.update(ctx.get_variables())
+        for step_name_key in ctx.completed_steps:
+            context_dict[step_name_key] = ctx.get_step_result(step_name_key)
+
+        # Execute deterministically — no LLM involved
+        dispatcher = NativeComputeDispatcher()
+        result = await dispatcher.dispatch(compute_meta, context_dict)
+
+        output_name = result.get("output_name", "")
+        computed_value = result.get("result")
+
+        # Store result in context for downstream steps
+        if output_name:
+            ctx.set_variable(output_name, computed_value)
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "fast_path": True,
+                "success": True,
+                "output_name": output_name,
+            },
+            duration_ms=step_duration,
+        )
+
+        # Build a ModelResponse-compatible result
+        response = ModelResponse(
+            content=str(computed_value) if computed_value is not None else "",
+            model="native-compute",
+            usage={"input_tokens": 0, "output_tokens": 0},
+        )
+
+        return StepResult(
+            step_name=step_name,
+            response=response,
             duration_ms=step_duration,
         )
 

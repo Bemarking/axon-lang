@@ -149,7 +149,7 @@ class Lexer:
                 else:
                     self._emit(TokenType.DOT, ".", line, col)
 
-            # arrow (->) or minus (currently just arrow)
+            # arrow (->) or minus
             case "-":
                 if self._match(">"):
                     self._emit(TokenType.ARROW, "->", line, col)
@@ -158,11 +158,15 @@ class Lexer:
                     if not self._at_end() and self._peek().isdigit():
                         self._scan_number(line, col, negative=True)
                     else:
-                        raise AxonLexerError(
-                            f"Unexpected character '-'",
-                            line=line,
-                            column=col,
-                        )
+                        self._emit(TokenType.MINUS, "-", line, col)
+
+            # arithmetic operators (Compute primitive §CM)
+            case "+":
+                self._emit(TokenType.PLUS, "+", line, col)
+            case "*":
+                self._emit(TokenType.STAR, "*", line, col)
+            case "/":
+                self._emit(TokenType.SLASH, "/", line, col)
 
             # comparison operators
             case "<":

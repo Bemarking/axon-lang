@@ -39,6 +39,8 @@ from .ast_nodes import (
     ImportNode,
     IngestNode,
     IntentNode,
+    ComputeApplyNode,
+    ComputeDefinition,
     LambdaDataApplyNode,
     LambdaDataDefinition,
     LetStatement,
@@ -147,6 +149,8 @@ class Parser:
                 return self._parse_ots_definition()
             case TokenType.MANDATE:
                 return self._parse_mandate()
+            case TokenType.COMPUTE:
+                return self._parse_compute()
             case TokenType.LAMBDA:
                 return self._parse_lambda_data()
             case TokenType.LET:
@@ -617,6 +621,8 @@ class Parser:
                 return self._parse_ots_apply()
             case TokenType.MANDATE:
                 return self._parse_mandate_apply()
+            case TokenType.COMPUTE:
+                return self._parse_compute_apply()
             case TokenType.LAMBDA:
                 return self._parse_lambda_data_apply()
             case TokenType.FOR:
@@ -1797,12 +1803,37 @@ class Parser:
             column=tok.column,
         )
 
+    _ARITHMETIC_OPS = frozenset({
+        TokenType.PLUS, TokenType.MINUS, TokenType.STAR, TokenType.SLASH,
+    })
+
     def _parse_let_value_expr(self) -> str | int | float | bool | list:
         """Parse a compile-time constant value expression for let bindings.
 
         Returns the parsed value as a Python literal (str, int, float,
         bool, list) or a dotted identifier string.
+
+        When the expression contains arithmetic operators (+, -, *, /),
+        the entire expression is returned as a string so that the
+        NativeComputeDispatcher can evaluate it at runtime.
         """
+        atom = self._parse_let_atom()
+
+        # If the next token is an arithmetic operator, collect the full
+        # expression as a string for runtime evaluation.
+        if self._current().type in self._ARITHMETIC_OPS:
+            parts: list[str] = [str(atom)]
+            while self._current().type in self._ARITHMETIC_OPS:
+                op_tok = self._current()
+                self._advance()
+                parts.append(op_tok.value)
+                parts.append(str(self._parse_let_atom()))
+            return " ".join(parts)
+
+        return atom
+
+    def _parse_let_atom(self) -> str | int | float | bool | list:
+        """Parse a single atomic value in a let expression."""
         tok = self._current()
 
         if tok.type == TokenType.STRING:
@@ -2908,6 +2939,163 @@ class Parser:
             node.output_type = self._consume(TokenType.IDENTIFIER).value
 
         return node
+
+    # ── COMPUTE (Deterministic Muscle Primitive §CM) ───────────────
+
+    def _parse_compute(self) -> ComputeDefinition:
+        """
+        Parse a top-level compute definition:
+
+          compute CalculateTax {
+              input: amount (Float), rate (Float)
+              output: TaxResult
+              shield: TypeSafety
+              logic {
+                  let tax = amount * rate
+                  let total = amount + tax
+                  return { tax: tax, total: total }
+              }
+          }
+
+        The compute primitive — deterministic "muscle" execution.
+        System 1 (Kahneman) for the AXON cognitive architecture.
+        Bypasses the LLM entirely via the Fast-Path.
+        """
+        tok = self._consume(TokenType.COMPUTE)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = ComputeDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            inner = self._current()
+
+            # "input", "output", "shield", "logic" are parsed as identifiers
+            # or keywords depending on whether they are reserved.
+            if inner.value == "input":
+                self._advance()
+                self._consume(TokenType.COLON)
+                node.inputs = self._parse_compute_input_params()
+
+            elif inner.type == TokenType.OUTPUT:
+                self._advance()
+                self._consume(TokenType.COLON)
+                node.output_type = self._parse_type_expr()
+
+            elif inner.type == TokenType.SHIELD:
+                self._advance()
+                self._consume(TokenType.COLON)
+                node.shield_ref = self._consume_any_identifier_or_keyword().value
+
+            elif inner.type == TokenType.LOGIC:
+                self._advance()
+                self._consume(TokenType.LBRACE)
+                while not self._check(TokenType.RBRACE):
+                    node.logic_body.append(self._parse_flow_step())
+                self._consume(TokenType.RBRACE)
+
+            else:
+                # Skip unknown fields gracefully
+                self._advance()
+                if self._check(TokenType.COLON):
+                    self._consume(TokenType.COLON)
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_compute_input_params(self) -> list[ParameterNode]:
+        """Parse compute input parameter list: name (Type), name (Type), ..."""
+        params: list[ParameterNode] = []
+
+        # First parameter
+        name_tok = self._consume_any_identifier_or_keyword()
+        self._consume(TokenType.LPAREN)
+        type_expr = self._parse_type_expr()
+        self._consume(TokenType.RPAREN)
+        params.append(ParameterNode(
+            name=name_tok.value, type_expr=type_expr,
+            line=name_tok.line, column=name_tok.column,
+        ))
+
+        # Additional comma-separated parameters
+        while self._check(TokenType.COMMA):
+            self._advance()
+            name_tok = self._consume_any_identifier_or_keyword()
+            self._consume(TokenType.LPAREN)
+            type_expr = self._parse_type_expr()
+            self._consume(TokenType.RPAREN)
+            params.append(ParameterNode(
+                name=name_tok.value, type_expr=type_expr,
+                line=name_tok.line, column=name_tok.column,
+            ))
+
+        return params
+
+    def _parse_compute_apply(self) -> ComputeApplyNode:
+        """
+        Parse an in-flow compute application:
+
+          compute CalculateTax on order.amount, 0.19 -> tax_result
+
+        The Fast-Path insertion point — the executor bypasses the
+        LLM and routes directly to the NativeComputeDispatcher.
+        """
+        tok = self._consume(TokenType.COMPUTE)
+        compute_name = self._consume(TokenType.IDENTIFIER).value
+
+        # "on" keyword expected (parsed as identifier since it's not reserved)
+        on_tok = self._consume_any_identifier_or_keyword()
+        if on_tok.value != "on":
+            raise AxonParseError(
+                "Expected 'on' after compute name in flow step",
+                line=on_tok.line,
+                column=on_tok.column,
+                expected="on",
+                found=on_tok.value,
+            )
+
+        # Parse arguments: dotted paths, numbers, strings (comma-separated)
+        arguments: list[str] = []
+        arguments.append(self._parse_compute_argument())
+
+        while self._check(TokenType.COMMA):
+            self._advance()
+            arguments.append(self._parse_compute_argument())
+
+        node = ComputeApplyNode(
+            compute_name=compute_name,
+            arguments=arguments,
+            line=tok.line,
+            column=tok.column,
+        )
+
+        # optional -> output_name
+        if self._check(TokenType.ARROW):
+            self._advance()
+            node.output_name = self._consume_any_identifier_or_keyword().value
+
+        return node
+
+    def _parse_compute_argument(self) -> str:
+        """Parse a single compute argument: dotted path, number, or string."""
+        tok = self._current()
+
+        if tok.type == TokenType.STRING:
+            self._advance()
+            return tok.value
+        if tok.type == TokenType.FLOAT:
+            self._advance()
+            return tok.value
+        if tok.type == TokenType.INTEGER:
+            self._advance()
+            return tok.value
+
+        # Dotted identifier: order.amount.subtotal
+        parts = [self._consume_any_identifier_or_keyword().value]
+        while self._check(TokenType.DOT):
+            self._advance()
+            parts.append(self._consume_any_identifier_or_keyword().value)
+        return ".".join(parts)
 
     # ── LAMBDA DATA (ΛD) ───────────────────────────────────────────
 

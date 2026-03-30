@@ -132,6 +132,10 @@ class TokenType(Enum):
     MAX_STEPS = auto()        # max_steps: 50
     ON_VIOLATION = auto()     # on_violation: halt|retry|coerce
 
+    # ── COMPUTE KEYWORDS (Deterministic Muscle Primitive §CM) ─────
+    COMPUTE = auto()          # compute definition / apply
+    LOGIC = auto()            # logic block inside compute
+
     # ── LAMBDA DATA KEYWORDS (ΛD — Epistemic State Vectors §ΛD) ──
     LAMBDA = auto()           # lambda definition / apply
     ONTOLOGY = auto()         # ontology: Measure | Chronon | Quantity | ...
@@ -196,6 +200,12 @@ class TokenType(Enum):
     EQ = auto()           # ==
     NEQ = auto()          # !=
     ASSIGN = auto()       # = (SSA binding operator)
+
+    # ── ARITHMETIC (Compute primitive §CM) ────────────────────────
+    PLUS = auto()         # +
+    MINUS = auto()        # -
+    STAR = auto()         # *
+    SLASH = auto()        # /
 
     # ── SPECIAL ──────────────────────────────────────────────────
     EOF = auto()
@@ -317,6 +327,9 @@ KEYWORDS: dict[str, TokenType] = {
     # EMCP (Epistemic MCP §6)
     "mcp": TokenType.MCP,
     "taint": TokenType.TAINT,
+    # Compute (Deterministic Muscle Primitive §CM)
+    "compute": TokenType.COMPUTE,
+    "logic": TokenType.LOGIC,
     # Mandate (Cybernetic Refinement Calculus §CRC)
     "mandate": TokenType.MANDATE,
     "constraint": TokenType.CONSTRAINT,
