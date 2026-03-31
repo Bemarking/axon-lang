@@ -18,6 +18,7 @@ from .ast_nodes import (
     AggregateNode,
     AnchorConstraint,
     AssociateNode,
+    AxonEndpointDefinition,
     AxonStoreDefinition,
     ConditionalNode,
     ConsensusBlock,
@@ -168,6 +169,8 @@ class Parser:
                 return self._parse_daemon()
             case TokenType.AXONSTORE:
                 return self._parse_axonstore()
+            case TokenType.AXONENDPOINT:
+                return self._parse_axonendpoint()
             case TokenType.PERSIST:
                 return self._parse_persist()
             case TokenType.RETRIEVE:
@@ -2313,6 +2316,7 @@ class Parser:
             TokenType.MEMORY, TokenType.TOOL, TokenType.TYPE,
             TokenType.FLOW, TokenType.INTENT, TokenType.RUN,
             TokenType.IMPORT, TokenType.DATASPACE, TokenType.INGEST,
+            TokenType.AXONENDPOINT,
             TokenType.EOF,
         )
 
@@ -3582,6 +3586,45 @@ class Parser:
                         node.on_breach = self._consume_any_identifier_or_keyword().value
             else:
                 self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_axonendpoint(self) -> AxonEndpointDefinition:
+        """Parse: axonendpoint Name { method: ..., path: ..., execute: ... }"""
+        tok = self._consume(TokenType.AXONENDPOINT)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = AxonEndpointDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "method":
+                    node.method = self._consume_any_identifier_or_keyword().value.upper()
+                case "path":
+                    node.path = self._consume(TokenType.STRING).value
+                case "body":
+                    node.body_type = self._consume_any_identifier_or_keyword().value
+                case "execute":
+                    node.execute_flow = self._consume_any_identifier_or_keyword().value
+                case "output":
+                    node.output_type = self._consume_any_identifier_or_keyword().value
+                case "shield":
+                    node.shield_ref = self._consume_any_identifier_or_keyword().value
+                case "retries":
+                    node.retries = int(self._consume(TokenType.INTEGER).value)
+                case "timeout":
+                    if self._check(TokenType.DURATION):
+                        node.timeout = self._advance().value
+                    else:
+                        node.timeout = self._consume_any_identifier_or_keyword().value
+                case _:
+                    self._skip_value()
 
         self._consume(TokenType.RBRACE)
         return node

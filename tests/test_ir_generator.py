@@ -338,6 +338,34 @@ class TestVisitMemory:
         assert m.decay == "daily"
 
 
+class TestVisitAxonEndpoint:
+    """AxonEndpoint AST → IR transformation."""
+
+    def test_axonendpoint_fields_mapped(self):
+        gen = IRGenerator()
+        endpoint = ast.AxonEndpointDefinition(
+            line=50,
+            column=2,
+            name="ContractsAPI",
+            method="POST",
+            path="/api/contracts/analyze",
+            body_type="ContractInput",
+            execute_flow="AnalyzeContract",
+            output_type="ContractReport",
+            shield_ref="EdgeShield",
+            retries=2,
+            timeout="10s",
+        )
+        program = gen.generate(_program(endpoint))
+        assert len(program.endpoints) == 1
+        ir_endpoint = program.endpoints[0]
+        assert ir_endpoint.name == "ContractsAPI"
+        assert ir_endpoint.method == "POST"
+        assert ir_endpoint.path == "/api/contracts/analyze"
+        assert ir_endpoint.execute_flow == "AnalyzeContract"
+        assert ir_endpoint.source_line == 50
+
+
 class TestVisitImport:
     """Import AST → IR transformation."""
 

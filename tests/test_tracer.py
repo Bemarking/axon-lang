@@ -65,6 +65,8 @@ class TestTraceEvent:
             # Mandate CRC enforcement events
             "mandate_enforce_start", "mandate_pid_step", "mandate_converged",
             "mandate_violation", "mandate_policy_applied",
+            # AxonEndpoint telemetry events
+            "endpoint_request_start", "endpoint_request_end",
         }
         actual = {e.value for e in TraceEventType}
         assert actual == expected

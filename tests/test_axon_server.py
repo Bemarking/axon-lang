@@ -597,6 +597,36 @@ flow F() -> String {
         assert data["success"] is True
         assert "TestHTTPDaemon" in data["daemons_registered"]
 
+    def test_deploy_registers_axonendpoint_and_dispatches(self):
+        """Deploying axonendpoint exposes a runtime HTTP route."""
+        client = self._make_client()
+        source = '''
+flow AnalyzeContract(doc: Document) -> ContractReport {
+    step S {
+        ask: "analyze"
+        output: ContractReport
+    }
+}
+
+axonendpoint ContractsAPI {
+    method: post
+    path: "/api/contracts/analyze"
+    execute: AnalyzeContract
+    output: ContractReport
+    retries: 2
+}
+'''
+        deploy_resp = client.post("/v1/deploy", json={"source": source, "backend": "anthropic"})
+        assert deploy_resp.status_code == 200
+        payload = deploy_resp.json()
+        assert "ContractsAPI" in payload["endpoints_registered"]
+
+        call_resp = client.post("/api/contracts/analyze", json={"text": "hello"})
+        assert call_resp.status_code == 200
+        body = call_resp.json()
+        assert body["ok"] is True
+        assert body["endpoint"] == "ContractsAPI"
+
     def test_deploy_invalid_source(self):
         """POST /v1/deploy with bad source returns 422."""
         client = self._make_client()

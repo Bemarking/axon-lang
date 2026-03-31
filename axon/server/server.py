@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from axon.runtime.tracer import TraceEventType, Tracer
+
 from axon.runtime.channels import make_channel_factory
 from axon.runtime.event_bus import EventBus
 from axon.runtime.state_backend import InMemoryStateBackend, StateBackend
@@ -43,6 +45,7 @@ class DeployResult:
     success: bool
     deployment_id: str = ""
     daemons_registered: tuple[str, ...] = ()
+    endpoints_registered: tuple[str, ...] = ()
     flows_compiled: int = 0
     error: str = ""
     timestamp: float = 0.0
@@ -56,6 +59,20 @@ class DaemonInfo:
     events_processed: int = 0
     last_event_time: float = 0.0
     restart_count: int = 0
+    deployment_id: str = ""
+
+
+@dataclass
+class EndpointInfo:
+    """Runtime status of a deployed axonendpoint."""
+    name: str
+    method: str = "POST"
+    path: str = ""
+    execute_flow: str = ""
+    output_type: str = ""
+    shield_ref: str = ""
+    retries: int = 0
+    timeout: str = ""
     deployment_id: str = ""
 
 
@@ -86,8 +103,10 @@ class AxonServer:
         self._state_backend: StateBackend | None = None
         self._deployments: dict[str, Any] = {}          # deployment_id → CompiledProgram
         self._daemon_info: dict[str, DaemonInfo] = {}    # daemon_name → DaemonInfo
+        self._endpoint_info: dict[str, EndpointInfo] = {}  # endpoint_name → EndpointInfo
         self._running = False
         self._started_at: float = 0.0
+        self._tracer = Tracer(program_name="axonserver", backend_name="server")
 
     # ── Lifecycle ─────────────────────────────────────────────
 
@@ -174,7 +193,7 @@ class AxonServer:
         deploy_id = deployment_id or f"deploy_{int(time.time() * 1000)}"
 
         try:
-            compiled, daemon_names = self._compile_source(source, backend_name)
+            compiled, daemon_names, endpoint_specs = self._compile_source(source, backend_name)
         except Exception as exc:
             logger.error("Deployment %s failed: %s", deploy_id, exc)
             return DeployResult(
@@ -204,17 +223,33 @@ class AxonServer:
                 deployment_id=deploy_id,
             )
 
+        endpoint_names: list[str] = []
+        for spec in endpoint_specs:
+            self._endpoint_info[spec.name] = EndpointInfo(
+                name=spec.name,
+                method=spec.method,
+                path=spec.path,
+                execute_flow=spec.execute_flow,
+                output_type=spec.output_type,
+                shield_ref=spec.shield_ref,
+                retries=spec.retries,
+                timeout=spec.timeout,
+                deployment_id=deploy_id,
+            )
+            endpoint_names.append(spec.name)
+
         logger.info(
-            "Deployed %s: %d daemons (%s)",
+            "Deployed %s: %d daemons, %d endpoints",
             deploy_id,
             len(daemon_names),
-            ", ".join(daemon_names),
+            len(endpoint_names),
         )
 
         return DeployResult(
             success=True,
             deployment_id=deploy_id,
             daemons_registered=tuple(daemon_names),
+            endpoints_registered=tuple(endpoint_names),
             flows_compiled=len(compiled.execution_units),
             timestamp=time.time(),
         )
@@ -228,6 +263,14 @@ class AxonServer:
     def get_daemon(self, name: str) -> DaemonInfo | None:
         """Get status of a specific daemon."""
         return self._daemon_info.get(name)
+
+    def list_endpoints(self) -> list[EndpointInfo]:
+        """List all deployed endpoints."""
+        return list(self._endpoint_info.values())
+
+    def get_endpoint(self, name: str) -> EndpointInfo | None:
+        """Get status/config of a specific endpoint."""
+        return self._endpoint_info.get(name)
 
     async def hibernate_daemon(self, name: str) -> bool:
         """Force-hibernate a running daemon."""
@@ -286,6 +329,7 @@ class AxonServer:
             "daemons_hibernating": sum(
                 1 for d in self._daemon_info.values() if d.state == "hibernating"
             ),
+            "endpoints_total": len(self._endpoint_info),
             "event_bus_topics": self._bus.topics() if self._bus else [],
             "channel_backend": self._config.channel_backend,
             "state_backend": self._config.state_backend,
@@ -319,12 +363,12 @@ class AxonServer:
         self,
         source: str,
         backend_name: str,
-    ) -> tuple[Any, list[str]]:
+    ) -> tuple[Any, list[str], list[Any]]:
         """
         Compile AXON source through the full pipeline.
 
         Returns:
-            (CompiledProgram, list of daemon names)
+            (CompiledProgram, list of daemon names, list of endpoint specs)
         """
         from axon.compiler.lexer import Lexer
         from axon.compiler.parser import Parser
@@ -342,8 +386,35 @@ class AxonServer:
 
         # Extract daemon names from IR
         daemon_names = [d.name for d in ir_program.daemons]
+        endpoint_specs = list(ir_program.endpoints)
 
-        return compiled, daemon_names
+        return compiled, daemon_names, endpoint_specs
+
+    def record_endpoint_event(
+        self,
+        endpoint_name: str,
+        *,
+        method: str,
+        path: str,
+        trace_id: str,
+        status_code: int,
+    ) -> None:
+        """Emit holographic endpoint telemetry for each HTTP ingress call."""
+        self._tracer.start_span(
+            f"endpoint:{endpoint_name}",
+            metadata={"trace_id": trace_id, "method": method, "path": path},
+        )
+        self._tracer.emit(
+            TraceEventType.ENDPOINT_REQUEST_START,
+            step_name=endpoint_name,
+            data={"phase": "ingress", "method": method, "path": path},
+        )
+        self._tracer.emit(
+            TraceEventType.ENDPOINT_REQUEST_END,
+            step_name=endpoint_name,
+            data={"phase": "egress", "status_code": status_code, "trace_id": trace_id},
+        )
+        self._tracer.end_span()
 
     def _resolve_state_backend(self) -> StateBackend:
         """Resolve the state backend from config."""

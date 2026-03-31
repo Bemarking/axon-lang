@@ -150,6 +150,7 @@ def create_app(server: Any) -> Any:
             "success": result.success,
             "deployment_id": result.deployment_id,
             "daemons_registered": list(result.daemons_registered),
+            "endpoints_registered": list(result.endpoints_registered),
             "flows_compiled": result.flows_compiled,
             "error": result.error,
             "timestamp": result.timestamp,
@@ -248,6 +249,79 @@ def create_app(server: Any) -> Any:
             )
         return JSONResponse({"stopped": True, "daemon": name})
 
+    async def dispatch_endpoint(request: Request) -> JSONResponse:
+        full_path = "/" + request.path_params.get("full_path", "")
+        if full_path.startswith("/v1/"):
+            return JSONResponse({"error": "Not found"}, status_code=404)
+
+        method = request.method.upper()
+        endpoint = next(
+            (
+                ep for ep in server.list_endpoints()
+                if ep.path == full_path and ep.method.upper() == method
+            ),
+            None,
+        )
+        if endpoint is None:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+
+        try:
+            if method == "GET":
+                payload: dict[str, Any] = dict(request.query_params)
+            else:
+                data = await _read_json(request)
+                if data is None:
+                    return JSONResponse(
+                        {"error": "Invalid JSON body. Content-Type must be application/json."},
+                        status_code=400,
+                    )
+                payload = data
+
+            trace_id = f"ep_{int(time.time() * 1000)}_{endpoint.name}"
+            event_topic = f"endpoint.{endpoint.name}"
+            published = await server.publish_event(
+                event_topic,
+                {
+                    "trace_id": trace_id,
+                    "endpoint": endpoint.name,
+                    "method": method,
+                    "path": endpoint.path,
+                    "payload": payload,
+                    "execute_flow": endpoint.execute_flow,
+                },
+            )
+            if not published:
+                server.record_endpoint_event(
+                    endpoint.name,
+                    method=method,
+                    path=endpoint.path,
+                    trace_id=trace_id,
+                    status_code=503,
+                )
+                return JSONResponse(
+                    {"error": "Server not running or bus unavailable."},
+                    status_code=503,
+                )
+
+            server.record_endpoint_event(
+                endpoint.name,
+                method=method,
+                path=endpoint.path,
+                trace_id=trace_id,
+                status_code=200,
+            )
+            return JSONResponse({
+                "ok": True,
+                "endpoint": endpoint.name,
+                "execute_flow": endpoint.execute_flow,
+                "output_type": endpoint.output_type,
+                "trace_id": trace_id,
+                "timestamp": time.time(),
+            })
+        except Exception as exc:
+            logger.exception("Endpoint dispatch failed for %s %s", method, full_path)
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
     # ── WebSocket ─────────────────────────────────────────────
 
     async def ws_events(websocket: WebSocket) -> None:
@@ -315,6 +389,7 @@ def create_app(server: Any) -> Any:
         Route("/v1/daemons/{name}/resume", resume_daemon, methods=["POST"]),
         Route("/v1/daemons/{name}", delete_daemon, methods=["DELETE"]),
         WebSocketRoute("/v1/ws/events/{topic:path}", ws_events),
+        Route("/{full_path:path}", dispatch_endpoint, methods=["GET", "POST", "PUT", "PATCH", "DELETE"]),
     ]
 
     middleware = [Middleware(AuthMiddleware)]

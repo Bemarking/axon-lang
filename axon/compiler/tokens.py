@@ -158,6 +158,9 @@ class TokenType(Enum):
     PURGE = auto()            # purge from Store where (controlled deletion)
     TRANSACT = auto()         # transact { ... } (linear logic block A ⊸ B)
 
+    # ── AXONENDPOINT KEYWORDS (Reactive Boundary Primitive §AE) ──
+    AXONENDPOINT = auto()     # axonendpoint declaration
+
     # ── MODIFIERS (run statement modifiers) ───────────────────────
     AS = auto()
     WITHIN = auto()
@@ -372,6 +375,9 @@ KEYWORDS: dict[str, TokenType] = {
     "mutate": TokenType.MUTATE,
     "purge": TokenType.PURGE,
     "transact": TokenType.TRANSACT,
+    # AxonEndpoint (Reactive Boundary Primitive §AE)
+    "axonendpoint": TokenType.AXONENDPOINT,
+    "axpoint": TokenType.AXONENDPOINT,
 }
 
 # Duration suffixes recognized by the lexer

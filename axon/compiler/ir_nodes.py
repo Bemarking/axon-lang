@@ -98,6 +98,7 @@ class IRProgram(IRNode):
     lambda_data_specs: tuple['IRLambdaData', ...] = ()
     compute_specs: tuple['IRCompute', ...] = ()
     axonstore_specs: tuple['IRAxonStore', ...] = ()
+    endpoints: tuple['IREndpoint', ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1519,3 +1520,18 @@ class IRTransact(IRNode):
     """
     node_type: str = "transact"
     children: tuple[IRNode, ...] = ()
+
+
+@dataclass(frozen=True)
+class IREndpoint(IRNode):
+    """Compiled endpoint declaration — transport boundary to flow execution."""
+    node_type: str = "endpoint"
+    name: str = ""
+    method: str = "POST"
+    path: str = ""
+    body_type: str = ""
+    execute_flow: str = ""
+    output_type: str = ""
+    shield_ref: str = ""
+    retries: int = 0
+    timeout: str = ""

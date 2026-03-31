@@ -1,0 +1,54 @@
+type ContractInput {
+  text: String,
+  language: String
+}
+
+type ContractReport {
+  summary: String,
+  risk_score: Float
+}
+
+shield EdgeShield {
+  scan: [prompt_injection, pii]
+  on_breach: halt
+  severity: high
+  sandbox: true
+}
+
+persona ContractAnalyst {
+  domain: [contracts, legal]
+  tone: precise
+  confidence_threshold: 0.8
+  cite_sources: true
+}
+
+context ContractSession {
+  memory: session
+  language: "es"
+  depth: deep
+  max_tokens: 1200
+}
+
+flow AnalyzeContract(doc: ContractInput) -> ContractReport {
+  step Analyze {
+    given: doc
+    ask: "Analiza el contrato, resume riesgos y entrega un reporte estructurado."
+    output: ContractReport
+  }
+}
+
+axonendpoint ContractsAPI {
+  method: post
+  path: "/api/contracts/analyze"
+  body: ContractInput
+  execute: AnalyzeContract
+  output: ContractReport
+  shield: EdgeShield
+  retries: 2
+  timeout: 10s
+}
+
+run AnalyzeContract(sample_contract)
+  as ContractAnalyst
+  within ContractSession
+  effort: high

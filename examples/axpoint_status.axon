@@ -1,0 +1,45 @@
+type StatusReport {
+  status: String,
+  message: String
+}
+
+shield StatusEdgeShield {
+  scan: [prompt_injection]
+  on_breach: halt
+  severity: high
+}
+
+persona StatusOperator {
+  domain: [ops, telemetry]
+  tone: precise
+  confidence_threshold: 0.85
+}
+
+context StatusSession {
+  memory: session
+  language: "es"
+  depth: standard
+  max_tokens: 600
+}
+
+flow SystemStatus() -> StatusReport {
+  step Inspect {
+    ask: "Genera un estado operacional breve y accionable del sistema."
+    output: StatusReport
+  }
+}
+
+axpoint StatusAPI {
+  method: get
+  path: "/api/status"
+  execute: SystemStatus
+  output: StatusReport
+  shield: StatusEdgeShield
+  retries: 1
+  timeout: 5s
+}
+
+run SystemStatus()
+  as StatusOperator
+  within StatusSession
+  effort: medium

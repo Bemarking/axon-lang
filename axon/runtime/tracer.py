@@ -110,6 +110,10 @@ class TraceEventType(str, Enum):
     MANDATE_VIOLATION = "mandate_violation"
     MANDATE_POLICY_APPLIED = "mandate_policy_applied"
 
+    # — AxonEndpoint lifecycle —
+    ENDPOINT_REQUEST_START = "endpoint_request_start"
+    ENDPOINT_REQUEST_END = "endpoint_request_end"
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  TRACE EVENT — a single atomic observation

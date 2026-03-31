@@ -324,3 +324,59 @@ class TestFlowValidation:
         tree = ProgramNode(declarations=[flow], line=1, column=1)
         errors = TypeChecker(tree).check()
         assert any("at least 2 sources" in e.message for e in errors)
+
+
+class TestAxonEndpointValidation:
+    """Type checker validates axonendpoint declarations."""
+
+    def test_valid_axonendpoint(self):
+        source = '''type ContractInput
+type ContractReport
+
+flow AnalyzeContract(doc: Document) -> ContractReport {
+  step S {
+    ask: "Analyze"
+    output: ContractReport
+  }
+}
+
+shield EdgeShield {
+  scan: [prompt_injection]
+  on_breach: halt
+  severity: high
+}
+
+axonendpoint ContractsAPI {
+  method: post
+  path: "/api/contracts/analyze"
+  body: ContractInput
+  execute: AnalyzeContract
+  output: ContractReport
+  shield: EdgeShield
+  retries: 1
+}'''
+        errors = _check(source)
+        assert errors == []
+
+    def test_axonendpoint_invalid_method_and_path(self):
+        source = '''flow Analyze(doc: Document) -> Report {
+  step S { ask: "x" output: Report }
+}
+
+axonendpoint BadEndpoint {
+  method: fetch
+  path: "api/no-leading-slash"
+  execute: Analyze
+}'''
+        errors = _check(source)
+        assert any("Unknown HTTP method" in e.message for e in errors)
+        assert any("path must start with '/'" in e.message for e in errors)
+
+    def test_axonendpoint_undefined_flow(self):
+        source = '''axonendpoint Broken {
+  method: post
+  path: "/api/run"
+  execute: MissingFlow
+}'''
+        errors = _check(source)
+        assert any("undefined flow" in e.message.lower() for e in errors)

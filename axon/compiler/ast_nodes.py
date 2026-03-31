@@ -1723,6 +1723,34 @@ class RunStatement(ASTNode):
     effort: str = ""  # low | medium | high | max
 
 
+@dataclass
+class AxonEndpointDefinition(ASTNode):
+    """
+    axonendpoint ContractsAPI {
+        method: post
+        path: "/v1/contracts/analyze"
+        body: ContractInput
+        execute: AnalyzeContract
+        output: ContractReport
+        shield: EdgeShield
+        retries: 2
+        timeout: 10s
+    }
+
+    Declarative HTTP boundary primitive that binds transport ingress
+    to a validated AXON flow execution target.
+    """
+    name: str = ""
+    method: str = "POST"
+    path: str = ""
+    body_type: str = ""
+    execute_flow: str = ""
+    output_type: str = ""
+    shield_ref: str = ""
+    retries: int = 0
+    timeout: str = ""
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  AXONSTORE PRIMITIVE — HoTT Transactional Persistence (§AS)
 # ═══════════════════════════════════════════════════════════════════

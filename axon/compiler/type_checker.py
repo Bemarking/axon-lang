@@ -27,6 +27,7 @@ from .ast_nodes import (
     AggregateNode,
     AnchorConstraint,
     AssociateNode,
+    AxonEndpointDefinition,
     AxonStoreDefinition,
     ConditionalNode,
     ConsensusBlock,
@@ -484,6 +485,8 @@ class TypeChecker:
                     pass  # PIX flow-level commands, not declarations
                 case AxonStoreDefinition(name=name):
                     self._register(name, "axonstore", decl)
+                case AxonEndpointDefinition(name=name):
+                    self._register(name, "axonendpoint", decl)
                 case PersistNode() | RetrieveNode() | MutateNode() | PurgeNode() | TransactNode():
                     pass  # axonstore CRUD ops validated at Phase 2
 
@@ -562,6 +565,8 @@ class TypeChecker:
                 pass  # PIX/MDN flow commands validated in flow step context
             case AxonStoreDefinition():
                 self._check_axonstore(decl)
+            case AxonEndpointDefinition():
+                self._check_axonendpoint(decl)
             case PersistNode() | RetrieveNode() | MutateNode() | PurgeNode() | TransactNode():
                 self._check_store_crud(decl)
             case LetStatement():
@@ -1122,6 +1127,7 @@ class TypeChecker:
         "integer", "text", "real", "decimal", "timestamp",
         "boolean", "float", "string",
     })
+    _VALID_ENDPOINT_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
 
     def _check_axonstore(self, node: AxonStoreDefinition) -> None:
         if not node.name:
@@ -1205,6 +1211,66 @@ class TypeChecker:
                     f"'{store_name}' is a {sym.kind}, not an axonstore",
                     node,
                 )
+
+    def _check_axonendpoint(self, node: AxonEndpointDefinition) -> None:
+        if not node.name:
+            self._emit("axonendpoint requires a name", node)
+
+        if node.method and node.method.upper() not in self._VALID_ENDPOINT_METHODS:
+            self._emit(
+                f"Unknown HTTP method '{node.method}' in axonendpoint '{node.name}'. "
+                f"Valid: {', '.join(sorted(self._VALID_ENDPOINT_METHODS))}",
+                node,
+            )
+
+        if not node.path or not node.path.startswith("/"):
+            self._emit(
+                f"axonendpoint '{node.name}' path must start with '/': got '{node.path}'",
+                node,
+            )
+
+        if node.execute_flow:
+            sym = self._symbols.lookup(node.execute_flow)
+            if sym is None:
+                self._emit(
+                    f"axonendpoint '{node.name}' references undefined flow '{node.execute_flow}'",
+                    node,
+                )
+            elif sym.kind != "flow":
+                self._emit(
+                    f"'{node.execute_flow}' is a {sym.kind}, not a flow",
+                    node,
+                )
+        else:
+            self._emit(
+                f"axonendpoint '{node.name}' requires 'execute: <FlowName>'",
+                node,
+            )
+
+        if node.body_type:
+            self._check_type_reference(node.body_type, node)
+
+        if node.output_type:
+            self._check_type_reference(node.output_type, node)
+
+        if node.shield_ref:
+            sym = self._symbols.lookup(node.shield_ref)
+            if sym is None:
+                self._emit(
+                    f"axonendpoint '{node.name}' references undefined shield '{node.shield_ref}'",
+                    node,
+                )
+            elif sym.kind != "shield":
+                self._emit(
+                    f"'{node.shield_ref}' is a {sym.kind}, not a shield",
+                    node,
+                )
+
+        if node.retries < 0:
+            self._emit(
+                f"axonendpoint '{node.name}' retries must be >= 0, got {node.retries}",
+                node,
+            )
 
     # ── DELIBERATE validation ─────────────────────────────────────────
 

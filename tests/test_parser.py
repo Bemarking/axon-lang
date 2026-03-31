@@ -9,6 +9,7 @@ import pytest
 from axon.compiler.lexer import Lexer
 from axon.compiler.parser import Parser
 from axon.compiler.ast_nodes import (
+    AxonEndpointDefinition,
     AnchorConstraint,
     ConditionalNode,
     ContextDefinition,
@@ -342,6 +343,45 @@ class TestRun:
         assert r.flow_name == "SimpleFlow"
         assert r.persona == ""
         assert r.context == ""
+
+
+class TestAxonEndpoint:
+    """Parser handles axonendpoint declarations and alias syntax."""
+
+    def test_axonendpoint_full(self):
+        source = '''axonendpoint ContractsAPI {
+  method: post
+  path: "/api/contracts/analyze"
+  body: ContractInput
+  execute: AnalyzeContract
+  output: ContractReport
+  shield: EdgeShield
+  retries: 2
+  timeout: 10s
+}'''
+        tree = _parse(source)
+        endpoint = tree.declarations[0]
+        assert isinstance(endpoint, AxonEndpointDefinition)
+        assert endpoint.name == "ContractsAPI"
+        assert endpoint.method == "POST"
+        assert endpoint.path == "/api/contracts/analyze"
+        assert endpoint.body_type == "ContractInput"
+        assert endpoint.execute_flow == "AnalyzeContract"
+        assert endpoint.output_type == "ContractReport"
+        assert endpoint.shield_ref == "EdgeShield"
+        assert endpoint.retries == 2
+        assert endpoint.timeout == "10s"
+
+    def test_axpoint_alias(self):
+        tree = _parse('''axpoint QuickAPI {
+  method: get
+  path: "/api/ping"
+  execute: PingFlow
+}''')
+        endpoint = tree.declarations[0]
+        assert isinstance(endpoint, AxonEndpointDefinition)
+        assert endpoint.name == "QuickAPI"
+        assert endpoint.method == "GET"
 
 
 class TestErrors:

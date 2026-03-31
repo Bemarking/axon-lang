@@ -50,6 +50,7 @@ from axon.compiler.ir_nodes import (
     IRDataSpace,
     IRDeliberate,
     IRDrill,
+    IREndpoint,
     IREffectRow,
     IREpistemicBlock,
     IRExplore,
@@ -154,6 +155,7 @@ class IRGenerator:
         self._lambda_data_specs: dict[str, IRLambdaData] = {}
         self._compute_specs: dict[str, IRCompute] = {}
         self._axonstore_specs: dict[str, IRAxonStore] = {}
+        self._endpoints: dict[str, IREndpoint] = {}
 
         # EMS: Module registry for cross-file symbol resolution
         self._registry = module_registry
@@ -205,6 +207,7 @@ class IRGenerator:
             lambda_data_specs=tuple(self._lambda_data_specs.values()),
             compute_specs=tuple(self._compute_specs.values()),
             axonstore_specs=tuple(self._axonstore_specs.values()),
+            endpoints=tuple(self._endpoints.values()),
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -288,6 +291,7 @@ class IRGenerator:
         ast.MutateNode: "_visit_mutate",
         ast.PurgeNode: "_visit_purge",
         ast.TransactNode: "_visit_transact",
+        ast.AxonEndpointDefinition: "_visit_axonendpoint",
     }
 
     def _visit(self, node: ast.ASTNode) -> IRNode:
@@ -1467,6 +1471,9 @@ class IRGenerator:
         self._ots_specs.clear()
         self._mandate_specs.clear()
         self._compute_specs.clear()
+        self._lambda_data_specs.clear()
+        self._axonstore_specs.clear()
+        self._endpoints.clear()
         self._agents.clear()
         self._shields.clear()
         self._daemons.clear()
@@ -1939,3 +1946,21 @@ class IRGenerator:
             source_column=node.column,
             children=children,
         )
+
+    def _visit_axonendpoint(self, node: ast.AxonEndpointDefinition) -> IREndpoint:
+        """Lower AxonEndpointDefinition → IREndpoint."""
+        ir_endpoint = IREndpoint(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            method=node.method,
+            path=node.path,
+            body_type=node.body_type,
+            execute_flow=node.execute_flow,
+            output_type=node.output_type,
+            shield_ref=node.shield_ref,
+            retries=node.retries,
+            timeout=node.timeout,
+        )
+        self._endpoints[node.name] = ir_endpoint
+        return ir_endpoint
