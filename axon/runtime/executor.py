@@ -2939,9 +2939,17 @@ class Executor:
 
         This is System 1 (Kahneman) for the AXON runtime:
         NO model call is made. The NativeComputeDispatcher
-        evaluates the logic DSL directly in Python.
+        evaluates the logic DSL directly (Rust → C → Python).
+
+        MEK Integration (Paper §4.2):
+            The ComputeMEKBridge de-references any Latent Pointers
+            in the input arguments and registers the deterministic
+            result as a new LatentState in the MEK tensor_registry,
+            enriching it with epistemic metadata (entropy, tier,
+            shield verification, provenance).
         """
         from axon.runtime.compute_dispatcher import NativeComputeDispatcher
+        from axon.runtime.compute_mek_bridge import ComputeMEKBridge
 
         step_start = time.perf_counter()
         compute_meta = step.metadata.get("compute", {})
@@ -2960,16 +2968,24 @@ class Executor:
         for step_name_key in ctx.completed_steps:
             context_dict[step_name_key] = ctx.get_step_result(step_name_key)
 
+        # Instantiate the MEK bridge for epistemic enrichment
+        mek_bridge = ComputeMEKBridge()
+
         # Execute deterministically — no LLM involved
-        dispatcher = NativeComputeDispatcher()
+        dispatcher = NativeComputeDispatcher(mek_bridge=mek_bridge)
         result = await dispatcher.dispatch(compute_meta, context_dict)
 
         output_name = result.get("output_name", "")
         computed_value = result.get("result")
+        latent_pointer = result.get("latent_pointer", "")
 
         # Store result in context for downstream steps
         if output_name:
             ctx.set_variable(output_name, computed_value)
+        # Also store the latent pointer so downstream reason/probe
+        # steps can reference the compute result via MEK
+        if latent_pointer:
+            ctx.set_variable(f"{output_name}__ptr", latent_pointer)
 
         step_duration = (time.perf_counter() - step_start) * 1000
 
@@ -2980,6 +2996,11 @@ class Executor:
                 "fast_path": True,
                 "success": True,
                 "output_name": output_name,
+                "tier": result.get("tier", "python"),
+                "latent_pointer": latent_pointer,
+                "entropy": result.get("entropy", 0.0),
+                "deterministic": result.get("deterministic", True),
+                "verified": result.get("verified", False),
             },
             duration_ms=step_duration,
         )

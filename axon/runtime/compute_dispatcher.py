@@ -33,6 +33,13 @@ class NativeComputeDispatcher:
     On first call the dispatcher lazily initialises the native compile
     pipeline (Rust → C → Python fallback).  Compiled libraries are
     cached by source hash across calls.
+
+    MEK Integration (Paper §4.2):
+        When a ``ComputeMEKBridge`` is provided, every dispatch:
+        a) De-references Latent Pointers in the argument list.
+        b) Registers the deterministic result in the MEK
+           ``tensor_registry`` as a new ``LatentState``.
+        c) Returns a ``ComputeEpistemicResult`` with full provenance.
     """
 
     # Supported binary operators for arithmetic expressions
@@ -43,10 +50,11 @@ class NativeComputeDispatcher:
         "/": operator.truediv,
     }
 
-    def __init__(self) -> None:
+    def __init__(self, *, mek_bridge: Any | None = None) -> None:
         self._native_compiler: Any = None
         self._ffi_bridge: Any = None
         self._native_init_done = False
+        self._mek_bridge = mek_bridge
 
     def _ensure_native_pipeline(self) -> None:
         """Lazily initialise the native compilation pipeline."""
@@ -82,7 +90,10 @@ class NativeComputeDispatcher:
             context: The current execution context (step outputs).
 
         Returns:
-            A dict with 'output_name', 'result', and 'tier' keys.
+            A dict with 'output_name', 'result', 'tier', and
+            optionally 'latent_pointer', 'entropy', 'deterministic',
+            'verified', and 'provenance' keys (when MEK bridge is
+            active).
         """
         compute_def = compute_meta.get("compute_definition", {})
         arguments = compute_meta.get("arguments", [])
@@ -90,6 +101,13 @@ class NativeComputeDispatcher:
         compute_name = compute_meta.get("compute_name", "compute")
         inputs = compute_def.get("inputs", [])
         logic_source = compute_def.get("logic_source", "")
+        verified = compute_def.get("verified", False)
+
+        # ── MEK Input De-referencing ───────────────────────────
+        # If a MEK bridge is active, resolve any Latent Pointers
+        # in the argument list to their numeric payloads.
+        if self._mek_bridge is not None:
+            context = self._mek_bridge.resolve_inputs(arguments, context)
 
         # Bind arguments to input parameter names
         env: dict[str, Any] = {}
@@ -136,6 +154,19 @@ class NativeComputeDispatcher:
         if result is None:
             result = self._evaluate_logic(logic_source, env)
             tier = "python"
+
+        # ── MEK Output Registration ───────────────────────────
+        # Wrap the deterministic result as an epistemic LatentState
+        # and register it in the MEK tensor_registry.
+        if self._mek_bridge is not None:
+            epistemic = self._mek_bridge.register_output(
+                compute_name=compute_name,
+                output_name=output_name,
+                result=result,
+                tier=tier,
+                verified=verified,
+            )
+            return epistemic.to_dict()
 
         return {
             "output_name": output_name,
