@@ -89,6 +89,7 @@ class IRProgram(IRNode):
     imports: tuple[IRImport, ...] = ()
     agents: tuple['IRAgent', ...] = ()
     shields: tuple['IRShield', ...] = ()
+    daemons: tuple['IRDaemon', ...] = ()
     ots_specs: tuple['IROtsDefinition', ...] = ()
     pix_specs: tuple['IRPixSpec', ...] = ()
     corpus_specs: tuple['IRCorpusSpec', ...] = ()
@@ -756,6 +757,100 @@ class IRAgent(IRNode):
     return_type: str = ""                       # expected output type name
     shield_ref: str = ""                        # reference to declared shield
     children: tuple[IRNode, ...] = ()           # compiled plan library steps
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  DAEMON IR NODES — AxonServer π-calculus reactive primitive
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRListen(IRNode):
+    """
+    Compiled listen block — a π-calculus channel input prefix.
+
+    Maps from AST ListenBlock. Each listen declares a reactive
+    subscription to an event channel, binding incoming events
+    to a local alias for processing by inner steps.
+
+    π-Calculus correspondence:
+      listen "ch" as x { Q }  ≡  c(x).Q
+
+    The channel_type is always "topic" for now (extensible to
+    "queue", "broadcast" in future versions).
+    """
+    node_type: str = "listen"
+    channel_type: str = "topic"                 # topic | queue | broadcast
+    channel_topic: str = ""                     # event channel name
+    event_alias: str = ""                       # local binding for event payload
+    children: tuple[IRNode, ...] = ()           # compiled inner steps
+
+
+@dataclass(frozen=True)
+class IRDaemon(IRNode):
+    """
+    Compiled daemon block — co-inductive reactive server.
+
+    Maps from AST DaemonDefinition. Orchestrates the full
+    π-calculus replicated listener pattern:
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  FORMAL SEMANTICS                                            ║
+    ╠══════════════════════════════════════════════════════════════╣
+    ║                                                              ║
+    ║  π-Calculus (Milner, 1999):                                  ║
+    ║    Daemon ≡ !( Σᵢ cᵢ(xᵢ).Qᵢ )                             ║
+    ║    Replicated sum of channel input prefixes — one per        ║
+    ║    listen block. The bang (!) makes it perpetual.            ║
+    ║                                                              ║
+    ║  Co-algebraic (greatest fixpoint νX):                        ║
+    ║    δ : S → S × E — daemon is the greatest fixpoint νX       ║
+    ║    Unlike flows (μX = least fixpoint = terminating),         ║
+    ║    daemons run forever until explicitly stopped.             ║
+    ║                                                              ║
+    ║  Linear Logic per event (Girard, 1987):                      ║
+    ║    Budget(n) ⊗ Event ⊸ Output ⊗ Budget(n-c)                 ║
+    ║    Per-event budget is replenished each cycle.               ║
+    ║                                                              ║
+    ║  CPS Integration:                                            ║
+    ║    continuation_id generated for hibernate between events.   ║
+    ║    The daemon auto-hibernates after processing; on event     ║
+    ║    arrival it resumes with full cognitive state restored.    ║
+    ║                                                              ║
+    ║  OTP Supervision:                                            ║
+    ║    Supervisor monitors daemon health and restarts on crash   ║
+    ║    with preserved global memory (Armstrong's "let it crash") ║
+    ║                                                              ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+    Fields:
+        name:             daemon identifier
+        goal:             natural-language objective
+        tools:            available tool references
+        max_tokens:       per-event token budget (0=unlimited)
+        max_time:         per-event time budget (duration)
+        max_cost:         per-event cost budget (0.0=unlimited)
+        memory_ref:       reference to declared memory
+        strategy:         deliberation strategy
+        on_stuck:         STIT recovery policy
+        return_type:      expected output type per event
+        shield_ref:       reference to declared shield
+        continuation_id:  compiler-generated CPS resume point
+        listeners:        compiled listen blocks
+    """
+    node_type: str = "daemon"
+    name: str = ""
+    goal: str = ""                              # Davidson's pro-attitude
+    tools: tuple[str, ...] = ()                 # available tool references
+    max_tokens: int = 0                         # per-event token cap (0=unlimited)
+    max_time: str = ""                          # per-event time cap (duration)
+    max_cost: float = 0.0                       # per-event cost cap (0.0=unlimited)
+    memory_ref: str = ""                        # reference to declared memory
+    strategy: str = "react"                     # deliberation strategy
+    on_stuck: str = "hibernate"                 # STIT recovery policy
+    return_type: str = ""                       # expected output type name
+    shield_ref: str = ""                        # reference to declared shield
+    continuation_id: str = ""                   # compiler-generated CPS resume point
+    listeners: tuple[IRListen, ...] = ()        # compiled listen blocks
 
 
 # ═══════════════════════════════════════════════════════════════════

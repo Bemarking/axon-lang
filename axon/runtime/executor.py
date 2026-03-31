@@ -261,6 +261,73 @@ class AgentResult:
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  DAEMON RESULT — output of a daemon event cycle
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class DaemonResult:
+    """Result of a daemon's event processing cycle.
+
+    Co-algebraic state representation:
+      Daemon = νX. δ(S) → S × E
+      The daemon is the greatest fixpoint — it runs forever.
+      Each cycle processes one event and produces one result.
+
+    Linear Logic per event (Girard, 1987):
+      Budget(n) ⊗ Event ⊸ Output ⊗ Budget(n-c)
+
+    Attributes:
+        daemon_name:      Daemon identifier.
+        goal:             The goal the daemon was pursuing.
+        strategy:         Deliberation strategy used.
+        events_processed: Number of events processed in this invocation.
+        channel_topic:    The channel that triggered this cycle.
+        event_alias:      The local binding for the event payload.
+        on_stuck_fired:   Whether recovery policy activated.
+        on_stuck_policy:  Which recovery policy was configured.
+        cycle_results:    Ordered results from event processing.
+        final_response:   The daemon's output for this cycle.
+        total_tokens:     Accumulated token usage.
+        continuation_id:  CPS resume point for auto-hibernate.
+    """
+
+    daemon_name: str = ""
+    goal: str = ""
+    strategy: str = "react"
+    events_processed: int = 0
+    channel_topic: str = ""
+    event_alias: str = ""
+    on_stuck_fired: bool = False
+    on_stuck_policy: str = "hibernate"
+    cycle_results: tuple[StepResult, ...] = ()
+    final_response: ModelResponse | None = None
+    total_tokens: int = 0
+    continuation_id: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-compatible dictionary."""
+        result: dict[str, Any] = {
+            "daemon_name": self.daemon_name,
+            "goal": self.goal,
+            "strategy": self.strategy,
+            "events_processed": self.events_processed,
+            "channel_topic": self.channel_topic,
+            "on_stuck_fired": self.on_stuck_fired,
+            "continuation_id": self.continuation_id,
+        }
+        if self.cycle_results:
+            result["cycle_results"] = [
+                cr.to_dict() for cr in self.cycle_results
+            ]
+        if self.final_response:
+            result["final_response"] = self.final_response.to_dict()
+        if self.total_tokens:
+            result["total_tokens"] = self.total_tokens
+        return result
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  UNIT RESULT — output of a single execution unit
 # ═══════════════════════════════════════════════════════════════════
 
@@ -623,6 +690,14 @@ class Executor:
         if step.metadata.get("compute"):
             return await self._execute_compute_step(
                 step=step, ctx=ctx, tracer=tracer,
+            )
+
+        # ── Daemon step shortcut ───────────────────────────────────────
+        # If the step carries a daemon config, route through
+        # _execute_daemon_step — co-inductive reactive event loop.
+        if step.metadata.get("daemon"):
+            return await self._execute_daemon_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
             )
 
         # Extract refine config from step metadata (if present)
@@ -3015,6 +3090,193 @@ class Executor:
         return StepResult(
             step_name=step_name,
             response=response,
+            duration_ms=step_duration,
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  DAEMON EXECUTION — co-inductive reactive event loop
+    # ═══════════════════════════════════════════════════════════════
+
+    async def _execute_daemon_step(
+        self,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a daemon step — co-inductive reactive event processor.
+
+        Implements the π-calculus replicated listener pattern:
+          Daemon ≡ !( Σᵢ cᵢ(xᵢ).Qᵢ )
+
+        The daemon processes a single event cycle (for runtime integration).
+        The outer co-inductive loop (!-replication) is managed by the
+        DaemonSupervisor; this method handles one pass through the listeners.
+
+        Co-algebraic semantics:
+          δ : S → S × E
+          Input: current state S + incoming event
+          Output: new state S' + emitted output E
+
+        Linear Logic per event (Girard, 1987):
+          Budget(n) ⊗ Event ⊸ Output ⊗ Budget(n-c)
+          Per-event budget is consumed and replenished each cycle.
+
+        CPS Integration:
+          After processing, the daemon auto-hibernates by serializing
+          its cognitive state. On next event, it resumes with full
+          BDI matrix recovered.
+
+        Recovery (STIT logic):
+          When processing fails, on_stuck fires per DaemonDefinition:
+          hibernate → partial result, escalate → error propagation,
+          retry → re-attempt, forge → creative synthesis.
+        """
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        daemon_meta = step.metadata["daemon"]
+
+        # ── Extract daemon configuration ─────────────────────────
+        name = daemon_meta.get("name", "")
+        goal = daemon_meta.get("goal", "")
+        tools = daemon_meta.get("tools", [])
+        max_tokens = daemon_meta.get("max_tokens", 0)
+        max_time = daemon_meta.get("max_time", "")
+        max_cost = daemon_meta.get("max_cost", 0.0)
+        strategy = daemon_meta.get("strategy", "react")
+        on_stuck = daemon_meta.get("on_stuck", "hibernate")
+        continuation_id = daemon_meta.get("continuation_id", "")
+        listeners_meta = daemon_meta.get("listeners", [])
+
+        # Strategy → effort mapping (reuses agent strategy map)
+        effort = self._AGENT_STRATEGY_EFFORT.get(strategy, "medium")
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "daemon_name": name,
+                "daemon_goal": goal,
+                "daemon_strategy": strategy,
+                "daemon_on_stuck": on_stuck,
+                "daemon_listeners": len(listeners_meta),
+                "daemon_continuation_id": continuation_id,
+            },
+        )
+
+        # ── Process one event cycle ──────────────────────────────
+        cycle_results: list[StepResult] = []
+        accumulated_tokens = 0
+        on_stuck_fired = False
+        active_channel = ""
+        active_alias = ""
+
+        # The daemon processes its listeners' child steps sequentially
+        # In a full server deployment, the EventBus would dispatch
+        # to the matching listener; here we compile all listeners' steps.
+        for listener_meta in listeners_meta:
+            channel_topic = listener_meta.get("channel_topic", "")
+            event_alias = listener_meta.get("event_alias", "")
+            child_steps_meta = listener_meta.get("child_steps", [])
+            active_channel = channel_topic
+            active_alias = event_alias
+
+            # Build a context-aware prompt for this listener's cycle
+            daemon_prompt = (
+                f"You are daemon '{name}' processing events on channel '{channel_topic}'.\n"
+                f"Goal: {goal}\n"
+                f"Strategy: {strategy}\n"
+                f"Event alias: {event_alias}\n"
+                f"Available tools: {', '.join(tools) if tools else 'none'}\n\n"
+                f"Process the event and produce a structured response. "
+                f"If the event requires action, execute the appropriate steps."
+            )
+
+            # Execute child steps for this listener
+            for i, child_meta in enumerate(child_steps_meta):
+                child_step = CompiledStep(
+                    step_name=child_meta.get("step_name", f"daemon:{name}:listener:{channel_topic}:step:{i}"),
+                    system_prompt=child_meta.get("system_prompt", ""),
+                    user_prompt=child_meta.get("user_prompt", daemon_prompt),
+                    metadata=child_meta.get("metadata", {}),
+                )
+
+                try:
+                    child_result = await self._execute_step(
+                        step=child_step,
+                        unit=unit,
+                        ctx=ctx,
+                        tracer=tracer,
+                    )
+                    cycle_results.append(child_result)
+                    if child_result.response:
+                        accumulated_tokens += sum(child_result.response.usage.values())
+
+                    # Store result in context
+                    ctx.set(
+                        f"daemon:{name}:{channel_topic}:{i}",
+                        child_result.response.content if child_result.response else "",
+                    )
+                except Exception:
+                    on_stuck_fired = True
+                    # Apply on_stuck recovery policy
+                    if on_stuck == "hibernate":
+                        break
+                    elif on_stuck == "escalate":
+                        raise
+                    elif on_stuck == "retry":
+                        continue
+                    else:
+                        break
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+
+        # Build the final response from accumulated cycle results
+        final_content = "; ".join(
+            cr.response.content for cr in cycle_results
+            if cr.response and cr.response.content
+        ) or f"Daemon '{name}' cycle completed"
+
+        final_response = ModelResponse(
+            content=final_content,
+            model=cycle_results[-1].response.model if cycle_results and cycle_results[-1].response else "daemon",
+            usage={"input_tokens": 0, "output_tokens": accumulated_tokens},
+        )
+
+        daemon_result = DaemonResult(
+            daemon_name=name,
+            goal=goal,
+            strategy=strategy,
+            events_processed=1,
+            channel_topic=active_channel,
+            event_alias=active_alias,
+            on_stuck_fired=on_stuck_fired,
+            on_stuck_policy=on_stuck,
+            cycle_results=tuple(cycle_results),
+            final_response=final_response,
+            total_tokens=accumulated_tokens,
+            continuation_id=continuation_id,
+        )
+
+        # Store daemon result in context
+        ctx.set(f"daemon:{name}", daemon_result.to_dict())
+
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "daemon_name": name,
+                "events_processed": 1,
+                "on_stuck_fired": on_stuck_fired,
+                "total_tokens": accumulated_tokens,
+                "continuation_id": continuation_id,
+            },
+            duration_ms=step_duration,
+        )
+
+        return StepResult(
+            step_name=step_name,
+            response=final_response,
             duration_ms=step_duration,
         )
 

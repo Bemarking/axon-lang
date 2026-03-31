@@ -34,6 +34,7 @@ from axon.compiler.ir_nodes import (
     IRConsensus,
     IRContext,
     IRCorroborate,
+    IRDaemon,
     IRDataSpace,
     IRDeliberate,
     IRExplore,
@@ -74,6 +75,9 @@ _OTS_IR_TYPES = (IROtsApply,)
 
 # IR types that represent Compute operations (deterministic muscle)
 _COMPUTE_IR_TYPES = (IRComputeApply,)
+
+# IR types that represent Daemon operations (AxonServer π-calculus)
+_DAEMON_IR_TYPES = (IRDaemon,)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -289,6 +293,9 @@ class BaseBackend(ABC):
                 elif isinstance(step, _COMPUTE_IR_TYPES):
                     compute_step = self._compile_compute_step(step, ir)
                     compiled_steps.append(compute_step)
+                elif isinstance(step, _DAEMON_IR_TYPES):
+                    daemon_step = self._compile_daemon_step(step, ctx)
+                    compiled_steps.append(daemon_step)
                 else:
                     compiled = self.compile_step(step, ctx)
                     compiled_steps.append(compiled)
@@ -495,6 +502,54 @@ class BaseBackend(ABC):
                     user_prompt="",
                     metadata={},
                 )
+
+    def _compile_daemon_step(
+        self, step: IRDaemon, ctx: CompilationContext,
+    ) -> CompiledStep:
+        """Compile a daemon IR node into a metadata-only step.
+
+        Daemon steps carry all configuration for the runtime's
+        co-inductive event loop. The executor uses this metadata
+        to set up the EventBus, register listeners, and manage
+        the auto-hibernate/resume CPS cycle.
+
+        π-Calculus: Daemon ≡ !( Σᵢ cᵢ(xᵢ).Qᵢ )
+        Each listener is compiled with its child steps.
+        """
+        compiled_listeners = []
+        for listener in step.listeners:
+            child_steps = [
+                self.compile_step(child, ctx)
+                for child in listener.children
+            ] if listener.children else []
+            compiled_listeners.append({
+                "channel_type": listener.channel_type,
+                "channel_topic": listener.channel_topic,
+                "event_alias": listener.event_alias,
+                "child_steps": [cs.to_dict() for cs in child_steps],
+            })
+
+        return CompiledStep(
+            step_name=f"daemon:{step.name}",
+            user_prompt="",
+            metadata={
+                "daemon": {
+                    "name": step.name,
+                    "goal": step.goal,
+                    "tools": list(step.tools),
+                    "max_tokens": step.max_tokens,
+                    "max_time": step.max_time,
+                    "max_cost": step.max_cost,
+                    "memory_ref": step.memory_ref,
+                    "strategy": step.strategy,
+                    "on_stuck": step.on_stuck,
+                    "return_type": step.return_type,
+                    "shield_ref": step.shield_ref,
+                    "continuation_id": step.continuation_id,
+                    "listeners": compiled_listeners,
+                },
+            },
+        )
 
     @staticmethod
     def _compile_shield_step(

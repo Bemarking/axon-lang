@@ -44,6 +44,11 @@ class ExecutionState:
     persona_name: str = ""
     context_name: str = ""
     effort: str = ""
+    # ── Daemon CPS fields (AxonServer — co-inductive state) ──────
+    daemon_name: str = ""                        # daemon identifier (empty for flows)
+    channel_topic: str = ""                      # active listen channel topic
+    event_index: int = 0                         # events processed count
+    daemon_state: str = "idle"                   # idle | listening | processing | hibernating
 
     def serialize(self) -> bytes:
         """Serialize to JSON bytes for storage."""

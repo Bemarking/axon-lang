@@ -132,6 +132,11 @@ class TokenType(Enum):
     MAX_STEPS = auto()        # max_steps: 50
     ON_VIOLATION = auto()     # on_violation: halt|retry|coerce
 
+    # ── DAEMON KEYWORDS (AxonServer — π-calculus reactive primitive) ─
+    DAEMON = auto()           # daemon definition (νX co-algebraic)
+    LISTEN = auto()           # listen block inside daemon
+    BUDGET_PER_EVENT = auto() # budget_per_event: N (linear logic ⊗)
+
     # ── COMPUTE KEYWORDS (Deterministic Muscle Primitive §CM) ─────
     COMPUTE = auto()          # compute definition / apply
     LOGIC = auto()            # logic block inside compute
@@ -327,6 +332,10 @@ KEYWORDS: dict[str, TokenType] = {
     # EMCP (Epistemic MCP §6)
     "mcp": TokenType.MCP,
     "taint": TokenType.TAINT,
+    # Daemon (AxonServer — π-calculus reactive primitive)
+    "daemon": TokenType.DAEMON,
+    "listen": TokenType.LISTEN,
+    "budget_per_event": TokenType.BUDGET_PER_EVENT,
     # Compute (Deterministic Muscle Primitive §CM)
     "compute": TokenType.COMPUTE,
     "logic": TokenType.LOGIC,

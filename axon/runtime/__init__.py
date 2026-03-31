@@ -32,6 +32,7 @@ Usage::
 
 from axon.runtime.context_mgr import ContextManager, ContextSnapshot
 from axon.runtime.executor import (
+    DaemonResult,
     ExecutionResult,
     Executor,
     ModelClient,
@@ -89,6 +90,7 @@ __all__ = [
     "ExecutionResult",
     "StepResult",
     "UnitResult",
+    "DaemonResult",
     # Context
     "ContextManager",
     "ContextSnapshot",

@@ -903,6 +903,134 @@ class AgentDefinition(ASTNode):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  DAEMON NODES — AxonServer π-calculus reactive primitive
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class ListenBlock(ASTNode):
+    """
+    listen "orders" as event {
+        step ProcessOrder { ... }
+    }
+
+    A single reactive listener within a daemon. Binds an event
+    channel to a local alias and executes the body on each event.
+
+    π-Calculus correspondence:
+      listen "ch" as x { Q }  ≡  c(x).Q  (channel input prefix)
+
+    The channel_expr names the event channel (topic string),
+    event_alias is the local binding for the received event payload,
+    and body contains the steps to execute per event.
+    """
+    channel_expr: str = ""       # event channel / topic name
+    event_alias: str = ""        # local binding for event payload
+    body: list[ASTNode] = field(default_factory=list)
+
+
+@dataclass
+class DaemonBudget(ASTNode):
+    """
+    budget_per_event: {
+        max_tokens: 5000
+        max_time: 30s
+        max_cost: 0.10
+    }
+
+    Linear logic resource envelope consumed per event cycle:
+      Budget(n) ⊗ Event ⊸ Output ⊗ Budget(n-c)
+
+    Unlike AgentBudget, there is no max_iterations — daemons are
+    co-inductive (νX) and never terminate by iteration count.
+    """
+    max_tokens: int = 0          # 0 = unlimited
+    max_time: str = ""           # duration string (e.g., "30s", "5m")
+    max_cost: float = 0.0        # 0.0 = unlimited, in fractional currency
+
+
+@dataclass
+class DaemonDefinition(ASTNode):
+    """
+    daemon OrderProcessor(config: ServerConfig) -> OrderResult {
+        goal: "Process incoming orders in real time"
+        tools: [DBQuery, EmailSender]
+        budget_per_event: { max_tokens: 5000, max_time: 30s, max_cost: 0.10 }
+        memory: OrderMemory
+        strategy: react
+        on_stuck: hibernate
+        shield: InputGuard
+
+        listen "orders" as order_event {
+            step Validate { ... }
+            step Process { ... }
+        }
+        listen "cancellations" as cancel_event {
+            step HandleCancel { ... }
+        }
+    }
+
+    The **daemon** primitive — a co-inductive, perpetually reactive
+    cognitive server grounded in π-calculus process theory.
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  THEORETICAL FOUNDATIONS                                     ║
+    ╠══════════════════════════════════════════════════════════════╣
+    ║                                                              ║
+    ║  π-Calculus (Milner, 1999):                                  ║
+    ║    P ::= !c(x).Q — replicated listener (daemon model)       ║
+    ║    The bang (!) makes the listener perpetual: after           ║
+    ║    processing one event, the process replicates itself.      ║
+    ║                                                              ║
+    ║  Co-algebraic Semantics (greatest fixpoint νX):              ║
+    ║    δ : S → S × E — daemon transition function                ║
+    ║    Unlike flows (μX, least fixpoint = finite computation),   ║
+    ║    daemons are νX (greatest fixpoint = infinite behaviour).  ║
+    ║    The daemon never terminates — it observes and reacts.     ║
+    ║                                                              ║
+    ║  Linear Logic (Girard, 1987):                                ║
+    ║    Budget(n) ⊗ Event ⊸ Output ⊗ Budget(n-c)                 ║
+    ║    Each event cycle consumes resources from a per-event      ║
+    ║    budget. Budget is replenished per cycle, not accumulated. ║
+    ║                                                              ║
+    ║  CPS Integration (hibernate):                                ║
+    ║    Between events, the daemon auto-hibernates, serializing   ║
+    ║    its cognitive state. On event arrival, it resumes,        ║
+    ║    processes, and re-hibernates — the BDI agent recovers     ║
+    ║    its full cognitive matrix each cycle.                     ║
+    ║                                                              ║
+    ║  OTP Supervision (Erlang, Armstrong 2003):                   ║
+    ║    Crashed daemons are restarted by DaemonSupervisor with    ║
+    ║    preserved global memory — "let it crash" philosophy.      ║
+    ║                                                              ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+    Fields:
+        name:             unique identifier for the daemon
+        parameters:       typed configuration inputs
+        return_type:      declared output type per event cycle
+        goal:             natural-language objective (Davidson's pro-attitude)
+        tools:            list of tool names available to the daemon
+        budget_per_event: resource constraints per event cycle (linear logic)
+        memory_ref:       reference to a declared memory {} block
+        strategy:         deliberation strategy (react, reflexion, etc.)
+        on_stuck:         recovery policy (hibernate, escalate, retry, forge)
+        shield_ref:       reference to a declared shield
+        listeners:        list of ListenBlock — the daemon's event channels
+    """
+    name: str = ""
+    parameters: list[ParameterNode] = field(default_factory=list)
+    return_type: TypeExprNode | None = None
+    goal: str = ""
+    tools: list[str] = field(default_factory=list)
+    budget_per_event: DaemonBudget | None = None
+    memory_ref: str = ""                   # reference to a memory {} block
+    strategy: str = "react"                # react | reflexion | plan_and_execute | custom
+    on_stuck: str = "hibernate"            # hibernate | escalate | retry | forge
+    shield_ref: str = ""                   # reference to a declared shield
+    listeners: list[ListenBlock] = field(default_factory=list)
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  SHIELD NODES — compiler-level LLM security
 # ═══════════════════════════════════════════════════════════════════
 

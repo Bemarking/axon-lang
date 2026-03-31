@@ -25,6 +25,8 @@ from .ast_nodes import (
     CorpusDocEntry,
     CorpusEdgeEntry,
     CorroborateNode,
+    DaemonBudget,
+    DaemonDefinition,
     DataSpaceDefinition,
     DeliberateBlock,
     DrillNode,
@@ -44,6 +46,7 @@ from .ast_nodes import (
     LambdaDataApplyNode,
     LambdaDataDefinition,
     LetStatement,
+    ListenBlock,
     MandateApplyNode,
     MandateDefinition,
     MemoryDefinition,
@@ -153,6 +156,8 @@ class Parser:
                 return self._parse_compute()
             case TokenType.LAMBDA:
                 return self._parse_lambda_data()
+            case TokenType.DAEMON:
+                return self._parse_daemon()
             case TokenType.LET:
                 return self._parse_let()
             case _:
@@ -160,7 +165,7 @@ class Parser:
                     f"Unexpected token at top level",
                     line=tok.line,
                     column=tok.column,
-                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, ots, mandate, lambda, run, know, speculate, ...)",
+                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, ots, mandate, lambda, daemon, run, know, speculate, ...)",
                     found=tok.value,
                 )
 
@@ -625,6 +630,10 @@ class Parser:
                 return self._parse_compute_apply()
             case TokenType.LAMBDA:
                 return self._parse_lambda_data_apply()
+            case TokenType.LISTEN:
+                return self._parse_listen()
+            case TokenType.DAEMON:
+                return self._parse_daemon()
             case TokenType.FOR:
                 return self._parse_for_in()
             case TokenType.LET:
@@ -636,7 +645,7 @@ class Parser:
                     "Unexpected token in flow body",
                     line=tok.line,
                     column=tok.column,
-                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, mandate, lambda, focus, associate, aggregate, explore, ingest, let, return",
+                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, mandate, lambda, daemon, listen, focus, associate, aggregate, explore, ingest, let, return",
                     found=tok.value,
                 )
 
@@ -2504,6 +2513,188 @@ class Parser:
                     node.max_time = self._consume(TokenType.DURATION).value
                 case "max_cost":
                     # Accept both float (0.50) and integer (1) values
+                    cost_tok = self._current()
+                    if cost_tok.type == TokenType.FLOAT:
+                        node.max_cost = float(self._advance().value)
+                    else:
+                        node.max_cost = float(self._consume(TokenType.INTEGER).value)
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    # ── DAEMON (AxonServer — π-calculus reactive primitive) ────────
+
+    def _parse_daemon(self) -> DaemonDefinition:
+        """
+        Parse a daemon definition:
+
+          daemon OrderProcessor(config: ServerConfig) -> OrderResult {
+              goal: "Process incoming orders"
+              tools: [DBQuery, EmailSender]
+              budget_per_event: { max_tokens: 5000, max_time: 30s, max_cost: 0.10 }
+              memory: OrderMemory
+              strategy: react
+              on_stuck: hibernate
+              shield: InputGuard
+
+              listen "orders" as order_event {
+                  step Validate { ... }
+              }
+          }
+
+        π-Calculus grounding:
+          P ::= !c(x).Q — replicated listener
+          The daemon is the replication operator (!), each listen
+          block is a channel input prefix c(x).Q.
+        """
+        tok = self._consume(TokenType.DAEMON)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = DaemonDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        # parameters: (param: Type, ...)
+        self._consume(TokenType.LPAREN)
+        if not self._check(TokenType.RPAREN):
+            node.parameters = self._parse_param_list()
+        self._consume(TokenType.RPAREN)
+
+        # optional return type: -> ReturnType
+        if self._check(TokenType.ARROW):
+            self._advance()
+            node.return_type = self._parse_type_expr()
+
+        # body
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            inner = self._current()
+
+            match inner.type:
+                # ── Daemon-specific clauses ───────────────────────
+                case TokenType.GOAL:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.goal = self._consume(TokenType.STRING).value
+
+                case TokenType.TOOLS:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    self._consume(TokenType.LBRACKET)
+                    if self._check(TokenType.RBRACKET):
+                        self._advance()
+                        node.tools = []
+                    else:
+                        node.tools = self._parse_extended_identifier_list()
+                        self._consume(TokenType.RBRACKET)
+
+                case TokenType.BUDGET_PER_EVENT:
+                    self._advance()
+                    if self._check(TokenType.COLON):
+                        self._advance()
+                    node.budget_per_event = self._parse_daemon_budget()
+
+                case TokenType.MEMORY:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.memory_ref = self._consume_any_identifier_or_keyword().value
+
+                case TokenType.STRATEGY:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.strategy = self._consume_any_identifier_or_keyword().value
+
+                case TokenType.ON_STUCK:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.on_stuck = self._consume_any_identifier_or_keyword().value
+
+                case TokenType.SHIELD:
+                    self._advance()
+                    self._consume(TokenType.COLON)
+                    node.shield_ref = self._consume_any_identifier_or_keyword().value
+
+                # ── Listen blocks (π-calculus channel input) ──────
+                case TokenType.LISTEN:
+                    node.listeners.append(self._parse_listen())
+
+                # ── Delegate to flow step parser for body ────────
+                case _:
+                    step = self._parse_flow_step()
+                    if step is not None:
+                        node.listeners  # ensure exists; flow steps go in listeners' bodies
+                        raise AxonParseError(
+                            "Non-listen flow steps must be inside a listen block in a daemon",
+                            line=inner.line,
+                            column=inner.column,
+                            expected="listen, goal, tools, budget_per_event, memory, strategy, on_stuck, shield",
+                            found=inner.value,
+                        )
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_listen(self) -> ListenBlock:
+        """
+        Parse a listen block:
+
+          listen "orders" as order_event {
+              step Validate { ... }
+              step Process { ... }
+          }
+
+        π-Calculus correspondence: c(x).Q
+          "orders" is the channel c, order_event is the binding x,
+          and the body is the continuation Q.
+        """
+        tok = self._consume(TokenType.LISTEN)
+        node = ListenBlock(line=tok.line, column=tok.column)
+
+        # channel expression (string literal — topic name)
+        node.channel_expr = self._consume(TokenType.STRING).value
+
+        # optional: as <alias>
+        if self._check(TokenType.AS):
+            self._advance()
+            node.event_alias = self._consume(TokenType.IDENTIFIER).value
+
+        # body: { flow_steps... }
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            step = self._parse_flow_step()
+            if step is not None:
+                node.body.append(step)
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_daemon_budget(self) -> DaemonBudget:
+        """
+        Parse the per-event budget for a daemon:
+
+          budget_per_event: {
+              max_tokens: 5000
+              max_time: 30s
+              max_cost: 0.10
+          }
+
+        Grounded in Linear Logic — each field declares a consumable
+        resource replenished per event cycle.
+        No max_iterations: daemons are νX (greatest fixpoint).
+        """
+        node = DaemonBudget(line=self._current().line, column=self._current().column)
+        self._consume(TokenType.LBRACE)
+
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "max_tokens":
+                    node.max_tokens = int(self._consume(TokenType.INTEGER).value)
+                case "max_time":
+                    node.max_time = self._consume(TokenType.DURATION).value
+                case "max_cost":
                     cost_tok = self._current()
                     if cost_tok.type == TokenType.FLOAT:
                         node.max_cost = float(self._advance().value)

@@ -44,6 +44,7 @@ from axon.compiler.ir_nodes import (
     IRCorpusEdgeSpec,
     IRCorpusSpec,
     IRCorroborate,
+    IRDaemon,
     IRDataEdge,
     IRDataSpace,
     IRDeliberate,
@@ -56,6 +57,7 @@ from axon.compiler.ir_nodes import (
     IRForIn,
     IRForge,
     IRLetBinding,
+    IRListen,
     IRReturn,
     IRHibernate,
     IRImport,
@@ -135,6 +137,7 @@ class IRGenerator:
         self._runs: list[IRRun] = []
         self._agents: dict[str, IRAgent] = {}
         self._shields: dict[str, IRShield] = {}
+        self._daemons: dict[str, IRDaemon] = {}
         self._pix_specs: dict[str, IRPixSpec] = {}
         self._corpus_specs: dict[str, IRCorpusSpec] = {}
         self._psyche_specs: dict[str, IRPsycheSpec] = {}
@@ -184,6 +187,7 @@ class IRGenerator:
             imports=tuple(self._imports),
             agents=tuple(self._agents.values()),
             shields=tuple(self._shields.values()),
+            daemons=tuple(self._daemons.values()),
             pix_specs=tuple(self._pix_specs.values()),
             corpus_specs=tuple(self._corpus_specs.values()),
             psyche_specs=tuple(self._psyche_specs.values()),
@@ -264,6 +268,9 @@ class IRGenerator:
         # CM — Compute (deterministic muscle primitive)
         ast.ComputeDefinition: "_visit_compute",
         ast.ComputeApplyNode: "_visit_compute_apply",
+        # Daemon — AxonServer (π-calculus reactive primitive)
+        ast.DaemonDefinition: "_visit_daemon",
+        ast.ListenBlock: "_visit_listen",
     }
 
     def _visit(self, node: ast.ASTNode) -> IRNode:
@@ -1088,6 +1095,73 @@ class IRGenerator:
         return ir_agent
 
     # ═══════════════════════════════════════════════════════════════════
+    #  DAEMON VISITORS — AxonServer π-calculus reactive primitive
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _visit_daemon(self, node: ast.DaemonDefinition) -> IRDaemon:
+        """
+        Compile DaemonDefinition → IRDaemon.
+
+        Resolves:
+        - listeners (recursive _visit for each ListenBlock)
+        - budget constraints (from DaemonBudget, per-event linear logic)
+        - continuation_id (SHA-256 for CPS auto-hibernate)
+
+        π-Calculus lowering:
+          daemon D { listen c₁ as x₁ { Q₁ }; listen c₂ as x₂ { Q₂ } }
+          →  IRDaemon( listeners=[ IRListen(c₁,x₁,Q₁), IRListen(c₂,x₂,Q₂) ] )
+          ≡  !( c₁(x₁).Q₁ + c₂(x₂).Q₂ )   [replicated choice]
+        """
+        listeners = tuple(self._visit_listen(l) for l in node.listeners)
+
+        # Generate a deterministic continuation ID for CPS auto-hibernate
+        seed = f"daemon:{node.name}:{node.line}:{node.column}"
+        continuation_id = hashlib.sha256(seed.encode()).hexdigest()[:16]
+
+        # Extract per-event budget with defaults for absent budget block
+        budget = node.budget_per_event
+        max_tokens = budget.max_tokens if budget else 0
+        max_time = budget.max_time if budget else ""
+        max_cost = budget.max_cost if budget else 0.0
+
+        ir_daemon = IRDaemon(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            goal=node.goal,
+            tools=tuple(node.tools),
+            max_tokens=max_tokens,
+            max_time=max_time,
+            max_cost=max_cost,
+            memory_ref=node.memory_ref,
+            strategy=node.strategy,
+            on_stuck=node.on_stuck,
+            return_type=node.return_type.name if node.return_type else "",
+            shield_ref=node.shield_ref,
+            continuation_id=continuation_id,
+            listeners=listeners,
+        )
+        self._daemons[node.name] = ir_daemon
+        return ir_daemon
+
+    def _visit_listen(self, node: ast.ListenBlock) -> IRListen:
+        """
+        Compile ListenBlock → IRListen.
+
+        π-Calculus correspondence:
+          listen "ch" as x { Q }  →  IRListen(channel_topic="ch", event_alias="x", children=Q)
+          ≡  ch(x).Q  (channel input prefix)
+        """
+        children = tuple(self._visit(child) for child in node.body)
+        return IRListen(
+            source_line=node.line,
+            source_column=node.column,
+            channel_topic=node.channel_expr,
+            event_alias=node.event_alias,
+            children=children,
+        )
+
+    # ═══════════════════════════════════════════════════════════════════
     #  SHIELD VISITORS
     # ═══════════════════════════════════════════════════════════════════
 
@@ -1362,6 +1436,9 @@ class IRGenerator:
         self._ots_specs.clear()
         self._mandate_specs.clear()
         self._compute_specs.clear()
+        self._agents.clear()
+        self._shields.clear()
+        self._daemons.clear()
 
     # ═════════════════════════════════════════════════════════════════
     #  PIX VISITORS — Structured Cognitive Retrieval
