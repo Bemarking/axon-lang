@@ -108,7 +108,7 @@ class NativeCompiler:
         """
         source_hash = hashlib.sha256(
             logic_source.encode("utf-8"),
-        ).hexdigest()[:16]
+        ).hexdigest()
 
         # Check cache first
         cached_lib = self._cache_dir / f"{source_hash}{self._lib_ext}"
@@ -298,7 +298,9 @@ class NativeCompiler:
                 continue
 
         if not has_return:
-            body_lines.append("    return 0.0;")
+            raise ValueError(
+                "C transpiler: compute logic must contain a 'return' statement."
+            )
 
         body = "\n".join(body_lines)
 

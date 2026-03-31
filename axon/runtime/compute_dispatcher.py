@@ -103,7 +103,11 @@ class NativeComputeDispatcher:
                 try:
                     arg_values.append(float(val))
                 except (ValueError, TypeError):
-                    arg_values.append(0.0)
+                    raise ValueError(
+                        f"Compute argument '{arguments[i]}' resolved to "
+                        f"non-numeric value: {val!r}. All compute inputs "
+                        f"must be numeric (f64)."
+                    )
 
         # --- 3-Tier Execution Pipeline ---
         self._ensure_native_pipeline()
@@ -245,6 +249,10 @@ class NativeComputeDispatcher:
         while i < len(parts):
             op_str = parts[i]
             operand = self._eval_atom(parts[i + 1], env)
+            if op_str == "/" and operand == 0:
+                raise ZeroDivisionError(
+                    "Division by zero in compute logic"
+                )
             result = self._OPS[op_str](result, operand)
             i += 2
         return result

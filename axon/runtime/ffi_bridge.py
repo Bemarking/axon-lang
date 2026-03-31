@@ -79,6 +79,7 @@ class FFIBridge:
         lib_path: str | Path,
         fn_name: str,
         args: list[float],
+        expected_arity: int | None = None,
     ) -> float:
         """Call a native compute function via FFI.
 
@@ -86,6 +87,7 @@ class FFIBridge:
             lib_path: Path to the shared library.
             fn_name: The exported function name (e.g. "axon_compute_CalculateTax").
             args: List of f64 arguments.
+            expected_arity: If provided, validates that len(args) matches.
 
         Returns:
             The f64 result from the native function.
@@ -93,7 +95,14 @@ class FFIBridge:
         Raises:
             OSError: If the library cannot be loaded.
             AttributeError: If the function is not found in the library.
+            ValueError: If arity mismatch or result is not finite.
         """
+        if expected_arity is not None and len(args) != expected_arity:
+            raise ValueError(
+                f"Arity mismatch for {fn_name}: expected {expected_arity} "
+                f"args, got {len(args)}"
+            )
+
         lib = self.load(lib_path)
 
         func = getattr(lib, fn_name)
@@ -101,7 +110,16 @@ class FFIBridge:
         func.argtypes = [ctypes.c_double] * len(args)
 
         c_args = [ctypes.c_double(a) for a in args]
-        return func(*c_args)
+        result = func(*c_args)
+
+        # Guard: reject NaN/Inf produced by native code
+        import math
+        if not math.isfinite(result):
+            raise ValueError(
+                f"Native function {fn_name} returned non-finite value: {result}"
+            )
+
+        return result
 
     def unload_all(self) -> None:
         """Clear all loaded library handles.

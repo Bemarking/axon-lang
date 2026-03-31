@@ -79,7 +79,7 @@ class RustTranspiler:
         """
         source_hash = hashlib.sha256(
             logic_source.encode("utf-8"),
-        ).hexdigest()[:16]
+        ).hexdigest()
 
         rust_fn_name = f"axon_compute_{self._sanitize(fn_name)}"
 
@@ -118,7 +118,10 @@ class RustTranspiler:
     ) -> list[str]:
         """Transpile the logic DSL body into Rust statements."""
         if not logic_source:
-            return ["0.0_f64"]
+            raise ValueError(
+                "Empty logic_source: compute blocks must contain "
+                "at least one 'return' statement."
+            )
 
         lines = logic_source.strip().splitlines()
         rust_lines: list[str] = []
@@ -156,7 +159,10 @@ class RustTranspiler:
             )
 
         if not has_return:
-            rust_lines.append("0.0_f64")
+            raise ValueError(
+                "Compute logic must contain a 'return' statement. "
+                "Implicit return of 0.0 is not allowed for deterministic safety."
+            )
 
         return rust_lines
 
@@ -224,10 +230,11 @@ class RustTranspiler:
 
     @staticmethod
     def _is_numeric(token: str) -> bool:
-        """Check if a token is a numeric literal."""
+        """Check if a token is a finite numeric literal."""
         try:
-            float(token)
-            return True
+            val = float(token)
+            import math
+            return math.isfinite(val)
         except (ValueError, TypeError):
             return False
 

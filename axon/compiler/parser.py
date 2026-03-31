@@ -2990,7 +2990,7 @@ class Parser:
                 self._advance()
                 self._consume(TokenType.LBRACE)
                 while not self._check(TokenType.RBRACE):
-                    node.logic_body.append(self._parse_flow_step())
+                    node.logic_body.append(self._parse_compute_logic_stmt())
                 self._consume(TokenType.RBRACE)
 
             else:
@@ -3002,6 +3002,32 @@ class Parser:
 
         self._consume(TokenType.RBRACE)
         return node
+
+    def _parse_compute_logic_stmt(self) -> ASTNode:
+        """Parse a single statement inside compute logic { }.
+
+        Only deterministic, pure statements are allowed:
+          - let bindings: let x = expr
+          - return statements: return expr
+
+        All other constructs (step, probe, reason, etc.) are
+        rejected — compute logic must be statically deterministic.
+        """
+        tok = self._current()
+        if tok.type == TokenType.LET:
+            return self._parse_let()
+        if tok.type == TokenType.RETURN:
+            return self._parse_return()
+
+        raise AxonParseError(
+            "Only 'let' and 'return' statements are allowed inside "
+            "compute logic blocks. Compute must be deterministic — "
+            "flow steps, probes, and LLM calls are not permitted.",
+            line=tok.line,
+            column=tok.column,
+            expected="let or return",
+            found=tok.value,
+        )
 
     def _parse_compute_input_params(self) -> list[ParameterNode]:
         """Parse compute input parameter list: name (Type), name (Type), ..."""

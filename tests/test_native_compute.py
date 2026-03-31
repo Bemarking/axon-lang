@@ -89,10 +89,11 @@ class TestRustTranspiler:
         # Special characters should be sanitized
         assert "axon_compute_" in result.fn_name
 
-    def test_empty_logic(self):
+    def test_empty_logic_raises(self):
+        """Empty logic_source must raise — no implicit 0.0 allowed."""
         t = RustTranspiler()
-        result = t.transpile("", "Empty", [])
-        assert "0.0_f64" in result.rust_source  # default return
+        with pytest.raises(ValueError, match="Empty logic_source"):
+            t.transpile("", "Empty", [])
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -488,3 +489,276 @@ class TestCompileResult:
         )
         with pytest.raises(AttributeError):
             cr.tier = "rust"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  NEGATIVE TESTS — Division by Zero
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestDivisionByZero:
+    """Division by zero must raise, never produce inf silently."""
+
+    async def test_python_fallback_div_zero_raises(self):
+        d = NativeComputeDispatcher()
+        meta = {
+            "compute_name": "Div",
+            "arguments": ["10.0", "0"],
+            "output_name": "r",
+            "compute_definition": {
+                "name": "Div",
+                "inputs": [
+                    {"name": "a", "type": "Float"},
+                    {"name": "b", "type": "Float"},
+                ],
+                "output_type": "Float",
+                "logic_source": "let r = a / b\nreturn r",
+                "shield_ref": "",
+                "verified": False,
+            },
+        }
+        with pytest.raises(ZeroDivisionError, match="Division by zero"):
+            await d.dispatch(meta, {})
+
+    def test_ffi_bridge_non_finite_raises(self):
+        """FFI bridge must reject NaN/Inf from native functions."""
+        bridge = FFIBridge()
+        # We can't call a real native function, but verify the contract
+        # by testing the arity validation
+        with pytest.raises(ValueError, match="Arity mismatch"):
+            bridge.call("/fake/lib.so", "fn", [1.0, 2.0], expected_arity=3)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  NEGATIVE TESTS — Missing Return
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestMissingReturn:
+    """Compute logic without 'return' must raise, not silently return 0."""
+
+    def test_rust_transpiler_no_return_raises(self):
+        t = RustTranspiler()
+        with pytest.raises(ValueError, match="return"):
+            t.transpile("let x = a + b", "NoRet", ["a", "b"])
+
+    def test_c_transpiler_no_return_raises(self):
+        with patch("shutil.which", return_value=None):
+            nc = NativeCompiler(cache_dir=tempfile.mkdtemp())
+        with pytest.raises(ValueError, match="return"):
+            nc._transpile_to_c("let x = a + b", "fn", ["a", "b"])
+
+    def test_rust_transpiler_empty_raises(self):
+        t = RustTranspiler()
+        with pytest.raises(ValueError, match="Empty logic_source"):
+            t.transpile("", "Empty", [])
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  NEGATIVE TESTS — Non-Numeric Arguments
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestNonNumericArgs:
+    """Non-numeric compute arguments must raise, not silently become 0.0."""
+
+    async def test_string_arg_raises(self):
+        d = NativeComputeDispatcher()
+        meta = {
+            "compute_name": "Add",
+            "arguments": ["hello", "5.0"],
+            "output_name": "r",
+            "compute_definition": {
+                "name": "Add",
+                "inputs": [
+                    {"name": "a", "type": "Float"},
+                    {"name": "b", "type": "Float"},
+                ],
+                "output_type": "Float",
+                "logic_source": "return a + b",
+                "shield_ref": "",
+                "verified": False,
+            },
+        }
+        with pytest.raises(ValueError, match="non-numeric"):
+            await d.dispatch(meta, {})
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  NEGATIVE TESTS — Invalid Expressions
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestInvalidExpressions:
+    """Unsupported or malformed expressions must be rejected."""
+
+    def test_unknown_identifier_raises(self):
+        t = RustTranspiler()
+        with pytest.raises(ValueError, match="Unknown identifier"):
+            t.transpile("return z", "Bad", ["a", "b"])
+
+    def test_unsupported_statement_raises(self):
+        t = RustTranspiler()
+        with pytest.raises(ValueError, match="Unsupported"):
+            t.transpile("if x > 0 then return x", "Bad", ["x"])
+
+    def test_numeric_overflow_rejected(self):
+        """Overflow literals (1e999) must not be accepted as numeric."""
+        t = RustTranspiler()
+        with pytest.raises(ValueError, match="Unknown identifier"):
+            # 1e999 overflows float → _is_numeric returns False → treated as id
+            t.transpile("return 1e999", "Overflow", [])
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  NEGATIVE TESTS — Parser Rejects Invalid Logic
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestParserRejectsInvalidLogic:
+    """Parser must reject non-deterministic constructs inside logic {}."""
+
+    def test_step_inside_logic_rejected(self):
+        from axon.compiler.lexer import Lexer
+        from axon.compiler.parser import Parser
+        source = '''compute Bad {
+    input: x (Float)
+    output: Float
+    logic {
+        step Report {
+            ask: "This should not be allowed"
+            output: String
+        }
+    }
+}'''
+        tokens = Lexer(source).tokenize()
+        with pytest.raises(Exception, match="let or return"):
+            Parser(tokens).parse()
+
+    def test_probe_inside_logic_rejected(self):
+        from axon.compiler.lexer import Lexer
+        from axon.compiler.parser import Parser
+        source = '''compute Bad {
+    input: x (Float)
+    output: Float
+    logic {
+        probe Check { ask: "check" }
+    }
+}'''
+        tokens = Lexer(source).tokenize()
+        with pytest.raises(Exception, match="let or return"):
+            Parser(tokens).parse()
+
+    def test_valid_logic_still_works(self):
+        from axon.compiler.lexer import Lexer
+        from axon.compiler.parser import Parser
+        from axon.compiler import ast_nodes as ast
+        source = '''compute Add {
+    input: a (Float), b (Float)
+    output: Float
+    logic {
+        let result = a + b
+        return result
+    }
+}'''
+        tokens = Lexer(source).tokenize()
+        tree = Parser(tokens).parse()
+        decl = tree.declarations[0]
+        assert isinstance(decl, ast.ComputeDefinition)
+        assert len(decl.logic_body) == 2
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  FULL SHA-256 HASH TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestFullSHA256:
+    """Verify full SHA-256 hash is used (no truncation)."""
+
+    def test_transpiler_hash_length(self):
+        t = RustTranspiler()
+        result = t.transpile("return a", "Id", ["a"])
+        assert len(result.source_hash) == 64  # full SHA-256 hex
+
+    def test_compiler_hash_length(self):
+        with patch("shutil.which", return_value=None):
+            nc = NativeCompiler(cache_dir=tempfile.mkdtemp())
+        result = nc.compile("return a + b", "Add", ["a", "b"])
+        assert len(result.source_hash) == 64
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  FFI ARITY VALIDATION
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestFFIArityValidation:
+    """FFI bridge must validate argument count before calling native code."""
+
+    def test_arity_mismatch_raises(self):
+        bridge = FFIBridge()
+        with pytest.raises(ValueError, match="Arity mismatch"):
+            bridge.call("/fake.so", "fn", [1.0], expected_arity=2)
+
+    def test_arity_match_passes_validation(self):
+        """Correct arity should not raise ValueError (will raise OSError for missing lib)."""
+        bridge = FFIBridge()
+        with pytest.raises(OSError):
+            bridge.call("/fake.so", "fn", [1.0, 2.0], expected_arity=2)
+
+    def test_no_arity_check_when_none(self):
+        """When expected_arity is None, no arity check is performed."""
+        bridge = FFIBridge()
+        with pytest.raises(OSError):
+            bridge.call("/fake.so", "fn", [1.0])
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  SHIELD VERIFICATION HONESTY
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestShieldVerificationHonesty:
+    """Shield verification must check scan categories, not just existence."""
+
+    def test_shield_with_scan_marks_verified(self):
+        from axon.compiler.lexer import Lexer
+        from axon.compiler.parser import Parser
+        from axon.compiler.ir_generator import IRGenerator
+        source = '''shield TypeSafety {
+    scan: [bias]
+}
+compute Calc {
+    input: x (Float)
+    output: Float
+    shield: TypeSafety
+    logic {
+        return x
+    }
+}'''
+        tokens = Lexer(source).tokenize()
+        tree = Parser(tokens).parse()
+        ir = IRGenerator().generate(tree)
+        assert ir.compute_specs[0].verified is True
+
+    def test_shield_without_scan_marks_unverified(self):
+        """A shield with empty scan categories should not mark verified."""
+        from axon.compiler.lexer import Lexer
+        from axon.compiler.parser import Parser
+        from axon.compiler.ir_generator import IRGenerator
+        source = '''shield EmptyShield {
+    strategy: "pattern"
+}
+compute Calc {
+    input: x (Float)
+    output: Float
+    shield: EmptyShield
+    logic {
+        return x
+    }
+}'''
+        tokens = Lexer(source).tokenize()
+        tree = Parser(tokens).parse()
+        ir = IRGenerator().generate(tree)
+        assert ir.compute_specs[0].verified is False

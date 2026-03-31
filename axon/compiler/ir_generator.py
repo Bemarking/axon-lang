@@ -1672,8 +1672,9 @@ class IRGenerator:
             elif isinstance(child, ast.ReturnStatement):
                 if child.value_expr and isinstance(child.value_expr, ast.LetStatement):
                     logic_lines.append(f"return {child.value_expr.value_expr}")
-                else:
-                    logic_lines.append("return")
+                elif child.value_expr is not None:
+                    logic_lines.append(f"return {child.value_expr}")
+                # else: bare return — omit (compute must always return a value)
         logic_source = "\n".join(logic_lines)
 
         # Compile input parameters
@@ -1690,11 +1691,15 @@ class IRGenerator:
         )
 
         # Shield theorem prover verification
+        # A compute definition is only marked 'verified' when the
+        # referenced shield exists AND has at least one scan category.
+        # This is a structural pre-check; full Curry-Howard theorem
+        # proving activates when the shield engine is connected.
         verified = False
         if node.shield_ref and node.shield_ref in self._shields:
-            # Shield exists — mark as verified (full theorem proving
-            # will be implemented when the shield engine is connected)
-            verified = True
+            shield_ir = self._shields[node.shield_ref]
+            if hasattr(shield_ir, 'scan') and shield_ir.scan:
+                verified = True
 
         ir_compute = IRCompute(
             source_line=node.line,
