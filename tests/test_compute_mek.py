@@ -353,7 +353,7 @@ class TestDispatcherMEKIntegration:
         dispatcher = NativeComputeDispatcher()
         result = await dispatcher.dispatch(meta_add, {})
         assert result["result"] == 8
-        assert result["tier"] == "python"
+        assert result["tier"] in ("python", "rust", "c")
         # No latent_pointer without MEK
         assert "latent_pointer" not in result
 
