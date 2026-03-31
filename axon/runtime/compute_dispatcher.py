@@ -5,30 +5,35 @@ Deterministic Fast-Path execution engine for compute primitives.
 
 The NativeComputeDispatcher is the "muscle" of the AXON runtime:
 it evaluates compute logic blocks without invoking any LLM,
-executing deterministic transformations directly in Python.
+executing deterministic transformations at native speed.
 
-Architecture:
-  1. Receives a compute application (metadata) + context
-  2. Resolves input arguments from context or literal values
-  3. Evaluates the logic DSL (let bindings, arithmetic, return)
-  4. Returns the result as a Python value
+3-Tier Execution Architecture (Paper §5):
+  Tier 1 — Rust:  logic → RustTranspiler → rustc cdylib → ctypes FFI
+  Tier 2 — C:     logic → C transpiler → gcc/tcc → ctypes FFI
+  Tier 3 — Python: interpreted Fast-Path (always-available fallback)
 
-Future roadmap:
-  - Transpile DSL logic → Rust source
-  - Compile Rust → shared library (.so/.dll) via rustc
-  - Load via CFFI for zero-copy execution on MEK buffers
-  - Currently: interpreted Python Fast-Path (still no LLM)
+Each tier produces the same deterministic result; the only difference
+is execution speed.  The dispatcher auto-detects available compilers
+and selects the best tier at runtime.
 """
 
 from __future__ import annotations
 
+import logging
 import operator
 import re
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 
 class NativeComputeDispatcher:
-    """Fast-Path deterministic executor — runs compute without LLM."""
+    """Fast-Path deterministic executor — runs compute without LLM.
+
+    On first call the dispatcher lazily initialises the native compile
+    pipeline (Rust → C → Python fallback).  Compiled libraries are
+    cached by source hash across calls.
+    """
 
     # Supported binary operators for arithmetic expressions
     _OPS: dict[str, Any] = {
@@ -37,6 +42,31 @@ class NativeComputeDispatcher:
         "*": operator.mul,
         "/": operator.truediv,
     }
+
+    def __init__(self) -> None:
+        self._native_compiler: Any = None
+        self._ffi_bridge: Any = None
+        self._native_init_done = False
+
+    def _ensure_native_pipeline(self) -> None:
+        """Lazily initialise the native compilation pipeline."""
+        if self._native_init_done:
+            return
+        self._native_init_done = True
+        try:
+            from axon.runtime.native_compiler import NativeCompiler
+            from axon.runtime.ffi_bridge import FFIBridge
+
+            self._native_compiler = NativeCompiler()
+            self._ffi_bridge = FFIBridge()
+            tier = self._native_compiler.available_tier
+            logger.info("AXON compute native tier: %s", tier)
+        except Exception:
+            logger.debug(
+                "Native compile pipeline unavailable — using Python fallback",
+            )
+            self._native_compiler = None
+            self._ffi_bridge = None
 
     async def dispatch(
         self,
@@ -52,28 +82,61 @@ class NativeComputeDispatcher:
             context: The current execution context (step outputs).
 
         Returns:
-            A dict with 'output_name' and 'result' keys.
+            A dict with 'output_name', 'result', and 'tier' keys.
         """
         compute_def = compute_meta.get("compute_definition", {})
         arguments = compute_meta.get("arguments", [])
         output_name = compute_meta.get("output_name", "")
+        compute_name = compute_meta.get("compute_name", "compute")
         inputs = compute_def.get("inputs", [])
         logic_source = compute_def.get("logic_source", "")
 
         # Bind arguments to input parameter names
         env: dict[str, Any] = {}
+        param_names: list[str] = []
+        arg_values: list[float] = []
         for i, param in enumerate(inputs):
             if i < len(arguments):
-                env[param["name"]] = self._resolve_argument(
-                    arguments[i], context,
+                val = self._resolve_argument(arguments[i], context)
+                env[param["name"]] = val
+                param_names.append(param["name"])
+                try:
+                    arg_values.append(float(val))
+                except (ValueError, TypeError):
+                    arg_values.append(0.0)
+
+        # --- 3-Tier Execution Pipeline ---
+        self._ensure_native_pipeline()
+
+        tier = "python"
+        result = None
+
+        # Tier 1 & 2: Try native compilation (Rust / C)
+        if self._native_compiler is not None and logic_source:
+            try:
+                cr = self._native_compiler.compile(
+                    logic_source, compute_name, param_names,
+                )
+                if cr.tier in ("rust", "c"):
+                    result = self._ffi_bridge.call(
+                        str(cr.lib_path), cr.fn_name, arg_values,
+                    )
+                    tier = cr.tier
+            except Exception:
+                logger.debug(
+                    "Native execution failed — falling back to Python",
+                    exc_info=True,
                 )
 
-        # Evaluate the logic DSL
-        result = self._evaluate_logic(logic_source, env)
+        # Tier 3: Python fallback
+        if result is None:
+            result = self._evaluate_logic(logic_source, env)
+            tier = "python"
 
         return {
             "output_name": output_name,
             "result": result,
+            "tier": tier,
         }
 
     def _resolve_argument(
