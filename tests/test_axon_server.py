@@ -563,7 +563,7 @@ class TestHTTPAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["version"] == "0.28.0"
+        assert data["version"] == "0.27.5"
 
     def test_metrics_endpoint(self):
         """GET /v1/metrics returns metrics."""

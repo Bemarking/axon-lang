@@ -112,7 +112,7 @@ def create_app(server: Any) -> Any:
         """GET /v1/health — Health check."""
         return JSONResponse({
             "status": "ok" if server.is_running else "stopped",
-            "version": "0.28.0",
+            "version": "0.27.5",
             "timestamp": time.time(),
         })
 
