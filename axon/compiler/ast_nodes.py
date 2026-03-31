@@ -1719,3 +1719,162 @@ class RunStatement(ASTNode):
     on_failure_params: dict[str, str] = field(default_factory=dict)
     output_to: str = ""  # output destination
     effort: str = ""  # low | medium | high | max
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  AXONSTORE PRIMITIVE — HoTT Transactional Persistence (§AS)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class StoreColumnNode(ASTNode):
+    """
+    id: integer primary_key auto_increment
+    name: text not_null
+    balance: decimal default 0.00
+
+    A single column in an ``axonstore`` schema.
+
+    HoTT interpretation: each column is a fiber in the dependent
+    type family  Σ(c : ColName). ColType(c) , where constraints
+    (primary_key, not_null, unique) restrict the fiber's
+    inhabitants.
+    """
+    col_name: str = ""
+    col_type: str = ""                                # integer | text | decimal | timestamp | boolean
+    primary_key: bool = False
+    auto_increment: bool = False
+    not_null: bool = False
+    unique: bool = False
+    default_value: str = ""                           # literal default value
+
+
+@dataclass
+class StoreSchemaNode(ASTNode):
+    """
+    schema {
+        id: integer primary_key auto_increment
+        name: text not_null
+        email: text unique not_null
+    }
+
+    The schema sub-block inside an ``axonstore`` definition.
+
+    HoTT interpretation: the schema is a **product type**
+    (record type) whose univalence path to the DB schema
+    must be constructible for any CRUD operation to be valid:
+
+      (AxonType ≃ DBSchema) ≃ (AxonType = DBSchema)
+    """
+    columns: list[StoreColumnNode] = field(default_factory=list)
+
+
+@dataclass
+class AxonStoreDefinition(ASTNode):
+    """
+    axonstore Users {
+        backend: sqlite
+        connection: "env:DATABASE_URL"
+        schema { ... }
+        confidence_floor: 0.92
+        isolation: serializable
+        on_breach: rollback
+    }
+
+    The **axonstore** primitive — HoTT Transactional Persistence.
+
+    Acts as a transducer between the Open World Assumption (OWA)
+    of LLMs and the Closed World Assumption (CWA) of relational
+    databases.  Formal pillars:
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  §1  HoTT Univalence — schema isomorphism verification      ║
+    ║  §2  Linear Logic    — single-use transaction tokens (⊸)    ║
+    ║  §3  Design by Contract — anchor-based ACID invariants      ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+    Axiom of Univalence:
+      (A ≃ B) ≃ (A = B)
+      If the compiler can construct a homotopy path between
+      the cognitive type (B) and the DB schema (A), any
+      validated operation is mathematically correct.
+
+    Linear Logic (A ⊸ B):
+      Each transaction consumes a unique ephemeral token.
+      No duplication (no hallucinatory re-inserts).
+      No weakening (no silently dropped COMMITs).
+    """
+    name: str = ""
+    backend: str = "sqlite"                    # sqlite | postgresql | mysql
+    connection: str = ""                       # connection string or env ref
+    schema: StoreSchemaNode | None = None
+    confidence_floor: float = 0.9              # HoTT epistemic threshold
+    isolation: str = "serializable"            # read_committed | repeatable_read | serializable
+    on_breach: str = "rollback"                # rollback | raise | log
+
+
+@dataclass
+class PersistNode(ASTNode):
+    """
+    persist into Users {
+        name: "John Doe"
+        email: "john@example.com"
+    }
+
+    INSERT operation under Linear Logic ⊗ guarantees.
+    Consumes a write token — cannot be duplicated.
+    """
+    store_name: str = ""                       # target axonstore
+    fields: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class RetrieveNode(ASTNode):
+    """
+    retrieve from Users where "email == 'john@example.com'" as result
+
+    SELECT/QUERY with optional filter and result binding.
+    """
+    store_name: str = ""
+    where_expr: str = ""                       # filter expression
+    alias: str = ""                            # result binding name
+
+
+@dataclass
+class MutateNode(ASTNode):
+    """
+    mutate Users where "id == 1" {
+        balance: 150.00
+    }
+
+    UPDATE operation — atomic mutation under ACID isolation.
+    """
+    store_name: str = ""
+    where_expr: str = ""
+    fields: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class PurgeNode(ASTNode):
+    """
+    purge from Users where "status == 'inactive'"
+
+    DELETE operation — controlled purge with mandatory filter.
+    """
+    store_name: str = ""
+    where_expr: str = ""
+
+
+@dataclass
+class TransactNode(ASTNode):
+    """
+    transact {
+        persist into Users { name: "Alice" }
+        mutate Accounts where "id == 1" { balance: 500.00 }
+    }
+
+    Transaction block — Linear Logic implication (A ⊸ B).
+    Generates a single-use ephemeral token.  All operations
+    within the block share the token; on failure, rollback
+    consumes the token and reverts all mutations.
+    """
+    body: list[ASTNode] = field(default_factory=list)

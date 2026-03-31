@@ -97,6 +97,7 @@ class IRProgram(IRNode):
     mandate_specs: tuple['IRMandate', ...] = ()
     lambda_data_specs: tuple['IRLambdaData', ...] = ()
     compute_specs: tuple['IRCompute', ...] = ()
+    axonstore_specs: tuple['IRAxonStore', ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1416,3 +1417,103 @@ class IRLambdaDataApply(IRNode):
     lambda_data_name: str = ""                      # reference to declared ΛD
     target: str = ""                                # expression being bound
     output_type: str = ""                           # result type after binding
+
+
+# ═════════════════════════════════════════════════════════════════
+#  AXONSTORE IR — HoTT Transactional Persistence (§AS)
+# ═════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class IRStoreColumn(IRNode):
+    """Compiled store column — fiber in the HoTT dependent type family.
+
+    Each column is:  Σ(c : ColName). ColType(c) × Constraints(c)
+    """
+    node_type: str = "store_column"
+    col_name: str = ""
+    col_type: str = ""                             # integer | text | decimal | timestamp | boolean
+    primary_key: bool = False
+    auto_increment: bool = False
+    not_null: bool = False
+    unique: bool = False
+    default_value: str = ""
+
+
+@dataclass(frozen=True)
+class IRStoreSchema(IRNode):
+    """Compiled store schema — HoTT product type (record).
+
+    Univalence axiom:  (AxonType ≃ DBSchema) ≃ (AxonType = DBSchema)
+    The schema is the canonical representative of the equivalence class.
+    """
+    node_type: str = "store_schema"
+    columns: tuple[IRStoreColumn, ...] = ()
+
+
+@dataclass(frozen=True)
+class IRAxonStore(IRNode):
+    """Compiled axonstore definition — HoTT transactional transducer.
+
+    Bridges OWA (LLM) ↔ CWA (RDBMS) via three formal pillars:
+      §1 HoTT Univalence  — schema isomorphism verification
+      §2 Linear Logic (A ⊸ B) — single-use transaction tokens
+      §3 Design by Contract — anchor-based ACID invariants
+
+    confidence_floor: epistemic threshold below which operations
+    are rejected (HoTT path collapses → AnchorBreachError).
+    """
+    node_type: str = "axonstore"
+    name: str = ""
+    backend: str = "sqlite"
+    connection: str = ""
+    schema: IRStoreSchema | None = None
+    confidence_floor: float = 0.9
+    isolation: str = "serializable"
+    on_breach: str = "rollback"
+
+
+@dataclass(frozen=True)
+class IRPersist(IRNode):
+    """Compiled INSERT — linear write token ⊗ consumption."""
+    node_type: str = "persist"
+    store_name: str = ""
+    fields: tuple[tuple[str, str], ...] = ()       # ((col, val), ...)
+
+
+@dataclass(frozen=True)
+class IRRetrieve(IRNode):
+    """Compiled SELECT — query projection π."""
+    node_type: str = "retrieve"
+    store_name: str = ""
+    where_expr: str = ""
+    alias: str = ""
+
+
+@dataclass(frozen=True)
+class IRMutate(IRNode):
+    """Compiled UPDATE — atomic mutation Δ under ACID isolation."""
+    node_type: str = "mutate"
+    store_name: str = ""
+    where_expr: str = ""
+    fields: tuple[tuple[str, str], ...] = ()       # ((col, val), ...)
+
+
+@dataclass(frozen=True)
+class IRPurge(IRNode):
+    """Compiled DELETE — controlled purge with mandatory filter."""
+    node_type: str = "purge"
+    store_name: str = ""
+    where_expr: str = ""
+
+
+@dataclass(frozen=True)
+class IRTransact(IRNode):
+    """Compiled transaction block — Linear Logic implication (A ⊸ B).
+
+    Generates a single-use ephemeral token at runtime.
+    All children share the token; on failure, rollback consumes
+    it and reverts all mutations (no weakening, no contraction).
+    """
+    node_type: str = "transact"
+    children: tuple[IRNode, ...] = ()

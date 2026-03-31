@@ -35,6 +35,7 @@ from axon.compiler.ir_nodes import (
     IRAggregate,
     IRAnchor,
     IRAssociate,
+    IRAxonStore,
     IRCompute,
     IRComputeApply,
     IRConditional,
@@ -58,7 +59,11 @@ from axon.compiler.ir_nodes import (
     IRForge,
     IRLetBinding,
     IRListen,
+    IRMutate,
+    IRPersist,
+    IRPurge,
     IRReturn,
+    IRRetrieve,
     IRHibernate,
     IRImport,
     IRIngest,
@@ -85,9 +90,12 @@ from axon.compiler.ir_nodes import (
     IRStep,
     IRShield,
     IRShieldApply,
+    IRStoreColumn,
+    IRStoreSchema,
     IRStreamSpec,
     IRToolSpec,
     IRTrail,
+    IRTransact,
     IRType,
     IRTypeField,
     IRUseTool,
@@ -145,6 +153,7 @@ class IRGenerator:
         self._mandate_specs: dict[str, IRMandate] = {}
         self._lambda_data_specs: dict[str, IRLambdaData] = {}
         self._compute_specs: dict[str, IRCompute] = {}
+        self._axonstore_specs: dict[str, IRAxonStore] = {}
 
         # EMS: Module registry for cross-file symbol resolution
         self._registry = module_registry
@@ -195,6 +204,7 @@ class IRGenerator:
             mandate_specs=tuple(self._mandate_specs.values()),
             lambda_data_specs=tuple(self._lambda_data_specs.values()),
             compute_specs=tuple(self._compute_specs.values()),
+            axonstore_specs=tuple(self._axonstore_specs.values()),
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -271,6 +281,13 @@ class IRGenerator:
         # Daemon — AxonServer (π-calculus reactive primitive)
         ast.DaemonDefinition: "_visit_daemon",
         ast.ListenBlock: "_visit_listen",
+        # AxonStore — HoTT Transactional Persistence (§AS)
+        ast.AxonStoreDefinition: "_visit_axonstore",
+        ast.PersistNode: "_visit_persist",
+        ast.RetrieveNode: "_visit_retrieve",
+        ast.MutateNode: "_visit_mutate",
+        ast.PurgeNode: "_visit_purge",
+        ast.TransactNode: "_visit_transact",
     }
 
     def _visit(self, node: ast.ASTNode) -> IRNode:
@@ -1810,4 +1827,101 @@ class IRGenerator:
             compute_name=node.compute_name,
             arguments=tuple(node.arguments),
             output_name=node.output_name,
+        )
+
+    # ══════════════════════════════════════════════════════════════
+    #  AXONSTORE — HoTT Transactional Persistence (§AS)
+    # ══════════════════════════════════════════════════════════════
+
+    def _visit_axonstore(self, node: ast.AxonStoreDefinition) -> IRAxonStore:
+        """Lower AxonStoreDefinition → IRAxonStore.
+
+        Registers the store in the symbol table so that CRUD
+        operations (persist/retrieve/mutate/purge) can reference it.
+        """
+        schema_ir: IRStoreSchema | None = None
+        if node.schema:
+            columns = tuple(
+                IRStoreColumn(
+                    source_line=col.line,
+                    source_column=col.column,
+                    col_name=col.col_name,
+                    col_type=col.col_type,
+                    primary_key=col.primary_key,
+                    auto_increment=col.auto_increment,
+                    not_null=col.not_null,
+                    unique=col.unique,
+                    default_value=col.default_value,
+                )
+                for col in node.schema.columns
+            )
+            schema_ir = IRStoreSchema(
+                source_line=node.schema.line,
+                source_column=node.schema.column,
+                columns=columns,
+            )
+
+        ir_store = IRAxonStore(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            backend=node.backend,
+            connection=node.connection,
+            schema=schema_ir,
+            confidence_floor=node.confidence_floor,
+            isolation=node.isolation,
+            on_breach=node.on_breach,
+        )
+        self._axonstore_specs[node.name] = ir_store
+        return ir_store
+
+    def _visit_persist(self, node: ast.PersistNode) -> IRPersist:
+        """Lower PersistNode → IRPersist (linear write token ⊗)."""
+        return IRPersist(
+            source_line=node.line,
+            source_column=node.column,
+            store_name=node.store_name,
+            fields=tuple(node.fields.items()),
+        )
+
+    def _visit_retrieve(self, node: ast.RetrieveNode) -> IRRetrieve:
+        """Lower RetrieveNode → IRRetrieve (query projection π)."""
+        return IRRetrieve(
+            source_line=node.line,
+            source_column=node.column,
+            store_name=node.store_name,
+            where_expr=node.where_expr,
+            alias=node.alias,
+        )
+
+    def _visit_mutate(self, node: ast.MutateNode) -> IRMutate:
+        """Lower MutateNode → IRMutate (atomic update Δ)."""
+        return IRMutate(
+            source_line=node.line,
+            source_column=node.column,
+            store_name=node.store_name,
+            where_expr=node.where_expr,
+            fields=tuple(node.fields.items()),
+        )
+
+    def _visit_purge(self, node: ast.PurgeNode) -> IRPurge:
+        """Lower PurgeNode → IRPurge (controlled deletion)."""
+        return IRPurge(
+            source_line=node.line,
+            source_column=node.column,
+            store_name=node.store_name,
+            where_expr=node.where_expr,
+        )
+
+    def _visit_transact(self, node: ast.TransactNode) -> IRTransact:
+        """Lower TransactNode → IRTransact (linear logic A ⊸ B).
+
+        All children are lowered recursively; at runtime the
+        executor wraps them in a single-use ephemeral token.
+        """
+        children = tuple(self._visit(child) for child in node.body)
+        return IRTransact(
+            source_line=node.line,
+            source_column=node.column,
+            children=children,
         )

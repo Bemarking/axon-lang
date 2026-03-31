@@ -30,6 +30,7 @@ from axon.compiler.ir_nodes import (
     IRAgent,
     IRAggregate,
     IRAssociate,
+    IRAxonStore,
     IRComputeApply,
     IRConsensus,
     IRContext,
@@ -42,16 +43,21 @@ from axon.compiler.ir_nodes import (
     IRFocus,
     IRForge,
     IRIngest,
+    IRMutate,
     IRNavigate,
     IRNode,
+    IRPersist,
     IRPersona,
     IRProgram,
     IRPsycheSpec,
+    IRPurge,
+    IRRetrieve,
     IRRun,
     IRShield,
     IRShieldApply,
     IRStep,
     IRToolSpec,
+    IRTransact,
     IROtsApply,
 )
 
@@ -78,6 +84,9 @@ _COMPUTE_IR_TYPES = (IRComputeApply,)
 
 # IR types that represent Daemon operations (AxonServer π-calculus)
 _DAEMON_IR_TYPES = (IRDaemon,)
+
+# IR types that represent AxonStore operations (HoTT transactional persistence)
+_AXONSTORE_IR_TYPES = (IRAxonStore, IRPersist, IRRetrieve, IRMutate, IRPurge, IRTransact)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -268,6 +277,12 @@ class BaseBackend(ABC):
 
             # Phase 4: Compile each step in the flow
             compiled_steps: list[CompiledStep] = []
+
+            # Phase 4a: Inject axonstore definitions as init steps
+            for store_spec in ir.axonstore_specs:
+                store_init = self._compile_axonstore_step(store_spec)
+                compiled_steps.append(store_init)
+
             for step in run.resolved_flow.steps:
                 # Data Science IR nodes bypass the model — compile as
                 # metadata-only steps that the executor routes to the
@@ -296,6 +311,9 @@ class BaseBackend(ABC):
                 elif isinstance(step, _DAEMON_IR_TYPES):
                     daemon_step = self._compile_daemon_step(step, ctx)
                     compiled_steps.append(daemon_step)
+                elif isinstance(step, _AXONSTORE_IR_TYPES):
+                    store_step = self._compile_axonstore_step(step)
+                    compiled_steps.append(store_step)
                 else:
                     compiled = self.compile_step(step, ctx)
                     compiled_steps.append(compiled)
@@ -370,6 +388,85 @@ class BaseBackend(ABC):
             user_prompt="",
             metadata={
                 "data_science": {
+                    "operation": op,
+                    "args": args,
+                },
+            },
+        )
+
+    @staticmethod
+    def _compile_axonstore_step(step: IRNode) -> CompiledStep:
+        """Compile an AxonStore IR node into a metadata-only step.
+
+        These steps bypass the model — the executor routes them
+        directly to the ``StoreDispatcher``.
+
+        Formal basis:
+          - HoTT univalence path (schema isomorphism)
+          - Linear Logic token (A ⊸ B) for transact blocks
+          - DbC on_breach policy for invariant violations
+        """
+        from axon.compiler.ir_nodes import (
+            IRAxonStore,
+            IRMutate,
+            IRPersist,
+            IRPurge,
+            IRRetrieve,
+            IRTransact,
+        )
+
+        op: str = "unknown"
+        args: dict[str, Any] = {}
+
+        match step:
+            case IRAxonStore(name=name, backend=backend, connection=conn,
+                             confidence_floor=cf, isolation=iso, on_breach=ob):
+                op = "axonstore"
+                schema_data: list[dict[str, Any]] = []
+                if step.schema:
+                    schema_data = [
+                        {
+                            "col_name": c.col_name,
+                            "col_type": c.col_type,
+                            "primary_key": c.primary_key,
+                            "auto_increment": c.auto_increment,
+                            "not_null": c.not_null,
+                            "unique": c.unique,
+                            "default_value": c.default_value,
+                        }
+                        for c in step.schema.columns
+                    ]
+                args = {
+                    "name": name, "backend": backend,
+                    "connection": conn, "schema": schema_data,
+                    "confidence_floor": cf, "isolation": iso,
+                    "on_breach": ob,
+                }
+            case IRPersist(store_name=sn, fields=fields):
+                op = "persist"
+                args = {"store_name": sn, "fields": [list(f) for f in fields]}
+            case IRRetrieve(store_name=sn, where_expr=w, alias=a):
+                op = "retrieve"
+                args = {"store_name": sn, "where_expr": w, "alias": a}
+            case IRMutate(store_name=sn, where_expr=w, fields=fields):
+                op = "mutate"
+                args = {"store_name": sn, "where_expr": w, "fields": [list(f) for f in fields]}
+            case IRPurge(store_name=sn, where_expr=w):
+                op = "purge"
+                args = {"store_name": sn, "where_expr": w}
+            case IRTransact(children=children):
+                op = "transact"
+                child_ops: list[dict[str, Any]] = []
+                for child in children:
+                    child_step = BaseBackend._compile_axonstore_step(child)
+                    child_ops.append(child_step.metadata.get("axonstore", {}))
+                args = {"children": child_ops}
+
+        return CompiledStep(
+            step_name=f"store:{op}",
+            user_prompt="",
+            metadata={
+                "axonstore": {
                     "operation": op,
                     "args": args,
                 },

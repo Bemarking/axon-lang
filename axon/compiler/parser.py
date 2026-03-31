@@ -18,6 +18,7 @@ from .ast_nodes import (
     AggregateNode,
     AnchorConstraint,
     AssociateNode,
+    AxonStoreDefinition,
     ConditionalNode,
     ConsensusBlock,
     ContextDefinition,
@@ -50,30 +51,37 @@ from .ast_nodes import (
     MandateApplyNode,
     MandateDefinition,
     MemoryDefinition,
+    MutateNode,
     NavigateNode,
     OtsApplyNode,
     OtsDefinition,
     ParallelBlock,
     ParameterNode,
+    PersistNode,
     PersonaDefinition,
     PixDefinition,
     ProbeDirective,
     ProgramNode,
     PsycheDefinition,
+    PurgeNode,
     RangeConstraint,
     ReasonChain,
     RecallNode,
     RefineBlock,
     RememberNode,
+    RetrieveNode,
     ReturnStatement,
     RunStatement,
     ShieldApplyNode,
     ShieldDefinition,
     StepNode,
+    StoreColumnNode,
+    StoreSchemaNode,
     StreamDefinition,
     StreamHandlerNode,
     ToolDefinition,
     TrailNode,
+    TransactNode,
     TypeDefinition,
     TypeExprNode,
     TypeFieldNode,
@@ -158,6 +166,18 @@ class Parser:
                 return self._parse_lambda_data()
             case TokenType.DAEMON:
                 return self._parse_daemon()
+            case TokenType.AXONSTORE:
+                return self._parse_axonstore()
+            case TokenType.PERSIST:
+                return self._parse_persist()
+            case TokenType.RETRIEVE:
+                return self._parse_retrieve()
+            case TokenType.MUTATE:
+                return self._parse_mutate()
+            case TokenType.PURGE:
+                return self._parse_purge()
+            case TokenType.TRANSACT:
+                return self._parse_transact()
             case TokenType.LET:
                 return self._parse_let()
             case _:
@@ -165,7 +185,7 @@ class Parser:
                     f"Unexpected token at top level",
                     line=tok.line,
                     column=tok.column,
-                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, ots, mandate, lambda, daemon, run, know, speculate, ...)",
+                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, ots, mandate, lambda, daemon, axonstore, run, know, speculate, ...)",
                     found=tok.value,
                 )
 
@@ -634,6 +654,16 @@ class Parser:
                 return self._parse_listen()
             case TokenType.DAEMON:
                 return self._parse_daemon()
+            case TokenType.PERSIST:
+                return self._parse_persist()
+            case TokenType.RETRIEVE:
+                return self._parse_retrieve()
+            case TokenType.MUTATE:
+                return self._parse_mutate()
+            case TokenType.PURGE:
+                return self._parse_purge()
+            case TokenType.TRANSACT:
+                return self._parse_transact()
             case TokenType.FOR:
                 return self._parse_for_in()
             case TokenType.LET:
@@ -645,7 +675,7 @@ class Parser:
                     "Unexpected token in flow body",
                     line=tok.line,
                     column=tok.column,
-                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, mandate, lambda, daemon, listen, focus, associate, aggregate, explore, ingest, let, return",
+                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, mandate, lambda, daemon, listen, persist, retrieve, mutate, purge, transact, focus, associate, aggregate, explore, ingest, let, return",
                     found=tok.value,
                 )
 
@@ -3428,3 +3458,193 @@ class Parser:
             node.output_type = self._consume(TokenType.IDENTIFIER).value
 
         return node
+
+    # ══════════════════════════════════════════════════════════════
+    #  AXONSTORE PRIMITIVE — HoTT Transactional Persistence (§AS)
+    # ══════════════════════════════════════════════════════════════
+
+    def _parse_axonstore(self) -> AxonStoreDefinition:
+        """Parse: axonstore Name { backend: ..., schema { ... }, ... }"""
+        tok = self._consume(TokenType.AXONSTORE)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = AxonStoreDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+
+        while not self._check(TokenType.RBRACE):
+            inner = self._current()
+            field_name = inner.value
+            if inner.type == TokenType.SCHEMA:
+                self._advance()
+                node.schema = self._parse_store_schema(tok)
+            elif field_name in (
+                "backend", "connection", "confidence_floor",
+                "isolation", "on_breach",
+            ):
+                self._advance()
+                self._consume(TokenType.COLON)
+                match field_name:
+                    case "backend":
+                        node.backend = self._consume_any_identifier_or_keyword().value
+                    case "connection":
+                        node.connection = self._consume(TokenType.STRING).value
+                    case "confidence_floor":
+                        val_tok = self._current()
+                        if val_tok.type == TokenType.FLOAT:
+                            node.confidence_floor = float(self._advance().value)
+                        elif val_tok.type == TokenType.INTEGER:
+                            node.confidence_floor = float(self._advance().value)
+                        else:
+                            node.confidence_floor = float(
+                                self._consume_any_identifier_or_keyword().value
+                            )
+                    case "isolation":
+                        node.isolation = self._consume_any_identifier_or_keyword().value
+                    case "on_breach":
+                        node.on_breach = self._consume_any_identifier_or_keyword().value
+            else:
+                self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_store_schema(self, parent_tok: Token) -> StoreSchemaNode:
+        """Parse: schema { col: type constraints, ... }"""
+        node = StoreSchemaNode(line=parent_tok.line, column=parent_tok.column)
+        self._consume(TokenType.LBRACE)
+
+        while not self._check(TokenType.RBRACE):
+            col = self._parse_store_column()
+            node.columns.append(col)
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_store_column(self) -> StoreColumnNode:
+        """Parse: col_name: col_type [primary_key] [auto_increment] [not_null] [unique] [default V]"""
+        col_tok = self._current()
+        col_name = self._consume_any_identifier_or_keyword().value
+        node = StoreColumnNode(col_name=col_name, line=col_tok.line, column=col_tok.column)
+        self._consume(TokenType.COLON)
+        node.col_type = self._consume_any_identifier_or_keyword().value
+
+        # Parse trailing column constraints (position-independent)
+        while not self._check(TokenType.RBRACE) and self._current().type == TokenType.IDENTIFIER:
+            cval = self._current().value
+            if cval == "primary_key":
+                node.primary_key = True
+                self._advance()
+            elif cval == "auto_increment":
+                node.auto_increment = True
+                self._advance()
+            elif cval == "not_null":
+                node.not_null = True
+                self._advance()
+            elif cval == "unique":
+                node.unique = True
+                self._advance()
+            elif cval == "default":
+                self._advance()
+                default_tok = self._current()
+                if default_tok.type in (TokenType.STRING, TokenType.INTEGER, TokenType.FLOAT):
+                    node.default_value = self._advance().value
+                else:
+                    node.default_value = self._consume_any_identifier_or_keyword().value
+            else:
+                break
+
+        return node
+
+    def _parse_persist(self) -> PersistNode:
+        """Parse: persist into StoreName { field: value, ... }"""
+        tok = self._consume(TokenType.PERSIST)
+        node = PersistNode(line=tok.line, column=tok.column)
+
+        # 'into' is a known token
+        self._consume(TokenType.INTO)
+        node.store_name = self._consume(TokenType.IDENTIFIER).value
+
+        # field body { key: value, ... }
+        node.fields = self._parse_store_field_body()
+        return node
+
+    def _parse_retrieve(self) -> RetrieveNode:
+        """Parse: retrieve from StoreName [where "expr"] [as alias]"""
+        tok = self._consume(TokenType.RETRIEVE)
+        node = RetrieveNode(line=tok.line, column=tok.column)
+
+        self._consume(TokenType.FROM)
+        node.store_name = self._consume(TokenType.IDENTIFIER).value
+
+        # optional where clause
+        if self._check(TokenType.WHERE):
+            self._advance()
+            node.where_expr = self._consume(TokenType.STRING).value
+
+        # optional as alias
+        if self._check(TokenType.AS):
+            self._advance()
+            node.alias = self._consume(TokenType.IDENTIFIER).value
+
+        return node
+
+    def _parse_mutate(self) -> MutateNode:
+        """Parse: mutate StoreName where "expr" { field: value, ... }"""
+        tok = self._consume(TokenType.MUTATE)
+        node = MutateNode(line=tok.line, column=tok.column)
+
+        node.store_name = self._consume(TokenType.IDENTIFIER).value
+
+        # mandatory where clause
+        self._consume(TokenType.WHERE)
+        node.where_expr = self._consume(TokenType.STRING).value
+
+        # field body
+        node.fields = self._parse_store_field_body()
+        return node
+
+    def _parse_purge(self) -> PurgeNode:
+        """Parse: purge from StoreName where "expr" """
+        tok = self._consume(TokenType.PURGE)
+        node = PurgeNode(line=tok.line, column=tok.column)
+
+        self._consume(TokenType.FROM)
+        node.store_name = self._consume(TokenType.IDENTIFIER).value
+
+        self._consume(TokenType.WHERE)
+        node.where_expr = self._consume(TokenType.STRING).value
+
+        return node
+
+    def _parse_transact(self) -> TransactNode:
+        """Parse: transact { persist ... ; mutate ... ; ... }"""
+        tok = self._consume(TokenType.TRANSACT)
+        node = TransactNode(line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            inner = self._parse_flow_step()
+            if inner is not None:
+                node.body.append(inner)
+        self._consume(TokenType.RBRACE)
+
+        return node
+
+    def _parse_store_field_body(self) -> dict[str, str]:
+        """Parse: { key: value, key: value, ... } → dict."""
+        fields: dict[str, str] = {}
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            key = self._consume_any_identifier_or_keyword().value
+            self._consume(TokenType.COLON)
+            val_tok = self._current()
+            if val_tok.type == TokenType.STRING:
+                fields[key] = self._advance().value
+            elif val_tok.type in (TokenType.INTEGER, TokenType.FLOAT):
+                fields[key] = self._advance().value
+            elif val_tok.type == TokenType.BOOL:
+                fields[key] = self._advance().value
+            else:
+                fields[key] = self._consume_any_identifier_or_keyword().value
+        self._consume(TokenType.RBRACE)
+        return fields

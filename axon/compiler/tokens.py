@@ -149,6 +149,15 @@ class TokenType(Enum):
     PROVENANCE = auto()       # provenance: "sensor_x" | "llm_y" (EntityRef ρ)
     DERIVATION = auto()       # derivation: axiomatic | observed | inferred | mutated (δ ∈ Δ)
 
+    # ── AXONSTORE KEYWORDS (HoTT Transactional Persistence §AS) ──
+    AXONSTORE = auto()        # axonstore definition (HoTT transducer)
+    SCHEMA = auto()           # schema block inside axonstore
+    PERSIST = auto()          # persist into Store (linear write token ⊗)
+    RETRIEVE = auto()         # retrieve from Store (query projection π)
+    MUTATE = auto()           # mutate Store where (atomic update Δ)
+    PURGE = auto()            # purge from Store where (controlled deletion)
+    TRANSACT = auto()         # transact { ... } (linear logic block A ⊸ B)
+
     # ── MODIFIERS (run statement modifiers) ───────────────────────
     AS = auto()
     WITHIN = auto()
@@ -355,6 +364,14 @@ KEYWORDS: dict[str, TokenType] = {
     "temporal_frame": TokenType.TEMPORAL_FRAME,
     "provenance": TokenType.PROVENANCE,
     "derivation": TokenType.DERIVATION,
+    # AxonStore (HoTT Transactional Persistence §AS)
+    "axonstore": TokenType.AXONSTORE,
+    "schema": TokenType.SCHEMA,
+    "persist": TokenType.PERSIST,
+    "retrieve": TokenType.RETRIEVE,
+    "mutate": TokenType.MUTATE,
+    "purge": TokenType.PURGE,
+    "transact": TokenType.TRANSACT,
 }
 
 # Duration suffixes recognized by the lexer

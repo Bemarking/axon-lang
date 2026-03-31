@@ -446,6 +446,7 @@ class Executor:
         self._memory = memory or InMemoryBackend()
         self._tool_dispatcher = tool_dispatcher
         self._data_dispatcher: DataScienceDispatcher | None = None
+        self._store_dispatcher: Any = None  # lazy: StoreDispatcher
 
     async def execute(self, program: CompiledProgram) -> ExecutionResult:
         """Execute a complete compiled AXON program.
@@ -698,6 +699,14 @@ class Executor:
         if step.metadata.get("daemon"):
             return await self._execute_daemon_step(
                 step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
+        # ── AxonStore step shortcut ────────────────────────────────────
+        # If the step carries an axonstore config, route through
+        # _execute_store_step — HoTT transactional persistence.
+        if step.metadata.get("axonstore"):
+            return await self._execute_store_step(
+                step=step, ctx=ctx, tracer=tracer,
             )
 
         # Extract refine config from step metadata (if present)
@@ -1158,6 +1167,80 @@ class Executor:
 
         factory = constructors.get(op)
         return factory() if factory else None
+
+    # ── AXONSTORE EXECUTION ────────────────────────────────────────
+
+    async def _execute_store_step(
+        self,
+        step: CompiledStep,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute an AxonStore step (via StoreDispatcher).
+
+        When a compiled step's metadata contains ``axonstore``, this
+        method routes the operation to the ``StoreDispatcher`` which
+        handles CRUD under HoTT + Linear Logic + DbC guarantees.
+        """
+        import json
+
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        store_meta = step.metadata["axonstore"]
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={"axonstore_op": store_meta.get("operation", "unknown")},
+        )
+
+        # Lazy-init dispatcher
+        if self._store_dispatcher is None:
+            from axon.runtime.store_dispatcher import StoreDispatcher
+            self._store_dispatcher = StoreDispatcher()
+
+        store_result = await self._store_dispatcher.dispatch(
+            store_meta, context={"step_name": step_name},
+        )
+
+        response = ModelResponse(
+            content=json.dumps(store_result.data) if store_result.data else "",
+            structured=store_result.data if isinstance(store_result.data, dict) else None,
+        )
+
+        if not store_result.success:
+            from axon.runtime.runtime_errors import AxonRuntimeError, ErrorContext
+            raise AxonRuntimeError(
+                message=(
+                    f"AxonStore operation '{store_result.operation}' failed: "
+                    f"{store_result.error}"
+                ),
+                error_type="axonstore",
+                context=ErrorContext(
+                    flow_name="",
+                    step_name=step_name,
+                ),
+            )
+
+        ctx.set_step_result(step_name, response.content)
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "axonstore_op": store_result.operation,
+            },
+            duration_ms=step_duration,
+        )
+
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=step_duration,
+        )
 
     # ── MDN EXECUTION ──────────────────────────────────────────────
 

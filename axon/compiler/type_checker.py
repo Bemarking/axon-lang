@@ -27,6 +27,7 @@ from .ast_nodes import (
     AggregateNode,
     AnchorConstraint,
     AssociateNode,
+    AxonStoreDefinition,
     ConditionalNode,
     ConsensusBlock,
     ContextDefinition,
@@ -52,19 +53,23 @@ from .ast_nodes import (
     MandateApplyNode,
     MandateDefinition,
     MemoryDefinition,
+    MutateNode,
     NavigateNode,
     OtsApplyNode,
     OtsDefinition,
     ParallelBlock,
+    PersistNode,
     PersonaDefinition,
     PixDefinition,
     ProbeDirective,
     ProgramNode,
     PsycheDefinition,
+    PurgeNode,
     ReasonChain,
     RecallNode,
     RefineBlock,
     RememberNode,
+    RetrieveNode,
     ReturnStatement,
     RunStatement,
     ShieldApplyNode,
@@ -73,6 +78,7 @@ from .ast_nodes import (
     StreamDefinition,
     ToolDefinition,
     TrailNode,
+    TransactNode,
     TypeDefinition,
     ValidateGate,
     WeaveNode,
@@ -458,6 +464,10 @@ class TypeChecker:
                     pass  # lambda apply is a flow-level command
                 case NavigateNode() | DrillNode() | TrailNode():
                     pass  # PIX flow-level commands, not declarations
+                case AxonStoreDefinition(name=name):
+                    self._register(name, "axonstore", decl)
+                case PersistNode() | RetrieveNode() | MutateNode() | PurgeNode() | TransactNode():
+                    pass  # axonstore CRUD ops validated at Phase 2
 
     def _register(self, name: str, kind: str, node: ASTNode, type_name: str = "") -> None:
         err = self._symbols.declare(name, kind, node, type_name=type_name)
@@ -532,6 +542,10 @@ class TypeChecker:
                 pass  # validated at runtime
             case NavigateNode() | DrillNode() | TrailNode() | CorroborateNode():
                 pass  # PIX/MDN flow commands validated in flow step context
+            case AxonStoreDefinition():
+                self._check_axonstore(decl)
+            case PersistNode() | RetrieveNode() | MutateNode() | PurgeNode() | TransactNode():
+                pass  # axonstore CRUD ops — validated at runtime by StoreDispatcher
             case LetStatement():
                 self._check_let(decl)
 
@@ -1078,6 +1092,44 @@ class TypeChecker:
         # Recursively check inner body statements
         for stmt in node.body:
             self._check_declaration(stmt)
+
+    # ── AXONSTORE validation ──────────────────────────────────────
+
+    _VALID_STORE_BACKENDS = frozenset({"sqlite", "postgresql", "mysql"})
+    _VALID_STORE_ISOLATION = frozenset({
+        "read_committed", "repeatable_read", "serializable",
+    })
+    _VALID_STORE_ON_BREACH = frozenset({"rollback", "raise", "log"})
+
+    def _check_axonstore(self, node: AxonStoreDefinition) -> None:
+        if not node.name:
+            self._emit("axonstore requires a name", node)
+        if node.backend and node.backend not in self._VALID_STORE_BACKENDS:
+            self._emit(
+                f"Unknown backend '{node.backend}' in axonstore '{node.name}'. "
+                f"Valid: {', '.join(sorted(self._VALID_STORE_BACKENDS))}",
+                node,
+            )
+        if node.isolation and node.isolation not in self._VALID_STORE_ISOLATION:
+            self._emit(
+                f"Unknown isolation level '{node.isolation}' in axonstore '{node.name}'. "
+                f"Valid: {', '.join(sorted(self._VALID_STORE_ISOLATION))}",
+                node,
+            )
+        if node.on_breach and node.on_breach not in self._VALID_STORE_ON_BREACH:
+            self._emit(
+                f"Unknown on_breach policy '{node.on_breach}' in axonstore '{node.name}'. "
+                f"Valid: {', '.join(sorted(self._VALID_STORE_ON_BREACH))}",
+                node,
+            )
+        if node.schema:
+            if not node.schema.columns:
+                self._emit(
+                    f"axonstore '{node.name}' schema must have at least one column",
+                    node,
+                )
+        self._check_range(node.confidence_floor, 0.0, 1.0,
+                          "confidence_floor", node)
 
     # ── DELIBERATE validation ─────────────────────────────────────────
 
