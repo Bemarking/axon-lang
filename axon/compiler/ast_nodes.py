@@ -51,6 +51,8 @@ class ImportNode(ASTNode):
     """
     module_path: list[str] = field(default_factory=list)
     names: list[str] = field(default_factory=list)
+    apx_enabled: bool = False
+    apx_policy: dict[str, object] = field(default_factory=dict)
 
 
 # ═══════════════════════════════════════════════════════════════════

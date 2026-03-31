@@ -31,6 +31,22 @@ Usage::
 """
 
 from axon.runtime.context_mgr import ContextManager, ContextSnapshot
+from axon.engine.apx.observability import (
+    APXComplianceError,
+    APXCompliancePolicy,
+    APXEventType,
+    APXObservability,
+)
+from axon.runtime.apx_resolver import (
+    APXBlameMonitor,
+    APXContract,
+    APXDecision,
+    APXPolicy,
+    APXResolutionError,
+    APXResolutionResult,
+    APXResolver,
+    APXTaintedValue,
+)
 from axon.runtime.executor import (
     DaemonResult,
     ExecutionResult,
@@ -94,6 +110,19 @@ __all__ = [
     # Context
     "ContextManager",
     "ContextSnapshot",
+    # APX runtime resolver
+    "APXResolver",
+    "APXPolicy",
+    "APXContract",
+    "APXResolutionResult",
+    "APXTaintedValue",
+    "APXDecision",
+    "APXResolutionError",
+    "APXBlameMonitor",
+    "APXObservability",
+    "APXEventType",
+    "APXCompliancePolicy",
+    "APXComplianceError",
     # Validation
     "SemanticValidator",
     "ValidationResult",

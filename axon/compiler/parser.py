@@ -219,7 +219,81 @@ class Parser:
             node.names = self._parse_identifier_list()
             self._consume(TokenType.RBRACE)
 
+        # optional APX policy: with apx { ... }
+        if self._check_contextual_keyword("with"):
+            self._advance()  # consume contextual 'with'
+            apx_kw = self._consume_any_identifier_or_keyword()
+            if apx_kw.value.lower() != "apx":
+                raise AxonParseError(
+                    "Invalid import policy scope",
+                    line=apx_kw.line,
+                    column=apx_kw.column,
+                    expected="apx",
+                    found=apx_kw.value,
+                )
+            node.apx_enabled = True
+            if self._check(TokenType.LBRACE):
+                node.apx_policy = self._parse_apx_policy_block()
+
         return node
+
+    def _parse_apx_policy_block(self) -> dict[str, object]:
+        """Parse APX import policy block.
+
+        Example:
+          with apx {
+            min_epr: 0.70
+            on_low_rank: quarantine
+            require_pcc: true
+          }
+        """
+        policy: dict[str, object] = {}
+        self._consume(TokenType.LBRACE)
+
+        while not self._check(TokenType.RBRACE):
+            key_tok = self._consume_any_identifier_or_keyword()
+            key = key_tok.value
+            self._consume(TokenType.COLON)
+            value = self._parse_apx_value()
+            policy[key] = value
+
+            if self._check(TokenType.COMMA):
+                self._advance()
+
+        self._consume(TokenType.RBRACE)
+        return policy
+
+    def _parse_apx_value(self) -> object:
+        """Parse a scalar/list APX policy value."""
+        if self._check(TokenType.AT):
+            self._advance()
+            scoped = self._consume(TokenType.IDENTIFIER)
+            return "@" + scoped.value
+
+        if self._check(TokenType.LBRACKET):
+            self._consume(TokenType.LBRACKET)
+            items: list[object] = []
+            if not self._check(TokenType.RBRACKET):
+                items.append(self._parse_apx_value())
+                while self._check(TokenType.COMMA):
+                    self._advance()
+                    if self._check(TokenType.RBRACKET):
+                        break
+                    items.append(self._parse_apx_value())
+            self._consume(TokenType.RBRACKET)
+            return items
+
+        tok = self._current()
+        if tok.type == TokenType.STRING:
+            return self._advance().value
+        if tok.type == TokenType.BOOL:
+            return self._parse_bool()
+        if tok.type == TokenType.FLOAT:
+            return float(self._advance().value)
+        if tok.type == TokenType.INTEGER:
+            return int(self._advance().value)
+
+        return self._consume_any_identifier_or_keyword().value
 
     # ── PERSONA ───────────────────────────────────────────────────
 
@@ -2049,6 +2123,10 @@ class Parser:
             TokenType.AS, TokenType.WITHIN, TokenType.CONSTRAINED_BY,
             TokenType.ON_FAILURE, TokenType.OUTPUT_TO, TokenType.EFFORT,
         )
+
+    def _check_contextual_keyword(self, keyword: str) -> bool:
+        tok = self._current()
+        return tok.type == TokenType.IDENTIFIER and tok.value.lower() == keyword.lower()
 
     def _consume(self, expected: TokenType) -> Token:
         tok = self._current()

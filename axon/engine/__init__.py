@@ -25,6 +25,28 @@ from axon.engine.data_column import DataColumn
 from axon.engine.association_index import AssociationIndex, AssociationLink
 from axon.engine.selection_state import SelectionState, SelectionEngine
 from axon.engine.dataspace import DataSpace
+from axon.engine.apx import (
+  APXDecision,
+  APXDependency,
+  APXPackageManifest,
+  APXPackageRecord,
+  APXRegistry,
+  APXRegistryError,
+  APXResolutionResult,
+  APXObservability,
+  APXEventType,
+  APXAuditEvent,
+  APXCompliancePolicy,
+  APXComplianceError,
+  EdgeKind,
+  EpistemicContract,
+  EpistemicEdge,
+  EpistemicGraph,
+  EpistemicLattice,
+  EpistemicLevel,
+  EpistemicNode,
+  EpistemicPageRank,
+)
 
 __all__ = [
     "SymbolTable",
@@ -34,4 +56,24 @@ __all__ = [
     "SelectionState",
     "SelectionEngine",
     "DataSpace",
+    "APXDecision",
+    "APXDependency",
+    "APXPackageManifest",
+    "APXPackageRecord",
+    "APXRegistry",
+    "APXRegistryError",
+    "APXResolutionResult",
+    "APXObservability",
+    "APXEventType",
+    "APXAuditEvent",
+    "APXCompliancePolicy",
+    "APXComplianceError",
+    "EdgeKind",
+    "EpistemicContract",
+    "EpistemicEdge",
+    "EpistemicGraph",
+    "EpistemicLattice",
+    "EpistemicLevel",
+    "EpistemicNode",
+    "EpistemicPageRank",
 ]

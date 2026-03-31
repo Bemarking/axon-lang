@@ -284,6 +284,24 @@ VALID_VIOLATION_ACTIONS = frozenset({"raise", "warn", "log", "escalate", "fallba
 VALID_EFFORT_LEVELS = frozenset({"low", "medium", "high", "max"})
 
 VALID_RETRIEVAL_STRATEGIES = frozenset({"semantic", "exact", "hybrid"})
+VALID_APX_POLICY_KEYS = frozenset({
+    "min_epr",
+    "on_low_rank",
+    "trust_floor",
+    "ffi_mode",
+    "require_pcc",
+    "allow_scopes",
+})
+VALID_APX_ON_LOW_RANK = frozenset({"warn", "quarantine", "block"})
+VALID_APX_TRUST_FLOOR = frozenset({
+    "uncertainty",
+    "speculation",
+    "opinion",
+    "factual_claim",
+    "cited_fact",
+    "corroborated_fact",
+})
+VALID_APX_FFI_MODE = frozenset({"taint", "sanitize", "strict"})
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -497,7 +515,7 @@ class TypeChecker:
             case RunStatement():
                 self._check_run(decl)
             case ImportNode():
-                pass  # module resolution is a later-phase concern
+                self._check_import(decl)
             case EpistemicBlock():
                 self._check_epistemic_block(decl)
             case ParallelBlock():
@@ -1972,6 +1990,60 @@ class TypeChecker:
                 "not a lambda data specification",
                 node,
             )
+
+    def _check_import(self, node: ImportNode) -> None:
+        """Validate import declaration and optional APX policy metadata."""
+        if not node.module_path:
+            self._emit("Import must contain a module path", node)
+
+        if node.apx_policy and not node.apx_enabled:
+            self._emit("APX policy provided but APX mode is not enabled", node)
+
+        if not node.apx_enabled:
+            return
+
+        for key in node.apx_policy.keys():
+            if key not in VALID_APX_POLICY_KEYS:
+                self._emit(
+                    f"Unknown APX policy key '{key}'. "
+                    f"Valid keys: {', '.join(sorted(VALID_APX_POLICY_KEYS))}",
+                    node,
+                )
+
+        min_epr = node.apx_policy.get("min_epr")
+        if min_epr is not None and not isinstance(min_epr, (int, float)):
+            self._emit("APX min_epr must be numeric", node)
+        elif isinstance(min_epr, (int, float)) and (min_epr < 0.0 or min_epr > 1.0):
+            self._emit("APX min_epr must be between 0.0 and 1.0", node)
+
+        on_low_rank = node.apx_policy.get("on_low_rank")
+        if on_low_rank is not None and str(on_low_rank) not in VALID_APX_ON_LOW_RANK:
+            self._emit(
+                f"APX on_low_rank must be one of: {', '.join(sorted(VALID_APX_ON_LOW_RANK))}",
+                node,
+            )
+
+        trust_floor = node.apx_policy.get("trust_floor")
+        if trust_floor is not None and str(trust_floor) not in VALID_APX_TRUST_FLOOR:
+            self._emit(
+                f"APX trust_floor must be one of: {', '.join(sorted(VALID_APX_TRUST_FLOOR))}",
+                node,
+            )
+
+        ffi_mode = node.apx_policy.get("ffi_mode")
+        if ffi_mode is not None and str(ffi_mode) not in VALID_APX_FFI_MODE:
+            self._emit(
+                f"APX ffi_mode must be one of: {', '.join(sorted(VALID_APX_FFI_MODE))}",
+                node,
+            )
+
+        require_pcc = node.apx_policy.get("require_pcc")
+        if require_pcc is not None and not isinstance(require_pcc, bool):
+            self._emit("APX require_pcc must be boolean", node)
+
+        allow_scopes = node.apx_policy.get("allow_scopes")
+        if allow_scopes is not None and not isinstance(allow_scopes, list):
+            self._emit("APX allow_scopes must be a list", node)
 
     # ── HELPERS ─────────────────────────────────────────────────────────
 

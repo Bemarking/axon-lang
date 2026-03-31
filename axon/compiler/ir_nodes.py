@@ -121,6 +121,8 @@ class IRImport(IRNode):
     names: tuple[str, ...] = ()
     resolved: bool = False
     interface_hash: str = ""
+    apx_enabled: bool = False
+    apx_policy: tuple[tuple[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)

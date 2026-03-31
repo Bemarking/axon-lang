@@ -315,6 +315,10 @@ class IRGenerator:
     def _visit_import(self, node: ast.ImportNode) -> IRImport:
         resolved = False
         iface_hash = ""
+        apx_policy = tuple(
+            (key, self._freeze_apx_value(value))
+            for key, value in sorted(node.apx_policy.items())
+        )
 
         # EMS Phase 2: Resolve imported symbols into local tables
         if self._registry:
@@ -332,9 +336,19 @@ class IRGenerator:
             names=tuple(node.names),
             resolved=resolved,
             interface_hash=iface_hash,
+            apx_enabled=node.apx_enabled,
+            apx_policy=apx_policy,
         )
         self._imports.append(ir_import)
         return ir_import
+
+    def _freeze_apx_value(self, value: object) -> object:
+        """Normalize APX policy values to immutable IR-safe structures."""
+        if isinstance(value, list):
+            return tuple(self._freeze_apx_value(item) for item in value)
+        if isinstance(value, dict):
+            return tuple((k, self._freeze_apx_value(v)) for k, v in sorted(value.items()))
+        return value
 
     def _inject_imported_symbol(
         self,

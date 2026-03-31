@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v0.28.5</em><br>
+  <strong>AXON</strong> <em>v0.29.5</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -14,14 +14,14 @@
   <code>mcp</code> · <code>taint</code> · <code>mandate</code> · <code>lambda</code><br>
   <code>compute</code> · <code>logic</code><br>
   <code>daemon</code> · <code>listen</code><br>
-  <code>axonstore</code>
+  <code>axonstore</code> · <code>apx</code>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.28.5-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v0.29.5-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/tests-2559%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-2597%20passing-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/paradigms-20%20shifts-blueviolet" alt="Paradigm Shifts">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
   <img src="https://img.shields.io/badge/pypi-axon--lang-blue" alt="PyPI">
@@ -3790,9 +3790,9 @@ daemon ComplianceReporter(event: RiskAssessment) -> SARReport {
 
 ---
 
-### XX. Transactional Persistence — the `axonstore` Primitive
+### XI. Muscle AxonStore — the `axonstore` Primitive
 
-> AXON v0.28.5 introduces a twentieth paradigm shift: **compiler-verified
+> AXON v0.29.5 consolidates Phase 24 as a production paradigm shift: **compiler-verified
 > transactional persistence with ACID guarantees, HoTT schema validation, and
 > Linear Logic transaction tokens** — the first cognitive language primitive
 > that subyugates the stochastic volatility of LLMs to the formal guarantees
@@ -3805,7 +3805,7 @@ a **compiled cognitive primitive** whose schema, transaction semantics, and
 epistemic contracts are verified at compile time — before a single query
 ever reaches a database engine.
 
-#### A. Hard Argument — Pure Mathematics in Three Theorems
+#### 1. Hard Argument — Pure Mathematics
 
 **Definition 1 (Ontological Transducer).** An `axonstore` declaration defines
 a morphism between the probabilistic cognitive domain and the deterministic
@@ -3893,7 +3893,7 @@ sub-threshold writes.
 
 ---
 
-#### B. Sweet Argument — Why `axonstore` Is Genuinely Brilliant
+#### 2. Sweet Argument — Why `axonstore` Is Genuinely Brilliant
 
 Every other AI framework treats the database as plumbing. AXON makes it
 a **cognitive primitive** — and the difference is profound:
@@ -3937,7 +3937,7 @@ Rust's ownership model.
 
 ---
 
-#### C. Three Use Cases
+#### 3. Three Use Cases
 
 **Use Case 1 — Financial Ledger with Atomic Double-Entry Bookkeeping**
 
@@ -4001,7 +4001,7 @@ axonstore Users {
         email:             text     not_null
         name:              text
         created_at:        text
-        // v0.28.5: new column — migrate() handles ALTER TABLE automatically
+        // v0.29.5: new column — migrate() handles ALTER TABLE automatically
         subscription_tier: text
     }
     indexes {
@@ -4127,7 +4127,7 @@ know {
                               Typed Output (validated, traced result)
 ```
 
-### 47 Cognitive Primitives
+### 48 Cognitive Primitives
 
 | Primitive  | Keyword      | What it represents                                   |
 | ---------- | ------------ | ---------------------------------------------------- |
@@ -4179,6 +4179,7 @@ know {
 | Daemon     | `daemon`     | π-Calculus reactive process — persistent event-driven agent with OTP supervision |
 | Listen     | `listen`     | Co-algebraic event subscription — binds daemon to typed EventBus channels       |
 | AxonStore  | `axonstore`  | Transactional persistence — ACID-guaranteed CRUD with HoTT schema validation     |
+| APX        | `apx`        | Epistemic dependency manager — MEC/PCC verification, EPR ranking, quarantine, and compliance gates |
 
 ### Epistemic Type System (Partial Order Lattice)
 
@@ -4379,7 +4380,7 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 ### Current Status
 
 ```
-2559 passed, 0 failures ✅
+2597 passed, 15 skipped, 0 failures ✅
 ```
 
 | Phase | Tests | What's covered                              |
@@ -4403,7 +4404,8 @@ pytest tests/test_tool_stubs.py tests/test_tool_backends.py  # Phase 4: Tools
 | 21    | 38    | Lambda Data (ΛD — lexer + parser + type checker + IR + integration) |
 | 22    | 31    | Compute (lexer + parser + IR + dispatcher + backend + integration) |
 | 23    | 98    | Daemon/Listen (π-calculus + EventBus FFI + AxonServer HTTP/WS API) |
-| 24    | 158   | AxonStore Enterprise (SQL injection, transactions, confidence, circuit breaker, metrics, migration, health checks) |
+| 24    | 158   | AxonStore Enterprise (ACID + HoTT + Linear Logic + confidence floor + circuit breaker + migrations + health checks) |
+| 25    | 50    | APX Enterprise (lattice, graph invariants, runtime resolver, registry, observability, compliance hardening) |
 | misc  | 894   | Stdlib, integration, edge cases             |
 
 ---
@@ -4531,6 +4533,7 @@ honesty:
 | 22    | Reactive Daemons (`daemon` + `listen` π-calculus) | ✅ Done |
 | 23    | AxonServer Process (HTTP/WS API + EventBus FFI)   | ✅ Done |
 | 24    | Transactional Persistence (`axonstore` — HoTT + Linear Logic + DbC + Enterprise hardening) | ✅ Done |
+| 25    | Epistemic Dependency Management (`apx` — lattice + MEC/PCC + EPR + registry + observability/compliance) | ✅ Done |
 
 ---
 
