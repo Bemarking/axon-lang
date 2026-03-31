@@ -447,6 +447,7 @@ class Executor:
         self._tool_dispatcher = tool_dispatcher
         self._data_dispatcher: DataScienceDispatcher | None = None
         self._store_dispatcher: Any = None  # lazy: StoreDispatcher
+        self._store_timeout: float = 30.0   # Enterprise: operation timeout (seconds)
 
     async def execute(self, program: CompiledProgram) -> ExecutionResult:
         """Execute a complete compiled AXON program.
@@ -1182,6 +1183,7 @@ class Executor:
         method routes the operation to the ``StoreDispatcher`` which
         handles CRUD under HoTT + Linear Logic + DbC guarantees.
         """
+        import asyncio
         import json
 
         step_name = step.step_name
@@ -1199,8 +1201,11 @@ class Executor:
             from axon.runtime.store_dispatcher import StoreDispatcher
             self._store_dispatcher = StoreDispatcher()
 
-        store_result = await self._store_dispatcher.dispatch(
-            store_meta, context={"step_name": step_name},
+        store_result = await asyncio.wait_for(
+            self._store_dispatcher.dispatch(
+                store_meta, context={"step_name": step_name},
+            ),
+            timeout=self._store_timeout,
         )
 
         response = ModelResponse(

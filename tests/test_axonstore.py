@@ -1362,3 +1362,851 @@ class TestStoreResult:
         )
         assert entry.confidence_floor == 0.9
         assert entry.isolation == "serializable"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  §13 — SQL INJECTION PREVENTION
+# ═══════════════════════════════════════════════════════════════════
+
+class TestSQLInjectionPrevention:
+    """All WHERE clauses must be parameterized — no SQL injection possible."""
+
+    from axon.runtime.store_backends.filter_parser import (
+        build_sqlite_where, build_pg_where, parse_filter,
+    )
+
+    def test_basic_equality_parameterized(self):
+        from axon.runtime.store_backends.filter_parser import build_sqlite_where
+        sql, params = build_sqlite_where("id = 1")
+        assert "?" in sql
+        assert params == [1]
+        assert "1" not in sql  # value is NOT interpolated
+
+    def test_string_value_parameterized(self):
+        from axon.runtime.store_backends.filter_parser import build_sqlite_where
+        sql, params = build_sqlite_where("name = 'Alice'")
+        assert "?" in sql
+        assert params == ["Alice"]
+        assert "Alice" not in sql
+
+    def test_injection_attempt_semicolons_rejected(self):
+        from axon.runtime.store_backends.filter_parser import parse_filter
+        with pytest.raises(ValueError, match="identifier|character"):
+            parse_filter("1=1; DROP TABLE users; --")
+
+    def test_injection_attempt_union_rejected(self):
+        from axon.runtime.store_backends.filter_parser import parse_filter
+        with pytest.raises(ValueError, match="identifier|character"):
+            parse_filter("1=1 UNION SELECT * FROM passwords")
+
+    def test_injection_comment_rejected(self):
+        from axon.runtime.store_backends.filter_parser import parse_filter
+        with pytest.raises(ValueError, match="identifier|character|Unexpected"):
+            parse_filter("id=1 --")
+
+    def test_empty_where_safe(self):
+        from axon.runtime.store_backends.filter_parser import build_sqlite_where
+        sql, params = build_sqlite_where("")
+        assert sql == "1=1"
+        assert params == []
+
+    def test_equality_operator_normalized(self):
+        from axon.runtime.store_backends.filter_parser import build_sqlite_where
+        sql, params = build_sqlite_where("id == 5")
+        assert "=" in sql
+        assert params == [5]
+
+    def test_float_value_parameterized(self):
+        from axon.runtime.store_backends.filter_parser import build_sqlite_where
+        sql, params = build_sqlite_where("price > 9.99")
+        assert "?" in sql
+        assert params == [9.99]
+
+    def test_and_conjunction(self):
+        from axon.runtime.store_backends.filter_parser import build_sqlite_where
+        sql, params = build_sqlite_where("price > 1 AND price < 100")
+        assert "AND" in sql
+        assert params == [1, 100]
+
+    def test_or_conjunction(self):
+        from axon.runtime.store_backends.filter_parser import build_sqlite_where
+        sql, params = build_sqlite_where("status = 'active' OR status = 'trial'")
+        assert "OR" in sql
+        assert params == ["active", "trial"]
+
+    def test_pg_parameterized_placeholders(self):
+        from axon.runtime.store_backends.filter_parser import build_pg_where
+        sql, params = build_pg_where("id = 1 AND name = 'Bob'")
+        assert "$1" in sql
+        assert "$2" in sql
+        assert params == [1, "Bob"]
+
+    def test_pg_param_offset(self):
+        from axon.runtime.store_backends.filter_parser import build_pg_where
+        sql, params = build_pg_where("id = 1", param_offset=3)
+        assert "$4" in sql
+        assert params == [1]
+
+    def test_boolean_value(self):
+        from axon.runtime.store_backends.filter_parser import build_sqlite_where
+        sql, params = build_sqlite_where("active = true")
+        assert params == [True]
+
+    def test_null_comparison(self):
+        from axon.runtime.store_backends.filter_parser import build_sqlite_where
+        sql, params = build_sqlite_where("deleted = null")
+        assert "IS NULL" in sql
+        assert params == []
+
+    def test_not_null_comparison(self):
+        from axon.runtime.store_backends.filter_parser import build_sqlite_where
+        sql, params = build_sqlite_where("deleted != null")
+        assert "IS NOT NULL" in sql
+        assert params == []
+
+    def test_column_names_quoted(self):
+        from axon.runtime.store_backends.filter_parser import build_sqlite_where
+        sql, params = build_sqlite_where("user_id = 42")
+        assert '"user_id"' in sql
+
+    def test_actual_query_no_injection(self):
+        """Verify the backend actually uses parameterized queries end-to-end."""
+        b = SQLiteStoreBackend(connection=":memory:")
+        _run_async(b.initialize("Users", [
+            {"col_name": "id", "col_type": "integer", "primary_key": True, "auto_increment": True},
+            {"col_name": "name", "col_type": "text"},
+        ]))
+        _run_async(b.insert("Users", {"name": "Alice"}))
+        _run_async(b.insert("Users", {"name": "Bob"}))
+
+        # This should return 0 rows (injection attempt treated as literal value)
+        rows = _run_async(b.query("Users", "name = '1=1'"))
+        assert len(rows) == 0
+
+        # Normal query works
+        rows = _run_async(b.query("Users", "name = 'Alice'"))
+        assert len(rows) == 1
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  §14 — CONFIDENCE FLOOR ENFORCEMENT
+# ═══════════════════════════════════════════════════════════════════
+
+class TestConfidenceFloorEnforcement:
+    """confidence_floor must be enforced by the dispatcher."""
+
+    def _make_dispatcher_with_confidence(self, cf=0.9, on_breach="rollback"):
+        d = StoreDispatcher()
+        _run_async(d.dispatch({
+            "operation": "axonstore",
+            "args": {
+                "name": "CF_Store",
+                "backend": "sqlite",
+                "connection": ":memory:",
+                "confidence_floor": cf,
+                "on_breach": on_breach,
+                "schema": [
+                    {"col_name": "id", "col_type": "integer", "primary_key": True},
+                    {"col_name": "val", "col_type": "text"},
+                ],
+            },
+        }))
+        return d
+
+    def test_high_confidence_passes(self):
+        d = self._make_dispatcher_with_confidence(cf=0.9)
+        result = _run_async(d.dispatch(
+            {"operation": "persist", "args": {"store_name": "CF_Store", "fields": [["val", "x"]]}},
+            context={"confidence": 1.0},
+        ))
+        assert result.success
+
+    def test_low_confidence_rollback_rejected(self):
+        d = self._make_dispatcher_with_confidence(cf=0.9, on_breach="rollback")
+        result = _run_async(d.dispatch(
+            {"operation": "persist", "args": {"store_name": "CF_Store", "fields": [["val", "x"]]}},
+            context={"confidence": 0.5},
+        ))
+        assert not result.success
+        assert "Confidence" in result.error or "ConfidenceFlo" in result.error
+
+    def test_low_confidence_raise_rejected(self):
+        d = self._make_dispatcher_with_confidence(cf=0.95, on_breach="raise")
+        result = _run_async(d.dispatch(
+            {"operation": "retrieve", "args": {"store_name": "CF_Store"}},
+            context={"confidence": 0.7},
+        ))
+        assert not result.success
+        assert "AnchorBreach" in result.error or "Confidence" in result.error
+
+    def test_low_confidence_log_allows(self):
+        d = self._make_dispatcher_with_confidence(cf=0.95, on_breach="log")
+        result = _run_async(d.dispatch(
+            {"operation": "retrieve", "args": {"store_name": "CF_Store", "where_expr": ""}},
+            context={"confidence": 0.1},
+        ))
+        # on_breach=log should allow the operation through
+        assert result.success
+
+    def test_exact_threshold_passes(self):
+        d = self._make_dispatcher_with_confidence(cf=0.9)
+        result = _run_async(d.dispatch(
+            {"operation": "retrieve", "args": {"store_name": "CF_Store", "where_expr": ""}},
+            context={"confidence": 0.9},
+        ))
+        assert result.success
+
+    def test_no_confidence_context_defaults_to_pass(self):
+        """When no confidence in context, default 1.0 — always passes."""
+        d = self._make_dispatcher_with_confidence(cf=0.9)
+        result = _run_async(d.dispatch(
+            {"operation": "retrieve", "args": {"store_name": "CF_Store", "where_expr": ""}},
+            context={},  # no "confidence" key
+        ))
+        assert result.success
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  §15 — HEALTH CHECKS & OBSERVABILITY
+# ═══════════════════════════════════════════════════════════════════
+
+class TestHealthChecks:
+    """Backend health check and metrics API."""
+
+    def test_sqlite_ping(self):
+        b = SQLiteStoreBackend(connection=":memory:")
+        assert _run_async(b.ping()) is True
+
+    def test_sqlite_is_healthy(self):
+        b = SQLiteStoreBackend(connection=":memory:")
+        health = _run_async(b.is_healthy())
+        assert health["healthy"] is True
+        assert health["backend"] == "sqlite"
+        assert "active_transactions" in health
+        assert "total_operations" in health
+
+    def test_sqlite_health_after_close(self):
+        b = SQLiteStoreBackend(connection=":memory:")
+        _run_async(b.initialize("T", [{"col_name": "id", "col_type": "integer"}]))
+        _run_async(b.close())
+        # After close, ping should still return True (fresh connection on lazy-init)
+        # or False — what matters is it doesn't throw
+        result = _run_async(b.ping())
+        assert isinstance(result, bool)
+
+    def test_dispatcher_metrics_recorded(self):
+        d = StoreDispatcher()
+        _run_async(d.dispatch({
+            "operation": "axonstore",
+            "args": {
+                "name": "MetricsStore",
+                "backend": "sqlite",
+                "connection": ":memory:",
+                "schema": [{"col_name": "id", "col_type": "integer"}],
+            },
+        }))
+        _run_async(d.dispatch({
+            "operation": "persist",
+            "args": {"store_name": "MetricsStore", "fields": [["id", 1]]},
+        }))
+        snap = d.metrics.snapshot()
+        assert snap["global"]["total_ops"] >= 2
+
+    def test_dispatcher_metrics_tracks_errors(self):
+        d = StoreDispatcher()
+        _run_async(d.dispatch({
+            "operation": "persist",
+            "args": {"store_name": "NoSuchStore", "fields": []},
+        }))
+        snap = d.metrics.snapshot()
+        # Error should be recorded
+        assert snap["global"]["total_ops"] >= 1
+
+    def test_metrics_snapshot_structure(self):
+        from axon.runtime.store_backends.metrics import StoreMetrics
+        m = StoreMetrics()
+        m.record("MyStore", "persist", 5.0)
+        m.record("MyStore", "retrieve", 2.5, error=True)
+        snap = m.snapshot()
+        assert "uptime_seconds" in snap
+        assert "global" in snap
+        assert "stores" in snap
+        assert "MyStore" in snap["stores"]
+        assert snap["stores"]["MyStore"]["persist"]["count"] == 1
+        assert snap["stores"]["MyStore"]["retrieve"]["errors"] == 1
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  §16 — SCHEMA MIGRATION
+# ═══════════════════════════════════════════════════════════════════
+
+class TestSchemaMigration:
+    """ALTER TABLE migration for adding new columns."""
+
+    def test_migrate_adds_column(self):
+        b = SQLiteStoreBackend(connection=":memory:")
+        _run_async(b.initialize("Products", [
+            {"col_name": "id", "col_type": "integer", "primary_key": True},
+            {"col_name": "name", "col_type": "text"},
+        ]))
+        # Insert row before migration
+        _run_async(b.insert("Products", {"name": "Widget"}))
+
+        # Migrate — add price column
+        added = _run_async(b.migrate("Products", [
+            {"col_name": "id", "col_type": "integer", "primary_key": True},
+            {"col_name": "name", "col_type": "text"},
+            {"col_name": "price", "col_type": "real"},
+        ]))
+        assert "price" in added
+
+    def test_migrate_no_duplicate_columns(self):
+        b = SQLiteStoreBackend(connection=":memory:")
+        _run_async(b.initialize("Products", [
+            {"col_name": "id", "col_type": "integer", "primary_key": True},
+        ]))
+        # Second migrate with same columns = 0 additions
+        added = _run_async(b.migrate("Products", [
+            {"col_name": "id", "col_type": "integer", "primary_key": True},
+        ]))
+        assert len(added) == 0
+
+    def test_migrate_existing_data_preserved(self):
+        b = SQLiteStoreBackend(connection=":memory:")
+        _run_async(b.initialize("T", [
+            {"col_name": "id", "col_type": "integer", "primary_key": True, "auto_increment": True},
+            {"col_name": "val", "col_type": "text"},
+        ]))
+        _run_async(b.insert("T", {"val": "preserved"}))
+        _run_async(b.migrate("T", [
+            {"col_name": "id", "col_type": "integer"},
+            {"col_name": "val", "col_type": "text"},
+            {"col_name": "extra", "col_type": "integer"},
+        ]))
+        rows = _run_async(b.query("T", ""))
+        assert len(rows) == 1
+        assert rows[0]["val"] == "preserved"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  §17 — INDEX MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════
+
+class TestIndexManagement:
+    """Index creation for query performance."""
+
+    def test_create_index(self):
+        b = SQLiteStoreBackend(connection=":memory:")
+        _run_async(b.initialize("Users", [
+            {"col_name": "id", "col_type": "integer", "primary_key": True, "auto_increment": True},
+            {"col_name": "email", "col_type": "text"},
+        ]))
+        # Should not raise
+        _run_async(b.create_index("Users", "idx_users_email", ["email"]))
+
+    def test_create_unique_index(self):
+        b = SQLiteStoreBackend(connection=":memory:")
+        _run_async(b.initialize("Products", [
+            {"col_name": "id", "col_type": "integer", "primary_key": True},
+            {"col_name": "sku", "col_type": "text"},
+        ]))
+        _run_async(b.create_index("Products", "idx_products_sku", ["sku"], unique=True))
+
+    def test_index_creation_idempotent(self):
+        """CREATE INDEX IF NOT EXISTS — second call should not raise."""
+        b = SQLiteStoreBackend(connection=":memory:")
+        _run_async(b.initialize("T", [
+            {"col_name": "id", "col_type": "integer"},
+            {"col_name": "tag", "col_type": "text"},
+        ]))
+        _run_async(b.create_index("T", "idx_t_tag", ["tag"]))
+        # Second call should succeed (IF NOT EXISTS)
+        _run_async(b.create_index("T", "idx_t_tag", ["tag"]))
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  §18 — CIRCUIT BREAKER & RETRY
+# ═══════════════════════════════════════════════════════════════════
+
+class TestCircuitBreaker:
+    """Circuit breaker state transitions and retry logic."""
+
+    def test_circuit_starts_closed(self):
+        from axon.runtime.store_backends.circuit_breaker import CircuitBreaker, CircuitState
+        cb = CircuitBreaker()
+        assert cb.state == CircuitState.CLOSED
+
+    def test_circuit_opens_after_threshold(self):
+        from axon.runtime.store_backends.circuit_breaker import (
+            CircuitBreaker, CircuitBreakerConfig, CircuitState,
+        )
+        cb = CircuitBreaker(CircuitBreakerConfig(failure_threshold=3))
+        cb.record_failure()
+        cb.record_failure()
+        assert cb.state == CircuitState.CLOSED  # still closed
+        cb.record_failure()
+        assert cb.state == CircuitState.OPEN
+
+    def test_circuit_rejects_when_open(self):
+        from axon.runtime.store_backends.circuit_breaker import (
+            CircuitBreaker, CircuitBreakerConfig,
+        )
+        cb = CircuitBreaker(CircuitBreakerConfig(failure_threshold=1))
+        cb.record_failure()
+        assert cb.allow_request() is False
+
+    def test_circuit_resets_on_success(self):
+        from axon.runtime.store_backends.circuit_breaker import (
+            CircuitBreaker, CircuitBreakerConfig, CircuitState,
+        )
+        cb = CircuitBreaker(CircuitBreakerConfig(failure_threshold=5))
+        for _ in range(3):
+            cb.record_failure()
+        cb.record_success()
+        assert cb._failure_count == 0  # reset on success in CLOSED
+
+    def test_circuit_reset_forces_closed(self):
+        from axon.runtime.store_backends.circuit_breaker import (
+            CircuitBreaker, CircuitBreakerConfig, CircuitState,
+        )
+        cb = CircuitBreaker(CircuitBreakerConfig(failure_threshold=1))
+        cb.record_failure()
+        assert cb.state == CircuitState.OPEN
+        cb.reset()
+        assert cb.state == CircuitState.CLOSED
+
+    def test_retry_succeeds_on_first_attempt(self):
+        from axon.runtime.store_backends.circuit_breaker import retry_with_backoff, RetryConfig
+
+        counter = {"n": 0}
+
+        async def ok_func():
+            counter["n"] += 1
+            return 42
+
+        result = _run_async(retry_with_backoff(
+            ok_func,
+            config=RetryConfig(max_retries=3, base_delay=0.001),
+        ))
+        assert result == 42
+        assert counter["n"] == 1
+
+    def test_retry_retries_on_failure(self):
+        from axon.runtime.store_backends.circuit_breaker import retry_with_backoff, RetryConfig
+
+        counter = {"n": 0}
+
+        async def flaky():
+            counter["n"] += 1
+            if counter["n"] < 3:
+                raise RuntimeError("transient")
+            return "ok"
+
+        result = _run_async(retry_with_backoff(
+            flaky,
+            config=RetryConfig(max_retries=3, base_delay=0.001),
+        ))
+        assert result == "ok"
+        assert counter["n"] == 3
+
+    def test_retry_exhaustion_raises(self):
+        from axon.runtime.store_backends.circuit_breaker import retry_with_backoff, RetryConfig
+
+        async def always_fails():
+            raise ValueError("always bad")
+
+        with pytest.raises(ValueError, match="always bad"):
+            _run_async(retry_with_backoff(
+                always_fails,
+                config=RetryConfig(max_retries=2, base_delay=0.001),
+            ))
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  §19 — COMPILE-TIME CROSS-REFERENCE VALIDATION
+# ═══════════════════════════════════════════════════════════════════
+
+class TestCompileTimeCrossReferences:
+    """Type checker validates CRUD operations against declared stores."""
+
+    def test_valid_persist_xref(self):
+        src = _PERSIST_SRC  # uses Users store declared above
+        errors = _check(src)
+        xref_errors = [e for e in errors if "undeclared" in str(e).lower()]
+        assert len(xref_errors) == 0
+
+    def test_invalid_persist_undeclared_store(self):
+        src = """
+persist into GhostStore {
+  name: "test"
+}
+"""
+        errors = _check(src)
+        xref_errors = [e for e in errors if "undeclared" in str(e).lower() or "GhostStore" in str(e)]
+        assert len(xref_errors) >= 1
+
+    def test_invalid_mutate_undeclared_store(self):
+        src = """
+mutate NonExistent where "id = 1" {
+  name: "value"
+}
+"""
+        errors = _check(src)
+        xref_errors = [e for e in errors if "undeclared" in str(e).lower() or "NonExistent" in str(e)]
+        assert len(xref_errors) >= 1
+
+    def test_invalid_purge_undeclared_store(self):
+        src = """
+purge from MissingStore where "id = 1"
+"""
+        errors = _check(src)
+        xref_errors = [e for e in errors if "undeclared" in str(e).lower() or "MissingStore" in str(e)]
+        assert len(xref_errors) >= 1
+
+    def test_duplicate_column_rejected(self):
+        src = """
+axonstore Bad {
+  backend: sqlite
+  schema {
+    id: integer primary_key
+    id: text
+  }
+}
+"""
+        errors = _check(src)
+        dup_errors = [e for e in errors if "duplicate" in str(e).lower() or "id" in str(e).lower()]
+        assert len(dup_errors) >= 1
+
+    def test_invalid_column_type_rejected(self):
+        src = """
+axonstore Bad {
+  backend: sqlite
+  schema {
+    id: integer primary_key
+    name: varchar
+  }
+}
+"""
+        errors = _check(src)
+        type_errors = [e for e in errors if "type" in str(e).lower() or "varchar" in str(e).lower()]
+        assert len(type_errors) >= 1
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  §20 — RESOURCE LIFECYCLE
+# ═══════════════════════════════════════════════════════════════════
+
+class TestResourceLifecycle:
+    """Resource cleanup and lifecycle management."""
+
+    def test_close_all_clears_stores(self):
+        d = StoreDispatcher()
+        _run_async(d.dispatch({
+            "operation": "axonstore",
+            "args": {
+                "name": "A",
+                "backend": "sqlite",
+                "connection": ":memory:",
+                "schema": [{"col_name": "id", "col_type": "integer"}],
+            },
+        }))
+        _run_async(d.dispatch({
+            "operation": "axonstore",
+            "args": {
+                "name": "B",
+                "backend": "sqlite",
+                "connection": ":memory:",
+                "schema": [{"col_name": "id", "col_type": "integer"}],
+            },
+        }))
+        assert len(d.stores) == 2
+        _run_async(d.close_all())
+        assert len(d.stores) == 0
+
+    def test_dispatcher_close_then_reinit(self):
+        """After close_all, new stores can be registered again."""
+        d = StoreDispatcher()
+        _run_async(d.dispatch({
+            "operation": "axonstore",
+            "args": {
+                "name": "X",
+                "backend": "sqlite",
+                "connection": ":memory:",
+                "schema": [{"col_name": "id", "col_type": "integer"}],
+            },
+        }))
+        _run_async(d.close_all())
+
+        # Re-register
+        result = _run_async(d.dispatch({
+            "operation": "axonstore",
+            "args": {
+                "name": "X",
+                "backend": "sqlite",
+                "connection": ":memory:",
+                "schema": [{"col_name": "id", "col_type": "integer"}],
+            },
+        }))
+        assert result.success
+        assert "X" in d.stores
+
+    def test_sqlite_backend_close_idempotent(self):
+        """Calling close twice should not raise."""
+        b = SQLiteStoreBackend(connection=":memory:")
+        _run_async(b.initialize("T", [{"col_name": "id", "col_type": "integer"}]))
+        _run_async(b.close())
+        _run_async(b.close())  # second close should be a no-op
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  §21 — TOKEN PROPAGATION IN TRANSACT
+# ═══════════════════════════════════════════════════════════════════
+
+class TestTokenPropagation:
+    """Verify token_id is propagated to child operations in transact."""
+
+    def test_transact_children_see_token(self):
+        """The _token_id must be in child args after dispatch routes them."""
+        d = StoreDispatcher()
+        _run_async(d.dispatch({
+            "operation": "axonstore",
+            "args": {
+                "name": "Ledger",
+                "backend": "sqlite",
+                "connection": ":memory:",
+                "schema": [
+                    {"col_name": "id", "col_type": "integer", "primary_key": True, "auto_increment": True},
+                    {"col_name": "entry", "col_type": "text"},
+                    {"col_name": "amount", "col_type": "real"},
+                ],
+            },
+        }))
+
+        # Multi-row transact
+        result = _run_async(d.dispatch({
+            "operation": "transact",
+            "args": {
+                "children": [
+                    {
+                        "operation": "persist",
+                        "args": {
+                            "store_name": "Ledger",
+                            "fields": [["entry", "debit"], ["amount", 100.0]],
+                        },
+                    },
+                    {
+                        "operation": "persist",
+                        "args": {
+                            "store_name": "Ledger",
+                            "fields": [["entry", "credit"], ["amount", 100.0]],
+                        },
+                    },
+                ],
+            },
+        }))
+        assert result.success
+        assert result.data["children_executed"] == 2
+
+        # Verify both rows are committed
+        rows_result = _run_async(d.dispatch({
+            "operation": "retrieve",
+            "args": {"store_name": "Ledger", "where_expr": ""},
+        }))
+        assert rows_result.data["count"] == 2
+
+    def test_transact_rollback_on_failure(self):
+        """If a child fails, all changes must roll back."""
+        d = StoreDispatcher()
+        _run_async(d.dispatch({
+            "operation": "axonstore",
+            "args": {
+                "name": "Accounts",
+                "backend": "sqlite",
+                "connection": ":memory:",
+                "schema": [
+                    {"col_name": "id", "col_type": "integer", "primary_key": True, "auto_increment": True},
+                    {"col_name": "name", "col_type": "text"},
+                ],
+            },
+        }))
+
+        # transact with a failing child (persist into wrong store)
+        result = _run_async(d.dispatch({
+            "operation": "transact",
+            "args": {
+                "children": [
+                    {
+                        "operation": "persist",
+                        "args": {
+                            "store_name": "Accounts",
+                            "fields": [["name", "Will-be-rolled-back"]],
+                        },
+                    },
+                    {
+                        "operation": "persist",
+                        "args": {
+                            "store_name": "NonExistentStore",  # Will fail
+                            "fields": [["name", "bad"]],
+                        },
+                    },
+                ],
+            },
+        }))
+
+        # Transaction should fail
+        assert not result.success
+
+        # After rollback, no rows should be committed
+        rows_result = _run_async(d.dispatch({
+            "operation": "retrieve",
+            "args": {"store_name": "Accounts", "where_expr": ""},
+        }))
+        # The row from the first child must have been rolled back
+        assert rows_result.data["count"] == 0
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  §22 — CREDENTIAL REDACTION
+# ═══════════════════════════════════════════════════════════════════
+
+class TestCredentialRedaction:
+    """Connection strings in compiled metadata must have credentials redacted."""
+
+    def _compile_store(self, connection: str):
+        from axon.compiler.ir_nodes import (
+            IRAxonStore, IRStoreSchema, IRStoreColumn,
+        )
+        from axon.backends.base_backend import BaseBackend
+        schema = IRStoreSchema(
+            source_line=0, source_column=0,
+            columns=(
+                IRStoreColumn(
+                    source_line=0, source_column=0,
+                    col_name="id", col_type="integer",
+                ),
+            ),
+        )
+        ir = IRAxonStore(
+            source_line=0, source_column=0,
+            name="TestStore",
+            backend="postgresql",
+            connection=connection,
+            schema=schema,
+            confidence_floor=0.9,
+            isolation="serializable",
+            on_breach="rollback",
+        )
+        step = BaseBackend._compile_axonstore_step(ir)
+        return step.metadata["axonstore"]["args"]["connection"]
+
+    def test_credentials_redacted_in_metadata(self):
+        conn = "postgresql://admin:s3cr3t@db.example.com/mydb"
+        result = self._compile_store(conn)
+        assert "s3cr3t" not in result
+        assert "admin" not in result
+        assert "***" in result
+
+    def test_env_ref_not_redacted(self):
+        conn = "env:DATABASE_URL"
+        result = self._compile_store(conn)
+        assert result == conn  # env refs pass through unchanged
+
+    def test_no_credentials_not_redacted(self):
+        conn = "postgresql://localhost/mydb"
+        result = self._compile_store(conn)
+        # No credentials to redact — should be unchanged
+        assert "localhost" in result
+
+    def test_empty_connection_unchanged(self):
+        result = self._compile_store("")
+        assert result == ""
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  §23 — FUZZ / EDGE CASES
+# ═══════════════════════════════════════════════════════════════════
+
+class TestEdgeCases:
+    """Edge cases and boundary conditions."""
+
+    def test_empty_fields_persist(self):
+        d = StoreDispatcher()
+        _run_async(d.dispatch({
+            "operation": "axonstore",
+            "args": {
+                "name": "Edge",
+                "backend": "sqlite",
+                "connection": ":memory:",
+                "schema": [{"col_name": "id", "col_type": "integer"}],
+            },
+        }))
+        # Empty fields is valid — INSERT with no columns
+        result = _run_async(d.dispatch({
+            "operation": "persist",
+            "args": {"store_name": "Edge", "fields": []},
+        }))
+        # May succeed or fail depending on NOT NULL constraints — should not throw internal error
+
+    def test_very_long_string_value(self):
+        b = SQLiteStoreBackend(connection=":memory:")
+        _run_async(b.initialize("T", [
+            {"col_name": "id", "col_type": "integer", "primary_key": True, "auto_increment": True},
+            {"col_name": "data", "col_type": "text"},
+        ]))
+        long_str = "x" * 10000
+        _run_async(b.insert("T", {"data": long_str}))
+        rows = _run_async(b.query("T", ""))
+        assert rows[0]["data"] == long_str
+
+    def test_special_chars_in_value_parameterized(self):
+        from axon.runtime.store_backends.filter_parser import build_sqlite_where
+        # Special chars in VALUE portion should be safely parameterized
+        sql, params = build_sqlite_where("name = 'O\\'Neil'")
+        assert "?" in sql
+        assert "O'Neil" in params or "O\\'Neil" in params[0] if params else True
+
+    def test_multiple_stores_independent(self):
+        d = StoreDispatcher()
+        for name in ["S1", "S2", "S3"]:
+            _run_async(d.dispatch({
+                "operation": "axonstore",
+                "args": {
+                    "name": name,
+                    "backend": "sqlite",
+                    "connection": ":memory:",
+                    "schema": [{"col_name": "v", "col_type": "text"}],
+                },
+            }))
+        # Insert into S1 only
+        _run_async(d.dispatch({
+            "operation": "persist",
+            "args": {"store_name": "S1", "fields": [["v", "hi"]]},
+        }))
+        # S2 and S3 should be empty
+        r2 = _run_async(d.dispatch({"operation": "retrieve", "args": {"store_name": "S2", "where_expr": ""}}))
+        r3 = _run_async(d.dispatch({"operation": "retrieve", "args": {"store_name": "S3", "where_expr": ""}}))
+        assert r2.data["count"] == 0
+        assert r3.data["count"] == 0
+
+    def test_filter_parser_unknown_operator_rejected(self):
+        from axon.runtime.store_backends.filter_parser import parse_filter
+        with pytest.raises(ValueError, match="operator|Invalid"):
+            parse_filter("id BETWEEN 1 AND 10")
+
+    def test_env_connection_string_resolves(self):
+        import os
+        os.environ["TEST_AXON_DB"] = ":memory:"
+        try:
+            from axon.runtime.store_backends import create_store_backend
+            b = create_store_backend("sqlite", "env:TEST_AXON_DB")
+            assert b is not None
+        finally:
+            del os.environ["TEST_AXON_DB"]
+
+    def test_env_missing_variable_raises(self):
+        from axon.runtime.store_backends import create_store_backend
+        import os
+        # Ensure variable is not set
+        os.environ.pop("DEFINITELY_NOT_SET_AXON_VAR", None)
+        with pytest.raises(ValueError, match="not set|not found|Environment"):
+            create_store_backend("sqlite", "env:DEFINITELY_NOT_SET_AXON_VAR")

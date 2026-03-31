@@ -545,7 +545,7 @@ class TypeChecker:
             case AxonStoreDefinition():
                 self._check_axonstore(decl)
             case PersistNode() | RetrieveNode() | MutateNode() | PurgeNode() | TransactNode():
-                pass  # axonstore CRUD ops — validated at runtime by StoreDispatcher
+                self._check_store_crud(decl)
             case LetStatement():
                 self._check_let(decl)
 
@@ -1100,6 +1100,10 @@ class TypeChecker:
         "read_committed", "repeatable_read", "serializable",
     })
     _VALID_STORE_ON_BREACH = frozenset({"rollback", "raise", "log"})
+    _VALID_COLUMN_TYPES = frozenset({
+        "integer", "text", "real", "decimal", "timestamp",
+        "boolean", "float", "string",
+    })
 
     def _check_axonstore(self, node: AxonStoreDefinition) -> None:
         if not node.name:
@@ -1128,8 +1132,61 @@ class TypeChecker:
                     f"axonstore '{node.name}' schema must have at least one column",
                     node,
                 )
+            else:
+                # Check for duplicate column names
+                seen_cols: set[str] = set()
+                for col in node.schema.columns:
+                    if col.col_name in seen_cols:
+                        self._emit(
+                            f"Duplicate column '{col.col_name}' in "
+                            f"axonstore '{node.name}' schema",
+                            node,
+                        )
+                    seen_cols.add(col.col_name)
+                    # Validate column type
+                    if col.col_type and col.col_type not in self._VALID_COLUMN_TYPES:
+                        self._emit(
+                            f"Unknown column type '{col.col_type}' for "
+                            f"'{col.col_name}' in axonstore '{node.name}'. "
+                            f"Valid: {', '.join(sorted(self._VALID_COLUMN_TYPES))}",
+                            node,
+                        )
         self._check_range(node.confidence_floor, 0.0, 1.0,
                           "confidence_floor", node)
+
+    def _check_store_crud(self, node: ASTNode) -> None:
+        """Validate CRUD operations cross-reference declared stores."""
+        store_name = ""
+        op_name = ""
+        match node:
+            case PersistNode(store_name=sn):
+                store_name, op_name = sn, "persist"
+            case RetrieveNode(store_name=sn):
+                store_name, op_name = sn, "retrieve"
+            case MutateNode(store_name=sn):
+                store_name, op_name = sn, "mutate"
+            case PurgeNode(store_name=sn):
+                store_name, op_name = sn, "purge"
+            case TransactNode():
+                for child in node.body:
+                    self._check_store_crud(child)
+                return
+            case _:
+                return
+
+        if store_name:
+            sym = self._symbols.lookup(store_name)
+            if sym is None:
+                self._emit(
+                    f"{op_name} references undeclared store '{store_name}'. "
+                    f"Declare it with: axonstore {store_name} {{ ... }}",
+                    node,
+                )
+            elif sym.kind != "axonstore":
+                self._emit(
+                    f"'{store_name}' is a {sym.kind}, not an axonstore",
+                    node,
+                )
 
     # ── DELIBERATE validation ─────────────────────────────────────────
 

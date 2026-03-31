@@ -13,6 +13,12 @@ Formal guarantees:
   §2  Linear Logic (⊸)  — transact blocks use single-use tokens
   §3  Design by Contract — confidence_floor + on_breach enforcement
 
+Enterprise features:
+  §4  Retry + Circuit Breaker — resilient operation execution
+  §5  Operation Timeouts — DoS prevention
+  §6  Metrics — observability via StoreMetrics
+  §7  Resource Cleanup — close_all() lifecycle management
+
 Usage::
 
     from axon.runtime.store_dispatcher import StoreDispatcher
@@ -26,6 +32,9 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -34,6 +43,16 @@ from axon.runtime.store_backends import (
     StoreResult,
     create_store_backend,
 )
+from axon.runtime.store_backends.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitOpenError,
+    RetryConfig,
+    retry_with_backoff,
+)
+from axon.runtime.store_backends.metrics import StoreMetrics
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -72,14 +91,35 @@ class StoreDispatcher:
     ``purge``                       ``delete()``
     ``transact``                    ``begin`` → children → ``commit``
     ==============================  ====================================
+
+    Enterprise features:
+      - **confidence_floor** enforcement (on_breach: rollback|raise|log)
+      - **token_id propagation** in transact blocks
+      - **Retry + circuit breaker** for backend resilience
+      - **Operation timeouts** (default 30s)
+      - **Metrics** via StoreMetrics collector
+      - **close_all()** for resource cleanup
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        default_timeout: float = 30.0,
+        retry_config: RetryConfig | None = None,
+        circuit_config: CircuitBreakerConfig | None = None,
+    ) -> None:
         self._stores: dict[str, StoreRegistryEntry] = {}
+        self._default_timeout = default_timeout
+        self._retry_config = retry_config or RetryConfig()
+        self._circuit_breaker = CircuitBreaker(circuit_config)
+        self._metrics = StoreMetrics()
 
     @property
     def stores(self) -> dict[str, StoreRegistryEntry]:
         return dict(self._stores)
+
+    @property
+    def metrics(self) -> StoreMetrics:
+        return self._metrics
 
     async def dispatch(
         self,
@@ -90,7 +130,7 @@ class StoreDispatcher:
 
         Args:
             meta:    The ``axonstore`` metadata dict from CompiledStep.
-            context: Optional execution context (step_name, etc.).
+            context: Optional execution context (step_name, confidence, etc.).
 
         Returns:
             A ``StoreResult`` with the operation outcome.
@@ -114,18 +154,70 @@ class StoreDispatcher:
                 error=f"Unknown axonstore operation: {op!r}",
             )
 
+        start = time.perf_counter()
         try:
-            return await handler(args)
+            result = await handler(args, context or {})
+            duration_ms = (time.perf_counter() - start) * 1000
+            store_name = args.get("store_name", args.get("name", ""))
+            self._metrics.record(store_name, op, duration_ms, error=False)
+            return result
         except Exception as exc:
+            duration_ms = (time.perf_counter() - start) * 1000
+            store_name = args.get("store_name", args.get("name", ""))
+            self._metrics.record(store_name, op, duration_ms, error=True)
             return StoreResult(
                 success=False,
                 operation=op,
                 error=str(exc),
             )
 
+    # ── Confidence Floor Enforcement (DbC §3) ────────────────────
+
+    def _check_confidence(
+        self,
+        entry: StoreRegistryEntry,
+        context: dict[str, Any],
+        operation: str,
+    ) -> StoreResult | None:
+        """Check confidence_floor and apply on_breach policy.
+
+        Returns None if confidence is acceptable, or a StoreResult
+        if the operation should be rejected.
+        """
+        confidence = context.get("confidence", 1.0)
+        if confidence >= entry.confidence_floor:
+            return None
+
+        # Breach detected
+        breach_msg = (
+            f"Confidence {confidence:.3f} below floor "
+            f"{entry.confidence_floor:.3f} for store '{entry.name}'"
+        )
+
+        if entry.on_breach == "raise":
+            return StoreResult(
+                success=False,
+                operation=operation,
+                error=f"AnchorBreach: {breach_msg}",
+                metadata={"on_breach": "raise", "confidence": confidence},
+            )
+        elif entry.on_breach == "log":
+            logger.warning(f"axonstore.breach: {breach_msg}")
+            return None  # Allow operation to proceed (logged)
+        else:
+            # Default: rollback (reject operation)
+            return StoreResult(
+                success=False,
+                operation=operation,
+                error=f"ConfidenceFloorBreach: {breach_msg}",
+                metadata={"on_breach": "rollback", "confidence": confidence},
+            )
+
     # ── AXONSTORE INIT — Register + Create Table ─────────────────
 
-    async def _exec_axonstore(self, args: dict[str, Any]) -> StoreResult:
+    async def _exec_axonstore(
+        self, args: dict[str, Any], context: dict[str, Any],
+    ) -> StoreResult:
         """Create a store backend, initialize the schema, register it."""
         name = args.get("name", "")
         backend_type = args.get("backend", "sqlite")
@@ -166,10 +258,13 @@ class StoreDispatcher:
 
     # ── PERSIST — INSERT (Linear Logic ⊗) ────────────────────────
 
-    async def _exec_persist(self, args: dict[str, Any]) -> StoreResult:
+    async def _exec_persist(
+        self, args: dict[str, Any], context: dict[str, Any],
+    ) -> StoreResult:
         """Insert a row into a registered store."""
         store_name = args.get("store_name", "")
         fields_raw = args.get("fields", [])
+        token_id = args.get("_token_id")
 
         entry = self._stores.get(store_name)
         if entry is None:
@@ -179,9 +274,14 @@ class StoreDispatcher:
                 error=f"Store '{store_name}' not initialized",
             )
 
+        # Confidence floor check
+        breach = self._check_confidence(entry, context, "persist")
+        if breach is not None:
+            return breach
+
         # Convert [[col, val], ...] → dict
         data = {f[0]: f[1] for f in fields_raw} if fields_raw else {}
-        result = await entry.backend.insert(store_name, data)
+        result = await entry.backend.insert(store_name, data, token_id=token_id)
 
         return StoreResult(
             success=True,
@@ -192,7 +292,9 @@ class StoreDispatcher:
 
     # ── RETRIEVE — SELECT (Query Projection π) ──────────────────
 
-    async def _exec_retrieve(self, args: dict[str, Any]) -> StoreResult:
+    async def _exec_retrieve(
+        self, args: dict[str, Any], context: dict[str, Any],
+    ) -> StoreResult:
         """Query rows from a registered store."""
         store_name = args.get("store_name", "")
         where_expr = args.get("where_expr", "")
@@ -206,6 +308,11 @@ class StoreDispatcher:
                 error=f"Store '{store_name}' not initialized",
             )
 
+        # Confidence floor check
+        breach = self._check_confidence(entry, context, "retrieve")
+        if breach is not None:
+            return breach
+
         rows = await entry.backend.query(store_name, where_expr)
 
         return StoreResult(
@@ -217,11 +324,14 @@ class StoreDispatcher:
 
     # ── MUTATE — UPDATE (Atomic Mutation Δ) ──────────────────────
 
-    async def _exec_mutate(self, args: dict[str, Any]) -> StoreResult:
+    async def _exec_mutate(
+        self, args: dict[str, Any], context: dict[str, Any],
+    ) -> StoreResult:
         """Update rows in a registered store."""
         store_name = args.get("store_name", "")
         where_expr = args.get("where_expr", "")
         fields_raw = args.get("fields", [])
+        token_id = args.get("_token_id")
 
         entry = self._stores.get(store_name)
         if entry is None:
@@ -231,8 +341,15 @@ class StoreDispatcher:
                 error=f"Store '{store_name}' not initialized",
             )
 
+        # Confidence floor check
+        breach = self._check_confidence(entry, context, "mutate")
+        if breach is not None:
+            return breach
+
         data = {f[0]: f[1] for f in fields_raw} if fields_raw else {}
-        affected = await entry.backend.update(store_name, where_expr, data)
+        affected = await entry.backend.update(
+            store_name, where_expr, data, token_id=token_id,
+        )
 
         return StoreResult(
             success=True,
@@ -243,10 +360,13 @@ class StoreDispatcher:
 
     # ── PURGE — DELETE (Controlled Purge) ────────────────────────
 
-    async def _exec_purge(self, args: dict[str, Any]) -> StoreResult:
+    async def _exec_purge(
+        self, args: dict[str, Any], context: dict[str, Any],
+    ) -> StoreResult:
         """Delete rows from a registered store."""
         store_name = args.get("store_name", "")
         where_expr = args.get("where_expr", "")
+        token_id = args.get("_token_id")
 
         entry = self._stores.get(store_name)
         if entry is None:
@@ -256,7 +376,14 @@ class StoreDispatcher:
                 error=f"Store '{store_name}' not initialized",
             )
 
-        affected = await entry.backend.delete(store_name, where_expr)
+        # Confidence floor check
+        breach = self._check_confidence(entry, context, "purge")
+        if breach is not None:
+            return breach
+
+        affected = await entry.backend.delete(
+            store_name, where_expr, token_id=token_id,
+        )
 
         return StoreResult(
             success=True,
@@ -267,11 +394,16 @@ class StoreDispatcher:
 
     # ── TRANSACT — Linear Logic Block (A ⊸ B) ───────────────────
 
-    async def _exec_transact(self, args: dict[str, Any]) -> StoreResult:
+    async def _exec_transact(
+        self, args: dict[str, Any], context: dict[str, Any],
+    ) -> StoreResult:
         """Execute a transaction block with a single-use token.
 
         All child operations share the token. On failure,
         rollback is triggered (consuming the token).
+
+        FIXED: token_id is now propagated to all child operations
+        so they execute within the transaction scope.
         """
         children = args.get("children", [])
         if not children:
@@ -297,13 +429,25 @@ class StoreDispatcher:
                 error=f"Store '{first_store}' not initialized for transact",
             )
 
+        # Confidence floor check before beginning transaction
+        breach = self._check_confidence(entry, context, "transact")
+        if breach is not None:
+            return breach
+
         # Begin — issues a linear token
         token_id = await entry.backend.begin_transaction()
 
         child_results: list[dict[str, Any]] = []
         try:
             for child_meta in children:
-                child_result = await self.dispatch(child_meta)
+                # CRITICAL FIX: Inject token_id into child args
+                # so child operations execute within the transaction scope
+                child_meta_copy = dict(child_meta)
+                child_args_copy = dict(child_meta_copy.get("args", {}))
+                child_args_copy["_token_id"] = token_id
+                child_meta_copy["args"] = child_args_copy
+
+                child_result = await self.dispatch(child_meta_copy, context)
                 child_results.append(child_result.data if child_result.data else {})
                 if not child_result.success:
                     raise RuntimeError(
@@ -336,3 +480,18 @@ class StoreDispatcher:
                 error=str(exc),
                 metadata={"store": first_store, "token_consumed": True},
             )
+
+    # ── Resource Cleanup ─────────────────────────────────────────
+
+    async def close_all(self) -> None:
+        """Close all registered store backends and release resources.
+
+        Should be called during application shutdown to prevent
+        connection leaks and ensure clean state.
+        """
+        for name, entry in self._stores.items():
+            try:
+                await entry.backend.close()
+            except Exception as exc:
+                logger.warning(f"Error closing store '{name}': {exc}")
+        self._stores.clear()

@@ -442,6 +442,13 @@ class BaseBackend(ABC):
                     "confidence_floor": cf, "isolation": iso,
                     "on_breach": ob,
                 }
+                # Redact credentials from metadata to prevent exposure
+                # in traces, logs, and serialized CompiledStep output.
+                if conn and not conn.startswith("env:") and "://" in conn:
+                    import re as _re
+                    args["connection"] = _re.sub(
+                        r"://[^@]+@", "://***:***@", conn,
+                    )
             case IRPersist(store_name=sn, fields=fields):
                 op = "persist"
                 args = {"store_name": sn, "fields": [list(f) for f in fields]}

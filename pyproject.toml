@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-lang"
-version = "0.27.5"
+version = "0.28.0"
 description = "A domain-specific language for defining AI agent behaviors with deterministic control"
 readme = "README.md"
 license = "MIT"
@@ -93,6 +93,12 @@ kafka = [
 rabbitmq = [
     "aio-pika>=9.4",
 ]
+postgresql = [
+    "asyncpg>=0.29",
+]
+sqlite-async = [
+    "aiosqlite>=0.20",
+]
 aws = [
     "aiobotocore>=2.15",
 ]
@@ -112,6 +118,8 @@ all = [
     "axon-lang[ollama]",
     "axon-lang[kafka]",
     "axon-lang[rabbitmq]",
+    "axon-lang[postgresql]",
+    "axon-lang[sqlite-async]",
     "axon-lang[aws]",
     "axon-lang[redis]",
     "axon-lang[server]",

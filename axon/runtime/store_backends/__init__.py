@@ -8,12 +8,13 @@ ACID-compliant CRUD operations under HoTT schema validation and
 Linear Logic transactional guarantees.
 
 Available backends:
-  - ``sqlite``      — Zero-config SQLite via ``aiosqlite`` (default)
+  - ``sqlite``      — Zero-config SQLite (``aiosqlite`` or sync fallback)
   - ``postgresql``  — Production PostgreSQL via ``asyncpg``
 """
 
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -59,6 +60,10 @@ class StoreBackend(Protocol):
       - Consistency: schema enforcement before mutation
       - Isolation:   configurable via ``isolation`` parameter
       - Durability:  writes survive process restart
+
+    Security:
+      - All WHERE clauses are parameterized (no SQL injection)
+      - Connection strings resolved from env vars when prefixed ``env:``
     """
 
     async def initialize(self, table_name: str, columns: list[dict[str, Any]]) -> None:
@@ -100,6 +105,45 @@ class StoreBackend(Protocol):
         """Release DB connections."""
         ...
 
+    # ── Extended Enterprise Protocol ─────────────────────────────
+
+    async def migrate(self, table_name: str,
+                      new_columns: list[dict[str, Any]]) -> list[str]:
+        """Add missing columns (ALTER TABLE). Returns list of added columns."""
+        ...
+
+    async def create_index(self, table_name: str, index_name: str,
+                           columns: list[str], unique: bool = False) -> None:
+        """Create an index on the table."""
+        ...
+
+    async def ping(self) -> bool:
+        """Check if the backend is reachable."""
+        ...
+
+    async def is_healthy(self) -> dict[str, Any]:
+        """Return health status with operational metrics."""
+        ...
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  CONNECTION STRING RESOLVER
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _resolve_connection(connection: str) -> str:
+    """Resolve ``env:VAR_NAME`` connection strings from environment."""
+    if connection.startswith("env:"):
+        var_name = connection[4:]
+        resolved = os.environ.get(var_name, "")
+        if not resolved:
+            raise ValueError(
+                f"Environment variable '{var_name}' is not set "
+                f"(from connection string '{connection}')"
+            )
+        return resolved
+    return connection
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  STORE BACKEND FACTORY
@@ -110,6 +154,7 @@ def create_store_backend(
     backend_type: str,
     connection: str = "",
     isolation: str = "serializable",
+    **kwargs: Any,
 ) -> StoreBackend:
     """Factory for creating store backends.
 
@@ -117,15 +162,24 @@ def create_store_backend(
         backend_type: ``"sqlite"`` | ``"postgresql"``
         connection:   Connection string or ``"env:VAR"``
         isolation:    ACID isolation level
+        **kwargs:     Backend-specific options (pool_min_size, ssl, etc.)
 
     Returns:
         A backend instance implementing ``StoreBackend``.
     """
+    resolved = _resolve_connection(connection)
+
     if backend_type == "sqlite":
         from axon.runtime.store_backends.sqlite_backend import SQLiteStoreBackend
-        return SQLiteStoreBackend(connection=connection, isolation=isolation)
+        return SQLiteStoreBackend(connection=resolved, isolation=isolation)
     elif backend_type == "postgresql":
         from axon.runtime.store_backends.postgresql_backend import PostgreSQLStoreBackend
-        return PostgreSQLStoreBackend(connection=connection, isolation=isolation)
+        return PostgreSQLStoreBackend(
+            connection=resolved,
+            isolation=isolation,
+            pool_min_size=kwargs.get("pool_min_size", 2),
+            pool_max_size=kwargs.get("pool_max_size", 10),
+            ssl=kwargs.get("ssl"),
+        )
     else:
         raise ValueError(f"Unknown store backend: {backend_type!r}")
