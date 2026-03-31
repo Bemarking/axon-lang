@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -121,6 +121,25 @@ class InMemoryChannel:
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  CHANNEL FACTORY TYPE
+# ═══════════════════════════════════════════════════════════════════
+
+ChannelFactory = Callable[[str, int], EventChannel]
+"""
+Factory signature: (topic, maxsize) → EventChannel.
+
+The default factory creates InMemoryChannel instances.
+Custom factories (Kafka, RabbitMQ, EventBridge) must return
+objects satisfying the EventChannel protocol.
+"""
+
+
+def _default_channel_factory(topic: str, maxsize: int = 0) -> InMemoryChannel:
+    """Default factory — creates asyncio.Queue-backed channels."""
+    return InMemoryChannel(topic=topic, maxsize=maxsize)
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  EVENT BUS — channel registry + topic routing
 # ═══════════════════════════════════════════════════════════════════
 
@@ -132,20 +151,30 @@ class EventBus:
       EventBus ≡ (ν ch₁)(ν ch₂)…(P | Q | …)
       The bus creates restricted channels and composes listeners.
 
+    The ``channel_factory`` parameter enables plugging in external
+    message brokers (Kafka, RabbitMQ, EventBridge) while keeping
+    the same EventBus API. Default: InMemoryChannel (asyncio.Queue).
+
     Usage:
-        bus = EventBus()
+        bus = EventBus()                                    # in-memory
+        bus = EventBus(channel_factory=kafka_factory)       # Kafka
+
         channel = bus.get_or_create("orders")
         await bus.publish("orders", Event(topic="orders", payload={...}))
         event = await channel.receive()
     """
 
-    def __init__(self) -> None:
-        self._channels: dict[str, InMemoryChannel] = {}
+    def __init__(
+        self,
+        channel_factory: ChannelFactory | None = None,
+    ) -> None:
+        self._factory: ChannelFactory = channel_factory or _default_channel_factory
+        self._channels: dict[str, EventChannel] = {}
 
-    def get_or_create(self, topic: str, maxsize: int = 0) -> InMemoryChannel:
+    def get_or_create(self, topic: str, maxsize: int = 0) -> EventChannel:
         """Get existing channel or create a new one for the topic."""
         if topic not in self._channels:
-            self._channels[topic] = InMemoryChannel(topic=topic, maxsize=maxsize)
+            self._channels[topic] = self._factory(topic, maxsize)
         return self._channels[topic]
 
     async def publish(self, topic: str, event: Event) -> None:

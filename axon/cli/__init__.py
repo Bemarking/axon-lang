@@ -131,6 +131,64 @@ def _build_parser() -> argparse.ArgumentParser:
         help="List all stdlib components across all namespaces",
     )
 
+    # ── axon serve ────────────────────────────────────────────
+    serve = sub.add_parser(
+        "serve",
+        help="Start the AxonServer (reactive daemon platform).",
+    )
+    serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address (default: 127.0.0.1)",
+    )
+    serve.add_argument(
+        "--port",
+        type=int,
+        default=8420,
+        help="Listen port (default: 8420)",
+    )
+    serve.add_argument(
+        "--channel",
+        default="memory",
+        choices=["memory", "kafka", "rabbitmq", "eventbridge"],
+        help="Event channel backend (default: memory)",
+    )
+    serve.add_argument(
+        "--auth-token",
+        default="",
+        help="Bearer token for API authentication",
+    )
+    serve.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level (default: INFO)",
+    )
+
+    # ── axon deploy ───────────────────────────────────────────
+    deploy = sub.add_parser(
+        "deploy",
+        help="Deploy .axon file to a running AxonServer.",
+    )
+    deploy.add_argument("file", help="Path to .axon source file")
+    deploy.add_argument(
+        "--server",
+        default="http://localhost:8420",
+        help="AxonServer URL (default: http://localhost:8420)",
+    )
+    deploy.add_argument(
+        "-b",
+        "--backend",
+        default="anthropic",
+        choices=["anthropic", "openai", "gemini", "ollama"],
+        help="Target backend (default: anthropic)",
+    )
+    deploy.add_argument(
+        "--auth-token",
+        default="",
+        help="Bearer token for AxonServer authentication",
+    )
+
     return parser
 
 
@@ -179,6 +237,16 @@ def main(argv: list[str] | None = None) -> int:
         from axon.cli.inspect_cmd import cmd_inspect
 
         return cmd_inspect(args)
+
+    if args.command == "serve":
+        from axon.cli.serve_cmd import cmd_serve
+
+        return cmd_serve(args)
+
+    if args.command == "deploy":
+        from axon.cli.deploy_cmd import cmd_deploy
+
+        return cmd_deploy(args)
 
     parser.print_help()
     return 1
