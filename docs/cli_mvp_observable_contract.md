@@ -76,7 +76,7 @@ python -m axon.cli version
 
 ### Salida esperada en error de I/O
 
-- stderr: `✗ File not found: examples\__missing__.axon`
+- stderr: `✗ File not found: examples/__missing__.axon`
 
 ### Casos canonicos
 
@@ -122,7 +122,7 @@ python -m axon.cli check examples/__missing__.axon --no-color
 
 ### Salida esperada en error de I/O
 
-- stderr: `✗ File not found: examples\__missing__.axon`
+- stderr: `✗ File not found: examples/__missing__.axon`
 
 ### Casos canonicos
 

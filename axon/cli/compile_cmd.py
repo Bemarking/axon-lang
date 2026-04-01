@@ -17,6 +17,8 @@ from argparse import Namespace
 from dataclasses import asdict
 from pathlib import Path
 
+from axon.cli.display import format_cli_path
+
 
 _RED = "\033[31m"
 _BOLD = "\033[1m"
@@ -34,7 +36,7 @@ def cmd_compile(args: Namespace) -> int:
     path = Path(args.file)
 
     if not path.exists():
-        print(f"✗ File not found: {path}", file=sys.stderr)
+        print(f"✗ File not found: {format_cli_path(path)}", file=sys.stderr)
         return 2
 
     source = path.read_text(encoding="utf-8")
@@ -75,7 +77,7 @@ def cmd_compile(args: Namespace) -> int:
     # ── Serialize ─────────────────────────────────────────────
     ir_dict = _serialize_ir(ir_program)
     ir_dict["_meta"] = {
-        "source": str(path),
+        "source": format_cli_path(path),
         "backend": args.backend,
         "axon_version": _get_version(),
     }
@@ -87,7 +89,7 @@ def cmd_compile(args: Namespace) -> int:
     else:
         out_path = Path(args.output) if args.output else path.with_suffix(".ir.json")
         out_path.write_text(ir_json, encoding="utf-8")
-        print(f"✓ Compiled → {out_path}")
+        print(f"✓ Compiled → {format_cli_path(out_path)}")
 
     return 0
 

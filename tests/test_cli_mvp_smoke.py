@@ -23,6 +23,10 @@ CLI_MODULE = [sys.executable, "-m", "axon.cli"]
 ENV = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 
 
+def _normalize_cli_path(text: str) -> str:
+    return text.replace("\\", "/")
+
+
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [*CLI_MODULE, *args],
@@ -57,7 +61,7 @@ def test_check_missing_file_smoke() -> None:
 
     assert result.returncode == 2
     assert result.stdout == ""
-    assert result.stderr.strip() == "✗ File not found: examples\\__missing__.axon"
+    assert _normalize_cli_path(result.stderr.strip()) == "✗ File not found: examples/__missing__.axon"
 
 
 def test_compile_stdout_smoke() -> None:
@@ -68,7 +72,7 @@ def test_compile_stdout_smoke() -> None:
 
     payload = json.loads(result.stdout)
     assert payload["node_type"] == "program"
-    assert payload["_meta"]["source"].endswith("examples\\contract_analyzer.axon") or payload["_meta"]["source"].endswith("examples/contract_analyzer.axon")
+    assert payload["_meta"]["source"].endswith("examples/contract_analyzer.axon")
     assert payload["_meta"]["backend"] == "anthropic"
     assert payload["_meta"]["axon_version"] == "0.30.6"
 
@@ -78,7 +82,7 @@ def test_compile_missing_file_smoke() -> None:
 
     assert result.returncode == 2
     assert result.stdout == ""
-    assert result.stderr.strip() == "✗ File not found: examples\\__missing__.axon"
+    assert _normalize_cli_path(result.stderr.strip()) == "✗ File not found: examples/__missing__.axon"
 
 
 def test_trace_success_smoke() -> None:

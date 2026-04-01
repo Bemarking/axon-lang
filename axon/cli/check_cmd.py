@@ -18,6 +18,8 @@ import sys
 from argparse import Namespace
 from pathlib import Path
 
+from axon.cli.display import format_cli_path
+
 # ── ANSI colors ──────────────────────────────────────────────────
 
 _RED = "\033[31m"
@@ -44,7 +46,11 @@ def cmd_check(args: Namespace) -> int:
     # ── Read source ───────────────────────────────────────────
     if not path.exists():
         print(
-            _c(f"✗ File not found: {path}", _RED, no_color=no_color),
+            _c(
+                f"✗ File not found: {format_cli_path(path)}",
+                _RED,
+                no_color=no_color,
+            ),
             file=sys.stderr,
         )
         return 2

@@ -16,6 +16,8 @@ import sys
 from argparse import Namespace
 from pathlib import Path
 
+from axon.cli.display import format_cli_path, supports_text
+
 # ── ANSI colors ──────────────────────────────────────────────────
 
 _RED = "\033[31m"
@@ -44,6 +46,20 @@ _EVENT_COLORS: dict[str, str] = {
     "confidence_check": _CYAN,
 }
 
+_UNICODE_TRACE_THEME = {
+    "rule": "═",
+    "span_open": "┌─",
+    "span_close": "└─",
+    "event_prefix": "│",
+}
+
+_ASCII_TRACE_THEME = {
+    "rule": "=",
+    "span_open": "+-",
+    "span_close": "`-",
+    "event_prefix": "|",
+}
+
 
 def _c(text: str, code: str, *, no_color: bool = False) -> str:
     if no_color or not sys.stdout.isatty():
@@ -57,7 +73,7 @@ def cmd_trace(args: Namespace) -> int:
     no_color = getattr(args, "no_color", False)
 
     if not path.exists():
-        print(f"✗ File not found: {path}", file=sys.stderr)
+        print(f"✗ File not found: {format_cli_path(path)}", file=sys.stderr)
         return 2
 
     try:
@@ -72,55 +88,68 @@ def cmd_trace(args: Namespace) -> int:
 
 def _render_trace(data: dict | list, *, no_color: bool) -> None:
     """Render a trace data structure to the terminal."""
+    theme = _trace_theme()
     print()
-    print(_c("═" * 60, _BOLD, no_color=no_color))
+    print(_c(theme["rule"] * 60, _BOLD, no_color=no_color))
     print(_c("  AXON Execution Trace", _BOLD, no_color=no_color))
-    print(_c("═" * 60, _BOLD, no_color=no_color))
+    print(_c(theme["rule"] * 60, _BOLD, no_color=no_color))
 
-    # Handle different trace formats
     if isinstance(data, dict):
-        # Top-level metadata
-        meta = data.get("_meta", data.get("meta", {}))
-        if meta:
-            print(
-                _c("  source: ", _DIM, no_color=no_color)
-                + str(meta.get("source", "unknown"))
-            )
-            print(
-                _c("  backend: ", _DIM, no_color=no_color)
-                + str(meta.get("backend", "unknown"))
-            )
-            print()
-
-        # Spans
-        spans = data.get("spans", [])
-        if spans:
-            for span in spans:
-                _render_span(span, indent=1, no_color=no_color)
-
-        # Top-level events
-        events = data.get("events", [])
-        if events:
-            for event in events:
-                _render_event(event, indent=1, no_color=no_color)
-
-        # If data has neither spans nor events, dump as structured
-        if not spans and not events:
-            _render_flat(data, indent=1, no_color=no_color)
-
+        _render_trace_dict(data, no_color=no_color, theme=theme)
     elif isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict):
-                _render_event(item, indent=1, no_color=no_color)
-            else:
-                print(f"  {item}")
+        _render_trace_list(data, no_color=no_color, theme=theme)
 
     print()
-    print(_c("═" * 60, _BOLD, no_color=no_color))
+    print(_c(theme["rule"] * 60, _BOLD, no_color=no_color))
+
+
+def _render_trace_dict(
+    data: dict, *, no_color: bool, theme: dict[str, str]
+) -> None:
+    meta = data.get("_meta", data.get("meta", {}))
+    if meta:
+        _render_meta(meta, no_color=no_color)
+
+    spans = data.get("spans", [])
+    for span in spans:
+        _render_span(span, indent=1, no_color=no_color, theme=theme)
+
+    events = data.get("events", [])
+    for event in events:
+        _render_event(event, indent=1, no_color=no_color, theme=theme)
+
+    if not spans and not events:
+        _render_flat(data, indent=1, no_color=no_color)
+
+
+def _render_trace_list(
+    data: list, *, no_color: bool, theme: dict[str, str]
+) -> None:
+    for item in data:
+        if isinstance(item, dict):
+            _render_event(item, indent=1, no_color=no_color, theme=theme)
+            continue
+        print(f"  {item}")
+
+
+def _render_meta(meta: dict, *, no_color: bool) -> None:
+    print(
+        _c("  source: ", _DIM, no_color=no_color)
+        + format_cli_path(str(meta.get("source", "unknown")))
+    )
+    print(
+        _c("  backend: ", _DIM, no_color=no_color)
+        + str(meta.get("backend", "unknown"))
+    )
+    print()
 
 
 def _render_span(
-    span: dict, *, indent: int = 0, no_color: bool = False
+    span: dict,
+    *,
+    indent: int = 0,
+    no_color: bool = False,
+    theme: dict[str, str],
 ) -> None:
     """Render a trace span (named scope with children)."""
     prefix = "  " * indent
@@ -128,58 +157,86 @@ def _render_span(
     duration = span.get("duration_ms", "")
     dur_str = f" ({duration}ms)" if duration else ""
 
-    print(f"{prefix}┌─ {_c(name, _BOLD + _CYAN, no_color=no_color)}{dur_str}")
+    print(
+        f"{prefix}{theme['span_open']} "
+        f"{_c(name, _BOLD + _CYAN, no_color=no_color)}{dur_str}"
+    )
 
     for event in span.get("events", []):
-        _render_event(event, indent=indent + 1, no_color=no_color)
+        _render_event(event, indent=indent + 1, no_color=no_color, theme=theme)
 
     for child in span.get("children", []):
-        _render_span(child, indent=indent + 1, no_color=no_color)
+        _render_span(child, indent=indent + 1, no_color=no_color, theme=theme)
 
-    print(f"{prefix}└─")
+    print(f"{prefix}{theme['span_close']}")
 
 
 def _render_event(
-    event: dict, *, indent: int = 0, no_color: bool = False
+    event: dict,
+    *,
+    indent: int = 0,
+    no_color: bool = False,
+    theme: dict[str, str],
 ) -> None:
     """Render a single trace event."""
     prefix = "  " * indent
     event_type = event.get("type", event.get("event_type", "unknown"))
     color = _EVENT_COLORS.get(event_type, "")
-
-    # Timestamp
-    ts = event.get("timestamp", "")
-    ts_str = f"[{ts}] " if ts else ""
-
-    # Event type badge
-    badge = _c(f"[{event_type}]", color + _BOLD, no_color=no_color)
-
-    # Data summary
     data = event.get("data", {})
-    summary_parts: list[str] = []
+    ts_str = _render_timestamp(event)
+    badge = _c(f"[{event_type}]", color + _BOLD, no_color=no_color)
+    summary_text = _event_summary(data)
+    summary = f"  {summary_text}" if summary_text else ""
+
+    print(f"{prefix}{theme['event_prefix']} {ts_str}{badge}{summary}")
+
+    if event_type in ("anchor_breach", "validation_fail", "retry_attempt"):
+        _render_event_details(
+            data,
+            prefix=prefix,
+            no_color=no_color,
+            theme=theme,
+        )
+
+
+def _trace_theme() -> dict[str, str]:
+    if supports_text(sys.stdout, "═┌└│"):
+        return _UNICODE_TRACE_THEME
+    return _ASCII_TRACE_THEME
+
+
+def _render_timestamp(event: dict) -> str:
+    timestamp = event.get("timestamp", "")
+    return f"[{timestamp}] " if timestamp else ""
+
+
+def _event_summary(data: dict) -> str:
     for key in ("step_name", "name", "message", "content", "reason"):
         if key in data:
-            val = str(data[key])
-            if len(val) > 80:
-                val = val[:77] + "..."
-            summary_parts.append(val)
-            break
+            return _truncate(str(data[key]), 80)
+    return ""
 
-    summary = f"  {summary_parts[0]}" if summary_parts else ""
 
-    print(f"{prefix}│ {ts_str}{badge}{summary}")
+def _render_event_details(
+    data: dict,
+    *,
+    prefix: str,
+    no_color: bool,
+    theme: dict[str, str],
+) -> None:
+    for key, value in data.items():
+        if key in ("step_name", "name", "message"):
+            continue
+        print(
+            f"{prefix}{theme['event_prefix']}   "
+            f"{_c(key, _DIM, no_color=no_color)}: {_truncate(str(value), 60)}"
+        )
 
-    # Show extra data for important events
-    if event_type in ("anchor_breach", "validation_fail", "retry_attempt"):
-        for k, v in data.items():
-            if k in ("step_name", "name", "message"):
-                continue
-            val_str = str(v)
-            if len(val_str) > 60:
-                val_str = val_str[:57] + "..."
-            print(
-                f"{prefix}│   {_c(k, _DIM, no_color=no_color)}: {val_str}"
-            )
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) > limit:
+        return text[: limit - 3] + "..."
+    return text
 
 
 def _render_flat(

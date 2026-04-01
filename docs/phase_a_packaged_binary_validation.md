@@ -31,7 +31,7 @@ build/pyinstaller/dist/axon/axon.exe
 - `version` devuelve `0`
 - `check` sobre `examples/contract_analyzer.axon` imprime `✓ contract_analyzer.axon  168 tokens · 9 declarations · 0 errors`
 - `check` sobre fuente valida devuelve `0`
-- `check` sobre `examples/__missing__.axon` imprime `✗ File not found: examples\__missing__.axon`
+- `check` sobre `examples/__missing__.axon` imprime `✗ File not found: examples/__missing__.axon`
 - `check` sobre archivo inexistente devuelve `2`
 
 ### Conclusión
@@ -61,7 +61,7 @@ build/pyinstaller/dist/axon/axon.exe
 - `compile` sobre fuente valida devuelve `0`
 - el archivo `temp_a7_compile.ir.json` se genera correctamente
 - el IR generado incluye `node_type: "program"`
-- `compile` sobre `examples/__missing__.axon` imprime `✗ File not found: examples\__missing__.axon`
+- `compile` sobre `examples/__missing__.axon` imprime `✗ File not found: examples/__missing__.axon`
 - `compile` sobre archivo inexistente devuelve `2`
 - `trace` sobre `examples/sample.trace.json` renderiza el encabezado `AXON Execution Trace`
 - `trace` sobre `examples/sample.trace.json` devuelve `0`

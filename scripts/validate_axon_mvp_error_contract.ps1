@@ -33,11 +33,11 @@ $BadSource = Join-Path $RepoRoot 'temp_a8_bad.axon'
 Set-Content -Path $BadSource -Value '42 + garbage' -Encoding UTF8
 
 Invoke-Case -Name 'check-missing-file' -Action { & $Exe check 'examples/__missing__.axon' --no-color } -ExpectedExit 2 -ExpectedContains @(
-    'File not found: examples\__missing__.axon'
+    'File not found: examples/__missing__.axon'
 )
 
 Invoke-Case -Name 'compile-missing-file' -Action { & $Exe compile 'examples/__missing__.axon' } -ExpectedExit 2 -ExpectedContains @(
-    'File not found: examples\__missing__.axon'
+    'File not found: examples/__missing__.axon'
 )
 
 Invoke-Case -Name 'compile-invalid-syntax' -Action { & $Exe compile $BadSource } -ExpectedExit 1 -ExpectedContains @(
