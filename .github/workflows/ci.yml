@@ -34,3 +34,43 @@ jobs:
           axon version
           axon check examples/contract_analyzer.axon
           axon compile examples/contract_analyzer.axon --stdout > /dev/null
+
+  windows-mvp-executable:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Build AXON MVP executable
+        shell: pwsh
+        run: |
+          $env:AXON_PYTHON = (Get-Command python).Source
+          & .\scripts\build_axon_mvp_windows.ps1
+
+      - name: Validate packaged MVP executable
+        shell: pwsh
+        run: |
+          & .\build\pyinstaller\dist\axon\axon.exe version
+          & .\build\pyinstaller\dist\axon\axon.exe check examples/contract_analyzer.axon --no-color
+          & .\build\pyinstaller\dist\axon\axon.exe compile examples/contract_analyzer.axon --output temp_ci_compile.ir.json
+          if (-not (Test-Path .\temp_ci_compile.ir.json)) { throw 'compile did not generate temp_ci_compile.ir.json' }
+          & .\build\pyinstaller\dist\axon\axon.exe trace examples/sample.trace.json --no-color | Out-Null
+          & .\scripts\validate_axon_mvp_error_contract.ps1
+
+      - name: Upload AXON MVP executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: axon-mvp-windows
+          path: build/pyinstaller/dist/axon/
+          if-no-files-found: error

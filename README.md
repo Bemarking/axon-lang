@@ -38,6 +38,19 @@ semantic type checking, retry engines, and execution tracing.
 
 It is **not** a Python library, a LangChain wrapper, or a YAML DSL.
 
+## Windows MVP Executable
+
+AXON already has a Windows MVP executable for the Phase A bridge toolchain.
+
+The supported MVP commands are:
+
+- `axon version`
+- `axon check`
+- `axon compile`
+- `axon trace`
+
+Quick start and installation guidance are documented in [docs/phase_a_executable_user_guide.md](docs/phase_a_executable_user_guide.md).
+
 ```axon
 persona LegalExpert {
     domain: ["contract law", "IP", "corporate"]

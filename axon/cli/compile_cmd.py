@@ -18,6 +18,17 @@ from dataclasses import asdict
 from pathlib import Path
 
 
+_RED = "\033[31m"
+_BOLD = "\033[1m"
+_RESET = "\033[0m"
+
+
+def _c(text: str, code: str) -> str:
+    if not sys.stdout.isatty():
+        return text
+    return f"{code}{text}{_RESET}"
+
+
 def cmd_compile(args: Namespace) -> int:
     """Execute the ``axon compile`` subcommand."""
     path = Path(args.file)
@@ -39,13 +50,19 @@ def cmd_compile(args: Namespace) -> int:
         tokens = Lexer(source, filename=str(path)).tokenize()
         ast = Parser(tokens).parse()
     except AxonError as exc:
-        print(f"✗ {path.name}: {exc}", file=sys.stderr)
+        _print_error(exc, path)
         return 1
 
     errors = TypeChecker(ast).check()
     if errors:
+        print(
+            _c(f"✗ {path.name}", _RED + _BOLD)
+            + f"  — {len(errors)} type error(s)",
+            file=sys.stderr,
+        )
         for err in errors:
-            print(f"  error: {err.message}", file=sys.stderr)
+            line_info = f"  line {err.line}" if err.line else ""
+            print(f"  error{line_info}: {err.message}", file=sys.stderr)
         return 1
 
     # ── IR Generation ─────────────────────────────────────────
@@ -107,3 +124,20 @@ def _get_version() -> str:
         return axon.__version__
     except Exception:
         return "unknown"
+
+
+def _print_error(exc: Exception, path: Path) -> None:
+    from axon.compiler.errors import AxonError
+
+    if isinstance(exc, AxonError):
+        loc = ""
+        if exc.line:
+            loc = f":{exc.line}"
+            if exc.column:
+                loc += f":{exc.column}"
+        print(
+            _c(f"✗ {path.name}{loc}", _RED + _BOLD) + f"  {exc.message}",
+            file=sys.stderr,
+        )
+    else:
+        print(_c(f"✗ {path.name}", _RED + _BOLD) + f"  {exc}", file=sys.stderr)
