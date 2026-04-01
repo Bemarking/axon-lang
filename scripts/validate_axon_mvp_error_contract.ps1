@@ -27,6 +27,7 @@ function Invoke-Case {
     }
 
     Write-Output "PASS: $Name"
+    $global:LASTEXITCODE = 0
 }
 
 $BadSource = Join-Path $RepoRoot 'temp_a8_bad.axon'
@@ -60,3 +61,6 @@ Invoke-Case -Name 'unknown-command' -Action { & $Exe unknown } -ExpectedExit 2 -
 )
 
 Write-Output 'AXON MVP packaged error contract validated.'
+
+Remove-Item -Force $BadSource -ErrorAction SilentlyContinue
+$global:LASTEXITCODE = 0
