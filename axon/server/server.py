@@ -20,7 +20,11 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+import asyncio
+import json
+import math
+from collections import deque
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from axon.runtime.tracer import TraceEventType, Tracer
@@ -31,8 +35,10 @@ from axon.runtime.state_backend import InMemoryStateBackend, StateBackend
 from axon.runtime.supervisor import DaemonSupervisor
 
 from axon.server.config import AxonServerConfig
+from axon.server.model_clients import create_endpoint_model_client
 
 logger = logging.getLogger(__name__)
+_ENDPOINT_LATENCY_WINDOW = 512
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -76,6 +82,19 @@ class EndpointInfo:
     deployment_id: str = ""
 
 
+@dataclass(frozen=True)
+class EndpointExecutionResult:
+    """Result of serving an HTTP request through an axonendpoint flow."""
+    success: bool
+    status_code: int
+    trace_id: str
+    endpoint_name: str
+    output_type: str = ""
+    response: Any = None
+    error: str = ""
+    duration_ms: float = 0.0
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  AXON SERVER
 # ═══════════════════════════════════════════════════════════════════
@@ -106,6 +125,12 @@ class AxonServer:
         self._endpoint_info: dict[str, EndpointInfo] = {}  # endpoint_name → EndpointInfo
         self._running = False
         self._started_at: float = 0.0
+        self._endpoint_semaphore: Any = None
+        self._endpoint_model_client: Any = None
+        self._endpoint_model_metrics: dict[str, Any] = {}
+        self._endpoint_route_metrics: dict[str, dict[str, Any]] = {}
+        self._endpoint_traces: dict[str, dict[str, Any]] = {}
+        self._endpoint_trace_order: deque[str] = deque()
         self._tracer = Tracer(program_name="axonserver", backend_name="server")
 
     # ── Lifecycle ─────────────────────────────────────────────
@@ -137,6 +162,12 @@ class AxonServer:
 
         self._running = True
         self._started_at = time.time()
+        self._endpoint_semaphore = asyncio.Semaphore(
+            max(1, self._config.endpoint_max_concurrency)
+        )
+        self._endpoint_model_client = self._build_endpoint_model_client()
+        self._endpoint_model_metrics = self._init_endpoint_model_metrics()
+        self._endpoint_route_metrics = {}
 
         logger.info("AxonServer started successfully")
 
@@ -314,10 +345,73 @@ class AxonServer:
         await self._bus.publish(topic, event)
         return True
 
+    async def execute_endpoint_request(
+        self,
+        endpoint: EndpointInfo,
+        *,
+        payload: dict[str, Any],
+        trace_id: str,
+    ) -> EndpointExecutionResult:
+        """Execute an endpoint request with backpressure and per-request isolation."""
+        unavailable = self._endpoint_unavailable_result(endpoint, trace_id)
+        if unavailable is not None:
+            return self._finalize_endpoint_result(unavailable)
+
+        queue_timeout = max(0.001, float(self._config.endpoint_queue_timeout_seconds))
+        req_start = time.perf_counter()
+
+        try:
+            await asyncio.wait_for(self._endpoint_semaphore.acquire(), timeout=queue_timeout)
+        except asyncio.TimeoutError:
+            return self._finalize_endpoint_result(self._endpoint_error_result(
+                endpoint,
+                trace_id,
+                status_code=429,
+                error="Endpoint is saturated. Retry later.",
+            ))
+
+        try:
+            result = await self._execute_endpoint_with_slot(
+                endpoint=endpoint,
+                payload=payload,
+                trace_id=trace_id,
+                req_start=req_start,
+            )
+            return self._finalize_endpoint_result(result)
+        except asyncio.TimeoutError:
+            return self._finalize_endpoint_result(self._endpoint_error_result(
+                endpoint,
+                trace_id,
+                status_code=504,
+                error="Endpoint execution timeout.",
+                duration_ms=(time.perf_counter() - req_start) * 1000,
+            ))
+        except Exception as exc:
+            return self._finalize_endpoint_result(self._endpoint_error_result(
+                endpoint,
+                trace_id,
+                status_code=500,
+                error=str(exc),
+                duration_ms=(time.perf_counter() - req_start) * 1000,
+            ))
+        finally:
+            self._endpoint_semaphore.release()
+
+    def get_endpoint_trace(self, trace_id: str) -> dict[str, Any] | None:
+        """Return a recorded endpoint execution trace by trace id."""
+        return self._endpoint_traces.get(trace_id)
+
     # ── Metrics ───────────────────────────────────────────────
 
-    def metrics(self) -> dict[str, Any]:
+    def metrics(
+        self,
+        top_n: int = 5,
+        score_weights: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
         """Server metrics snapshot."""
+        safe_top_n = max(1, int(top_n))
+        effective_weights = self._score_weights_snapshot(score_weights)
+        route_snapshot = self._endpoint_route_metrics_snapshot(effective_weights)
         return {
             "running": self._running,
             "uptime_seconds": time.time() - self._started_at if self._running else 0,
@@ -330,6 +424,15 @@ class AxonServer:
                 1 for d in self._daemon_info.values() if d.state == "hibernating"
             ),
             "endpoints_total": len(self._endpoint_info),
+            "endpoint_inflight": self._endpoint_inflight_count(),
+            "endpoint_trace_cache": len(self._endpoint_traces),
+            "endpoint_model": self._endpoint_model_metrics_snapshot(),
+            "endpoint_routes": route_snapshot,
+            "endpoint_routes_top": self._endpoint_route_top_summary(
+                route_snapshot,
+                top_n=safe_top_n,
+                score_weights=effective_weights,
+            ),
             "event_bus_topics": self._bus.topics() if self._bus else [],
             "channel_backend": self._config.channel_backend,
             "state_backend": self._config.state_backend,
@@ -428,3 +531,456 @@ class AxonServer:
             )
             return RedisStateBackend(redis_url=redis_url)
         raise ValueError(f"Unknown state backend: {name}")
+
+    def _endpoint_inflight_count(self) -> int:
+        if self._endpoint_semaphore is None:
+            return 0
+        value = getattr(self._endpoint_semaphore, "_value", None)
+        if not isinstance(value, int):
+            return 0
+        return max(0, self._config.endpoint_max_concurrency - value)
+
+    def _resolve_endpoint_unit(self, endpoint: EndpointInfo) -> Any:
+        compiled = self._deployments.get(endpoint.deployment_id)
+        if compiled is None:
+            return None
+        return next(
+            (u for u in compiled.execution_units if u.flow_name == endpoint.execute_flow),
+            None,
+        )
+
+    def _bind_endpoint_request(self, unit: Any, payload: dict[str, Any], trace_id: str) -> Any:
+        """Create a request-local execution unit with payload prelude in first step."""
+        from axon.backends.base_backend import CompiledExecutionUnit
+
+        payload_json = json.dumps(payload, ensure_ascii=True, sort_keys=True)
+        steps = list(unit.steps)
+        if steps:
+            first = steps[0]
+            prelude = (
+                "Endpoint request payload (JSON):\n"
+                f"{payload_json}\n\n"
+                f"Trace ID: {trace_id}\n\n"
+            )
+            steps[0] = replace(first, user_prompt=prelude + first.user_prompt)
+
+        metadata = dict(unit.metadata)
+        metadata["endpoint_trace_id"] = trace_id
+        metadata["endpoint_payload"] = payload
+
+        return CompiledExecutionUnit(
+            flow_name=unit.flow_name,
+            persona_name=unit.persona_name,
+            context_name=unit.context_name,
+            system_prompt=unit.system_prompt,
+            steps=steps,
+            tool_declarations=list(unit.tool_declarations),
+            anchor_instructions=list(unit.anchor_instructions),
+            active_anchors=list(unit.active_anchors),
+            effort=unit.effort,
+            metadata=metadata,
+        )
+
+    def _store_endpoint_trace(self, trace_id: str, trace: dict[str, Any]) -> None:
+        limit = max(1, int(self._config.endpoint_trace_history_size))
+        if trace_id in self._endpoint_traces:
+            self._endpoint_traces[trace_id] = trace
+            return
+
+        self._endpoint_traces[trace_id] = trace
+        self._endpoint_trace_order.append(trace_id)
+        while len(self._endpoint_trace_order) > limit:
+            old_id = self._endpoint_trace_order.popleft()
+            self._endpoint_traces.pop(old_id, None)
+
+    def _endpoint_unavailable_result(
+        self,
+        endpoint: EndpointInfo,
+        trace_id: str,
+    ) -> EndpointExecutionResult | None:
+        if not self._running:
+            return self._endpoint_error_result(
+                endpoint,
+                trace_id,
+                status_code=503,
+                error="Server not running.",
+            )
+        if self._endpoint_semaphore is None:
+            return self._endpoint_error_result(
+                endpoint,
+                trace_id,
+                status_code=503,
+                error="Server execution gate unavailable.",
+            )
+        if self._endpoint_model_client is None:
+            return self._endpoint_error_result(
+                endpoint,
+                trace_id,
+                status_code=503,
+                error="Server model client unavailable.",
+            )
+        return None
+
+    def _endpoint_error_result(
+        self,
+        endpoint: EndpointInfo,
+        trace_id: str,
+        *,
+        status_code: int,
+        error: str,
+        duration_ms: float = 0.0,
+    ) -> EndpointExecutionResult:
+        return EndpointExecutionResult(
+            success=False,
+            status_code=status_code,
+            trace_id=trace_id,
+            endpoint_name=endpoint.name,
+            output_type=endpoint.output_type,
+            error=error,
+            duration_ms=duration_ms,
+        )
+
+    async def _execute_endpoint_with_slot(
+        self,
+        *,
+        endpoint: EndpointInfo,
+        payload: dict[str, Any],
+        trace_id: str,
+        req_start: float,
+    ) -> EndpointExecutionResult:
+        from axon.backends.base_backend import CompiledProgram
+        from axon.runtime.executor import Executor
+
+        unit = self._resolve_endpoint_unit(endpoint)
+        if unit is None:
+            return self._endpoint_error_result(
+                endpoint,
+                trace_id,
+                status_code=422,
+                error=(
+                    f"Flow '{endpoint.execute_flow}' not found in deployment "
+                    f"'{endpoint.deployment_id}'."
+                ),
+            )
+
+        request_unit = self._bind_endpoint_request(unit, payload, trace_id)
+        program = CompiledProgram(
+            backend_name=self._config.default_backend,
+            execution_units=[request_unit],
+            metadata={"program_name": f"endpoint:{endpoint.name}", "trace_id": trace_id},
+        )
+        request_timeout = max(0.1, float(self._config.endpoint_request_timeout_seconds))
+        executor = Executor(client=self._endpoint_model_client)
+        execution = await asyncio.wait_for(executor.execute(program), timeout=request_timeout)
+        unit_result = execution.unit_results[0] if execution.unit_results else None
+
+        response_payload: Any = {"ok": execution.success}
+        if unit_result and unit_result.step_results:
+            last = unit_result.step_results[-1]
+            if last.response:
+                response_payload = last.response.structured or last.response.content
+
+        trace_dict = execution.trace.to_dict() if execution.trace else {}
+        self._store_endpoint_trace(trace_id, trace_dict)
+
+        status = 200 if execution.success else 422
+        err = unit_result.error if (unit_result and unit_result.error) else ""
+        duration_ms = (time.perf_counter() - req_start) * 1000
+
+        return EndpointExecutionResult(
+            success=execution.success,
+            status_code=status,
+            trace_id=trace_id,
+            endpoint_name=endpoint.name,
+            output_type=endpoint.output_type,
+            response=response_payload,
+            error=err,
+            duration_ms=duration_ms,
+        )
+
+    def _build_endpoint_model_client(self) -> Any:
+        return create_endpoint_model_client(self._config, logger=logger)
+
+    def _init_endpoint_model_metrics(self) -> dict[str, Any]:
+        provider = self._endpoint_model_provider()
+        model = self._endpoint_model_name()
+        transport = self._endpoint_model_transport()
+        return {
+            "provider": provider,
+            "model": model,
+            "transport": transport,
+            "requests_total": 0,
+            "success_total": 0,
+            "error_total": 0,
+            "backpressure_total": 0,
+            "timeout_total": 0,
+            "latency_total_ms": 0.0,
+            "latency_avg_ms": 0.0,
+            "providers": {
+                provider: {
+                    "requests_total": 0,
+                    "success_total": 0,
+                    "error_total": 0,
+                    "latency_total_ms": 0.0,
+                    "latency_avg_ms": 0.0,
+                }
+            },
+        }
+
+    def _endpoint_model_metrics_snapshot(self) -> dict[str, Any]:
+        if not self._endpoint_model_metrics:
+            return self._init_endpoint_model_metrics()
+        snapshot = dict(self._endpoint_model_metrics)
+        providers = snapshot.get("providers", {})
+        snapshot["providers"] = {k: dict(v) for k, v in providers.items()}
+        return snapshot
+
+    def _endpoint_model_provider(self) -> str:
+        return str(getattr(self._endpoint_model_client, "provider_name", "deterministic"))
+
+    def _endpoint_model_name(self) -> str:
+        return str(getattr(self._endpoint_model_client, "model_name", "deterministic"))
+
+    def _endpoint_model_transport(self) -> str:
+        return str(getattr(self._endpoint_model_client, "transport_kind", "local"))
+
+    def _finalize_endpoint_result(self, result: EndpointExecutionResult) -> EndpointExecutionResult:
+        self._record_endpoint_model_metrics(result)
+        self._record_endpoint_route_metrics(result)
+        return result
+
+    def _record_endpoint_model_metrics(self, result: EndpointExecutionResult) -> None:
+        if not self._endpoint_model_metrics:
+            self._endpoint_model_metrics = self._init_endpoint_model_metrics()
+
+        provider = self._endpoint_model_provider()
+        top = self._endpoint_model_metrics
+        top["provider"] = provider
+        top["model"] = self._endpoint_model_name()
+        top["transport"] = self._endpoint_model_transport()
+        top["requests_total"] += 1
+        top["latency_total_ms"] += float(result.duration_ms)
+        top["latency_avg_ms"] = round(
+            top["latency_total_ms"] / max(1, top["requests_total"]),
+            2,
+        )
+
+        if result.success:
+            top["success_total"] += 1
+        else:
+            top["error_total"] += 1
+
+        if result.status_code == 429:
+            top["backpressure_total"] += 1
+        if result.status_code == 504:
+            top["timeout_total"] += 1
+
+        providers = top.setdefault("providers", {})
+        bucket = providers.setdefault(
+            provider,
+            {
+                "requests_total": 0,
+                "success_total": 0,
+                "error_total": 0,
+                "latency_total_ms": 0.0,
+                "latency_avg_ms": 0.0,
+            },
+        )
+        bucket["requests_total"] += 1
+        bucket["latency_total_ms"] += float(result.duration_ms)
+        bucket["latency_avg_ms"] = round(
+            bucket["latency_total_ms"] / max(1, bucket["requests_total"]),
+            2,
+        )
+        if result.success:
+            bucket["success_total"] += 1
+        else:
+            bucket["error_total"] += 1
+
+    def _record_endpoint_route_metrics(self, result: EndpointExecutionResult) -> None:
+        endpoint = self._endpoint_info.get(result.endpoint_name)
+        if endpoint is None:
+            return
+
+        route_key = f"{endpoint.method.upper()} {endpoint.path}"
+        bucket = self._endpoint_route_metrics.setdefault(
+            route_key,
+            {
+                "endpoint_name": endpoint.name,
+                "method": endpoint.method.upper(),
+                "path": endpoint.path,
+                "requests_total": 0,
+                "success_total": 0,
+                "error_total": 0,
+                "backpressure_total": 0,
+                "timeout_total": 0,
+                "latency_total_ms": 0.0,
+                "latency_avg_ms": 0.0,
+                "latency_min_ms": 0.0,
+                "latency_max_ms": 0.0,
+                "latency_p95_ms": 0.0,
+                "latency_p99_ms": 0.0,
+                "error_rate": 0.0,
+                "priority_score": 0.0,
+                "_latencies": deque(maxlen=_ENDPOINT_LATENCY_WINDOW),
+            },
+        )
+
+        latency_ms = float(result.duration_ms)
+        bucket["requests_total"] += 1
+        bucket["latency_total_ms"] += latency_ms
+        bucket["latency_avg_ms"] = round(
+            bucket["latency_total_ms"] / max(1, bucket["requests_total"]),
+            2,
+        )
+        latencies: deque[float] = bucket["_latencies"]
+        latencies.append(latency_ms)
+        bucket["latency_min_ms"] = round(min(latencies), 2) if latencies else 0.0
+        bucket["latency_max_ms"] = round(max(latencies), 2) if latencies else 0.0
+        bucket["latency_p95_ms"] = self._percentile(list(latencies), 95)
+        bucket["latency_p99_ms"] = self._percentile(list(latencies), 99)
+
+        if result.success:
+            bucket["success_total"] += 1
+        else:
+            bucket["error_total"] += 1
+
+        if result.status_code == 429:
+            bucket["backpressure_total"] += 1
+        if result.status_code == 504:
+            bucket["timeout_total"] += 1
+
+        bucket["error_rate"] = round(
+            bucket["error_total"] / max(1, bucket["requests_total"]),
+            4,
+        )
+        bucket["priority_score"] = self._priority_score(
+            error_rate=float(bucket["error_rate"]),
+            p95_ms=float(bucket["latency_p95_ms"]),
+            requests_total=int(bucket["requests_total"]),
+        )
+
+    def _endpoint_route_metrics_snapshot(
+        self,
+        score_weights: dict[str, float] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        snapshot: dict[str, dict[str, Any]] = {}
+        effective_weights = self._score_weights_snapshot(score_weights)
+        for key, raw in self._endpoint_route_metrics.items():
+            view = dict(raw)
+            view.pop("_latencies", None)
+            view["priority_score"] = self._priority_score(
+                error_rate=float(view.get("error_rate", 0.0)),
+                p95_ms=float(view.get("latency_p95_ms", 0.0)),
+                requests_total=int(view.get("requests_total", 0)),
+                weights=effective_weights,
+            )
+            snapshot[key] = view
+        return snapshot
+
+    def _endpoint_route_top_summary(
+        self,
+        route_snapshot: dict[str, dict[str, Any]],
+        *,
+        top_n: int,
+        score_weights: dict[str, float],
+    ) -> dict[str, Any]:
+        rows: list[dict[str, Any]] = []
+        for route_key, row in route_snapshot.items():
+            item = dict(row)
+            item["route"] = route_key
+            rows.append(item)
+
+        slowest = sorted(
+            rows,
+            key=lambda r: (
+                float(r.get("latency_p95_ms", 0.0)),
+                float(r.get("latency_avg_ms", 0.0)),
+                int(r.get("requests_total", 0)),
+            ),
+            reverse=True,
+        )[:top_n]
+        error_prone = sorted(
+            rows,
+            key=lambda r: (
+                float(r.get("error_rate", 0.0)),
+                int(r.get("error_total", 0)),
+                int(r.get("requests_total", 0)),
+            ),
+            reverse=True,
+        )[:top_n]
+        by_volume = sorted(
+            rows,
+            key=lambda r: (
+                int(r.get("requests_total", 0)),
+                float(r.get("latency_p95_ms", 0.0)),
+            ),
+            reverse=True,
+        )[:top_n]
+        by_score = sorted(
+            rows,
+            key=lambda r: (
+                float(r.get("priority_score", 0.0)),
+                float(r.get("error_rate", 0.0)),
+                float(r.get("latency_p95_ms", 0.0)),
+            ),
+            reverse=True,
+        )[:top_n]
+
+        return {
+            "top_n": top_n,
+            "score_weights": score_weights,
+            "slowest_p95": slowest,
+            "highest_error_rate": error_prone,
+            "top_by_volume": by_volume,
+            "top_by_score": by_score,
+        }
+
+    def _priority_score(
+        self,
+        *,
+        error_rate: float,
+        p95_ms: float,
+        requests_total: int,
+        weights: dict[str, float] | None = None,
+    ) -> float:
+        resolved = self._score_weights_snapshot(weights)
+        w_error = max(0.0, float(resolved["error"]))
+        w_latency = max(0.0, float(resolved["latency"]))
+        w_volume = max(0.0, float(resolved["volume"]))
+        volume = math.log1p(max(0, requests_total))
+        score = (
+            max(0.0, error_rate) * w_error
+            * max(0.0, p95_ms) * w_latency
+            * volume * w_volume
+        )
+        return round(score, 4)
+
+    def _score_weights_snapshot(
+        self,
+        override: dict[str, float] | None = None,
+    ) -> dict[str, float]:
+        base = {
+            "error": float(getattr(self._config, "endpoint_score_weight_error", 1.0)),
+            "latency": float(getattr(self._config, "endpoint_score_weight_latency", 1.0)),
+            "volume": float(getattr(self._config, "endpoint_score_weight_volume", 1.0)),
+        }
+        if not override:
+            return base
+
+        result = dict(base)
+        for key in ("error", "latency", "volume"):
+            if key in override and override[key] is not None:
+                try:
+                    result[key] = float(override[key])
+                except (TypeError, ValueError):
+                    pass
+        return result
+
+    @staticmethod
+    def _percentile(values: list[float], p: int) -> float:
+        if not values:
+            return 0.0
+        sorted_vals = sorted(values)
+        idx = max(0, min(len(sorted_vals) - 1, int((p / 100) * len(sorted_vals) + 0.999999) - 1))
+        return round(float(sorted_vals[idx]), 2)

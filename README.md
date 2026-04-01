@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v0.30.5</em><br>
+  <strong>AXON</strong> <em>v0.30.6</em><br>
   A programming language whose primitives are cognitive primitives of AI.
 </p>
 
@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.30.5-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v0.30.6-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha">
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/tests-2603%20passing-brightgreen" alt="Tests">
@@ -3792,7 +3792,7 @@ daemon ComplianceReporter(event: RiskAssessment) -> SARReport {
 
 ### XI. Muscle AxonStore — the `axonstore` Primitive
 
-> AXON v0.30.5 consolidates Phase 24 as a production paradigm shift: **compiler-verified
+> AXON v0.30.6 consolidates Phase 24 as a production paradigm shift: **compiler-verified
 > transactional persistence with ACID guarantees, HoTT schema validation, and
 > Linear Logic transaction tokens** — the first cognitive language primitive
 > that subyugates the stochastic volatility of LLMs to the formal guarantees
@@ -4001,7 +4001,7 @@ axonstore Users {
         email:             text     not_null
         name:              text
         created_at:        text
-        // v0.30.5: new column — migrate() handles ALTER TABLE automatically
+        // v0.30.6: new column — migrate() handles ALTER TABLE automatically
         subscription_tier: text
     }
     indexes {

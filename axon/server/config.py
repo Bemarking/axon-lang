@@ -44,5 +44,22 @@ class AxonServerConfig:
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
     auth_token: str = ""
     max_daemons: int = 100
+    endpoint_max_concurrency: int = 64
+    endpoint_queue_timeout_seconds: float = 0.25
+    endpoint_request_timeout_seconds: float = 30.0
+    endpoint_trace_history_size: int = 500
+    endpoint_model: str = "deterministic"
+    endpoint_model_provider: str = ""
+    endpoint_model_name: str = ""
+    endpoint_model_api_key_env: str = ""
+    endpoint_model_base_url: str = ""
+    endpoint_model_timeout_seconds: float = 30.0
+    endpoint_model_strict: bool = False
+    endpoint_model_latency_seconds: float = 0.0
+    endpoint_model_max_prompt_chars: int = 16000
+    endpoint_model_max_response_chars: int = 32000
+    endpoint_score_weight_error: float = 1.0
+    endpoint_score_weight_latency: float = 1.0
+    endpoint_score_weight_volume: float = 1.0
     log_level: str = "INFO"
     default_backend: str = "anthropic"

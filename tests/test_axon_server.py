@@ -18,6 +18,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 import pytest
@@ -242,6 +243,23 @@ class TestAxonServerConfig:
         assert config.state_backend == "memory"
         assert config.auth_token == ""
         assert config.max_daemons == 100
+        assert config.endpoint_max_concurrency == 64
+        assert config.endpoint_queue_timeout_seconds == 0.25
+        assert config.endpoint_request_timeout_seconds == 30.0
+        assert config.endpoint_trace_history_size == 500
+        assert config.endpoint_model == "deterministic"
+        assert config.endpoint_model_provider == ""
+        assert config.endpoint_model_name == ""
+        assert config.endpoint_model_api_key_env == ""
+        assert config.endpoint_model_base_url == ""
+        assert config.endpoint_model_timeout_seconds == 30.0
+        assert config.endpoint_model_strict is False
+        assert config.endpoint_model_latency_seconds == 0.0
+        assert config.endpoint_model_max_prompt_chars == 16000
+        assert config.endpoint_model_max_response_chars == 32000
+        assert config.endpoint_score_weight_error == 1.0
+        assert config.endpoint_score_weight_latency == 1.0
+        assert config.endpoint_score_weight_volume == 1.0
         assert config.log_level == "INFO"
         assert config.default_backend == "anthropic"
 
@@ -530,7 +548,7 @@ flow F2() -> String {
 class TestHTTPAPI:
     """AxonServer HTTP endpoints via Starlette TestClient."""
 
-    def _make_client(self, auth_token: str = ""):
+    def _make_client(self, auth_token: str = "", **config_overrides):
         """Create test client with embedded AxonServer.
 
         Uses TestClient as context manager so Starlette fires
@@ -548,7 +566,7 @@ class TestHTTPAPI:
         from axon.server.config import AxonServerConfig
         from axon.server.http_app import create_app
 
-        config = AxonServerConfig(auth_token=auth_token)
+        config = AxonServerConfig(auth_token=auth_token, **config_overrides)
         server = AxonServer(config)
         app = create_app(server)
         client = TestClient(app)
@@ -573,6 +591,11 @@ class TestHTTPAPI:
         data = resp.json()
         assert "running" in data
         assert "daemons_total" in data
+        assert "endpoint_model" in data
+        assert data["endpoint_model"]["requests_total"] == 0
+        assert "endpoint_routes" in data
+        assert "endpoint_routes_top" in data
+        assert data["endpoint_routes_top"]["top_n"] == 5
 
     def test_deploy_endpoint(self):
         """POST /v1/deploy compiles and registers daemons."""
@@ -626,6 +649,262 @@ axonendpoint ContractsAPI {
         body = call_resp.json()
         assert body["ok"] is True
         assert body["endpoint"] == "ContractsAPI"
+        assert "trace_id" in body
+        assert "result" in body
+        assert body["result"]["trace_id"] == body["trace_id"]
+        assert body["result"]["output"]["text"] == "hello"
+
+        trace_resp = client.get(f"/v1/traces/{body['trace_id']}")
+        assert trace_resp.status_code == 200
+        trace_body = trace_resp.json()
+        assert trace_body["trace_id"] == body["trace_id"]
+        assert "trace" in trace_body
+
+        metrics_resp = client.get("/v1/metrics")
+        assert metrics_resp.status_code == 200
+        metrics_json = metrics_resp.json()
+        metrics_data = metrics_json["endpoint_model"]
+        assert metrics_data["requests_total"] >= 1
+        assert metrics_data["success_total"] >= 1
+        assert metrics_data["error_total"] == 0
+        assert metrics_data["provider"] == "deterministic"
+
+        route = metrics_json["endpoint_routes"]["POST /api/contracts/analyze"]
+        assert route["endpoint_name"] == "ContractsAPI"
+        assert route["requests_total"] >= 1
+        assert route["success_total"] >= 1
+        assert route["error_total"] == 0
+        assert abs(route["error_rate"]) < 1e-9
+        assert route["latency_p95_ms"] >= 0.0
+        assert route["latency_p99_ms"] >= route["latency_p95_ms"]
+        assert route["priority_score"] >= 0.0
+
+        top = metrics_json["endpoint_routes_top"]
+        assert top["top_n"] == 5
+        assert top["score_weights"]["error"] == 1.0
+        assert top["score_weights"]["latency"] == 1.0
+        assert top["score_weights"]["volume"] == 1.0
+        assert len(top["slowest_p95"]) >= 1
+        assert len(top["highest_error_rate"]) >= 1
+        assert len(top["top_by_volume"]) >= 1
+        assert len(top["top_by_score"]) >= 1
+        assert top["slowest_p95"][0]["route"] == "POST /api/contracts/analyze"
+
+    def test_trace_not_found(self):
+        """GET /v1/traces/{trace_id} returns 404 for unknown ids."""
+        client = self._make_client()
+        resp = client.get("/v1/traces/unknown-trace")
+        assert resp.status_code == 404
+
+    def test_endpoint_backpressure_returns_429_under_saturation(self):
+        """Second request gets 429 when endpoint execution queue timeout is exceeded."""
+        client = self._make_client(
+            endpoint_max_concurrency=1,
+            endpoint_queue_timeout_seconds=0.01,
+            endpoint_model_latency_seconds=0.2,
+        )
+        source = '''
+flow AnalyzeContract(doc: Document) -> ContractReport {
+    step S {
+        ask: "analyze"
+        output: ContractReport
+    }
+}
+
+axonendpoint ContractsAPI {
+    method: post
+    path: "/api/contracts/analyze"
+    execute: AnalyzeContract
+    output: ContractReport
+}
+'''
+        deploy_resp = client.post("/v1/deploy", json={"source": source, "backend": "anthropic"})
+        assert deploy_resp.status_code == 200
+
+        responses: list[int] = []
+        lock = threading.Lock()
+
+        def _invoke(payload: dict[str, str]) -> None:
+            resp = client.post("/api/contracts/analyze", json=payload)
+            with lock:
+                responses.append(resp.status_code)
+
+        t1 = threading.Thread(target=_invoke, args=({"text": "slow"},))
+        t2 = threading.Thread(target=_invoke, args=({"text": "queued"},))
+
+        t1.start()
+        time.sleep(0.02)
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert 200 in responses
+        assert 429 in responses
+
+        metrics_resp = client.get("/v1/metrics")
+        assert metrics_resp.status_code == 200
+        model_metrics = metrics_resp.json()["endpoint_model"]
+        assert model_metrics["requests_total"] >= 2
+        assert model_metrics["backpressure_total"] >= 1
+        assert model_metrics["error_total"] >= 1
+
+        route_metrics = metrics_resp.json()["endpoint_routes"]["POST /api/contracts/analyze"]
+        assert route_metrics["requests_total"] >= 2
+        assert route_metrics["backpressure_total"] >= 1
+        assert route_metrics["error_total"] >= 1
+        assert route_metrics["error_rate"] > 0.0
+        assert route_metrics["priority_score"] > 0.0
+
+        top = metrics_resp.json()["endpoint_routes_top"]
+        assert top["highest_error_rate"][0]["route"] == "POST /api/contracts/analyze"
+        assert top["top_by_volume"][0]["route"] == "POST /api/contracts/analyze"
+        assert top["top_by_score"][0]["route"] == "POST /api/contracts/analyze"
+
+    def test_metrics_top_n_query_param(self):
+        """GET /v1/metrics?top_n=N limits top lists to N entries."""
+        client = self._make_client()
+        source = '''
+flow AnalyzeContract(doc: Document) -> ContractReport {
+    step S {
+        ask: "analyze"
+        output: ContractReport
+    }
+}
+
+axonendpoint ContractsAPI {
+    method: post
+    path: "/api/contracts/analyze"
+    execute: AnalyzeContract
+    output: ContractReport
+}
+'''
+        deploy_resp = client.post("/v1/deploy", json={"source": source, "backend": "anthropic"})
+        assert deploy_resp.status_code == 200
+        _ = client.post("/api/contracts/analyze", json={"text": "hello"})
+
+        resp = client.get("/v1/metrics?top_n=1")
+        assert resp.status_code == 200
+        top = resp.json()["endpoint_routes_top"]
+        assert top["top_n"] == 1
+        assert len(top["slowest_p95"]) <= 1
+        assert len(top["highest_error_rate"]) <= 1
+        assert len(top["top_by_volume"]) <= 1
+        assert len(top["top_by_score"]) <= 1
+
+    def test_score_weights_can_be_tuned(self):
+        """Priority score responds to configured weight overrides."""
+        client = self._make_client(
+            endpoint_max_concurrency=1,
+            endpoint_queue_timeout_seconds=0.01,
+            endpoint_model_latency_seconds=0.2,
+            endpoint_score_weight_error=0.0,
+            endpoint_score_weight_latency=1.0,
+            endpoint_score_weight_volume=1.0,
+        )
+        source = '''
+flow AnalyzeContract(doc: Document) -> ContractReport {
+    step S {
+        ask: "analyze"
+        output: ContractReport
+    }
+}
+
+axonendpoint ContractsAPI {
+    method: post
+    path: "/api/contracts/analyze"
+    execute: AnalyzeContract
+    output: ContractReport
+}
+'''
+        deploy_resp = client.post("/v1/deploy", json={"source": source, "backend": "anthropic"})
+        assert deploy_resp.status_code == 200
+
+        responses: list[int] = []
+        lock = threading.Lock()
+
+        def _invoke(payload: dict[str, str]) -> None:
+            resp = client.post("/api/contracts/analyze", json=payload)
+            with lock:
+                responses.append(resp.status_code)
+
+        t1 = threading.Thread(target=_invoke, args=({"text": "slow"},))
+        t2 = threading.Thread(target=_invoke, args=({"text": "queued"},))
+
+        t1.start()
+        time.sleep(0.02)
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert 200 in responses
+        assert 429 in responses
+
+        metrics_resp = client.get("/v1/metrics")
+        assert metrics_resp.status_code == 200
+        metrics_json = metrics_resp.json()
+        route = metrics_json["endpoint_routes"]["POST /api/contracts/analyze"]
+        assert route["error_rate"] > 0.0
+        assert abs(route["priority_score"]) < 1e-9
+        weights = metrics_json["endpoint_routes_top"]["score_weights"]
+        assert abs(weights["error"]) < 1e-9
+
+    def test_metrics_query_score_weights_what_if(self):
+        """/v1/metrics query weights allow what-if scoring without server restart."""
+        client = self._make_client(
+            endpoint_max_concurrency=1,
+            endpoint_queue_timeout_seconds=0.01,
+            endpoint_model_latency_seconds=0.2,
+        )
+        source = '''
+flow AnalyzeContract(doc: Document) -> ContractReport {
+    step S {
+        ask: "analyze"
+        output: ContractReport
+    }
+}
+
+axonendpoint ContractsAPI {
+    method: post
+    path: "/api/contracts/analyze"
+    execute: AnalyzeContract
+    output: ContractReport
+}
+'''
+        deploy_resp = client.post("/v1/deploy", json={"source": source, "backend": "anthropic"})
+        assert deploy_resp.status_code == 200
+
+        responses: list[int] = []
+        lock = threading.Lock()
+
+        def _invoke(payload: dict[str, str]) -> None:
+            resp = client.post("/api/contracts/analyze", json=payload)
+            with lock:
+                responses.append(resp.status_code)
+
+        t1 = threading.Thread(target=_invoke, args=({"text": "slow"},))
+        t2 = threading.Thread(target=_invoke, args=({"text": "queued"},))
+        t1.start()
+        time.sleep(0.02)
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert 200 in responses
+        assert 429 in responses
+
+        baseline = client.get("/v1/metrics")
+        assert baseline.status_code == 200
+        baseline_route = baseline.json()["endpoint_routes"]["POST /api/contracts/analyze"]
+        assert baseline_route["priority_score"] > 0.0
+
+        what_if = client.get("/v1/metrics?w_error=0&w_latency=1&w_volume=1&top_n=1")
+        assert what_if.status_code == 200
+        body = what_if.json()
+        route = body["endpoint_routes"]["POST /api/contracts/analyze"]
+        assert abs(route["priority_score"]) < 1e-9
+        weights = body["endpoint_routes_top"]["score_weights"]
+        assert abs(weights["error"]) < 1e-9
+        assert body["endpoint_routes_top"]["top_n"] == 1
 
     def test_deploy_invalid_source(self):
         """POST /v1/deploy with bad source returns 422."""

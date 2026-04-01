@@ -118,7 +118,35 @@ def create_app(server: Any) -> Any:
 
     async def metrics(request: Request) -> JSONResponse:
         """GET /v1/metrics — Server metrics."""
-        return JSONResponse(server.metrics())
+        raw_top_n = request.query_params.get("top_n", "5")
+        try:
+            top_n = max(1, int(raw_top_n))
+        except ValueError:
+            top_n = 5
+
+        def _opt_float(name: str) -> float | None:
+            raw = request.query_params.get(name)
+            if raw is None:
+                return None
+            try:
+                return float(raw)
+            except ValueError:
+                return None
+
+        score_weights = {
+            "error": _opt_float("w_error"),
+            "latency": _opt_float("w_latency"),
+            "volume": _opt_float("w_volume"),
+        }
+        return JSONResponse(server.metrics(top_n=top_n, score_weights=score_weights))
+
+    async def get_trace(request: Request) -> JSONResponse:
+        """GET /v1/traces/{trace_id} — Retrieve endpoint execution trace."""
+        trace_id = request.path_params["trace_id"]
+        trace = server.get_endpoint_trace(trace_id)
+        if trace is None:
+            return JSONResponse({"error": "Trace not found"}, status_code=404)
+        return JSONResponse({"trace_id": trace_id, "trace": trace})
 
     async def deploy(request: Request) -> JSONResponse:
         """POST /v1/deploy — Deploy .axon source."""
@@ -278,46 +306,35 @@ def create_app(server: Any) -> Any:
                 payload = data
 
             trace_id = f"ep_{int(time.time() * 1000)}_{endpoint.name}"
-            event_topic = f"endpoint.{endpoint.name}"
-            published = await server.publish_event(
-                event_topic,
-                {
-                    "trace_id": trace_id,
-                    "endpoint": endpoint.name,
-                    "method": method,
-                    "path": endpoint.path,
-                    "payload": payload,
-                    "execute_flow": endpoint.execute_flow,
-                },
+            result = await server.execute_endpoint_request(
+                endpoint,
+                payload=payload,
+                trace_id=trace_id,
             )
-            if not published:
-                server.record_endpoint_event(
-                    endpoint.name,
-                    method=method,
-                    path=endpoint.path,
-                    trace_id=trace_id,
-                    status_code=503,
-                )
-                return JSONResponse(
-                    {"error": "Server not running or bus unavailable."},
-                    status_code=503,
-                )
-
             server.record_endpoint_event(
                 endpoint.name,
                 method=method,
                 path=endpoint.path,
                 trace_id=trace_id,
-                status_code=200,
+                status_code=result.status_code,
             )
-            return JSONResponse({
-                "ok": True,
+
+            response_body = {
+                "ok": result.success,
                 "endpoint": endpoint.name,
                 "execute_flow": endpoint.execute_flow,
                 "output_type": endpoint.output_type,
                 "trace_id": trace_id,
+                "duration_ms": round(result.duration_ms, 2),
                 "timestamp": time.time(),
-            })
+            }
+
+            if result.error:
+                response_body["error"] = result.error
+            else:
+                response_body["result"] = result.response
+
+            return JSONResponse(response_body, status_code=result.status_code)
         except Exception as exc:
             logger.exception("Endpoint dispatch failed for %s %s", method, full_path)
             return JSONResponse({"error": str(exc)}, status_code=500)
@@ -381,6 +398,7 @@ def create_app(server: Any) -> Any:
     routes = [
         Route("/v1/health", health, methods=["GET"]),
         Route("/v1/metrics", metrics, methods=["GET"]),
+        Route("/v1/traces/{trace_id}", get_trace, methods=["GET"]),
         Route("/v1/deploy", deploy, methods=["POST"]),
         Route("/v1/events/{topic:path}", publish_event, methods=["POST"]),
         Route("/v1/daemons", list_daemons, methods=["GET"]),
