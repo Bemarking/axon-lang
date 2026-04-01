@@ -17,7 +17,7 @@ from argparse import Namespace
 from dataclasses import asdict
 from pathlib import Path
 
-from axon.cli.display import format_cli_path
+from axon.cli.display import format_cli_path, safe_text
 
 
 _RED = "\033[31m"
@@ -26,6 +26,7 @@ _RESET = "\033[0m"
 
 
 def _c(text: str, code: str) -> str:
+    text = safe_text(text, sys.stdout)
     if not sys.stdout.isatty():
         return text
     return f"{code}{text}{_RESET}"
@@ -36,7 +37,13 @@ def cmd_compile(args: Namespace) -> int:
     path = Path(args.file)
 
     if not path.exists():
-        print(f"✗ File not found: {format_cli_path(path)}", file=sys.stderr)
+        print(
+            safe_text(
+                f"✗ File not found: {format_cli_path(path)}",
+                sys.stderr,
+            ),
+            file=sys.stderr,
+        )
         return 2
 
     source = path.read_text(encoding="utf-8")
@@ -71,7 +78,7 @@ def cmd_compile(args: Namespace) -> int:
     try:
         ir_program = IRGenerator().generate(ast)
     except Exception as exc:
-        print(f"✗ IR generation failed: {exc}", file=sys.stderr)
+        print(safe_text(f"✗ IR generation failed: {exc}", sys.stderr), file=sys.stderr)
         return 1
 
     # ── Serialize ─────────────────────────────────────────────
@@ -89,7 +96,7 @@ def cmd_compile(args: Namespace) -> int:
     else:
         out_path = Path(args.output) if args.output else path.with_suffix(".ir.json")
         out_path.write_text(ir_json, encoding="utf-8")
-        print(f"✓ Compiled → {format_cli_path(out_path)}")
+        print(safe_text(f"✓ Compiled → {format_cli_path(out_path)}", sys.stdout))
 
     return 0
 
@@ -138,8 +145,13 @@ def _print_error(exc: Exception, path: Path) -> None:
             if exc.column:
                 loc += f":{exc.column}"
         print(
-            _c(f"✗ {path.name}{loc}", _RED + _BOLD) + f"  {exc.message}",
+            _c(f"✗ {path.name}{loc}", _RED + _BOLD)
+            + safe_text(f"  {exc.message}", sys.stderr),
             file=sys.stderr,
         )
     else:
-        print(_c(f"✗ {path.name}", _RED + _BOLD) + f"  {exc}", file=sys.stderr)
+        print(
+            _c(f"✗ {path.name}", _RED + _BOLD)
+            + safe_text(f"  {exc}", sys.stderr),
+            file=sys.stderr,
+        )

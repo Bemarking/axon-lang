@@ -5,6 +5,18 @@ from pathlib import Path
 from typing import TextIO
 
 
+_ASCII_FALLBACKS = {
+    "✓": "OK",
+    "✗": "X",
+    "→": "->",
+    "═": "=",
+    "┌": "+",
+    "└": "`",
+    "│": "|",
+    "─": "-",
+}
+
+
 def format_cli_path(path: str | Path) -> str:
     """Return a stable, shell-friendly path for CLI messages.
 
@@ -27,3 +39,14 @@ def supports_text(stream: TextIO, text: str) -> bool:
         except UnicodeEncodeError:
             return False
     return True
+
+
+def safe_text(text: str, stream: TextIO) -> str:
+    """Return *text* unchanged when encodable, else downgraded to ASCII."""
+    if supports_text(stream, text):
+        return text
+
+    for source, replacement in _ASCII_FALLBACKS.items():
+        text = text.replace(source, replacement)
+
+    return text

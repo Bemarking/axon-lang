@@ -18,7 +18,7 @@ import sys
 from argparse import Namespace
 from pathlib import Path
 
-from axon.cli.display import format_cli_path
+from axon.cli.display import format_cli_path, safe_text
 
 # ── ANSI colors ──────────────────────────────────────────────────
 
@@ -33,6 +33,7 @@ _DIM = "\033[2m"
 
 def _c(text: str, code: str, *, no_color: bool = False) -> str:
     """Wrap *text* in an ANSI escape sequence (unless --no-color)."""
+    text = safe_text(text, sys.stdout)
     if no_color or not sys.stdout.isatty():
         return text
     return f"{code}{text}{_RESET}"
@@ -94,7 +95,7 @@ def cmd_check(args: Namespace) -> int:
         for err in errors:
             line_info = f"  line {err.line}" if err.line else ""
             severity = _c("error", _RED, no_color=no_color)
-            print(f"  {severity}{line_info}: {err.message}")
+            print(safe_text(f"  {severity}{line_info}: {err.message}", sys.stdout))
         return 1
 
     # ── Success ───────────────────────────────────────────────
@@ -122,12 +123,12 @@ def _print_error(exc: Exception, path: Path, *, no_color: bool) -> None:
                 loc += f":{exc.column}"
         print(
             _c(f"✗ {path.name}{loc}", _RED + _BOLD, no_color=no_color)
-            + f"  {exc.message}",
+            + safe_text(f"  {exc.message}", sys.stderr),
             file=sys.stderr,
         )
     else:
         print(
             _c(f"✗ {path.name}", _RED + _BOLD, no_color=no_color)
-            + f"  {exc}",
+            + safe_text(f"  {exc}", sys.stderr),
             file=sys.stderr,
         )

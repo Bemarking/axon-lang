@@ -16,7 +16,7 @@ import sys
 from argparse import Namespace
 from pathlib import Path
 
-from axon.cli.display import format_cli_path, supports_text
+from axon.cli.display import format_cli_path, safe_text, supports_text
 
 # ── ANSI colors ──────────────────────────────────────────────────
 
@@ -62,6 +62,7 @@ _ASCII_TRACE_THEME = {
 
 
 def _c(text: str, code: str, *, no_color: bool = False) -> str:
+    text = safe_text(text, sys.stdout)
     if no_color or not sys.stdout.isatty():
         return text
     return f"{code}{text}{_RESET}"
@@ -73,13 +74,16 @@ def cmd_trace(args: Namespace) -> int:
     no_color = getattr(args, "no_color", False)
 
     if not path.exists():
-        print(f"✗ File not found: {format_cli_path(path)}", file=sys.stderr)
+        print(
+            safe_text(f"✗ File not found: {format_cli_path(path)}", sys.stderr),
+            file=sys.stderr,
+        )
         return 2
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        print(f"✗ Invalid JSON: {exc}", file=sys.stderr)
+        print(safe_text(f"✗ Invalid JSON: {exc}", sys.stderr), file=sys.stderr)
         return 2
 
     _render_trace(data, no_color=no_color)
