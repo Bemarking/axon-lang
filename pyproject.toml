@@ -7,13 +7,14 @@ build-backend = "hatchling.build"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-lang"
-version = "0.30.6"
-description = "A domain-specific language for defining AI agent behaviors with deterministic control"
+version = "1.0.0"
+description = "AXON v1.0.0 — The first formal cognitive language for AI with production-grade observability, resilience, and persistence"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 authors = [
-    { name = "RicardoVelit" },
+    { name = "Ricardo Velit", email = "ricardo@bemarking.com.co" },
+    { name = "Bemarking AI S.A.S." },
 ]
 keywords = [
     "ai",
@@ -26,7 +27,7 @@ keywords = [
 ]
 
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",

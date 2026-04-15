@@ -1,0 +1,23 @@
+[package]
+name = "axon"
+version = "1.0.0"
+authors = ["AXON Project", "Bemarking AI S.A.S."]
+edition = "2021"
+description = "AXON v1.0.0 - Native Rust runtime (production-hardened with Phase K systems)"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+http-body-util = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "fmt", "env-filter"] }
+tracing-appender = "0.2"
+uuid = { version = "1", features = ["v4"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "json", "chrono", "migrate"] }
+chrono = { version = "0.4", features = ["serde"] }
