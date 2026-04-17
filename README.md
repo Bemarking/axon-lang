@@ -40,19 +40,6 @@ semantic type checking, retry engines, and execution tracing.
 
 It is **not** a Python library, a LangChain wrapper, or a YAML DSL.
 
-## Windows MVP Executable
-
-AXON already has a Windows MVP executable for the Phase A bridge toolchain.
-
-The supported MVP commands are:
-
-- `axon version`
-- `axon check`
-- `axon compile`
-- `axon trace`
-
-Quick start and installation guidance are documented in [docs/phase_a_executable_user_guide.md](docs/phase_a_executable_user_guide.md).
-
 ---
 
 ## Production Status (Phase K)
@@ -4463,40 +4450,44 @@ axon-constructor/
 
 ## Installation
 
-AXON v1.0.0 is a **Rust-native** compiled language. No Python dependency.
+> **Migrating from a previous version?** Axon is no longer distributed via `pip`.
+> `pip install axon-lang` is retired. Axon v1.0.0 is a self-contained native binary
+> built in Rust — no Python, no interpreter, no runtime dependencies.
 
-### Build from Source
+### Option 1 — Download the binary (recommended)
+
+Pre-built executables for Linux, macOS, and Windows are available on the
+[releases page](https://github.com/axon-lang/axon/releases).
 
 ```bash
-# Clone the repository
-git clone https://github.com/bemarking/axon-constructor.git
-cd axon-constructor/axon-rs
+# Add to PATH, then:
+axon run kivi_brain.axon
+```
 
-# Build the Rust native runtime
+### Option 2 — Build from source
+
+Requires [Rust](https://rustup.rs) 1.75+.
+
+```bash
+# Install Rust (if you don't have it)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Clone and build
+git clone https://github.com/axon-lang/axon.git
+cd axon/axon-rs
 cargo build --release
 
-# Binary location: target/release/axon (or axon.exe on Windows)
+# Run a program
+./target/release/axon run kivi_brain.axon
 ```
 
-### Pre-built Binaries
-
-Pre-built executables for Windows, macOS, and Linux are available on the [releases page](https://github.com/bemarking/axon-constructor/releases).
+### Option 3 — Serve mode (HTTP API)
 
 ```bash
-# Download for your platform
-# Extract and add to PATH
-axon version
-```
+# Development — in-memory storage
+axon serve --port 3000
 
-### Optional: PostgreSQL for Production
-
-For persistent storage (Kivi KAS and production deployments):
-
-```bash
-# Create PostgreSQL database
-createdb axon
-
-# Start server with persistence
+# Production — with PostgreSQL persistence and structured logging
 DATABASE_URL="postgresql://user:pass@localhost/axon" \
 axon serve --port 3000 --log-format json --database-url "$DATABASE_URL"
 ```
@@ -4513,6 +4504,8 @@ Optional — only needed to execute flows against real backends (not for CLI val
 | `OPENAI_API_KEY`    | GPT backend       | [platform.openai.com](https://platform.openai.com/)     |
 | `GEMINI_API_KEY`    | Gemini backend    | [aistudio.google.com](https://aistudio.google.com/)     |
 | `OPENAI_API_KEY`    | OpenRouter (compatible) | [openrouter.ai](https://openrouter.ai)          |
+| `GLM_API_KEY`    | GLM backend       | [platform.openai.com](https://platform.openai.com/)     |
+| `KIM_API_KEY`    | Kimi backend       | [platform.openai.com](https://platform.openai.com/)     |
 
 Stubs work without keys — perfect for development and CI/CD.
 
