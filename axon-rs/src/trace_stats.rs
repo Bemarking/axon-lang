@@ -399,7 +399,7 @@ mod tests {
             source: "test.axon".into(),
             backend: "anthropic".into(),
             tool_mode: "stub".into(),
-            axon_version: "0.30.6".into(),
+            axon_version: "1.0.0".into(),
             mode: "stub".into(),
         }
     }
@@ -648,7 +648,7 @@ mod tests {
     fn run_stats_valid_trace_json() {
         let tmp = std::env::temp_dir().join("axon_stats_test.trace.json");
         let data = serde_json::json!({
-            "_meta": { "source": "t.axon", "backend": "anthropic", "tool_mode": "stub", "axon_version": "0.30.6", "mode": "stub" },
+            "_meta": { "source": "t.axon", "backend": "anthropic", "tool_mode": "stub", "axon_version": "1.0.0", "mode": "stub" },
             "events": [
                 { "event": "unit_start", "unit": "F", "step": "", "detail": "" },
                 { "event": "step_complete", "unit": "F", "step": "S", "detail": "ok" },

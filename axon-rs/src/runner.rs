@@ -32,7 +32,7 @@ use crate::tool_registry::ToolRegistry;
 use crate::tool_validator::{self, EffectTracker};
 use crate::type_checker::TypeChecker;
 
-pub const AXON_VERSION: &str = "0.30.6";
+pub const AXON_VERSION: &str = "1.0.0";
 
 // ── ANSI helpers ─────────────────────────────────────────────────────────────
 
