@@ -3,9 +3,9 @@ import torch
 from typing import Optional, Dict, Any
 
 class LatentState:
-    """
+    r"""
     Representa el estado oculto estructural $\mathcal{H}$ de un modelo.
-    En lugar de serializar el pensamiento a tokens/strings, Axon preserva 
+    En lugar de serializar el pensamiento a tokens/strings, Axon preserva
     este tensor continuo para el enrutamiento inter-agente.
     """
     def __init__(self, tensor: torch.Tensor, origin_model_id: str, semantic_type: Optional[str] = None):
@@ -22,7 +22,7 @@ class LatentState:
         return float(-torch.sum(probabilities * torch.log(probabilities + 1e-9)).item())
     
     def conforms_to_type(self, type_manifold: torch.Tensor, threshold: float = 0.95) -> bool:
-        """
+        r"""
         Homotopy Type Theory (HoTT) Validation:
         $ P(x \in \mathcal{V}_T) > 1 - \epsilon $
         Verifica axiomáticamente si este estado encaja con un Tipo Semántico esperado
@@ -32,7 +32,7 @@ class LatentState:
         return similarity >= threshold
 
 class DiffeomorphicTransformer:
-    """
+    r"""
     Ejecuta la Telepatía Tensorial realocando el estado Latente $\mathcal{H}_A$ al espacio $\mathcal{H}_B$.
     Transformación Diffeomorfica usando matrices puente (Wasserstein-based projections).
     """
@@ -44,7 +44,7 @@ class DiffeomorphicTransformer:
         self.W_matrices = transformation_matrices
         
     def project(self, state_a: LatentState, target_model_id: str) -> torch.Tensor:
-        """
+        r"""
         $ \mathcal{H}_B^{input} = \text{GeLU}(\mathbf{W}_{A \to B} \cdot \mathcal{H}_A^{output} + b) $
         """
         signature = f"{state_a.origin_model_id}->{target_model_id}"
