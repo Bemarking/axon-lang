@@ -37,7 +37,7 @@ class ModelExecutionKernel:
         return pointer
         
     def route_latent_state(self, source_pointer: str, target_model_id: str) -> Any:
-        """
+        r"""
         Recupera el estado latente $ \mathcal{H}_A $ y lo proyecta
         hacia el dominio $ \mathcal{H}_B $. Telepatía Tensorial matemática pura.
         """

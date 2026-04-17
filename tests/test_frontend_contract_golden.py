@@ -161,7 +161,7 @@ def test_compile_stdout_golden_contract() -> None:
     assert meta["source"].endswith("examples/contract_analyzer.axon")
     assert "/" in meta["source"]
     assert meta["backend"] == "anthropic"
-    assert meta["axon_version"] == "0.30.6"
+    assert meta["axon_version"] == "1.0.0"
 
     _assert_ir_node_shape(payload["personas"][0], "name")
     _assert_ir_node_shape(payload["contexts"][0], "name", "memory_scope", "language", "depth")
