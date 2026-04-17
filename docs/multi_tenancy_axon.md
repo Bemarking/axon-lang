@@ -4,8 +4,8 @@
 
 | Fase | Nombre | Estado |
 |------|--------|--------|
-| M1 | Tenant Identity | 🔄 En progreso |
-| M2 | Data Isolation (PostgreSQL RLS) | ⏳ Pendiente |
+| M1 | Tenant Identity | ✅ Completo |
+| M2 | Data Isolation (PostgreSQL RLS) | ✅ Completo |
 | M3 | Secrets per Tenant (AWS Secrets Manager) | ⏳ Pendiente |
 | M4 | Backend Isolation (circuit breakers + metering) | ⏳ Pendiente |
 | M5 | Terraform — onboarding de tenants | ⏳ Pendiente |

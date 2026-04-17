@@ -5,8 +5,11 @@
 ///   2. `Authorization: Bearer <jwt>` claim `"tenant_id"` (user-facing flows)
 ///   3. Fallback → `"default"` (single-tenant / open-source installs)
 ///
-/// The resolved `TenantContext` is injected as an Axum request extension so
-/// any handler can read it with `Extension<TenantContext>`.
+/// The resolved `TenantContext` is injected as:
+///   - An Axum request extension (`Extension<TenantContext>`) for handlers
+///   - A tokio task-local (`CURRENT_TENANT_ID`) for storage methods, so every
+///     `PostgresBackend` call picks up the tenant automatically without requiring
+///     any changes to existing handlers.
 use axum::{
     body::Body,
     extract::Request,
@@ -18,6 +21,24 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+// ── Task-local tenant propagation ─────────────────────────────────────────────
+
+tokio::task_local! {
+    /// The active tenant_id for the current async task (Axum request).
+    /// Set by `tenant_extractor_middleware` via `.scope()` so every downstream
+    /// future — including storage methods — inherits the value automatically.
+    static CURRENT_TENANT_ID: String;
+}
+
+/// Returns the active tenant_id for the current async task.
+/// Falls back to `"default"` when called outside a scoped request context
+/// (e.g. background tasks, tests, CLI operations).
+pub fn current_tenant_id() -> String {
+    CURRENT_TENANT_ID
+        .try_with(|t| t.clone())
+        .unwrap_or_else(|_| "default".to_string())
+}
 
 // ── TenantPlan ────────────────────────────────────────────────────────────────
 
@@ -76,9 +97,8 @@ impl TenantContext {
 
 // ── JWT claim extraction ──────────────────────────────────────────────────────
 
-/// Attempt to extract `tenant_id` from the payload of a JWT without verifying
-/// the signature. Signature verification is the responsibility of the auth
-/// middleware layer that runs before handlers.
+/// Extracts `tenant_id` from a JWT payload without signature verification.
+/// Signature verification is the responsibility of the auth middleware layer.
 fn tenant_id_from_jwt(token: &str) -> Option<String> {
     let parts: Vec<&str> = token.splitn(3, '.').collect();
     if parts.len() < 2 {
@@ -89,7 +109,7 @@ fn tenant_id_from_jwt(token: &str) -> Option<String> {
     claims.get("tenant_id")?.as_str().map(|s| s.to_string())
 }
 
-/// Extract tenant_id from `Authorization: Bearer <token>` header.
+/// Extracts tenant_id from `Authorization: Bearer <token>` header.
 fn tenant_id_from_bearer(headers: &HeaderMap) -> Option<String> {
     let auth = headers.get("authorization")?.to_str().ok()?;
     let token = auth.strip_prefix("Bearer ")?;
@@ -98,8 +118,10 @@ fn tenant_id_from_bearer(headers: &HeaderMap) -> Option<String> {
 
 // ── Axum middleware ───────────────────────────────────────────────────────────
 
-/// Axum middleware that resolves the active tenant and injects
-/// `TenantContext` into request extensions.
+/// Axum middleware that resolves the active tenant and:
+///   1. Injects `TenantContext` into request extensions (for handlers)
+///   2. Scopes `CURRENT_TENANT_ID` task-local for the request's future tree
+///      (for storage methods — zero handler changes needed)
 ///
 /// Resolution order:
 ///   1. `X-Tenant-ID` header
@@ -130,15 +152,17 @@ pub async fn tenant_extractor_middleware(
         "tenant resolved"
     );
 
+    let tenant_id = ctx.tenant_id.clone();
     req.extensions_mut().insert(ctx);
-    next.run(req).await
+
+    // Drive the rest of the request pipeline with CURRENT_TENANT_ID scoped to
+    // this tenant. All storage calls downstream read it via current_tenant_id().
+    CURRENT_TENANT_ID.scope(tenant_id, next.run(req)).await
 }
 
 // ── Helper for handlers ───────────────────────────────────────────────────────
 
 /// Extract `TenantContext` from request extensions.
-/// Returns `(StatusCode::UNAUTHORIZED, ...)` if not present (should not happen
-/// when the middleware is correctly wired).
 pub fn require_tenant(
     ext: Option<Extension<TenantContext>>,
 ) -> Result<TenantContext, Response> {
@@ -229,5 +253,35 @@ mod tests {
         assert_eq!(ctx.tenant_id, "acme");
         assert_eq!(ctx.plan, TenantPlan::Pro);
         assert!(!ctx.is_default());
+    }
+
+    // ── Task-local tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_current_tenant_id_default_outside_scope() {
+        // Outside any scope, must return "default" — never panic
+        assert_eq!(current_tenant_id(), "default");
+    }
+
+    #[tokio::test]
+    async fn test_current_tenant_id_inside_scope() {
+        let result = CURRENT_TENANT_ID
+            .scope("kivi-kas".to_string(), async { current_tenant_id() })
+            .await;
+        assert_eq!(result, "kivi-kas");
+    }
+
+    #[tokio::test]
+    async fn test_current_tenant_id_nested_scope() {
+        let outer = CURRENT_TENANT_ID
+            .scope("tenant-a".to_string(), async {
+                let inner = CURRENT_TENANT_ID
+                    .scope("tenant-b".to_string(), async { current_tenant_id() })
+                    .await;
+                (current_tenant_id(), inner)
+            })
+            .await;
+        assert_eq!(outer.0, "tenant-a");
+        assert_eq!(outer.1, "tenant-b");
     }
 }
