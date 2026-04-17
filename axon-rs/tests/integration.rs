@@ -3968,7 +3968,7 @@ fn replay_parse_and_reconstruct() {
             "source": "test.axon",
             "backend": "anthropic",
             "tool_mode": "stub",
-            "axon_version": "0.30.6",
+            "axon_version": "1.0.0",
             "mode": "stub",
         },
         "events": [
@@ -3996,7 +3996,7 @@ fn replay_regression_comparison() {
     use axon::replay;
 
     let trace_a = serde_json::json!({
-        "_meta": { "source": "a.axon", "backend": "anthropic", "tool_mode": "stub", "axon_version": "0.30.6", "mode": "stub" },
+        "_meta": { "source": "a.axon", "backend": "anthropic", "tool_mode": "stub", "axon_version": "1.0.0", "mode": "stub" },
         "events": [
             { "event": "unit_start", "unit": "F", "step": "", "detail": "" },
             { "event": "step_complete", "unit": "F", "step": "X", "detail": "output_v1" },
@@ -4006,7 +4006,7 @@ fn replay_regression_comparison() {
     });
 
     let trace_b = serde_json::json!({
-        "_meta": { "source": "b.axon", "backend": "anthropic", "tool_mode": "stub", "axon_version": "0.30.6", "mode": "stub" },
+        "_meta": { "source": "b.axon", "backend": "anthropic", "tool_mode": "stub", "axon_version": "1.0.0", "mode": "stub" },
         "events": [
             { "event": "unit_start", "unit": "F", "step": "", "detail": "" },
             { "event": "step_complete", "unit": "F", "step": "X", "detail": "output_v2" },
@@ -4032,7 +4032,7 @@ fn replay_cli_json_output() {
 
     let tmp = std::env::temp_dir().join("axon_replay_int.trace.json");
     let data = serde_json::json!({
-        "_meta": { "source": "t.axon", "backend": "anthropic", "tool_mode": "stub", "axon_version": "0.30.6", "mode": "stub" },
+        "_meta": { "source": "t.axon", "backend": "anthropic", "tool_mode": "stub", "axon_version": "1.0.0", "mode": "stub" },
         "events": [
             { "event": "unit_start", "unit": "F", "step": "", "detail": "" },
             { "event": "step_complete", "unit": "F", "step": "S", "detail": "ok" },
@@ -4153,7 +4153,7 @@ fn sample_trace_json(flow: &str, steps: &[(&str, bool)], duration_detail: &str) 
     events.push(serde_json::json!({ "event": "unit_complete", "unit": flow, "step": "", "detail": "" }));
 
     serde_json::json!({
-        "_meta": { "source": "test.axon", "backend": "anthropic", "tool_mode": "stub", "axon_version": "0.30.6", "mode": "stub" },
+        "_meta": { "source": "test.axon", "backend": "anthropic", "tool_mode": "stub", "axon_version": "1.0.0", "mode": "stub" },
         "events": events,
     })
 }

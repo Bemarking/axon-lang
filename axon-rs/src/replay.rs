@@ -608,7 +608,7 @@ mod tests {
                 "source": "test.axon",
                 "backend": "anthropic",
                 "tool_mode": "stub",
-                "axon_version": "0.30.6",
+                "axon_version": "1.0.0",
                 "mode": "stub",
             },
             "events": [
@@ -674,7 +674,7 @@ mod tests {
     #[test]
     fn parse_tool_events() {
         let data = json!({
-            "_meta": { "source": "t.axon", "backend": "anthropic", "tool_mode": "stub", "axon_version": "0.30.6", "mode": "stub" },
+            "_meta": { "source": "t.axon", "backend": "anthropic", "tool_mode": "stub", "axon_version": "1.0.0", "mode": "stub" },
             "events": [
                 { "event": "unit_start", "unit": "F", "step": "", "detail": "" },
                 { "event": "tool_native", "unit": "F", "step": "CalcStep", "detail": "tool=Calculator, success=true, output=42" },
@@ -692,7 +692,7 @@ mod tests {
     #[test]
     fn parse_retry_events() {
         let data = json!({
-            "_meta": { "source": "t.axon", "backend": "anthropic", "tool_mode": "real", "axon_version": "0.30.6", "mode": "real" },
+            "_meta": { "source": "t.axon", "backend": "anthropic", "tool_mode": "real", "axon_version": "1.0.0", "mode": "real" },
             "events": [
                 { "event": "unit_start", "unit": "F", "step": "", "detail": "" },
                 { "event": "retry_attempt", "unit": "F", "step": "S1", "detail": "attempt=1/2" },
@@ -709,7 +709,7 @@ mod tests {
     #[test]
     fn parse_error_step() {
         let data = json!({
-            "_meta": { "source": "t.axon", "backend": "anthropic", "tool_mode": "real", "axon_version": "0.30.6", "mode": "real" },
+            "_meta": { "source": "t.axon", "backend": "anthropic", "tool_mode": "real", "axon_version": "1.0.0", "mode": "real" },
             "events": [
                 { "event": "unit_start", "unit": "F", "step": "", "detail": "" },
                 { "event": "step_error", "unit": "F", "step": "Bad", "detail": "connection failed" },
@@ -725,7 +725,7 @@ mod tests {
     #[test]
     fn parse_hook_metrics() {
         let data = json!({
-            "_meta": { "source": "t.axon", "backend": "anthropic", "tool_mode": "real", "axon_version": "0.30.6", "mode": "real" },
+            "_meta": { "source": "t.axon", "backend": "anthropic", "tool_mode": "real", "axon_version": "1.0.0", "mode": "real" },
             "events": [
                 { "event": "unit_start", "unit": "F", "step": "", "detail": "" },
                 { "event": "step_complete", "unit": "F", "step": "S", "detail": "ok" },
