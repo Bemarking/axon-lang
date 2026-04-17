@@ -6,7 +6,7 @@
 |------|--------|--------|
 | M1 | Tenant Identity | ✅ Completo |
 | M2 | Data Isolation (PostgreSQL RLS) | ✅ Completo |
-| M3 | Secrets per Tenant (AWS Secrets Manager) | ⏳ Pendiente |
+| M3 | Secrets per Tenant (AWS Secrets Manager) | ✅ Completo |
 | M4 | Backend Isolation (circuit breakers + metering) | ⏳ Pendiente |
 | M5 | Terraform — onboarding de tenants | ⏳ Pendiente |
 
