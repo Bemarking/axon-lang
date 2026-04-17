@@ -15,6 +15,11 @@ import argparse
 import sys
 
 import axon
+from axon.cli.frontend_runtime import FRONTEND_COMMANDS, initialize_frontend_runtime
+
+
+_SOURCE_FILE_HELP = "Path to .axon source file"
+_BACKEND_HELP = "Target backend (default: anthropic)"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -36,7 +41,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "check",
         help="Lex, parse, and type-check an .axon file.",
     )
-    check.add_argument("file", help="Path to .axon source file")
+    check.add_argument("file", help=_SOURCE_FILE_HELP)
     check.add_argument(
         "--no-color",
         action="store_true",
@@ -48,13 +53,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "compile",
         help="Compile an .axon file to IR JSON.",
     )
-    compile_cmd.add_argument("file", help="Path to .axon source file")
+    compile_cmd.add_argument("file", help=_SOURCE_FILE_HELP)
     compile_cmd.add_argument(
         "-b",
         "--backend",
         default="anthropic",
         choices=["anthropic", "openai", "gemini", "ollama"],
-        help="Target backend (default: anthropic)",
+        help=_BACKEND_HELP,
     )
     compile_cmd.add_argument(
         "-o",
@@ -73,13 +78,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "run",
         help="Compile and execute an .axon file.",
     )
-    run_cmd.add_argument("file", help="Path to .axon source file")
+    run_cmd.add_argument("file", help=_SOURCE_FILE_HELP)
     run_cmd.add_argument(
         "-b",
         "--backend",
         default="anthropic",
         choices=["anthropic", "openai", "gemini", "ollama"],
-        help="Target backend (default: anthropic)",
+        help=_BACKEND_HELP,
     )
     run_cmd.add_argument(
         "--trace",
@@ -170,7 +175,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "deploy",
         help="Deploy .axon file to a running AxonServer.",
     )
-    deploy.add_argument("file", help="Path to .axon source file")
+    deploy.add_argument("file", help=_SOURCE_FILE_HELP)
     deploy.add_argument(
         "--server",
         default="http://localhost:8420",
@@ -181,7 +186,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--backend",
         default="anthropic",
         choices=["anthropic", "openai", "gemini", "ollama"],
-        help="Target backend (default: anthropic)",
+        help=_BACKEND_HELP,
     )
     deploy.add_argument(
         "--auth-token",
@@ -200,6 +205,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
+
+    init_exit = initialize_frontend_runtime(args.command, allowed_commands=FRONTEND_COMMANDS)
+    if init_exit is not None:
+        return init_exit
 
     # Dispatch to subcommand handlers.
     # Lazy imports keep startup fast.
@@ -250,7 +259,5 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help()
     return 1
-
-
 if __name__ == "__main__":
     sys.exit(main())

@@ -10,6 +10,7 @@ import argparse
 import sys
 
 import axon
+from axon.cli.frontend_runtime import MVP_FRONTEND_COMMANDS, initialize_frontend_runtime
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -86,6 +87,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
 
+    init_exit = initialize_frontend_runtime(args.command, allowed_commands=MVP_FRONTEND_COMMANDS)
+    if init_exit is not None:
+        return init_exit
+
     if args.command == "version":
         from axon.cli.version_cmd import cmd_version
 
@@ -108,7 +113,5 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help()
     return 1
-
-
 if __name__ == "__main__":
     sys.exit(main())
