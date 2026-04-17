@@ -21,3 +21,4 @@ tracing-appender = "0.2"
 uuid = { version = "1", features = ["v4"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "json", "chrono", "migrate"] }
 chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"

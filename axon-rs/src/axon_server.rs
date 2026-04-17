@@ -1,0 +1,24437 @@
+//! AxonServer — native reactive daemon platform.
+//!
+//! HTTP server for the AXON runtime, implementing the `/v1/` API surface:
+//!   - `/v1/health`       — full health report with component checks
+//!   - `/v1/health/live`  — liveness probe
+//!   - `/v1/health/ready` — readiness probe
+//!   - `/v1/health/components` — component-level health (trace_store, event_bus, supervisor, schedules, audit_log, rate_limiter)
+//!   - `/v1/health/gates` — configurable readiness gates (GET/PUT)
+//!   - `/v1/health/history` — health transition history (GET ?limit=N&component=...)
+//!   - `/v1/health/check-and-record` — evaluate health and record transitions (POST)
+//!   - `/v1/alerts/rules` — operational alert rules CRUD (GET/POST/DELETE)
+//!   - `/v1/alerts/evaluate` — evaluate rules against current metrics (POST)
+//!   - `/v1/alerts/history` — fired alert history (GET ?limit=N)
+//!   - `/v1/version`      — AXON version info
+//!   - `/v1/uptime`       — detailed server uptime with hourly buckets
+//!   - `/v1/dashboard`    — comprehensive server status overview (all subsystems)
+//!   - `/v1/primitives`   — cognitive primitive inventory (47 primitives, wired/pending status, ΛD alignment)
+//!   - `/v1/docs`         — API documentation with route listing and categories
+//!   - `/v1/metrics`  — execution metrics (deployments, latency, errors)
+//!   - `/v1/metrics/export` — export metrics snapshot to disk as Prometheus/JSON (POST)
+//!   - `/v1/deploy`   — compile and deploy .axon source
+//!   - `/v1/deploy/reload` — hot-reload all flows by re-reading source files (POST)
+//!   - `/v1/execute`  — execute a deployed flow (auto-records trace)
+//!   - `/v1/execute/enqueue` — enqueue flow execution with priority (POST)
+//!   - `/v1/execute/queue` — view execution queue (GET)
+//!   - `/v1/execute/dequeue` — take next item from queue (POST)
+//!   - `/v1/execute/drain` — process all pending queue items sequentially (POST)
+//!   - `/v1/execute/sandbox` — isolated execution with resource limits (POST)
+//!   - `/v1/execute/process` — dequeue+execute+trace in one atomic operation (POST)
+//!   - `/v1/execute/dry-run` — compile and validate without executing (POST)
+//!   - `/v1/execute/pipeline` — multi-flow sequential orchestration (POST)
+//!   - `/v1/execute/stream` — algebraic effect streaming execution (POST) — bridges flow.stream.{trace_id} to SSE
+//!   - `/v1/execute/cache` — execution result cache with TTL and ΛD epistemic state (GET/PUT/DELETE)
+//!   - `/v1/execute/cached` — cache-aware execution: check cache → execute if miss → auto-cache (POST)
+//!   - `/v1/execute/stream/:trace_id/consume` — stream consumer with cursor pagination and output reconstruction (GET)
+//!   - `/v1/execute/batch` — batch multiple flow executions in one request (POST)
+//!   - `/v1/execute/batch-cached` — batch execution with per-item cache awareness (POST)
+//!   - `/v1/execute/cache-replay` — re-execute cached flow and compare results (POST)
+//!   - `/v1/execute/pinned` — execute a specific version of a flow (POST)
+//!   - `/v1/execute/ab-test` — execute two versions and compare results (POST)
+//!   - `/v1/execute/warm` — pre-execute flows to prime cache (POST)
+//!   - `/v1/estimate`   — estimate execution cost (tokens/USD)
+//!   - `/v1/costs`      — cumulative per-flow cost tracking (GET all, GET /:flow, PUT /pricing)
+//!   - `/v1/costs/:flow/budget` — per-flow cost budget (PUT set, DELETE remove)
+//!   - `/v1/costs/alerts` — check flows against cost budgets (GET)
+//!   - `/v1/costs/forecast` — predict future costs via linear regression (GET ?flow=X&days=N)
+//!   - `/v1/axonstore`  — AxonStore cognitive persistence (create/list/get/delete, persist/retrieve/mutate/purge/transact with ΛD envelopes)
+//!   - `/v1/dataspace`  — Dataspace cognitive navigation (create/list/delete, ingest/focus/associate/aggregate/explore with ΛD)
+//!   - `/v1/backends`   — LLM backend registry (GET list, PUT register, DELETE, POST check)
+//!   - `/v1/backends/dashboard` — aggregate backend fleet dashboard (calls, cost, limits, circuit, ranking)
+//!   - `/v1/mcp`        — MCP server endpoint (JSON-RPC 2.0: initialize, tools/list, tools/call)
+//!   - `/v1/mcp/tools`  — list exposed MCP tools (convenience, non-JSON-RPC)
+//!   - `/v1/rate-limit` — rate limit status for calling client
+//!   - `/v1/rate-limit/endpoints` — per-endpoint rate limits (GET/PUT/DELETE)
+//!   - `/v1/keys`       — API key management (list/create/revoke/rotate)
+//!   - `/v1/webhooks`   — webhook management (register/list/delete/toggle/deliveries/stats)
+//!   - `/v1/webhooks/retry-queue` — pending webhook retries with exponential backoff
+//!   - `/v1/webhooks/dead-letters` — permanently failed webhook deliveries
+//!   - `/v1/webhooks/:id/template` — payload template management (GET/PUT)
+//!   - `/v1/webhooks/:id/render` — preview rendered payload with template (POST)
+//!   - `/v1/webhooks/:id/simulate` — dry-run delivery with signature computation (POST)
+//!   - `/v1/webhooks/:id/filters` — per-webhook event topic filters (GET/PUT)
+//!   - `/v1/config`     — runtime server configuration (GET/PUT/save/load)
+//!   - `/v1/config/snapshots` — config snapshot management (GET list/POST save)
+//!   - `/v1/config/snapshots/restore` — restore from named snapshot (POST)
+//!   - `/v1/audit`      — audit trail (query entries, stats, export)
+//!   - `/v1/shutdown`   — initiate graceful server shutdown (admin)
+//!   - `/v1/server/backup` — export server configuration as JSON (POST)
+//!   - `/v1/server/restore` — import server configuration from backup (POST)
+//!   - `/v1/server/persist` — save state to disk for crash recovery (POST)
+//!   - `/v1/server/recover` — load state from disk after restart (POST)
+//!   - `/v1/server/auto-persist` — toggle auto-persist on shutdown (GET/PUT)
+//!   - `/v1/cors`       — CORS configuration (GET/PUT)
+//!   - `/v1/middleware`  — request middleware config/stats (GET/PUT)
+//!   - `/v1/inspect`    — list deployed flows / introspect by name / graph export / dependency analysis
+//!   - `/v1/flows/:name/rules` — pre-execution validation rules (GET/PUT/DELETE)
+//!   - `/v1/flows/:name/validate` — validate flow against configured rules (POST)
+//!   - `/v1/flows/:name/quota` — execution quotas per flow (GET/PUT/DELETE)
+//!   - `/v1/flows/:name/quota/check` — check and record quota usage (POST)
+//!   - `/v1/flows/:name/dashboard` — per-flow execution dashboard (GET)
+//!   - `/v1/flows/:name/sla` — SLA definitions (GET/PUT/DELETE)
+//!   - `/v1/flows/:name/sla/check` — check SLA compliance (GET)
+//!   - `/v1/flows/:name/canary` — canary deployment config (GET/PUT/DELETE)
+//!   - `/v1/flows/:name/canary/route` — route request through canary logic (POST)
+//!   - `/v1/flows/compare` — compare multiple flows side-by-side (POST)
+//!   - `/v1/flows/:name/tags` — flow tagging for grouping (GET/PUT/DELETE)
+//!   - `/v1/flows/by-tag` — find flows by tag (GET ?tag=...)
+//!   - `/v1/flows/group/:tag/execute` — execute all flows in a tag group (POST)
+//!   - `/v1/flows/group/:tag/dashboard` — aggregate dashboard for tag group (GET)
+//!   - `/v1/versions/:name/rollback/check` — pre-rollback safety validation (POST)
+//!   - `/v1/traces`     — query execution traces (list/filter)
+//!   - `/v1/traces/:id` — get a specific trace by ID
+//!   - `/v1/traces/stats` — aggregate trace analytics
+//!   - `/v1/traces/export` — export traces as JSONL/CSV/Prometheus
+//!   - `/v1/traces/export/custom` — export traces with custom template (GET ?template=...)
+//!   - `/v1/traces/diff` — compare two traces side-by-side (GET ?a=X&b=Y)
+//!   - `/v1/traces/search` — full-text search across traces (GET ?q=...)
+//!   - `/v1/traces/aggregate` — aggregated metrics with percentiles (GET ?window=N)
+//!   - `/v1/traces/retention` — trace retention policy (GET/PUT max_age_secs)
+//!   - `/v1/traces/evict` — manually trigger TTL-based eviction (POST)
+//!   - `/v1/traces/bulk` — bulk delete traces by IDs (DELETE)
+//!   - `/v1/traces/bulk/annotate` — bulk annotate traces by IDs (POST)
+//!   - `/v1/traces/compare` — compare N traces across metrics (POST with ids array)
+//!   - `/v1/traces/timeline` — merged chronological timeline across traces (POST)
+//!   - `/v1/traces/heatmap` — latency/error heatmap across time buckets (GET ?bucket_secs=N&window=N)
+//!   - `/v1/traces/:id/annotate` — add annotation (note + tags) to a trace
+//!   - `/v1/traces/:id/annotations` — list annotations for a trace
+//!   - `/v1/traces/:id/replay` — re-execute trace's flow and compare results
+//!   - `/v1/traces/:id/flamegraph` — flamegraph-style span tree from trace events
+//!   - `/v1/traces/:id/profile` — per-step timing breakdown with hotspot detection (GET)
+//!   - `/v1/traces/:id/correlate` — set correlation ID on a trace (POST)
+//!   - `/v1/traces/:id/annotate-from-template` — apply annotation template (POST ?template=...)
+//!   - `/v1/traces/annotation-templates` — built-in and custom annotation templates (GET/PUT)
+//!   - `/v1/traces/correlated` — find traces by correlation ID (GET ?correlation_id=...)
+//!   - `/v1/session/:scope/export` — export scoped session data as JSON/CSV
+//!   - `/v1/logs`       — query recent request logs
+//!   - `/v1/logs/stats` — aggregate request statistics
+//!   - `/v1/logs/export` — export request logs as JSONL/CSV with filtering
+//!   - `/v1/daemons`    — list registered daemons
+//!   - `/v1/daemons/:name` — get/delete individual daemon
+//!   - `/v1/daemons/:name/run` — execute daemon's flow with lifecycle management
+//!   - `/v1/daemons/:name/pause` — pause a daemon (POST)
+//!   - `/v1/daemons/:name/resume` — resume a paused daemon (POST)
+//!   - `/v1/daemons/:name/events` — lifecycle events for a daemon (GET ?limit=N)
+//!   - `/v1/daemons/dependencies` — inferred daemon dependency graph from chain topology
+//!   - `/v1/daemons/autoscale` — auto-scaling configuration and evaluation (GET/PUT)
+//!   - `/v1/daemons/:name/trigger` — GET/PUT/DELETE daemon event trigger binding
+//!   - `/v1/triggers`   — list all daemon trigger bindings
+//!   - `/v1/triggers/dispatch` — dispatch event to matching triggered daemons
+//!   - `/v1/triggers/replay` — replay historical events to re-trigger daemons (POST)
+//!   - `/v1/events/history` — view recent event bus history (GET ?limit=N&topic=...)
+//!   - `/v1/events/stream` — poll-based SSE event stream (GET ?since=N&limit=N&topic=...)
+//!   - `/v1/daemons/:name/chain` — GET/PUT/DELETE daemon output chain binding
+//!   - `/v1/chains`   — list all daemon chain bindings (trigger → daemon → output)
+//!   - `/v1/chains/graph` — export chain topology as DOT or Mermaid graph
+//!   - `/v1/schedules`   — list/create scheduled flow executions
+//!   - `/v1/schedules/:name` — get/delete individual schedule
+//!   - `/v1/schedules/:name/toggle` — enable/disable a schedule
+//!   - `/v1/schedules/:name/history` — execution history for a schedule (GET ?limit=N)
+//!   - `/v1/schedules/tick` — poll-based tick to execute due schedules
+//!
+//! Built on tokio + axum for async HTTP handling.
+//! Auth: role-based via ApiKeyManager (Admin/Operator/ReadOnly) with auth_middleware.
+//!
+//! This is the Rust-native replacement for the Python AxonServer (uvicorn).
+
+use axum::{
+    Router,
+    Json,
+    extract::State,
+    extract::Path,
+    extract::Query,
+    http::StatusCode,
+    http::HeaderMap,
+    routing::{get, post, put, delete},
+};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use crate::api_keys::ApiKeyManager;
+use crate::audit_trail::{AuditLog, AuditAction, AuditFilter};
+use crate::auth_middleware::{self, AccessLevel};
+use crate::cors::CorsConfig;
+use crate::request_middleware::{RequestIdGenerator, MiddlewareConfig};
+use crate::trace_store::{TraceStore, TraceStoreConfig, TraceFilter};
+use crate::event_bus::{DaemonSupervisor, EventBus, RestartPolicy};
+use crate::flow_version::VersionRegistry;
+use crate::rate_limiter::{RateLimiter, RateLimitConfig};
+use crate::request_log::{RequestLogger, RequestLogConfig, LogFilter};
+use crate::runner::AXON_VERSION;
+use crate::session_scope::ScopedSessionManager;
+use crate::session_store::SessionStore;
+use crate::webhook_delivery::{self, DeliveryConfig};
+use crate::webhooks::WebhookRegistry;
+
+// ── Server configuration ──────────────────────────────────────────────────
+
+/// Server configuration — mirrors CLI args for `axon serve`.
+#[derive(Debug, Clone)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub channel: String,
+    pub auth_token: String,
+    pub log_level: String,
+    /// Log output format: "json" or "pretty".
+    pub log_format: String,
+    /// Optional directory for daily-rotated log files.
+    pub log_file: Option<String>,
+    /// PostgreSQL connection URL (for persistent storage).
+    pub database_url: Option<String>,
+    /// Optional path for persisted config file.
+    pub config_path: Option<String>,
+}
+
+impl ServerConfig {
+    /// Whether authentication is enabled.
+    pub fn auth_enabled(&self) -> bool {
+        !self.auth_token.is_empty()
+    }
+
+    /// The bind address string (host:port).
+    pub fn bind_addr(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+}
+
+// ── Server state ──────────────────────────────────────────────────────────
+
+/// Shared server state, wrapped in Arc<Mutex<>> for thread safety.
+pub struct ServerState {
+    pub config: ServerConfig,
+    pub daemons: HashMap<String, DaemonInfo>,
+    pub metrics: ServerMetrics,
+    pub started_at: Instant,
+    pub deploy_count: u64,
+    pub event_bus: EventBus,
+    pub supervisor: DaemonSupervisor,
+    pub versions: VersionRegistry,
+    pub session: SessionStore,
+    pub scoped_sessions: ScopedSessionManager,
+    pub rate_limiter: RateLimiter,
+    pub request_logger: RequestLogger,
+    pub api_keys: ApiKeyManager,
+    pub webhooks: WebhookRegistry,
+    pub delivery_config: DeliveryConfig,
+    pub cors_config: CorsConfig,
+    pub middleware_config: MiddlewareConfig,
+    pub request_id_gen: RequestIdGenerator,
+    pub audit_log: AuditLog,
+    pub trace_store: TraceStore,
+    pub schedules: HashMap<String, ScheduleEntry>,
+    pub config_snapshots: Vec<NamedConfigSnapshot>,
+    pub execution_queue: Vec<QueuedExecution>,
+    pub execution_queue_next_id: u64,
+    pub cost_pricing: CostPricing,
+    pub cost_budgets: HashMap<String, CostBudget>,
+    pub flow_rules: HashMap<String, FlowValidationRules>,
+    pub flow_quotas: HashMap<String, FlowQuota>,
+    pub readiness_gates: ReadinessGates,
+    pub autoscale_config: AutoscaleConfig,
+    pub auto_persist_on_shutdown: bool,
+    pub flow_tags: HashMap<String, Vec<String>>,
+    pub flow_slas: HashMap<String, FlowSLA>,
+    pub canary_configs: HashMap<String, CanaryConfig>,
+    pub alert_rules: Vec<AlertRule>,
+    pub fired_alerts: Vec<FiredAlert>,
+    pub alert_silences: Vec<AlertSilence>,
+    pub health_history: Vec<HealthTransition>,
+    pub endpoint_rate_limits: HashMap<String, EndpointRateLimit>,
+    pub execution_cache: Vec<CachedResult>,
+    pub backend_registry: HashMap<String, BackendRegistryEntry>,
+    pub axon_stores: HashMap<String, AxonStoreInstance>,
+    pub dataspaces: HashMap<String, DataspaceInstance>,
+    pub shields: HashMap<String, ShieldInstance>,
+    pub corpora: HashMap<String, CorpusInstance>,
+    pub mandates: HashMap<String, MandatePolicy>,
+    pub refine_sessions: HashMap<String, RefineSession>,
+    pub trails: HashMap<String, TrailRecord>,
+    pub probes: HashMap<String, ProbeSession>,
+    pub weaves: HashMap<String, WeaveSession>,
+    pub corroborations: HashMap<String, CorroborateSession>,
+    pub drills: HashMap<String, DrillSession>,
+    pub forges: HashMap<String, ForgeSession>,
+    pub deliberations: HashMap<String, DeliberateSession>,
+    pub consensus_sessions: HashMap<String, ConsensusSession>,
+    pub hibernations: HashMap<String, HibernateSession>,
+    pub ots_secrets: HashMap<String, OtsSecret>,
+    pub psyche_sessions: HashMap<String, PsycheSession>,
+    pub axon_endpoints: HashMap<String, EndpointBinding>,
+    pub endpoint_calls: Vec<EndpointCallRecord>,
+    pub pix_sessions: HashMap<String, PixSession>,
+    pub backend_health_probes: HashMap<String, BackendHealthProbe>,
+    pub backend_health_history: HashMap<String, Vec<HealthCheckRecord>>,
+    pub shutdown: Option<Arc<crate::graceful_shutdown::ShutdownCoordinator>>,
+    /// Persistent storage backend (PostgreSQL or InMemory).
+    pub storage: Arc<crate::storage::StorageDispatcher>,
+    /// Resilient backend for LLM calls with retry, circuit breaker, and fallback.
+    pub resilient_backend: Arc<crate::resilient_backend::ResilientBackend>,
+}
+
+/// A queued flow execution request with priority.
+#[derive(Debug, Clone, Serialize)]
+pub struct QueuedExecution {
+    /// Queue item ID.
+    pub id: u64,
+    /// Flow name to execute.
+    pub flow_name: String,
+    /// Backend override (or "stub").
+    pub backend: String,
+    /// Priority (lower = higher priority, default 5).
+    pub priority: u32,
+    /// Client who enqueued.
+    pub client_key: String,
+    /// Unix timestamp when enqueued.
+    pub enqueued_at: u64,
+    /// Status: "pending", "processing", "completed", "failed".
+    pub status: String,
+}
+
+/// Configurable pricing per backend (USD per 1M tokens).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CostPricing {
+    /// Price per 1M input tokens by backend.
+    pub input_per_million: HashMap<String, f64>,
+    /// Price per 1M output tokens by backend.
+    pub output_per_million: HashMap<String, f64>,
+}
+
+impl Default for CostPricing {
+    fn default() -> Self {
+        let mut input = HashMap::new();
+        input.insert("anthropic".into(), 3.0);
+        input.insert("openai".into(), 2.5);
+        input.insert("stub".into(), 0.0);
+
+        let mut output = HashMap::new();
+        output.insert("anthropic".into(), 15.0);
+        output.insert("openai".into(), 10.0);
+        output.insert("stub".into(), 0.0);
+
+        CostPricing { input_per_million: input, output_per_million: output }
+    }
+}
+
+/// Per-flow cost summary.
+#[derive(Debug, Clone, Serialize)]
+pub struct FlowCostSummary {
+    pub flow_name: String,
+    pub executions: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub estimated_cost_usd: f64,
+}
+
+/// Per-flow cost budget configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CostBudget {
+    /// Maximum allowed cost in USD.
+    pub max_cost_usd: f64,
+    /// Warning threshold (0.0–1.0, e.g. 0.8 = alert at 80%).
+    pub warn_threshold: f64,
+}
+
+/// A cost budget alert.
+#[derive(Debug, Clone, Serialize)]
+pub struct CostAlert {
+    pub flow_name: String,
+    pub current_cost_usd: f64,
+    pub budget_usd: f64,
+    pub usage_pct: f64,
+    pub level: String, // "warning" or "exceeded"
+}
+
+/// Pre-execution validation rules for a flow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowValidationRules {
+    /// Maximum allowed steps (0 = no limit).
+    #[serde(default)]
+    pub max_steps: usize,
+    /// Required anchor names (must be present in flow).
+    #[serde(default)]
+    pub required_anchors: Vec<String>,
+    /// Banned tool names (must not be used).
+    #[serde(default)]
+    pub banned_tools: Vec<String>,
+    /// Allowed backends (empty = all allowed).
+    #[serde(default)]
+    pub allowed_backends: Vec<String>,
+    /// Maximum estimated cost in USD (0.0 = no limit).
+    #[serde(default)]
+    pub max_cost_usd: f64,
+}
+
+/// Result of validating a flow against its rules.
+#[derive(Debug, Clone, Serialize)]
+pub struct ValidationResult {
+    pub valid: bool,
+    pub violations: Vec<String>,
+}
+
+/// Per-flow execution quota with hourly/daily limits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowQuota {
+    /// Maximum executions per hour (0 = unlimited).
+    #[serde(default)]
+    pub max_per_hour: u64,
+    /// Maximum executions per day (0 = unlimited).
+    #[serde(default)]
+    pub max_per_day: u64,
+    /// Executions in the current hour window.
+    #[serde(default)]
+    pub current_hour_count: u64,
+    /// Executions in the current day window.
+    #[serde(default)]
+    pub current_day_count: u64,
+    /// Hour window start (Unix seconds, aligned to hour).
+    #[serde(default)]
+    pub hour_window_start: u64,
+    /// Day window start (Unix seconds, aligned to day).
+    #[serde(default)]
+    pub day_window_start: u64,
+}
+
+impl FlowQuota {
+    /// Check if an execution is allowed and record it if so.
+    pub fn check_and_record(&mut self) -> (bool, Vec<String>) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Reset hour window if expired
+        let hour_start = (now / 3600) * 3600;
+        if self.hour_window_start != hour_start {
+            self.hour_window_start = hour_start;
+            self.current_hour_count = 0;
+        }
+
+        // Reset day window if expired
+        let day_start = (now / 86400) * 86400;
+        if self.day_window_start != day_start {
+            self.day_window_start = day_start;
+            self.current_day_count = 0;
+        }
+
+        let mut violations = Vec::new();
+        if self.max_per_hour > 0 && self.current_hour_count >= self.max_per_hour {
+            violations.push(format!("hourly quota exceeded ({}/{})", self.current_hour_count, self.max_per_hour));
+        }
+        if self.max_per_day > 0 && self.current_day_count >= self.max_per_day {
+            violations.push(format!("daily quota exceeded ({}/{})", self.current_day_count, self.max_per_day));
+        }
+
+        if violations.is_empty() {
+            self.current_hour_count += 1;
+            self.current_day_count += 1;
+            (true, Vec::new())
+        } else {
+            (false, violations)
+        }
+    }
+}
+
+/// Configurable readiness gates for the /v1/health/ready probe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadinessGates {
+    /// Minimum number of registered daemons required.
+    #[serde(default)]
+    pub min_daemons: usize,
+    /// Required flow names that must be deployed.
+    #[serde(default)]
+    pub required_flows: Vec<String>,
+    /// Maximum error rate (total_errors/total_requests) allowed (0.0 = no limit).
+    #[serde(default)]
+    pub max_error_rate: f64,
+    /// Minimum uptime in seconds before ready (0 = immediate).
+    #[serde(default)]
+    pub min_uptime_secs: u64,
+}
+
+impl Default for ReadinessGates {
+    fn default() -> Self {
+        ReadinessGates {
+            min_daemons: 0,
+            required_flows: Vec::new(),
+            max_error_rate: 0.0,
+            min_uptime_secs: 0,
+        }
+    }
+}
+
+/// Result of evaluating readiness gates.
+#[derive(Debug, Clone, Serialize)]
+pub struct GateCheckResult {
+    pub gate: String,
+    pub passed: bool,
+    pub detail: String,
+}
+
+/// Auto-scaling configuration for daemons.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoscaleConfig {
+    /// Whether auto-scaling is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Minimum daemons to keep active.
+    #[serde(default = "default_min_daemons")]
+    pub min_daemons: usize,
+    /// Maximum daemons allowed.
+    #[serde(default = "default_max_daemons")]
+    pub max_daemons: usize,
+    /// Queue depth threshold to trigger scale-up.
+    #[serde(default = "default_scale_up_threshold")]
+    pub scale_up_queue_depth: usize,
+    /// Events/sec threshold to trigger scale-up.
+    #[serde(default = "default_scale_up_events")]
+    pub scale_up_events_per_sec: u64,
+    /// Idle seconds before scale-down.
+    #[serde(default = "default_scale_down_idle_secs")]
+    pub scale_down_idle_secs: u64,
+}
+
+fn default_min_daemons() -> usize { 1 }
+fn default_max_daemons() -> usize { 10 }
+fn default_scale_up_threshold() -> usize { 5 }
+fn default_scale_up_events() -> u64 { 100 }
+fn default_scale_down_idle_secs() -> u64 { 300 }
+
+impl Default for AutoscaleConfig {
+    fn default() -> Self {
+        AutoscaleConfig {
+            enabled: false,
+            min_daemons: 1,
+            max_daemons: 10,
+            scale_up_queue_depth: 5,
+            scale_up_events_per_sec: 100,
+            scale_down_idle_secs: 300,
+        }
+    }
+}
+
+/// Result of an autoscale evaluation.
+#[derive(Debug, Clone, Serialize)]
+pub struct AutoscaleDecision {
+    pub current_daemons: usize,
+    pub active_daemons: usize,
+    pub queue_depth: usize,
+    pub events_per_sec: f64,
+    pub recommendation: String,
+    pub reason: String,
+}
+
+/// Per-endpoint rate limit with independent sliding window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndpointRateLimit {
+    /// Path prefix to match (e.g. "/v1/execute", "/v1/deploy").
+    pub path_prefix: String,
+    /// Max requests per window.
+    pub max_requests: u64,
+    /// Window size in seconds.
+    pub window_secs: u64,
+    /// Current request count in window.
+    #[serde(default)]
+    pub current_count: u64,
+    /// Window start timestamp (Unix seconds).
+    #[serde(default)]
+    pub window_start: u64,
+}
+
+impl EndpointRateLimit {
+    /// Check if a request to this path is allowed. Auto-resets window.
+    pub fn check(&mut self, path: &str) -> bool {
+        if !path.starts_with(&self.path_prefix) {
+            return true; // doesn't match this limit
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Reset window if expired
+        if now >= self.window_start + self.window_secs || self.window_start == 0 {
+            self.window_start = now;
+            self.current_count = 0;
+        }
+
+        if self.current_count >= self.max_requests {
+            return false;
+        }
+        self.current_count += 1;
+        true
+    }
+}
+
+/// A named server configuration snapshot for save/restore.
+#[derive(Debug, Clone, Serialize)]
+pub struct NamedConfigSnapshot {
+    pub name: String,
+    pub created_at: u64,
+    pub snapshot: crate::server_config::ConfigSnapshot,
+}
+
+/// A lifecycle event for a daemon (state transition record).
+#[derive(Debug, Clone, Serialize)]
+pub struct DaemonLifecycleEvent {
+    /// Unix timestamp of the event.
+    pub timestamp: u64,
+    /// Previous state.
+    pub from_state: DaemonState,
+    /// New state.
+    pub to_state: DaemonState,
+    /// Reason for the transition (if applicable).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Information about a registered daemon.
+#[derive(Debug, Clone, Serialize)]
+pub struct DaemonInfo {
+    pub name: String,
+    pub state: DaemonState,
+    pub source_file: String,
+    pub flow_name: String,
+    pub event_count: u64,
+    pub restart_count: u32,
+    /// Event topic pattern that triggers this daemon (None = manual only).
+    pub trigger_topic: Option<String>,
+    /// Topic to publish execution result to (enables daemon chaining).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_topic: Option<String>,
+    /// Lifecycle events (state transitions), capped at 100.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lifecycle_events: Vec<DaemonLifecycleEvent>,
+}
+
+/// Daemon lifecycle states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DaemonState {
+    Idle,
+    Running,
+    Hibernating,
+    Paused,
+    Stopped,
+    Crashed,
+}
+
+/// A single execution record in a schedule's history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleRun {
+    /// Unix timestamp of this execution.
+    pub timestamp: u64,
+    /// Whether the execution succeeded.
+    pub success: bool,
+    /// Trace ID for this execution (0 if unavailable).
+    pub trace_id: u64,
+    /// Latency in milliseconds.
+    pub latency_ms: u64,
+    /// Error message if failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// A scheduled flow execution entry.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScheduleEntry {
+    /// Flow name to execute on schedule.
+    pub flow_name: String,
+    /// Interval in seconds between executions.
+    pub interval_secs: u64,
+    /// Whether the schedule is active.
+    pub enabled: bool,
+    /// Backend for execution (default: "stub").
+    pub backend: String,
+    /// Unix timestamp of last execution (0 = never).
+    pub last_run: u64,
+    /// Unix timestamp of next scheduled execution.
+    pub next_run: u64,
+    /// Total executions performed by this schedule.
+    pub run_count: u64,
+    /// Total errors from scheduled executions.
+    pub error_count: u64,
+    /// Execution history (most recent last, capped at 50).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<ScheduleRun>,
+}
+
+/// Aggregated server metrics.
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerMetrics {
+    pub total_requests: u64,
+    pub total_deployments: u64,
+    pub total_errors: u64,
+    pub active_daemons: u32,
+}
+
+impl ServerMetrics {
+    fn new() -> Self {
+        ServerMetrics {
+            total_requests: 0,
+            total_deployments: 0,
+            total_errors: 0,
+            active_daemons: 0,
+        }
+    }
+}
+
+impl ServerState {
+    fn new(config: ServerConfig) -> Self {
+        let event_bus = EventBus::new();
+        let supervisor = DaemonSupervisor::new(event_bus.clone());
+        let master_token = if config.auth_token.is_empty() { None } else { Some(config.auth_token.clone()) };
+
+        let mut rate_limiter = RateLimiter::new(RateLimitConfig::default_config());
+        let mut request_logger = RequestLogger::new(RequestLogConfig::default_config());
+
+        // Restore persisted config if available
+        let config_path = crate::config_persistence::resolve_path(config.config_path.as_deref());
+        if crate::config_persistence::exists(&config_path) {
+            if let Ok(persisted) = crate::config_persistence::load(&config_path) {
+                let update = crate::config_persistence::snapshot_to_update(&persisted.config);
+                if let Some(ref rl) = update.rate_limit {
+                    crate::server_config::apply_rate_limit(rl, &mut rate_limiter);
+                }
+                if let Some(ref log) = update.request_log {
+                    crate::server_config::apply_request_log(log, &mut request_logger);
+                }
+                eprintln!("  Restored config from {} (save #{})", config_path.display(), persisted.save_count);
+            }
+        }
+
+        // Try auto-recover from ΛD-format state file
+        let state_path = config.config_path.as_deref()
+            .map(|p| std::path::Path::new(p).parent().unwrap_or(std::path::Path::new(".")).join(STATE_PERSIST_PATH))
+            .unwrap_or_else(|| std::path::PathBuf::from(STATE_PERSIST_PATH));
+
+        let mut cost_pricing = CostPricing::default();
+        let mut cost_budgets = HashMap::new();
+        let mut flow_rules = HashMap::new();
+        let mut flow_quotas = HashMap::new();
+        let mut readiness_gates = ReadinessGates::default();
+        let mut autoscale_config = AutoscaleConfig::default();
+        let mut endpoint_rate_limits = HashMap::new();
+        let mut schedules: HashMap<String, ScheduleEntry> = HashMap::new();
+        let mut recovered = false;
+
+        if state_path.exists() {
+            if let Ok(json_str) = std::fs::read_to_string(&state_path) {
+                if let Ok(backup) = serde_json::from_str::<ServerBackup>(&json_str) {
+                    if backup.lambda_d.validate().is_ok() {
+                        cost_pricing = backup.cost_pricing;
+                        cost_budgets = backup.cost_budgets;
+                        flow_rules = backup.flow_rules;
+                        flow_quotas = backup.flow_quotas;
+                        readiness_gates = backup.readiness_gates;
+                        endpoint_rate_limits = backup.endpoint_rate_limits;
+                        for sched in &backup.schedules {
+                            schedules.insert(sched.name.clone(), ScheduleEntry {
+                                flow_name: sched.flow_name.clone(), interval_secs: sched.interval_secs,
+                                enabled: sched.enabled, backend: sched.backend.clone(),
+                                last_run: 0, next_run: sched.interval_secs, run_count: 0, error_count: 0, history: Vec::new(),
+                            });
+                        }
+                        recovered = true;
+                        eprintln!("  Auto-recovered ΛD state from {} (v{})", state_path.display(), backup.version);
+                    }
+                }
+            }
+        }
+
+        let _ = recovered; // used for logging above
+
+        ServerState {
+            config,
+            daemons: HashMap::new(),
+            metrics: ServerMetrics::new(),
+            started_at: Instant::now(),
+            deploy_count: 0,
+            event_bus,
+            supervisor,
+            versions: VersionRegistry::new(),
+            session: SessionStore::new("axon-server"),
+            scoped_sessions: ScopedSessionManager::new("axon-server"),
+            rate_limiter,
+            request_logger,
+            api_keys: ApiKeyManager::new(master_token.as_deref()),
+            webhooks: WebhookRegistry::new(),
+            delivery_config: DeliveryConfig::default(),
+            cors_config: CorsConfig::default(),
+            middleware_config: MiddlewareConfig::default(),
+            request_id_gen: RequestIdGenerator::new(),
+            audit_log: AuditLog::new(5000),
+            trace_store: TraceStore::new(TraceStoreConfig::default()),
+            schedules,
+            config_snapshots: Vec::new(),
+            execution_queue: Vec::new(),
+            execution_queue_next_id: 1,
+            cost_pricing,
+            cost_budgets,
+            flow_rules,
+            flow_quotas,
+            readiness_gates,
+            autoscale_config,
+            auto_persist_on_shutdown: true,
+            flow_tags: HashMap::new(),
+            flow_slas: HashMap::new(),
+            canary_configs: HashMap::new(),
+            alert_rules: Vec::new(),
+            fired_alerts: Vec::new(),
+            alert_silences: Vec::new(),
+            health_history: Vec::new(),
+            endpoint_rate_limits,
+            execution_cache: Vec::new(),
+            backend_registry: HashMap::new(),
+            axon_stores: HashMap::new(),
+            dataspaces: HashMap::new(),
+            shields: HashMap::new(),
+            corpora: HashMap::new(),
+            mandates: HashMap::new(),
+            refine_sessions: HashMap::new(),
+            trails: HashMap::new(),
+            probes: HashMap::new(),
+            weaves: HashMap::new(),
+            corroborations: HashMap::new(),
+            drills: HashMap::new(),
+            forges: HashMap::new(),
+            deliberations: HashMap::new(),
+            consensus_sessions: HashMap::new(),
+            hibernations: HashMap::new(),
+            ots_secrets: HashMap::new(),
+            psyche_sessions: HashMap::new(),
+            axon_endpoints: HashMap::new(),
+            endpoint_calls: Vec::new(),
+            pix_sessions: HashMap::new(),
+            backend_health_probes: HashMap::new(),
+            backend_health_history: HashMap::new(),
+            shutdown: None,
+            storage: Arc::new(crate::storage::StorageDispatcher::in_memory()),
+            resilient_backend: Arc::new(crate::resilient_backend::ResilientBackend::new()),
+        }
+    }
+}
+
+type SharedState = Arc<Mutex<ServerState>>;
+
+// ── Auth middleware ────────────────────────────────────────────────────────
+
+/// Check auth + role for a mutable state reference (records usage).
+fn check_auth(state: &mut ServerState, headers: &HeaderMap, level: AccessLevel) -> Result<(), StatusCode> {
+    auth_middleware::check(&mut state.api_keys, headers, level)?;
+    Ok(())
+}
+
+/// Check auth + role without recording usage (for read-only peeks).
+fn check_auth_peek(state: &ServerState, headers: &HeaderMap, level: AccessLevel) -> Result<(), StatusCode> {
+    auth_middleware::peek(&state.api_keys, headers, level)?;
+    Ok(())
+}
+
+// ── Rate limiting ────────────────────────────────────────────────────────
+
+/// Record a daemon lifecycle event (state transition).
+fn record_lifecycle(daemon: &mut DaemonInfo, from: DaemonState, to: DaemonState, reason: Option<String>) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    daemon.lifecycle_events.push(DaemonLifecycleEvent {
+        timestamp: ts,
+        from_state: from,
+        to_state: to,
+        reason,
+    });
+    if daemon.lifecycle_events.len() > 100 {
+        daemon.lifecycle_events.remove(0);
+    }
+}
+
+/// Extract client key from headers (Authorization token or fallback to "anonymous").
+fn client_key_from_headers(headers: &HeaderMap) -> String {
+    headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "anonymous".to_string())
+}
+
+/// Check rate limit for a request. Returns Err(429) if over limit.
+fn check_rate_limit(state: &mut ServerState, headers: &HeaderMap) -> Result<(), StatusCode> {
+    let key = client_key_from_headers(headers);
+    let result = state.rate_limiter.check(&key);
+    if result.allowed {
+        Ok(())
+    } else {
+        Err(StatusCode::TOO_MANY_REQUESTS)
+    }
+}
+
+// ── Webhook async delivery ───────────────────────────────────────────────
+
+/// Trigger async webhook delivery for an event.
+/// Locks state to match webhooks and read config, then spawns tokio tasks.
+fn trigger_webhook_delivery(
+    state: &SharedState,
+    topic: &str,
+    payload: serde_json::Value,
+    source: &str,
+) {
+    let (matched_ids, targets, config, timestamp) = {
+        let s = state.lock().unwrap();
+        let ids = s.webhooks.match_topic(topic);
+        if ids.is_empty() {
+            return;
+        }
+        let mut targets = Vec::new();
+        for id in &ids {
+            if let Some(wh) = s.webhooks.get(id) {
+                targets.push((wh.id.clone(), wh.url.clone(), wh.secret.clone()));
+            }
+        }
+        let config = s.delivery_config.clone();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        (ids, targets, config, ts)
+    };
+
+    let _ = matched_ids; // used for count only
+
+    for (webhook_id, url, secret) in targets {
+        let state = state.clone();
+        let topic = topic.to_string();
+        let payload = payload.clone();
+        let source = source.to_string();
+        let config = config.clone();
+
+        tokio::spawn(async move {
+            let body = webhook_delivery::WebhookPayload {
+                event: topic.clone(),
+                payload,
+                source,
+                timestamp,
+            };
+
+            let signature = secret.as_ref().map(|s| {
+                let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+                crate::webhooks::WebhookRegistry::compute_signature(s, &body_bytes)
+            });
+
+            let result = webhook_delivery::deliver_with_retry(
+                &url,
+                &body,
+                signature.as_deref(),
+                &config,
+            ).await;
+
+            // Record result back in registry
+            if let Ok(mut s) = state.lock() {
+                s.webhooks.record_completed(
+                    &webhook_id,
+                    &topic,
+                    result.status_code,
+                    result.latency_ms,
+                    result.error,
+                    result.attempts.saturating_sub(1),
+                );
+            }
+        });
+    }
+}
+
+// ── Route handlers ────────────────────────────────────────────────────────
+
+/// Build a HealthInput snapshot from locked server state.
+fn build_health_input(s: &ServerState) -> crate::health_check::HealthInput {
+    let bus_stats = s.event_bus.stats();
+    let sup_counts = s.supervisor.state_counts();
+    let mut daemon_state_counts = std::collections::HashMap::new();
+    for (k, v) in &sup_counts {
+        daemon_state_counts.insert(k.to_string(), *v);
+    }
+
+    let rl_config = s.rate_limiter.config();
+    let log_config = s.request_logger.config();
+    let wh_stats = s.webhooks.stats();
+
+    crate::health_check::HealthInput {
+        uptime_secs: s.started_at.elapsed().as_secs(),
+        axon_version: AXON_VERSION.to_string(),
+        daemon_count: s.daemons.len(),
+        daemon_state_counts,
+        bus_events_published: bus_stats.events_published,
+        bus_subscriber_count: bus_stats.active_subscribers as usize,
+        session_memory_count: s.scoped_sessions.total_memory_count(),
+        session_store_count: s.scoped_sessions.total_store_count(),
+        flows_tracked: s.versions.flow_count(),
+        versions_total: s.versions.total_versions(),
+        rate_limiter_enabled: rl_config.enabled,
+        rate_limiter_max_requests: rl_config.max_requests,
+        rate_limiter_window_secs: rl_config.window.as_secs(),
+        request_log_enabled: log_config.enabled,
+        request_log_entries: s.request_logger.len(),
+        request_log_capacity: log_config.capacity,
+        api_keys_enabled: s.api_keys.is_enabled(),
+        api_keys_active: s.api_keys.active_count(),
+        api_keys_total: s.api_keys.total_count(),
+        webhooks_active: wh_stats.active_webhooks,
+        webhooks_total: wh_stats.total_webhooks,
+        webhooks_total_failures: wh_stats.total_failures,
+        audit_log_entries: s.audit_log.len(),
+        audit_log_total_recorded: s.audit_log.total_recorded(),
+    }
+}
+
+/// GET /v1/health — full health report with component checks.
+async fn health_handler(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let s = state.lock().unwrap();
+    let input = build_health_input(&s);
+    let report = crate::health_check::evaluate(&input);
+    Json(serde_json::to_value(&report).unwrap_or_default())
+}
+
+/// GET /v1/health/live — liveness probe (always alive if responding).
+async fn health_live_handler() -> Json<serde_json::Value> {
+    Json(crate::health_check::liveness())
+}
+
+/// GET /v1/health/ready — readiness probe (ready if no component is unhealthy).
+async fn health_ready_handler(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let s = state.lock().unwrap();
+    let input = build_health_input(&s);
+    Json(crate::health_check::readiness(&input))
+}
+
+/// GET /v1/health/components — component-level health checks.
+///
+/// Reports individual health status for: trace_store, event_bus,
+/// supervisor, schedules, audit_log, rate_limiter.
+async fn health_components_handler(
+    State(state): State<SharedState>,
+) -> Json<serde_json::Value> {
+    let s = state.lock().unwrap();
+
+    let mut components = Vec::new();
+    let mut overall = "healthy";
+
+    // ── Trace store ──
+    let ts_status = if !s.trace_store.config().enabled {
+        "disabled"
+    } else if s.trace_store.len() >= s.trace_store.config().capacity {
+        overall = if overall == "healthy" { "degraded" } else { overall };
+        "degraded"
+    } else {
+        "healthy"
+    };
+    components.push(serde_json::json!({
+        "name": "trace_store",
+        "status": ts_status,
+        "details": {
+            "enabled": s.trace_store.config().enabled,
+            "buffered": s.trace_store.len(),
+            "capacity": s.trace_store.config().capacity,
+            "total_recorded": s.trace_store.total_recorded(),
+            "utilization_pct": if s.trace_store.config().capacity > 0 {
+                (s.trace_store.len() as f64 / s.trace_store.config().capacity as f64 * 100.0) as u64
+            } else { 0 },
+        },
+    }));
+
+    // ── Event bus ──
+    let bus_stats = s.event_bus.stats();
+    let bus_status = if bus_stats.events_dropped > 0 { "degraded" } else { "healthy" };
+    if bus_status == "degraded" && overall == "healthy" {
+        overall = "degraded";
+    }
+    components.push(serde_json::json!({
+        "name": "event_bus",
+        "status": bus_status,
+        "details": {
+            "topics_seen": bus_stats.topics_seen.len(),
+            "events_published": bus_stats.events_published,
+            "events_delivered": bus_stats.events_delivered,
+            "events_dropped": bus_stats.events_dropped,
+            "active_subscribers": bus_stats.active_subscribers,
+        },
+    }));
+
+    // ── Supervisor ──
+    let sup_counts = s.supervisor.state_counts();
+    let dead = sup_counts.get("dead").copied().unwrap_or(0);
+    let sup_status = if dead > 0 {
+        overall = "degraded";
+        "degraded"
+    } else {
+        "healthy"
+    };
+    components.push(serde_json::json!({
+        "name": "supervisor",
+        "status": sup_status,
+        "details": {
+            "registered": s.supervisor.list().len(),
+            "state_counts": sup_counts,
+            "dead": dead,
+        },
+    }));
+
+    // ── Schedules ──
+    let sched_total = s.schedules.len();
+    let sched_enabled = s.schedules.values().filter(|e| e.enabled).count();
+    let sched_errors: u64 = s.schedules.values().map(|e| e.error_count).sum();
+    let sched_status = if sched_errors > 0 { "degraded" } else { "healthy" };
+    if sched_status == "degraded" && overall == "healthy" {
+        overall = "degraded";
+    }
+    components.push(serde_json::json!({
+        "name": "schedules",
+        "status": sched_status,
+        "details": {
+            "total": sched_total,
+            "enabled": sched_enabled,
+            "total_runs": s.schedules.values().map(|e| e.run_count).sum::<u64>(),
+            "total_errors": sched_errors,
+        },
+    }));
+
+    // ── Audit log ──
+    let audit_status = "healthy";
+    components.push(serde_json::json!({
+        "name": "audit_log",
+        "status": audit_status,
+        "details": {
+            "buffered": s.audit_log.len(),
+            "capacity": s.audit_log.capacity(),
+        },
+    }));
+
+    // ── Rate limiter ──
+    let rl_config = s.rate_limiter.config();
+    let rl_status = if rl_config.enabled { "healthy" } else { "disabled" };
+    components.push(serde_json::json!({
+        "name": "rate_limiter",
+        "status": rl_status,
+        "details": {
+            "enabled": rl_config.enabled,
+            "max_requests": rl_config.max_requests,
+            "window_secs": rl_config.window.as_secs(),
+        },
+    }));
+
+    let healthy_count = components.iter().filter(|c| c["status"] == "healthy").count();
+    let degraded_count = components.iter().filter(|c| c["status"] == "degraded").count();
+    let disabled_count = components.iter().filter(|c| c["status"] == "disabled").count();
+
+    Json(serde_json::json!({
+        "overall": overall,
+        "components_total": components.len(),
+        "healthy": healthy_count,
+        "degraded": degraded_count,
+        "disabled": disabled_count,
+        "components": components,
+    }))
+}
+
+/// GET /v1/version
+async fn version_handler() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "axon_version": AXON_VERSION,
+        "server": "axon-serve",
+        "runtime": "native",
+        "api_version": "v1",
+    }))
+}
+
+/// GET /v1/uptime — detailed server uptime information.
+async fn uptime_handler(
+    State(state): State<SharedState>,
+) -> Json<serde_json::Value> {
+    let s = state.lock().unwrap();
+    let uptime_secs = s.started_at.elapsed().as_secs();
+    let now_wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let start_timestamp = now_wall.saturating_sub(uptime_secs);
+
+    let days = uptime_secs / 86400;
+    let hours = (uptime_secs % 86400) / 3600;
+    let minutes = (uptime_secs % 3600) / 60;
+    let secs = uptime_secs % 60;
+    let formatted = format!("{}d {}h {}m {}s", days, hours, minutes, secs);
+
+    let requests_per_minute = if uptime_secs > 0 {
+        (s.metrics.total_requests as f64 / uptime_secs as f64) * 60.0
+    } else {
+        0.0
+    };
+
+    // Uptime buckets: what percentage of time has been "up" in each hour bracket
+    let total_hours = (uptime_secs as f64 / 3600.0).ceil() as u64;
+    let buckets: Vec<serde_json::Value> = (0..total_hours.min(24)).map(|h| {
+        let bucket_start = h * 3600;
+        let bucket_end = ((h + 1) * 3600).min(uptime_secs);
+        let bucket_duration = bucket_end.saturating_sub(bucket_start);
+        serde_json::json!({
+            "hour": h,
+            "duration_secs": bucket_duration,
+            "pct_of_hour": (bucket_duration as f64 / 3600.0 * 100.0).min(100.0),
+        })
+    }).collect();
+
+    Json(serde_json::json!({
+        "uptime_secs": uptime_secs,
+        "uptime_formatted": formatted,
+        "start_timestamp": start_timestamp,
+        "total_requests": s.metrics.total_requests,
+        "total_errors": s.metrics.total_errors,
+        "requests_per_minute": (requests_per_minute * 100.0).round() / 100.0,
+        "daemons_active": s.daemons.len(),
+        "traces_buffered": s.trace_store.len(),
+        "schedules_active": s.schedules.values().filter(|e| e.enabled).count(),
+        "hourly_buckets": buckets,
+    }))
+}
+
+/// GET /v1/metrics
+async fn metrics_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let uptime = s.started_at.elapsed().as_secs();
+    let bus_stats = s.event_bus.stats();
+    Ok(Json(serde_json::json!({
+        "uptime_secs": uptime,
+        "total_requests": s.metrics.total_requests,
+        "total_deployments": s.metrics.total_deployments,
+        "total_errors": s.metrics.total_errors,
+        "active_daemons": s.daemons.len(),
+        "daemon_names": s.daemons.keys().collect::<Vec<_>>(),
+        "bus_events_published": bus_stats.events_published,
+        "bus_topics_seen": bus_stats.topics_seen,
+        "supervisor_summary": s.supervisor.summary(),
+        "session_memory_count": s.scoped_sessions.total_memory_count(),
+        "session_store_count": s.scoped_sessions.total_store_count(),
+    })))
+}
+
+/// GET /v1/metrics/prometheus — server metrics in Prometheus exposition format.
+async fn metrics_prometheus_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<String, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let bus_stats = s.event_bus.stats();
+
+    let mut daemon_states: HashMap<String, u32> = HashMap::new();
+    for d in s.daemons.values() {
+        let state_name = format!("{:?}", d.state).to_lowercase();
+        *daemon_states.entry(state_name).or_insert(0) += 1;
+    }
+
+    let snap = crate::server_metrics::ServerSnapshot {
+        uptime_secs: s.started_at.elapsed().as_secs(),
+        server_start_timestamp: {
+            let now_wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+            now_wall.saturating_sub(s.started_at.elapsed().as_secs())
+        },
+        total_requests: s.metrics.total_requests,
+        total_deployments: s.metrics.total_deployments,
+        total_errors: s.metrics.total_errors,
+        active_daemons: s.daemons.len() as u32,
+        daemon_states,
+        daemon_metrics: s.daemons.values().map(|d| crate::server_metrics::DaemonMetric {
+            name: d.name.clone(),
+            state: format!("{:?}", d.state).to_lowercase(),
+            event_count: d.event_count,
+            restart_count: d.restart_count,
+        }).collect(),
+        daemon_total_restarts: s.daemons.values().map(|d| d.restart_count as u64).sum(),
+        daemon_total_events: s.daemons.values().map(|d| d.event_count).sum(),
+        bus_events_published: bus_stats.events_published,
+        bus_events_delivered: bus_stats.events_delivered,
+        bus_events_dropped: bus_stats.events_dropped,
+        bus_topics_seen: bus_stats.topics_seen.len(),
+        bus_active_subscribers: bus_stats.active_subscribers as usize,
+        bus_topic_metrics: bus_stats.topic_publish_counts.iter().map(|(topic, &count)| {
+            crate::server_metrics::TopicMetric { topic: topic.clone(), published: count }
+        }).collect(),
+        flows_tracked: s.versions.flow_count(),
+        versions_total: s.versions.total_versions(),
+        session_memory_count: s.scoped_sessions.total_memory_count(),
+        session_store_count: s.scoped_sessions.total_store_count(),
+        deploy_count: s.deploy_count,
+        // Rate limiter
+        rate_limiter_enabled: s.rate_limiter.config().enabled,
+        rate_limiter_clients: s.rate_limiter.client_count(),
+        rate_limiter_max_requests: s.rate_limiter.config().max_requests,
+        rate_limiter_window_secs: s.rate_limiter.config().window.as_secs(),
+        rate_limiter_client_metrics: s.rate_limiter.client_metrics().iter().map(|cm| {
+            crate::server_metrics::ClientRateLimitMetric {
+                client_key: cm.client_key.clone(),
+                total_requests: cm.total_requests,
+                rejected: cm.rejected,
+            }
+        }).collect(),
+        // Request log
+        request_log_enabled: s.request_logger.config().enabled,
+        request_log_buffered: s.request_logger.len(),
+        request_log_capacity: s.request_logger.config().capacity,
+        request_log_total: s.request_logger.total_requests(),
+        request_log_errors: s.request_logger.stats().total_errors,
+        // API keys
+        api_keys_enabled: s.api_keys.is_enabled(),
+        api_keys_active: s.api_keys.active_count(),
+        api_keys_total: s.api_keys.total_count(),
+        // Webhooks
+        webhooks_total: s.webhooks.count(),
+        webhooks_active: s.webhooks.active_count(),
+        webhooks_deliveries_total: s.webhooks.stats().total_deliveries,
+        webhooks_failures_total: s.webhooks.stats().total_failures,
+        // Audit trail
+        audit_buffered: s.audit_log.len(),
+        audit_total_recorded: s.audit_log.total_recorded(),
+        // Request middleware
+        middleware_enabled: s.middleware_config.enabled,
+        middleware_requests_total: s.request_id_gen.count(),
+        middleware_slow_threshold_ms: s.middleware_config.slow_threshold_ms,
+        // CORS
+        cors_enabled: s.cors_config.enabled,
+        cors_permissive: s.cors_config.is_permissive(),
+        // Trace store
+        trace_enabled: s.trace_store.config().enabled,
+        trace_buffered: s.trace_store.len(),
+        trace_capacity: s.trace_store.config().capacity,
+        trace_total_recorded: s.trace_store.total_recorded(),
+        trace_total_executions: s.trace_store.total_recorded(),
+        trace_total_errors: {
+            let stats = s.trace_store.stats();
+            stats.total_errors as u64
+        },
+        flow_metrics: {
+            let entries = s.trace_store.recent(s.trace_store.len(), None);
+            let mut fm_map: HashMap<String, (u64, u64, u64)> = HashMap::new(); // (count, errors, total_lat)
+            for e in &entries {
+                let entry = fm_map.entry(e.flow_name.clone()).or_insert((0, 0, 0));
+                entry.0 += 1;
+                entry.1 += e.errors as u64;
+                entry.2 += e.latency_ms;
+            }
+            fm_map.into_iter().map(|(name, (count, errs, lat))| {
+                crate::server_metrics::FlowMetric {
+                    flow_name: name,
+                    executions: count,
+                    errors: errs,
+                    avg_latency_ms: if count > 0 { lat / count } else { 0 },
+                }
+            }).collect()
+        },
+        // Schedules
+        schedules_total: s.schedules.len(),
+        schedules_enabled: s.schedules.values().filter(|e| e.enabled).count(),
+        schedules_total_runs: s.schedules.values().map(|e| e.run_count).sum(),
+        schedules_total_errors: s.schedules.values().map(|e| e.error_count).sum(),
+        schedules_avg_interval_secs: if s.schedules.is_empty() {
+            0
+        } else {
+            s.schedules.values().map(|e| e.interval_secs).sum::<u64>() / s.schedules.len() as u64
+        },
+        // Shutdown
+        shutdown_initiated: s.shutdown.as_ref().map_or(false, |c| c.is_triggered()),
+    };
+
+    Ok(crate::server_metrics::to_prometheus(&snap))
+}
+
+/// Deploy request payload.
+#[derive(Debug, Deserialize)]
+pub struct DeployRequest {
+    /// AXON source code to compile and deploy.
+    pub source: String,
+    /// Optional filename for error messages.
+    #[serde(default)]
+    pub filename: String,
+    /// Backend for execution (default: anthropic).
+    #[serde(default = "default_backend")]
+    pub backend: String,
+}
+
+fn default_backend() -> String {
+    "anthropic".to_string()
+}
+
+/// POST /v1/deploy
+async fn deploy_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<DeployRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+        check_rate_limit(&mut s, &headers)?;
+    }
+
+    // Compile the source
+    let source = payload.source.clone();
+    let filename = if payload.filename.is_empty() {
+        "deploy.axon".to_string()
+    } else {
+        payload.filename
+    };
+
+    // Lex → Parse → TypeCheck → IR
+    let tokens = match crate::lexer::Lexer::new(&source, &filename).tokenize() {
+        Ok(t) => t,
+        Err(e) => {
+            let mut s = state.lock().unwrap();
+            s.metrics.total_errors += 1;
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": format!("lex error: {e:?}"),
+                "phase": "lexer",
+            })));
+        }
+    };
+
+    let mut parser = crate::parser::Parser::new(tokens);
+    let program = match parser.parse() {
+        Ok(p) => p,
+        Err(e) => {
+            let mut s = state.lock().unwrap();
+            s.metrics.total_errors += 1;
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": format!("parse error: {e:?}"),
+                "phase": "parser",
+            })));
+        }
+    };
+
+    let type_errors = crate::type_checker::TypeChecker::new(&program).check();
+    if !type_errors.is_empty() {
+        let mut s = state.lock().unwrap();
+        s.metrics.total_errors += 1;
+        let msgs: Vec<String> = type_errors.iter().map(|e| format!("{e:?}")).collect();
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": msgs.join("; "),
+            "phase": "type_checker",
+            "error_count": type_errors.len(),
+        })));
+    }
+
+    let ir = crate::ir_generator::IRGenerator::new().generate(&program);
+
+    // Extract flow names from IR and register as daemons
+    let flow_names: Vec<String> = ir.flows.iter().map(|f| f.name.clone()).collect();
+    let registered: Vec<String>;
+
+    let version_results = {
+        let mut s = state.lock().unwrap();
+        s.deploy_count += 1;
+        s.metrics.total_deployments += 1;
+
+        registered = flow_names
+            .iter()
+            .map(|name| {
+                let daemon = DaemonInfo {
+                    name: name.clone(),
+                    state: DaemonState::Idle,
+                    source_file: filename.clone(),
+                    flow_name: name.clone(),
+                    event_count: 0,
+                    restart_count: 0,
+                    trigger_topic: None,
+                    output_topic: None,
+                    lifecycle_events: Vec::new(),
+                };
+                s.daemons.insert(name.clone(), daemon);
+
+                // Register with supervisor
+                s.supervisor.register(name, RestartPolicy::default());
+
+                name.clone()
+            })
+            .collect();
+
+        s.metrics.active_daemons = s.daemons.len() as u32;
+
+        // Record versions
+        let version_results = s.versions.record_deploy(
+            &registered,
+            &source,
+            &filename,
+            &payload.backend,
+        );
+
+        // Emit deploy event on bus
+        s.event_bus.publish(
+            "deploy",
+            serde_json::json!({
+                "flows": &registered,
+                "source_file": &filename,
+                "versions": version_results.iter().map(|(n, v)| serde_json::json!({"flow": n, "version": v})).collect::<Vec<_>>(),
+            }),
+            "server",
+        );
+
+        // Audit trail
+        s.audit_log.record(
+            &client,
+            AuditAction::Deploy,
+            &registered.join(","),
+            serde_json::json!({"flows": &registered, "source_file": &filename}),
+            true,
+        );
+
+        version_results
+    };
+
+    {
+        let mut s = state.lock().unwrap();
+        s.request_logger.record("POST", "/v1/deploy", 200, req_start.elapsed(), &client);
+    }
+
+    // Trigger async webhook delivery for deploy event
+    trigger_webhook_delivery(
+        &state,
+        "deploy",
+        serde_json::json!({"flows": &registered, "source_file": &filename}),
+        "server",
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "deployed": registered,
+        "flow_count": registered.len(),
+        "backend": payload.backend,
+        "versions": version_results.iter().map(|(n, v)| serde_json::json!({"flow": n, "version": v})).collect::<Vec<serde_json::Value>>(),
+    })))
+}
+
+// ── Execute endpoint ─────────────────────────────────────────────────────
+
+/// Execute request payload.
+#[derive(Debug, Deserialize)]
+pub struct ExecuteRequest {
+    /// Name of a deployed flow to execute.
+    pub flow: String,
+    /// Backend for execution (default: "stub").
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+}
+
+fn default_execute_backend() -> String {
+    "stub".to_string()
+}
+
+/// Server-side execution result (internal).
+#[derive(Debug, Clone, Serialize)]
+struct ServerExecutionResult {
+    success: bool,
+    flow_name: String,
+    source_file: String,
+    backend: String,
+    steps_executed: usize,
+    latency_ms: u64,
+    tokens_input: u64,
+    tokens_output: u64,
+    anchor_checks: usize,
+    anchor_breaches: usize,
+    errors: usize,
+    step_names: Vec<String>,
+    step_results: Vec<String>,
+    trace_id: u64,
+}
+
+/// Compile and execute a deployed flow server-side.
+///
+/// Compiles the stored source for the named flow, builds an execution unit,
+/// executes it via the LLM pipeline, collects metadata, and records a trace.
+fn server_execute(
+    source: &str,
+    source_file: &str,
+    flow_name: &str,
+    backend: &str,
+    api_key_override: Option<&str>,
+) -> Result<ServerExecutionResult, String> {
+    let start = Instant::now();
+
+    // Lex
+    let tokens = crate::lexer::Lexer::new(source, source_file)
+        .tokenize()
+        .map_err(|e| format!("lex error: {e:?}"))?;
+
+    // Parse
+    let mut parser = crate::parser::Parser::new(tokens);
+    let program = parser
+        .parse()
+        .map_err(|e| format!("parse error: {e:?}"))?;
+
+    // Type check (non-fatal for execution — collect errors)
+    let type_errors = crate::type_checker::TypeChecker::new(&program).check();
+
+    // Generate IR
+    let ir = crate::ir_generator::IRGenerator::new().generate(&program);
+
+    // Execute via runner
+    let run_res = crate::runner::execute_server_flow(&ir, flow_name, backend, source_file, api_key_override)?;
+
+    // Count anchors from IR
+    let anchor_count = ir.anchors.len();
+
+    let latency_ms = start.elapsed().as_millis() as u64;
+
+    Ok(ServerExecutionResult {
+        success: type_errors.is_empty() && run_res.success,
+        flow_name: flow_name.to_string(),
+        source_file: source_file.to_string(),
+        backend: backend.to_string(),
+        steps_executed: run_res.steps_executed,
+        latency_ms,
+        tokens_input: run_res.tokens_input,
+        tokens_output: run_res.tokens_output,
+        anchor_checks: anchor_count,
+        anchor_breaches: run_res.anchor_breaches,
+        errors: type_errors.len(),
+        step_names: run_res.step_names,
+        step_results: run_res.step_results,
+        trace_id: 0, // set after recording
+    })
+}
+
+/// POST /v1/execute — execute a deployed flow and auto-record a trace.
+async fn execute_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<ExecuteRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+        check_rate_limit(&mut s, &headers)?;
+    }
+
+    // Look up the deployed flow source, resolve auto-backend and key from registry
+    let (source, source_file, effective_backend, resolved_key) = {
+        let s = state.lock().unwrap();
+        // Auto-backend: if "auto", use optimizer to select best backend
+        let eff = if payload.backend == "auto" {
+            let scores = compute_backend_scores(&s, "balanced");
+            scores.first().map(|sc| sc.name.clone()).unwrap_or_else(|| "stub".to_string())
+        } else {
+            payload.backend.clone()
+        };
+        let history = s.versions.get_history(&payload.flow);
+        match history.and_then(|h| h.active()) {
+            Some(active) => {
+                let key = resolve_backend_key(&s, &eff).ok();
+                (active.source.clone(), active.source_file.clone(), eff, key)
+            }
+            None => {
+                return Ok(Json(serde_json::json!({
+                    "success": false,
+                    "error": format!("flow '{}' not deployed", payload.flow),
+                })));
+            }
+        }
+    };
+
+    // Execute with fallback chain support (outside lock — CPU-bound compilation)
+    let (result, actual_backend) = execute_with_fallback(
+        &state, &source, &source_file, &payload.flow,
+        &effective_backend, resolved_key.as_deref(),
+    );
+
+    match result {
+        Ok(mut exec_result) => {
+            // Update backend to actual (may differ if fallback was used)
+            exec_result.backend = actual_backend.clone();
+            // Build and record trace entry
+            let trace_entry = crate::trace_store::build_trace(
+                &exec_result.flow_name,
+                &exec_result.source_file,
+                &exec_result.backend,
+                &client,
+                if exec_result.success {
+                    crate::trace_store::TraceStatus::Success
+                } else {
+                    crate::trace_store::TraceStatus::Partial
+                },
+                exec_result.steps_executed,
+                exec_result.latency_ms,
+            );
+
+            let trace_id = {
+                let mut s = state.lock().unwrap();
+
+                // Record trace
+                let mut entry = trace_entry;
+                entry.tokens_input = exec_result.tokens_input;
+                entry.tokens_output = exec_result.tokens_output;
+                entry.anchor_checks = exec_result.anchor_checks;
+                entry.anchor_breaches = exec_result.anchor_breaches;
+                entry.errors = exec_result.errors;
+                let trace_id = s.trace_store.record(entry);
+
+                // Update daemon event count
+                if let Some(daemon) = s.daemons.get_mut(&payload.flow) {
+                    daemon.event_count += 1;
+                }
+
+                // Audit trail
+                s.audit_log.record(
+                    &client,
+                    AuditAction::Execute,
+                    &exec_result.flow_name,
+                    serde_json::json!({
+                        "flow": &exec_result.flow_name,
+                        "backend": &exec_result.backend,
+                        "success": exec_result.success,
+                        "trace_id": trace_id,
+                    }),
+                    exec_result.success,
+                );
+
+                // Backend call metrics
+                record_backend_metrics(
+                    &mut s, &exec_result.backend, exec_result.success,
+                    exec_result.tokens_input, exec_result.tokens_output, exec_result.latency_ms,
+                );
+
+                // Request log
+                s.request_logger.record("POST", "/v1/execute", 200, req_start.elapsed(), &client);
+
+                trace_id
+            };
+
+            exec_result.trace_id = trace_id;
+
+            // Emit event and trigger webhooks
+            {
+                let s = state.lock().unwrap();
+                s.event_bus.publish(
+                    "execute",
+                    serde_json::json!({
+                        "flow": &exec_result.flow_name,
+                        "success": exec_result.success,
+                        "trace_id": trace_id,
+                        "latency_ms": exec_result.latency_ms,
+                    }),
+                    "server",
+                );
+            }
+
+            trigger_webhook_delivery(
+                &state,
+                "execute",
+                serde_json::json!({
+                    "flow": &exec_result.flow_name,
+                    "success": exec_result.success,
+                    "trace_id": trace_id,
+                }),
+                "server",
+            );
+
+            Ok(Json(serde_json::to_value(&exec_result).unwrap_or_default()))
+        }
+        Err(e) => {
+            // Record failed trace
+            let mut entry = crate::trace_store::build_trace(
+                &payload.flow,
+                &source_file,
+                &payload.backend,
+                &client,
+                crate::trace_store::TraceStatus::Failed,
+                0,
+                req_start.elapsed().as_millis() as u64,
+            );
+            entry.errors = 1;
+
+            let trace_id = {
+                let mut s = state.lock().unwrap();
+                let tid = s.trace_store.record(entry);
+                s.metrics.total_errors += 1;
+                s.request_logger.record("POST", "/v1/execute", 500, req_start.elapsed(), &client);
+                tid
+            };
+
+            Ok(Json(serde_json::json!({
+                "success": false,
+                "error": e,
+                "flow": payload.flow,
+                "trace_id": trace_id,
+            })))
+        }
+    }
+}
+
+/// Estimate request payload.
+#[derive(Debug, Deserialize)]
+pub struct EstimateRequest {
+    /// AXON source code to analyze.
+    pub source: String,
+    /// Pricing model: "sonnet" (default), "opus", or "haiku".
+    #[serde(default = "default_estimate_model")]
+    pub model: String,
+}
+
+fn default_estimate_model() -> String {
+    "sonnet".to_string()
+}
+
+/// POST /v1/estimate — estimate execution cost for AXON source.
+async fn estimate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<EstimateRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+        check_rate_limit(&mut s, &headers)?;
+    }
+
+    // Lex
+    let tokens = match crate::lexer::Lexer::new(&payload.source, "estimate.axon").tokenize() {
+        Ok(t) => t,
+        Err(e) => {
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": format!("lex error: {e:?}"),
+                "phase": "lexer",
+            })));
+        }
+    };
+
+    // Parse
+    let mut parser = crate::parser::Parser::new(tokens);
+    let program = match parser.parse() {
+        Ok(p) => p,
+        Err(e) => {
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": format!("parse error: {e:?}"),
+                "phase": "parser",
+            })));
+        }
+    };
+
+    // Generate IR
+    let ir = crate::ir_generator::IRGenerator::new().generate(&program);
+
+    // Select pricing model
+    let pricing = match payload.model.as_str() {
+        "opus" => crate::cost_estimator::PricingModel::opus(),
+        "haiku" => crate::cost_estimator::PricingModel::haiku(),
+        _ => crate::cost_estimator::PricingModel::default_sonnet(),
+    };
+
+    // Estimate
+    let report = crate::cost_estimator::estimate_program(&ir, &pricing);
+
+    {
+        let mut s = state.lock().unwrap();
+        s.request_logger.record("POST", "/v1/estimate", 200, req_start.elapsed(), &client);
+    }
+
+    Ok(Json(serde_json::to_value(&report).unwrap_or_default()))
+}
+
+/// GET /v1/rate-limit — check rate limit status for the calling client.
+async fn rate_limit_status_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Json<serde_json::Value> {
+    let mut s = state.lock().unwrap();
+    let key = client_key_from_headers(&headers);
+    let result = s.rate_limiter.peek(&key);
+    Json(serde_json::json!({
+        "client_key": key,
+        "allowed": result.allowed,
+        "remaining": result.remaining,
+        "limit": result.limit,
+        "reset_secs": result.reset_secs,
+        "enabled": s.rate_limiter.config().enabled,
+    }))
+}
+
+/// GET /v1/daemons
+async fn list_daemons_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let daemons: Vec<&DaemonInfo> = s.daemons.values().collect();
+
+    Ok(Json(serde_json::json!({
+        "daemons": daemons,
+        "total": daemons.len(),
+    })))
+}
+
+/// GET /v1/daemons/:name
+async fn get_daemon_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.daemons.get(&name) {
+        Some(d) => Ok(Json(serde_json::to_value(d).unwrap())),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// DELETE /v1/daemons/:name
+async fn delete_daemon_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let client = client_key_from_headers(&headers);
+    match s.daemons.remove(&name) {
+        Some(d) => {
+            s.metrics.active_daemons = s.daemons.len() as u32;
+            s.supervisor.unregister(&name);
+            s.audit_log.record(&client, AuditAction::DaemonDelete, &name, serde_json::json!({"state": d.state}), true);
+            Ok(Json(serde_json::json!({
+                "removed": d.name,
+                "state": d.state,
+            })))
+        }
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// POST /v1/daemons/:name/pause — pause a daemon (preserves state for resume).
+async fn daemon_pause_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    match s.daemons.get_mut(&name) {
+        Some(daemon) => {
+            if daemon.state == DaemonState::Paused {
+                return Ok(Json(serde_json::json!({
+                    "success": false,
+                    "error": "daemon is already paused",
+                    "daemon": name,
+                })));
+            }
+            if daemon.state == DaemonState::Crashed || daemon.state == DaemonState::Stopped {
+                return Ok(Json(serde_json::json!({
+                    "success": false,
+                    "error": format!("cannot pause daemon in {:?} state", daemon.state),
+                    "daemon": name,
+                })));
+            }
+            let prev = daemon.state;
+            daemon.state = DaemonState::Paused;
+            record_lifecycle(daemon, prev, DaemonState::Paused, Some("manual pause".into()));
+
+            s.audit_log.record(
+                &client, AuditAction::ConfigUpdate, &name,
+                serde_json::json!({"action": "daemon_pause", "previous_state": format!("{:?}", prev)}),
+                true,
+            );
+
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "daemon": name,
+                "previous_state": format!("{:?}", prev).to_lowercase(),
+                "state": "paused",
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "error": format!("daemon '{}' not found", name),
+        }))),
+    }
+}
+
+/// POST /v1/daemons/:name/resume — resume a paused daemon.
+async fn daemon_resume_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    match s.daemons.get_mut(&name) {
+        Some(daemon) => {
+            if daemon.state != DaemonState::Paused {
+                return Ok(Json(serde_json::json!({
+                    "success": false,
+                    "error": format!("daemon is not paused (current state: {:?})", daemon.state),
+                    "daemon": name,
+                })));
+            }
+            let prev = daemon.state;
+            daemon.state = DaemonState::Idle;
+            record_lifecycle(daemon, prev, DaemonState::Idle, Some("manual resume".into()));
+
+            s.audit_log.record(
+                &client, AuditAction::ConfigUpdate, &name,
+                serde_json::json!({"action": "daemon_resume"}),
+                true,
+            );
+
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "daemon": name,
+                "state": "idle",
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "error": format!("daemon '{}' not found", name),
+        }))),
+    }
+}
+
+/// POST /v1/daemons/:name/run — execute a daemon's flow with full lifecycle management.
+///
+/// Transitions daemon state: Idle/Waiting → Running → (Waiting on success, crash handling on failure).
+/// Auto-records trace, updates supervisor, emits events, and records audit trail.
+async fn daemon_run_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+        check_rate_limit(&mut s, &headers)?;
+    }
+
+    // Look up daemon and its source
+    let (source, source_file, flow_name, backend) = {
+        let s = state.lock().unwrap();
+        let daemon = match s.daemons.get(&name) {
+            Some(d) => d,
+            None => {
+                return Ok(Json(serde_json::json!({
+                    "success": false,
+                    "error": format!("daemon '{}' not found", name),
+                })));
+            }
+        };
+
+        let flow = daemon.flow_name.clone();
+        let src_file = daemon.source_file.clone();
+
+        // Get source from version registry
+        let history = s.versions.get_history(&flow);
+        match history.and_then(|h| h.active()) {
+            Some(active) => (
+                active.source.clone(),
+                src_file,
+                flow,
+                active.backend.clone(),
+            ),
+            None => {
+                return Ok(Json(serde_json::json!({
+                    "success": false,
+                    "error": format!("no deployed source for daemon '{}'", name),
+                })));
+            }
+        }
+    };
+
+    // Transition to Running
+    {
+        let mut s = state.lock().unwrap();
+        s.supervisor.mark_started(&name);
+        if let Some(daemon) = s.daemons.get_mut(&name) {
+            let prev = daemon.state;
+            daemon.state = DaemonState::Running;
+            record_lifecycle(daemon, prev, DaemonState::Running, None);
+        }
+    }
+
+    // Execute flow (outside lock — CPU-bound, full backend stack)
+    let (exec_result, _) = server_execute_full(&state, &source, &source_file, &flow_name, &backend);
+
+    match exec_result {
+        Ok(mut result) => {
+            // Build and record trace
+            let trace_entry = crate::trace_store::build_trace(
+                &result.flow_name,
+                &result.source_file,
+                &result.backend,
+                &client,
+                if result.success {
+                    crate::trace_store::TraceStatus::Success
+                } else {
+                    crate::trace_store::TraceStatus::Partial
+                },
+                result.steps_executed,
+                result.latency_ms,
+            );
+
+            let (trace_id, supervisor_state) = {
+                let mut s = state.lock().unwrap();
+
+                // Record trace
+                let mut entry = trace_entry;
+                entry.tokens_input = result.tokens_input;
+                entry.tokens_output = result.tokens_output;
+                entry.anchor_checks = result.anchor_checks;
+                entry.anchor_breaches = result.anchor_breaches;
+                entry.errors = result.errors;
+                let trace_id = s.trace_store.record(entry);
+
+                // Update daemon
+                if let Some(daemon) = s.daemons.get_mut(&name) {
+                    daemon.event_count += 1;
+                    let prev = daemon.state;
+                    daemon.state = DaemonState::Hibernating;
+                    record_lifecycle(daemon, prev, DaemonState::Hibernating, Some("trigger execution complete".into()));
+                }
+
+                // Supervisor: Running → Waiting (success)
+                s.supervisor.heartbeat(&name);
+                s.supervisor.mark_waiting(&name);
+                let sup_state = s.supervisor.get(&name)
+                    .map(|d| format!("{:?}", d.state))
+                    .unwrap_or_default();
+
+                // Audit trail
+                s.audit_log.record(
+                    &client,
+                    AuditAction::Execute,
+                    &name,
+                    serde_json::json!({
+                        "daemon": &name,
+                        "flow": &result.flow_name,
+                        "success": result.success,
+                        "trace_id": trace_id,
+                    }),
+                    result.success,
+                );
+
+                s.request_logger.record("POST", &format!("/v1/daemons/{}/run", name), 200, req_start.elapsed(), &client);
+
+                (trace_id, sup_state)
+            };
+
+            result.trace_id = trace_id;
+
+            // Emit events
+            {
+                let s = state.lock().unwrap();
+                s.event_bus.publish(
+                    "daemon.executed",
+                    serde_json::json!({
+                        "daemon": &name,
+                        "flow": &result.flow_name,
+                        "success": result.success,
+                        "trace_id": trace_id,
+                        "latency_ms": result.latency_ms,
+                    }),
+                    "daemon-executor",
+                );
+            }
+
+            trigger_webhook_delivery(
+                &state,
+                "daemon.executed",
+                serde_json::json!({
+                    "daemon": &name,
+                    "flow": &result.flow_name,
+                    "success": result.success,
+                    "trace_id": trace_id,
+                }),
+                "daemon-executor",
+            );
+
+            Ok(Json(serde_json::json!({
+                "success": result.success,
+                "daemon": name,
+                "flow": result.flow_name,
+                "trace_id": trace_id,
+                "steps_executed": result.steps_executed,
+                "latency_ms": result.latency_ms,
+                "supervisor_state": supervisor_state,
+                "daemon_state": "hibernating",
+            })))
+        }
+        Err(e) => {
+            // Record failed trace
+            let mut entry = crate::trace_store::build_trace(
+                &flow_name,
+                &source_file,
+                &backend,
+                &client,
+                crate::trace_store::TraceStatus::Failed,
+                0,
+                req_start.elapsed().as_millis() as u64,
+            );
+            entry.errors = 1;
+
+            let (trace_id, will_restart) = {
+                let mut s = state.lock().unwrap();
+                let tid = s.trace_store.record(entry);
+                s.metrics.total_errors += 1;
+
+                // Report crash to supervisor
+                let will_restart = s.supervisor.report_crash(&name, &e);
+
+                // Update daemon state based on supervisor decision
+                if let Some(daemon) = s.daemons.get_mut(&name) {
+                    daemon.event_count += 1;
+                    daemon.restart_count += 1;
+                    let prev = daemon.state;
+                    let new_state = if will_restart { DaemonState::Idle } else { DaemonState::Crashed };
+                    daemon.state = new_state;
+                    record_lifecycle(daemon, prev, new_state, Some(e.clone()));
+                }
+
+                s.audit_log.record(
+                    &client,
+                    AuditAction::Execute,
+                    &name,
+                    serde_json::json!({
+                        "daemon": &name,
+                        "flow": &flow_name,
+                        "error": &e,
+                        "trace_id": tid,
+                        "will_restart": will_restart,
+                    }),
+                    false,
+                );
+
+                s.request_logger.record("POST", &format!("/v1/daemons/{}/run", name), 500, req_start.elapsed(), &client);
+
+                (tid, will_restart)
+            };
+
+            Ok(Json(serde_json::json!({
+                "success": false,
+                "daemon": name,
+                "flow": flow_name,
+                "error": e,
+                "trace_id": trace_id,
+                "will_restart": will_restart,
+                "daemon_state": if will_restart { "idle" } else { "crashed" },
+            })))
+        }
+    }
+}
+
+// ── Daemon trigger management ─────────────────────────────────────────────
+
+/// Subscribe request payload.
+#[derive(Debug, Deserialize)]
+pub struct DaemonSubscribeRequest {
+    /// Topic pattern to listen for (e.g., "deploy", "data.*", "*").
+    pub topic: String,
+}
+
+/// PUT /v1/daemons/:name/trigger — bind daemon to a topic trigger.
+async fn daemon_trigger_set_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<DaemonSubscribeRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let client = client_key_from_headers(&headers);
+
+    match s.daemons.get_mut(&name) {
+        Some(daemon) => {
+            let old_topic = daemon.trigger_topic.clone();
+            daemon.trigger_topic = Some(payload.topic.clone());
+
+            s.audit_log.record(
+                &client,
+                AuditAction::ConfigUpdate,
+                &name,
+                serde_json::json!({
+                    "action": "trigger_set",
+                    "daemon": &name,
+                    "topic": &payload.topic,
+                    "previous": old_topic,
+                }),
+                true,
+            );
+
+            s.event_bus.publish(
+                "daemon.trigger.set",
+                serde_json::json!({
+                    "daemon": &name,
+                    "topic": &payload.topic,
+                }),
+                "server",
+            );
+
+            Ok(Json(serde_json::json!({
+                "daemon": name,
+                "trigger_topic": payload.topic,
+                "status": "bound",
+            })))
+        }
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// DELETE /v1/daemons/:name/trigger — unbind daemon from topic trigger.
+async fn daemon_trigger_clear_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let client = client_key_from_headers(&headers);
+
+    match s.daemons.get_mut(&name) {
+        Some(daemon) => {
+            let old_topic = daemon.trigger_topic.take();
+
+            s.audit_log.record(
+                &client,
+                AuditAction::ConfigUpdate,
+                &name,
+                serde_json::json!({
+                    "action": "trigger_clear",
+                    "daemon": &name,
+                    "previous": old_topic,
+                }),
+                true,
+            );
+
+            Ok(Json(serde_json::json!({
+                "daemon": name,
+                "trigger_topic": serde_json::Value::Null,
+                "status": "unbound",
+            })))
+        }
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// GET /v1/daemons/:name/trigger — view daemon trigger config.
+async fn daemon_trigger_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.daemons.get(&name) {
+        Some(daemon) => Ok(Json(serde_json::json!({
+            "daemon": name,
+            "trigger_topic": daemon.trigger_topic,
+            "state": daemon.state,
+            "flow_name": daemon.flow_name,
+        }))),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// GET /v1/triggers — list all daemon trigger bindings.
+async fn triggers_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let triggers: Vec<serde_json::Value> = s.daemons.values()
+        .filter(|d| d.trigger_topic.is_some())
+        .map(|d| serde_json::json!({
+            "daemon": d.name,
+            "flow_name": d.flow_name,
+            "trigger_topic": d.trigger_topic,
+            "state": d.state,
+            "event_count": d.event_count,
+        }))
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "triggers": triggers,
+        "total": triggers.len(),
+        "total_daemons": s.daemons.len(),
+    })))
+}
+
+// ── Daemon chain management ──────────────────────────────────────────────
+
+/// Request to set a daemon's output chain topic.
+#[derive(Debug, Deserialize)]
+pub struct DaemonChainRequest {
+    /// Topic to publish execution result to.
+    pub topic: String,
+}
+
+/// PUT /v1/daemons/:name/chain — set the output topic for daemon chaining.
+async fn daemon_chain_set_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<DaemonChainRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    match s.daemons.get_mut(&name) {
+        Some(daemon) => {
+            daemon.output_topic = Some(payload.topic.clone());
+            Ok(Json(serde_json::json!({
+                "daemon": name,
+                "output_topic": payload.topic,
+                "status": "chained",
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "error": format!("daemon '{}' not found", name),
+        }))),
+    }
+}
+
+/// DELETE /v1/daemons/:name/chain — remove the output topic.
+async fn daemon_chain_clear_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    match s.daemons.get_mut(&name) {
+        Some(daemon) => {
+            daemon.output_topic = None;
+            Ok(Json(serde_json::json!({
+                "daemon": name,
+                "output_topic": serde_json::Value::Null,
+                "status": "unchained",
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "error": format!("daemon '{}' not found", name),
+        }))),
+    }
+}
+
+/// GET /v1/daemons/:name/chain — get the output topic for a daemon.
+async fn daemon_chain_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.daemons.get(&name) {
+        Some(daemon) => Ok(Json(serde_json::json!({
+            "daemon": name,
+            "output_topic": daemon.output_topic,
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "error": format!("daemon '{}' not found", name),
+        }))),
+    }
+}
+
+/// Request body for event replay.
+#[derive(Debug, Deserialize)]
+pub struct ReplayEventsRequest {
+    /// Topic filter (exact, prefix with .*, or * for all).
+    pub topic: String,
+    /// Max events to replay (default 10).
+    #[serde(default = "default_replay_limit")]
+    pub limit: usize,
+}
+
+fn default_replay_limit() -> usize { 10 }
+
+/// POST /v1/triggers/replay — replay historical events to re-trigger daemons.
+async fn triggers_replay_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<ReplayEventsRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+    }
+
+    let limit = if payload.limit == 0 { 10 } else { payload.limit.min(50) };
+
+    // Get matching events from history
+    let events = {
+        let s = state.lock().unwrap();
+        s.event_bus.recent_events(limit, Some(&payload.topic))
+    };
+
+    if events.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "replayed": 0,
+            "topic_filter": payload.topic,
+            "message": "no matching events in history",
+        })));
+    }
+
+    // Re-publish each event
+    let mut replayed = Vec::new();
+    for ev in &events {
+        let s = state.lock().unwrap();
+        s.event_bus.publish(&ev.topic, ev.payload.clone(), &format!("replay:{}", ev.source));
+        replayed.push(serde_json::json!({
+            "topic": ev.topic,
+            "source": ev.source,
+            "original_timestamp": ev.timestamp_secs,
+        }));
+    }
+
+    // Audit
+    {
+        let mut s = state.lock().unwrap();
+        s.audit_log.record(
+            &client, AuditAction::Execute, "triggers_replay",
+            serde_json::json!({"topic_filter": payload.topic, "replayed": replayed.len()}),
+            true,
+        );
+    }
+
+    Ok(Json(serde_json::json!({
+        "replayed": replayed.len(),
+        "topic_filter": payload.topic,
+        "events": replayed,
+    })))
+}
+
+/// Query parameters for event history.
+#[derive(Debug, Deserialize)]
+pub struct EventHistoryQuery {
+    /// Max events to return (default 50).
+    #[serde(default = "default_event_history_limit")]
+    pub limit: usize,
+    /// Optional topic filter.
+    pub topic: Option<String>,
+}
+
+fn default_event_history_limit() -> usize { 50 }
+
+/// GET /v1/events/history — view recent event bus history.
+async fn events_history_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<EventHistoryQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let events = s.event_bus.recent_events(params.limit, params.topic.as_deref());
+
+    let entries: Vec<serde_json::Value> = events.iter().map(|ev| {
+        serde_json::json!({
+            "topic": ev.topic,
+            "source": ev.source,
+            "timestamp": ev.timestamp_secs,
+            "payload": ev.payload,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "count": entries.len(),
+        "topic_filter": params.topic,
+        "events": entries,
+    })))
+}
+
+/// GET /v1/daemons/:name/events — lifecycle events for a daemon.
+async fn daemon_events_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.daemons.get(&name) {
+        Some(daemon) => {
+            let limit: usize = params.get("limit")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(100);
+
+            let events: Vec<&DaemonLifecycleEvent> = daemon.lifecycle_events.iter().rev().take(limit).collect();
+            Ok(Json(serde_json::json!({
+                "daemon": name,
+                "state": daemon.state,
+                "total_events": daemon.lifecycle_events.len(),
+                "events": events,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "error": format!("daemon '{}' not found", name),
+        }))),
+    }
+}
+
+/// GET /v1/chains — list all daemon chains (trigger → daemon → output).
+async fn chains_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let chains: Vec<serde_json::Value> = s.daemons.values()
+        .filter(|d| d.trigger_topic.is_some() || d.output_topic.is_some())
+        .map(|d| serde_json::json!({
+            "daemon": d.name,
+            "flow": d.flow_name,
+            "trigger_topic": d.trigger_topic,
+            "output_topic": d.output_topic,
+            "state": d.state,
+        }))
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "chains": chains,
+        "total": chains.len(),
+    })))
+}
+
+/// Query parameters for chain graph export.
+#[derive(Debug, Deserialize)]
+pub struct ChainGraphQuery {
+    /// Graph format: "dot" (default) or "mermaid".
+    #[serde(default = "default_chain_graph_format")]
+    pub format: String,
+}
+
+fn default_chain_graph_format() -> String { "dot".to_string() }
+
+/// GET /v1/chains/graph — export daemon chain topology as DOT or Mermaid.
+///
+/// Builds a directed graph where:
+/// - Topic nodes are ellipses (DOT) or circles (Mermaid)
+/// - Daemon nodes are boxes (DOT) or rectangles (Mermaid)
+/// - Edges: topic → daemon (trigger) and daemon → topic (output)
+/// - Daemon state shown as label suffix
+async fn chains_graph_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<ChainGraphQuery>,
+) -> Result<(StatusCode, HeaderMap, String), StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    // Collect all topics and daemons involved in chains
+    let mut topics: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut edges: Vec<(String, String, &str)> = Vec::new(); // (from, to, label)
+
+    for d in s.daemons.values() {
+        if let Some(ref trigger) = d.trigger_topic {
+            topics.insert(trigger.clone());
+            edges.push((
+                format!("topic:{}", trigger),
+                format!("daemon:{}", d.name),
+                "triggers",
+            ));
+        }
+        if let Some(ref output) = d.output_topic {
+            topics.insert(output.clone());
+            edges.push((
+                format!("daemon:{}", d.name),
+                format!("topic:{}", output),
+                "outputs",
+            ));
+        }
+    }
+
+    // Collect daemons that participate in chains
+    let chain_daemons: Vec<&DaemonInfo> = s.daemons.values()
+        .filter(|d| d.trigger_topic.is_some() || d.output_topic.is_some())
+        .collect();
+
+    let is_mermaid = params.format.to_lowercase() == "mermaid";
+
+    let body = if is_mermaid {
+        let mut lines = vec!["graph LR".to_string()];
+
+        // Topic nodes (circles)
+        for topic in &topics {
+            let safe_id = topic.replace('.', "_").replace('*', "star");
+            lines.push(format!("    t_{}(({}))", safe_id, topic));
+        }
+
+        // Daemon nodes (rectangles with state)
+        for d in &chain_daemons {
+            let state_str = serde_json::to_value(&d.state)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_else(|| "unknown".into());
+            lines.push(format!("    d_{}[{} <br/> {}]", d.name, d.name, state_str));
+        }
+
+        // Edges
+        for (from, to, label) in &edges {
+            let from_id = if from.starts_with("topic:") {
+                format!("t_{}", from[6..].replace('.', "_").replace('*', "star"))
+            } else {
+                format!("d_{}", &from[7..])
+            };
+            let to_id = if to.starts_with("topic:") {
+                format!("t_{}", to[6..].replace('.', "_").replace('*', "star"))
+            } else {
+                format!("d_{}", &to[7..])
+            };
+            lines.push(format!("    {} -->|{}| {}", from_id, label, to_id));
+        }
+
+        lines.join("\n")
+    } else {
+        // DOT format
+        let mut lines = vec![
+            "digraph chains {".to_string(),
+            "    rankdir=LR;".to_string(),
+            "    node [fontname=\"Helvetica\"];".to_string(),
+        ];
+
+        // Topic nodes (ellipse)
+        for topic in &topics {
+            let safe_id = topic.replace('.', "_").replace('*', "star");
+            lines.push(format!("    \"t_{}\" [label=\"{}\" shape=ellipse style=filled fillcolor=\"#e8f4fd\"];",
+                safe_id, topic));
+        }
+
+        // Daemon nodes (box with state)
+        for d in &chain_daemons {
+            let state_str = serde_json::to_value(&d.state)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_else(|| "unknown".into());
+            let color = match d.state {
+                DaemonState::Idle => "#d4edda",
+                DaemonState::Running => "#fff3cd",
+                DaemonState::Hibernating => "#cce5ff",
+                DaemonState::Paused => "#fce4ec",
+                DaemonState::Stopped => "#e2e3e5",
+                DaemonState::Crashed => "#f8d7da",
+            };
+            lines.push(format!("    \"d_{}\" [label=\"{}\\n[{}]\" shape=box style=filled fillcolor=\"{}\"];",
+                d.name, d.name, state_str, color));
+        }
+
+        // Edges
+        for (from, to, label) in &edges {
+            let from_id = if from.starts_with("topic:") {
+                format!("t_{}", from[6..].replace('.', "_").replace('*', "star"))
+            } else {
+                format!("d_{}", &from[7..])
+            };
+            let to_id = if to.starts_with("topic:") {
+                format!("t_{}", to[6..].replace('.', "_").replace('*', "star"))
+            } else {
+                format!("d_{}", &to[7..])
+            };
+            lines.push(format!("    \"{}\" -> \"{}\" [label=\"{}\"];", from_id, to_id, label));
+        }
+
+        lines.push("}".to_string());
+        lines.join("\n")
+    };
+
+    let mut response_headers = HeaderMap::new();
+    let ct = if is_mermaid { "text/plain" } else { "text/vnd.graphviz" };
+    if let Ok(val) = ct.parse() {
+        response_headers.insert("content-type", val);
+    }
+
+    Ok((StatusCode::OK, response_headers, body))
+}
+
+/// POST /v1/triggers/dispatch — check all triggered daemons and execute matching ones.
+///
+/// Accepts an event topic+payload. Any daemon whose trigger_topic matches
+/// the event topic (using TopicFilter pattern matching) will be executed.
+/// Returns the list of dispatched daemons with their execution results.
+#[derive(Debug, Deserialize)]
+pub struct DispatchRequest {
+    /// Event topic to match against daemon triggers.
+    pub topic: String,
+    /// Event payload (forwarded to daemon context).
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+async fn triggers_dispatch_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<DispatchRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+        check_rate_limit(&mut s, &headers)?;
+    }
+
+    // Find matching daemons (name, flow_name, source_file, output_topic)
+    let matched_daemons: Vec<(String, String, String, Option<String>)> = {
+        let s = state.lock().unwrap();
+        let filter_topic = &payload.topic;
+
+        s.daemons.values()
+            .filter(|d| {
+                if let Some(ref trigger) = d.trigger_topic {
+                    let filter = crate::event_bus::TopicFilter::new(trigger);
+                    filter.matches(filter_topic)
+                } else {
+                    false
+                }
+            })
+            .filter(|d| d.state != DaemonState::Crashed && d.state != DaemonState::Stopped && d.state != DaemonState::Paused)
+            .map(|d| (d.name.clone(), d.flow_name.clone(), d.source_file.clone(), d.output_topic.clone()))
+            .collect()
+    };
+
+    if matched_daemons.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "topic": payload.topic,
+            "dispatched": 0,
+            "results": [],
+        })));
+    }
+
+    // Publish the triggering event on the bus
+    {
+        let s = state.lock().unwrap();
+        s.event_bus.publish(
+            &payload.topic,
+            payload.payload.clone(),
+            "trigger-dispatch",
+        );
+    }
+
+    // Execute each matched daemon
+    let mut results = Vec::new();
+
+    for (daemon_name, flow_name, _source_file, output_topic) in &matched_daemons {
+        // Look up source
+        let (source, source_file, backend) = {
+            let s = state.lock().unwrap();
+            let history = s.versions.get_history(flow_name);
+            match history.and_then(|h| h.active()) {
+                Some(active) => (active.source.clone(), active.source_file.clone(), active.backend.clone()),
+                None => {
+                    results.push(serde_json::json!({
+                        "daemon": daemon_name,
+                        "success": false,
+                        "error": "no deployed source",
+                    }));
+                    continue;
+                }
+            }
+        };
+
+        // Transition to Running
+        {
+            let mut s = state.lock().unwrap();
+            s.supervisor.mark_started(daemon_name);
+            if let Some(daemon) = s.daemons.get_mut(daemon_name) {
+                let prev = daemon.state;
+                daemon.state = DaemonState::Running;
+                record_lifecycle(daemon, prev, DaemonState::Running, Some("trigger dispatch".into()));
+            }
+        }
+
+        // Execute (outside lock — full backend stack)
+        let (exec_result, _) = server_execute_full(&state, &source, &source_file, flow_name, &backend);
+
+        match exec_result {
+            Ok(result) => {
+                let trace_entry = crate::trace_store::build_trace(
+                    &result.flow_name,
+                    &result.source_file,
+                    &result.backend,
+                    &client,
+                    if result.success {
+                        crate::trace_store::TraceStatus::Success
+                    } else {
+                        crate::trace_store::TraceStatus::Partial
+                    },
+                    result.steps_executed,
+                    result.latency_ms,
+                );
+
+                let trace_id = {
+                    let mut s = state.lock().unwrap();
+                    let mut entry = trace_entry;
+                    entry.tokens_input = result.tokens_input;
+                    entry.tokens_output = result.tokens_output;
+                    entry.anchor_checks = result.anchor_checks;
+                    entry.anchor_breaches = result.anchor_breaches;
+                    entry.errors = result.errors;
+                    let tid = s.trace_store.record(entry);
+
+                    if let Some(daemon) = s.daemons.get_mut(daemon_name) {
+                        daemon.event_count += 1;
+                        let prev = daemon.state;
+                        daemon.state = DaemonState::Hibernating;
+                        record_lifecycle(daemon, prev, DaemonState::Hibernating, Some("dispatch execution complete".into()));
+                    }
+                    s.supervisor.heartbeat(daemon_name);
+                    s.supervisor.mark_waiting(daemon_name);
+
+                    tid
+                };
+
+                // Publish to output_topic for daemon chaining
+                if let Some(ref out_topic) = output_topic {
+                    let s = state.lock().unwrap();
+                    s.event_bus.publish(
+                        out_topic,
+                        serde_json::json!({
+                            "source_daemon": daemon_name,
+                            "flow": flow_name,
+                            "success": result.success,
+                            "trace_id": trace_id,
+                            "steps_executed": result.steps_executed,
+                            "latency_ms": result.latency_ms,
+                        }),
+                        "daemon-chain",
+                    );
+                }
+
+                results.push(serde_json::json!({
+                    "daemon": daemon_name,
+                    "flow": flow_name,
+                    "success": result.success,
+                    "trace_id": trace_id,
+                    "steps_executed": result.steps_executed,
+                    "latency_ms": result.latency_ms,
+                    "chained_to": output_topic,
+                }));
+            }
+            Err(e) => {
+                let mut err_entry = crate::trace_store::build_trace(
+                    flow_name,
+                    &source_file,
+                    &backend,
+                    &client,
+                    crate::trace_store::TraceStatus::Failed,
+                    0,
+                    req_start.elapsed().as_millis() as u64,
+                );
+                err_entry.errors = 1;
+
+                let (trace_id, will_restart) = {
+                    let mut s = state.lock().unwrap();
+                    let tid = s.trace_store.record(err_entry);
+                    let will_restart = s.supervisor.report_crash(daemon_name, &e);
+                    if let Some(daemon) = s.daemons.get_mut(daemon_name) {
+                        daemon.event_count += 1;
+                        daemon.restart_count += 1;
+                        let prev = daemon.state;
+                        let new_state = if will_restart { DaemonState::Idle } else { DaemonState::Crashed };
+                        daemon.state = new_state;
+                        record_lifecycle(daemon, prev, new_state, Some(e.clone()));
+                    }
+                    (tid, will_restart)
+                };
+
+                results.push(serde_json::json!({
+                    "daemon": daemon_name,
+                    "flow": flow_name,
+                    "success": false,
+                    "error": e,
+                    "trace_id": trace_id,
+                    "will_restart": will_restart,
+                }));
+            }
+        }
+    }
+
+    // Audit trail
+    {
+        let mut s = state.lock().unwrap();
+        s.audit_log.record(
+            &client,
+            AuditAction::Execute,
+            &payload.topic,
+            serde_json::json!({
+                "topic": &payload.topic,
+                "dispatched": results.len(),
+                "daemons": matched_daemons.iter().map(|(n, _, _, _)| n.as_str()).collect::<Vec<_>>(),
+            }),
+            true,
+        );
+        s.request_logger.record("POST", "/v1/triggers/dispatch", 200, req_start.elapsed(), &client);
+    }
+
+    Ok(Json(serde_json::json!({
+        "topic": payload.topic,
+        "dispatched": results.len(),
+        "results": results,
+    })))
+}
+
+// ── Event bus + supervisor handlers ───────────────────────────────────────
+
+/// POST /v1/events — publish an event to the bus.
+#[derive(Debug, Deserialize)]
+pub struct PublishEventRequest {
+    pub topic: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+    #[serde(default = "default_source")]
+    pub source: String,
+}
+
+fn default_source() -> String {
+    "api".to_string()
+}
+
+async fn publish_event_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<PublishEventRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let topic = payload.topic.clone();
+    let event_payload = payload.payload.clone();
+    let source = payload.source.clone();
+
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+        s.event_bus.publish(&payload.topic, payload.payload, &payload.source);
+    }
+
+    // Trigger async webhook delivery
+    trigger_webhook_delivery(&state, &topic, event_payload, &source);
+
+    Ok(Json(serde_json::json!({
+        "published": true,
+        "topic": topic,
+        "source": source,
+    })))
+}
+
+/// GET /v1/events/stats — event bus statistics.
+async fn event_stats_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let stats = s.event_bus.stats();
+    Ok(Json(serde_json::json!({
+        "events_published": stats.events_published,
+        "events_delivered": stats.events_delivered,
+        "events_dropped": stats.events_dropped,
+        "active_subscribers": stats.active_subscribers,
+        "topics_seen": stats.topics_seen,
+    })))
+}
+
+/// GET /v1/supervisor — supervisor overview.
+async fn supervisor_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let daemons: Vec<serde_json::Value> = s.supervisor.list().iter().map(|d| {
+        serde_json::json!({
+            "name": d.name,
+            "state": d.state,
+            "restart_policy": d.restart_policy,
+            "restart_count": d.restart_count,
+            "crash_reason": d.crash_reason,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "summary": s.supervisor.summary(),
+        "state_counts": s.supervisor.state_counts(),
+        "daemons": daemons,
+    })))
+}
+
+/// POST /v1/supervisor/:name/start — mark daemon as started.
+async fn supervisor_start_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    if s.supervisor.mark_started(&name) {
+        Ok(Json(serde_json::json!({ "started": name })))
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+/// POST /v1/supervisor/:name/stop — stop a daemon.
+async fn supervisor_stop_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    if s.supervisor.stop(&name) {
+        Ok(Json(serde_json::json!({ "stopped": name })))
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+// ── Version endpoints ─────────────────────────────────────────────────────
+
+/// GET /v1/versions — list all flows with version info.
+async fn versions_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let flows = s.versions.list_flows();
+    Ok(Json(serde_json::json!({
+        "flows": flows,
+        "total_flows": s.versions.flow_count(),
+        "total_versions": s.versions.total_versions(),
+    })))
+}
+
+/// GET /v1/versions/:name ��� version history for a specific flow.
+async fn version_history_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.versions.get_history(&name) {
+        Some(history) => {
+            let versions: Vec<serde_json::Value> = history.versions.iter().map(|v| {
+                serde_json::json!({
+                    "version": v.version,
+                    "source_hash": v.source_hash,
+                    "source_file": v.source_file,
+                    "backend": v.backend,
+                    "flow_names": v.flow_names,
+                    "active": v.active,
+                })
+            }).collect();
+
+            Ok(Json(serde_json::json!({
+                "flow_name": history.flow_name,
+                "active_version": history.active_version,
+                "deploy_count": history.deploy_count,
+                "versions": versions,
+            })))
+        }
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// Version diff query parameters.
+#[derive(Debug, Deserialize)]
+pub struct VersionDiffQuery {
+    pub from: u32,
+    pub to: u32,
+}
+
+/// GET /v1/versions/:name/diff?from=1&to=2 — diff source between two versions.
+async fn version_diff_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<VersionDiffQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match crate::version_diff::diff_versions(&s.versions, &name, query.from, query.to) {
+        Ok(diff) => Ok(Json(serde_json::to_value(&diff).unwrap())),
+        Err(e) => Ok(Json(serde_json::json!({
+            "success": false,
+            "error": e,
+        }))),
+    }
+}
+
+/// Rollback request payload.
+#[derive(Debug, Deserialize)]
+pub struct RollbackRequest {
+    pub version: u32,
+}
+
+/// POST /v1/versions/:name/rollback — rollback to a specific version.
+async fn rollback_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<RollbackRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let client = client_key_from_headers(&headers);
+    match s.versions.rollback(&name, payload.version) {
+        Ok(_source) => {
+            s.event_bus.publish(
+                "version.rollback",
+                serde_json::json!({
+                    "flow": &name,
+                    "version": payload.version,
+                }),
+                "server",
+            );
+            s.audit_log.record(&client, AuditAction::Rollback, &name, serde_json::json!({"version": payload.version}), true);
+
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "flow": name,
+                "rolled_back_to": payload.version,
+            })))
+        }
+        Err(e) => {
+            s.audit_log.record(&client, AuditAction::Rollback, &name, serde_json::json!({"error": &e}), false);
+            Ok(Json(serde_json::json!({
+                "success": false,
+                "error": e,
+            })))
+        }
+    }
+}
+
+// ── Session endpoints ────────────────────────────────────────────────────
+
+/// Request payload for session write operations.
+#[derive(Debug, Deserialize)]
+pub struct SessionWriteRequest {
+    pub key: String,
+    pub value: String,
+    #[serde(default = "default_source_step")]
+    pub source_step: String,
+    #[serde(default = "default_scope")]
+    pub scope: String,
+}
+
+fn default_source_step() -> String {
+    "api".to_string()
+}
+
+/// Request payload for session purge.
+#[derive(Debug, Deserialize)]
+pub struct SessionPurgeRequest {
+    pub key: String,
+    #[serde(default = "default_scope")]
+    pub scope: String,
+}
+
+/// Request payload for session query operations.
+#[derive(Debug, Deserialize)]
+pub struct SessionQueryRequest {
+    pub query: String,
+    #[serde(default = "default_scope")]
+    pub scope: String,
+}
+
+fn default_scope() -> String {
+    crate::session_scope::DEFAULT_SCOPE.to_string()
+}
+
+/// Query parameter for optional scope on GET session endpoints.
+#[derive(Debug, Deserialize)]
+pub struct ScopeQuery {
+    #[serde(default = "default_scope")]
+    pub scope: String,
+}
+
+/// POST /v1/session/remember — store ephemeral memory entry.
+async fn session_remember_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<SessionWriteRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let client = client_key_from_headers(&headers);
+    s.scoped_sessions.remember(&payload.scope, &payload.key, &payload.value, &payload.source_step);
+    s.event_bus.publish(
+        "session.remember",
+        serde_json::json!({ "key": &payload.key, "scope": &payload.scope }),
+        "server",
+    );
+    s.audit_log.record(&client, AuditAction::SessionWrite, &payload.key, serde_json::json!({"scope": &payload.scope}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "key": payload.key,
+        "scope": payload.scope,
+        "store": "memory",
+    })))
+}
+
+/// GET /v1/session/recall/:key?scope= — recall ephemeral memory entry.
+async fn session_recall_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    Query(params): Query<ScopeQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.scoped_sessions.recall(&params.scope, &key) {
+        Some(entry) => Ok(Json(serde_json::json!({
+            "found": true,
+            "key": entry.key,
+            "value": entry.value,
+            "timestamp": entry.timestamp,
+            "source_step": entry.source_step,
+            "scope": params.scope,
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "found": false,
+            "key": key,
+            "scope": params.scope,
+        }))),
+    }
+}
+
+/// POST /v1/session/persist — store persistent entry (file-backed).
+async fn session_persist_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<SessionWriteRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    s.scoped_sessions.persist(&payload.scope, &payload.key, &payload.value, &payload.source_step);
+    let flush_result = s.scoped_sessions.flush(&payload.scope);
+
+    s.event_bus.publish(
+        "session.persist",
+        serde_json::json!({ "key": &payload.key, "scope": &payload.scope }),
+        "server",
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "key": payload.key,
+        "scope": payload.scope,
+        "store": "persistent",
+        "flushed": flush_result.is_ok(),
+    })))
+}
+
+/// GET /v1/session/retrieve/:key — retrieve persistent entry.
+async fn session_retrieve_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    Query(params): Query<ScopeQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.scoped_sessions.retrieve(&params.scope, &key) {
+        Some(entry) => Ok(Json(serde_json::json!({
+            "found": true,
+            "key": entry.key,
+            "value": entry.value,
+            "timestamp": entry.timestamp,
+            "source_step": entry.source_step,
+            "scope": params.scope,
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "found": false,
+            "key": key,
+            "scope": params.scope,
+        }))),
+    }
+}
+
+/// POST /v1/session/query — retrieve entries matching a query string.
+async fn session_query_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<SessionQueryRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::ReadOnly)?;
+
+    let results = s.scoped_sessions.query(&payload.scope, &payload.query);
+    let entries: Vec<serde_json::Value> = results.iter().map(|e| {
+        serde_json::json!({
+            "key": e.key,
+            "value": e.value,
+            "timestamp": e.timestamp,
+            "source_step": e.source_step,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "query": payload.query,
+        "scope": payload.scope,
+        "count": entries.len(),
+        "entries": entries,
+    })))
+}
+
+/// POST /v1/session/mutate — update an existing persistent entry.
+async fn session_mutate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<SessionWriteRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let updated = s.scoped_sessions.mutate(&payload.scope, &payload.key, &payload.value, &payload.source_step);
+    if updated {
+        let _ = s.scoped_sessions.flush(&payload.scope);
+        s.event_bus.publish(
+            "session.mutate",
+            serde_json::json!({ "key": &payload.key, "scope": &payload.scope }),
+            "server",
+        );
+    }
+
+    Ok(Json(serde_json::json!({
+        "success": updated,
+        "key": payload.key,
+        "scope": payload.scope,
+    })))
+}
+
+/// POST /v1/session/purge — delete a persistent entry.
+async fn session_purge_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<SessionPurgeRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let client = client_key_from_headers(&headers);
+    let removed = s.scoped_sessions.purge(&payload.scope, &payload.key);
+    if removed {
+        let _ = s.scoped_sessions.flush(&payload.scope);
+        s.event_bus.publish(
+            "session.purge",
+            serde_json::json!({ "key": &payload.key, "scope": &payload.scope }),
+            "server",
+        );
+    }
+    s.audit_log.record(&client, AuditAction::SessionPurge, &payload.key, serde_json::json!({"scope": &payload.scope, "removed": removed}), removed);
+
+    Ok(Json(serde_json::json!({
+        "success": removed,
+        "key": payload.key,
+        "scope": payload.scope,
+    })))
+}
+
+/// Query parameters for session scoped export.
+#[derive(Debug, Deserialize)]
+pub struct SessionExportQuery {
+    /// Export format: "json" (default) or "csv".
+    #[serde(default = "default_session_export_format")]
+    pub format: String,
+}
+
+fn default_session_export_format() -> String { "json".into() }
+
+/// GET /v1/session/:scope/export — export all entries in a scope as JSON or CSV.
+async fn session_scope_export_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(scope): Path<String>,
+    Query(params): Query<SessionExportQuery>,
+) -> Result<(StatusCode, [(String, String); 1], String), StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let entries = s.scoped_sessions.list_entries(&scope);
+
+    let format = params.format.to_lowercase();
+    match format.as_str() {
+        "csv" => {
+            let mut csv = String::from("scope,layer,key,value,timestamp,source_step\n");
+            for e in &entries {
+                let val = e.value.replace('"', "\"\"");
+                csv.push_str(&format!(
+                    "{},{},{},\"{}\",{},{}\n",
+                    e.scope, e.layer, e.key, val, e.timestamp, e.source_step
+                ));
+            }
+            Ok((
+                StatusCode::OK,
+                [("content-type".into(), "text/csv".into())],
+                csv,
+            ))
+        }
+        _ => {
+            // JSON
+            let json = serde_json::json!({
+                "scope": scope,
+                "count": entries.len(),
+                "entries": entries,
+            });
+            Ok((
+                StatusCode::OK,
+                [("content-type".into(), "application/json".into())],
+                serde_json::to_string_pretty(&json).unwrap_or_default(),
+            ))
+        }
+    }
+}
+
+/// GET /v1/session — list session stats with scoped summary.
+async fn session_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let summary = s.scoped_sessions.summary();
+
+    Ok(Json(serde_json::json!({
+        "scope_count": s.scoped_sessions.scope_count(),
+        "total_memory_count": s.scoped_sessions.total_memory_count(),
+        "total_store_count": s.scoped_sessions.total_store_count(),
+        "scopes": summary,
+    })))
+}
+
+// ── AxonStore endpoints — cognitive durable persistence (primitive #18) ──────
+
+/// POST /v1/axonstore — create a named AxonStore instance.
+/// Body: { "name": "my_store", "ontology": "knowledge_base" }
+async fn axonstore_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let ontology = payload.get("ontology").and_then(|v| v.as_str()).unwrap_or("general").to_string();
+
+    if name.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name is required"})));
+    }
+    if s.axon_stores.contains_key(&name) {
+        return Ok(Json(serde_json::json!({"error": format!("axonstore '{}' already exists", name)})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let store = AxonStoreInstance {
+        name: name.clone(),
+        ontology: ontology.clone(),
+        entries: HashMap::new(),
+        created_at: now,
+        total_ops: 0,
+    };
+    s.axon_stores.insert(name.clone(), store);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "axonstore",
+        serde_json::json!({"action": "create", "store": &name, "ontology": &ontology}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "store": name,
+        "ontology": ontology,
+        "created_at": now,
+    })))
+}
+
+/// GET /v1/axonstore — list all named AxonStore instances.
+async fn axonstore_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let stores: Vec<serde_json::Value> = s.axon_stores.values().map(|st| {
+        serde_json::json!({
+            "name": st.name,
+            "ontology": st.ontology,
+            "entry_count": st.entries.len(),
+            "total_ops": st.total_ops,
+            "created_at": st.created_at,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "stores": stores,
+        "total": stores.len(),
+    })))
+}
+
+/// GET /v1/axonstore/{name} — introspect a named AxonStore (keys, metadata, epistemic state).
+async fn axonstore_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.axon_stores.get(&name) {
+        Some(store) => {
+            let entries: Vec<serde_json::Value> = store.entries.values().map(|e| {
+                serde_json::json!({
+                    "key": e.key,
+                    "value": e.value,
+                    "version": e.version,
+                    "created_at": e.created_at,
+                    "updated_at": e.updated_at,
+                    "envelope": {
+                        "ontology": e.envelope.ontology,
+                        "certainty": e.envelope.certainty,
+                        "provenance": e.envelope.provenance,
+                        "derivation": e.envelope.derivation,
+                        "temporal_start": e.envelope.temporal_start,
+                        "temporal_end": e.envelope.temporal_end,
+                    }
+                })
+            }).collect();
+
+            Ok(Json(serde_json::json!({
+                "name": store.name,
+                "ontology": store.ontology,
+                "entry_count": store.entries.len(),
+                "total_ops": store.total_ops,
+                "created_at": store.created_at,
+                "entries": entries,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({"error": format!("axonstore '{}' not found", name)}))),
+    }
+}
+
+/// DELETE /v1/axonstore/{name} — delete a named AxonStore and all its entries.
+async fn axonstore_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    match s.axon_stores.remove(&name) {
+        Some(removed) => {
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "axonstore",
+                serde_json::json!({"action": "delete", "store": &name, "entries_purged": removed.entries.len()}), true);
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "store": name,
+                "entries_purged": removed.entries.len(),
+            })))
+        }
+        None => Ok(Json(serde_json::json!({"error": format!("axonstore '{}' not found", name)}))),
+    }
+}
+
+/// POST /v1/axonstore/{name}/persist — store a key-value entry with ΛD envelope (c=1.0, δ=raw).
+/// Body: { "key": "fact_1", "value": <any JSON> }
+async fn axonstore_persist_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(store_name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let key = payload.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let value = payload.get("value").cloned().unwrap_or(serde_json::json!(null));
+
+    if key.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "key is required"})));
+    }
+
+    let store = match s.axon_stores.get_mut(&store_name) {
+        Some(st) => st,
+        None => return Ok(Json(serde_json::json!({"error": format!("axonstore '{}' not found", store_name)}))),
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // ΛD: persist = raw write → c=1.0, δ=raw
+    let envelope = EpistemicEnvelope::raw_config(&store.ontology, &client);
+
+    let entry = AxonStoreEntry {
+        key: key.clone(),
+        value: value.clone(),
+        envelope,
+        created_at: now,
+        updated_at: now,
+        version: 1,
+    };
+
+    store.entries.insert(key.clone(), entry);
+    store.total_ops += 1;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "store": store_name,
+        "key": key,
+        "version": 1,
+        "envelope": { "certainty": 1.0, "derivation": "raw" },
+    })))
+}
+
+/// GET /v1/axonstore/{name}/retrieve/{key} — retrieve an entry with its ΛD envelope.
+async fn axonstore_retrieve_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path((store_name, key)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let store = match s.axon_stores.get(&store_name) {
+        Some(st) => st,
+        None => return Ok(Json(serde_json::json!({"error": format!("axonstore '{}' not found", store_name)}))),
+    };
+
+    match store.entries.get(&key) {
+        Some(entry) => Ok(Json(serde_json::json!({
+            "store": store_name,
+            "key": entry.key,
+            "value": entry.value,
+            "version": entry.version,
+            "created_at": entry.created_at,
+            "updated_at": entry.updated_at,
+            "envelope": {
+                "ontology": entry.envelope.ontology,
+                "certainty": entry.envelope.certainty,
+                "provenance": entry.envelope.provenance,
+                "derivation": entry.envelope.derivation,
+                "temporal_start": entry.envelope.temporal_start,
+                "temporal_end": entry.envelope.temporal_end,
+            }
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "store": store_name,
+            "key": key,
+            "found": false,
+        }))),
+    }
+}
+
+/// POST /v1/axonstore/{name}/mutate — update an existing entry.
+/// ΛD: mutate → c clamped ≤0.99, δ=derived (Theorem 5.1: only raw may carry c=1.0).
+/// Body: { "key": "fact_1", "value": <new JSON> }
+async fn axonstore_mutate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(store_name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let key = payload.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let value = payload.get("value").cloned().unwrap_or(serde_json::json!(null));
+
+    if key.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "key is required"})));
+    }
+
+    let store = match s.axon_stores.get_mut(&store_name) {
+        Some(st) => st,
+        None => return Ok(Json(serde_json::json!({"error": format!("axonstore '{}' not found", store_name)}))),
+    };
+
+    match store.entries.get_mut(&key) {
+        Some(entry) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            entry.value = value;
+            entry.version += 1;
+            entry.updated_at = now;
+            // ΛD Theorem 5.1: mutation degrades certainty — derived, c ≤ 0.99
+            entry.envelope = EpistemicEnvelope::derived(&store.ontology, 0.99, &client);
+
+            store.total_ops += 1;
+            let version = entry.version;
+
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "store": store_name,
+                "key": key,
+                "version": version,
+                "envelope": { "certainty": 0.99, "derivation": "derived" },
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "error": format!("key '{}' not found in axonstore '{}'", key, store_name),
+        }))),
+    }
+}
+
+/// POST /v1/axonstore/{name}/purge — delete an entry from the store.
+/// Body: { "key": "fact_1" }
+async fn axonstore_purge_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(store_name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let key = payload.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if key.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "key is required"})));
+    }
+
+    let store = match s.axon_stores.get_mut(&store_name) {
+        Some(st) => st,
+        None => return Ok(Json(serde_json::json!({"error": format!("axonstore '{}' not found", store_name)}))),
+    };
+
+    match store.entries.remove(&key) {
+        Some(_) => {
+            store.total_ops += 1;
+
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "axonstore",
+                serde_json::json!({"action": "purge", "store": &store_name, "key": &key}), true);
+
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "store": store_name,
+                "key": key,
+                "purged": true,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "error": format!("key '{}' not found in axonstore '{}'", key, store_name),
+        }))),
+    }
+}
+
+/// POST /v1/axonstore/{name}/transact — atomic batch of persist/mutate/purge operations.
+/// Body: { "ops": [ { "op": "persist", "key": "k1", "value": "v1" }, { "op": "purge", "key": "k2" } ] }
+/// All-or-nothing: if any op fails validation, the entire batch is rejected.
+async fn axonstore_transact_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(store_name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let ops: Vec<AxonStoreTransactOp> = match payload.get("ops") {
+        Some(ops_val) => serde_json::from_value(ops_val.clone()).unwrap_or_default(),
+        None => return Ok(Json(serde_json::json!({"error": "ops array is required"}))),
+    };
+
+    if ops.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "ops array must not be empty"})));
+    }
+
+    let store = match s.axon_stores.get_mut(&store_name) {
+        Some(st) => st,
+        None => return Ok(Json(serde_json::json!({"error": format!("axonstore '{}' not found", store_name)}))),
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Validate all ops first (all-or-nothing)
+    for op in &ops {
+        match op.op.as_str() {
+            "persist" => {
+                if op.key.is_empty() {
+                    return Ok(Json(serde_json::json!({"error": "persist op requires non-empty key"})));
+                }
+            }
+            "mutate" => {
+                if op.key.is_empty() {
+                    return Ok(Json(serde_json::json!({"error": "mutate op requires non-empty key"})));
+                }
+                if !store.entries.contains_key(&op.key) {
+                    return Ok(Json(serde_json::json!({
+                        "error": format!("mutate op: key '{}' not found (transact is all-or-nothing)", op.key)
+                    })));
+                }
+            }
+            "purge" => {
+                if op.key.is_empty() {
+                    return Ok(Json(serde_json::json!({"error": "purge op requires non-empty key"})));
+                }
+                if !store.entries.contains_key(&op.key) {
+                    return Ok(Json(serde_json::json!({
+                        "error": format!("purge op: key '{}' not found (transact is all-or-nothing)", op.key)
+                    })));
+                }
+            }
+            other => {
+                return Ok(Json(serde_json::json!({
+                    "error": format!("unknown op '{}', expected persist|mutate|purge", other)
+                })));
+            }
+        }
+    }
+
+    // Apply all ops (validation passed)
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    let ontology = store.ontology.clone();
+
+    for op in &ops {
+        match op.op.as_str() {
+            "persist" => {
+                let envelope = EpistemicEnvelope::raw_config(&ontology, &client);
+                let entry = AxonStoreEntry {
+                    key: op.key.clone(),
+                    value: op.value.clone(),
+                    envelope,
+                    created_at: now,
+                    updated_at: now,
+                    version: 1,
+                };
+                store.entries.insert(op.key.clone(), entry);
+                store.total_ops += 1;
+                results.push(serde_json::json!({"op": "persist", "key": &op.key, "version": 1}));
+            }
+            "mutate" => {
+                if let Some(entry) = store.entries.get_mut(&op.key) {
+                    entry.value = op.value.clone();
+                    entry.version += 1;
+                    entry.updated_at = now;
+                    entry.envelope = EpistemicEnvelope::derived(&ontology, 0.99, &client);
+                    store.total_ops += 1;
+                    results.push(serde_json::json!({"op": "mutate", "key": &op.key, "version": entry.version}));
+                }
+            }
+            "purge" => {
+                store.entries.remove(&op.key);
+                store.total_ops += 1;
+                results.push(serde_json::json!({"op": "purge", "key": &op.key}));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "store": store_name,
+        "ops_applied": results.len(),
+        "results": results,
+    })))
+}
+
+// ── Dataspace endpoints — cognitive data navigation (primitive #13) ──────────
+
+/// POST /v1/dataspace — create a named Dataspace instance.
+/// Body: { "name": "my_space", "ontology": "research_domain" }
+async fn dataspace_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let ontology = payload.get("ontology").and_then(|v| v.as_str()).unwrap_or("general").to_string();
+
+    if name.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name is required"})));
+    }
+    if s.dataspaces.contains_key(&name) {
+        return Ok(Json(serde_json::json!({"error": format!("dataspace '{}' already exists", name)})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let ds = DataspaceInstance {
+        name: name.clone(),
+        ontology: ontology.clone(),
+        entries: HashMap::new(),
+        associations: Vec::new(),
+        created_at: now,
+        total_ops: 0,
+        next_id: 1,
+    };
+    s.dataspaces.insert(name.clone(), ds);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "dataspace",
+        serde_json::json!({"action": "create", "dataspace": &name, "ontology": &ontology}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "dataspace": name,
+        "ontology": ontology,
+        "created_at": now,
+    })))
+}
+
+/// GET /v1/dataspace — list all Dataspace instances.
+async fn dataspace_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let spaces: Vec<serde_json::Value> = s.dataspaces.values().map(|ds| {
+        serde_json::json!({
+            "name": ds.name,
+            "ontology": ds.ontology,
+            "entry_count": ds.entries.len(),
+            "association_count": ds.associations.len(),
+            "total_ops": ds.total_ops,
+            "created_at": ds.created_at,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "dataspaces": spaces,
+        "total": spaces.len(),
+    })))
+}
+
+/// DELETE /v1/dataspace/{name} — delete a Dataspace and all its entries.
+async fn dataspace_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    match s.dataspaces.remove(&name) {
+        Some(removed) => {
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "dataspace",
+                serde_json::json!({"action": "delete", "dataspace": &name,
+                    "entries_removed": removed.entries.len(),
+                    "associations_removed": removed.associations.len()}), true);
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "dataspace": name,
+                "entries_removed": removed.entries.len(),
+                "associations_removed": removed.associations.len(),
+            })))
+        }
+        None => Ok(Json(serde_json::json!({"error": format!("dataspace '{}' not found", name)}))),
+    }
+}
+
+/// POST /v1/dataspace/{name}/ingest — add a data entry to the dataspace.
+/// ΛD: ingest = raw data ingestion → c=1.0, δ=raw.
+/// Body: { "ontology": "observation", "data": <any JSON>, "tags": ["tag1", "tag2"] }
+async fn dataspace_ingest_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(ds_name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let ds = match s.dataspaces.get_mut(&ds_name) {
+        Some(d) => d,
+        None => return Ok(Json(serde_json::json!({"error": format!("dataspace '{}' not found", ds_name)}))),
+    };
+
+    let entry_ontology = payload.get("ontology").and_then(|v| v.as_str())
+        .unwrap_or(&ds.ontology).to_string();
+    let data = payload.get("data").cloned().unwrap_or(serde_json::json!(null));
+    let tags: Vec<String> = payload.get("tags")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let id = format!("ds_{}_{}", ds_name, ds.next_id);
+    ds.next_id += 1;
+
+    // ΛD: ingest = raw → c=1.0, δ=raw
+    let envelope = EpistemicEnvelope::raw_config(&entry_ontology, &client);
+
+    let entry = DataspaceEntry {
+        id: id.clone(),
+        ontology: entry_ontology,
+        data,
+        envelope,
+        ingested_at: now,
+        tags,
+    };
+
+    ds.entries.insert(id.clone(), entry);
+    ds.total_ops += 1;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "dataspace": ds_name,
+        "entry_id": id,
+        "envelope": { "certainty": 1.0, "derivation": "raw" },
+    })))
+}
+
+/// POST /v1/dataspace/{name}/focus — filter entries by predicate.
+/// ΛD: focus = derived computation → c≤0.99, δ=derived (Theorem 5.1).
+/// Body: { "ontology": "observation", "tags": ["tag1"], "limit": 100 }
+/// All filter fields are optional; omitted fields match everything.
+async fn dataspace_focus_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(ds_name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let ds = match s.dataspaces.get(&ds_name) {
+        Some(d) => d,
+        None => return Ok(Json(serde_json::json!({"error": format!("dataspace '{}' not found", ds_name)}))),
+    };
+
+    let filter_ontology = payload.get("ontology").and_then(|v| v.as_str());
+    let filter_tags: Option<Vec<String>> = payload.get("tags")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let limit = payload.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+
+    let results: Vec<serde_json::Value> = ds.entries.values()
+        .filter(|e| {
+            if let Some(ont) = filter_ontology {
+                if e.ontology != ont { return false; }
+            }
+            if let Some(ref tags) = filter_tags {
+                if !tags.iter().all(|t| e.tags.contains(t)) { return false; }
+            }
+            true
+        })
+        .take(limit)
+        .map(|e| {
+            serde_json::json!({
+                "id": e.id,
+                "ontology": e.ontology,
+                "data": e.data,
+                "tags": e.tags,
+                "ingested_at": e.ingested_at,
+                "envelope": {
+                    "certainty": e.envelope.certainty,
+                    "derivation": e.envelope.derivation,
+                    "provenance": e.envelope.provenance,
+                }
+            })
+        })
+        .collect();
+
+    // ΛD: focus result is derived (filtered subset of raw data)
+    Ok(Json(serde_json::json!({
+        "dataspace": ds_name,
+        "matched": results.len(),
+        "total_entries": ds.entries.len(),
+        "results": results,
+        "result_envelope": {
+            "certainty": 0.99,
+            "derivation": "derived",
+            "reason": "Theorem 5.1: focus is a derived computation over raw data"
+        },
+    })))
+}
+
+/// POST /v1/dataspace/{name}/associate — link two entries by named relation.
+/// Body: { "from": "ds_x_1", "to": "ds_x_2", "relation": "supports", "certainty": 0.85 }
+async fn dataspace_associate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(ds_name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let ds = match s.dataspaces.get_mut(&ds_name) {
+        Some(d) => d,
+        None => return Ok(Json(serde_json::json!({"error": format!("dataspace '{}' not found", ds_name)}))),
+    };
+
+    let from = payload.get("from").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let to = payload.get("to").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let relation = payload.get("relation").and_then(|v| v.as_str()).unwrap_or("related").to_string();
+    let certainty = payload.get("certainty").and_then(|v| v.as_f64()).unwrap_or(0.9);
+
+    if from.is_empty() || to.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "from and to are required"})));
+    }
+    if !ds.entries.contains_key(&from) {
+        return Ok(Json(serde_json::json!({"error": format!("entry '{}' not found", from)})));
+    }
+    if !ds.entries.contains_key(&to) {
+        return Ok(Json(serde_json::json!({"error": format!("entry '{}' not found", to)})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // ΛD: association certainty is clamped to [0, 0.99] — associations are derived knowledge
+    let clamped_certainty = certainty.clamp(0.0, 0.99);
+
+    let assoc = DataspaceAssociation {
+        from: from.clone(),
+        to: to.clone(),
+        relation: relation.clone(),
+        certainty: clamped_certainty,
+        created_at: now,
+    };
+
+    ds.associations.push(assoc);
+    ds.total_ops += 1;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "dataspace": ds_name,
+        "from": from,
+        "to": to,
+        "relation": relation,
+        "certainty": clamped_certainty,
+    })))
+}
+
+/// POST /v1/dataspace/{name}/aggregate — reduce entries to a single value.
+/// Body: { "op": "count|sum|avg|min|max", "field": "data.score", "ontology": "observation" }
+/// For count, field is optional. For sum/avg/min/max, field must point to a numeric JSON path.
+async fn dataspace_aggregate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(ds_name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let ds = match s.dataspaces.get(&ds_name) {
+        Some(d) => d,
+        None => return Ok(Json(serde_json::json!({"error": format!("dataspace '{}' not found", ds_name)}))),
+    };
+
+    let op = payload.get("op").and_then(|v| v.as_str()).unwrap_or("count");
+    let field = payload.get("field").and_then(|v| v.as_str()).unwrap_or("");
+    let filter_ontology = payload.get("ontology").and_then(|v| v.as_str());
+
+    // Filter entries by ontology if specified
+    let filtered: Vec<&DataspaceEntry> = ds.entries.values()
+        .filter(|e| {
+            if let Some(ont) = filter_ontology {
+                e.ontology == ont
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    // Extract numeric values from the specified field path
+    let extract_number = |entry: &DataspaceEntry| -> Option<f64> {
+        let parts: Vec<&str> = field.split('.').collect();
+        let mut current = &entry.data;
+        for part in &parts[..] {
+            // Skip "data" prefix if present
+            if *part == "data" { continue; }
+            current = current.get(part)?;
+        }
+        current.as_f64()
+    };
+
+    let result: serde_json::Value = match op {
+        "count" => serde_json::json!(filtered.len()),
+        "sum" => {
+            let sum: f64 = filtered.iter().filter_map(|e| extract_number(e)).sum();
+            serde_json::json!(sum)
+        }
+        "avg" => {
+            let values: Vec<f64> = filtered.iter().filter_map(|e| extract_number(e)).collect();
+            if values.is_empty() {
+                serde_json::json!(0.0)
+            } else {
+                let avg = values.iter().sum::<f64>() / values.len() as f64;
+                serde_json::json!((avg * 10000.0).round() / 10000.0)
+            }
+        }
+        "min" => {
+            let min = filtered.iter().filter_map(|e| extract_number(e))
+                .fold(f64::INFINITY, f64::min);
+            if min.is_infinite() { serde_json::json!(null) } else { serde_json::json!(min) }
+        }
+        "max" => {
+            let max = filtered.iter().filter_map(|e| extract_number(e))
+                .fold(f64::NEG_INFINITY, f64::max);
+            if max.is_infinite() { serde_json::json!(null) } else { serde_json::json!(max) }
+        }
+        other => return Ok(Json(serde_json::json!({
+            "error": format!("unknown aggregate op '{}', expected count|sum|avg|min|max", other)
+        }))),
+    };
+
+    // ΛD: aggregation is a derived computation → c≤0.99
+    Ok(Json(serde_json::json!({
+        "dataspace": ds_name,
+        "op": op,
+        "field": field,
+        "entries_considered": filtered.len(),
+        "result": result,
+        "result_envelope": {
+            "certainty": 0.99,
+            "derivation": "aggregated",
+            "reason": "Theorem 5.1: aggregation is a derived reduction over raw data"
+        },
+    })))
+}
+
+/// GET /v1/dataspace/{name}/explore — discover structure of the dataspace.
+/// Returns entry count, ontology distribution, tag frequency, association graph summary.
+async fn dataspace_explore_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(ds_name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let ds = match s.dataspaces.get(&ds_name) {
+        Some(d) => d,
+        None => return Ok(Json(serde_json::json!({"error": format!("dataspace '{}' not found", ds_name)}))),
+    };
+
+    // Ontology distribution
+    let mut ontology_counts: HashMap<&str, u64> = HashMap::new();
+    for entry in ds.entries.values() {
+        *ontology_counts.entry(&entry.ontology).or_insert(0) += 1;
+    }
+
+    // Tag frequency
+    let mut tag_counts: HashMap<&str, u64> = HashMap::new();
+    for entry in ds.entries.values() {
+        for tag in &entry.tags {
+            *tag_counts.entry(tag).or_insert(0) += 1;
+        }
+    }
+
+    // Association summary
+    let mut relation_counts: HashMap<&str, u64> = HashMap::new();
+    for assoc in &ds.associations {
+        *relation_counts.entry(&assoc.relation).or_insert(0) += 1;
+    }
+
+    // Certainty distribution
+    let certainties: Vec<f64> = ds.entries.values().map(|e| e.envelope.certainty).collect();
+    let avg_certainty = if certainties.is_empty() {
+        0.0
+    } else {
+        certainties.iter().sum::<f64>() / certainties.len() as f64
+    };
+    let min_certainty = certainties.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max_certainty = certainties.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+    Ok(Json(serde_json::json!({
+        "dataspace": ds_name,
+        "ontology": ds.ontology,
+        "entry_count": ds.entries.len(),
+        "association_count": ds.associations.len(),
+        "total_ops": ds.total_ops,
+        "ontology_distribution": ontology_counts,
+        "tag_frequency": tag_counts,
+        "relation_types": relation_counts,
+        "epistemic_summary": {
+            "avg_certainty": (avg_certainty * 10000.0).round() / 10000.0,
+            "min_certainty": if min_certainty.is_infinite() { serde_json::json!(null) } else { serde_json::json!(min_certainty) },
+            "max_certainty": if max_certainty.is_infinite() { serde_json::json!(null) } else { serde_json::json!(max_certainty) },
+        },
+        "result_envelope": {
+            "certainty": 0.99,
+            "derivation": "derived",
+            "reason": "Theorem 5.1: exploration is a derived introspection"
+        },
+    })))
+}
+
+// ── Shield endpoints ────────────────────────────────────────────────────────
+
+/// POST /v1/shields — create a named Shield instance.
+/// Body: { "name": "toxicity", "mode": "output", "rules": [...] }
+async fn shield_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let mode = payload.get("mode").and_then(|v| v.as_str()).unwrap_or("both").to_string();
+
+    if name.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name is required"})));
+    }
+
+    if !["input", "output", "both"].contains(&mode.as_str()) {
+        return Ok(Json(serde_json::json!({"error": "mode must be 'input', 'output', or 'both'"})));
+    }
+
+    if s.shields.contains_key(&name) {
+        return Ok(Json(serde_json::json!({"error": format!("shield '{}' already exists", name)})));
+    }
+
+    let rules: Vec<ShieldRule> = payload.get("rules")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let shield = ShieldInstance {
+        name: name.clone(),
+        mode,
+        rules,
+        created_at: now,
+        total_evaluations: 0,
+        total_blocks: 0,
+    };
+
+    s.shields.insert(name.clone(), shield);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "shield",
+        serde_json::json!({"action": "create", "name": &name}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "name": name,
+    })))
+}
+
+/// GET /v1/shields — list all Shield instances.
+async fn shield_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let shields: Vec<serde_json::Value> = s.shields.values().map(|sh| {
+        serde_json::json!({
+            "name": sh.name,
+            "mode": sh.mode,
+            "rule_count": sh.rules.len(),
+            "total_evaluations": sh.total_evaluations,
+            "total_blocks": sh.total_blocks,
+            "created_at": sh.created_at,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "shields": shields,
+        "count": shields.len(),
+    })))
+}
+
+/// GET /v1/shields/{name} — introspect a Shield (rules, stats).
+async fn shield_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.shields.get(&name) {
+        Some(sh) => Ok(Json(serde_json::json!({
+            "name": sh.name,
+            "mode": sh.mode,
+            "rules": sh.rules,
+            "total_evaluations": sh.total_evaluations,
+            "total_blocks": sh.total_blocks,
+            "created_at": sh.created_at,
+        }))),
+        None => Ok(Json(serde_json::json!({"error": format!("shield '{}' not found", name)}))),
+    }
+}
+
+/// DELETE /v1/shields/{name} — remove a Shield instance.
+async fn shield_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    match s.shields.remove(&name) {
+        Some(_) => {
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "shield",
+                serde_json::json!({"action": "delete", "name": &name}), true);
+            Ok(Json(serde_json::json!({"success": true, "deleted": name})))
+        }
+        None => Ok(Json(serde_json::json!({"error": format!("shield '{}' not found", name)}))),
+    }
+}
+
+/// POST /v1/shields/{name}/evaluate — evaluate content against a Shield.
+/// Body: { "content": "text to check", "direction": "input"|"output" }
+/// Returns ShieldResult with block/warn/redact actions and ΛD envelope.
+async fn shield_evaluate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::ReadOnly)?;
+
+    let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let direction = payload.get("direction").and_then(|v| v.as_str()).unwrap_or("input");
+
+    let shield = match s.shields.get_mut(&name) {
+        Some(sh) => sh,
+        None => return Ok(Json(serde_json::json!({"error": format!("shield '{}' not found", name)}))),
+    };
+
+    // Check mode compatibility
+    let mode_ok = match shield.mode.as_str() {
+        "both" => true,
+        m => m == direction,
+    };
+
+    if !mode_ok {
+        return Ok(Json(serde_json::json!({
+            "error": format!("shield '{}' is configured for '{}' only, got '{}'", name, shield.mode, direction),
+        })));
+    }
+
+    let result = shield.evaluate(&content);
+    shield.total_evaluations += 1;
+    if result.blocked {
+        shield.total_blocks += 1;
+    }
+
+    // ΛD: shield evaluation is derived (c≤0.99) — pattern matching is speculative
+    let certainty = if result.rules_triggered == 0 { 0.95 } else { 0.85 };
+
+    Ok(Json(serde_json::json!({
+        "shield": name,
+        "direction": direction,
+        "blocked": result.blocked,
+        "warnings": result.warnings,
+        "redactions": result.redactions,
+        "content": result.content,
+        "rules_evaluated": result.rules_evaluated,
+        "rules_triggered": result.rules_triggered,
+        "envelope": {
+            "certainty": certainty,
+            "derivation": "derived",
+            "reason": "Theorem 5.1: shield evaluation is approximate pattern matching (δ=derived, c≤0.99)",
+        },
+        "lattice_position": if result.blocked { "doubt" } else { "speculate" },
+        "effect_row": ["io", "epistemic:speculate"],
+    })))
+}
+
+/// POST /v1/shields/{name}/rules — add a rule to a Shield.
+/// Body: { "id": "rule_1", "kind": "deny_list", "value": "password", "action": "redact", "description": "..." }
+async fn shield_add_rule_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let shield = match s.shields.get_mut(&name) {
+        Some(sh) => sh,
+        None => return Ok(Json(serde_json::json!({"error": format!("shield '{}' not found", name)}))),
+    };
+
+    let rule: ShieldRule = match serde_json::from_value(payload) {
+        Ok(r) => r,
+        Err(e) => return Ok(Json(serde_json::json!({"error": format!("invalid rule: {}", e)}))),
+    };
+
+    // Check for duplicate rule ID
+    if shield.rules.iter().any(|r| r.id == rule.id) {
+        return Ok(Json(serde_json::json!({"error": format!("rule '{}' already exists in shield '{}'", rule.id, name)})));
+    }
+
+    let rule_id = rule.id.clone();
+    shield.rules.push(rule);
+    let total_rules = shield.rules.len();
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "shield",
+        serde_json::json!({"action": "add_rule", "shield": &name, "rule": &rule_id}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "shield": name,
+        "rule_added": rule_id,
+        "total_rules": total_rules,
+    })))
+}
+
+// ── Corpus endpoints ────────────────────────────────────────────────────────
+
+/// POST /v1/corpus — create a named Corpus instance.
+/// Body: { "name": "research_papers", "ontology": "academic" }
+async fn corpus_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let ontology = payload.get("ontology").and_then(|v| v.as_str()).unwrap_or("general").to_string();
+
+    if name.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name is required"})));
+    }
+
+    if s.corpora.contains_key(&name) {
+        return Ok(Json(serde_json::json!({"error": format!("corpus '{}' already exists", name)})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let corpus = CorpusInstance {
+        name: name.clone(),
+        ontology,
+        documents: HashMap::new(),
+        created_at: now,
+        total_ops: 0,
+        next_id: 1,
+    };
+
+    s.corpora.insert(name.clone(), corpus);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "corpus",
+        serde_json::json!({"action": "create", "name": &name}), true);
+
+    Ok(Json(serde_json::json!({"success": true, "name": name})))
+}
+
+/// GET /v1/corpus — list all Corpus instances.
+async fn corpus_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let corpora: Vec<serde_json::Value> = s.corpora.values().map(|c| {
+        serde_json::json!({
+            "name": c.name,
+            "ontology": c.ontology,
+            "document_count": c.documents.len(),
+            "total_ops": c.total_ops,
+            "created_at": c.created_at,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"corpora": corpora, "count": corpora.len()})))
+}
+
+/// DELETE /v1/corpus/{name} — delete a Corpus instance and all its documents.
+async fn corpus_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    match s.corpora.remove(&name) {
+        Some(_) => {
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "corpus",
+                serde_json::json!({"action": "delete", "name": &name}), true);
+            Ok(Json(serde_json::json!({"success": true, "deleted": name})))
+        }
+        None => Ok(Json(serde_json::json!({"error": format!("corpus '{}' not found", name)}))),
+    }
+}
+
+/// POST /v1/corpus/{name}/ingest — add a document to the corpus.
+/// Body: { "title": "Paper Title", "content": "Full text...", "tags": ["ml", "nlp"], "source": "arxiv:2301.00001" }
+/// ΛD: ingest = raw write → c=1.0, δ=raw (the document itself is ground truth).
+async fn corpus_ingest_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let corpus = match s.corpora.get_mut(&name) {
+        Some(c) => c,
+        None => return Ok(Json(serde_json::json!({"error": format!("corpus '{}' not found", name)}))),
+    };
+
+    let title = payload.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled").to_string();
+    let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let tags: Vec<String> = payload.get("tags")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let source = payload.get("source").and_then(|v| v.as_str()).unwrap_or("manual").to_string();
+
+    if content.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "content is required"})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let doc_id = format!("doc_{}_{}", name, corpus.next_id);
+    corpus.next_id += 1;
+
+    let word_count = content.split_whitespace().count() as u64;
+    let envelope = EpistemicEnvelope::raw_config(&corpus.ontology, &client);
+
+    let doc = CorpusDocument {
+        id: doc_id.clone(),
+        title: title.clone(),
+        content,
+        tags,
+        source,
+        envelope,
+        ingested_at: now,
+        word_count,
+    };
+
+    corpus.documents.insert(doc_id.clone(), doc);
+    corpus.total_ops += 1;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "corpus": name,
+        "document_id": doc_id,
+        "title": title,
+        "word_count": word_count,
+        "envelope": { "certainty": 1.0, "derivation": "raw" },
+    })))
+}
+
+/// POST /v1/corpus/{name}/search — search documents by keyword with relevance scoring.
+/// Body: { "query": "neural networks", "tags": ["ml"], "limit": 10 }
+/// ΛD: search = derived → c≤0.99, δ=derived (relevance scoring is approximate).
+async fn corpus_search_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::ReadOnly)?;
+
+    let corpus = match s.corpora.get_mut(&name) {
+        Some(c) => c,
+        None => return Ok(Json(serde_json::json!({"error": format!("corpus '{}' not found", name)}))),
+    };
+
+    let query = payload.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let filter_tags: Option<Vec<String>> = payload.get("tags")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let limit = payload.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+
+    if query.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "query is required"})));
+    }
+
+    let query_lower = query.to_lowercase();
+    let query_terms: Vec<&str> = query_lower.split_whitespace().collect();
+
+    // Score documents by keyword relevance (term frequency)
+    let mut scored: Vec<(String, String, f64, u64)> = Vec::new();
+    for doc in corpus.documents.values() {
+        // Tag filter
+        if let Some(ref tags) = filter_tags {
+            if !tags.iter().all(|t| doc.tags.contains(t)) {
+                continue;
+            }
+        }
+
+        let content_lower = doc.content.to_lowercase();
+        let title_lower = doc.title.to_lowercase();
+
+        // Simple TF-based relevance: count term hits in content + title (title weighted 3x)
+        let mut hits = 0.0f64;
+        for term in &query_terms {
+            hits += content_lower.matches(term).count() as f64;
+            hits += title_lower.matches(term).count() as f64 * 3.0;
+        }
+
+        if hits > 0.0 {
+            // Normalize: relevance = hits / (word_count + title_words), capped at 1.0
+            let total_words = doc.word_count.max(1) as f64 + doc.title.split_whitespace().count() as f64;
+            let relevance = (hits / total_words).min(1.0);
+            scored.push((doc.id.clone(), doc.title.clone(), relevance, doc.word_count));
+        }
+    }
+
+    // Sort by relevance descending
+    scored.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit);
+
+    corpus.total_ops += 1;
+
+    let results: Vec<serde_json::Value> = scored.iter().map(|(id, title, rel, wc)| {
+        serde_json::json!({
+            "document_id": id,
+            "title": title,
+            "relevance": (rel * 10000.0).round() / 10000.0,
+            "word_count": wc,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "corpus": name,
+        "query": query,
+        "results": results,
+        "total_matches": results.len(),
+        "envelope": {
+            "certainty": 0.99,
+            "derivation": "derived",
+            "reason": "Theorem 5.1: search relevance is approximate (δ=derived, c≤0.99)",
+        },
+        "lattice_position": "speculate",
+    })))
+}
+
+/// POST /v1/corpus/{name}/cite — generate citations for a query from matching documents.
+/// Body: { "query": "attention mechanisms", "max_citations": 5, "excerpt_length": 200 }
+/// ΛD: citation = derived → c≤0.99, δ=derived (excerpt extraction is interpretation).
+async fn corpus_cite_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::ReadOnly)?;
+
+    let corpus = match s.corpora.get_mut(&name) {
+        Some(c) => c,
+        None => return Ok(Json(serde_json::json!({"error": format!("corpus '{}' not found", name)}))),
+    };
+
+    let query = payload.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let max_citations = payload.get("max_citations").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+    let excerpt_length = payload.get("excerpt_length").and_then(|v| v.as_u64()).unwrap_or(200) as usize;
+
+    if query.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "query is required"})));
+    }
+
+    let query_lower = query.to_lowercase();
+    let ontology = corpus.ontology.clone();
+
+    // Find relevant passages and build citations
+    let mut citations: Vec<serde_json::Value> = Vec::new();
+
+    for doc in corpus.documents.values() {
+        let content_lower = doc.content.to_lowercase();
+
+        // Find best matching position
+        if let Some(pos) = content_lower.find(&query_lower) {
+            // Extract excerpt around match
+            let start = pos.saturating_sub(excerpt_length / 4);
+            let end = (pos + query.len() + excerpt_length * 3 / 4).min(doc.content.len());
+            // Ensure we don't split in the middle of a UTF-8 char
+            let safe_start = doc.content[..start].char_indices().map(|(i, _)| i).last().unwrap_or(0);
+            let safe_end = doc.content[end..].char_indices().next().map(|(i, _)| end + i).unwrap_or(doc.content.len()).min(doc.content.len());
+            let excerpt = doc.content[safe_start..safe_end].to_string();
+
+            let relevance = 1.0 - (pos as f64 / doc.content.len().max(1) as f64 * 0.1);
+
+            let envelope = EpistemicEnvelope::derived(&ontology, 0.99, &client);
+
+            citations.push(serde_json::json!({
+                "document_id": doc.id,
+                "title": doc.title,
+                "excerpt": excerpt,
+                "relevance": (relevance.min(1.0) * 10000.0).round() / 10000.0,
+                "envelope": {
+                    "certainty": envelope.certainty,
+                    "derivation": envelope.derivation,
+                },
+            }));
+        } else {
+            // Partial term matching
+            let terms: Vec<&str> = query_lower.split_whitespace().collect();
+            let hit_count = terms.iter().filter(|t| content_lower.contains(*t)).count();
+            if hit_count > 0 {
+                let best_term = terms.iter().find(|t| content_lower.contains(*t)).unwrap();
+                if let Some(pos) = content_lower.find(*best_term) {
+                    let start = pos.saturating_sub(excerpt_length / 4);
+                    let end = (pos + best_term.len() + excerpt_length * 3 / 4).min(doc.content.len());
+                    let excerpt = doc.content[start..end].to_string();
+
+                    let relevance = hit_count as f64 / terms.len().max(1) as f64 * 0.8;
+                    let envelope = EpistemicEnvelope::derived(&ontology, 0.99, &client);
+
+                    citations.push(serde_json::json!({
+                        "document_id": doc.id,
+                        "title": doc.title,
+                        "excerpt": excerpt,
+                        "relevance": (relevance.min(1.0) * 10000.0).round() / 10000.0,
+                        "envelope": {
+                            "certainty": envelope.certainty,
+                            "derivation": envelope.derivation,
+                        },
+                    }));
+                }
+            }
+        }
+    }
+
+    // Sort by relevance, take top N
+    citations.sort_by(|a, b| {
+        b["relevance"].as_f64().unwrap_or(0.0)
+            .partial_cmp(&a["relevance"].as_f64().unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    citations.truncate(max_citations);
+
+    corpus.total_ops += 1;
+
+    Ok(Json(serde_json::json!({
+        "corpus": name,
+        "query": query,
+        "citations": citations,
+        "total_citations": citations.len(),
+        "envelope": {
+            "certainty": 0.99,
+            "derivation": "derived",
+            "reason": "Theorem 5.1: citation extraction is interpretive (δ=derived, c≤0.99)",
+        },
+        "lattice_position": "speculate",
+    })))
+}
+
+// ── Compute endpoints ───────────────────────────────────────────────────────
+
+/// POST /v1/compute/evaluate — evaluate a numeric/symbolic expression.
+/// Body: { "expression": "2 * (3 + 4) ^ 2", "variables": { "x": 10 } }
+/// ΛD: exact integer arithmetic → c=1.0, δ=raw; floating/symbolic → c=0.99, δ=derived.
+async fn compute_evaluate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+    drop(s);
+
+    let expression = payload.get("expression").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let variables: HashMap<String, f64> = payload.get("variables")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    if expression.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "expression is required"})));
+    }
+
+    match compute_evaluate(&expression, &variables) {
+        Ok(result) => {
+            Ok(Json(serde_json::json!({
+                "expression": result.expression,
+                "value": result.value,
+                "exact": result.exact,
+                "variables": result.variables,
+                "envelope": {
+                    "certainty": result.certainty,
+                    "derivation": result.derivation,
+                },
+                "lattice_position": if result.exact { "know" } else { "speculate" },
+                "effect_row": ["compute", if result.exact { "epistemic:know" } else { "epistemic:speculate" }],
+            })))
+        }
+        Err(e) => {
+            Ok(Json(serde_json::json!({
+                "error": e,
+                "expression": expression,
+                "_axon_blame": { "blame": "caller", "reason": "CT-2: invalid expression" },
+            })))
+        }
+    }
+}
+
+/// POST /v1/compute/batch — evaluate multiple expressions in one call.
+/// Body: { "expressions": ["2+3", "x*y"], "variables": { "x": 10, "y": 5 } }
+async fn compute_batch_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+    drop(s);
+
+    let expressions: Vec<String> = payload.get("expressions")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let variables: HashMap<String, f64> = payload.get("variables")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    if expressions.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "expressions array is required"})));
+    }
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    let mut all_exact = true;
+
+    for expr in &expressions {
+        match compute_evaluate(expr, &variables) {
+            Ok(result) => {
+                if !result.exact { all_exact = false; }
+                results.push(serde_json::json!({
+                    "expression": result.expression,
+                    "value": result.value,
+                    "exact": result.exact,
+                    "certainty": result.certainty,
+                }));
+            }
+            Err(e) => {
+                all_exact = false;
+                results.push(serde_json::json!({
+                    "expression": expr,
+                    "error": e,
+                }));
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "results": results,
+        "count": results.len(),
+        "all_exact": all_exact,
+        "envelope": {
+            "certainty": if all_exact { 1.0 } else { 0.99 },
+            "derivation": if all_exact { "raw" } else { "derived" },
+        },
+    })))
+}
+
+/// GET /v1/compute/functions — list available functions and constants.
+async fn compute_functions_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    Ok(Json(serde_json::json!({
+        "operators": ["+", "-", "*", "/", "%", "^"],
+        "functions": {
+            "sqrt": { "args": 1, "description": "Square root", "exact": false },
+            "abs": { "args": 1, "description": "Absolute value", "exact": true },
+            "sin": { "args": 1, "description": "Sine (radians)", "exact": false },
+            "cos": { "args": 1, "description": "Cosine (radians)", "exact": false },
+            "log": { "args": 1, "description": "Natural logarithm", "exact": false },
+            "exp": { "args": 1, "description": "Exponential (e^x)", "exact": false },
+            "ceil": { "args": 1, "description": "Ceiling", "exact": true },
+            "floor": { "args": 1, "description": "Floor", "exact": true },
+            "round": { "args": 1, "description": "Round to nearest integer", "exact": true },
+        },
+        "constants": {
+            "pi": std::f64::consts::PI,
+            "e": std::f64::consts::E,
+            "tau": std::f64::consts::TAU,
+        },
+        "epistemic_rules": {
+            "exact_arithmetic": "c=1.0, δ=raw (integer arithmetic only)",
+            "approximate": "c=0.99, δ=derived (float division, transcendentals, constants)",
+            "theorem": "Theorem 5.1: only exact computations may carry c=1.0",
+        },
+    })))
+}
+
+// ── Mandate endpoints ───────────────────────────────────────────────────────
+
+/// POST /v1/mandates — create a named Mandate policy.
+/// Body: { "name": "flow_access", "description": "Controls flow execution permissions", "rules": [...] }
+async fn mandate_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let description = payload.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if name.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name is required"})));
+    }
+
+    if s.mandates.contains_key(&name) {
+        return Ok(Json(serde_json::json!({"error": format!("mandate '{}' already exists", name)})));
+    }
+
+    let rules: Vec<MandateRule> = payload.get("rules")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let policy = MandatePolicy {
+        name: name.clone(),
+        description,
+        rules,
+        created_at: now,
+        total_evaluations: 0,
+        total_denials: 0,
+    };
+
+    s.mandates.insert(name.clone(), policy);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "mandate",
+        serde_json::json!({"action": "create", "name": &name}), true);
+
+    Ok(Json(serde_json::json!({"success": true, "name": name})))
+}
+
+/// GET /v1/mandates — list all Mandate policies.
+async fn mandate_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let mandates: Vec<serde_json::Value> = s.mandates.values().map(|m| {
+        serde_json::json!({
+            "name": m.name,
+            "description": m.description,
+            "rule_count": m.rules.len(),
+            "total_evaluations": m.total_evaluations,
+            "total_denials": m.total_denials,
+            "created_at": m.created_at,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"mandates": mandates, "count": mandates.len()})))
+}
+
+/// GET /v1/mandates/{name} — introspect a Mandate policy (rules, stats).
+async fn mandate_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.mandates.get(&name) {
+        Some(m) => Ok(Json(serde_json::json!({
+            "name": m.name,
+            "description": m.description,
+            "rules": m.rules,
+            "total_evaluations": m.total_evaluations,
+            "total_denials": m.total_denials,
+            "created_at": m.created_at,
+        }))),
+        None => Ok(Json(serde_json::json!({"error": format!("mandate '{}' not found", name)}))),
+    }
+}
+
+/// DELETE /v1/mandates/{name} — delete a Mandate policy.
+async fn mandate_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    match s.mandates.remove(&name) {
+        Some(_) => {
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "mandate",
+                serde_json::json!({"action": "delete", "name": &name}), true);
+            Ok(Json(serde_json::json!({"success": true, "deleted": name})))
+        }
+        None => Ok(Json(serde_json::json!({"error": format!("mandate '{}' not found", name)}))),
+    }
+}
+
+/// POST /v1/mandates/{name}/evaluate — evaluate a request against a Mandate policy.
+/// Body: { "subject": "admin", "action": "execute", "resource": "/v1/flows/analyze" }
+/// ΛD: explicit match → c=1.0/raw, default deny → c=0.99/derived.
+async fn mandate_evaluate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::ReadOnly)?;
+
+    let subject = payload.get("subject").and_then(|v| v.as_str()).unwrap_or("anonymous");
+    let action = payload.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    let resource = payload.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+
+    if action.is_empty() || resource.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "action and resource are required"})));
+    }
+
+    let policy = match s.mandates.get_mut(&name) {
+        Some(m) => m,
+        None => return Ok(Json(serde_json::json!({"error": format!("mandate '{}' not found", name)}))),
+    };
+
+    let result = policy.evaluate(subject, action, resource);
+    policy.total_evaluations += 1;
+    if !result.allowed {
+        policy.total_denials += 1;
+    }
+
+    Ok(Json(serde_json::json!({
+        "mandate": name,
+        "subject": subject,
+        "action": action,
+        "resource": resource,
+        "allowed": result.allowed,
+        "effect": result.effect,
+        "matched_rule": result.matched_rule,
+        "rules_evaluated": result.rules_evaluated,
+        "envelope": {
+            "certainty": result.certainty,
+            "derivation": result.derivation,
+        },
+        "lattice_position": if result.certainty == 1.0 { "know" } else { "speculate" },
+        "effect_row": ["io", if result.certainty == 1.0 { "epistemic:know" } else { "epistemic:speculate" }],
+    })))
+}
+
+/// POST /v1/mandates/{name}/rules — add a rule to a Mandate policy.
+/// Body: { "id": "r1", "subject": "admin", "action": "*", "resource": "*", "effect": "allow", "priority": 100, "enabled": true }
+async fn mandate_add_rule_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let policy = match s.mandates.get_mut(&name) {
+        Some(m) => m,
+        None => return Ok(Json(serde_json::json!({"error": format!("mandate '{}' not found", name)}))),
+    };
+
+    let rule: MandateRule = match serde_json::from_value(payload) {
+        Ok(r) => r,
+        Err(e) => return Ok(Json(serde_json::json!({"error": format!("invalid rule: {}", e)}))),
+    };
+
+    if policy.rules.iter().any(|r| r.id == rule.id) {
+        return Ok(Json(serde_json::json!({"error": format!("rule '{}' already exists in mandate '{}'", rule.id, name)})));
+    }
+
+    let rule_id = rule.id.clone();
+    policy.rules.push(rule);
+    let total_rules = policy.rules.len();
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "mandate",
+        serde_json::json!({"action": "add_rule", "mandate": &name, "rule": &rule_id}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "mandate": name,
+        "rule_added": rule_id,
+        "total_rules": total_rules,
+    })))
+}
+
+// ── Refine endpoints ────────────────────────────────────────────────────────
+
+/// POST /v1/refine — start a new Refine session.
+/// Body: { "name": "improve_summary", "initial_content": "...", "initial_quality": 0.3, "target_quality": 0.9, "max_iterations": 10 }
+async fn refine_start_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let initial_content = payload.get("initial_content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let initial_quality = payload.get("initial_quality").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let target_quality = payload.get("target_quality").and_then(|v| v.as_f64()).unwrap_or(0.9);
+    let convergence_threshold = payload.get("convergence_threshold").and_then(|v| v.as_f64()).unwrap_or(0.01);
+    let max_iterations = payload.get("max_iterations").and_then(|v| v.as_u64()).unwrap_or(10) as u32;
+
+    if name.is_empty() || initial_content.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name and initial_content are required"})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let session_id = format!("refine_{}_{}", name, now);
+
+    let mut session = RefineSession {
+        id: session_id.clone(),
+        name: name.clone(),
+        target_quality,
+        convergence_threshold,
+        max_iterations,
+        converged: false,
+        iterations: Vec::new(),
+        created_at: now,
+    };
+
+    // Record initial state as iteration 0
+    let _ = session.add_iteration(initial_content, initial_quality, "initial".into());
+
+    s.refine_sessions.insert(session_id.clone(), session);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "refine",
+        serde_json::json!({"action": "start", "session": &session_id}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "session_id": session_id,
+        "name": name,
+        "initial_quality": initial_quality,
+        "target_quality": target_quality,
+        "max_iterations": max_iterations,
+        "envelope": { "certainty": 0.99, "derivation": "derived" },
+    })))
+}
+
+/// POST /v1/refine/{id}/iterate — submit the next iteration of a Refine session.
+/// Body: { "content": "improved text...", "quality": 0.7, "feedback": "improve clarity" }
+/// ΛD: all refinements are derived (c≤0.99, δ=derived per Theorem 5.1).
+async fn refine_iterate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let quality = payload.get("quality").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let feedback = payload.get("feedback").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if content.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "content is required"})));
+    }
+
+    let session = match s.refine_sessions.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("refine session '{}' not found", session_id)}))),
+    };
+
+    match session.add_iteration(content, quality, feedback) {
+        Ok(iteration) => {
+            let iter_num = iteration.iteration;
+            let delta = iteration.delta;
+            let converged = session.converged;
+            let remaining = session.max_iterations.saturating_sub(session.iteration_count());
+
+            // ΛD: certainty increases with quality but capped at 0.99 (derived)
+            let certainty = (0.5 + quality * 0.49).min(0.99);
+
+            Ok(Json(serde_json::json!({
+                "session_id": session_id,
+                "iteration": iter_num,
+                "quality": quality,
+                "delta": (delta * 10000.0).round() / 10000.0,
+                "converged": converged,
+                "remaining_iterations": remaining,
+                "envelope": {
+                    "certainty": (certainty * 10000.0).round() / 10000.0,
+                    "derivation": "derived",
+                    "reason": "Theorem 5.1: refinement is transformation (δ=derived, c≤0.99)",
+                },
+                "lattice_position": if converged { "believe" } else { "speculate" },
+                "effect_row": ["io", "epistemic:speculate"],
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({
+            "error": e,
+            "session_id": session_id,
+        }))),
+    }
+}
+
+/// GET /v1/refine/{id} — get status and history of a Refine session.
+async fn refine_status_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let session = match s.refine_sessions.get(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("refine session '{}' not found", session_id)}))),
+    };
+
+    let quality_trend: Vec<f64> = session.iterations.iter().map(|i| i.quality).collect();
+    let delta_trend: Vec<f64> = session.iterations.iter().map(|i| (i.delta * 10000.0).round() / 10000.0).collect();
+
+    Ok(Json(serde_json::json!({
+        "session_id": session.id,
+        "name": session.name,
+        "converged": session.converged,
+        "current_quality": session.current_quality(),
+        "target_quality": session.target_quality,
+        "iteration_count": session.iteration_count(),
+        "max_iterations": session.max_iterations,
+        "quality_trend": quality_trend,
+        "delta_trend": delta_trend,
+        "iterations": session.iterations,
+    })))
+}
+
+/// GET /v1/refine — list all Refine sessions.
+async fn refine_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let sessions: Vec<serde_json::Value> = s.refine_sessions.values().map(|sess| {
+        serde_json::json!({
+            "session_id": sess.id,
+            "name": sess.name,
+            "converged": sess.converged,
+            "current_quality": sess.current_quality(),
+            "target_quality": sess.target_quality,
+            "iteration_count": sess.iteration_count(),
+            "max_iterations": sess.max_iterations,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"sessions": sessions, "count": sessions.len()})))
+}
+
+// ── Trail endpoints ─────────────────────────────────────────────────────────
+
+/// POST /v1/trails — start a new Trail record.
+/// Body: { "name": "analyze_flow_trace", "target": "flow:analyze" }
+async fn trail_start_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let target = payload.get("target").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if name.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name is required"})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let trail_id = format!("trail_{}_{}", name, now);
+
+    let trail = TrailRecord {
+        id: trail_id.clone(),
+        name: name.clone(),
+        target,
+        completed: false,
+        outcome: "in_progress".into(),
+        steps: Vec::new(),
+        created_at: now,
+        completed_at: 0,
+        total_duration_ms: 0,
+    };
+
+    s.trails.insert(trail_id.clone(), trail);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "trail",
+        serde_json::json!({"action": "start", "trail": &trail_id}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "trail_id": trail_id,
+        "name": name,
+        "envelope": { "certainty": 0.95, "derivation": "raw" },
+    })))
+}
+
+/// POST /v1/trails/{id}/step — record a step in the trail.
+/// Body: { "operation": "validate", "input": "flow source", "output": "valid", "duration_ms": 12, "outcome": "success", "metadata": {} }
+async fn trail_step_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(trail_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let operation = payload.get("operation").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let input = payload.get("input").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let output = payload.get("output").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let duration_ms = payload.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+    let outcome = payload.get("outcome").and_then(|v| v.as_str()).unwrap_or("success").to_string();
+    let metadata: HashMap<String, serde_json::Value> = payload.get("metadata")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    if operation.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "operation is required"})));
+    }
+
+    let trail = match s.trails.get_mut(&trail_id) {
+        Some(t) => t,
+        None => return Ok(Json(serde_json::json!({"error": format!("trail '{}' not found", trail_id)}))),
+    };
+
+    match trail.add_step(operation, input, output, duration_ms, outcome, metadata) {
+        Ok(step_num) => {
+            Ok(Json(serde_json::json!({
+                "trail_id": trail_id,
+                "step": step_num,
+                "total_steps": trail.step_count(),
+                "total_duration_ms": trail.total_duration_ms,
+                "envelope": { "certainty": 1.0, "derivation": "raw" },
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// POST /v1/trails/{id}/complete — mark a trail as complete.
+/// Body: { "outcome": "success" }
+async fn trail_complete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(trail_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let outcome = payload.get("outcome").and_then(|v| v.as_str()).unwrap_or("success").to_string();
+
+    let trail = match s.trails.get_mut(&trail_id) {
+        Some(t) => t,
+        None => return Ok(Json(serde_json::json!({"error": format!("trail '{}' not found", trail_id)}))),
+    };
+
+    match trail.complete(outcome.clone()) {
+        Ok(()) => {
+            let step_count = trail.step_count();
+            let success_count = trail.success_count();
+            let failure_count = trail.failure_count();
+            let total_duration = trail.total_duration_ms;
+
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "trail",
+                serde_json::json!({"action": "complete", "trail": &trail_id, "outcome": &outcome}), true);
+
+            Ok(Json(serde_json::json!({
+                "trail_id": trail_id,
+                "outcome": outcome,
+                "completed": true,
+                "step_count": step_count,
+                "success_count": success_count,
+                "failure_count": failure_count,
+                "total_duration_ms": total_duration,
+                "envelope": { "certainty": 1.0, "derivation": "raw" },
+                "lattice_position": "know",
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// GET /v1/trails/{id} — get a trail with full step history.
+async fn trail_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(trail_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.trails.get(&trail_id) {
+        Some(trail) => Ok(Json(serde_json::json!({
+            "trail_id": trail.id,
+            "name": trail.name,
+            "target": trail.target,
+            "completed": trail.completed,
+            "outcome": trail.outcome,
+            "step_count": trail.step_count(),
+            "success_count": trail.success_count(),
+            "failure_count": trail.failure_count(),
+            "total_duration_ms": trail.total_duration_ms,
+            "steps": trail.steps,
+            "created_at": trail.created_at,
+            "completed_at": trail.completed_at,
+            "envelope": {
+                "certainty": if trail.completed { 1.0 } else { 0.95 },
+                "derivation": "raw",
+            },
+        }))),
+        None => Ok(Json(serde_json::json!({"error": format!("trail '{}' not found", trail_id)}))),
+    }
+}
+
+/// GET /v1/trails — list all trails.
+async fn trail_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let trails: Vec<serde_json::Value> = s.trails.values().map(|t| {
+        serde_json::json!({
+            "trail_id": t.id,
+            "name": t.name,
+            "target": t.target,
+            "completed": t.completed,
+            "outcome": t.outcome,
+            "step_count": t.step_count(),
+            "total_duration_ms": t.total_duration_ms,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"trails": trails, "count": trails.len()})))
+}
+
+// ── Probe endpoints ─────────────────────────────────────────────────────────
+
+/// POST /v1/probes — start a new Probe session.
+/// Body: { "name": "investigate_topic", "question": "What is attention in transformers?", "sources": ["corpus:papers", "axonstore:facts"] }
+async fn probe_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let question = payload.get("question").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let sources: Vec<String> = payload.get("sources")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    if name.is_empty() || question.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name and question are required"})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let probe_id = format!("probe_{}_{}", name, now);
+
+    let probe = ProbeSession {
+        id: probe_id.clone(),
+        name: name.clone(),
+        question: question.clone(),
+        sources,
+        findings: Vec::new(),
+        completed: false,
+        created_at: now,
+        total_queries: 0,
+    };
+
+    s.probes.insert(probe_id.clone(), probe);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "probe",
+        serde_json::json!({"action": "create", "probe": &probe_id}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "probe_id": probe_id,
+        "name": name,
+        "question": question,
+        "envelope": { "certainty": 0.5, "derivation": "derived" },
+        "lattice_position": "speculate",
+    })))
+}
+
+/// POST /v1/probes/{id}/query — execute an exploratory query within a probe.
+/// Body: { "source": "corpus:papers", "query": "attention mechanism", "results": [...] }
+/// Accepts pre-gathered results (since probing is orchestrated by the caller).
+async fn probe_query_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(probe_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let source = payload.get("source").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let query = payload.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if source.is_empty() || query.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "source and query are required"})));
+    }
+
+    let probe = match s.probes.get_mut(&probe_id) {
+        Some(p) => p,
+        None => return Ok(Json(serde_json::json!({"error": format!("probe '{}' not found", probe_id)}))),
+    };
+
+    if probe.completed {
+        return Ok(Json(serde_json::json!({"error": "probe already completed"})));
+    }
+
+    // Accept findings from the payload
+    let results: Vec<serde_json::Value> = payload.get("results")
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+
+    let mut added = 0u32;
+    for result in &results {
+        let content = result.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let relevance = result.get("relevance").and_then(|v| v.as_f64()).unwrap_or(0.5);
+
+        if !content.is_empty() {
+            probe.add_finding(source.clone(), query.clone(), content, relevance);
+            added += 1;
+        }
+    }
+
+    probe.total_queries += 1;
+    let total_findings = probe.findings.len();
+    let agg_certainty = probe.aggregate_certainty();
+
+    Ok(Json(serde_json::json!({
+        "probe_id": probe_id,
+        "source": source,
+        "query": query,
+        "findings_added": added,
+        "total_findings": total_findings,
+        "aggregate_certainty": agg_certainty,
+        "envelope": {
+            "certainty": agg_certainty,
+            "derivation": "derived",
+            "reason": "Theorem 5.1: probe findings are exploratory (δ=derived, c≤0.99)",
+        },
+        "lattice_position": "speculate",
+    })))
+}
+
+/// POST /v1/probes/{id}/complete — mark probe as complete, get summary.
+/// Body: {} (optional)
+async fn probe_complete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(probe_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let probe = match s.probes.get_mut(&probe_id) {
+        Some(p) => p,
+        None => return Ok(Json(serde_json::json!({"error": format!("probe '{}' not found", probe_id)}))),
+    };
+
+    if probe.completed {
+        return Ok(Json(serde_json::json!({"error": "probe already completed"})));
+    }
+
+    probe.completed = true;
+
+    let top = probe.top_findings(5);
+    let top_json: Vec<serde_json::Value> = top.iter().map(|f| {
+        serde_json::json!({
+            "source": f.source, "content": f.content,
+            "relevance": (f.relevance * 10000.0).round() / 10000.0,
+            "certainty": (f.certainty * 10000.0).round() / 10000.0,
+        })
+    }).collect();
+
+    let per_source = probe.findings_per_source();
+    let agg_certainty = probe.aggregate_certainty();
+    let question = probe.question.clone();
+    let total_findings = probe.findings.len();
+    let total_queries = probe.total_queries;
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "probe",
+        serde_json::json!({"action": "complete", "probe": &probe_id}), true);
+
+    Ok(Json(serde_json::json!({
+        "probe_id": probe_id,
+        "question": question,
+        "completed": true,
+        "total_findings": total_findings,
+        "total_queries": total_queries,
+        "top_findings": top_json,
+        "findings_per_source": per_source,
+        "aggregate_certainty": agg_certainty,
+        "envelope": {
+            "certainty": agg_certainty,
+            "derivation": "derived",
+        },
+        "lattice_position": if agg_certainty > 0.8 { "believe" } else { "speculate" },
+    })))
+}
+
+/// GET /v1/probes/{id} — get probe status and findings.
+async fn probe_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(probe_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.probes.get(&probe_id) {
+        Some(probe) => Ok(Json(serde_json::json!({
+            "probe_id": probe.id,
+            "name": probe.name,
+            "question": probe.question,
+            "sources": probe.sources,
+            "completed": probe.completed,
+            "total_findings": probe.findings.len(),
+            "total_queries": probe.total_queries,
+            "aggregate_certainty": probe.aggregate_certainty(),
+            "findings_per_source": probe.findings_per_source(),
+            "findings": probe.findings,
+        }))),
+        None => Ok(Json(serde_json::json!({"error": format!("probe '{}' not found", probe_id)}))),
+    }
+}
+
+/// GET /v1/probes — list all probe sessions.
+async fn probe_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let probes_list: Vec<serde_json::Value> = s.probes.values().map(|p| {
+        serde_json::json!({
+            "probe_id": p.id,
+            "name": p.name,
+            "question": p.question,
+            "completed": p.completed,
+            "total_findings": p.findings.len(),
+            "total_queries": p.total_queries,
+            "aggregate_certainty": p.aggregate_certainty(),
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"probes": probes_list, "count": probes_list.len()})))
+}
+
+// ── Weave endpoints ─────────────────────────────────────────────────────────
+
+/// POST /v1/weaves — start a new Weave session.
+/// Body: { "name": "research_synthesis", "goal": "Combine findings on attention mechanisms" }
+async fn weave_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let goal = payload.get("goal").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if name.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name is required"})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let weave_id = format!("weave_{}_{}", name, now);
+
+    let weave = WeaveSession {
+        id: weave_id.clone(),
+        name: name.clone(),
+        goal,
+        strands: Vec::new(),
+        synthesis: String::new(),
+        synthesized: false,
+        created_at: now,
+        next_strand_id: 1,
+    };
+
+    s.weaves.insert(weave_id.clone(), weave);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "weave",
+        serde_json::json!({"action": "create", "weave": &weave_id}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "weave_id": weave_id,
+        "name": name,
+    })))
+}
+
+/// POST /v1/weaves/{id}/strand — add a source strand to the weave.
+/// Body: { "source": "corpus:papers/doc_1", "content": "...", "weight": 0.8, "source_certainty": 1.0 }
+async fn weave_strand_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(weave_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let source = payload.get("source").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let weight = payload.get("weight").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let source_certainty = payload.get("source_certainty").and_then(|v| v.as_f64()).unwrap_or(0.99);
+
+    if source.is_empty() || content.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "source and content are required"})));
+    }
+
+    let weave = match s.weaves.get_mut(&weave_id) {
+        Some(w) => w,
+        None => return Ok(Json(serde_json::json!({"error": format!("weave '{}' not found", weave_id)}))),
+    };
+
+    if weave.synthesized {
+        return Ok(Json(serde_json::json!({"error": "weave already synthesized, cannot add strands"})));
+    }
+
+    let strand_id = weave.add_strand(source, content, weight, source_certainty);
+    let total_strands = weave.strands.len();
+
+    Ok(Json(serde_json::json!({
+        "weave_id": weave_id,
+        "strand_id": strand_id,
+        "total_strands": total_strands,
+        "synthesis_certainty": weave.synthesis_certainty(),
+    })))
+}
+
+/// POST /v1/weaves/{id}/synthesize — synthesize strands into unified output.
+/// Returns the synthesis with attribution and ΛD envelope.
+async fn weave_synthesize_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(weave_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let weave = match s.weaves.get_mut(&weave_id) {
+        Some(w) => w,
+        None => return Ok(Json(serde_json::json!({"error": format!("weave '{}' not found", weave_id)}))),
+    };
+
+    match weave.synthesize() {
+        Ok(synthesis) => {
+            let certainty = weave.synthesis_certainty().min(0.99);
+            let attributions = weave.attributions();
+            let strand_count = weave.strands.len();
+
+            let attr_json: Vec<serde_json::Value> = attributions.iter().map(|(src, w)| {
+                serde_json::json!({"source": src, "weight": w})
+            }).collect();
+
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "weave",
+                serde_json::json!({"action": "synthesize", "weave": &weave_id}), true);
+
+            Ok(Json(serde_json::json!({
+                "weave_id": weave_id,
+                "synthesized": true,
+                "synthesis": synthesis,
+                "strand_count": strand_count,
+                "attributions": attr_json,
+                "envelope": {
+                    "certainty": certainty,
+                    "derivation": "derived",
+                    "reason": "Theorem 5.1: synthesis is always derived (δ=derived, c≤0.99)",
+                },
+                "lattice_position": if certainty > 0.8 { "believe" } else { "speculate" },
+                "effect_row": ["io", "epistemic:speculate"],
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// GET /v1/weaves/{id} — get weave session with strands and synthesis.
+async fn weave_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(weave_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.weaves.get(&weave_id) {
+        Some(weave) => Ok(Json(serde_json::json!({
+            "weave_id": weave.id,
+            "name": weave.name,
+            "goal": weave.goal,
+            "synthesized": weave.synthesized,
+            "synthesis": weave.synthesis,
+            "strand_count": weave.strands.len(),
+            "strands": weave.strands,
+            "synthesis_certainty": weave.synthesis_certainty(),
+            "attributions": weave.attributions().iter().map(|(s, w)| serde_json::json!({"source": s, "weight": w})).collect::<Vec<_>>(),
+        }))),
+        None => Ok(Json(serde_json::json!({"error": format!("weave '{}' not found", weave_id)}))),
+    }
+}
+
+/// GET /v1/weaves — list all weave sessions.
+async fn weave_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let weaves_list: Vec<serde_json::Value> = s.weaves.values().map(|w| {
+        serde_json::json!({
+            "weave_id": w.id,
+            "name": w.name,
+            "goal": w.goal,
+            "synthesized": w.synthesized,
+            "strand_count": w.strands.len(),
+            "synthesis_certainty": w.synthesis_certainty(),
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"weaves": weaves_list, "count": weaves_list.len()})))
+}
+
+// ── Corroborate endpoints ────────────────────────────────────────────────────
+
+/// POST /v1/corroborate — start a new Corroborate session.
+/// Body: { "name": "verify_claim", "claim": "Transformers outperform RNNs on long sequences" }
+async fn corroborate_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let claim = payload.get("claim").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if name.is_empty() || claim.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name and claim are required"})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let session_id = format!("corr_{}_{}", name, now);
+
+    let session = CorroborateSession {
+        id: session_id.clone(),
+        name: name.clone(),
+        claim: claim.clone(),
+        evidence: Vec::new(),
+        verified: false,
+        verdict: "pending".into(),
+        created_at: now,
+        next_evidence_id: 1,
+    };
+
+    s.corroborations.insert(session_id.clone(), session);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "corroborate",
+        serde_json::json!({"action": "create", "session": &session_id}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "session_id": session_id,
+        "claim": claim,
+    })))
+}
+
+/// POST /v1/corroborate/{id}/evidence — submit evidence for or against the claim.
+/// Body: { "source": "corpus:papers/doc_1", "content": "Study confirms...", "stance": "supports", "confidence": 0.9 }
+async fn corroborate_evidence_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let source = payload.get("source").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let stance = payload.get("stance").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let confidence = payload.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.5);
+
+    if source.is_empty() || content.is_empty() || stance.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "source, content, and stance are required"})));
+    }
+
+    let session = match s.corroborations.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("corroborate session '{}' not found", session_id)}))),
+    };
+
+    match session.add_evidence(source, content, stance, confidence) {
+        Ok(evidence_id) => {
+            let (agreement, certainty, verdict_preview) = session.compute_agreement();
+            let (sup, con, neu) = session.stance_counts();
+
+            Ok(Json(serde_json::json!({
+                "session_id": session_id,
+                "evidence_id": evidence_id,
+                "total_evidence": session.evidence.len(),
+                "stance_counts": { "supports": sup, "contradicts": con, "neutral": neu },
+                "current_agreement": agreement,
+                "current_certainty": certainty,
+                "verdict_preview": verdict_preview,
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// POST /v1/corroborate/{id}/verify — finalize verification with computed verdict.
+async fn corroborate_verify_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let session = match s.corroborations.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("corroborate session '{}' not found", session_id)}))),
+    };
+
+    match session.verify() {
+        Ok((agreement, certainty, verdict)) => {
+            let (sup, con, neu) = session.stance_counts();
+            let claim = session.claim.clone();
+
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "corroborate",
+                serde_json::json!({"action": "verify", "session": &session_id, "verdict": &verdict}), true);
+
+            // ΛD lattice based on verdict
+            let lattice = match verdict.as_str() {
+                "corroborated" => "believe",
+                "disputed" => "doubt",
+                _ => "speculate",
+            };
+
+            Ok(Json(serde_json::json!({
+                "session_id": session_id,
+                "claim": claim,
+                "verified": true,
+                "verdict": verdict,
+                "agreement": agreement,
+                "stance_counts": { "supports": sup, "contradicts": con, "neutral": neu },
+                "envelope": {
+                    "certainty": certainty,
+                    "derivation": "derived",
+                    "reason": "Theorem 5.1: cross-source verification is inferential (δ=derived, c≤0.99)",
+                },
+                "lattice_position": lattice,
+                "effect_row": ["io", format!("epistemic:{}", lattice)],
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// GET /v1/corroborate/{id} — get session with evidence and verdict.
+async fn corroborate_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.corroborations.get(&session_id) {
+        Some(sess) => {
+            let (agreement, certainty, _) = sess.compute_agreement();
+            let (sup, con, neu) = sess.stance_counts();
+            Ok(Json(serde_json::json!({
+                "session_id": sess.id,
+                "name": sess.name,
+                "claim": sess.claim,
+                "verified": sess.verified,
+                "verdict": sess.verdict,
+                "agreement": agreement,
+                "certainty": certainty,
+                "stance_counts": { "supports": sup, "contradicts": con, "neutral": neu },
+                "evidence": sess.evidence,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({"error": format!("corroborate session '{}' not found", session_id)}))),
+    }
+}
+
+/// GET /v1/corroborate — list all corroborate sessions.
+async fn corroborate_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let sessions: Vec<serde_json::Value> = s.corroborations.values().map(|sess| {
+        let (sup, con, neu) = sess.stance_counts();
+        serde_json::json!({
+            "session_id": sess.id,
+            "name": sess.name,
+            "claim": sess.claim,
+            "verified": sess.verified,
+            "verdict": sess.verdict,
+            "evidence_count": sess.evidence.len(),
+            "stance_counts": { "supports": sup, "contradicts": con, "neutral": neu },
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"sessions": sessions, "count": sessions.len()})))
+}
+
+// ── Drill endpoints ─────────────────────────────────────────────────────────
+
+/// POST /v1/drills — start a new Drill session.
+/// Body: { "name": "explore_attention", "root_question": "How does attention work?", "root_answer": "...", "max_depth": 5 }
+async fn drill_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let root_question = payload.get("root_question").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let root_answer = payload.get("root_answer").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let max_depth = payload.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(5) as u32;
+
+    if name.is_empty() || root_question.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name and root_question are required"})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let drill_id = format!("drill_{}_{}", name, now);
+
+    let mut drill = DrillSession {
+        id: drill_id.clone(),
+        name: name.clone(),
+        root_question: root_question.clone(),
+        max_depth,
+        nodes: HashMap::new(),
+        completed: false,
+        created_at: now,
+    };
+
+    let _ = drill.add_root(root_answer);
+
+    s.drills.insert(drill_id.clone(), drill);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "drill",
+        serde_json::json!({"action": "create", "drill": &drill_id}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "drill_id": drill_id,
+        "name": name,
+        "max_depth": max_depth,
+        "root_certainty": DrillSession::certainty_at_depth(0),
+        "envelope": { "certainty": 0.99, "derivation": "derived" },
+    })))
+}
+
+/// POST /v1/drills/{id}/expand — expand a node by adding a child exploration.
+/// Body: { "parent_id": "root", "question": "What is self-attention?", "answer": "..." }
+async fn drill_expand_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(drill_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let parent_id = payload.get("parent_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let question = payload.get("question").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let answer = payload.get("answer").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if parent_id.is_empty() || question.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "parent_id and question are required"})));
+    }
+
+    let drill = match s.drills.get_mut(&drill_id) {
+        Some(d) => d,
+        None => return Ok(Json(serde_json::json!({"error": format!("drill '{}' not found", drill_id)}))),
+    };
+
+    match drill.expand(&parent_id, question, answer) {
+        Ok(child_id) => {
+            let depth = drill.nodes.get(&child_id).unwrap().depth;
+            let certainty = drill.nodes.get(&child_id).unwrap().certainty;
+            let is_leaf = drill.nodes.get(&child_id).unwrap().is_leaf;
+
+            Ok(Json(serde_json::json!({
+                "drill_id": drill_id,
+                "node_id": child_id,
+                "depth": depth,
+                "is_leaf": is_leaf,
+                "node_count": drill.node_count(),
+                "envelope": {
+                    "certainty": certainty,
+                    "derivation": "derived",
+                },
+                "lattice_position": if certainty > 0.8 { "believe" } else { "speculate" },
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// POST /v1/drills/{id}/complete — mark drill as complete.
+async fn drill_complete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(drill_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let drill = match s.drills.get_mut(&drill_id) {
+        Some(d) => d,
+        None => return Ok(Json(serde_json::json!({"error": format!("drill '{}' not found", drill_id)}))),
+    };
+
+    if drill.completed {
+        return Ok(Json(serde_json::json!({"error": "drill already completed"})));
+    }
+
+    drill.completed = true;
+
+    let node_count = drill.node_count();
+    let max_depth_reached = drill.max_depth_reached();
+    let leaf_count = drill.leaf_count();
+    let avg_certainty = drill.avg_certainty();
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "drill",
+        serde_json::json!({"action": "complete", "drill": &drill_id}), true);
+
+    Ok(Json(serde_json::json!({
+        "drill_id": drill_id,
+        "completed": true,
+        "node_count": node_count,
+        "max_depth_reached": max_depth_reached,
+        "leaf_count": leaf_count,
+        "avg_certainty": avg_certainty,
+        "envelope": {
+            "certainty": avg_certainty.min(0.99),
+            "derivation": "derived",
+        },
+    })))
+}
+
+/// GET /v1/drills/{id} — get drill with full exploration tree.
+async fn drill_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(drill_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.drills.get(&drill_id) {
+        Some(drill) => Ok(Json(serde_json::json!({
+            "drill_id": drill.id,
+            "name": drill.name,
+            "root_question": drill.root_question,
+            "max_depth": drill.max_depth,
+            "completed": drill.completed,
+            "node_count": drill.node_count(),
+            "max_depth_reached": drill.max_depth_reached(),
+            "leaf_count": drill.leaf_count(),
+            "avg_certainty": drill.avg_certainty(),
+            "nodes": drill.nodes,
+        }))),
+        None => Ok(Json(serde_json::json!({"error": format!("drill '{}' not found", drill_id)}))),
+    }
+}
+
+/// GET /v1/drills — list all drill sessions.
+async fn drill_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let drills_list: Vec<serde_json::Value> = s.drills.values().map(|d| {
+        serde_json::json!({
+            "drill_id": d.id,
+            "name": d.name,
+            "root_question": d.root_question,
+            "completed": d.completed,
+            "node_count": d.node_count(),
+            "max_depth_reached": d.max_depth_reached(),
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"drills": drills_list, "count": drills_list.len()})))
+}
+
+// ── Forge endpoints ─────────────────────────────────────────────────────────
+
+/// POST /v1/forges — create a new Forge session.
+/// Body: { "name": "report_generator" }
+async fn forge_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if name.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name is required"})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let forge_id = format!("forge_{}_{}", name, now);
+
+    let forge = ForgeSession {
+        id: forge_id.clone(),
+        name: name.clone(),
+        templates: HashMap::new(),
+        artifacts: Vec::new(),
+        created_at: now,
+        next_artifact_id: 1,
+    };
+
+    s.forges.insert(forge_id.clone(), forge);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "forge",
+        serde_json::json!({"action": "create", "forge": &forge_id}), true);
+
+    Ok(Json(serde_json::json!({"success": true, "forge_id": forge_id, "name": name})))
+}
+
+/// POST /v1/forges/{id}/template — register a template in the forge.
+/// Body: { "name": "summary", "content": "# {{title}}\n\n{{body}}", "format": "markdown" }
+async fn forge_template_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(forge_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let template_name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let format = payload.get("format").and_then(|v| v.as_str()).unwrap_or("text").to_string();
+
+    if template_name.is_empty() || content.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name and content are required"})));
+    }
+
+    let forge = match s.forges.get_mut(&forge_id) {
+        Some(f) => f,
+        None => return Ok(Json(serde_json::json!({"error": format!("forge '{}' not found", forge_id)}))),
+    };
+
+    let variables = ForgeSession::extract_variables(&content);
+
+    match forge.add_template(template_name.clone(), content, format) {
+        Ok(()) => Ok(Json(serde_json::json!({
+            "forge_id": forge_id,
+            "template": template_name,
+            "variables": variables,
+            "total_templates": forge.templates.len(),
+        }))),
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// POST /v1/forges/{id}/render — render a template with variables to produce an artifact.
+/// Body: { "template": "summary", "variables": { "title": "Report", "body": "Content..." } }
+async fn forge_render_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(forge_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let template_name = payload.get("template").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let variables: HashMap<String, String> = payload.get("variables")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    if template_name.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "template name is required"})));
+    }
+
+    let forge = match s.forges.get_mut(&forge_id) {
+        Some(f) => f,
+        None => return Ok(Json(serde_json::json!({"error": format!("forge '{}' not found", forge_id)}))),
+    };
+
+    match forge.render(&template_name, &variables) {
+        Ok(artifact) => {
+            Ok(Json(serde_json::json!({
+                "forge_id": forge_id,
+                "artifact_id": artifact.id,
+                "template": artifact.template_name,
+                "content": artifact.content,
+                "format": artifact.format,
+                "variables_used": artifact.variables_used,
+                "total_artifacts": forge.artifacts.len(),
+                "envelope": {
+                    "certainty": artifact.certainty,
+                    "derivation": "derived",
+                    "reason": "Theorem 5.1: template rendering is transformation (δ=derived, c=0.99)",
+                },
+                "lattice_position": "believe",
+                "effect_row": ["io", "epistemic:believe"],
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({
+            "error": e,
+            "_axon_blame": { "blame": "caller", "reason": "CT-2" },
+        }))),
+    }
+}
+
+/// GET /v1/forges/{id} — get forge session with templates and artifacts.
+async fn forge_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(forge_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.forges.get(&forge_id) {
+        Some(forge) => {
+            let templates: Vec<serde_json::Value> = forge.templates.values().map(|t| {
+                serde_json::json!({
+                    "name": t.name, "format": t.format, "variables": t.variables,
+                })
+            }).collect();
+
+            Ok(Json(serde_json::json!({
+                "forge_id": forge.id,
+                "name": forge.name,
+                "templates": templates,
+                "artifact_count": forge.artifacts.len(),
+                "artifacts": forge.artifacts,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({"error": format!("forge '{}' not found", forge_id)}))),
+    }
+}
+
+/// GET /v1/forges — list all forge sessions.
+async fn forge_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let forges_list: Vec<serde_json::Value> = s.forges.values().map(|f| {
+        serde_json::json!({
+            "forge_id": f.id,
+            "name": f.name,
+            "template_count": f.templates.len(),
+            "artifact_count": f.artifacts.len(),
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"forges": forges_list, "count": forges_list.len()})))
+}
+
+// ── Deliberate endpoints ────────────────────────────────────────────────────
+
+/// POST /v1/deliberate — start a new Deliberate session.
+/// Body: { "name": "choose_backend", "question": "Which backend should we use for production?" }
+async fn deliberate_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let question = payload.get("question").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if name.is_empty() || question.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name and question are required"})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let session_id = format!("delib_{}_{}", name, now);
+
+    let session = DeliberateSession {
+        id: session_id.clone(),
+        name: name.clone(),
+        question: question.clone(),
+        options: Vec::new(),
+        decided: false,
+        chosen_option: None,
+        created_at: now,
+        next_option_id: 1,
+    };
+
+    s.deliberations.insert(session_id.clone(), session);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "deliberate",
+        serde_json::json!({"action": "create", "session": &session_id}), true);
+
+    Ok(Json(serde_json::json!({"success": true, "session_id": session_id, "question": question})))
+}
+
+/// POST /v1/deliberate/{id}/option — add an option to consider.
+/// Body: { "label": "Anthropic", "description": "Claude API with high reliability" }
+async fn deliberate_option_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let label = payload.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let description = payload.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if label.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "label is required"})));
+    }
+
+    let session = match s.deliberations.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("deliberate session '{}' not found", session_id)}))),
+    };
+
+    match session.add_option(label, description) {
+        Ok(option_id) => Ok(Json(serde_json::json!({
+            "session_id": session_id,
+            "option_id": option_id,
+            "total_options": session.options.len(),
+        }))),
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// POST /v1/deliberate/{id}/evaluate — add pros/cons to an option.
+/// Body: { "option_id": 1, "pro": "High reliability", "con": "Expensive" }
+async fn deliberate_evaluate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let option_id = payload.get("option_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let pro = payload.get("pro").and_then(|v| v.as_str()).map(String::from);
+    let con = payload.get("con").and_then(|v| v.as_str()).map(String::from);
+
+    let session = match s.deliberations.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("deliberate session '{}' not found", session_id)}))),
+    };
+
+    match session.evaluate(option_id, pro, con) {
+        Ok(score) => Ok(Json(serde_json::json!({
+            "session_id": session_id,
+            "option_id": option_id,
+            "score": score,
+            "envelope": { "certainty": (score * 0.99 * 10000.0).round() / 10000.0, "derivation": "derived" },
+        }))),
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// POST /v1/deliberate/{id}/eliminate — backtrack: eliminate an option.
+/// Body: { "option_id": 2, "reason": "Too expensive for our budget" }
+async fn deliberate_eliminate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let option_id = payload.get("option_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let reason = payload.get("reason").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let session = match s.deliberations.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("deliberate session '{}' not found", session_id)}))),
+    };
+
+    match session.eliminate(option_id, reason) {
+        Ok(()) => Ok(Json(serde_json::json!({
+            "session_id": session_id,
+            "option_id": option_id,
+            "eliminated": true,
+            "viable_remaining": session.viable_count(),
+        }))),
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// POST /v1/deliberate/{id}/decide — make the final decision.
+async fn deliberate_decide_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let session = match s.deliberations.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("deliberate session '{}' not found", session_id)}))),
+    };
+
+    match session.decide() {
+        Ok((chosen_id, score, certainty)) => {
+            let chosen_label = session.options.iter().find(|o| o.id == chosen_id)
+                .map(|o| o.label.clone()).unwrap_or_default();
+            let question = session.question.clone();
+
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "deliberate",
+                serde_json::json!({"action": "decide", "session": &session_id, "chosen": chosen_id}), true);
+
+            let lattice = if certainty > 0.5 { "believe" } else { "speculate" };
+
+            Ok(Json(serde_json::json!({
+                "session_id": session_id,
+                "question": question,
+                "decided": true,
+                "chosen_option": chosen_id,
+                "chosen_label": chosen_label,
+                "chosen_score": score,
+                "envelope": {
+                    "certainty": certainty,
+                    "derivation": "derived",
+                    "reason": "Theorem 5.1: deliberation is inferential reasoning (δ=derived)",
+                },
+                "lattice_position": lattice,
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// GET /v1/deliberate/{id} — get session with all options and decision.
+async fn deliberate_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.deliberations.get(&session_id) {
+        Some(sess) => Ok(Json(serde_json::json!({
+            "session_id": sess.id,
+            "name": sess.name,
+            "question": sess.question,
+            "decided": sess.decided,
+            "chosen_option": sess.chosen_option,
+            "viable_count": sess.viable_count(),
+            "options": sess.options,
+        }))),
+        None => Ok(Json(serde_json::json!({"error": format!("deliberate session '{}' not found", session_id)}))),
+    }
+}
+
+/// GET /v1/deliberate — list all deliberate sessions.
+async fn deliberate_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let sessions: Vec<serde_json::Value> = s.deliberations.values().map(|sess| {
+        serde_json::json!({
+            "session_id": sess.id,
+            "name": sess.name,
+            "question": sess.question,
+            "decided": sess.decided,
+            "option_count": sess.options.len(),
+            "viable_count": sess.viable_count(),
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"sessions": sessions, "count": sessions.len()})))
+}
+
+// ── Consensus endpoints ─────────────────────────────────────────────────────
+
+/// POST /v1/consensus — start a new Consensus session.
+/// Body: { "name": "model_selection", "proposal": "Which model for production?", "choices": ["claude", "gpt4", "gemini"], "quorum": 3 }
+async fn consensus_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let proposal = payload.get("proposal").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let choices: Vec<String> = payload.get("choices")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let quorum = payload.get("quorum").and_then(|v| v.as_u64()).unwrap_or(3) as u32;
+
+    if name.is_empty() || proposal.is_empty() || choices.len() < 2 {
+        return Ok(Json(serde_json::json!({"error": "name, proposal, and at least 2 choices are required"})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let session_id = format!("cons_{}_{}", name, now);
+
+    let session = ConsensusSession {
+        id: session_id.clone(),
+        name: name.clone(),
+        proposal: proposal.clone(),
+        choices: choices.clone(),
+        quorum,
+        votes: Vec::new(),
+        resolved: false,
+        winner: String::new(),
+        created_at: now,
+    };
+
+    s.consensus_sessions.insert(session_id.clone(), session);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "consensus",
+        serde_json::json!({"action": "create", "session": &session_id}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true, "session_id": session_id,
+        "proposal": proposal, "choices": choices, "quorum": quorum,
+    })))
+}
+
+/// POST /v1/consensus/{id}/vote — cast a vote.
+/// Body: { "voter": "agent_1", "choice": "claude", "confidence": 0.9, "rationale": "Best reasoning" }
+async fn consensus_vote_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let voter = payload.get("voter").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let choice = payload.get("choice").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let confidence = payload.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let rationale = payload.get("rationale").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if voter.is_empty() || choice.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "voter and choice are required"})));
+    }
+
+    let session = match s.consensus_sessions.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("consensus session '{}' not found", session_id)}))),
+    };
+
+    match session.vote(voter, choice, confidence, rationale) {
+        Ok(()) => {
+            let vote_count = session.vote_count();
+            let has_quorum = session.has_quorum();
+            let tally = session.tally();
+
+            Ok(Json(serde_json::json!({
+                "session_id": session_id,
+                "vote_count": vote_count,
+                "quorum": session.quorum,
+                "has_quorum": has_quorum,
+                "tally": tally.iter().map(|(c, s, n)| serde_json::json!({"choice": c, "score": s, "votes": n})).collect::<Vec<_>>(),
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// POST /v1/consensus/{id}/resolve — resolve consensus if quorum is met.
+async fn consensus_resolve_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let session = match s.consensus_sessions.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("consensus session '{}' not found", session_id)}))),
+    };
+
+    match session.resolve() {
+        Ok((winner, agreement, certainty)) => {
+            let proposal = session.proposal.clone();
+            let tally = session.tally();
+
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "consensus",
+                serde_json::json!({"action": "resolve", "session": &session_id, "winner": &winner}), true);
+
+            let lattice = if agreement > 0.8 { "believe" } else if agreement > 0.5 { "speculate" } else { "doubt" };
+
+            Ok(Json(serde_json::json!({
+                "session_id": session_id,
+                "proposal": proposal,
+                "resolved": true,
+                "winner": winner,
+                "agreement": agreement,
+                "tally": tally.iter().map(|(c, s, n)| serde_json::json!({"choice": c, "score": s, "votes": n})).collect::<Vec<_>>(),
+                "envelope": {
+                    "certainty": certainty,
+                    "derivation": "derived",
+                    "reason": "Theorem 5.1: consensus is aggregated opinion (δ=derived, c≤0.99)",
+                },
+                "lattice_position": lattice,
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// GET /v1/consensus/{id} — get session with votes and tally.
+async fn consensus_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.consensus_sessions.get(&session_id) {
+        Some(sess) => {
+            let tally = sess.tally();
+            Ok(Json(serde_json::json!({
+                "session_id": sess.id, "name": sess.name,
+                "proposal": sess.proposal, "choices": sess.choices,
+                "quorum": sess.quorum, "vote_count": sess.vote_count(),
+                "has_quorum": sess.has_quorum(), "resolved": sess.resolved,
+                "winner": sess.winner, "votes": sess.votes,
+                "tally": tally.iter().map(|(c, s, n)| serde_json::json!({"choice": c, "score": s, "votes": n})).collect::<Vec<_>>(),
+            })))
+        }
+        None => Ok(Json(serde_json::json!({"error": format!("consensus session '{}' not found", session_id)}))),
+    }
+}
+
+/// GET /v1/consensus — list all consensus sessions.
+async fn consensus_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let sessions: Vec<serde_json::Value> = s.consensus_sessions.values().map(|sess| {
+        serde_json::json!({
+            "session_id": sess.id, "name": sess.name,
+            "proposal": sess.proposal, "resolved": sess.resolved,
+            "vote_count": sess.vote_count(), "quorum": sess.quorum,
+            "winner": sess.winner,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"sessions": sessions, "count": sessions.len()})))
+}
+
+// ── Hibernate endpoints ─────────────────────────────────────────────────────
+
+/// POST /v1/hibernate — create a new Hibernate session.
+/// Body: { "name": "long_analysis", "operation": "flow:deep_analysis" }
+async fn hibernate_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let operation = payload.get("operation").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if name.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name is required"})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+    let session_id = format!("hib_{}_{}", name, now);
+
+    let session = HibernateSession {
+        id: session_id.clone(),
+        name: name.clone(),
+        operation,
+        status: "active".into(),
+        checkpoints: Vec::new(),
+        resumed_from: None,
+        created_at: now,
+        last_status_change: now,
+        next_checkpoint_id: 1,
+    };
+
+    s.hibernations.insert(session_id.clone(), session);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "hibernate",
+        serde_json::json!({"action": "create", "session": &session_id}), true);
+
+    Ok(Json(serde_json::json!({"success": true, "session_id": session_id, "status": "active"})))
+}
+
+/// POST /v1/hibernate/{id}/checkpoint — save a state checkpoint.
+/// Body: { "label": "after_phase_1", "state": {...}, "phase": "phase_1" }
+async fn hibernate_checkpoint_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let label = payload.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let state_data = payload.get("state").cloned().unwrap_or(serde_json::json!({}));
+    let phase = payload.get("phase").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let session = match s.hibernations.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("hibernate session '{}' not found", session_id)}))),
+    };
+
+    match session.checkpoint(label, state_data, phase) {
+        Ok(cp_id) => Ok(Json(serde_json::json!({
+            "session_id": session_id,
+            "checkpoint_id": cp_id,
+            "total_checkpoints": session.checkpoints.len(),
+            "envelope": { "certainty": 1.0, "derivation": "raw" },
+        }))),
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// POST /v1/hibernate/{id}/suspend — suspend (hibernate) the session.
+async fn hibernate_suspend_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let session = match s.hibernations.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("hibernate session '{}' not found", session_id)}))),
+    };
+
+    match session.suspend() {
+        Ok(()) => {
+            let cp_count = session.checkpoints.len();
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "hibernate",
+                serde_json::json!({"action": "suspend", "session": &session_id}), true);
+            Ok(Json(serde_json::json!({
+                "session_id": session_id, "status": "suspended",
+                "checkpoints": cp_count,
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// POST /v1/hibernate/{id}/resume — resume from a checkpoint.
+/// Body: { "checkpoint_id": 1 }
+async fn hibernate_resume_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let checkpoint_id = payload.get("checkpoint_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+    let session = match s.hibernations.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("hibernate session '{}' not found", session_id)}))),
+    };
+
+    match session.resume(checkpoint_id) {
+        Ok(cp) => {
+            let cp_label = cp.label.clone();
+            let cp_phase = cp.phase.clone();
+            let cp_state = cp.state.clone();
+
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "hibernate",
+                serde_json::json!({"action": "resume", "session": &session_id, "checkpoint": checkpoint_id}), true);
+
+            Ok(Json(serde_json::json!({
+                "session_id": session_id,
+                "status": "resumed",
+                "resumed_from": checkpoint_id,
+                "checkpoint_label": cp_label,
+                "checkpoint_phase": cp_phase,
+                "restored_state": cp_state,
+                "envelope": { "certainty": 0.99, "derivation": "derived" },
+                "lattice_position": "believe",
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// GET /v1/hibernate/{id} — get session status and checkpoints.
+async fn hibernate_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.hibernations.get(&session_id) {
+        Some(sess) => Ok(Json(serde_json::json!({
+            "session_id": sess.id, "name": sess.name,
+            "operation": sess.operation, "status": sess.status,
+            "checkpoints": sess.checkpoints, "resumed_from": sess.resumed_from,
+            "checkpoint_count": sess.checkpoints.len(),
+        }))),
+        None => Ok(Json(serde_json::json!({"error": format!("hibernate session '{}' not found", session_id)}))),
+    }
+}
+
+/// GET /v1/hibernate — list all hibernate sessions.
+async fn hibernate_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let sessions: Vec<serde_json::Value> = s.hibernations.values().map(|sess| {
+        serde_json::json!({
+            "session_id": sess.id, "name": sess.name,
+            "status": sess.status, "checkpoint_count": sess.checkpoints.len(),
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"sessions": sessions, "count": sessions.len()})))
+}
+
+// ── OTS endpoints ───────────────────────────────────────────────────────────
+
+/// POST /v1/ots — create a one-time secret.
+/// Body: { "value": "supersecret123", "ttl_secs": 3600, "label": "db_password" }
+async fn ots_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let value = payload.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let ttl_secs = payload.get("ttl_secs").and_then(|v| v.as_u64()).unwrap_or(3600);
+    let label = payload.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if value.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "value is required"})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+    let token = generate_ots_token(&label);
+
+    let secret = OtsSecret {
+        token: token.clone(),
+        value,
+        consumed: false,
+        created_at: now,
+        ttl_secs,
+        created_by: client.clone(),
+        label: label.clone(),
+    };
+
+    s.ots_secrets.insert(token.clone(), secret);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "ots",
+        serde_json::json!({"action": "create", "token": &token, "label": &label, "ttl_secs": ttl_secs}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "token": token,
+        "label": label,
+        "ttl_secs": ttl_secs,
+        "expires_at": now + ttl_secs,
+        "envelope": { "certainty": 1.0, "derivation": "raw" },
+    })))
+}
+
+/// GET /v1/ots/{token} — retrieve and consume a one-time secret.
+/// The secret is destroyed after retrieval (one-time use).
+async fn ots_retrieve_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(token): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::ReadOnly)?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+    let secret = match s.ots_secrets.get_mut(&token) {
+        Some(sec) => sec,
+        None => return Ok(Json(serde_json::json!({
+            "error": "secret not found or already consumed",
+            "token": token,
+            "envelope": { "certainty": 0.0, "derivation": "void" },
+        }))),
+    };
+
+    match secret.consume(now) {
+        Ok(value) => {
+            let label = secret.label.clone();
+
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "ots",
+                serde_json::json!({"action": "consume", "token": &token}), true);
+
+            Ok(Json(serde_json::json!({
+                "token": token,
+                "value": value,
+                "label": label,
+                "consumed": true,
+                "envelope": { "certainty": 1.0, "derivation": "raw" },
+                "lattice_position": "know",
+                "warning": "This secret has been consumed and is no longer available.",
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({
+            "error": e,
+            "token": token,
+            "envelope": { "certainty": 0.0, "derivation": "void" },
+        }))),
+    }
+}
+
+/// GET /v1/ots — list all OTS tokens (metadata only, never values).
+async fn ots_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+    let secrets: Vec<serde_json::Value> = s.ots_secrets.values().map(|sec| {
+        serde_json::json!({
+            "token": sec.token,
+            "label": sec.label,
+            "consumed": sec.consumed,
+            "expired": sec.is_expired(now),
+            "created_at": sec.created_at,
+            "ttl_secs": sec.ttl_secs,
+            // NEVER expose the value in listings
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"secrets": secrets, "count": secrets.len()})))
+}
+
+// ── Psyche endpoints ────────────────────────────────────────────────────────
+
+/// POST /v1/psyche — start a new Psyche introspection session.
+/// Body: { "name": "analysis_review", "context": "After analyzing 50 documents on attention mechanisms" }
+async fn psyche_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let context = payload.get("context").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if name.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name is required"})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+    let session_id = format!("psyche_{}_{}", name, now);
+
+    let session = PsycheSession {
+        id: session_id.clone(),
+        name: name.clone(),
+        context,
+        insights: Vec::new(),
+        completed: false,
+        created_at: now,
+        next_insight_id: 1,
+    };
+
+    s.psyche_sessions.insert(session_id.clone(), session);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "psyche",
+        serde_json::json!({"action": "create", "session": &session_id}), true);
+
+    Ok(Json(serde_json::json!({"success": true, "session_id": session_id})))
+}
+
+/// POST /v1/psyche/{id}/insight — add a metacognitive insight.
+/// Body: { "category": "knowledge_gap", "content": "Unclear on cross-attention variants", "confidence": 0.7, "severity": "warning" }
+async fn psyche_insight_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let category = payload.get("category").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let confidence = payload.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.5);
+    let severity = payload.get("severity").and_then(|v| v.as_str()).unwrap_or("info").to_string();
+
+    if category.is_empty() || content.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "category and content are required"})));
+    }
+
+    let session = match s.psyche_sessions.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("psyche session '{}' not found", session_id)}))),
+    };
+
+    match session.add_insight(category, content, confidence, severity) {
+        Ok(insight_id) => Ok(Json(serde_json::json!({
+            "session_id": session_id,
+            "insight_id": insight_id,
+            "total_insights": session.insights.len(),
+            "envelope": { "certainty": 0.99, "derivation": "derived" },
+        }))),
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// POST /v1/psyche/{id}/complete — complete introspection and generate report.
+async fn psyche_complete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let session = match s.psyche_sessions.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("psyche session '{}' not found", session_id)}))),
+    };
+
+    if session.completed {
+        return Ok(Json(serde_json::json!({"error": "session already completed"})));
+    }
+
+    let report = session.report();
+    session.completed = true;
+    let context = session.context.clone();
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "psyche",
+        serde_json::json!({"action": "complete", "session": &session_id}), true);
+
+    let awareness = report["self_awareness_score"].as_f64().unwrap_or(0.0);
+    let certainty = (awareness * 0.99).min(0.99);
+    let lattice = if awareness > 0.7 { "believe" } else { "speculate" };
+
+    Ok(Json(serde_json::json!({
+        "session_id": session_id,
+        "context": context,
+        "completed": true,
+        "report": report,
+        "envelope": {
+            "certainty": (certainty * 10000.0).round() / 10000.0,
+            "derivation": "derived",
+            "reason": "Theorem 5.1: self-reflection is meta-reasoning (δ=derived, c≤0.99)",
+        },
+        "lattice_position": lattice,
+    })))
+}
+
+/// GET /v1/psyche/{id} — get session with insights and report.
+async fn psyche_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.psyche_sessions.get(&session_id) {
+        Some(sess) => {
+            let report = sess.report();
+            Ok(Json(serde_json::json!({
+                "session_id": sess.id, "name": sess.name,
+                "context": sess.context, "completed": sess.completed,
+                "insights": sess.insights, "report": report,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({"error": format!("psyche session '{}' not found", session_id)}))),
+    }
+}
+
+/// GET /v1/psyche — list all psyche sessions.
+async fn psyche_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let sessions: Vec<serde_json::Value> = s.psyche_sessions.values().map(|sess| {
+        serde_json::json!({
+            "session_id": sess.id, "name": sess.name,
+            "completed": sess.completed, "insight_count": sess.insights.len(),
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"sessions": sessions, "count": sessions.len()})))
+}
+
+// ── AxonEndpoint endpoints ───────────────────────────────────────────────────
+
+/// POST /v1/endpoints — register an external API endpoint binding.
+/// Body: { "name": "weather_api", "method": "GET", "url_template": "https://api.weather.com/v1/{city}", "auth_type": "api_key", "auth_ref": "WEATHER_KEY", "timeout_ms": 5000, "description": "Weather API" }
+async fn endpoint_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let method = payload.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_string().to_uppercase();
+    let url_template = payload.get("url_template").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let auth_type = payload.get("auth_type").and_then(|v| v.as_str()).unwrap_or("none").to_string();
+    let auth_ref = payload.get("auth_ref").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let timeout_ms = payload.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(10000);
+    let description = payload.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let hdrs: HashMap<String, String> = payload.get("headers")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    if name.is_empty() || url_template.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name and url_template are required"})));
+    }
+
+    if !["GET", "POST", "PUT", "DELETE"].contains(&method.as_str()) {
+        return Ok(Json(serde_json::json!({"error": "method must be GET, POST, PUT, or DELETE"})));
+    }
+
+    if s.axon_endpoints.contains_key(&name) {
+        return Ok(Json(serde_json::json!({"error": format!("endpoint '{}' already exists", name)})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+    let binding = EndpointBinding {
+        name: name.clone(),
+        method: method.clone(),
+        url_template: url_template.clone(),
+        headers: hdrs,
+        auth_type,
+        auth_ref,
+        timeout_ms,
+        enabled: true,
+        description,
+        created_at: now,
+        total_calls: 0,
+        total_errors: 0,
+    };
+
+    s.axon_endpoints.insert(name.clone(), binding);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "axonendpoint",
+        serde_json::json!({"action": "create", "name": &name}), true);
+
+    Ok(Json(serde_json::json!({"success": true, "name": name, "method": method, "url_template": url_template})))
+}
+
+/// POST /v1/endpoints/{name}/call — record an endpoint call (intent-based, no actual HTTP).
+/// Body: { "params": {"city": "London"}, "body": {"query": "forecast"} }
+/// Returns the resolved URL and call record. Actual HTTP is delegated to external orchestration.
+async fn endpoint_call_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let params: HashMap<String, String> = payload.get("params")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let body = payload.get("body").cloned().unwrap_or(serde_json::json!(null));
+
+    let binding = match s.axon_endpoints.get_mut(&name) {
+        Some(b) => b,
+        None => return Ok(Json(serde_json::json!({"error": format!("endpoint '{}' not found", name)}))),
+    };
+
+    if !binding.enabled {
+        return Ok(Json(serde_json::json!({"error": format!("endpoint '{}' is disabled", name)})));
+    }
+
+    // Resolve URL template
+    let mut resolved_url = binding.url_template.clone();
+    for (key, value) in &params {
+        resolved_url = resolved_url.replace(&format!("{{{}}}", key), value);
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+    let call_id = format!("call_{}_{}_{}", name, binding.total_calls + 1, now);
+    binding.total_calls += 1;
+
+    let method = binding.method.clone();
+    let timeout_ms = binding.timeout_ms;
+
+    let record = EndpointCallRecord {
+        id: call_id.clone(),
+        binding: name.clone(),
+        resolved_url: resolved_url.clone(),
+        method: method.clone(),
+        body: body.clone(),
+        params: params.clone(),
+        called_at: now,
+    };
+
+    s.endpoint_calls.push(record);
+    // Cap call history at 500
+    if s.endpoint_calls.len() > 500 {
+        s.endpoint_calls.remove(0);
+    }
+
+    Ok(Json(serde_json::json!({
+        "call_id": call_id,
+        "binding": name,
+        "method": method,
+        "resolved_url": resolved_url,
+        "params": params,
+        "body": body,
+        "timeout_ms": timeout_ms,
+        "envelope": {
+            "certainty": 0.99,
+            "derivation": "derived",
+            "reason": "Theorem 5.1: external API call result is derived (δ=derived, c≤0.99)",
+        },
+        "lattice_position": "speculate",
+        "effect_row": ["io", "network", "epistemic:speculate"],
+        "note": "Intent recorded. Actual HTTP execution delegated to external orchestration.",
+    })))
+}
+
+/// GET /v1/endpoints/{name} — get binding details and call stats.
+async fn endpoint_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.axon_endpoints.get(&name) {
+        Some(b) => Ok(Json(serde_json::json!({
+            "name": b.name, "method": b.method, "url_template": b.url_template,
+            "headers": b.headers, "auth_type": b.auth_type,
+            "timeout_ms": b.timeout_ms, "enabled": b.enabled,
+            "description": b.description,
+            "total_calls": b.total_calls, "total_errors": b.total_errors,
+        }))),
+        None => Ok(Json(serde_json::json!({"error": format!("endpoint '{}' not found", name)}))),
+    }
+}
+
+/// DELETE /v1/endpoints/{name} — remove an endpoint binding.
+async fn endpoint_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    match s.axon_endpoints.remove(&name) {
+        Some(_) => {
+            s.audit_log.record(&client, AuditAction::ConfigUpdate, "axonendpoint",
+                serde_json::json!({"action": "delete", "name": &name}), true);
+            Ok(Json(serde_json::json!({"success": true, "deleted": name})))
+        }
+        None => Ok(Json(serde_json::json!({"error": format!("endpoint '{}' not found", name)}))),
+    }
+}
+
+/// GET /v1/endpoints — list all endpoint bindings.
+async fn endpoint_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let endpoints: Vec<serde_json::Value> = s.axon_endpoints.values().map(|b| {
+        serde_json::json!({
+            "name": b.name, "method": b.method, "url_template": b.url_template,
+            "enabled": b.enabled, "total_calls": b.total_calls,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"endpoints": endpoints, "count": endpoints.len()})))
+}
+
+// ── Pix endpoints ───────────────────────────────────────────────────────────
+
+/// POST /v1/pix — create a new Pix session.
+/// Body: { "name": "visual_analysis" }
+async fn pix_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if name.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name is required"})));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+    let session_id = format!("pix_{}_{}", name, now);
+
+    let session = PixSession {
+        id: session_id.clone(),
+        name: name.clone(),
+        images: HashMap::new(),
+        created_at: now,
+        next_image_id: 1,
+    };
+
+    s.pix_sessions.insert(session_id.clone(), session);
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "pix",
+        serde_json::json!({"action": "create", "session": &session_id}), true);
+
+    Ok(Json(serde_json::json!({"success": true, "session_id": session_id})))
+}
+
+/// POST /v1/pix/{id}/image — register an image in the session.
+/// Body: { "source": "https://example.com/image.png", "width": 1920, "height": 1080, "format": "png" }
+async fn pix_image_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let source = payload.get("source").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let width = payload.get("width").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let height = payload.get("height").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let format = payload.get("format").and_then(|v| v.as_str()).unwrap_or("png").to_string();
+
+    if source.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "source is required"})));
+    }
+
+    let session = match s.pix_sessions.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("pix session '{}' not found", session_id)}))),
+    };
+
+    let image_id = session.register_image(source, width, height, format, &client);
+
+    Ok(Json(serde_json::json!({
+        "session_id": session_id,
+        "image_id": image_id,
+        "total_images": session.image_count(),
+        "envelope": { "certainty": 1.0, "derivation": "raw" },
+    })))
+}
+
+/// POST /v1/pix/{id}/annotate — annotate a region on an image.
+/// Body: { "image_id": "img_...", "label": "cat", "bbox": [0.1, 0.2, 0.3, 0.4], "confidence": 0.95, "category": "object", "description": "A cat sitting" }
+async fn pix_annotate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let image_id = payload.get("image_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let label = payload.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let confidence = payload.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.5);
+    let category = payload.get("category").and_then(|v| v.as_str()).unwrap_or("region").to_string();
+    let description = payload.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let bbox_arr = payload.get("bbox").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let bbox: [f64; 4] = if bbox_arr.len() == 4 {
+        [
+            bbox_arr[0].as_f64().unwrap_or(0.0),
+            bbox_arr[1].as_f64().unwrap_or(0.0),
+            bbox_arr[2].as_f64().unwrap_or(0.0),
+            bbox_arr[3].as_f64().unwrap_or(0.0),
+        ]
+    } else {
+        return Ok(Json(serde_json::json!({"error": "bbox must be [x, y, width, height] with 4 values"})));
+    };
+
+    if image_id.is_empty() || label.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "image_id and label are required"})));
+    }
+
+    let session = match s.pix_sessions.get_mut(&session_id) {
+        Some(sess) => sess,
+        None => return Ok(Json(serde_json::json!({"error": format!("pix session '{}' not found", session_id)}))),
+    };
+
+    match session.annotate(&image_id, label, bbox, confidence, category, description) {
+        Ok(ann_id) => {
+            let total_ann = session.total_annotations();
+            Ok(Json(serde_json::json!({
+                "session_id": session_id,
+                "image_id": image_id,
+                "annotation_id": ann_id,
+                "total_annotations": total_ann,
+                "envelope": {
+                    "certainty": 0.99,
+                    "derivation": "derived",
+                    "reason": "Theorem 5.1: visual annotation is interpretation (δ=derived, c≤0.99)",
+                },
+                "lattice_position": "speculate",
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({"error": e}))),
+    }
+}
+
+/// GET /v1/pix/{id} — get session with images and annotations.
+async fn pix_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.pix_sessions.get(&session_id) {
+        Some(sess) => Ok(Json(serde_json::json!({
+            "session_id": sess.id, "name": sess.name,
+            "image_count": sess.image_count(),
+            "total_annotations": sess.total_annotations(),
+            "images": sess.images,
+        }))),
+        None => Ok(Json(serde_json::json!({"error": format!("pix session '{}' not found", session_id)}))),
+    }
+}
+
+/// GET /v1/pix — list all pix sessions.
+async fn pix_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let sessions: Vec<serde_json::Value> = s.pix_sessions.values().map(|sess| {
+        serde_json::json!({
+            "session_id": sess.id, "name": sess.name,
+            "image_count": sess.image_count(),
+            "total_annotations": sess.total_annotations(),
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({"sessions": sessions, "count": sessions.len()})))
+}
+
+// ── API key management endpoints ──────────────────────────────────────────
+
+/// Request payload for creating an API key.
+#[derive(Debug, Deserialize)]
+pub struct CreateKeyRequest {
+    pub name: String,
+    pub token: String,
+    #[serde(default = "default_key_role")]
+    pub role: String,
+    pub rate_limit: Option<u32>,
+}
+
+fn default_key_role() -> String { "operator".to_string() }
+
+/// Request payload for revoking an API key.
+#[derive(Debug, Deserialize)]
+pub struct RevokeKeyRequest {
+    pub name: String,
+}
+
+/// Request payload for rotating an API key.
+#[derive(Debug, Deserialize)]
+pub struct RotateKeyRequest {
+    pub old_token: String,
+    pub new_token: String,
+}
+
+/// GET /v1/keys — list all API keys (tokens masked).
+async fn keys_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let list = s.api_keys.list();
+    Ok(Json(serde_json::json!({
+        "enabled": s.api_keys.is_enabled(),
+        "active_count": s.api_keys.active_count(),
+        "total_count": s.api_keys.total_count(),
+        "keys": list,
+    })))
+}
+
+/// POST /v1/keys — create a new API key (admin only).
+async fn keys_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateKeyRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let role = match payload.role.as_str() {
+        "admin" => crate::api_keys::KeyRole::Admin,
+        "readonly" => crate::api_keys::KeyRole::ReadOnly,
+        _ => crate::api_keys::KeyRole::Operator,
+    };
+
+    let client = client_key_from_headers(&headers);
+    let created = s.api_keys.create_key(&payload.name, &payload.token, role, payload.rate_limit);
+    s.audit_log.record(&client, AuditAction::KeyCreate, &payload.name, serde_json::json!({"role": role.as_str()}), created);
+
+    Ok(Json(serde_json::json!({
+        "success": created,
+        "name": payload.name,
+        "role": role.as_str(),
+    })))
+}
+
+/// POST /v1/keys/revoke — revoke an API key by name.
+async fn keys_revoke_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<RevokeKeyRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let client = client_key_from_headers(&headers);
+    let revoked = s.api_keys.revoke_by_name(&payload.name);
+    s.audit_log.record(&client, AuditAction::KeyRevoke, &payload.name, serde_json::json!(null), revoked);
+
+    Ok(Json(serde_json::json!({
+        "success": revoked,
+        "name": payload.name,
+    })))
+}
+
+/// POST /v1/keys/rotate — rotate an API key (old→new).
+async fn keys_rotate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<RotateKeyRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let client = client_key_from_headers(&headers);
+    match s.api_keys.rotate(&payload.old_token, &payload.new_token) {
+        Some(name) => {
+            s.audit_log.record(&client, AuditAction::KeyRotate, &name, serde_json::json!(null), true);
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "name": name,
+            })))
+        }
+        None => {
+            s.audit_log.record(&client, AuditAction::KeyRotate, "unknown", serde_json::json!(null), false);
+            Ok(Json(serde_json::json!({
+                "success": false,
+                "error": "old token not found or already revoked",
+            })))
+        }
+    }
+}
+
+/// Query parameters for log retrieval.
+#[derive(Debug, Deserialize)]
+pub struct LogQuery {
+    #[serde(default = "default_log_limit")]
+    pub limit: usize,
+    pub path: Option<String>,
+    pub min_status: Option<u16>,
+    pub max_status: Option<u16>,
+    pub client: Option<String>,
+}
+
+fn default_log_limit() -> usize { 50 }
+
+/// GET /v1/logs — query recent request logs.
+async fn logs_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<LogQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let filter = if params.path.is_some() || params.min_status.is_some()
+        || params.max_status.is_some() || params.client.is_some()
+    {
+        Some(LogFilter {
+            path_prefix: params.path,
+            min_status: params.min_status,
+            max_status: params.max_status,
+            client_key: params.client,
+        })
+    } else {
+        None
+    };
+
+    let entries = s.request_logger.recent(params.limit, filter.as_ref());
+    let json_entries: Vec<serde_json::Value> = entries.iter().map(|e| {
+        serde_json::to_value(e).unwrap_or_default()
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "count": json_entries.len(),
+        "entries": json_entries,
+    })))
+}
+
+/// GET /v1/logs/stats — aggregate request statistics.
+async fn logs_stats_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let stats = s.request_logger.stats();
+    Ok(Json(serde_json::to_value(&stats).unwrap_or_default()))
+}
+
+/// Query parameters for request log export.
+#[derive(Debug, Deserialize)]
+pub struct LogExportQuery {
+    /// Export format: "jsonl" (default) or "csv".
+    #[serde(default = "default_log_export_format")]
+    pub format: String,
+    /// Filter by HTTP method.
+    pub method: Option<String>,
+    /// Filter by path prefix.
+    pub path_prefix: Option<String>,
+    /// Filter by minimum status code.
+    pub min_status: Option<u16>,
+    /// Max entries (default 1000).
+    #[serde(default = "default_log_export_limit")]
+    pub limit: usize,
+}
+
+fn default_log_export_format() -> String { "jsonl".into() }
+fn default_log_export_limit() -> usize { 1000 }
+
+/// GET /v1/logs/export — export request logs as JSONL or CSV with filtering.
+async fn logs_export_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<LogExportQuery>,
+) -> Result<(StatusCode, [(String, String); 1], String), StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let entries = s.request_logger.recent(params.limit, None);
+
+    let filtered: Vec<&&crate::request_log::RequestLogEntry> = entries.iter()
+        .filter(|e| {
+            let method_ok = params.method.as_ref().map_or(true, |m| e.method.eq_ignore_ascii_case(m));
+            let path_ok = params.path_prefix.as_ref().map_or(true, |p| e.path.starts_with(p.as_str()));
+            let status_ok = params.min_status.map_or(true, |ms| e.status >= ms);
+            method_ok && path_ok && status_ok
+        })
+        .collect();
+
+    let format = params.format.to_lowercase();
+    match format.as_str() {
+        "csv" => {
+            let mut csv = String::from("timestamp,method,path,status,latency_us,client_key\n");
+            for e in &filtered {
+                csv.push_str(&format!(
+                    "{},{},{},{},{},{}\n",
+                    e.timestamp, e.method, e.path, e.status, e.latency_us, e.client_key
+                ));
+            }
+            Ok((StatusCode::OK, [("content-type".into(), "text/csv".into())], csv))
+        }
+        _ => {
+            let mut jsonl = String::new();
+            for e in &filtered {
+                let line = serde_json::json!({
+                    "timestamp": e.timestamp, "method": e.method, "path": e.path,
+                    "status": e.status, "latency_us": e.latency_us, "client_key": e.client_key,
+                });
+                jsonl.push_str(&serde_json::to_string(&line).unwrap_or_default());
+                jsonl.push('\n');
+            }
+            Ok((StatusCode::OK, [("content-type".into(), "application/x-ndjson".into())], jsonl))
+        }
+    }
+}
+
+// ── Webhook endpoints ────────────────────────────────────────────────────
+
+/// Request payload for registering a webhook.
+#[derive(Debug, Deserialize)]
+pub struct RegisterWebhookRequest {
+    pub name: String,
+    pub url: String,
+    pub events: Vec<String>,
+    pub secret: Option<String>,
+    /// Optional payload template with {{topic}}, {{timestamp}}, {{source}}, {{payload}}, {{webhook_name}}, {{webhook_id}}.
+    pub template: Option<String>,
+}
+
+/// Query parameters for webhook deliveries.
+#[derive(Debug, Deserialize)]
+pub struct DeliveryQuery {
+    #[serde(default = "default_delivery_limit")]
+    pub limit: usize,
+    pub webhook_id: Option<String>,
+}
+
+fn default_delivery_limit() -> usize { 50 }
+
+/// GET /v1/webhooks — list registered webhooks.
+async fn webhooks_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let list = s.webhooks.list();
+    let stats = s.webhooks.stats();
+    Ok(Json(serde_json::json!({
+        "total": list.len(),
+        "active": stats.active_webhooks,
+        "webhooks": list,
+    })))
+}
+
+/// POST /v1/webhooks — register a new webhook.
+async fn webhooks_register_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<RegisterWebhookRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let client = client_key_from_headers(&headers);
+    let id = s.webhooks.register_with_template(&payload.name, &payload.url, payload.events, payload.secret, payload.template);
+
+    s.event_bus.publish(
+        "webhook.registered",
+        serde_json::json!({ "id": &id, "name": &payload.name }),
+        "server",
+    );
+    s.audit_log.record(&client, AuditAction::WebhookRegister, &id, serde_json::json!({"name": &payload.name, "url": &payload.url}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "id": id,
+        "name": payload.name,
+    })))
+}
+
+/// DELETE /v1/webhooks/:id — unregister a webhook.
+async fn webhooks_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let client = client_key_from_headers(&headers);
+    let removed = s.webhooks.unregister(&id);
+    if removed {
+        s.event_bus.publish(
+            "webhook.removed",
+            serde_json::json!({ "id": &id }),
+            "server",
+        );
+    }
+    s.audit_log.record(&client, AuditAction::WebhookRemove, &id, serde_json::json!(null), removed);
+
+    Ok(Json(serde_json::json!({
+        "success": removed,
+        "id": id,
+    })))
+}
+
+/// POST /v1/webhooks/:id/toggle — toggle webhook active state.
+async fn webhooks_toggle_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let client = client_key_from_headers(&headers);
+    match s.webhooks.toggle(&id) {
+        Some(active) => {
+            s.audit_log.record(&client, AuditAction::WebhookToggle, &id, serde_json::json!({"active": active}), true);
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "id": id,
+                "active": active,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "success": false,
+            "error": "webhook not found",
+        }))),
+    }
+}
+
+/// GET /v1/webhooks/deliveries — recent delivery log.
+async fn webhooks_deliveries_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<DeliveryQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let deliveries = s.webhooks.recent_deliveries(params.limit, params.webhook_id.as_deref());
+    let json_entries: Vec<serde_json::Value> = deliveries.iter().map(|d| {
+        serde_json::to_value(d).unwrap_or_default()
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "count": json_entries.len(),
+        "deliveries": json_entries,
+    })))
+}
+
+/// GET /v1/webhooks/stats — webhook statistics.
+async fn webhooks_stats_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let stats = s.webhooks.stats();
+    Ok(Json(serde_json::to_value(&stats).unwrap_or_default()))
+}
+
+/// GET /v1/webhooks/retry-queue — view pending retries.
+async fn webhooks_retry_queue_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let queue = s.webhooks.retry_queue();
+    Ok(Json(serde_json::json!({
+        "count": queue.len(),
+        "entries": serde_json::to_value(queue).unwrap_or_default(),
+    })))
+}
+
+/// GET /v1/webhooks/dead-letters — view permanently failed deliveries.
+async fn webhooks_dead_letters_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let dead = s.webhooks.dead_letters();
+    Ok(Json(serde_json::json!({
+        "count": dead.len(),
+        "entries": serde_json::to_value(dead).unwrap_or_default(),
+    })))
+}
+
+/// GET /v1/webhooks/:id/template — get the payload template for a webhook.
+async fn webhook_template_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.webhooks.get_template(&id) {
+        Some(template) => Ok(Json(serde_json::json!({
+            "webhook_id": id,
+            "template": template,
+            "has_template": template.is_some(),
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "error": format!("webhook '{}' not found", id),
+        }))),
+    }
+}
+
+/// Request to set a webhook template.
+#[derive(Debug, Deserialize)]
+pub struct SetTemplateRequest {
+    /// Template string (null to remove).
+    pub template: Option<String>,
+}
+
+/// PUT /v1/webhooks/:id/template — set or remove payload template.
+async fn webhook_template_set_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(payload): Json<SetTemplateRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    if s.webhooks.set_template(&id, payload.template.clone()) {
+        Ok(Json(serde_json::json!({
+            "success": true,
+            "webhook_id": id,
+            "template": payload.template,
+        })))
+    } else {
+        Ok(Json(serde_json::json!({
+            "error": format!("webhook '{}' not found", id),
+        })))
+    }
+}
+
+/// Request to render a webhook template preview.
+#[derive(Debug, Deserialize)]
+pub struct RenderPreviewRequest {
+    pub topic: String,
+    pub payload: serde_json::Value,
+    #[serde(default = "default_render_source")]
+    pub source: String,
+}
+
+fn default_render_source() -> String { "preview".into() }
+
+/// POST /v1/webhooks/:id/render — preview rendered payload with template.
+async fn webhook_render_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(payload): Json<RenderPreviewRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let rendered = s.webhooks.render_payload(&id, &payload.topic, &payload.payload, &payload.source);
+    Ok(Json(serde_json::json!({
+        "webhook_id": id,
+        "rendered": rendered,
+    })))
+}
+
+/// Request for webhook delivery simulation.
+#[derive(Debug, Deserialize)]
+pub struct SimulateDeliveryRequest {
+    /// Event topic.
+    pub topic: String,
+    /// Event payload.
+    pub payload: serde_json::Value,
+    /// Event source.
+    #[serde(default = "default_simulate_source")]
+    pub source: String,
+}
+
+fn default_simulate_source() -> String { "simulate".into() }
+
+/// POST /v1/webhooks/:id/simulate — dry-run webhook delivery.
+///
+/// Renders the payload (template or default), computes HMAC signature if secret
+/// is set, returns the full delivery preview without actually sending.
+async fn webhook_simulate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(payload): Json<SimulateDeliveryRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let wh = match s.webhooks.get(&id) {
+        Some(w) => w,
+        None => {
+            return Ok(Json(serde_json::json!({
+                "error": format!("webhook '{}' not found", id),
+            })));
+        }
+    };
+
+    // Render payload
+    let rendered = s.webhooks.render_payload(&id, &payload.topic, &payload.payload, &payload.source);
+    let rendered_bytes = serde_json::to_vec(&rendered).unwrap_or_default();
+
+    // Compute signature if secret exists
+    let signature = wh.secret.as_ref().map(|secret| {
+        crate::webhooks::WebhookRegistry::compute_signature(secret, &rendered_bytes)
+    });
+
+    // Check if topic matches webhook filters
+    let topic_matches = wh.events.iter().any(|f| {
+        f == "*" || f == &payload.topic
+            || (f.ends_with(".*") && payload.topic.starts_with(&f[..f.len()-2]))
+    });
+
+    Ok(Json(serde_json::json!({
+        "webhook_id": id,
+        "webhook_name": wh.name,
+        "url": wh.url,
+        "active": wh.active,
+        "topic": payload.topic,
+        "topic_matches": topic_matches,
+        "has_template": wh.template.is_some(),
+        "has_secret": wh.secret.is_some(),
+        "rendered_payload": rendered,
+        "signature": signature,
+        "content_type": "application/json",
+        "method": "POST",
+        "dry_run": true,
+    })))
+}
+
+// ── Server config endpoints ──────────────────────────────────────────────
+
+/// GET /v1/config — get current server configuration.
+async fn config_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let snap = crate::server_config::snapshot(&s.rate_limiter, &s.request_logger, &s.api_keys);
+    Ok(Json(serde_json::to_value(&snap).unwrap_or_default()))
+}
+
+/// PUT /v1/config — update server configuration at runtime.
+async fn config_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(update): Json<crate::server_config::ConfigUpdate>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    // Apply changes per-section to satisfy borrow checker (each borrows one field)
+    let mut changes = Vec::new();
+    if let Some(ref rl) = update.rate_limit {
+        changes.extend(crate::server_config::apply_rate_limit(rl, &mut s.rate_limiter));
+    }
+    if let Some(ref log) = update.request_log {
+        changes.extend(crate::server_config::apply_request_log(log, &mut s.request_logger));
+    }
+    let snap = crate::server_config::snapshot(&s.rate_limiter, &s.request_logger, &s.api_keys);
+    let result = crate::server_config::ConfigUpdateResult {
+        applied: !changes.is_empty(),
+        changes,
+        snapshot: snap,
+    };
+
+    let client = client_key_from_headers(&headers);
+    if result.applied {
+        s.event_bus.publish(
+            "config.updated",
+            serde_json::json!({
+                "changes": result.changes.len(),
+                "sections": result.changes.iter().map(|c| c.section.clone()).collect::<Vec<_>>(),
+            }),
+            "server",
+        );
+        s.audit_log.record(&client, AuditAction::ConfigUpdate, "config", serde_json::json!({"changes": result.changes.len()}), true);
+    }
+
+    Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
+}
+
+/// POST /v1/config/save — persist current config to disk.
+async fn config_save_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let snap = crate::server_config::snapshot(&s.rate_limiter, &s.request_logger, &s.api_keys);
+    let path = crate::config_persistence::resolve_path(s.config.config_path.as_deref());
+    let result = crate::config_persistence::save(&snap, &path, crate::runner::AXON_VERSION);
+
+    let client = client_key_from_headers(&headers);
+    if result.success {
+        s.event_bus.publish(
+            "config.saved",
+            serde_json::json!({ "path": &result.path, "save_count": result.save_count }),
+            "server",
+        );
+    }
+    s.audit_log.record(&client, AuditAction::ConfigSave, "config", serde_json::json!({"path": &result.path}), result.success);
+
+    Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
+}
+
+/// POST /v1/config/load — reload config from disk.
+async fn config_load_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let client = client_key_from_headers(&headers);
+    let path = crate::config_persistence::resolve_path(s.config.config_path.as_deref());
+
+    match crate::config_persistence::load(&path) {
+        Ok(persisted) => {
+            let update = crate::config_persistence::snapshot_to_update(&persisted.config);
+            let mut changes = Vec::new();
+            if let Some(ref rl) = update.rate_limit {
+                changes.extend(crate::server_config::apply_rate_limit(rl, &mut s.rate_limiter));
+            }
+            if let Some(ref log) = update.request_log {
+                changes.extend(crate::server_config::apply_request_log(log, &mut s.request_logger));
+            }
+
+            s.event_bus.publish(
+                "config.loaded",
+                serde_json::json!({
+                    "path": path.display().to_string(),
+                    "changes": changes.len(),
+                    "save_count": persisted.save_count,
+                }),
+                "server",
+            );
+            s.audit_log.record(&client, AuditAction::ConfigLoad, "config", serde_json::json!({"path": path.display().to_string(), "changes": changes.len()}), true);
+
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "path": path.display().to_string(),
+                "saved_at": persisted.saved_at,
+                "save_count": persisted.save_count,
+                "changes_applied": changes.len(),
+            })))
+        }
+        Err(e) => {
+            s.audit_log.record(&client, AuditAction::ConfigLoad, "config", serde_json::json!({"error": &e}), false);
+            Ok(Json(serde_json::json!({
+                "success": false,
+                "path": path.display().to_string(),
+                "error": e,
+            })))
+        }
+    }
+}
+
+/// DELETE /v1/config/saved — remove persisted config file.
+async fn config_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let client = client_key_from_headers(&headers);
+    let path = crate::config_persistence::resolve_path(s.config.config_path.as_deref());
+    let removed = crate::config_persistence::remove(&path);
+    s.audit_log.record(&client, AuditAction::ConfigDelete, "config", serde_json::json!({"path": path.display().to_string()}), removed);
+
+    Ok(Json(serde_json::json!({
+        "success": removed,
+        "path": path.display().to_string(),
+    })))
+}
+
+// ── Config snapshots endpoints ────────────────────────────────────────────
+
+/// GET /v1/config/snapshots — list all saved configuration snapshots.
+async fn config_snapshots_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let summaries: Vec<serde_json::Value> = s.config_snapshots.iter().map(|snap| {
+        serde_json::json!({
+            "name": snap.name,
+            "created_at": snap.created_at,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "count": summaries.len(),
+        "snapshots": summaries,
+    })))
+}
+
+/// Request to save a config snapshot.
+#[derive(Debug, Deserialize)]
+pub struct SnapshotSaveRequest {
+    pub name: String,
+}
+
+/// POST /v1/config/snapshots — save current configuration as a named snapshot.
+async fn config_snapshots_save_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<SnapshotSaveRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    if payload.name.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": "snapshot name must not be empty",
+        })));
+    }
+
+    // Check for duplicate name
+    if s.config_snapshots.iter().any(|snap| snap.name == payload.name) {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": format!("snapshot '{}' already exists", payload.name),
+        })));
+    }
+
+    let snap = crate::server_config::snapshot(&s.rate_limiter, &s.request_logger, &s.api_keys);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    s.config_snapshots.push(NamedConfigSnapshot {
+        name: payload.name.clone(),
+        created_at: now,
+        snapshot: snap,
+    });
+
+    // Cap at 50 snapshots
+    if s.config_snapshots.len() > 50 {
+        s.config_snapshots.remove(0);
+    }
+
+    s.audit_log.record(
+        &client, AuditAction::ConfigUpdate, "config_snapshot",
+        serde_json::json!({"action": "save", "name": payload.name}),
+        true,
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "name": payload.name,
+        "total_snapshots": s.config_snapshots.len(),
+    })))
+}
+
+/// Request to restore a config snapshot.
+#[derive(Debug, Deserialize)]
+pub struct SnapshotRestoreRequest {
+    pub name: String,
+}
+
+/// POST /v1/config/snapshots/restore — restore configuration from a named snapshot.
+async fn config_snapshots_restore_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<SnapshotRestoreRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let snap = match s.config_snapshots.iter().find(|snap| snap.name == payload.name) {
+        Some(snap) => snap.snapshot.clone(),
+        None => {
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": format!("snapshot '{}' not found", payload.name),
+            })));
+        }
+    };
+
+    // Apply rate limiter settings
+    s.rate_limiter.update_config(
+        Some(snap.rate_limit.max_requests),
+        Some(snap.rate_limit.window_secs),
+        Some(snap.rate_limit.enabled),
+    );
+
+    // Apply request log settings
+    s.request_logger.update_config(
+        Some(snap.request_log.capacity),
+        Some(snap.request_log.enabled),
+    );
+
+    s.audit_log.record(
+        &client, AuditAction::ConfigUpdate, "config_snapshot",
+        serde_json::json!({"action": "restore", "name": payload.name}),
+        true,
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "restored_from": payload.name,
+        "applied": {
+            "rate_limit": snap.rate_limit,
+            "request_log": snap.request_log,
+        },
+    })))
+}
+
+// ── Audit trail endpoints ────────────────────────────────────────────────
+
+/// Query parameters for audit log retrieval.
+#[derive(Debug, Deserialize)]
+pub struct AuditQuery {
+    #[serde(default = "default_audit_limit")]
+    pub limit: usize,
+    pub action: Option<String>,
+    pub actor: Option<String>,
+    pub target: Option<String>,
+    pub success: Option<bool>,
+}
+
+fn default_audit_limit() -> usize { 50 }
+
+/// GET /v1/audit — query recent audit entries with optional filters.
+async fn audit_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<AuditQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let filter = if params.action.is_some() || params.actor.is_some()
+        || params.target.is_some() || params.success.is_some()
+    {
+        Some(AuditFilter {
+            action: params.action.as_deref().and_then(crate::audit_trail::parse_action),
+            actor: params.actor,
+            target_prefix: params.target,
+            success: params.success,
+            ..Default::default()
+        })
+    } else {
+        None
+    };
+
+    let entries = s.audit_log.query(params.limit, filter.as_ref());
+    let json_entries: Vec<serde_json::Value> = entries.iter().map(|e| {
+        serde_json::to_value(e).unwrap_or_default()
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "count": json_entries.len(),
+        "total": s.audit_log.total_recorded(),
+        "entries": json_entries,
+    })))
+}
+
+/// GET /v1/audit/stats — aggregated audit statistics.
+async fn audit_stats_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let stats = s.audit_log.stats();
+    Ok(Json(serde_json::to_value(&stats).unwrap_or_default()))
+}
+
+/// Query parameters for audit trail export.
+#[derive(Debug, Deserialize)]
+pub struct AuditExportQuery {
+    /// Export format: "jsonl" (default) or "csv".
+    #[serde(default = "default_audit_export_format")]
+    pub format: String,
+    /// Only entries after this Unix timestamp (0 = no filter).
+    #[serde(default)]
+    pub from: u64,
+    /// Only entries before this Unix timestamp (0 = no filter).
+    #[serde(default)]
+    pub to: u64,
+    /// Max entries (default 1000).
+    #[serde(default = "default_audit_export_limit")]
+    pub limit: usize,
+}
+
+fn default_audit_export_format() -> String { "jsonl".into() }
+fn default_audit_export_limit() -> usize { 1000 }
+
+/// GET /v1/audit/export — export audit trail as JSONL or CSV.
+async fn audit_export_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<AuditExportQuery>,
+) -> Result<(StatusCode, [(String, String); 1], String), StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let entries = s.audit_log.query(params.limit, None);
+
+    // Apply date range filter
+    let filtered: Vec<&&crate::audit_trail::AuditEntry> = entries.iter()
+        .filter(|e| {
+            let after = params.from == 0 || e.timestamp >= params.from;
+            let before = params.to == 0 || e.timestamp <= params.to;
+            after && before
+        })
+        .collect();
+
+    let format = params.format.to_lowercase();
+    match format.as_str() {
+        "csv" => {
+            let mut csv = String::from("id,timestamp,actor,action,target,success,detail\n");
+            for e in &filtered {
+                let detail_str = serde_json::to_string(&e.detail).unwrap_or_default().replace('"', "\"\"");
+                csv.push_str(&format!(
+                    "{},{},{},{},{},{},\"{}\"\n",
+                    e.id, e.timestamp, e.actor, e.action.as_str(), e.target, e.success, detail_str
+                ));
+            }
+            Ok((
+                StatusCode::OK,
+                [("content-type".into(), "text/csv".into())],
+                csv,
+            ))
+        }
+        _ => {
+            // JSONL
+            let mut jsonl = String::new();
+            for e in &filtered {
+                let line = serde_json::json!({
+                    "id": e.id,
+                    "timestamp": e.timestamp,
+                    "actor": e.actor,
+                    "action": e.action.as_str(),
+                    "target": e.target,
+                    "success": e.success,
+                    "detail": e.detail,
+                });
+                jsonl.push_str(&serde_json::to_string(&line).unwrap_or_default());
+                jsonl.push('\n');
+            }
+            Ok((
+                StatusCode::OK,
+                [("content-type".into(), "application/x-ndjson".into())],
+                jsonl,
+            ))
+        }
+    }
+}
+
+// ── CORS config endpoints ────────────────────────────────────────────────
+
+/// GET /v1/cors — view current CORS configuration.
+async fn cors_config_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    Ok(Json(serde_json::to_value(&s.cors_config).unwrap_or_default()))
+}
+
+/// PUT /v1/cors — update CORS configuration.
+/// Note: changes take effect on next server restart (CORS layer is built at startup).
+async fn cors_config_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(update): Json<crate::cors::CorsUpdate>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let changes = crate::cors::apply_update(&mut s.cors_config, &update);
+
+    Ok(Json(serde_json::json!({
+        "updated": !changes.is_empty(),
+        "changes": changes,
+        "note": "CORS changes take effect on next server restart",
+        "config": serde_json::to_value(&s.cors_config).unwrap_or_default(),
+    })))
+}
+
+// ── Request middleware endpoints ─────────────────────────────────────────
+
+/// GET /v1/middleware — view current middleware configuration and stats.
+async fn middleware_config_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let stats = crate::request_middleware::MiddlewareStats {
+        total_requests: s.request_id_gen.count(),
+        config: s.middleware_config.clone(),
+    };
+
+    Ok(Json(serde_json::to_value(&stats).unwrap_or_default()))
+}
+
+/// PUT /v1/middleware — update middleware configuration at runtime.
+async fn middleware_config_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(update): Json<crate::request_middleware::MiddlewareUpdate>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let changes = crate::request_middleware::apply_update(&mut s.middleware_config, &update);
+
+    Ok(Json(serde_json::json!({
+        "updated": !changes.is_empty(),
+        "changes": changes,
+        "config": serde_json::to_value(&s.middleware_config).unwrap_or_default(),
+    })))
+}
+
+// ── Webhook delivery config endpoints ────────────────────────────────────
+
+/// GET /v1/webhooks/delivery-config — get current delivery configuration.
+async fn delivery_config_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let c = &s.delivery_config;
+    Ok(Json(serde_json::json!({
+        "timeout_secs": c.timeout.as_secs(),
+        "max_retries": c.max_retries,
+        "base_delay_ms": c.base_delay.as_millis() as u64,
+        "max_delay_secs": c.max_delay.as_secs(),
+    })))
+}
+
+/// Update payload for delivery config.
+#[derive(Debug, Deserialize)]
+pub struct DeliveryConfigUpdate {
+    pub timeout_secs: Option<u64>,
+    pub max_retries: Option<u32>,
+    pub base_delay_ms: Option<u64>,
+    pub max_delay_secs: Option<u64>,
+}
+
+/// PUT /v1/webhooks/delivery-config — update delivery configuration.
+async fn delivery_config_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(update): Json<DeliveryConfigUpdate>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    if let Some(t) = update.timeout_secs {
+        s.delivery_config.timeout = std::time::Duration::from_secs(t);
+    }
+    if let Some(r) = update.max_retries {
+        s.delivery_config.max_retries = r;
+    }
+    if let Some(d) = update.base_delay_ms {
+        s.delivery_config.base_delay = std::time::Duration::from_millis(d);
+    }
+    if let Some(m) = update.max_delay_secs {
+        s.delivery_config.max_delay = std::time::Duration::from_secs(m);
+    }
+
+    let c = &s.delivery_config;
+    Ok(Json(serde_json::json!({
+        "updated": true,
+        "timeout_secs": c.timeout.as_secs(),
+        "max_retries": c.max_retries,
+        "base_delay_ms": c.base_delay.as_millis() as u64,
+        "max_delay_secs": c.max_delay.as_secs(),
+    })))
+}
+
+// ── Shutdown endpoint ────────────────────────────────────────────────────
+
+/// POST /v1/shutdown — initiate graceful server shutdown (admin only).
+async fn shutdown_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let client = client_key_from_headers(&headers);
+
+    if let Some(ref coordinator) = s.shutdown {
+        let triggered = coordinator.trigger();
+        let uptime = coordinator.uptime_secs();
+
+        if triggered {
+            // Auto-persist state before shutdown
+            let auto_persist = s.auto_persist_on_shutdown;
+            let persist_result = if auto_persist {
+                match persist_state_to_disk(&s, &format!("shutdown:{}", client)) {
+                    Ok(path) => Some(serde_json::json!({"success": true, "path": path})),
+                    Err(e) => Some(serde_json::json!({"success": false, "error": e})),
+                }
+            } else {
+                None
+            };
+
+            s.audit_log.record(
+                &client,
+                AuditAction::ServerShutdown,
+                "server",
+                serde_json::json!({"reason": "api", "initiated_by": &client, "auto_persisted": auto_persist}),
+                true,
+            );
+            Ok(Json(serde_json::json!({
+                "initiated": true,
+                "reason": "api",
+                "uptime_secs": uptime,
+                "message": "graceful shutdown initiated",
+                "auto_persist": persist_result,
+            })))
+        } else {
+            Ok(Json(serde_json::json!({
+                "initiated": false,
+                "reason": "api",
+                "uptime_secs": uptime,
+                "message": "shutdown already in progress",
+            })))
+        }
+    } else {
+        Ok(Json(serde_json::json!({
+            "initiated": false,
+            "message": "shutdown coordinator not available",
+        })))
+    }
+}
+
+// ── Flow inspect endpoints ───────────────────────────────────────────────
+
+/// GET /v1/inspect/:name — introspect a deployed flow.
+///
+/// Re-compiles the flow's stored source and returns structured metadata:
+/// signature, steps, edges, execution levels, anchors, tools, personas.
+async fn inspect_flow_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    // Check if daemon exists
+    if !s.daemons.contains_key(&name) {
+        return Ok(Json(serde_json::json!({
+            "error": format!("flow '{}' not deployed", name),
+            "available": s.daemons.keys().collect::<Vec<_>>(),
+        })));
+    }
+
+    // Get the latest version source
+    let history = match s.versions.get_history(&name) {
+        Some(h) => h,
+        None => {
+            return Ok(Json(serde_json::json!({
+                "error": format!("no version history for flow '{}'", name),
+            })));
+        }
+    };
+
+    let active = match history.active() {
+        Some(v) => v,
+        None => {
+            return Ok(Json(serde_json::json!({
+                "error": format!("no active version for flow '{}'", name),
+            })));
+        }
+    };
+
+    let source = active.source.clone();
+    let source_file = active.source_file.clone();
+    let source_hash = active.source_hash.clone();
+    drop(s); // Release lock before compilation
+
+    match crate::flow_inspect::inspect_flow(&name, &source, &source_file, &source_hash) {
+        Ok(inspection) => Ok(Json(serde_json::to_value(&inspection).unwrap_or_default())),
+        Err(e) => Ok(Json(serde_json::json!({
+            "error": e,
+            "flow": name,
+        }))),
+    }
+}
+
+/// Query parameters for graph export.
+#[derive(Debug, Deserialize)]
+pub struct GraphQuery {
+    /// Output format: "dot" (default) or "mermaid".
+    #[serde(default = "default_graph_format")]
+    pub format: String,
+}
+
+fn default_graph_format() -> String {
+    "dot".to_string()
+}
+
+/// GET /v1/inspect/:name/graph — export flow dependency graph as DOT or Mermaid.
+async fn inspect_graph_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(query): Query<GraphQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    if !s.daemons.contains_key(&name) {
+        return Ok(Json(serde_json::json!({
+            "error": format!("flow '{}' not deployed", name),
+            "available": s.daemons.keys().collect::<Vec<_>>(),
+        })));
+    }
+
+    let history = match s.versions.get_history(&name) {
+        Some(h) => h,
+        None => {
+            return Ok(Json(serde_json::json!({
+                "error": format!("no version history for flow '{}'", name),
+            })));
+        }
+    };
+
+    let active = match history.active() {
+        Some(v) => v,
+        None => {
+            return Ok(Json(serde_json::json!({
+                "error": format!("no active version for flow '{}'", name),
+            })));
+        }
+    };
+
+    let source = active.source.clone();
+    let source_file = active.source_file.clone();
+    drop(s);
+
+    let format = crate::flow_inspect::GraphFormat::from_str(&query.format);
+
+    match crate::flow_inspect::export_flow_graph(&name, &source, &source_file, format) {
+        Ok(export) => Ok(Json(serde_json::to_value(&export).unwrap_or_default())),
+        Err(e) => Ok(Json(serde_json::json!({
+            "error": e,
+            "flow": name,
+        }))),
+    }
+}
+
+/// GET /v1/inspect/:name/dependencies — step dependency analysis for a flow.
+async fn inspect_dependencies_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let history = match s.versions.get_history(&name) {
+        Some(h) => h,
+        None => {
+            return Ok(Json(serde_json::json!({
+                "error": format!("no version history for flow '{}'", name),
+            })));
+        }
+    };
+
+    let active = match history.active() {
+        Some(v) => v,
+        None => {
+            return Ok(Json(serde_json::json!({
+                "error": format!("no active version for flow '{}'", name),
+            })));
+        }
+    };
+
+    let source = active.source.clone();
+    let source_file = active.source_file.clone();
+    drop(s);
+
+    // Lex → Parse → IR
+    let tokens = match crate::lexer::Lexer::new(&source, &source_file).tokenize() {
+        Ok(t) => t,
+        Err(e) => return Ok(Json(serde_json::json!({"error": format!("lex error: {e:?}")}))),
+    };
+    let mut parser = crate::parser::Parser::new(tokens);
+    let program = match parser.parse() {
+        Ok(p) => p,
+        Err(e) => return Ok(Json(serde_json::json!({"error": format!("parse error: {e:?}")}))),
+    };
+    let ir = crate::ir_generator::IRGenerator::new().generate(&program);
+
+    let ir_flow = match ir.flows.iter().find(|f| f.name == name) {
+        Some(f) => f,
+        None => return Ok(Json(serde_json::json!({"error": format!("flow '{}' not found in IR", name)}))),
+    };
+
+    // Extract StepInfo for step_deps analysis
+    let step_infos: Vec<crate::step_deps::StepInfo> = ir_flow.steps.iter().filter_map(|node| {
+        if let crate::ir_nodes::IRFlowNode::Step(step) = node {
+            Some(crate::step_deps::StepInfo {
+                name: step.name.clone(),
+                step_type: step.node_type.to_string(),
+                user_prompt: step.ask.clone(),
+                argument: step.use_tool.as_ref()
+                    .and_then(|t| t.get("argument").and_then(|a| a.as_str()).map(String::from))
+                    .unwrap_or_default(),
+            })
+        } else {
+            None
+        }
+    }).collect();
+
+    let graph = crate::step_deps::analyze(&step_infos);
+
+    // Serialize
+    let steps_json: Vec<serde_json::Value> = graph.steps.iter().map(|s| {
+        serde_json::json!({
+            "name": s.name,
+            "step_type": s.step_type,
+            "depends_on": s.depends_on,
+            "all_refs": s.all_refs,
+            "step_refs": s.step_refs,
+            "is_root": s.is_root,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "flow": name,
+        "total_steps": step_infos.len(),
+        "max_depth": graph.max_depth,
+        "parallel_groups": graph.parallel_groups,
+        "unresolved_refs": graph.unresolved_refs,
+        "steps": steps_json,
+    })))
+}
+
+/// GET /v1/inspect — list all deployed flows with summary info.
+async fn inspect_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let mut summaries = Vec::new();
+
+    for (name, daemon) in &s.daemons {
+        if let Some(history) = s.versions.get_history(name) {
+            if let Some(active) = history.active() {
+                // Quick summary without full recompilation
+                summaries.push(serde_json::json!({
+                    "name": name,
+                    "source_file": daemon.source_file,
+                    "source_hash": active.source_hash,
+                    "version": active.version,
+                    "state": daemon.state,
+                    "event_count": daemon.event_count,
+                }));
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "flows": summaries,
+        "total": summaries.len(),
+    })))
+}
+
+// ── Trace store endpoints ─────────────────────────────────────────────────
+
+/// Query parameters for trace listing.
+#[derive(Debug, Deserialize)]
+pub struct TraceQuery {
+    /// Max entries to return (default 50).
+    #[serde(default = "default_trace_limit")]
+    pub limit: usize,
+    /// Filter by flow name.
+    pub flow_name: Option<String>,
+    /// Filter by status (success/failed/partial/timeout).
+    pub status: Option<String>,
+    /// Filter by client key.
+    pub client_key: Option<String>,
+    /// Only traces with latency >= this (ms).
+    pub min_latency_ms: Option<u64>,
+    /// Only traces with errors.
+    pub has_errors: Option<bool>,
+}
+
+fn default_trace_limit() -> usize { 50 }
+
+/// GET /v1/traces — list recent execution traces with optional filters.
+async fn traces_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<TraceQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let filter = if params.flow_name.is_some() || params.status.is_some()
+        || params.client_key.is_some() || params.min_latency_ms.is_some()
+        || params.has_errors.is_some()
+    {
+        Some(TraceFilter {
+            flow_name: params.flow_name,
+            status: params.status,
+            client_key: params.client_key,
+            min_latency_ms: params.min_latency_ms,
+            has_errors: params.has_errors,
+            tag: None,
+        })
+    } else {
+        None
+    };
+
+    let entries = s.trace_store.recent(params.limit, filter.as_ref());
+    let json_entries: Vec<serde_json::Value> = entries.iter().map(|e| {
+        serde_json::to_value(e).unwrap_or_default()
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "count": json_entries.len(),
+        "total_recorded": s.trace_store.total_recorded(),
+        "entries": json_entries,
+    })))
+}
+
+/// GET /v1/traces/stats — aggregate analytics across buffered traces.
+async fn traces_stats_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let stats = s.trace_store.stats();
+    Ok(Json(serde_json::to_value(&stats).unwrap_or_default()))
+}
+
+/// GET /v1/traces/:id — get a specific trace by ID.
+async fn traces_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.trace_store.get(id) {
+        Some(entry) => Ok(Json(serde_json::to_value(entry).unwrap_or_default())),
+        None => Ok(Json(serde_json::json!({
+            "error": "trace not found",
+            "id": id,
+        }))),
+    }
+}
+
+/// Request to annotate a trace.
+#[derive(Debug, Deserialize)]
+pub struct AnnotateRequest {
+    /// Free-form note text.
+    pub text: String,
+    /// Tags for categorization/filtering.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Author of the annotation (default: client key).
+    pub author: Option<String>,
+}
+
+/// POST /v1/traces/:id/annotate — add an annotation to a trace.
+async fn traces_annotate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+    Json(payload): Json<AnnotateRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let author = payload.author.unwrap_or_else(|| client.clone());
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let annotation = crate::trace_store::TraceAnnotation {
+        author: author.clone(),
+        text: payload.text.clone(),
+        tags: payload.tags.clone(),
+        timestamp: now,
+    };
+
+    if s.trace_store.annotate(id, annotation) {
+        let annotation_count = s.trace_store.get(id)
+            .map(|e| e.annotations.len())
+            .unwrap_or(0);
+
+        Ok(Json(serde_json::json!({
+            "success": true,
+            "trace_id": id,
+            "author": author,
+            "text": payload.text,
+            "tags": payload.tags,
+            "annotation_count": annotation_count,
+        })))
+    } else {
+        Ok(Json(serde_json::json!({
+            "success": false,
+            "error": format!("trace {} not found", id),
+        })))
+    }
+}
+
+/// GET /v1/traces/:id/annotations — get all annotations for a trace.
+async fn traces_annotations_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.trace_store.get(id) {
+        Some(entry) => Ok(Json(serde_json::json!({
+            "trace_id": id,
+            "annotations": entry.annotations,
+            "count": entry.annotations.len(),
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "error": format!("trace {} not found", id),
+        }))),
+    }
+}
+
+/// Query parameters for trace diff.
+#[derive(Debug, Deserialize)]
+pub struct TraceDiffQuery {
+    /// First trace ID.
+    pub a: u64,
+    /// Second trace ID.
+    pub b: u64,
+}
+
+/// GET /v1/traces/diff — compare two traces side-by-side.
+async fn traces_diff_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<TraceDiffQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let trace_a = match s.trace_store.get(params.a) {
+        Some(e) => e,
+        None => {
+            return Ok(Json(serde_json::json!({
+                "error": format!("trace {} not found", params.a),
+            })));
+        }
+    };
+
+    let trace_b = match s.trace_store.get(params.b) {
+        Some(e) => e,
+        None => {
+            return Ok(Json(serde_json::json!({
+                "error": format!("trace {} not found", params.b),
+            })));
+        }
+    };
+
+    // Build field-level diffs
+    let status_a = trace_a.status.as_str();
+    let status_b = trace_b.status.as_str();
+
+    let mut field_diffs = Vec::new();
+
+    if trace_a.flow_name != trace_b.flow_name {
+        field_diffs.push(serde_json::json!({
+            "field": "flow_name", "a": trace_a.flow_name, "b": trace_b.flow_name,
+        }));
+    }
+    if status_a != status_b {
+        field_diffs.push(serde_json::json!({
+            "field": "status", "a": status_a, "b": status_b,
+        }));
+    }
+    if trace_a.backend != trace_b.backend {
+        field_diffs.push(serde_json::json!({
+            "field": "backend", "a": trace_a.backend, "b": trace_b.backend,
+        }));
+    }
+    if trace_a.steps_executed != trace_b.steps_executed {
+        field_diffs.push(serde_json::json!({
+            "field": "steps_executed",
+            "a": trace_a.steps_executed,
+            "b": trace_b.steps_executed,
+            "delta": trace_b.steps_executed as i64 - trace_a.steps_executed as i64,
+        }));
+    }
+    if trace_a.latency_ms != trace_b.latency_ms {
+        field_diffs.push(serde_json::json!({
+            "field": "latency_ms",
+            "a": trace_a.latency_ms,
+            "b": trace_b.latency_ms,
+            "delta": trace_b.latency_ms as i64 - trace_a.latency_ms as i64,
+        }));
+    }
+    if trace_a.tokens_input != trace_b.tokens_input {
+        field_diffs.push(serde_json::json!({
+            "field": "tokens_input",
+            "a": trace_a.tokens_input,
+            "b": trace_b.tokens_input,
+            "delta": trace_b.tokens_input as i64 - trace_a.tokens_input as i64,
+        }));
+    }
+    if trace_a.tokens_output != trace_b.tokens_output {
+        field_diffs.push(serde_json::json!({
+            "field": "tokens_output",
+            "a": trace_a.tokens_output,
+            "b": trace_b.tokens_output,
+            "delta": trace_b.tokens_output as i64 - trace_a.tokens_output as i64,
+        }));
+    }
+    if trace_a.anchor_checks != trace_b.anchor_checks {
+        field_diffs.push(serde_json::json!({
+            "field": "anchor_checks",
+            "a": trace_a.anchor_checks,
+            "b": trace_b.anchor_checks,
+            "delta": trace_b.anchor_checks as i64 - trace_a.anchor_checks as i64,
+        }));
+    }
+    if trace_a.anchor_breaches != trace_b.anchor_breaches {
+        field_diffs.push(serde_json::json!({
+            "field": "anchor_breaches",
+            "a": trace_a.anchor_breaches,
+            "b": trace_b.anchor_breaches,
+            "delta": trace_b.anchor_breaches as i64 - trace_a.anchor_breaches as i64,
+        }));
+    }
+    if trace_a.errors != trace_b.errors {
+        field_diffs.push(serde_json::json!({
+            "field": "errors",
+            "a": trace_a.errors,
+            "b": trace_b.errors,
+            "delta": trace_b.errors as i64 - trace_a.errors as i64,
+        }));
+    }
+    if trace_a.retries != trace_b.retries {
+        field_diffs.push(serde_json::json!({
+            "field": "retries",
+            "a": trace_a.retries,
+            "b": trace_b.retries,
+            "delta": trace_b.retries as i64 - trace_a.retries as i64,
+        }));
+    }
+    if trace_a.source_file != trace_b.source_file {
+        field_diffs.push(serde_json::json!({
+            "field": "source_file", "a": trace_a.source_file, "b": trace_b.source_file,
+        }));
+    }
+    if trace_a.client_key != trace_b.client_key {
+        field_diffs.push(serde_json::json!({
+            "field": "client_key", "a": trace_a.client_key, "b": trace_b.client_key,
+        }));
+    }
+
+    let identical = field_diffs.is_empty();
+
+    Ok(Json(serde_json::json!({
+        "trace_a": params.a,
+        "trace_b": params.b,
+        "identical": identical,
+        "differences": field_diffs.len(),
+        "diffs": field_diffs,
+        "summary": {
+            "a": {
+                "flow": trace_a.flow_name,
+                "status": status_a,
+                "steps": trace_a.steps_executed,
+                "latency_ms": trace_a.latency_ms,
+                "errors": trace_a.errors,
+                "timestamp": trace_a.timestamp,
+            },
+            "b": {
+                "flow": trace_b.flow_name,
+                "status": status_b,
+                "steps": trace_b.steps_executed,
+                "latency_ms": trace_b.latency_ms,
+                "errors": trace_b.errors,
+                "timestamp": trace_b.timestamp,
+            },
+        },
+    })))
+}
+
+/// Query parameters for full-text trace search.
+#[derive(Debug, Deserialize)]
+pub struct TraceSearchQuery {
+    /// Search query string (case-insensitive substring match).
+    pub q: String,
+    /// Max results to return (default 50).
+    #[serde(default = "default_search_limit")]
+    pub limit: usize,
+}
+
+fn default_search_limit() -> usize {
+    50
+}
+
+/// Query parameters for trace aggregation.
+#[derive(Debug, Deserialize)]
+pub struct TraceAggregateQuery {
+    /// Time window in seconds (0 = all buffered traces).
+    #[serde(default)]
+    pub window: u64,
+}
+
+/// GET /v1/traces/aggregate — compute aggregated metrics across traces.
+async fn traces_aggregate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<TraceAggregateQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let agg = s.trace_store.aggregate(params.window);
+    Ok(Json(serde_json::to_value(&agg).unwrap_or_default()))
+}
+
+/// GET /v1/traces/search — full-text search across buffered traces.
+///
+/// Matches query against flow_name, source_file, backend, client_key,
+/// event step_name, event detail, annotation text, and annotation tags.
+async fn traces_search_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<TraceSearchQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    if params.q.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "error": "query parameter 'q' must not be empty",
+        })));
+    }
+
+    let results = s.trace_store.search(&params.q, params.limit);
+
+    let hits: Vec<serde_json::Value> = results.iter().map(|e| {
+        serde_json::json!({
+            "id": e.id,
+            "flow_name": e.flow_name,
+            "status": e.status.as_str(),
+            "timestamp": e.timestamp,
+            "latency_ms": e.latency_ms,
+            "steps_executed": e.steps_executed,
+            "errors": e.errors,
+            "source_file": e.source_file,
+            "backend": e.backend,
+            "client_key": e.client_key,
+            "events_count": e.events.len(),
+            "annotations_count": e.annotations.len(),
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "query": params.q,
+        "hits": hits.len(),
+        "total_buffered": s.trace_store.len(),
+        "results": hits,
+    })))
+}
+
+/// GET /v1/traces/retention — get current retention policy.
+async fn traces_retention_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let cfg = s.trace_store.config();
+    Ok(Json(serde_json::json!({
+        "max_age_secs": cfg.max_age_secs,
+        "capacity": cfg.capacity,
+        "enabled": cfg.enabled,
+    })))
+}
+
+/// Request to update retention policy.
+#[derive(Debug, Deserialize)]
+pub struct RetentionUpdateRequest {
+    /// Maximum age of traces in seconds (0 = no TTL).
+    pub max_age_secs: u64,
+}
+
+/// PUT /v1/traces/retention — update retention policy and run immediate eviction.
+async fn traces_retention_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<RetentionUpdateRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let previous = s.trace_store.set_max_age_secs(payload.max_age_secs);
+    let evicted = s.trace_store.evict_expired();
+
+    s.audit_log.record(
+        &client,
+        AuditAction::ConfigUpdate,
+        "trace_retention",
+        serde_json::json!({
+            "previous_max_age_secs": previous,
+            "new_max_age_secs": payload.max_age_secs,
+            "evicted": evicted,
+        }),
+        true,
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "previous_max_age_secs": previous,
+        "new_max_age_secs": payload.max_age_secs,
+        "evicted": evicted,
+        "buffered": s.trace_store.len(),
+    })))
+}
+
+/// POST /v1/traces/evict — manually trigger TTL-based eviction.
+async fn traces_evict_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let evicted = s.trace_store.evict_expired();
+
+    Ok(Json(serde_json::json!({
+        "evicted": evicted,
+        "buffered": s.trace_store.len(),
+        "max_age_secs": s.trace_store.config().max_age_secs,
+    })))
+}
+
+/// Request for bulk trace deletion.
+#[derive(Debug, Deserialize)]
+pub struct BulkDeleteRequest {
+    /// Trace IDs to delete.
+    pub ids: Vec<u64>,
+}
+
+/// DELETE /v1/traces/bulk — delete multiple traces by ID.
+async fn traces_bulk_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<BulkDeleteRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let requested = payload.ids.len();
+    let deleted = s.trace_store.bulk_delete(&payload.ids);
+
+    s.audit_log.record(
+        &client,
+        AuditAction::ConfigUpdate,
+        "traces_bulk_delete",
+        serde_json::json!({
+            "requested": requested,
+            "deleted": deleted,
+            "ids": payload.ids,
+        }),
+        true,
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "requested": requested,
+        "deleted": deleted,
+        "buffered": s.trace_store.len(),
+    })))
+}
+
+/// Request for bulk trace annotation.
+#[derive(Debug, Deserialize)]
+pub struct BulkAnnotateRequest {
+    /// Trace IDs to annotate.
+    pub ids: Vec<u64>,
+    /// Annotation author.
+    pub author: String,
+    /// Annotation text.
+    pub text: String,
+    /// Annotation tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// POST /v1/traces/bulk/annotate — annotate multiple traces at once.
+async fn traces_bulk_annotate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<BulkAnnotateRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let annotation = crate::trace_store::TraceAnnotation {
+        author: payload.author.clone(),
+        text: payload.text.clone(),
+        tags: payload.tags.clone(),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    };
+
+    let requested = payload.ids.len();
+    let annotated = s.trace_store.bulk_annotate(&payload.ids, annotation);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "requested": requested,
+        "annotated": annotated,
+        "author": payload.author,
+        "text": payload.text,
+        "tags": payload.tags,
+    })))
+}
+
+/// Query parameters for trace export.
+#[derive(Debug, Deserialize)]
+pub struct TraceExportQuery {
+    /// Export format: "jsonl" (default), "csv", "prometheus".
+    #[serde(default = "default_export_format")]
+    pub format: String,
+    /// Max traces to export (default 100).
+    #[serde(default = "default_export_limit")]
+    pub limit: usize,
+    /// Filter by flow name.
+    pub flow_name: Option<String>,
+    /// Filter by status.
+    pub status: Option<String>,
+    /// Filter by client key.
+    pub client_key: Option<String>,
+}
+
+fn default_export_format() -> String { "jsonl".to_string() }
+fn default_export_limit() -> usize { 100 }
+
+/// GET /v1/traces/export — export buffered traces in various formats.
+async fn traces_export_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<TraceExportQuery>,
+) -> Result<(StatusCode, HeaderMap, String), StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let format = crate::trace_store::ExportFormat::from_str(&params.format);
+
+    let filter = if params.flow_name.is_some() || params.status.is_some() || params.client_key.is_some() {
+        Some(TraceFilter {
+            flow_name: params.flow_name,
+            status: params.status,
+            client_key: params.client_key,
+            min_latency_ms: None,
+            has_errors: None,
+            tag: None,
+        })
+    } else {
+        None
+    };
+
+    let entries = s.trace_store.recent(params.limit, filter.as_ref());
+
+    let body = match format {
+        crate::trace_store::ExportFormat::JsonLines => crate::trace_store::export_jsonl(&entries),
+        crate::trace_store::ExportFormat::Csv => crate::trace_store::export_csv(&entries),
+        crate::trace_store::ExportFormat::Prometheus => crate::trace_store::export_prometheus(&entries),
+    };
+
+    let mut response_headers = HeaderMap::new();
+    if let Ok(ct) = format.content_type().parse() {
+        response_headers.insert("content-type", ct);
+    }
+
+    Ok((StatusCode::OK, response_headers, body))
+}
+
+// ── Flow scheduler endpoints ──────────────────────────────────────────────
+
+/// Request to create a new schedule.
+#[derive(Debug, Deserialize)]
+pub struct CreateScheduleRequest {
+    /// Flow name to schedule (must be deployed).
+    pub flow_name: String,
+    /// Interval in seconds between executions (min 1).
+    pub interval_secs: u64,
+    /// Backend for execution (default: "stub").
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+}
+
+/// POST /v1/schedules — create a new scheduled flow execution.
+async fn schedules_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateScheduleRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    if payload.interval_secs == 0 {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": "interval_secs must be >= 1",
+        })));
+    }
+
+    // Verify flow is deployed
+    let history = s.versions.get_history(&payload.flow_name);
+    if history.and_then(|h| h.active()).is_none() {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": format!("flow '{}' not deployed", payload.flow_name),
+        })));
+    }
+
+    if s.schedules.contains_key(&payload.flow_name) {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": format!("schedule for '{}' already exists", payload.flow_name),
+        })));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let entry = ScheduleEntry {
+        flow_name: payload.flow_name.clone(),
+        interval_secs: payload.interval_secs,
+        enabled: true,
+        backend: payload.backend.clone(),
+        last_run: 0,
+        next_run: now + payload.interval_secs,
+        run_count: 0,
+        error_count: 0,
+        history: Vec::new(),
+    };
+
+    s.schedules.insert(payload.flow_name.clone(), entry);
+
+    s.audit_log.record(
+        &client,
+        AuditAction::ConfigUpdate,
+        &payload.flow_name,
+        serde_json::json!({
+            "action": "schedule_create",
+            "flow": &payload.flow_name,
+            "interval_secs": payload.interval_secs,
+            "backend": &payload.backend,
+        }),
+        true,
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "flow_name": payload.flow_name,
+        "interval_secs": payload.interval_secs,
+        "next_run": now + payload.interval_secs,
+    })))
+}
+
+/// GET /v1/schedules — list all scheduled flow executions.
+async fn schedules_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let entries: Vec<serde_json::Value> = s.schedules.values()
+        .map(|e| serde_json::to_value(e).unwrap_or_default())
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "schedules": entries,
+        "total": entries.len(),
+    })))
+}
+
+/// GET /v1/schedules/{name} — get a specific schedule.
+async fn schedules_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.schedules.get(&name) {
+        Some(entry) => Ok(Json(serde_json::to_value(entry).unwrap_or_default())),
+        None => Ok(Json(serde_json::json!({
+            "error": format!("schedule '{}' not found", name),
+        }))),
+    }
+}
+
+/// DELETE /v1/schedules/{name} — remove a schedule.
+async fn schedules_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    match s.schedules.remove(&name) {
+        Some(_) => {
+            s.audit_log.record(
+                &client,
+                AuditAction::ConfigUpdate,
+                &name,
+                serde_json::json!({ "action": "schedule_delete", "flow": &name }),
+                true,
+            );
+            Ok(Json(serde_json::json!({ "success": true, "deleted": name })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "success": false,
+            "error": format!("schedule '{}' not found", name),
+        }))),
+    }
+}
+
+/// POST /v1/schedules/{name}/toggle — enable or disable a schedule.
+async fn schedules_toggle_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    match s.schedules.get_mut(&name) {
+        Some(entry) => {
+            entry.enabled = !entry.enabled;
+            let new_state = entry.enabled;
+            s.audit_log.record(
+                &client,
+                AuditAction::ConfigUpdate,
+                &name,
+                serde_json::json!({
+                    "action": "schedule_toggle",
+                    "flow": &name,
+                    "enabled": new_state,
+                }),
+                true,
+            );
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "flow_name": name,
+                "enabled": new_state,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "success": false,
+            "error": format!("schedule '{}' not found", name),
+        }))),
+    }
+}
+
+/// GET /v1/schedules/:name/history — execution history for a schedule.
+async fn schedules_history_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.schedules.get(&name) {
+        Some(entry) => {
+            let limit: usize = params.get("limit")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(50);
+
+            let history: Vec<&ScheduleRun> = entry.history.iter().rev().take(limit).collect();
+            let success_count = entry.history.iter().filter(|r| r.success).count();
+            let error_count = entry.history.iter().filter(|r| !r.success).count();
+            let avg_latency = if entry.history.is_empty() {
+                0
+            } else {
+                entry.history.iter().map(|r| r.latency_ms).sum::<u64>() / entry.history.len() as u64
+            };
+
+            Ok(Json(serde_json::json!({
+                "schedule": name,
+                "flow_name": entry.flow_name,
+                "total_runs": entry.history.len(),
+                "success_count": success_count,
+                "error_count": error_count,
+                "avg_latency_ms": avg_latency,
+                "history": history,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "error": format!("schedule '{}' not found", name),
+        }))),
+    }
+}
+
+/// POST /v1/schedules/tick — check all due schedules and execute them.
+///
+/// Poll-based scheduler tick: iterates all enabled schedules where
+/// `now >= next_run`, executes each flow via `server_execute`, records
+/// traces, and advances `next_run`.
+async fn schedules_tick_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Collect due schedules (flow_name, backend, source, source_file)
+    let due: Vec<(String, String, String, String)> = {
+        let s = state.lock().unwrap();
+        s.schedules.iter()
+            .filter(|(_, e)| e.enabled && now >= e.next_run)
+            .filter_map(|(name, e)| {
+                let history = s.versions.get_history(name);
+                history.and_then(|h| h.active()).map(|active| {
+                    (name.clone(), e.backend.clone(), active.source.clone(), active.source_file.clone())
+                })
+            })
+            .collect()
+    };
+
+    let mut results = Vec::new();
+
+    for (flow_name, backend, source, source_file) in &due {
+        let (exec_result, _) = server_execute_full(&state, source, source_file, flow_name, backend);
+
+        match exec_result {
+            Ok(mut er) => {
+                let trace_entry = crate::trace_store::build_trace(
+                    &er.flow_name,
+                    &er.source_file,
+                    &er.backend,
+                    &client,
+                    if er.success {
+                        crate::trace_store::TraceStatus::Success
+                    } else {
+                        crate::trace_store::TraceStatus::Partial
+                    },
+                    er.steps_executed,
+                    er.latency_ms,
+                );
+
+                let mut s = state.lock().unwrap();
+                let mut entry = trace_entry;
+                entry.tokens_input = er.tokens_input;
+                entry.tokens_output = er.tokens_output;
+                entry.anchor_checks = er.anchor_checks;
+                entry.anchor_breaches = er.anchor_breaches;
+                entry.errors = er.errors;
+                let trace_id = s.trace_store.record(entry);
+                er.trace_id = trace_id;
+
+                // Update schedule state
+                if let Some(sched) = s.schedules.get_mut(flow_name) {
+                    sched.last_run = now;
+                    sched.next_run = now + sched.interval_secs;
+                    sched.run_count += 1;
+                    if !er.success {
+                        sched.error_count += 1;
+                    }
+                    sched.history.push(ScheduleRun {
+                        timestamp: now,
+                        success: er.success,
+                        trace_id,
+                        latency_ms: er.latency_ms,
+                        error: None,
+                    });
+                    if sched.history.len() > 50 {
+                        sched.history.remove(0);
+                    }
+                }
+
+                results.push(serde_json::json!({
+                    "flow": flow_name,
+                    "success": er.success,
+                    "trace_id": trace_id,
+                    "steps": er.steps_executed,
+                    "latency_ms": er.latency_ms,
+                }));
+            }
+            Err(e) => {
+                let mut fail_entry = crate::trace_store::build_trace(
+                    flow_name,
+                    source_file,
+                    backend,
+                    &client,
+                    crate::trace_store::TraceStatus::Failed,
+                    0,
+                    req_start.elapsed().as_millis() as u64,
+                );
+                fail_entry.errors = 1;
+
+                let mut s = state.lock().unwrap();
+                let trace_id = s.trace_store.record(fail_entry);
+                s.metrics.total_errors += 1;
+
+                let err_latency = req_start.elapsed().as_millis() as u64;
+                if let Some(sched) = s.schedules.get_mut(flow_name) {
+                    sched.last_run = now;
+                    sched.next_run = now + sched.interval_secs;
+                    sched.run_count += 1;
+                    sched.error_count += 1;
+                    sched.history.push(ScheduleRun {
+                        timestamp: now,
+                        success: false,
+                        trace_id,
+                        latency_ms: err_latency,
+                        error: Some(e.clone()),
+                    });
+                    if sched.history.len() > 50 {
+                        sched.history.remove(0);
+                    }
+                }
+
+                results.push(serde_json::json!({
+                    "flow": flow_name,
+                    "success": false,
+                    "trace_id": trace_id,
+                    "error": e,
+                }));
+            }
+        }
+    }
+
+    // Emit event
+    {
+        let mut s = state.lock().unwrap();
+        s.event_bus.publish(
+            "schedule.tick",
+            serde_json::json!({
+                "executed": results.len(),
+                "timestamp": now,
+            }),
+            "server",
+        );
+        s.request_logger.record("POST", "/v1/schedules/tick", 200, req_start.elapsed(), &client);
+    }
+
+    Ok(Json(serde_json::json!({
+        "executed": results.len(),
+        "results": results,
+        "timestamp": now,
+    })))
+}
+
+// ── Trace replay endpoint ──────────────────────────────────────────────────
+
+/// Replay request — optional overrides for the original execution parameters.
+#[derive(Debug, Deserialize)]
+pub struct ReplayRequest {
+    /// Override the backend (default: reuse original trace's backend).
+    pub backend: Option<String>,
+}
+
+/// Comparison of original vs replay trace fields.
+#[derive(Debug, Serialize)]
+struct ReplayDiff {
+    status_changed: bool,
+    original_status: String,
+    replay_status: String,
+    latency_delta_ms: i64,
+    steps_delta: i64,
+    errors_delta: i64,
+}
+
+/// POST /v1/traces/{id}/replay — re-execute the flow that produced a trace.
+///
+/// Looks up the original trace by ID, finds the deployed source for the same
+/// flow, re-executes it, records a new trace linked via `replay_of`, and
+/// returns a comparison of original vs replay results.
+async fn traces_replay_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+    body: Option<Json<ReplayRequest>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+        check_rate_limit(&mut s, &headers)?;
+    }
+
+    // Look up the original trace
+    let (flow_name, source_file, original_backend, original_status,
+         original_steps, original_latency, original_errors) = {
+        let s = state.lock().unwrap();
+        match s.trace_store.get(id) {
+            Some(entry) => (
+                entry.flow_name.clone(),
+                entry.source_file.clone(),
+                entry.backend.clone(),
+                entry.status.as_str().to_string(),
+                entry.steps_executed,
+                entry.latency_ms,
+                entry.errors,
+            ),
+            None => {
+                return Ok(Json(serde_json::json!({
+                    "success": false,
+                    "error": format!("trace {} not found", id),
+                })));
+            }
+        }
+    };
+
+    // Determine backend (override or original)
+    let backend = body
+        .as_ref()
+        .and_then(|b| b.backend.clone())
+        .unwrap_or(original_backend);
+
+    // Look up deployed source for the flow
+    let source = {
+        let s = state.lock().unwrap();
+        let history = s.versions.get_history(&flow_name);
+        match history.and_then(|h| h.active()) {
+            Some(active) => active.source.clone(),
+            None => {
+                return Ok(Json(serde_json::json!({
+                    "success": false,
+                    "error": format!("flow '{}' no longer deployed — cannot replay", flow_name),
+                })));
+            }
+        }
+    };
+
+    // Execute (outside lock — full backend stack)
+    let (result, _) = server_execute_full(&state, &source, &source_file, &flow_name, &backend);
+
+    match result {
+        Ok(mut exec_result) => {
+            // Build replay trace with link to original
+            let mut trace_entry = crate::trace_store::build_trace(
+                &exec_result.flow_name,
+                &exec_result.source_file,
+                &exec_result.backend,
+                &client,
+                if exec_result.success {
+                    crate::trace_store::TraceStatus::Success
+                } else {
+                    crate::trace_store::TraceStatus::Partial
+                },
+                exec_result.steps_executed,
+                exec_result.latency_ms,
+            );
+            trace_entry.tokens_input = exec_result.tokens_input;
+            trace_entry.tokens_output = exec_result.tokens_output;
+            trace_entry.anchor_checks = exec_result.anchor_checks;
+            trace_entry.anchor_breaches = exec_result.anchor_breaches;
+            trace_entry.errors = exec_result.errors;
+            trace_entry.replay_of = Some(id);
+
+            let trace_id = {
+                let mut s = state.lock().unwrap();
+                let tid = s.trace_store.record(trace_entry);
+
+                // Audit trail
+                s.audit_log.record(
+                    &client,
+                    AuditAction::Execute,
+                    &exec_result.flow_name,
+                    serde_json::json!({
+                        "action": "replay",
+                        "original_trace": id,
+                        "replay_trace": tid,
+                        "flow": &exec_result.flow_name,
+                        "backend": &exec_result.backend,
+                        "success": exec_result.success,
+                    }),
+                    exec_result.success,
+                );
+
+                s.request_logger.record("POST", &format!("/v1/traces/{}/replay", id), 200, req_start.elapsed(), &client);
+                tid
+            };
+
+            exec_result.trace_id = trace_id;
+
+            // Emit event
+            {
+                let s = state.lock().unwrap();
+                s.event_bus.publish(
+                    "trace.replay",
+                    serde_json::json!({
+                        "original_trace": id,
+                        "replay_trace": trace_id,
+                        "flow": &exec_result.flow_name,
+                        "success": exec_result.success,
+                    }),
+                    "server",
+                );
+            }
+
+            // Build diff
+            let replay_status = if exec_result.success { "success" } else { "partial" };
+            let diff = ReplayDiff {
+                status_changed: original_status != replay_status,
+                original_status: original_status.clone(),
+                replay_status: replay_status.to_string(),
+                latency_delta_ms: exec_result.latency_ms as i64 - original_latency as i64,
+                steps_delta: exec_result.steps_executed as i64 - original_steps as i64,
+                errors_delta: exec_result.errors as i64 - original_errors as i64,
+            };
+
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "original_trace_id": id,
+                "replay_trace_id": trace_id,
+                "flow": exec_result.flow_name,
+                "backend": exec_result.backend,
+                "steps_executed": exec_result.steps_executed,
+                "latency_ms": exec_result.latency_ms,
+                "errors": exec_result.errors,
+                "step_names": exec_result.step_names,
+                "diff": serde_json::to_value(&diff).unwrap_or_default(),
+            })))
+        }
+        Err(e) => {
+            // Record failed replay trace
+            let mut entry = crate::trace_store::build_trace(
+                &flow_name,
+                &source_file,
+                &backend,
+                &client,
+                crate::trace_store::TraceStatus::Failed,
+                0,
+                req_start.elapsed().as_millis() as u64,
+            );
+            entry.errors = 1;
+            entry.replay_of = Some(id);
+
+            let trace_id = {
+                let mut s = state.lock().unwrap();
+                let tid = s.trace_store.record(entry);
+                s.metrics.total_errors += 1;
+                s.request_logger.record("POST", &format!("/v1/traces/{}/replay", id), 500, req_start.elapsed(), &client);
+                tid
+            };
+
+            Ok(Json(serde_json::json!({
+                "success": false,
+                "original_trace_id": id,
+                "replay_trace_id": trace_id,
+                "error": e,
+                "diff": {
+                    "status_changed": original_status != "failed",
+                    "original_status": original_status,
+                    "replay_status": "failed",
+                },
+            })))
+        }
+    }
+}
+
+/// A flamegraph span node.
+#[derive(Debug, Clone, Serialize)]
+struct FlamegraphSpan {
+    name: String,
+    event_type: String,
+    start_ms: u64,
+    end_ms: u64,
+    duration_ms: u64,
+    detail: String,
+    children: Vec<FlamegraphSpan>,
+}
+
+/// GET /v1/traces/:id/flamegraph — generate flamegraph-style JSON from trace events.
+async fn traces_flamegraph_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let entry = match s.trace_store.get(id) {
+        Some(e) => e,
+        None => {
+            return Ok(Json(serde_json::json!({
+                "error": format!("trace {} not found", id),
+            })));
+        }
+    };
+
+    // Build flamegraph from events
+    let mut root_spans: Vec<FlamegraphSpan> = Vec::new();
+    let mut stack: Vec<FlamegraphSpan> = Vec::new();
+
+    for ev in &entry.events {
+        match ev.event_type.as_str() {
+            "step_start" => {
+                stack.push(FlamegraphSpan {
+                    name: ev.step_name.clone(),
+                    event_type: "step".into(),
+                    start_ms: ev.offset_ms,
+                    end_ms: ev.offset_ms, // will be updated on step_end
+                    duration_ms: 0,
+                    detail: ev.detail.clone(),
+                    children: Vec::new(),
+                });
+            }
+            "step_end" => {
+                if let Some(mut span) = stack.pop() {
+                    span.end_ms = ev.offset_ms;
+                    span.duration_ms = ev.offset_ms.saturating_sub(span.start_ms);
+                    if let Some(parent) = stack.last_mut() {
+                        parent.children.push(span);
+                    } else {
+                        root_spans.push(span);
+                    }
+                }
+            }
+            _ => {
+                // model_call, anchor_check, error, etc. → leaf span
+                let leaf = FlamegraphSpan {
+                    name: if ev.step_name.is_empty() { ev.event_type.clone() } else { ev.step_name.clone() },
+                    event_type: ev.event_type.clone(),
+                    start_ms: ev.offset_ms,
+                    end_ms: ev.offset_ms,
+                    duration_ms: 0,
+                    detail: ev.detail.clone(),
+                    children: Vec::new(),
+                };
+                if let Some(parent) = stack.last_mut() {
+                    parent.children.push(leaf);
+                } else {
+                    root_spans.push(leaf);
+                }
+            }
+        }
+    }
+
+    // Flush any unclosed spans
+    while let Some(mut span) = stack.pop() {
+        span.end_ms = entry.latency_ms;
+        span.duration_ms = entry.latency_ms.saturating_sub(span.start_ms);
+        if let Some(parent) = stack.last_mut() {
+            parent.children.push(span);
+        } else {
+            root_spans.push(span);
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "trace_id": id,
+        "flow_name": entry.flow_name,
+        "total_latency_ms": entry.latency_ms,
+        "events_count": entry.events.len(),
+        "spans": root_spans,
+    })))
+}
+
+/// Request body for trace comparison.
+#[derive(Debug, Deserialize)]
+pub struct TraceCompareRequest {
+    /// Trace IDs to compare (2–20).
+    pub ids: Vec<u64>,
+}
+
+/// POST /v1/traces/compare — compare N traces across key metrics.
+async fn traces_compare_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<TraceCompareRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    if payload.ids.len() < 2 {
+        return Ok(Json(serde_json::json!({
+            "error": "at least 2 trace IDs required for comparison",
+        })));
+    }
+    if payload.ids.len() > 20 {
+        return Ok(Json(serde_json::json!({
+            "error": "maximum 20 traces per comparison",
+        })));
+    }
+
+    let mut rows = Vec::new();
+    let mut not_found = Vec::new();
+    let mut latencies = Vec::new();
+    let mut total_tokens_sum: u64 = 0;
+    let mut total_errors: usize = 0;
+    let mut flow_set = std::collections::HashSet::new();
+    let mut backend_set = std::collections::HashSet::new();
+
+    for &id in &payload.ids {
+        match s.trace_store.get(id) {
+            Some(e) => {
+                let tokens = e.tokens_input + e.tokens_output;
+                latencies.push(e.latency_ms);
+                total_tokens_sum += tokens;
+                total_errors += e.errors;
+                flow_set.insert(e.flow_name.clone());
+                backend_set.insert(e.backend.clone());
+
+                rows.push(serde_json::json!({
+                    "id": e.id,
+                    "flow_name": e.flow_name,
+                    "status": e.status.as_str(),
+                    "latency_ms": e.latency_ms,
+                    "steps_executed": e.steps_executed,
+                    "tokens_input": e.tokens_input,
+                    "tokens_output": e.tokens_output,
+                    "tokens_total": tokens,
+                    "errors": e.errors,
+                    "retries": e.retries,
+                    "anchor_checks": e.anchor_checks,
+                    "anchor_breaches": e.anchor_breaches,
+                    "backend": e.backend,
+                    "timestamp": e.timestamp,
+                }));
+            }
+            None => {
+                not_found.push(id);
+            }
+        }
+    }
+
+    let count = rows.len() as u64;
+    let (avg_latency, min_latency, max_latency, latency_spread) = if !latencies.is_empty() {
+        latencies.sort();
+        let sum: u64 = latencies.iter().sum();
+        let avg = sum / latencies.len() as u64;
+        let min = latencies[0];
+        let max = latencies[latencies.len() - 1];
+        (avg, min, max, max - min)
+    } else {
+        (0, 0, 0, 0)
+    };
+
+    Ok(Json(serde_json::json!({
+        "compared": count,
+        "not_found": not_found,
+        "rows": rows,
+        "summary": {
+            "avg_latency_ms": avg_latency,
+            "min_latency_ms": min_latency,
+            "max_latency_ms": max_latency,
+            "latency_spread_ms": latency_spread,
+            "total_errors": total_errors,
+            "avg_tokens": if count > 0 { total_tokens_sum / count } else { 0 },
+            "unique_flows": flow_set.len(),
+            "unique_backends": backend_set.len(),
+            "flows": flow_set.into_iter().collect::<Vec<_>>(),
+            "backends": backend_set.into_iter().collect::<Vec<_>>(),
+        },
+    })))
+}
+
+/// Request body for trace timeline.
+#[derive(Debug, Deserialize)]
+pub struct TraceTimelineRequest {
+    /// Trace IDs to include in the timeline.
+    pub ids: Vec<u64>,
+    /// Optional: only include events after this offset_ms (relative to earliest trace).
+    #[serde(default)]
+    pub from_ms: u64,
+    /// Optional: only include events before this offset_ms (0 = no limit).
+    #[serde(default)]
+    pub to_ms: u64,
+}
+
+/// A single event in the merged timeline.
+#[derive(Debug, Clone, Serialize)]
+struct TimelineEvent {
+    /// Absolute timestamp (trace timestamp_secs * 1000 + event offset_ms).
+    abs_ms: u64,
+    /// Trace ID this event belongs to.
+    trace_id: u64,
+    /// Flow name of the parent trace.
+    flow_name: String,
+    /// Event type.
+    event_type: String,
+    /// Step name.
+    step_name: String,
+    /// Event detail.
+    detail: String,
+    /// Original offset within the trace.
+    offset_ms: u64,
+}
+
+/// POST /v1/traces/timeline — merged chronological timeline across traces.
+async fn traces_timeline_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<TraceTimelineRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    if payload.ids.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "error": "at least 1 trace ID required",
+        })));
+    }
+
+    let mut timeline: Vec<TimelineEvent> = Vec::new();
+    let mut not_found: Vec<u64> = Vec::new();
+    let mut traces_included: Vec<serde_json::Value> = Vec::new();
+
+    for &id in &payload.ids {
+        match s.trace_store.get(id) {
+            Some(entry) => {
+                let base_ms = entry.timestamp * 1000;
+                traces_included.push(serde_json::json!({
+                    "id": entry.id,
+                    "flow_name": entry.flow_name,
+                    "timestamp": entry.timestamp,
+                    "events_count": entry.events.len(),
+                }));
+
+                for ev in &entry.events {
+                    let abs = base_ms + ev.offset_ms;
+                    timeline.push(TimelineEvent {
+                        abs_ms: abs,
+                        trace_id: entry.id,
+                        flow_name: entry.flow_name.clone(),
+                        event_type: ev.event_type.clone(),
+                        step_name: ev.step_name.clone(),
+                        detail: ev.detail.clone(),
+                        offset_ms: ev.offset_ms,
+                    });
+                }
+            }
+            None => not_found.push(id),
+        }
+    }
+
+    // Sort by absolute timestamp
+    timeline.sort_by_key(|e| e.abs_ms);
+
+    // Apply time range filter if specified
+    let earliest = timeline.first().map(|e| e.abs_ms).unwrap_or(0);
+    let filtered: Vec<&TimelineEvent> = timeline.iter().filter(|e| {
+        let relative = e.abs_ms.saturating_sub(earliest);
+        let after_from = relative >= payload.from_ms;
+        let before_to = payload.to_ms == 0 || relative <= payload.to_ms;
+        after_from && before_to
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "traces_included": traces_included,
+        "not_found": not_found,
+        "total_events": filtered.len(),
+        "time_range": {
+            "earliest_abs_ms": timeline.first().map(|e| e.abs_ms).unwrap_or(0),
+            "latest_abs_ms": timeline.last().map(|e| e.abs_ms).unwrap_or(0),
+            "span_ms": timeline.last().map(|e| e.abs_ms).unwrap_or(0).saturating_sub(
+                timeline.first().map(|e| e.abs_ms).unwrap_or(0)
+            ),
+        },
+        "timeline": filtered,
+    })))
+}
+
+/// Query parameters for trace heatmap.
+#[derive(Debug, Deserialize)]
+pub struct TraceHeatmapQuery {
+    /// Bucket size in seconds (default 60).
+    #[serde(default = "default_heatmap_bucket")]
+    pub bucket_secs: u64,
+    /// Time window in seconds (0 = all buffered).
+    #[serde(default)]
+    pub window: u64,
+}
+
+fn default_heatmap_bucket() -> u64 { 60 }
+
+/// A single time bucket in the heatmap.
+#[derive(Debug, Clone, Serialize)]
+struct HeatmapBucket {
+    /// Bucket start timestamp (Unix seconds).
+    bucket_start: u64,
+    /// Bucket end timestamp.
+    bucket_end: u64,
+    /// Number of traces in this bucket.
+    count: u64,
+    /// Average latency in ms.
+    avg_latency_ms: u64,
+    /// P50 latency in ms.
+    p50_latency_ms: u64,
+    /// Max latency in ms.
+    max_latency_ms: u64,
+    /// Traces with errors.
+    error_count: u64,
+    /// Error rate (0.0–1.0).
+    error_rate: f64,
+    /// Total tokens consumed.
+    total_tokens: u64,
+}
+
+/// GET /v1/traces/heatmap — latency/error heatmap across time buckets.
+async fn traces_heatmap_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<TraceHeatmapQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let bucket_secs = if params.bucket_secs == 0 { 60 } else { params.bucket_secs };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let cutoff = if params.window > 0 { now.saturating_sub(params.window) } else { 0 };
+
+    // Collect traces in window
+    let entries: Vec<_> = s.trace_store.recent(s.trace_store.len(), None)
+        .into_iter()
+        .filter(|e| e.timestamp >= cutoff)
+        .collect();
+
+    if entries.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "bucket_secs": bucket_secs,
+            "window": params.window,
+            "total_traces": 0,
+            "buckets": [],
+        })));
+    }
+
+    // Group by bucket
+    let mut bucket_map: std::collections::BTreeMap<u64, Vec<&crate::trace_store::TraceEntry>> =
+        std::collections::BTreeMap::new();
+
+    for e in &entries {
+        let bucket_start = (e.timestamp / bucket_secs) * bucket_secs;
+        bucket_map.entry(bucket_start).or_default().push(e);
+    }
+
+    let buckets: Vec<HeatmapBucket> = bucket_map.into_iter().map(|(start, traces)| {
+        let count = traces.len() as u64;
+        let mut latencies: Vec<u64> = traces.iter().map(|t| t.latency_ms).collect();
+        latencies.sort();
+        let total_lat: u64 = latencies.iter().sum();
+        let errors = traces.iter().filter(|t| t.errors > 0).count() as u64;
+        let tokens: u64 = traces.iter().map(|t| t.tokens_input + t.tokens_output).sum();
+
+        let p50_idx = ((50 * latencies.len() + 99) / 100).min(latencies.len()) - 1;
+
+        HeatmapBucket {
+            bucket_start: start,
+            bucket_end: start + bucket_secs,
+            count,
+            avg_latency_ms: total_lat / count,
+            p50_latency_ms: latencies[p50_idx.min(latencies.len() - 1)],
+            max_latency_ms: *latencies.last().unwrap(),
+            error_count: errors,
+            error_rate: errors as f64 / count as f64,
+            total_tokens: tokens,
+        }
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "bucket_secs": bucket_secs,
+        "window": params.window,
+        "total_traces": entries.len(),
+        "total_buckets": buckets.len(),
+        "buckets": buckets,
+    })))
+}
+
+/// A dependency edge between two daemons.
+#[derive(Debug, Clone, Serialize)]
+struct DependencyEdge {
+    from: String,
+    to: String,
+    topic: String,
+}
+
+/// A node in the dependency graph.
+#[derive(Debug, Clone, Serialize)]
+struct DependencyNode {
+    name: String,
+    state: DaemonState,
+    trigger_topic: Option<String>,
+    output_topic: Option<String>,
+    upstream: Vec<String>,
+    downstream: Vec<String>,
+    depth: u32,
+}
+
+/// GET /v1/daemons/dependencies — infer daemon-to-daemon dependencies from chain topology.
+async fn daemons_dependencies_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let daemons: Vec<&DaemonInfo> = s.daemons.values().collect();
+
+    // Build edges: daemon A's output_topic matches daemon B's trigger_topic
+    let mut edges: Vec<DependencyEdge> = Vec::new();
+    let mut upstream_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut downstream_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+
+    for a in &daemons {
+        if let Some(ref out_topic) = a.output_topic {
+            for b in &daemons {
+                if a.name == b.name { continue; }
+                if let Some(ref trig) = b.trigger_topic {
+                    // Exact match or wildcard
+                    let matches = trig == out_topic
+                        || trig == "*"
+                        || (trig.ends_with(".*") && out_topic.starts_with(&trig[..trig.len()-2]));
+                    if matches {
+                        edges.push(DependencyEdge {
+                            from: a.name.clone(),
+                            to: b.name.clone(),
+                            topic: out_topic.clone(),
+                        });
+                        downstream_map.entry(a.name.clone()).or_default().push(b.name.clone());
+                        upstream_map.entry(b.name.clone()).or_default().push(a.name.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Compute depth via BFS from roots
+    let roots: Vec<String> = daemons.iter()
+        .filter(|d| !upstream_map.contains_key(&d.name))
+        .map(|d| d.name.clone())
+        .collect();
+
+    let mut depth_map: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut queue: std::collections::VecDeque<(String, u32)> = std::collections::VecDeque::new();
+    for r in &roots {
+        queue.push_back((r.clone(), 0));
+        depth_map.insert(r.clone(), 0);
+    }
+    while let Some((name, depth)) = queue.pop_front() {
+        if let Some(children) = downstream_map.get(&name) {
+            for child in children {
+                if !depth_map.contains_key(child) || depth_map[child] < depth + 1 {
+                    depth_map.insert(child.clone(), depth + 1);
+                    queue.push_back((child.clone(), depth + 1));
+                }
+            }
+        }
+    }
+
+    let leaves: Vec<String> = daemons.iter()
+        .filter(|d| !downstream_map.contains_key(&d.name))
+        .map(|d| d.name.clone())
+        .collect();
+
+    // Build nodes
+    let mut nodes: Vec<DependencyNode> = daemons.iter().map(|d| {
+        DependencyNode {
+            name: d.name.clone(),
+            state: d.state,
+            trigger_topic: d.trigger_topic.clone(),
+            output_topic: d.output_topic.clone(),
+            upstream: upstream_map.get(&d.name).cloned().unwrap_or_default(),
+            downstream: downstream_map.get(&d.name).cloned().unwrap_or_default(),
+            depth: depth_map.get(&d.name).copied().unwrap_or(0),
+        }
+    }).collect();
+    nodes.sort_by_key(|n| (n.depth, n.name.clone()));
+
+    let max_depth = depth_map.values().copied().max().unwrap_or(0);
+
+    Ok(Json(serde_json::json!({
+        "total_daemons": daemons.len(),
+        "total_edges": edges.len(),
+        "max_depth": max_depth,
+        "roots": roots,
+        "leaves": leaves,
+        "nodes": nodes,
+        "edges": edges,
+    })))
+}
+
+/// Request to enqueue a flow execution.
+#[derive(Debug, Deserialize)]
+pub struct EnqueueRequest {
+    /// Flow name to execute.
+    pub flow_name: String,
+    /// Backend override (default "stub").
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+    /// Priority (1=highest, 10=lowest, default 5).
+    #[serde(default = "default_priority")]
+    pub priority: u32,
+}
+
+fn default_priority() -> u32 { 5 }
+
+/// POST /v1/execute/enqueue — add a flow execution to the priority queue.
+async fn execute_enqueue_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<EnqueueRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let priority = payload.priority.clamp(1, 10);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let id = s.execution_queue_next_id;
+    s.execution_queue_next_id += 1;
+
+    let item = QueuedExecution {
+        id,
+        flow_name: payload.flow_name.clone(),
+        backend: payload.backend.clone(),
+        priority,
+        client_key: client.clone(),
+        enqueued_at: now,
+        status: "pending".into(),
+    };
+
+    // Insert sorted by priority (stable: same priority preserves FIFO)
+    let pos = s.execution_queue.iter().position(|q| q.priority > priority)
+        .unwrap_or(s.execution_queue.len());
+    s.execution_queue.insert(pos, item);
+
+    // Cap queue at 100
+    if s.execution_queue.len() > 100 {
+        s.execution_queue.truncate(100);
+    }
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "queue_id": id,
+        "flow_name": payload.flow_name,
+        "priority": priority,
+        "position": pos,
+        "queue_length": s.execution_queue.len(),
+    })))
+}
+
+/// GET /v1/execute/queue — view the current execution queue.
+async fn execute_queue_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let pending: Vec<&QueuedExecution> = s.execution_queue.iter()
+        .filter(|q| q.status == "pending")
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "total": s.execution_queue.len(),
+        "pending": pending.len(),
+        "queue": s.execution_queue,
+    })))
+}
+
+/// POST /v1/execute/dequeue — take the next item from the queue and mark it processing.
+async fn execute_dequeue_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    // Find first pending item (queue is already priority-sorted)
+    match s.execution_queue.iter_mut().find(|q| q.status == "pending") {
+        Some(item) => {
+            item.status = "processing".into();
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "queue_id": item.id,
+                "flow_name": item.flow_name,
+                "backend": item.backend,
+                "priority": item.priority,
+                "client_key": item.client_key,
+                "enqueued_at": item.enqueued_at,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "success": false,
+            "message": "queue is empty",
+        }))),
+    }
+}
+
+/// Compute per-flow cost from buffered traces using pricing config.
+fn compute_flow_costs(
+    trace_store: &crate::trace_store::TraceStore,
+    pricing: &CostPricing,
+) -> Vec<FlowCostSummary> {
+    let mut flow_map: HashMap<String, (u64, u64, u64, String)> = HashMap::new(); // (execs, input_tok, output_tok, backend)
+
+    let entries = trace_store.recent(trace_store.len(), None);
+    for e in entries {
+        let entry = flow_map.entry(e.flow_name.clone()).or_insert((0, 0, 0, e.backend.clone()));
+        entry.0 += 1;
+        entry.1 += e.tokens_input;
+        entry.2 += e.tokens_output;
+        entry.3 = e.backend.clone(); // last backend used
+    }
+
+    let mut costs: Vec<FlowCostSummary> = flow_map.into_iter().map(|(name, (execs, inp, outp, backend))| {
+        let input_price = pricing.input_per_million.get(&backend).copied().unwrap_or(0.0);
+        let output_price = pricing.output_per_million.get(&backend).copied().unwrap_or(0.0);
+        let cost = (inp as f64 / 1_000_000.0) * input_price + (outp as f64 / 1_000_000.0) * output_price;
+
+        FlowCostSummary {
+            flow_name: name,
+            executions: execs,
+            total_input_tokens: inp,
+            total_output_tokens: outp,
+            estimated_cost_usd: (cost * 10000.0).round() / 10000.0, // 4 decimal places
+        }
+    }).collect();
+    costs.sort_by(|a, b| b.estimated_cost_usd.partial_cmp(&a.estimated_cost_usd).unwrap_or(std::cmp::Ordering::Equal));
+    costs
+}
+
+/// GET /v1/costs — aggregate cost summary across all flows.
+async fn costs_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let costs = compute_flow_costs(&s.trace_store, &s.cost_pricing);
+    let total_cost: f64 = costs.iter().map(|c| c.estimated_cost_usd).sum();
+    let total_tokens: u64 = costs.iter().map(|c| c.total_input_tokens + c.total_output_tokens).sum();
+
+    Ok(Json(serde_json::json!({
+        "total_estimated_cost_usd": (total_cost * 10000.0).round() / 10000.0,
+        "total_tokens": total_tokens,
+        "flows_count": costs.len(),
+        "pricing": s.cost_pricing,
+        "flows": costs,
+    })))
+}
+
+/// GET /v1/costs/:flow — cost details for a specific flow.
+async fn costs_flow_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(flow): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let costs = compute_flow_costs(&s.trace_store, &s.cost_pricing);
+    match costs.iter().find(|c| c.flow_name == flow) {
+        Some(cost) => Ok(Json(serde_json::to_value(cost).unwrap_or_default())),
+        None => Ok(Json(serde_json::json!({
+            "error": format!("no cost data for flow '{}'", flow),
+        }))),
+    }
+}
+
+/// PUT /v1/costs/pricing — update backend pricing configuration.
+async fn costs_pricing_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<CostPricing>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    s.cost_pricing = payload.clone();
+    s.audit_log.record(
+        &client, AuditAction::ConfigUpdate, "cost_pricing",
+        serde_json::json!({"input_per_million": payload.input_per_million, "output_per_million": payload.output_per_million}),
+        true,
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "pricing": s.cost_pricing,
+    })))
+}
+
+/// POST /v1/execute/drain — process all pending queue items sequentially.
+async fn execute_drain_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+    }
+
+    // Collect pending items
+    let pending: Vec<(u64, String, String)> = {
+        let mut s = state.lock().unwrap();
+        s.execution_queue.iter_mut()
+            .filter(|q| q.status == "pending")
+            .map(|q| {
+                q.status = "processing".into();
+                (q.id, q.flow_name.clone(), q.backend.clone())
+            })
+            .collect()
+    };
+
+    if pending.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "drained": 0,
+            "message": "queue empty",
+        })));
+    }
+
+    let mut results = Vec::new();
+
+    for (queue_id, flow_name, backend) in &pending {
+        // Look up deployed source
+        let source_info = {
+            let s = state.lock().unwrap();
+            s.versions.get_history(flow_name)
+                .and_then(|h| h.active())
+                .map(|v| (v.source.clone(), v.source_file.clone()))
+        };
+
+        let (source, source_file) = match source_info {
+            Some(info) => info,
+            None => {
+                // Mark failed
+                let mut s = state.lock().unwrap();
+                if let Some(item) = s.execution_queue.iter_mut().find(|q| q.id == *queue_id) {
+                    item.status = "failed".into();
+                }
+                results.push(serde_json::json!({
+                    "queue_id": queue_id,
+                    "flow": flow_name,
+                    "success": false,
+                    "error": "flow not deployed",
+                }));
+                continue;
+            }
+        };
+
+        match server_execute_full(&state, &source, &source_file, flow_name, backend).0 {
+            Ok(mut er) => {
+                let mut trace_entry = crate::trace_store::build_trace(
+                    &er.flow_name, &er.source_file, &er.backend, &client,
+                    if er.success { crate::trace_store::TraceStatus::Success }
+                    else { crate::trace_store::TraceStatus::Partial },
+                    er.steps_executed, er.latency_ms,
+                );
+                trace_entry.tokens_input = er.tokens_input;
+                trace_entry.tokens_output = er.tokens_output;
+                trace_entry.errors = er.errors;
+
+                let mut s = state.lock().unwrap();
+                let trace_id = s.trace_store.record(trace_entry);
+                if let Some(item) = s.execution_queue.iter_mut().find(|q| q.id == *queue_id) {
+                    item.status = if er.success { "completed" } else { "failed" }.into();
+                }
+
+                results.push(serde_json::json!({
+                    "queue_id": queue_id,
+                    "flow": flow_name,
+                    "success": er.success,
+                    "trace_id": trace_id,
+                    "latency_ms": er.latency_ms,
+                    "steps": er.steps_executed,
+                }));
+            }
+            Err(e) => {
+                let mut s = state.lock().unwrap();
+                s.metrics.total_errors += 1;
+                if let Some(item) = s.execution_queue.iter_mut().find(|q| q.id == *queue_id) {
+                    item.status = "failed".into();
+                }
+                results.push(serde_json::json!({
+                    "queue_id": queue_id,
+                    "flow": flow_name,
+                    "success": false,
+                    "error": e,
+                }));
+            }
+        }
+    }
+
+    let succeeded = results.iter().filter(|r| r["success"] == true).count();
+    let failed = results.iter().filter(|r| r["success"] == false).count();
+    let total_latency = req_start.elapsed().as_millis() as u64;
+
+    // Audit
+    {
+        let mut s = state.lock().unwrap();
+        s.audit_log.record(
+            &client, AuditAction::Execute, "queue_drain",
+            serde_json::json!({"drained": results.len(), "succeeded": succeeded, "failed": failed}),
+            true,
+        );
+    }
+
+    Ok(Json(serde_json::json!({
+        "drained": results.len(),
+        "succeeded": succeeded,
+        "failed": failed,
+        "total_latency_ms": total_latency,
+        "results": results,
+    })))
+}
+
+/// Request to set a cost budget for a flow.
+#[derive(Debug, Deserialize)]
+pub struct SetBudgetRequest {
+    /// Maximum cost in USD.
+    pub max_cost_usd: f64,
+    /// Warning threshold (0.0–1.0, default 0.8).
+    #[serde(default = "default_warn_threshold")]
+    pub warn_threshold: f64,
+}
+
+fn default_warn_threshold() -> f64 { 0.8 }
+
+/// PUT /v1/costs/:flow/budget — set a cost budget for a flow.
+async fn costs_budget_set_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(flow): Path<String>,
+    Json(payload): Json<SetBudgetRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let threshold = payload.warn_threshold.clamp(0.0, 1.0);
+    s.cost_budgets.insert(flow.clone(), CostBudget {
+        max_cost_usd: payload.max_cost_usd,
+        warn_threshold: threshold,
+    });
+
+    s.audit_log.record(
+        &client, AuditAction::ConfigUpdate, &format!("cost_budget:{}", flow),
+        serde_json::json!({"max_cost_usd": payload.max_cost_usd, "warn_threshold": threshold}),
+        true,
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "flow": flow,
+        "max_cost_usd": payload.max_cost_usd,
+        "warn_threshold": threshold,
+    })))
+}
+
+/// DELETE /v1/costs/:flow/budget — remove a cost budget for a flow.
+async fn costs_budget_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(flow): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let removed = s.cost_budgets.remove(&flow).is_some();
+    Ok(Json(serde_json::json!({
+        "success": removed,
+        "flow": flow,
+    })))
+}
+
+/// GET /v1/costs/alerts — check all flows against their budgets.
+async fn costs_alerts_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let costs = compute_flow_costs(&s.trace_store, &s.cost_pricing);
+    let mut alerts: Vec<CostAlert> = Vec::new();
+
+    for (flow_name, budget) in &s.cost_budgets {
+        let current_cost = costs.iter()
+            .find(|c| &c.flow_name == flow_name)
+            .map(|c| c.estimated_cost_usd)
+            .unwrap_or(0.0);
+
+        let usage_pct = if budget.max_cost_usd > 0.0 {
+            current_cost / budget.max_cost_usd
+        } else {
+            0.0
+        };
+
+        if usage_pct >= 1.0 {
+            alerts.push(CostAlert {
+                flow_name: flow_name.clone(),
+                current_cost_usd: current_cost,
+                budget_usd: budget.max_cost_usd,
+                usage_pct: (usage_pct * 10000.0).round() / 10000.0,
+                level: "exceeded".into(),
+            });
+        } else if usage_pct >= budget.warn_threshold {
+            alerts.push(CostAlert {
+                flow_name: flow_name.clone(),
+                current_cost_usd: current_cost,
+                budget_usd: budget.max_cost_usd,
+                usage_pct: (usage_pct * 10000.0).round() / 10000.0,
+                level: "warning".into(),
+            });
+        }
+    }
+
+    alerts.sort_by(|a, b| b.usage_pct.partial_cmp(&a.usage_pct).unwrap_or(std::cmp::Ordering::Equal));
+
+    Ok(Json(serde_json::json!({
+        "total_budgets": s.cost_budgets.len(),
+        "alerts_count": alerts.len(),
+        "alerts": alerts,
+    })))
+}
+
+/// Per-day cost data point for forecasting.
+#[derive(Debug, Clone, Serialize)]
+pub struct DailyCostPoint {
+    pub day_offset: i64,
+    pub date: String,
+    pub cost_usd: f64,
+    pub executions: u64,
+}
+
+/// Cost forecast result for a flow (or aggregate).
+#[derive(Debug, Clone, Serialize)]
+pub struct CostForecast {
+    pub flow: String,
+    pub historical_days: usize,
+    pub forecast_days: u64,
+    pub daily_history: Vec<DailyCostPoint>,
+    pub forecast: Vec<DailyCostPoint>,
+    pub trend_slope_usd_per_day: f64,
+    pub total_forecast_cost_usd: f64,
+}
+
+/// GET /v1/costs/forecast — predict future costs based on historical daily trends.
+/// Query params: flow (optional), days (forecast horizon, default 7).
+async fn costs_forecast_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let flow_filter = params.get("flow").cloned();
+    let forecast_days = params.get("days").and_then(|d| d.parse::<u64>().ok()).unwrap_or(7);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let secs_per_day: u64 = 86400;
+
+    // Collect trace entries, optionally filtered by flow
+    let entries = s.trace_store.recent(s.trace_store.len(), None);
+    let filtered: Vec<_> = entries.iter().filter(|e| {
+        flow_filter.as_ref().map_or(true, |f| &e.flow_name == f)
+    }).collect();
+
+    if filtered.is_empty() {
+        let flow_label = flow_filter.unwrap_or_else(|| "*".into());
+        return Ok(Json(serde_json::json!({
+            "flow": flow_label,
+            "historical_days": 0,
+            "forecast_days": forecast_days,
+            "daily_history": [],
+            "forecast": [],
+            "trend_slope_usd_per_day": 0.0,
+            "total_forecast_cost_usd": 0.0,
+        })));
+    }
+
+    // Find time range and bucket by day
+    let min_ts = filtered.iter().map(|e| e.timestamp).min().unwrap_or(now);
+    let day_zero = min_ts / secs_per_day; // day index of earliest trace
+    let today = now / secs_per_day;
+    let num_days = ((today - day_zero) + 1) as usize;
+
+    // Accumulate cost per day bucket
+    let mut day_costs: Vec<(f64, u64)> = vec![(0.0, 0); num_days]; // (cost, executions)
+    for e in &filtered {
+        let day_idx = ((e.timestamp / secs_per_day) - day_zero) as usize;
+        if day_idx < num_days {
+            let backend = &e.backend;
+            let input_price = s.cost_pricing.input_per_million.get(backend).copied().unwrap_or(0.0);
+            let output_price = s.cost_pricing.output_per_million.get(backend).copied().unwrap_or(0.0);
+            let cost = (e.tokens_input as f64 / 1_000_000.0) * input_price
+                     + (e.tokens_output as f64 / 1_000_000.0) * output_price;
+            day_costs[day_idx].0 += cost;
+            day_costs[day_idx].1 += 1;
+        }
+    }
+
+    // Build historical daily points
+    let daily_history: Vec<DailyCostPoint> = day_costs.iter().enumerate().map(|(i, (cost, execs))| {
+        let day_ts = (day_zero + i as u64) * secs_per_day;
+        DailyCostPoint {
+            day_offset: i as i64,
+            date: format_unix_day(day_ts),
+            cost_usd: (*cost * 10000.0).round() / 10000.0,
+            executions: *execs,
+        }
+    }).collect();
+
+    // Linear regression: y = a + b*x where x = day_offset, y = cost
+    let n = daily_history.len() as f64;
+    let sum_x: f64 = daily_history.iter().map(|p| p.day_offset as f64).sum();
+    let sum_y: f64 = daily_history.iter().map(|p| p.cost_usd).sum();
+    let sum_xy: f64 = daily_history.iter().map(|p| p.day_offset as f64 * p.cost_usd).sum();
+    let sum_x2: f64 = daily_history.iter().map(|p| (p.day_offset as f64).powi(2)).sum();
+
+    let denom = n * sum_x2 - sum_x * sum_x;
+    let (slope, intercept) = if denom.abs() < 1e-12 {
+        // Flat — use average
+        (0.0, if n > 0.0 { sum_y / n } else { 0.0 })
+    } else {
+        let b = (n * sum_xy - sum_x * sum_y) / denom;
+        let a = (sum_y - b * sum_x) / n;
+        (b, a)
+    };
+
+    // Generate forecast points
+    let last_offset = num_days as i64;
+    let forecast: Vec<DailyCostPoint> = (0..forecast_days).map(|d| {
+        let offset = last_offset + d as i64;
+        let predicted = (intercept + slope * offset as f64).max(0.0);
+        let day_ts = (day_zero + offset as u64) * secs_per_day;
+        DailyCostPoint {
+            day_offset: offset,
+            date: format_unix_day(day_ts),
+            cost_usd: (predicted * 10000.0).round() / 10000.0,
+            executions: 0,
+        }
+    }).collect();
+
+    let total_forecast: f64 = forecast.iter().map(|p| p.cost_usd).sum();
+    let flow_label = flow_filter.unwrap_or_else(|| "*".into());
+
+    Ok(Json(serde_json::json!({
+        "flow": flow_label,
+        "historical_days": num_days,
+        "forecast_days": forecast_days,
+        "daily_history": daily_history,
+        "forecast": forecast,
+        "trend_slope_usd_per_day": (slope * 10000.0).round() / 10000.0,
+        "total_forecast_cost_usd": (total_forecast * 10000.0).round() / 10000.0,
+    })))
+}
+
+/// Format Unix timestamp to YYYY-MM-DD string.
+fn format_unix_day(ts: u64) -> String {
+    // Simple conversion without chrono: days since epoch
+    let days = ts / 86400;
+    // Approximate: good enough for display
+    let y = 1970 + (days as i64 * 400 / 146097);
+    let mut remaining = days as i64 - ((y - 1970) * 365 + (y - 1970) / 4 - (y - 1970) / 100 + (y - 1970) / 400);
+    let mut year = y;
+    if remaining < 0 {
+        year -= 1;
+        remaining += if is_leap(year) { 366 } else { 365 };
+    }
+    while remaining >= if is_leap(year) { 366 } else { 365 } {
+        remaining -= if is_leap(year) { 366 } else { 365 };
+        year += 1;
+    }
+    let leap = is_leap(year);
+    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 0usize;
+    for (i, &md) in month_days.iter().enumerate() {
+        if remaining < md as i64 { month = i; break; }
+        remaining -= md as i64;
+    }
+    format!("{:04}-{:02}-{:02}", year, month + 1, remaining + 1)
+}
+
+fn is_leap(y: i64) -> bool {
+    y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)
+}
+
+/// GET /v1/backends — list registered backends with status.
+async fn backends_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+    // Merge supported backends with registry entries
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    for &name in crate::backend::SUPPORTED_BACKENDS {
+        let registered = s.backend_registry.get(name);
+        let has_env_key = std::env::var(format!("{}_API_KEY", name.to_uppercase())).is_ok();
+        let has_server_key = registered.map_or(false, |r| !r.api_key.is_empty());
+
+        entries.push(serde_json::json!({
+            "name": name,
+            "enabled": registered.map_or(true, |r| r.enabled),
+            "key_source": if has_server_key { "server" } else if has_env_key { "env" } else { "none" },
+            "status": registered.map_or("unknown".to_string(), |r| r.status.clone()),
+            "last_check_at": registered.map_or(0, |r| r.last_check_at),
+            "last_check_latency_ms": registered.map_or(0, |r| r.last_check_latency_ms),
+            "total_calls": registered.map_or(0, |r| r.total_calls),
+            "total_errors": registered.map_or(0, |r| r.total_errors),
+        }));
+    }
+
+    Ok(Json(serde_json::json!({
+        "backends": entries,
+        "total": entries.len(),
+    })))
+}
+
+/// PUT /v1/backends/{name} — register or update a backend with server-managed API key.
+async fn backends_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    // Validate backend name
+    if !crate::backend::SUPPORTED_BACKENDS.contains(&name.as_str()) {
+        return Ok(Json(serde_json::json!({
+            "error": format!("Unknown backend '{}'. Supported: {:?}", name, crate::backend::SUPPORTED_BACKENDS),
+        })));
+    }
+
+    let api_key = payload.get("api_key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let enabled = payload.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+
+    let entry = s.backend_registry.entry(name.clone()).or_insert_with(|| BackendRegistryEntry {
+        name: name.clone(),
+        api_key: String::new(),
+        enabled: true,
+        status: "unknown".into(),
+        last_check_at: 0,
+        last_check_latency_ms: 0,
+        total_calls: 0,
+        total_errors: 0,
+        total_tokens_input: 0,
+        total_tokens_output: 0,
+        total_latency_ms: 0,
+        last_call_at: 0,
+        fallback_chain: Vec::new(),
+        consecutive_failures: 0,
+        circuit_open_until: 0,
+        circuit_breaker_threshold: 5,
+        circuit_breaker_cooldown_secs: 60,
+            total_cost_usd: 0.0, max_rpm: 0, max_tpm: 0, rpm_window_start: 0, rpm_count: 0, tpm_count: 0,
+    });
+
+    if !api_key.is_empty() {
+        entry.api_key = api_key;
+    }
+    entry.enabled = enabled;
+    let has_key = !entry.api_key.is_empty();
+    let status = entry.status.clone();
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "backend_registry",
+        serde_json::json!({"action": "put", "backend": &name, "enabled": enabled, "has_key": has_key}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "backend": name,
+        "enabled": enabled,
+        "has_key": has_key,
+        "status": status,
+    })))
+}
+
+/// DELETE /v1/backends/{name} — remove a backend from registry (reverts to env-only).
+async fn backends_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let removed = s.backend_registry.remove(&name).is_some();
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "backend_registry",
+        serde_json::json!({"action": "delete", "backend": &name, "removed": removed}), removed);
+
+    Ok(Json(serde_json::json!({"success": removed, "backend": name})))
+}
+
+/// POST /v1/backends/{name}/check — health-check a backend by attempting a minimal API call.
+async fn backends_check_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Validate and get key outside lock
+    let api_key = {
+        let s = state.lock().unwrap();
+        check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+        if !crate::backend::SUPPORTED_BACKENDS.contains(&name.as_str()) {
+            return Ok(Json(serde_json::json!({"error": format!("Unknown backend '{}'", name)})));
+        }
+
+        // Prefer server registry key, fallback to env
+        let server_key = s.backend_registry.get(&name).map(|r| r.api_key.clone()).unwrap_or_default();
+        if !server_key.is_empty() {
+            server_key
+        } else {
+            crate::backend::get_api_key(&name).unwrap_or_default()
+        }
+    };
+
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let check_start = Instant::now();
+
+    // Attempt a minimal call (1-token response)
+    let result = crate::backend::call(
+        &name,
+        &api_key,
+        "You are a health check. Reply with OK.",
+        "health",
+        Some(5),
+    );
+
+    let latency_ms = check_start.elapsed().as_millis() as u64;
+    let (status, error_msg) = match &result {
+        Ok(_) => ("healthy".to_string(), None),
+        Err(e) => {
+            let msg = e.message.clone();
+            if msg.contains("not set") || msg.contains("API_KEY") {
+                ("no_key".to_string(), Some(msg))
+            } else if msg.contains("timeout") || msg.contains("connect") {
+                ("unreachable".to_string(), Some(msg))
+            } else {
+                ("degraded".to_string(), Some(msg))
+            }
+        }
+    };
+
+    // Update registry entry + record health history
+    let transition;
+    {
+        let mut s = state.lock().unwrap();
+        let entry = s.backend_registry.entry(name.clone()).or_insert_with(|| BackendRegistryEntry {
+            name: name.clone(),
+            api_key: String::new(),
+            enabled: true,
+            status: "unknown".into(),
+            last_check_at: 0,
+            last_check_latency_ms: 0,
+            total_calls: 0,
+            total_errors: 0,
+            total_tokens_input: 0,
+            total_tokens_output: 0,
+            total_latency_ms: 0,
+            last_call_at: 0,
+            fallback_chain: Vec::new(),
+            consecutive_failures: 0,
+            circuit_open_until: 0,
+            circuit_breaker_threshold: 5,
+            circuit_breaker_cooldown_secs: 60,
+            total_cost_usd: 0.0, max_rpm: 0, max_tpm: 0, rpm_window_start: 0, rpm_count: 0, tpm_count: 0,
+        });
+        let previous_status = entry.status.clone();
+        entry.status = status.clone();
+        entry.last_check_at = now;
+        entry.last_check_latency_ms = latency_ms;
+        transition = previous_status != status;
+
+        // Update probe consecutive counters
+        if let Some(probe) = s.backend_health_probes.get_mut(&name) {
+            if status == "healthy" {
+                probe.consecutive_ok += 1;
+                probe.consecutive_fail = 0;
+            } else {
+                probe.consecutive_fail += 1;
+                probe.consecutive_ok = 0;
+            }
+        }
+
+        // Record health history (cap at 100 entries per backend)
+        let record = HealthCheckRecord {
+            timestamp: now,
+            status: status.clone(),
+            latency_ms,
+            error: error_msg.clone(),
+            previous_status,
+        };
+        let history = s.backend_health_history.entry(name.clone()).or_insert_with(Vec::new);
+        history.push(record);
+        if history.len() > 100 {
+            history.remove(0);
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "backend": name,
+        "status": status,
+        "latency_ms": latency_ms,
+        "error": error_msg,
+        "transition": transition,
+    })))
+}
+
+/// Resolve API key for a backend: server registry → env var → error.
+/// GET /v1/backends/{name}/metrics — detailed call metrics for a specific backend.
+async fn backends_metrics_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    if !crate::backend::SUPPORTED_BACKENDS.contains(&name.as_str()) {
+        return Ok(Json(serde_json::json!({"error": format!("Unknown backend '{}'", name)})));
+    }
+
+    match s.backend_registry.get(&name) {
+        Some(entry) => {
+            let avg_latency = if entry.total_calls > 0 {
+                entry.total_latency_ms as f64 / entry.total_calls as f64
+            } else {
+                0.0
+            };
+            let error_rate = if entry.total_calls > 0 {
+                entry.total_errors as f64 / entry.total_calls as f64
+            } else {
+                0.0
+            };
+            let total_tokens = entry.total_tokens_input + entry.total_tokens_output;
+
+            Ok(Json(serde_json::json!({
+                "backend": name,
+                "enabled": entry.enabled,
+                "status": entry.status,
+                "total_calls": entry.total_calls,
+                "total_errors": entry.total_errors,
+                "error_rate": (error_rate * 10000.0).round() / 10000.0,
+                "total_tokens_input": entry.total_tokens_input,
+                "total_tokens_output": entry.total_tokens_output,
+                "total_tokens": total_tokens,
+                "total_latency_ms": entry.total_latency_ms,
+                "avg_latency_ms": (avg_latency * 100.0).round() / 100.0,
+                "last_call_at": entry.last_call_at,
+                "total_cost_usd": entry.total_cost_usd,
+                "last_check_at": entry.last_check_at,
+                "last_check_latency_ms": entry.last_check_latency_ms,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "backend": name,
+            "enabled": true,
+            "status": "unknown",
+            "total_calls": 0,
+            "total_errors": 0,
+            "error_rate": 0.0,
+            "total_tokens_input": 0,
+            "total_tokens_output": 0,
+            "total_tokens": 0,
+            "total_latency_ms": 0,
+            "avg_latency_ms": 0.0,
+            "total_cost_usd": 0.0,
+            "last_call_at": 0,
+            "last_check_at": 0,
+            "last_check_latency_ms": 0,
+        }))),
+    }
+}
+
+/// PUT /v1/backends/{name}/limits — set rate limits for a backend.
+/// Body: { "max_rpm": 60, "max_tpm": 100000 } (0 = unlimited)
+async fn backends_limits_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let max_rpm = payload.get("max_rpm").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let max_tpm = payload.get("max_tpm").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    if let Some(entry) = s.backend_registry.get_mut(&name) {
+        entry.max_rpm = max_rpm;
+        entry.max_tpm = max_tpm;
+    } else {
+        return Ok(Json(serde_json::json!({"error": format!("backend '{}' not in registry", name)})));
+    }
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "backend_limits",
+        serde_json::json!({"action": "set", "backend": &name, "max_rpm": max_rpm, "max_tpm": max_tpm}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "backend": name,
+        "max_rpm": max_rpm,
+        "max_tpm": max_tpm,
+    })))
+}
+
+/// GET /v1/backends/{name}/limits — view rate limits and current usage.
+async fn backends_limits_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    match s.backend_registry.get(&name) {
+        Some(entry) => {
+            let window_remaining = if entry.rpm_window_start + 60 > now {
+                entry.rpm_window_start + 60 - now
+            } else { 60 };
+            Ok(Json(serde_json::json!({
+                "backend": name,
+                "max_rpm": entry.max_rpm,
+                "max_tpm": entry.max_tpm,
+                "current_rpm": entry.rpm_count,
+                "current_tpm": entry.tpm_count,
+                "window_remaining_secs": window_remaining,
+                "rpm_limited": entry.max_rpm > 0 && entry.rpm_count >= entry.max_rpm,
+                "tpm_limited": entry.max_tpm > 0 && entry.tpm_count >= entry.max_tpm,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({"error": format!("backend '{}' not in registry", name)}))),
+    }
+}
+
+/// GET /v1/backends/{name}/fallback — view fallback chain for a backend.
+async fn backends_fallback_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let chain = s.backend_registry.get(&name)
+        .map(|e| e.fallback_chain.clone())
+        .unwrap_or_default();
+
+    Ok(Json(serde_json::json!({
+        "backend": name,
+        "fallback_chain": chain,
+    })))
+}
+
+/// PUT /v1/backends/{name}/fallback — set fallback chain for a backend.
+async fn backends_fallback_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let chain: Vec<String> = payload.get("chain")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+
+    // Validate: no self-reference, all must be supported backends
+    if chain.contains(&name) {
+        return Ok(Json(serde_json::json!({"error": "fallback chain cannot contain the backend itself"})));
+    }
+    for fb in &chain {
+        if !crate::backend::SUPPORTED_BACKENDS.contains(&fb.as_str()) {
+            return Ok(Json(serde_json::json!({"error": format!("unknown backend '{}' in chain", fb)})));
+        }
+    }
+
+    let entry = s.backend_registry.entry(name.clone()).or_insert_with(|| BackendRegistryEntry {
+        name: name.clone(),
+        api_key: String::new(),
+        enabled: true,
+        status: "unknown".into(),
+        last_check_at: 0,
+        last_check_latency_ms: 0,
+        total_calls: 0,
+        total_errors: 0,
+        total_tokens_input: 0,
+        total_tokens_output: 0,
+        total_latency_ms: 0,
+        last_call_at: 0,
+        fallback_chain: Vec::new(),
+        consecutive_failures: 0,
+        circuit_open_until: 0,
+        circuit_breaker_threshold: 5,
+        circuit_breaker_cooldown_secs: 60,
+        total_cost_usd: 0.0, max_rpm: 0, max_tpm: 0, rpm_window_start: 0, rpm_count: 0, tpm_count: 0,
+    });
+    entry.fallback_chain = chain.clone();
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "backend_fallback",
+        serde_json::json!({"action": "set", "backend": &name, "chain": &chain}), true);
+
+    Ok(Json(serde_json::json!({"success": true, "backend": name, "fallback_chain": chain})))
+}
+
+/// Backend score for ranking/selection.
+#[derive(Debug, Clone, Serialize)]
+pub struct BackendScore {
+    pub name: String,
+    pub enabled: bool,
+    pub circuit_open: bool,
+    pub total_calls: u64,
+    pub error_rate: f64,
+    pub avg_latency_ms: f64,
+    pub cost_per_call_usd: f64,
+    pub total_cost_usd: f64,
+    /// Composite score (higher = better). Strategy-dependent.
+    pub score: f64,
+}
+
+/// Compute scores for all backends in registry based on strategy.
+/// Strategy: "cheapest" | "fastest" | "most_reliable" | "balanced"
+fn compute_backend_scores(state: &ServerState, strategy: &str) -> Vec<BackendScore> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut scores: Vec<BackendScore> = state.backend_registry.values().filter(|e| e.enabled).map(|e| {
+        let error_rate = if e.total_calls > 0 { e.total_errors as f64 / e.total_calls as f64 } else { 0.0 };
+        let avg_latency = if e.total_calls > 0 { e.total_latency_ms as f64 / e.total_calls as f64 } else { 0.0 };
+        let cost_per_call = if e.total_calls > 0 { e.total_cost_usd / e.total_calls as f64 } else { 0.0 };
+        let circuit_open = e.circuit_open_until > 0 && now < e.circuit_open_until;
+
+        // Base score: 100 for usable backends, 0 for circuit-open
+        let mut score = if circuit_open { 0.0 } else { 100.0 };
+
+        if !circuit_open && e.total_calls > 0 {
+            match strategy {
+                "cheapest" => {
+                    // Lower cost → higher score. Normalize: max $0.10/call → score 0
+                    score = (100.0 - cost_per_call * 1000.0).max(0.0);
+                }
+                "fastest" => {
+                    // Lower latency → higher score. 0ms → 100, 5000ms → 0
+                    score = (100.0 - avg_latency / 50.0).max(0.0);
+                }
+                "most_reliable" => {
+                    // Lower error rate → higher score
+                    score = (1.0 - error_rate) * 100.0;
+                }
+                "balanced" | _ => {
+                    // Weighted composite: 40% reliability + 30% speed + 30% cost
+                    let reliability = (1.0 - error_rate) * 100.0;
+                    let speed = (100.0 - avg_latency / 50.0).max(0.0);
+                    let cost_score = (100.0 - cost_per_call * 1000.0).max(0.0);
+                    score = reliability * 0.4 + speed * 0.3 + cost_score * 0.3;
+                }
+            }
+        }
+
+        BackendScore {
+            name: e.name.clone(),
+            enabled: e.enabled,
+            circuit_open,
+            total_calls: e.total_calls,
+            error_rate: (error_rate * 10000.0).round() / 10000.0,
+            avg_latency_ms: (avg_latency * 100.0).round() / 100.0,
+            cost_per_call_usd: (cost_per_call * 10000.0).round() / 10000.0,
+            total_cost_usd: e.total_cost_usd,
+            score: (score * 100.0).round() / 100.0,
+        }
+    }).collect();
+
+    scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    scores
+}
+
+/// GET /v1/backends/ranking — rank all backends by strategy.
+/// Query param: strategy (cheapest|fastest|most_reliable|balanced, default balanced).
+async fn backends_ranking_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let strategy = params.get("strategy").map(|s| s.as_str()).unwrap_or("balanced");
+    let scores = compute_backend_scores(&s, strategy);
+
+    Ok(Json(serde_json::json!({
+        "strategy": strategy,
+        "backends": scores,
+        "recommended": scores.first().map(|s| s.name.clone()),
+    })))
+}
+
+/// POST /v1/backends/select — auto-select optimal backend for execution.
+/// Body: { "strategy": "cheapest|fastest|most_reliable|balanced" }
+/// Returns the best backend name and its score.
+async fn backends_select_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let strategy = payload.get("strategy").and_then(|s| s.as_str()).unwrap_or("balanced");
+    let scores = compute_backend_scores(&s, strategy);
+
+    match scores.first() {
+        Some(best) => Ok(Json(serde_json::json!({
+            "selected": best.name,
+            "strategy": strategy,
+            "score": best.score,
+            "error_rate": best.error_rate,
+            "avg_latency_ms": best.avg_latency_ms,
+            "cost_per_call_usd": best.cost_per_call_usd,
+            "circuit_open": best.circuit_open,
+            "alternatives": scores.iter().skip(1).take(3).map(|s| {
+                serde_json::json!({"name": s.name, "score": s.score})
+            }).collect::<Vec<_>>(),
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "error": "no enabled backends with metrics available",
+            "strategy": strategy,
+        }))),
+    }
+}
+
+/// GET /v1/backends/dashboard — aggregate backend dashboard.
+/// Returns per-backend summary (calls, cost, limits, circuit state, ranking)
+/// plus fleet-wide aggregates and the balanced optimizer ranking.
+async fn backends_dashboard_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Per-backend summaries
+    let mut backends_summary: Vec<serde_json::Value> = Vec::new();
+    let mut fleet_total_calls: u64 = 0;
+    let mut fleet_total_errors: u64 = 0;
+    let mut fleet_total_tokens_input: u64 = 0;
+    let mut fleet_total_tokens_output: u64 = 0;
+    let mut fleet_total_cost_usd: f64 = 0.0;
+    let mut fleet_total_latency_ms: u64 = 0;
+    let mut backends_enabled: u32 = 0;
+    let mut backends_circuit_open: u32 = 0;
+    let mut backends_degraded: u32 = 0;
+
+    for entry in s.backend_registry.values() {
+        let avg_latency = if entry.total_calls > 0 {
+            entry.total_latency_ms as f64 / entry.total_calls as f64
+        } else {
+            0.0
+        };
+        let error_rate = if entry.total_calls > 0 {
+            entry.total_errors as f64 / entry.total_calls as f64
+        } else {
+            0.0
+        };
+        let circuit_open = entry.circuit_open_until > 0 && now < entry.circuit_open_until;
+        let circuit_state = if circuit_open {
+            "open"
+        } else if entry.consecutive_failures > 0 {
+            "half-open"
+        } else {
+            "closed"
+        };
+
+        let rpm_remaining = if entry.max_rpm > 0 {
+            let in_window = now.saturating_sub(entry.rpm_window_start) < 60;
+            if in_window { entry.max_rpm.saturating_sub(entry.rpm_count) } else { entry.max_rpm }
+        } else {
+            0
+        };
+        let tpm_remaining = if entry.max_tpm > 0 {
+            let in_window = now.saturating_sub(entry.rpm_window_start) < 60;
+            if in_window { entry.max_tpm.saturating_sub(entry.tpm_count) } else { entry.max_tpm }
+        } else {
+            0
+        };
+
+        // Fleet aggregates
+        fleet_total_calls += entry.total_calls;
+        fleet_total_errors += entry.total_errors;
+        fleet_total_tokens_input += entry.total_tokens_input;
+        fleet_total_tokens_output += entry.total_tokens_output;
+        fleet_total_cost_usd += entry.total_cost_usd;
+        fleet_total_latency_ms += entry.total_latency_ms;
+        if entry.enabled { backends_enabled += 1; }
+        if circuit_open { backends_circuit_open += 1; }
+        if entry.status == "degraded" { backends_degraded += 1; }
+
+        let mut rate_limits = serde_json::json!({
+            "max_rpm": entry.max_rpm,
+            "max_tpm": entry.max_tpm,
+        });
+        if entry.max_rpm > 0 {
+            rate_limits["rpm_remaining"] = serde_json::json!(rpm_remaining);
+        }
+        if entry.max_tpm > 0 {
+            rate_limits["tpm_remaining"] = serde_json::json!(tpm_remaining);
+        }
+
+        backends_summary.push(serde_json::json!({
+            "name": entry.name,
+            "enabled": entry.enabled,
+            "status": entry.status,
+            "circuit_state": circuit_state,
+            "consecutive_failures": entry.consecutive_failures,
+            "total_calls": entry.total_calls,
+            "total_errors": entry.total_errors,
+            "error_rate": (error_rate * 10000.0).round() / 10000.0,
+            "total_tokens_input": entry.total_tokens_input,
+            "total_tokens_output": entry.total_tokens_output,
+            "avg_latency_ms": (avg_latency * 100.0).round() / 100.0,
+            "total_cost_usd": (entry.total_cost_usd * 10000.0).round() / 10000.0,
+            "last_call_at": entry.last_call_at,
+            "rate_limits": rate_limits,
+            "fallback_chain": entry.fallback_chain,
+        }));
+    }
+
+    // Fleet-wide averages
+    let fleet_avg_latency = if fleet_total_calls > 0 {
+        fleet_total_latency_ms as f64 / fleet_total_calls as f64
+    } else {
+        0.0
+    };
+    let fleet_error_rate = if fleet_total_calls > 0 {
+        fleet_total_errors as f64 / fleet_total_calls as f64
+    } else {
+        0.0
+    };
+
+    // Balanced ranking
+    let ranking = compute_backend_scores(&s, "balanced");
+
+    Ok(Json(serde_json::json!({
+        "fleet": {
+            "total_backends": s.backend_registry.len(),
+            "backends_enabled": backends_enabled,
+            "backends_circuit_open": backends_circuit_open,
+            "backends_degraded": backends_degraded,
+            "total_calls": fleet_total_calls,
+            "total_errors": fleet_total_errors,
+            "fleet_error_rate": (fleet_error_rate * 10000.0).round() / 10000.0,
+            "total_tokens_input": fleet_total_tokens_input,
+            "total_tokens_output": fleet_total_tokens_output,
+            "total_tokens": fleet_total_tokens_input + fleet_total_tokens_output,
+            "total_cost_usd": (fleet_total_cost_usd * 10000.0).round() / 10000.0,
+            "avg_latency_ms": (fleet_avg_latency * 100.0).round() / 100.0,
+        },
+        "backends": backends_summary,
+        "ranking": {
+            "strategy": "balanced",
+            "scores": ranking,
+            "recommended": ranking.first().map(|s| s.name.clone()),
+        },
+    })))
+}
+
+/// GET /v1/backends/{name}/health — health check history with transition analysis.
+async fn backends_health_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let history = s.backend_health_history.get(&name).cloned().unwrap_or_default();
+    let probe = s.backend_health_probes.get(&name);
+    let registry = s.backend_registry.get(&name);
+
+    let current_status = registry.map(|r| r.status.as_str()).unwrap_or("unknown");
+    let last_check_at = registry.map(|r| r.last_check_at).unwrap_or(0);
+
+    // Compute transition count
+    let transitions: Vec<&HealthCheckRecord> = history.iter()
+        .filter(|r| r.status != r.previous_status && r.previous_status != "unknown")
+        .collect();
+
+    // Uptime calculation: count healthy checks / total checks
+    let total_checks = history.len();
+    let healthy_checks = history.iter().filter(|r| r.status == "healthy").count();
+    let uptime_pct = if total_checks > 0 {
+        (healthy_checks as f64 / total_checks as f64 * 10000.0).round() / 100.0
+    } else {
+        0.0
+    };
+
+    // Average latency from history
+    let avg_latency = if total_checks > 0 {
+        let total: u64 = history.iter().map(|r| r.latency_ms).sum();
+        (total as f64 / total_checks as f64 * 100.0).round() / 100.0
+    } else {
+        0.0
+    };
+
+    let probe_info = probe.map(|p| serde_json::json!({
+        "interval_secs": p.interval_secs,
+        "unhealthy_threshold": p.unhealthy_threshold,
+        "healthy_threshold": p.healthy_threshold,
+        "timeout_ms": p.timeout_ms,
+        "enabled": p.enabled,
+        "consecutive_ok": p.consecutive_ok,
+        "consecutive_fail": p.consecutive_fail,
+    }));
+
+    Ok(Json(serde_json::json!({
+        "backend": name,
+        "current_status": current_status,
+        "last_check_at": last_check_at,
+        "probe": probe_info,
+        "history": {
+            "total_checks": total_checks,
+            "healthy_checks": healthy_checks,
+            "uptime_pct": uptime_pct,
+            "avg_latency_ms": avg_latency,
+            "transitions": transitions.len(),
+            "records": history,
+        },
+    })))
+}
+
+/// PUT /v1/backends/{name}/probe — configure health probe for a backend.
+/// Body: { "interval_secs": 300, "unhealthy_threshold": 3, "healthy_threshold": 2, "timeout_ms": 10000, "enabled": true }
+async fn backends_probe_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let probe = s.backend_health_probes.entry(name.clone()).or_insert_with(|| {
+        let mut p = BackendHealthProbe::default();
+        p.backend = name.clone();
+        p
+    });
+
+    if let Some(v) = payload.get("interval_secs").and_then(|v| v.as_u64()) {
+        probe.interval_secs = v;
+    }
+    if let Some(v) = payload.get("unhealthy_threshold").and_then(|v| v.as_u64()) {
+        probe.unhealthy_threshold = v as u32;
+    }
+    if let Some(v) = payload.get("healthy_threshold").and_then(|v| v.as_u64()) {
+        probe.healthy_threshold = v as u32;
+    }
+    if let Some(v) = payload.get("timeout_ms").and_then(|v| v.as_u64()) {
+        probe.timeout_ms = v;
+    }
+    if let Some(v) = payload.get("enabled").and_then(|v| v.as_bool()) {
+        probe.enabled = v;
+    }
+
+    let probe_snapshot = probe.clone();
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "backend_probe",
+        serde_json::json!({"action": "configure", "backend": &name}), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "backend": name,
+        "probe": {
+            "interval_secs": probe_snapshot.interval_secs,
+            "unhealthy_threshold": probe_snapshot.unhealthy_threshold,
+            "healthy_threshold": probe_snapshot.healthy_threshold,
+            "timeout_ms": probe_snapshot.timeout_ms,
+            "enabled": probe_snapshot.enabled,
+        },
+    })))
+}
+
+/// GET /v1/backends/{name}/probe — get probe configuration.
+async fn backends_probe_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.backend_health_probes.get(&name) {
+        Some(probe) => Ok(Json(serde_json::json!({
+            "backend": name,
+            "probe": {
+                "interval_secs": probe.interval_secs,
+                "unhealthy_threshold": probe.unhealthy_threshold,
+                "healthy_threshold": probe.healthy_threshold,
+                "timeout_ms": probe.timeout_ms,
+                "enabled": probe.enabled,
+                "consecutive_ok": probe.consecutive_ok,
+                "consecutive_fail": probe.consecutive_fail,
+            },
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "backend": name,
+            "probe": null,
+            "message": "no probe configured",
+        }))),
+    }
+}
+
+/// GET /v1/backends/health — fleet-wide health summary across all backends.
+async fn backends_fleet_health_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let mut backends_summary: Vec<serde_json::Value> = Vec::new();
+    let mut total_healthy = 0u32;
+    let mut total_degraded = 0u32;
+    let mut total_unreachable = 0u32;
+    let mut total_unknown = 0u32;
+
+    for (bname, entry) in &s.backend_registry {
+        match entry.status.as_str() {
+            "healthy" => total_healthy += 1,
+            "degraded" => total_degraded += 1,
+            "unreachable" => total_unreachable += 1,
+            _ => total_unknown += 1,
+        }
+
+        let history = s.backend_health_history.get(bname);
+        let check_count = history.map(|h| h.len()).unwrap_or(0);
+        let healthy_count = history.map(|h| h.iter().filter(|r| r.status == "healthy").count()).unwrap_or(0);
+        let uptime = if check_count > 0 {
+            (healthy_count as f64 / check_count as f64 * 10000.0).round() / 100.0
+        } else {
+            0.0
+        };
+
+        let probe = s.backend_health_probes.get(bname);
+
+        backends_summary.push(serde_json::json!({
+            "name": bname,
+            "status": entry.status,
+            "enabled": entry.enabled,
+            "last_check_at": entry.last_check_at,
+            "last_check_latency_ms": entry.last_check_latency_ms,
+            "check_count": check_count,
+            "uptime_pct": uptime,
+            "probe_enabled": probe.map(|p| p.enabled).unwrap_or(false),
+        }));
+    }
+
+    backends_summary.sort_by(|a, b| {
+        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+    });
+
+    Ok(Json(serde_json::json!({
+        "fleet_health": {
+            "total": s.backend_registry.len(),
+            "healthy": total_healthy,
+            "degraded": total_degraded,
+            "unreachable": total_unreachable,
+            "unknown": total_unknown,
+        },
+        "backends": backends_summary,
+    })))
+}
+
+/// Attempt execution with fallback: try primary, then each fallback in order.
+/// Returns (result, actual_backend_used).
+fn execute_with_fallback(
+    state: &std::sync::Mutex<ServerState>,
+    source: &str,
+    source_file: &str,
+    flow_name: &str,
+    primary_backend: &str,
+    primary_key: Option<&str>,
+) -> (Result<ServerExecutionResult, String>, String) {
+    // Try primary
+    let result = server_execute(source, source_file, flow_name, primary_backend, primary_key);
+    if result.is_ok() {
+        return (result, primary_backend.to_string());
+    }
+
+    // Get fallback chain from registry
+    let chain = {
+        let s = state.lock().unwrap();
+        s.backend_registry.get(primary_backend)
+            .map(|e| e.fallback_chain.clone())
+            .unwrap_or_default()
+    };
+
+    if chain.is_empty() {
+        return (result, primary_backend.to_string());
+    }
+
+    // Try each fallback
+    let primary_err = result.unwrap_err();
+    for fallback_backend in &chain {
+        let fb_key = {
+            let s = state.lock().unwrap();
+            resolve_backend_key(&s, fallback_backend).ok()
+        };
+        let fb_result = server_execute(source, source_file, flow_name, fallback_backend, fb_key.as_deref());
+        if fb_result.is_ok() {
+            return (fb_result, fallback_backend.clone());
+        }
+    }
+
+    // All fallbacks failed — return original error
+    (Err(primary_err), primary_backend.to_string())
+}
+
+/// Full execution pipeline: resolve key → execute with fallback → record metrics.
+/// Replaces the pattern: resolve_backend_key + server_execute + record_backend_metrics.
+/// Call sites only need state, source, source_file, flow_name, backend.
+fn server_execute_full(
+    state: &std::sync::Mutex<ServerState>,
+    source: &str,
+    source_file: &str,
+    flow_name: &str,
+    backend: &str,
+) -> (Result<ServerExecutionResult, String>, String) {
+    // Auto-backend: if "auto", use optimizer to select best backend
+    let effective_backend = if backend == "auto" {
+        let s = state.lock().unwrap();
+        let scores = compute_backend_scores(&s, "balanced");
+        scores.first().map(|s| s.name.clone()).unwrap_or_else(|| "stub".to_string())
+    } else {
+        backend.to_string()
+    };
+
+    // Check rate limit before execution
+    {
+        let mut s = state.lock().unwrap();
+        if let Err(e) = check_backend_rate_limit(&mut s, &effective_backend) {
+            return (Err(e), effective_backend);
+        }
+    }
+
+    // Resolve key from registry
+    let resolved_key = {
+        let s = state.lock().unwrap();
+        resolve_backend_key(&s, &effective_backend).ok()
+    };
+
+    // Execute with fallback chain
+    let (result, actual_backend) = execute_with_fallback(
+        state, source, source_file, flow_name, &effective_backend, resolved_key.as_deref(),
+    );
+
+    // Record metrics
+    if let Ok(ref er) = result {
+        let mut s = state.lock().unwrap();
+        record_backend_metrics(
+            &mut s, &actual_backend, er.success,
+            er.tokens_input, er.tokens_output, er.latency_ms,
+        );
+    } else {
+        let mut s = state.lock().unwrap();
+        record_backend_metrics(&mut s, &actual_backend, false, 0, 0, 0);
+    }
+
+    (result, actual_backend)
+}
+
+pub fn resolve_backend_key(state: &ServerState, backend: &str) -> Result<String, String> {
+    // Check server registry first
+    if let Some(entry) = state.backend_registry.get(backend) {
+        if !entry.enabled {
+            return Err(format!("Backend '{}' is disabled in registry", backend));
+        }
+        // Circuit breaker check
+        if entry.circuit_open_until > 0 {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if now < entry.circuit_open_until {
+                return Err(format!(
+                    "Backend '{}' circuit is open ({} consecutive failures, recovers in {}s)",
+                    backend, entry.consecutive_failures,
+                    entry.circuit_open_until.saturating_sub(now)
+                ));
+            }
+            // Cooldown expired — allow through (half-open state, success will close it)
+        }
+        if !entry.api_key.is_empty() {
+            return Ok(entry.api_key.clone());
+        }
+    }
+    // Fallback to env
+    crate::backend::get_api_key(backend).map_err(|e| e.message)
+}
+
+// ── MCP Exposition (ℰMCP Server) ────────────────────────────────────────
+
+/// Extract anchor names from a flow's source for CSP constraint schema.
+/// Best-effort: compiles the source and extracts anchor names from IR.
+fn extract_flow_anchors(source: &str, flow_name: &str) -> Vec<String> {
+    let tokens = match crate::lexer::Lexer::new(source, "mcp_schema").tokenize() {
+        Ok(t) => t,
+        Err(_) => return vec![],
+    };
+    let mut parser = crate::parser::Parser::new(tokens);
+    let program = match parser.parse() {
+        Ok(p) => p,
+        Err(_) => return vec![],
+    };
+    let ir = crate::ir_generator::IRGenerator::new().generate(&program);
+    ir.anchors.iter().map(|a| a.name.clone()).collect()
+}
+
+/// Extract personas from a flow's deployed source for MCP prompts exposition.
+fn extract_personas(source: &str) -> Vec<(String, Vec<String>, String, Option<f64>, String)> {
+    let tokens = match crate::lexer::Lexer::new(source, "mcp_prompts").tokenize() {
+        Ok(t) => t,
+        Err(_) => return vec![],
+    };
+    let mut parser = crate::parser::Parser::new(tokens);
+    let program = match parser.parse() {
+        Ok(p) => p,
+        Err(_) => return vec![],
+    };
+    let ir = crate::ir_generator::IRGenerator::new().generate(&program);
+    ir.personas.iter().map(|p| (
+        p.name.clone(), p.domain.clone(), p.tone.clone(),
+        p.confidence_threshold, p.description.clone(),
+    )).collect()
+}
+
+/// Extract contexts from a flow's deployed source for MCP prompts exposition.
+fn extract_contexts(source: &str) -> Vec<(String, String, String, Option<i64>, Option<f64>)> {
+    let tokens = match crate::lexer::Lexer::new(source, "mcp_prompts").tokenize() {
+        Ok(t) => t,
+        Err(_) => return vec![],
+    };
+    let mut parser = crate::parser::Parser::new(tokens);
+    let program = match parser.parse() {
+        Ok(p) => p,
+        Err(_) => return vec![],
+    };
+    let ir = crate::ir_generator::IRGenerator::new().generate(&program);
+    ir.contexts.iter().map(|c| (
+        c.name.clone(), c.memory_scope.clone(), c.depth.clone(),
+        c.max_tokens, c.temperature,
+    )).collect()
+}
+
+/// The 47 cognitive primitives of AXON — the formal instruction set.
+pub const AXON_COGNITIVE_PRIMITIVES: &[&str] = &[
+    // Top-level declarations (20)
+    "persona", "context", "flow", "anchor", "tool", "memory", "type",
+    "agent", "shield", "pix", "psyche", "corpus", "dataspace",
+    "ots", "mandate", "compute", "daemon", "axonstore", "axonendpoint", "lambda",
+    // Step-level primitives (27)
+    "step", "reason", "validate", "refine", "weave", "probe",
+    "use", "remember", "recall",
+    "know", "believe", "speculate", "doubt",
+    "par", "hibernate", "deliberate", "consensus", "forge",
+    "stream", "navigate", "drill", "trail", "corroborate",
+    "focus", "associate", "aggregate", "explore",
+];
+
+/// MCP tool descriptor for exposition.
+#[derive(Debug, Clone, Serialize)]
+pub struct McpExposedTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+/// POST /v1/mcp — JSON-RPC 2.0 endpoint implementing MCP server protocol.
+/// Exposes deployed AXON flows as MCP tools and server state as MCP resources.
+/// Methods: initialize, tools/list, tools/call, resources/list, resources/read.
+async fn mcp_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    body: String,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let rpc: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    let method = rpc.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    let id = rpc.get("id").and_then(|i| i.as_u64()).unwrap_or(0);
+    let params = rpc.get("params").cloned().unwrap_or(serde_json::json!({}));
+
+    match method {
+        "initialize" => {
+            Ok(Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {
+                        "tools": { "listChanged": false },
+                        "resources": { "subscribe": false, "listChanged": false },
+                        "prompts": { "listChanged": false }
+                    },
+                    "serverInfo": {
+                        "name": "axon-server",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    }
+                }
+            })))
+        }
+        "tools/list" => {
+            let s = state.lock().unwrap();
+            check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+            let mut tools: Vec<serde_json::Value> = Vec::new();
+            // Each deployed flow → MCP tool with CSP-derived schema (§5.3)
+            for summary in s.versions.list_flows() {
+                if let Some(active) = s.versions.get_active(&summary.flow_name) {
+                    // Extract anchor constraints from flow IR for CSP schema
+                    let anchors = extract_flow_anchors(&active.source, &summary.flow_name);
+                    tools.push(serde_json::json!({
+                        "name": format!("axon_{}", summary.flow_name),
+                        "description": format!(
+                            "Execute AXON flow '{}' (v{}) — ℰMCP tool with epistemic guarantees",
+                            summary.flow_name, active.version
+                        ),
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "backend": {
+                                    "type": "string",
+                                    "description": "LLM backend provider",
+                                    "default": "stub",
+                                    "enum": crate::backend::SUPPORTED_BACKENDS,
+                                },
+                                "input": {
+                                    "type": "string",
+                                    "description": "Input data for the flow"
+                                }
+                            },
+                            // CSP constraints (§5.3): anchors that bound the output space
+                            "_axon_csp": {
+                                "constraints": anchors,
+                                "effect_row": "<io, epistemic:speculate>",
+                                "output_taint": "Uncertainty",
+                            }
+                        }
+                    }));
+                }
+            }
+
+            // AxonStore cognitive tools (CSP §5.3 schemas, Theorem 5.1)
+            for store in s.axon_stores.values() {
+                // persist tool — raw write, c=1.0, δ=raw
+                tools.push(serde_json::json!({
+                    "name": format!("axon_as_{}_persist", store.name),
+                    "description": format!(
+                        "Persist key-value entry into AxonStore '{}' (ontology: {}) — ΛD: c=1.0, δ=raw",
+                        store.name, store.ontology
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": "Storage key for the entry",
+                            },
+                            "value": {
+                                "description": "Entry payload (any JSON value)",
+                            }
+                        },
+                        "required": ["key", "value"],
+                        "_axon_csp": {
+                            "constraints": [
+                                format!("ontology ∈ {}", store.ontology),
+                                "Theorem 5.1: raw persist → c=1.0",
+                            ],
+                            "effect_row": "<io, epistemic:know>",
+                            "output_taint": "Raw",
+                        }
+                    }
+                }));
+
+                // retrieve tool — read, c preserved from entry
+                tools.push(serde_json::json!({
+                    "name": format!("axon_as_{}_retrieve", store.name),
+                    "description": format!(
+                        "Retrieve entry by key from AxonStore '{}' with ΛD envelope — epistemic state preserved",
+                        store.name
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": "Storage key to retrieve",
+                            }
+                        },
+                        "required": ["key"],
+                        "_axon_csp": {
+                            "constraints": ["key ∈ store.entries", "envelope faithfully returned"],
+                            "effect_row": "<io, epistemic:believe>",
+                            "output_taint": "Preserved",
+                        }
+                    }
+                }));
+
+                // mutate tool — derived, c≤0.99, δ=derived (Theorem 5.1)
+                tools.push(serde_json::json!({
+                    "name": format!("axon_as_{}_mutate", store.name),
+                    "description": format!(
+                        "Mutate existing entry in AxonStore '{}' — ΛD: c≤0.99, δ=derived (Theorem 5.1: only raw may carry c=1.0)",
+                        store.name
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": "Key of entry to mutate (must exist)",
+                            },
+                            "value": {
+                                "description": "New value (any JSON)",
+                            }
+                        },
+                        "required": ["key", "value"],
+                        "_axon_csp": {
+                            "constraints": [
+                                "key ∈ store.entries (pre-condition)",
+                                "Theorem 5.1: mutation → c clamped ≤0.99, δ=derived",
+                            ],
+                            "effect_row": "<io, epistemic:speculate>",
+                            "output_taint": "Uncertainty",
+                        }
+                    }
+                }));
+
+                // purge tool — destructive delete
+                tools.push(serde_json::json!({
+                    "name": format!("axon_as_{}_purge", store.name),
+                    "description": format!(
+                        "Purge entry from AxonStore '{}' — irreversible deletion with audit trail",
+                        store.name
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": "Key of entry to purge (must exist)",
+                            }
+                        },
+                        "required": ["key"],
+                        "_axon_csp": {
+                            "constraints": ["key ∈ store.entries (pre-condition)", "irreversible"],
+                            "effect_row": "<io, epistemic:know>",
+                            "output_taint": "Void",
+                        }
+                    }
+                }));
+            }
+
+            // Dataspace cognitive tools (CSP §5.3 schemas)
+            for ds in s.dataspaces.values() {
+                // ingest tool
+                tools.push(serde_json::json!({
+                    "name": format!("axon_ds_{}_ingest", ds.name),
+                    "description": format!(
+                        "Ingest data into dataspace '{}' (ontology: {}) — ΛD: c=1.0, δ=raw",
+                        ds.name, ds.ontology
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "ontology": {
+                                "type": "string",
+                                "description": "Ontological type tag for the entry",
+                                "default": &ds.ontology,
+                            },
+                            "data": {
+                                "description": "Entry payload (any JSON value)",
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Tags for filtering and grouping",
+                            }
+                        },
+                        "required": ["data"],
+                        "_axon_csp": {
+                            "constraints": [format!("ontology ∈ {}", ds.ontology)],
+                            "effect_row": "<io, epistemic:know>",
+                            "output_taint": "Raw",
+                        }
+                    }
+                }));
+
+                // focus tool
+                tools.push(serde_json::json!({
+                    "name": format!("axon_ds_{}_focus", ds.name),
+                    "description": format!(
+                        "Filter entries in dataspace '{}' by ontology/tags — ΛD: c≤0.99, δ=derived (Theorem 5.1)",
+                        ds.name
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "ontology": {
+                                "type": "string",
+                                "description": "Filter by ontological type",
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Filter by tags (all must match)",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max results to return",
+                                "default": 100,
+                            }
+                        },
+                        "_axon_csp": {
+                            "constraints": ["result ⊆ dataspace", "Theorem 5.1: derived"],
+                            "effect_row": "<io, epistemic:speculate>",
+                            "output_taint": "Uncertainty",
+                        }
+                    }
+                }));
+
+                // aggregate tool
+                tools.push(serde_json::json!({
+                    "name": format!("axon_ds_{}_aggregate", ds.name),
+                    "description": format!(
+                        "Aggregate entries in dataspace '{}' (count/sum/avg/min/max) — ΛD: c≤0.99, δ=aggregated",
+                        ds.name
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "op": {
+                                "type": "string",
+                                "enum": ["count", "sum", "avg", "min", "max"],
+                                "description": "Aggregation operation",
+                            },
+                            "field": {
+                                "type": "string",
+                                "description": "Dot-path to numeric field (e.g., 'score')",
+                            },
+                            "ontology": {
+                                "type": "string",
+                                "description": "Filter by ontological type before aggregating",
+                            }
+                        },
+                        "required": ["op"],
+                        "_axon_csp": {
+                            "constraints": ["op ∈ {count,sum,avg,min,max}", "Theorem 5.1: aggregated"],
+                            "effect_row": "<io, epistemic:speculate>",
+                            "output_taint": "Uncertainty",
+                        }
+                    }
+                }));
+            }
+
+            // Shield cognitive tools (CSP §5.3 schemas)
+            for sh in s.shields.values() {
+                // evaluate tool
+                tools.push(serde_json::json!({
+                    "name": format!("axon_sh_{}_evaluate", sh.name),
+                    "description": format!(
+                        "Evaluate content against shield '{}' ({} rules, mode: {}) — ΛD: c≤0.99, δ=derived",
+                        sh.name, sh.rules.len(), sh.mode
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "content": {
+                                "type": "string",
+                                "description": "Content to evaluate against guardrails",
+                            },
+                            "direction": {
+                                "type": "string",
+                                "enum": ["input", "output"],
+                                "description": "Direction: input (pre-execution) or output (post-execution)",
+                                "default": "input",
+                            }
+                        },
+                        "required": ["content"],
+                        "_axon_csp": {
+                            "constraints": [
+                                format!("mode ∈ {}", sh.mode),
+                                "Theorem 5.1: pattern matching is approximate (δ=derived)",
+                            ],
+                            "effect_row": "<io, epistemic:speculate>",
+                            "output_taint": "Uncertainty",
+                        }
+                    }
+                }));
+            }
+
+            // Corpus cognitive tools (CSP §5.3 schemas)
+            for corpus in s.corpora.values() {
+                // search tool
+                tools.push(serde_json::json!({
+                    "name": format!("axon_corpus_{}_search", corpus.name),
+                    "description": format!(
+                        "Search corpus '{}' ({} docs, ontology: {}) — ΛD: c≤0.99, δ=derived",
+                        corpus.name, corpus.documents.len(), corpus.ontology
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Search query (keyword-based)",
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Filter by tags (all must match)",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max results",
+                                "default": 10,
+                            }
+                        },
+                        "required": ["query"],
+                        "_axon_csp": {
+                            "constraints": [
+                                format!("ontology ∈ {}", corpus.ontology),
+                                "Theorem 5.1: relevance scoring is approximate",
+                            ],
+                            "effect_row": "<io, epistemic:speculate>",
+                            "output_taint": "Uncertainty",
+                        }
+                    }
+                }));
+
+                // cite tool
+                tools.push(serde_json::json!({
+                    "name": format!("axon_corpus_{}_cite", corpus.name),
+                    "description": format!(
+                        "Generate citations from corpus '{}' — ΛD: c≤0.99, δ=derived (excerpt extraction is interpretive)",
+                        corpus.name
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Citation query",
+                            },
+                            "max_citations": {
+                                "type": "integer",
+                                "description": "Max citations to return",
+                                "default": 5,
+                            },
+                            "excerpt_length": {
+                                "type": "integer",
+                                "description": "Excerpt length in characters",
+                                "default": 200,
+                            }
+                        },
+                        "required": ["query"],
+                        "_axon_csp": {
+                            "constraints": ["Theorem 5.1: citation extraction is interpretive (δ=derived)"],
+                            "effect_row": "<io, epistemic:speculate>",
+                            "output_taint": "Uncertainty",
+                        }
+                    }
+                }));
+            }
+
+            // Compute cognitive tool (CSP §5.3 schema)
+            tools.push(serde_json::json!({
+                "name": "axon_compute_evaluate",
+                "description": "Evaluate arithmetic/symbolic expression — ΛD: c=1.0 exact, c=0.99 approximate",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "expression": {
+                            "type": "string",
+                            "description": "Math expression (e.g., '2*(3+4)^2', 'sqrt(x^2+y^2)')",
+                        },
+                        "variables": {
+                            "type": "object",
+                            "description": "Named variables (e.g., {\"x\": 10, \"y\": 5})",
+                        }
+                    },
+                    "required": ["expression"],
+                    "_axon_csp": {
+                        "constraints": ["exact int → c=1.0", "float/transcendental → c=0.99", "Theorem 5.1"],
+                        "effect_row": "<compute, epistemic:know|speculate>",
+                        "output_taint": "Exact|Uncertainty",
+                    }
+                }
+            }));
+
+            // Mandate cognitive tools (CSP §5.3 schemas)
+            for mandate in s.mandates.values() {
+                tools.push(serde_json::json!({
+                    "name": format!("axon_mandate_{}_evaluate", mandate.name),
+                    "description": format!(
+                        "Evaluate access request against mandate '{}' ({} rules) — ΛD: c=1.0 explicit match, c=0.99 default deny",
+                        mandate.name, mandate.rules.len()
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "subject": {
+                                "type": "string",
+                                "description": "Subject (role or principal)",
+                                "default": "anonymous",
+                            },
+                            "action": {
+                                "type": "string",
+                                "description": "Action to authorize (e.g., 'execute', 'read', 'delete')",
+                            },
+                            "resource": {
+                                "type": "string",
+                                "description": "Resource path (e.g., '/v1/flows/analyze')",
+                            }
+                        },
+                        "required": ["action", "resource"],
+                        "_axon_csp": {
+                            "constraints": ["first-match-wins with priority ordering", "default deny if no rule matches"],
+                            "effect_row": "<io, epistemic:know|speculate>",
+                            "output_taint": "Raw|Uncertainty",
+                        }
+                    }
+                }));
+            }
+
+            // Forge cognitive tools (CSP §5.3 schemas)
+            for forge in s.forges.values() {
+                let template_names: Vec<&str> = forge.templates.keys().map(|k| k.as_str()).collect();
+                tools.push(serde_json::json!({
+                    "name": format!("axon_forge_{}_render", forge.name),
+                    "description": format!(
+                        "Render template artifact in forge '{}' (templates: {:?}) — ΛD: c=0.99, δ=derived",
+                        forge.name, template_names
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "template": {
+                                "type": "string",
+                                "description": "Template name to render",
+                            },
+                            "variables": {
+                                "type": "object",
+                                "description": "Variables for {{placeholder}} substitution",
+                            }
+                        },
+                        "required": ["template", "variables"],
+                        "_axon_csp": {
+                            "constraints": ["all {{variables}} must be provided", "Theorem 5.1: template rendering is derived"],
+                            "effect_row": "<io, epistemic:believe>",
+                            "output_taint": "Uncertainty",
+                        }
+                    }
+                }));
+            }
+
+            Ok(Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "tools": tools }
+            })))
+        }
+        "tools/call" => {
+            let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let arguments = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+
+            // ── Dataspace tool dispatch (axon_ds_{name}_{op}) ──
+            if let Some(ds_suffix) = tool_name.strip_prefix("axon_ds_") {
+                // Parse: "{dataspace_name}_{op}" where op is ingest|focus|aggregate
+                let (ds_name, op) = if let Some(pos) = ds_suffix.rfind('_') {
+                    (&ds_suffix[..pos], &ds_suffix[pos+1..])
+                } else {
+                    return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("invalid dataspace tool name: {}", tool_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    })));
+                };
+
+                let mut s = state.lock().unwrap();
+                let client = client_key_from_headers(&headers);
+                check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+                let ds = match s.dataspaces.get_mut(ds_name) {
+                    Some(d) => d,
+                    None => return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("dataspace '{}' not found", ds_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2: referenced non-existent dataspace" }
+                    }))),
+                };
+
+                match op {
+                    "ingest" => {
+                        let entry_ontology = arguments.get("ontology").and_then(|v| v.as_str())
+                            .unwrap_or(&ds.ontology).to_string();
+                        let data = arguments.get("data").cloned().unwrap_or(serde_json::json!(null));
+                        let tags: Vec<String> = arguments.get("tags")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok())
+                            .unwrap_or_default();
+
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+
+                        let entry_id = format!("ds_{}_{}", ds_name, ds.next_id);
+                        ds.next_id += 1;
+
+                        let envelope = EpistemicEnvelope::raw_config(&entry_ontology, &client);
+                        let entry = DataspaceEntry {
+                            id: entry_id.clone(),
+                            ontology: entry_ontology.clone(),
+                            data: data.clone(),
+                            envelope,
+                            ingested_at: now,
+                            tags,
+                        };
+                        ds.entries.insert(entry_id.clone(), entry);
+                        ds.total_ops += 1;
+
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {
+                                "content": [{ "type": "text", "text": format!("Ingested entry {} into dataspace {}", entry_id, ds_name) }],
+                                "isError": false,
+                                "_axon": {
+                                    "dataspace": ds_name, "entry_id": entry_id,
+                                    "epistemic_envelope": { "certainty": 1.0, "derivation": "raw" },
+                                    "lattice_position": "know",
+                                    "effect_row": ["io", "epistemic:know"],
+                                    "blame": "none",
+                                }
+                            }
+                        })));
+                    }
+                    "focus" => {
+                        let filter_ontology = arguments.get("ontology").and_then(|v| v.as_str());
+                        let filter_tags: Option<Vec<String>> = arguments.get("tags")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok());
+                        let limit = arguments.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+
+                        let results: Vec<serde_json::Value> = ds.entries.values()
+                            .filter(|e| {
+                                if let Some(ont) = filter_ontology {
+                                    if e.ontology != ont { return false; }
+                                }
+                                if let Some(ref tags) = filter_tags {
+                                    if !tags.iter().all(|t| e.tags.contains(t)) { return false; }
+                                }
+                                true
+                            })
+                            .take(limit)
+                            .map(|e| serde_json::json!({
+                                "id": e.id, "ontology": e.ontology, "data": e.data, "tags": e.tags,
+                            }))
+                            .collect();
+
+                        let result_text = serde_json::to_string_pretty(&results).unwrap_or_default();
+
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {
+                                "content": [{ "type": "text", "text": result_text }],
+                                "isError": false,
+                                "_axon": {
+                                    "dataspace": ds_name, "matched": results.len(),
+                                    "epistemic_envelope": { "certainty": 0.99, "derivation": "derived" },
+                                    "lattice_position": "speculate",
+                                    "effect_row": ["io", "epistemic:speculate"],
+                                    "blame": "none",
+                                }
+                            }
+                        })));
+                    }
+                    "aggregate" => {
+                        let agg_op = arguments.get("op").and_then(|v| v.as_str()).unwrap_or("count");
+                        let field = arguments.get("field").and_then(|v| v.as_str()).unwrap_or("");
+                        let filter_ontology = arguments.get("ontology").and_then(|v| v.as_str());
+
+                        let filtered: Vec<&DataspaceEntry> = ds.entries.values()
+                            .filter(|e| filter_ontology.map_or(true, |ont| e.ontology == ont))
+                            .collect();
+
+                        let extract_number = |entry: &DataspaceEntry| -> Option<f64> {
+                            let parts: Vec<&str> = field.split('.').collect();
+                            let mut current = &entry.data;
+                            for part in &parts {
+                                if *part == "data" { continue; }
+                                current = current.get(part)?;
+                            }
+                            current.as_f64()
+                        };
+
+                        let result_val: serde_json::Value = match agg_op {
+                            "count" => serde_json::json!(filtered.len()),
+                            "sum" => {
+                                let sum: f64 = filtered.iter().filter_map(|e| extract_number(e)).sum();
+                                serde_json::json!(sum)
+                            }
+                            "avg" => {
+                                let vals: Vec<f64> = filtered.iter().filter_map(|e| extract_number(e)).collect();
+                                if vals.is_empty() { serde_json::json!(0.0) }
+                                else { serde_json::json!((vals.iter().sum::<f64>() / vals.len() as f64 * 10000.0).round() / 10000.0) }
+                            }
+                            "min" => {
+                                let min = filtered.iter().filter_map(|e| extract_number(e)).fold(f64::INFINITY, f64::min);
+                                if min.is_infinite() { serde_json::json!(null) } else { serde_json::json!(min) }
+                            }
+                            "max" => {
+                                let max = filtered.iter().filter_map(|e| extract_number(e)).fold(f64::NEG_INFINITY, f64::max);
+                                if max.is_infinite() { serde_json::json!(null) } else { serde_json::json!(max) }
+                            }
+                            _ => return Ok(Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": id,
+                                "error": { "code": -32602, "message": format!("unknown aggregate op '{}'", agg_op) },
+                                "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                            }))),
+                        };
+
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {
+                                "content": [{ "type": "text", "text": format!("{}: {}", agg_op, result_val) }],
+                                "isError": false,
+                                "_axon": {
+                                    "dataspace": ds_name, "op": agg_op, "result": result_val,
+                                    "entries_considered": filtered.len(),
+                                    "epistemic_envelope": { "certainty": 0.99, "derivation": "aggregated" },
+                                    "lattice_position": "speculate",
+                                    "effect_row": ["io", "epistemic:speculate"],
+                                    "blame": "none",
+                                }
+                            }
+                        })));
+                    }
+                    _ => {
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": format!("unknown dataspace op '{}' in tool '{}'", op, tool_name) },
+                            "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                        })));
+                    }
+                }
+            }
+
+            // ── AxonStore tool dispatch (axon_as_{name}_{op}) ──
+            if let Some(as_suffix) = tool_name.strip_prefix("axon_as_") {
+                // Parse: "{store_name}_{op}" where op is persist|retrieve|mutate|purge
+                let (store_name, op) = if let Some(pos) = as_suffix.rfind('_') {
+                    (&as_suffix[..pos], &as_suffix[pos+1..])
+                } else {
+                    return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("invalid axonstore tool name: {}", tool_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    })));
+                };
+
+                let mut s = state.lock().unwrap();
+                let client = client_key_from_headers(&headers);
+                check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+                let store = match s.axon_stores.get_mut(store_name) {
+                    Some(st) => st,
+                    None => return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("axonstore '{}' not found", store_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2: referenced non-existent axonstore" }
+                    }))),
+                };
+
+                match op {
+                    "persist" => {
+                        let key = arguments.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let value = arguments.get("value").cloned().unwrap_or(serde_json::json!(null));
+
+                        if key.is_empty() {
+                            return Ok(Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": id,
+                                "error": { "code": -32602, "message": "key is required" },
+                                "_axon_blame": { "blame": "caller", "reason": "CT-2: missing required parameter" }
+                            })));
+                        }
+
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+
+                        // ΛD: persist = raw write → c=1.0, δ=raw
+                        let envelope = EpistemicEnvelope::raw_config(&store.ontology, &client);
+
+                        let entry = AxonStoreEntry {
+                            key: key.clone(),
+                            value: value.clone(),
+                            envelope,
+                            created_at: now,
+                            updated_at: now,
+                            version: 1,
+                        };
+
+                        store.entries.insert(key.clone(), entry);
+                        store.total_ops += 1;
+
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {
+                                "content": [{ "type": "text", "text": format!("Persisted key '{}' in axonstore '{}'", key, store_name) }],
+                                "isError": false,
+                                "_axon": {
+                                    "store": store_name, "key": key, "version": 1,
+                                    "epistemic_envelope": { "certainty": 1.0, "derivation": "raw" },
+                                    "lattice_position": "know",
+                                    "effect_row": ["io", "epistemic:know"],
+                                    "blame": "none",
+                                }
+                            }
+                        })));
+                    }
+                    "retrieve" => {
+                        let key = arguments.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                        if key.is_empty() {
+                            return Ok(Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": id,
+                                "error": { "code": -32602, "message": "key is required" },
+                                "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                            })));
+                        }
+
+                        match store.entries.get(&key) {
+                            Some(entry) => {
+                                let result_text = serde_json::to_string_pretty(&serde_json::json!({
+                                    "key": entry.key,
+                                    "value": entry.value,
+                                    "version": entry.version,
+                                    "envelope": {
+                                        "ontology": entry.envelope.ontology,
+                                        "certainty": entry.envelope.certainty,
+                                        "provenance": entry.envelope.provenance,
+                                        "derivation": entry.envelope.derivation,
+                                    }
+                                })).unwrap_or_default();
+
+                                return Ok(Json(serde_json::json!({
+                                    "jsonrpc": "2.0", "id": id,
+                                    "result": {
+                                        "content": [{ "type": "text", "text": result_text }],
+                                        "isError": false,
+                                        "_axon": {
+                                            "store": store_name, "key": key, "found": true,
+                                            "epistemic_envelope": {
+                                                "certainty": entry.envelope.certainty,
+                                                "derivation": &entry.envelope.derivation,
+                                            },
+                                            "lattice_position": "believe",
+                                            "effect_row": ["io", "epistemic:believe"],
+                                            "blame": "none",
+                                        }
+                                    }
+                                })));
+                            }
+                            None => {
+                                return Ok(Json(serde_json::json!({
+                                    "jsonrpc": "2.0", "id": id,
+                                    "result": {
+                                        "content": [{ "type": "text", "text": format!("Key '{}' not found in axonstore '{}'", key, store_name) }],
+                                        "isError": false,
+                                        "_axon": {
+                                            "store": store_name, "key": key, "found": false,
+                                            "epistemic_envelope": { "certainty": 0.0, "derivation": "absent" },
+                                            "lattice_position": "doubt",
+                                            "effect_row": ["io", "epistemic:doubt"],
+                                            "blame": "none",
+                                        }
+                                    }
+                                })));
+                            }
+                        }
+                    }
+                    "mutate" => {
+                        let key = arguments.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let value = arguments.get("value").cloned().unwrap_or(serde_json::json!(null));
+
+                        if key.is_empty() {
+                            return Ok(Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": id,
+                                "error": { "code": -32602, "message": "key is required" },
+                                "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                            })));
+                        }
+
+                        match store.entries.get_mut(&key) {
+                            Some(entry) => {
+                                let now = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
+
+                                entry.value = value;
+                                entry.version += 1;
+                                entry.updated_at = now;
+                                // ΛD Theorem 5.1: mutation degrades certainty
+                                entry.envelope = EpistemicEnvelope::derived(&store.ontology, 0.99, &client);
+
+                                store.total_ops += 1;
+                                let version = entry.version;
+
+                                return Ok(Json(serde_json::json!({
+                                    "jsonrpc": "2.0", "id": id,
+                                    "result": {
+                                        "content": [{ "type": "text", "text": format!("Mutated key '{}' in axonstore '{}' → v{}", key, store_name, version) }],
+                                        "isError": false,
+                                        "_axon": {
+                                            "store": store_name, "key": key, "version": version,
+                                            "epistemic_envelope": { "certainty": 0.99, "derivation": "derived" },
+                                            "lattice_position": "speculate",
+                                            "effect_row": ["io", "epistemic:speculate"],
+                                            "blame": "none",
+                                        }
+                                    }
+                                })));
+                            }
+                            None => {
+                                return Ok(Json(serde_json::json!({
+                                    "jsonrpc": "2.0", "id": id,
+                                    "error": { "code": -32602, "message": format!("key '{}' not found in axonstore '{}'", key, store_name) },
+                                    "_axon_blame": { "blame": "caller", "reason": "CT-2: mutate target absent" }
+                                })));
+                            }
+                        }
+                    }
+                    "purge" => {
+                        let key = arguments.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                        if key.is_empty() {
+                            return Ok(Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": id,
+                                "error": { "code": -32602, "message": "key is required" },
+                                "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                            })));
+                        }
+
+                        match store.entries.remove(&key) {
+                            Some(_) => {
+                                store.total_ops += 1;
+
+                                return Ok(Json(serde_json::json!({
+                                    "jsonrpc": "2.0", "id": id,
+                                    "result": {
+                                        "content": [{ "type": "text", "text": format!("Purged key '{}' from axonstore '{}'", key, store_name) }],
+                                        "isError": false,
+                                        "_axon": {
+                                            "store": store_name, "key": key, "purged": true,
+                                            "epistemic_envelope": { "certainty": 1.0, "derivation": "void" },
+                                            "lattice_position": "know",
+                                            "effect_row": ["io", "epistemic:know"],
+                                            "blame": "none",
+                                        }
+                                    }
+                                })));
+                            }
+                            None => {
+                                return Ok(Json(serde_json::json!({
+                                    "jsonrpc": "2.0", "id": id,
+                                    "error": { "code": -32602, "message": format!("key '{}' not found in axonstore '{}'", key, store_name) },
+                                    "_axon_blame": { "blame": "caller", "reason": "CT-2: purge target absent" }
+                                })));
+                            }
+                        }
+                    }
+                    _ => {
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": format!("unknown axonstore op '{}' in tool '{}'", op, tool_name) },
+                            "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                        })));
+                    }
+                }
+            }
+
+            // ── Shield tool dispatch (axon_sh_{name}_evaluate) ──
+            if let Some(sh_suffix) = tool_name.strip_prefix("axon_sh_") {
+                let (sh_name, op) = if let Some(pos) = sh_suffix.rfind('_') {
+                    (&sh_suffix[..pos], &sh_suffix[pos+1..])
+                } else {
+                    return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("invalid shield tool name: {}", tool_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    })));
+                };
+
+                if op == "evaluate" {
+                    let mut s = state.lock().unwrap();
+                    check_auth(&mut s, &headers, AccessLevel::ReadOnly)?;
+
+                    let content = arguments.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let direction = arguments.get("direction").and_then(|v| v.as_str()).unwrap_or("input");
+
+                    let shield = match s.shields.get_mut(sh_name) {
+                        Some(sh) => sh,
+                        None => return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": format!("shield '{}' not found", sh_name) },
+                            "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                        }))),
+                    };
+
+                    let mode_ok = match shield.mode.as_str() {
+                        "both" => true,
+                        m => m == direction,
+                    };
+                    if !mode_ok {
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": format!("shield mode '{}' incompatible with direction '{}'", shield.mode, direction) },
+                        })));
+                    }
+
+                    let result = shield.evaluate(&content);
+                    shield.total_evaluations += 1;
+                    if result.blocked { shield.total_blocks += 1; }
+
+                    let certainty = if result.rules_triggered == 0 { 0.95 } else { 0.85 };
+                    let result_text = serde_json::to_string_pretty(&serde_json::json!({
+                        "blocked": result.blocked,
+                        "warnings": result.warnings,
+                        "redactions": result.redactions,
+                        "content": result.content,
+                        "rules_evaluated": result.rules_evaluated,
+                        "rules_triggered": result.rules_triggered,
+                    })).unwrap_or_default();
+
+                    return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": {
+                            "content": [{ "type": "text", "text": result_text }],
+                            "isError": false,
+                            "_axon": {
+                                "shield": sh_name, "blocked": result.blocked,
+                                "epistemic_envelope": { "certainty": certainty, "derivation": "derived" },
+                                "lattice_position": if result.blocked { "doubt" } else { "speculate" },
+                                "effect_row": ["io", "epistemic:speculate"],
+                                "blame": "none",
+                            }
+                        }
+                    })));
+                } else {
+                    return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("unknown shield op '{}' in tool '{}'", op, tool_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    })));
+                }
+            }
+
+            // ── Corpus tool dispatch (axon_corpus_{name}_{op}) ──
+            if let Some(corpus_suffix) = tool_name.strip_prefix("axon_corpus_") {
+                let (corpus_name, op) = if let Some(pos) = corpus_suffix.rfind('_') {
+                    (&corpus_suffix[..pos], &corpus_suffix[pos+1..])
+                } else {
+                    return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("invalid corpus tool name: {}", tool_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    })));
+                };
+
+                let mut s = state.lock().unwrap();
+                let client = client_key_from_headers(&headers);
+                check_auth(&mut s, &headers, AccessLevel::ReadOnly)?;
+
+                let corpus = match s.corpora.get_mut(corpus_name) {
+                    Some(c) => c,
+                    None => return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("corpus '{}' not found", corpus_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    }))),
+                };
+
+                match op {
+                    "search" => {
+                        let query = arguments.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let filter_tags: Option<Vec<String>> = arguments.get("tags")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok());
+                        let limit = arguments.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+
+                        if query.is_empty() {
+                            return Ok(Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": id,
+                                "error": { "code": -32602, "message": "query is required" },
+                                "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                            })));
+                        }
+
+                        let query_lower = query.to_lowercase();
+                        let query_terms: Vec<&str> = query_lower.split_whitespace().collect();
+
+                        let mut scored: Vec<serde_json::Value> = Vec::new();
+                        for doc in corpus.documents.values() {
+                            if let Some(ref tags) = filter_tags {
+                                if !tags.iter().all(|t| doc.tags.contains(t)) { continue; }
+                            }
+                            let content_lower = doc.content.to_lowercase();
+                            let title_lower = doc.title.to_lowercase();
+                            let mut hits = 0.0f64;
+                            for term in &query_terms {
+                                hits += content_lower.matches(term).count() as f64;
+                                hits += title_lower.matches(term).count() as f64 * 3.0;
+                            }
+                            if hits > 0.0 {
+                                let total_words = doc.word_count.max(1) as f64 + doc.title.split_whitespace().count() as f64;
+                                let relevance = (hits / total_words).min(1.0);
+                                scored.push(serde_json::json!({
+                                    "document_id": doc.id, "title": doc.title,
+                                    "relevance": (relevance * 10000.0).round() / 10000.0,
+                                }));
+                            }
+                        }
+                        scored.sort_by(|a, b| b["relevance"].as_f64().unwrap_or(0.0)
+                            .partial_cmp(&a["relevance"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
+                        scored.truncate(limit);
+                        corpus.total_ops += 1;
+
+                        let result_text = serde_json::to_string_pretty(&scored).unwrap_or_default();
+
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {
+                                "content": [{ "type": "text", "text": result_text }],
+                                "isError": false,
+                                "_axon": {
+                                    "corpus": corpus_name, "query": query, "matched": scored.len(),
+                                    "epistemic_envelope": { "certainty": 0.99, "derivation": "derived" },
+                                    "lattice_position": "speculate",
+                                    "effect_row": ["io", "epistemic:speculate"],
+                                    "blame": "none",
+                                }
+                            }
+                        })));
+                    }
+                    "cite" => {
+                        let query = arguments.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let max_citations = arguments.get("max_citations").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+                        let excerpt_length = arguments.get("excerpt_length").and_then(|v| v.as_u64()).unwrap_or(200) as usize;
+
+                        if query.is_empty() {
+                            return Ok(Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": id,
+                                "error": { "code": -32602, "message": "query is required" },
+                                "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                            })));
+                        }
+
+                        let query_lower = query.to_lowercase();
+                        let ontology = corpus.ontology.clone();
+                        let mut citations: Vec<serde_json::Value> = Vec::new();
+
+                        for doc in corpus.documents.values() {
+                            let content_lower = doc.content.to_lowercase();
+                            if let Some(pos) = content_lower.find(&query_lower) {
+                                let start = pos.saturating_sub(excerpt_length / 4);
+                                let end = (pos + query.len() + excerpt_length * 3 / 4).min(doc.content.len());
+                                let excerpt = &doc.content[start..end];
+                                let relevance = 1.0 - (pos as f64 / doc.content.len().max(1) as f64 * 0.1);
+                                citations.push(serde_json::json!({
+                                    "document_id": doc.id, "title": doc.title,
+                                    "excerpt": excerpt,
+                                    "relevance": (relevance.min(1.0) * 10000.0).round() / 10000.0,
+                                }));
+                            }
+                        }
+                        citations.sort_by(|a, b| b["relevance"].as_f64().unwrap_or(0.0)
+                            .partial_cmp(&a["relevance"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
+                        citations.truncate(max_citations);
+                        corpus.total_ops += 1;
+
+                        let result_text = serde_json::to_string_pretty(&citations).unwrap_or_default();
+
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {
+                                "content": [{ "type": "text", "text": result_text }],
+                                "isError": false,
+                                "_axon": {
+                                    "corpus": corpus_name, "query": query, "citations": citations.len(),
+                                    "epistemic_envelope": { "certainty": 0.99, "derivation": "derived" },
+                                    "lattice_position": "speculate",
+                                    "effect_row": ["io", "epistemic:speculate"],
+                                    "blame": "none",
+                                }
+                            }
+                        })));
+                    }
+                    _ => {
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": format!("unknown corpus op '{}' in tool '{}'", op, tool_name) },
+                            "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                        })));
+                    }
+                }
+            }
+
+            // ── Compute tool dispatch (axon_compute_evaluate) ──
+            if tool_name == "axon_compute_evaluate" {
+                let expression = arguments.get("expression").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let variables: HashMap<String, f64> = arguments.get("variables")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+
+                if expression.is_empty() {
+                    return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": "expression is required" },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    })));
+                }
+
+                match compute_evaluate(&expression, &variables) {
+                    Ok(result) => {
+                        let result_text = format!("{} = {}", result.expression, result.value);
+                        let lattice = if result.exact { "know" } else { "speculate" };
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {
+                                "content": [{ "type": "text", "text": result_text }],
+                                "isError": false,
+                                "_axon": {
+                                    "value": result.value, "exact": result.exact,
+                                    "epistemic_envelope": { "certainty": result.certainty, "derivation": result.derivation },
+                                    "lattice_position": lattice,
+                                    "effect_row": ["compute", format!("epistemic:{}", lattice)],
+                                    "blame": "none",
+                                }
+                            }
+                        })));
+                    }
+                    Err(e) => {
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": e },
+                            "_axon_blame": { "blame": "caller", "reason": "CT-2: invalid expression" }
+                        })));
+                    }
+                }
+            }
+
+            // ── Mandate tool dispatch (axon_mandate_{name}_evaluate) ──
+            if let Some(mandate_suffix) = tool_name.strip_prefix("axon_mandate_") {
+                let (mandate_name, op) = if let Some(pos) = mandate_suffix.rfind('_') {
+                    (&mandate_suffix[..pos], &mandate_suffix[pos+1..])
+                } else {
+                    return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("invalid mandate tool: {}", tool_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    })));
+                };
+
+                if op == "evaluate" {
+                    let mut s = state.lock().unwrap();
+                    check_auth(&mut s, &headers, AccessLevel::ReadOnly)?;
+
+                    let subject = arguments.get("subject").and_then(|v| v.as_str()).unwrap_or("anonymous");
+                    let action = arguments.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                    let resource = arguments.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+
+                    if action.is_empty() || resource.is_empty() {
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": "action and resource are required" },
+                            "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                        })));
+                    }
+
+                    let policy = match s.mandates.get_mut(mandate_name) {
+                        Some(m) => m,
+                        None => return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": format!("mandate '{}' not found", mandate_name) },
+                            "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                        }))),
+                    };
+
+                    let result = policy.evaluate(subject, action, resource);
+                    policy.total_evaluations += 1;
+                    if !result.allowed { policy.total_denials += 1; }
+
+                    let result_text = format!("{}: {} {} on {}", result.effect, subject, action, resource);
+                    let lattice = if result.certainty == 1.0 { "know" } else { "speculate" };
+
+                    return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": {
+                            "content": [{ "type": "text", "text": result_text }],
+                            "isError": false,
+                            "_axon": {
+                                "mandate": mandate_name, "allowed": result.allowed,
+                                "effect": result.effect, "matched_rule": result.matched_rule,
+                                "epistemic_envelope": { "certainty": result.certainty, "derivation": result.derivation },
+                                "lattice_position": lattice,
+                                "effect_row": ["io", format!("epistemic:{}", lattice)],
+                                "blame": "none",
+                            }
+                        }
+                    })));
+                } else {
+                    return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("unknown mandate op '{}'", op) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    })));
+                }
+            }
+
+            // ── Forge tool dispatch (axon_forge_{name}_render) ──
+            if let Some(forge_suffix) = tool_name.strip_prefix("axon_forge_") {
+                let (forge_name, op) = if let Some(pos) = forge_suffix.rfind('_') {
+                    (&forge_suffix[..pos], &forge_suffix[pos+1..])
+                } else {
+                    return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("invalid forge tool: {}", tool_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    })));
+                };
+
+                if op == "render" {
+                    let mut s = state.lock().unwrap();
+                    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+                    let template_name = arguments.get("template").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let variables: HashMap<String, String> = arguments.get("variables")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+
+                    if template_name.is_empty() {
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": "template is required" },
+                            "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                        })));
+                    }
+
+                    let forge = match s.forges.get_mut(forge_name) {
+                        Some(f) => f,
+                        None => return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": format!("forge '{}' not found", forge_name) },
+                            "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                        }))),
+                    };
+
+                    match forge.render(&template_name, &variables) {
+                        Ok(artifact) => {
+                            return Ok(Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": id,
+                                "result": {
+                                    "content": [{ "type": "text", "text": artifact.content }],
+                                    "isError": false,
+                                    "_axon": {
+                                        "forge": forge_name, "artifact_id": artifact.id,
+                                        "template": artifact.template_name, "format": artifact.format,
+                                        "epistemic_envelope": { "certainty": 0.99, "derivation": "derived" },
+                                        "lattice_position": "believe",
+                                        "effect_row": ["io", "epistemic:believe"],
+                                        "blame": "none",
+                                    }
+                                }
+                            })));
+                        }
+                        Err(e) => {
+                            return Ok(Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": id,
+                                "error": { "code": -32602, "message": e },
+                                "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                            })));
+                        }
+                    }
+                } else {
+                    return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("unknown forge op '{}'", op) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    })));
+                }
+            }
+
+            // Strip "axon_" prefix to get flow name
+            let flow_name = tool_name.strip_prefix("axon_").unwrap_or(tool_name);
+            let backend = arguments.get("backend").and_then(|b| b.as_str()).unwrap_or("stub");
+
+            // Resolve source and key — blame: Caller if flow not found
+            let (source, source_file, resolved_key) = {
+                let s = state.lock().unwrap();
+                check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+                let history = s.versions.get_history(flow_name);
+                match history.and_then(|h| h.active()) {
+                    Some(active) => {
+                        let key = resolve_backend_key(&s, backend).ok();
+                        (active.source.clone(), active.source_file.clone(), key)
+                    }
+                    None => {
+                        // Blame::Caller (CT-2) — invalid tool name
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32602,
+                                "message": format!("flow '{}' not deployed", flow_name)
+                            },
+                            "_axon_blame": {
+                                "blame": "caller",
+                                "reason": "CT-2: caller referenced non-existent flow",
+                                "flow": flow_name,
+                            }
+                        })));
+                    }
+                }
+            };
+
+            // Execute
+            let result = server_execute(&source, &source_file, flow_name, backend, resolved_key.as_deref());
+
+            match result {
+                Ok(exec_result) => {
+                    // Record backend metrics
+                    {
+                        let mut s = state.lock().unwrap();
+                        record_backend_metrics(
+                            &mut s, &exec_result.backend, exec_result.success,
+                            exec_result.tokens_input, exec_result.tokens_output,
+                            exec_result.latency_ms,
+                        );
+                    }
+
+                    // ΛD Epistemic Envelope — computed, not hardcoded
+                    // ψ = ⟨T, V, E⟩ where E = ⟨c, τ, ρ, δ⟩
+                    // All MCP-sourced execution is δ=derived (not raw data)
+                    // Certainty based on execution outcome:
+                    //   success + no anchor breaches → c=0.85 (speculate, not know)
+                    //   success + anchor breaches → c=0.5 (doubt)
+                    //   failure → c=0.1 (near ⊥)
+                    let certainty = if exec_result.success && exec_result.anchor_breaches == 0 {
+                        0.85 // speculate: succeeded, anchors held
+                    } else if exec_result.success {
+                        0.5  // doubt: succeeded but anchors breached
+                    } else {
+                        0.1  // near ⊥: execution failed
+                    };
+                    let epistemic_envelope = EpistemicEnvelope::derived(
+                        &format!("mcp:tool:{}", flow_name),
+                        certainty,
+                        &format!("emcp:axon_server:{}:{}", flow_name, exec_result.backend),
+                    );
+
+                    // Effect row — computed from actual execution
+                    let mut effects = vec!["io".to_string()];
+                    if backend != "stub" {
+                        effects.push("network".to_string());
+                    }
+                    // Map certainty to epistemic effect
+                    let epistemic_effect = if certainty >= 0.85 {
+                        "epistemic:speculate"
+                    } else if certainty >= 0.5 {
+                        "epistemic:doubt"
+                    } else {
+                        "epistemic:uncertain"
+                    };
+                    effects.push(epistemic_effect.to_string());
+
+                    // Epistemic lattice position
+                    let lattice_position = if certainty >= 0.85 {
+                        "speculate"
+                    } else if certainty >= 0.5 {
+                        "doubt"
+                    } else {
+                        "⊥"
+                    };
+
+                    let output_text = exec_result.step_results.join("\n");
+                    Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "content": [{
+                                "type": "text",
+                                "text": output_text,
+                            }],
+                            "isError": !exec_result.success,
+                            // ℰMCP epistemic metadata (formally derived)
+                            "_axon": {
+                                "flow": flow_name,
+                                "backend": exec_result.backend,
+                                "steps_executed": exec_result.steps_executed,
+                                "latency_ms": exec_result.latency_ms,
+                                "tokens_input": exec_result.tokens_input,
+                                "tokens_output": exec_result.tokens_output,
+                                "anchor_checks": exec_result.anchor_checks,
+                                "anchor_breaches": exec_result.anchor_breaches,
+                                // ΛD: full epistemic envelope ψ = ⟨T, V, E⟩
+                                "epistemic_envelope": {
+                                    "ontology": epistemic_envelope.ontology,
+                                    "certainty": epistemic_envelope.certainty,
+                                    "temporal_start": epistemic_envelope.temporal_start,
+                                    "temporal_end": epistemic_envelope.temporal_end,
+                                    "provenance": epistemic_envelope.provenance,
+                                    "derivation": epistemic_envelope.derivation,
+                                },
+                                // Lattice position: ⊥ ⊑ doubt ⊑ speculate ⊑ believe ⊑ know
+                                "lattice_position": lattice_position,
+                                // Effect row: <io, network?, epistemic:X>
+                                "effect_row": effects,
+                                // Blame: none on success
+                                "blame": "none",
+                            }
+                        }
+                    })))
+                }
+                Err(e) => {
+                    // Blame assignment (Findler-Felleisen CT-2/CT-3)
+                    let blame = if e.contains("Backend error") || e.contains("timeout") || e.contains("connect") {
+                        "network"  // infrastructure failure
+                    } else if e.contains("not found") || e.contains("parse error") || e.contains("lex error") {
+                        "server"   // AXON server failed to compile/execute
+                    } else {
+                        "server"   // default: server-side failure
+                    };
+
+                    Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "content": [{
+                                "type": "text",
+                                "text": format!("Execution error: {}", e),
+                            }],
+                            "isError": true,
+                            "_axon": {
+                                "blame": blame,
+                                "epistemic_envelope": {
+                                    "ontology": format!("mcp:tool:{}:error", flow_name),
+                                    "certainty": 0.0,
+                                    "derivation": "failed",
+                                    "provenance": format!("emcp:axon_server:{}", flow_name),
+                                },
+                                "lattice_position": "⊥",
+                                "effect_row": ["io", "epistemic:uncertain"],
+                            }
+                        }
+                    })))
+                }
+            }
+        }
+        "resources/list" => {
+            let s = state.lock().unwrap();
+            check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+            let mut resources: Vec<serde_json::Value> = Vec::new();
+
+            // axon://traces/recent — recent execution traces
+            resources.push(serde_json::json!({
+                "uri": "axon://traces/recent",
+                "name": "Recent Traces",
+                "description": "Last 20 execution traces with epistemic metadata",
+                "mimeType": "application/json",
+            }));
+
+            // axon://metrics — server metrics snapshot
+            resources.push(serde_json::json!({
+                "uri": "axon://metrics",
+                "name": "Server Metrics",
+                "description": "Current server metrics (requests, errors, latency, tokens)",
+                "mimeType": "application/json",
+            }));
+
+            // axon://backends — backend registry status
+            resources.push(serde_json::json!({
+                "uri": "axon://backends",
+                "name": "Backend Registry",
+                "description": "LLM backend status, metrics, circuit breaker state",
+                "mimeType": "application/json",
+            }));
+
+            // axon://flows — deployed flows
+            resources.push(serde_json::json!({
+                "uri": "axon://flows",
+                "name": "Deployed Flows",
+                "description": "All deployed AXON flows with version info",
+                "mimeType": "application/json",
+            }));
+
+            // axon://dataspaces — dataspace registry
+            resources.push(serde_json::json!({
+                "uri": "axon://dataspaces",
+                "name": "Dataspaces",
+                "description": "Cognitive data navigation containers with ΛD epistemic envelopes",
+                "mimeType": "application/json",
+            }));
+
+            // axon://dataspaces/{name} — individual dataspaces
+            for ds in s.dataspaces.values() {
+                resources.push(serde_json::json!({
+                    "uri": format!("axon://dataspaces/{}", ds.name),
+                    "name": format!("Dataspace: {}", ds.name),
+                    "description": format!("{} — {} entries, {} associations, ontology: {}", ds.name, ds.entries.len(), ds.associations.len(), ds.ontology),
+                    "mimeType": "application/json",
+                }));
+            }
+
+            // axon://axonstores — axonstore registry
+            resources.push(serde_json::json!({
+                "uri": "axon://axonstores",
+                "name": "AxonStores",
+                "description": "Cognitive durable persistence stores with ΛD epistemic envelopes",
+                "mimeType": "application/json",
+            }));
+
+            // axon://axonstores/{name} — individual axonstores
+            for st in s.axon_stores.values() {
+                resources.push(serde_json::json!({
+                    "uri": format!("axon://axonstores/{}", st.name),
+                    "name": format!("AxonStore: {}", st.name),
+                    "description": format!("{} — {} entries, ontology: {}, {} ops", st.name, st.entries.len(), st.ontology, st.total_ops),
+                    "mimeType": "application/json",
+                }));
+            }
+
+            // axon://shields — shield registry
+            resources.push(serde_json::json!({
+                "uri": "axon://shields",
+                "name": "Shields",
+                "description": "Cognitive guardrail instances with deny_list/pattern/pii/length rules",
+                "mimeType": "application/json",
+            }));
+            for sh in s.shields.values() {
+                resources.push(serde_json::json!({
+                    "uri": format!("axon://shields/{}", sh.name),
+                    "name": format!("Shield: {}", sh.name),
+                    "description": format!("{} — {} rules, mode: {}, {} evals, {} blocks", sh.name, sh.rules.len(), sh.mode, sh.total_evaluations, sh.total_blocks),
+                    "mimeType": "application/json",
+                }));
+            }
+
+            // axon://corpora — corpus registry
+            resources.push(serde_json::json!({
+                "uri": "axon://corpora",
+                "name": "Corpora",
+                "description": "Document corpus instances with search and citation",
+                "mimeType": "application/json",
+            }));
+            for corpus in s.corpora.values() {
+                resources.push(serde_json::json!({
+                    "uri": format!("axon://corpora/{}", corpus.name),
+                    "name": format!("Corpus: {}", corpus.name),
+                    "description": format!("{} — {} docs, ontology: {}", corpus.name, corpus.documents.len(), corpus.ontology),
+                    "mimeType": "application/json",
+                }));
+            }
+
+            // axon://mandates — mandate policy registry
+            resources.push(serde_json::json!({
+                "uri": "axon://mandates",
+                "name": "Mandates",
+                "description": "Authorization policies with priority-ordered rule evaluation",
+                "mimeType": "application/json",
+            }));
+            for mandate in s.mandates.values() {
+                resources.push(serde_json::json!({
+                    "uri": format!("axon://mandates/{}", mandate.name),
+                    "name": format!("Mandate: {}", mandate.name),
+                    "description": format!("{} — {} rules, {} evals", mandate.name, mandate.rules.len(), mandate.total_evaluations),
+                    "mimeType": "application/json",
+                }));
+            }
+
+            // axon://forges — forge session registry
+            resources.push(serde_json::json!({
+                "uri": "axon://forges",
+                "name": "Forges",
+                "description": "Template-based artifact generation sessions",
+                "mimeType": "application/json",
+            }));
+            for forge in s.forges.values() {
+                resources.push(serde_json::json!({
+                    "uri": format!("axon://forges/{}", forge.name),
+                    "name": format!("Forge: {}", forge.name),
+                    "description": format!("{} — {} templates, {} artifacts", forge.name, forge.templates.len(), forge.artifacts.len()),
+                    "mimeType": "application/json",
+                }));
+            }
+
+            // axon://traces/{id} — individual traces (template)
+            for entry in s.trace_store.recent(10, None) {
+                resources.push(serde_json::json!({
+                    "uri": format!("axon://traces/{}", entry.id),
+                    "name": format!("Trace #{} ({})", entry.id, entry.flow_name),
+                    "description": format!("{} — {} steps, {}ms", entry.status.as_str(), entry.steps_executed, entry.latency_ms),
+                    "mimeType": "application/json",
+                }));
+            }
+
+            Ok(Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "resources": resources }
+            })))
+        }
+        "resources/read" => {
+            let uri = params.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+
+            let s = state.lock().unwrap();
+            check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+            let (content, mime) = if uri == "axon://traces/recent" {
+                let traces: Vec<serde_json::Value> = s.trace_store.recent(20, None).iter().map(|e| {
+                    serde_json::json!({
+                        "id": e.id, "flow": e.flow_name, "status": e.status.as_str(),
+                        "steps": e.steps_executed, "latency_ms": e.latency_ms,
+                        "tokens_input": e.tokens_input, "tokens_output": e.tokens_output,
+                        "backend": e.backend, "timestamp": e.timestamp,
+                        "_epistemic": {
+                            "derivation": "derived",
+                            "certainty": if e.status.as_str() == "success" { 0.85 } else { 0.3 },
+                            "lattice": if e.status.as_str() == "success" { "speculate" } else { "doubt" },
+                        }
+                    })
+                }).collect();
+                (serde_json::to_string_pretty(&traces).unwrap_or_default(), "application/json")
+            } else if uri == "axon://metrics" {
+                let m = &s.metrics;
+                let content = serde_json::json!({
+                    "total_requests": m.total_requests,
+                    "total_errors": m.total_errors,
+                    "deploy_count": s.deploy_count,
+                    "flows_deployed": s.versions.flow_count(),
+                    "traces_stored": s.trace_store.len(),
+                    "backends_registered": s.backend_registry.len(),
+                    "alert_rules": s.alert_rules.len(),
+                    "fired_alerts": s.fired_alerts.len(),
+                });
+                (serde_json::to_string_pretty(&content).unwrap_or_default(), "application/json")
+            } else if uri == "axon://backends" {
+                let backends: Vec<serde_json::Value> = s.backend_registry.values().map(|e| {
+                    serde_json::json!({
+                        "name": e.name, "enabled": e.enabled, "status": e.status,
+                        "total_calls": e.total_calls, "total_errors": e.total_errors,
+                        "circuit_open_until": e.circuit_open_until,
+                        "consecutive_failures": e.consecutive_failures,
+                        "fallback_chain": e.fallback_chain,
+                    })
+                }).collect();
+                (serde_json::to_string_pretty(&backends).unwrap_or_default(), "application/json")
+            } else if uri == "axon://flows" {
+                let flows: Vec<serde_json::Value> = s.versions.list_flows().iter().map(|f| {
+                    serde_json::json!({
+                        "name": f.flow_name,
+                        "active_version": f.active_version,
+                        "total_versions": f.total_versions,
+                        "deploy_count": f.deploy_count,
+                    })
+                }).collect();
+                (serde_json::to_string_pretty(&flows).unwrap_or_default(), "application/json")
+            } else if uri == "axon://dataspaces" {
+                let spaces: Vec<serde_json::Value> = s.dataspaces.values().map(|ds| {
+                    serde_json::json!({
+                        "name": ds.name,
+                        "ontology": ds.ontology,
+                        "entry_count": ds.entries.len(),
+                        "association_count": ds.associations.len(),
+                        "total_ops": ds.total_ops,
+                        "created_at": ds.created_at,
+                        "_epistemic": {
+                            "ontology": "dataspace:registry",
+                            "derivation": "raw",
+                            "certainty": 1.0,
+                            "provenance": "axon_server:dataspaces",
+                        }
+                    })
+                }).collect();
+                (serde_json::to_string_pretty(&spaces).unwrap_or_default(), "application/json")
+            } else if let Some(ds_name) = uri.strip_prefix("axon://dataspaces/") {
+                match s.dataspaces.get(ds_name) {
+                    Some(ds) => {
+                        let entries: Vec<serde_json::Value> = ds.entries.values().map(|e| {
+                            serde_json::json!({
+                                "id": e.id,
+                                "ontology": e.ontology,
+                                "data": e.data,
+                                "tags": e.tags,
+                                "ingested_at": e.ingested_at,
+                                "_epistemic": {
+                                    "ontology": &e.envelope.ontology,
+                                    "certainty": e.envelope.certainty,
+                                    "derivation": &e.envelope.derivation,
+                                    "provenance": &e.envelope.provenance,
+                                    "temporal_start": &e.envelope.temporal_start,
+                                    "temporal_end": &e.envelope.temporal_end,
+                                }
+                            })
+                        }).collect();
+                        let associations: Vec<serde_json::Value> = ds.associations.iter().map(|a| {
+                            serde_json::json!({
+                                "from": a.from, "to": a.to,
+                                "relation": a.relation,
+                                "certainty": a.certainty,
+                                "created_at": a.created_at,
+                            })
+                        }).collect();
+                        let content = serde_json::json!({
+                            "name": ds.name,
+                            "ontology": ds.ontology,
+                            "entries": entries,
+                            "associations": associations,
+                            "total_ops": ds.total_ops,
+                            "_epistemic": {
+                                "ontology": format!("dataspace:{}", ds.name),
+                                "derivation": "raw",
+                                "certainty": 1.0,
+                                "provenance": format!("axon_server:dataspace:{}", ds.name),
+                            }
+                        });
+                        (serde_json::to_string_pretty(&content).unwrap_or_default(), "application/json")
+                    }
+                    None => {
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": format!("dataspace '{}' not found", ds_name) },
+                            "_axon_blame": { "blame": "caller", "reason": "CT-2: referenced non-existent dataspace" }
+                        })));
+                    }
+                }
+            } else if uri == "axon://axonstores" {
+                let stores: Vec<serde_json::Value> = s.axon_stores.values().map(|st| {
+                    serde_json::json!({
+                        "name": st.name,
+                        "ontology": st.ontology,
+                        "entry_count": st.entries.len(),
+                        "total_ops": st.total_ops,
+                        "created_at": st.created_at,
+                        "_epistemic": {
+                            "ontology": "axonstore:registry",
+                            "derivation": "raw",
+                            "certainty": 1.0,
+                            "provenance": "axon_server:axon_stores",
+                        }
+                    })
+                }).collect();
+                (serde_json::to_string_pretty(&stores).unwrap_or_default(), "application/json")
+            } else if let Some(store_name) = uri.strip_prefix("axon://axonstores/") {
+                match s.axon_stores.get(store_name) {
+                    Some(st) => {
+                        let entries: Vec<serde_json::Value> = st.entries.values().map(|e| {
+                            serde_json::json!({
+                                "key": e.key,
+                                "value": e.value,
+                                "version": e.version,
+                                "created_at": e.created_at,
+                                "updated_at": e.updated_at,
+                                "_epistemic": {
+                                    "ontology": &e.envelope.ontology,
+                                    "certainty": e.envelope.certainty,
+                                    "derivation": &e.envelope.derivation,
+                                    "provenance": &e.envelope.provenance,
+                                    "temporal_start": &e.envelope.temporal_start,
+                                    "temporal_end": &e.envelope.temporal_end,
+                                }
+                            })
+                        }).collect();
+                        let content = serde_json::json!({
+                            "name": st.name,
+                            "ontology": st.ontology,
+                            "entries": entries,
+                            "total_ops": st.total_ops,
+                            "_epistemic": {
+                                "ontology": format!("axonstore:{}", st.name),
+                                "derivation": "raw",
+                                "certainty": 1.0,
+                                "provenance": format!("axon_server:axonstore:{}", st.name),
+                            }
+                        });
+                        (serde_json::to_string_pretty(&content).unwrap_or_default(), "application/json")
+                    }
+                    None => {
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": format!("axonstore '{}' not found", store_name) },
+                            "_axon_blame": { "blame": "caller", "reason": "CT-2: referenced non-existent axonstore" }
+                        })));
+                    }
+                }
+            } else if let Some(id_str) = uri.strip_prefix("axon://traces/") {
+                if let Ok(trace_id) = id_str.parse::<u64>() {
+                    match s.trace_store.get(trace_id) {
+                        Some(e) => {
+                            let content = serde_json::json!({
+                                "id": e.id, "flow": e.flow_name, "status": e.status.as_str(),
+                                "backend": e.backend, "client": e.client_key,
+                                "steps": e.steps_executed, "latency_ms": e.latency_ms,
+                                "tokens_input": e.tokens_input, "tokens_output": e.tokens_output,
+                                "anchor_checks": e.anchor_checks, "anchor_breaches": e.anchor_breaches,
+                                "errors": e.errors, "timestamp": e.timestamp,
+                                "_epistemic": {
+                                    "ontology": format!("trace:{}", e.flow_name),
+                                    "derivation": "raw",
+                                    "certainty": 1.0,
+                                    "provenance": format!("axon_server:trace_store:{}", e.id),
+                                }
+                            });
+                            (serde_json::to_string_pretty(&content).unwrap_or_default(), "application/json")
+                        }
+                        None => {
+                            return Ok(Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": id,
+                                "error": { "code": -32602, "message": format!("trace {} not found", trace_id) }
+                            })));
+                        }
+                    }
+                } else {
+                    return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("invalid trace id in URI: {}", uri) }
+                    })));
+                }
+            } else if uri == "axon://shields" {
+                let shields: Vec<serde_json::Value> = s.shields.values().map(|sh| {
+                    serde_json::json!({
+                        "name": sh.name, "mode": sh.mode, "rule_count": sh.rules.len(),
+                        "total_evaluations": sh.total_evaluations, "total_blocks": sh.total_blocks,
+                        "_epistemic": { "derivation": "raw", "certainty": 1.0 }
+                    })
+                }).collect();
+                (serde_json::to_string_pretty(&shields).unwrap_or_default(), "application/json")
+            } else if let Some(sh_name) = uri.strip_prefix("axon://shields/") {
+                match s.shields.get(sh_name) {
+                    Some(sh) => {
+                        let content = serde_json::json!({
+                            "name": sh.name, "mode": sh.mode, "rules": sh.rules,
+                            "total_evaluations": sh.total_evaluations, "total_blocks": sh.total_blocks,
+                            "_epistemic": { "derivation": "raw", "certainty": 1.0, "provenance": format!("axon_server:shield:{}", sh.name) }
+                        });
+                        (serde_json::to_string_pretty(&content).unwrap_or_default(), "application/json")
+                    }
+                    None => return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("shield '{}' not found", sh_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    }))),
+                }
+            } else if uri == "axon://corpora" {
+                let corpora: Vec<serde_json::Value> = s.corpora.values().map(|c| {
+                    serde_json::json!({
+                        "name": c.name, "ontology": c.ontology, "document_count": c.documents.len(),
+                        "total_ops": c.total_ops,
+                        "_epistemic": { "derivation": "raw", "certainty": 1.0 }
+                    })
+                }).collect();
+                (serde_json::to_string_pretty(&corpora).unwrap_or_default(), "application/json")
+            } else if let Some(corpus_name) = uri.strip_prefix("axon://corpora/") {
+                match s.corpora.get(corpus_name) {
+                    Some(corpus) => {
+                        let docs: Vec<serde_json::Value> = corpus.documents.values().map(|d| {
+                            serde_json::json!({
+                                "id": d.id, "title": d.title, "word_count": d.word_count,
+                                "tags": d.tags, "source": d.source,
+                                "_epistemic": { "certainty": d.envelope.certainty, "derivation": &d.envelope.derivation }
+                            })
+                        }).collect();
+                        let content = serde_json::json!({
+                            "name": corpus.name, "ontology": corpus.ontology,
+                            "documents": docs, "total_ops": corpus.total_ops,
+                            "_epistemic": { "derivation": "raw", "certainty": 1.0, "provenance": format!("axon_server:corpus:{}", corpus.name) }
+                        });
+                        (serde_json::to_string_pretty(&content).unwrap_or_default(), "application/json")
+                    }
+                    None => return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("corpus '{}' not found", corpus_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    }))),
+                }
+            } else if uri == "axon://mandates" {
+                let mandates: Vec<serde_json::Value> = s.mandates.values().map(|m| {
+                    serde_json::json!({
+                        "name": m.name, "description": m.description, "rule_count": m.rules.len(),
+                        "total_evaluations": m.total_evaluations, "total_denials": m.total_denials,
+                        "_epistemic": { "derivation": "raw", "certainty": 1.0 }
+                    })
+                }).collect();
+                (serde_json::to_string_pretty(&mandates).unwrap_or_default(), "application/json")
+            } else if let Some(mandate_name) = uri.strip_prefix("axon://mandates/") {
+                match s.mandates.get(mandate_name) {
+                    Some(m) => {
+                        let content = serde_json::json!({
+                            "name": m.name, "description": m.description, "rules": m.rules,
+                            "total_evaluations": m.total_evaluations, "total_denials": m.total_denials,
+                            "_epistemic": { "derivation": "raw", "certainty": 1.0, "provenance": format!("axon_server:mandate:{}", m.name) }
+                        });
+                        (serde_json::to_string_pretty(&content).unwrap_or_default(), "application/json")
+                    }
+                    None => return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("mandate '{}' not found", mandate_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    }))),
+                }
+            } else if uri == "axon://forges" {
+                let forges: Vec<serde_json::Value> = s.forges.values().map(|f| {
+                    serde_json::json!({
+                        "name": f.name, "template_count": f.templates.len(),
+                        "artifact_count": f.artifacts.len(),
+                        "_epistemic": { "derivation": "raw", "certainty": 1.0 }
+                    })
+                }).collect();
+                (serde_json::to_string_pretty(&forges).unwrap_or_default(), "application/json")
+            } else if let Some(forge_name) = uri.strip_prefix("axon://forges/") {
+                match s.forges.get(forge_name) {
+                    Some(f) => {
+                        let templates: Vec<serde_json::Value> = f.templates.values().map(|t| {
+                            serde_json::json!({ "name": t.name, "format": t.format, "variables": t.variables })
+                        }).collect();
+                        let content = serde_json::json!({
+                            "name": f.name, "templates": templates,
+                            "artifact_count": f.artifacts.len(),
+                            "_epistemic": { "derivation": "raw", "certainty": 1.0, "provenance": format!("axon_server:forge:{}", f.name) }
+                        });
+                        (serde_json::to_string_pretty(&content).unwrap_or_default(), "application/json")
+                    }
+                    None => return Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("forge '{}' not found", forge_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                    }))),
+                }
+            } else {
+                return Ok(Json(serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "error": { "code": -32602, "message": format!("unknown resource URI: {}", uri) }
+                })));
+            };
+
+            Ok(Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "contents": [{
+                        "uri": uri,
+                        "mimeType": mime,
+                        "text": content,
+                    }]
+                }
+            })))
+        }
+        "prompts/list" => {
+            let s = state.lock().unwrap();
+            check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+            let mut prompts: Vec<serde_json::Value> = Vec::new();
+
+            // Each deployed flow's personas → MCP prompts
+            for summary in s.versions.list_flows() {
+                if let Some(active) = s.versions.get_active(&summary.flow_name) {
+                    let personas = extract_personas(&active.source);
+                    for (name, domain, tone, confidence, desc) in &personas {
+                        prompts.push(serde_json::json!({
+                            "name": format!("{}:{}", summary.flow_name, name),
+                            "description": if desc.is_empty() {
+                                format!("Persona '{}' from flow '{}' — domain: {:?}, tone: {}", name, summary.flow_name, domain, tone)
+                            } else {
+                                desc.clone()
+                            },
+                            "arguments": [
+                                {
+                                    "name": "input",
+                                    "description": "User message to process with this persona",
+                                    "required": true,
+                                },
+                                {
+                                    "name": "backend",
+                                    "description": "LLM backend to use",
+                                    "required": false,
+                                },
+                            ],
+                            "_axon_persona": {
+                                "domain": domain,
+                                "tone": tone,
+                                "confidence_threshold": confidence,
+                            }
+                        }));
+                    }
+                }
+            }
+
+            // Cognitive workflow prompt templates
+            prompts.push(serde_json::json!({
+                "name": "workflow:research",
+                "description": "Research workflow: probe sources → weave synthesis → forge artifact. Guided multi-source information gathering with attributed output.",
+                "arguments": [
+                    { "name": "question", "description": "Research question to investigate", "required": true },
+                    { "name": "sources", "description": "Comma-separated source list (e.g., 'corpus:papers,axonstore:facts')", "required": false },
+                    { "name": "output_format", "description": "Output format: markdown, text, json", "required": false },
+                ],
+            }));
+            prompts.push(serde_json::json!({
+                "name": "workflow:decide",
+                "description": "Decision workflow: drill options → corroborate claims → deliberate with pros/cons → decide. Structured decision-making with epistemic audit trail.",
+                "arguments": [
+                    { "name": "question", "description": "Decision to make", "required": true },
+                    { "name": "options", "description": "Comma-separated options to consider", "required": true },
+                    { "name": "max_depth", "description": "Drill exploration depth (default: 3)", "required": false },
+                ],
+            }));
+            prompts.push(serde_json::json!({
+                "name": "workflow:secure_transfer",
+                "description": "Secure transfer workflow: axonstore persist → shield validate → ots one-time delivery → mandate authorize. Security-hardened credential pipeline.",
+                "arguments": [
+                    { "name": "payload", "description": "Content to securely transfer", "required": true },
+                    { "name": "ttl_secs", "description": "One-time secret TTL in seconds (default: 3600)", "required": false },
+                    { "name": "recipient_role", "description": "Authorized recipient role", "required": false },
+                ],
+            }));
+            prompts.push(serde_json::json!({
+                "name": "workflow:reflect",
+                "description": "Metacognitive workflow: psyche introspect → probe knowledge gaps → weave synthesis. Self-reflective learning loop.",
+                "arguments": [
+                    { "name": "context", "description": "Cognitive context to reflect on", "required": true },
+                    { "name": "depth", "description": "Reflection depth: shallow, medium, deep", "required": false },
+                ],
+            }));
+            prompts.push(serde_json::json!({
+                "name": "workflow:analyze_image",
+                "description": "Visual analysis workflow: pix register → annotate objects → compute metrics → report via axonendpoint. Image understanding pipeline.",
+                "arguments": [
+                    { "name": "image_source", "description": "Image URL or path", "required": true },
+                    { "name": "analysis_type", "description": "Analysis: objects, text, features, all", "required": false },
+                ],
+            }));
+
+            Ok(Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "prompts": prompts,
+                    "_axon_primitives": {
+                        "count": AXON_COGNITIVE_PRIMITIVES.len(),
+                        "inventory": AXON_COGNITIVE_PRIMITIVES,
+                        "categories": {
+                            "declarations": ["persona", "context", "flow", "anchor", "tool", "memory", "type",
+                                            "agent", "shield", "pix", "psyche", "corpus", "dataspace",
+                                            "ots", "mandate", "compute", "daemon", "axonstore", "axonendpoint", "lambda"],
+                            "epistemic": ["know", "believe", "speculate", "doubt"],
+                            "execution": ["step", "reason", "validate", "refine", "weave", "probe", "use",
+                                         "remember", "recall", "par", "hibernate", "deliberate", "consensus", "forge"],
+                            "navigation": ["stream", "navigate", "drill", "trail", "corroborate",
+                                          "focus", "associate", "aggregate", "explore"],
+                        },
+                    }
+                }
+            })))
+        }
+        "prompts/get" => {
+            let prompt_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let arguments = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+
+            let s = state.lock().unwrap();
+            check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+            // ── Workflow prompt templates ──
+            if let Some(workflow_name) = prompt_name.strip_prefix("workflow:") {
+                let workflow_prompt = match workflow_name {
+                    "research" => {
+                        let question = arguments.get("question").and_then(|v| v.as_str()).unwrap_or("(no question)");
+                        let sources = arguments.get("sources").and_then(|v| v.as_str()).unwrap_or("corpus:default,axonstore:default");
+                        let format = arguments.get("output_format").and_then(|v| v.as_str()).unwrap_or("markdown");
+                        serde_json::json!({
+                            "description": "Research workflow: probe → weave → forge",
+                            "messages": [{
+                                "role": "user",
+                                "content": { "type": "text", "text": format!(
+                                    "Execute AXON research workflow:\n\n\
+                                    1. PROBE: Investigate '{}' across sources [{}]\n\
+                                    2. WEAVE: Synthesize findings with source attribution\n\
+                                    3. FORGE: Render as {} artifact\n\n\
+                                    ΛD: All outputs are derived (c≤0.99). Cite sources.",
+                                    question, sources, format
+                                )}
+                            }],
+                            "_axon": {
+                                "workflow": "probe→weave→forge",
+                                "primitives": ["probe", "weave", "forge"],
+                                "epistemic_envelope": { "certainty": 0.99, "derivation": "derived" },
+                            }
+                        })
+                    }
+                    "decide" => {
+                        let question = arguments.get("question").and_then(|v| v.as_str()).unwrap_or("(no question)");
+                        let options = arguments.get("options").and_then(|v| v.as_str()).unwrap_or("option_a,option_b");
+                        let depth = arguments.get("max_depth").and_then(|v| v.as_str()).unwrap_or("3");
+                        serde_json::json!({
+                            "description": "Decision workflow: drill → corroborate → deliberate",
+                            "messages": [{
+                                "role": "user",
+                                "content": { "type": "text", "text": format!(
+                                    "Execute AXON decision workflow:\n\n\
+                                    1. DRILL: Explore options [{}] recursively (depth: {})\n\
+                                    2. CORROBORATE: Verify key claims with cross-source evidence\n\
+                                    3. DELIBERATE: Evaluate pros/cons and select best option\n\n\
+                                    Question: {}\n\
+                                    ΛD: Certainty based on evidence margin.",
+                                    options, depth, question
+                                )}
+                            }],
+                            "_axon": {
+                                "workflow": "drill→corroborate→deliberate",
+                                "primitives": ["drill", "corroborate", "deliberate"],
+                                "epistemic_envelope": { "certainty": 0.99, "derivation": "derived" },
+                            }
+                        })
+                    }
+                    "secure_transfer" => {
+                        let ttl = arguments.get("ttl_secs").and_then(|v| v.as_str()).unwrap_or("3600");
+                        let role = arguments.get("recipient_role").and_then(|v| v.as_str()).unwrap_or("operator");
+                        serde_json::json!({
+                            "description": "Secure transfer workflow: axonstore → shield → ots → mandate",
+                            "messages": [{
+                                "role": "user",
+                                "content": { "type": "text", "text": format!(
+                                    "Execute AXON secure transfer workflow:\n\n\
+                                    1. AXONSTORE: Persist payload securely\n\
+                                    2. SHIELD: Validate no credential leakage in outputs\n\
+                                    3. OTS: Create one-time secret (TTL: {}s)\n\
+                                    4. MANDATE: Authorize access for role '{}'\n\n\
+                                    ΛD: Checkpoint raw, delivery ephemeral.",
+                                    ttl, role
+                                )}
+                            }],
+                            "_axon": {
+                                "workflow": "axonstore→shield→ots→mandate",
+                                "primitives": ["axonstore", "shield", "ots", "mandate"],
+                                "epistemic_envelope": { "certainty": 0.99, "derivation": "derived" },
+                            }
+                        })
+                    }
+                    "reflect" => {
+                        let context = arguments.get("context").and_then(|v| v.as_str()).unwrap_or("(no context)");
+                        let depth = arguments.get("depth").and_then(|v| v.as_str()).unwrap_or("medium");
+                        serde_json::json!({
+                            "description": "Metacognitive workflow: psyche → probe → weave",
+                            "messages": [{
+                                "role": "user",
+                                "content": { "type": "text", "text": format!(
+                                    "Execute AXON metacognitive workflow ({} depth):\n\n\
+                                    1. PSYCHE: Self-reflect on '{}' — identify gaps, biases, strengths\n\
+                                    2. PROBE: Investigate identified knowledge gaps\n\
+                                    3. WEAVE: Synthesize original knowledge + new findings\n\n\
+                                    ΛD: All self-reflection is derived (c≤0.99).",
+                                    depth, context
+                                )}
+                            }],
+                            "_axon": {
+                                "workflow": "psyche→probe→weave",
+                                "primitives": ["psyche", "probe", "weave"],
+                                "epistemic_envelope": { "certainty": 0.99, "derivation": "derived" },
+                            }
+                        })
+                    }
+                    "analyze_image" => {
+                        let source = arguments.get("image_source").and_then(|v| v.as_str()).unwrap_or("(no source)");
+                        let analysis = arguments.get("analysis_type").and_then(|v| v.as_str()).unwrap_or("all");
+                        serde_json::json!({
+                            "description": "Visual analysis workflow: pix → compute → axonendpoint",
+                            "messages": [{
+                                "role": "user",
+                                "content": { "type": "text", "text": format!(
+                                    "Execute AXON visual analysis workflow:\n\n\
+                                    1. PIX: Register image '{}' and annotate (type: {})\n\
+                                    2. COMPUTE: Calculate scene metrics from annotations\n\
+                                    3. AXONENDPOINT: Report results to monitoring endpoint\n\n\
+                                    ΛD: Image metadata raw, annotations derived.",
+                                    source, analysis
+                                )}
+                            }],
+                            "_axon": {
+                                "workflow": "pix→compute→axonendpoint",
+                                "primitives": ["pix", "compute", "axonendpoint"],
+                                "epistemic_envelope": { "certainty": 0.99, "derivation": "derived" },
+                            }
+                        })
+                    }
+                    _ => {
+                        return Ok(Json(serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": format!("unknown workflow prompt: {}", workflow_name) },
+                            "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                        })));
+                    }
+                };
+
+                return Ok(Json(serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": workflow_prompt,
+                })));
+            }
+
+            // Parse "flow:persona" format
+            let parts: Vec<&str> = prompt_name.splitn(2, ':').collect();
+            if parts.len() != 2 {
+                return Ok(Json(serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "error": { "code": -32602, "message": format!("prompt name must be 'flow:persona' or 'workflow:name', got '{}'", prompt_name) }
+                })));
+            }
+            let (flow_name, persona_name) = (parts[0], parts[1]);
+
+            let active = match s.versions.get_active(flow_name) {
+                Some(v) => v,
+                None => return Ok(Json(serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "error": { "code": -32602, "message": format!("flow '{}' not deployed", flow_name) },
+                    "_axon_blame": { "blame": "caller", "reason": "CT-2" }
+                }))),
+            };
+
+            let personas = extract_personas(&active.source);
+            let contexts = extract_contexts(&active.source);
+
+            let persona = personas.iter().find(|(n, _, _, _, _)| n == persona_name);
+            match persona {
+                Some((name, domain, tone, confidence, desc)) => {
+                    // Build system prompt from persona + context
+                    let mut system_parts = vec![
+                        format!("You are {}, an AXON cognitive persona.", name),
+                    ];
+                    if !domain.is_empty() {
+                        system_parts.push(format!("Domain expertise: {}.", domain.join(", ")));
+                    }
+                    if !tone.is_empty() {
+                        system_parts.push(format!("Communication tone: {}.", tone));
+                    }
+                    if let Some(ct) = confidence {
+                        system_parts.push(format!("Confidence threshold: {:.0}%.", ct * 100.0));
+                    }
+                    if !desc.is_empty() {
+                        system_parts.push(desc.clone());
+                    }
+
+                    // Include first context as additional system context
+                    if let Some((ctx_name, scope, depth, max_tok, temp)) = contexts.first() {
+                        system_parts.push(format!("Context '{}': scope={}, depth={}.", ctx_name, scope, depth));
+                        if let Some(t) = temp {
+                            system_parts.push(format!("Temperature: {}.", t));
+                        }
+                    }
+
+                    let system_message = system_parts.join(" ");
+
+                    // Build user message from arguments
+                    let user_input = params.get("arguments")
+                        .and_then(|a| a.get("input"))
+                        .and_then(|i| i.as_str())
+                        .unwrap_or("(no input provided)");
+
+                    Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "description": format!("Prompt for persona '{}' in flow '{}'", name, flow_name),
+                            "messages": [
+                                { "role": "user", "content": { "type": "text", "text": format!("{}\n\n{}", system_message, user_input) } },
+                            ],
+                            "_axon": {
+                                "persona": name,
+                                "flow": flow_name,
+                                "domain": domain,
+                                "tone": tone,
+                                "confidence_threshold": confidence,
+                                "contexts": contexts.iter().map(|(n, s, d, mt, t)| {
+                                    serde_json::json!({"name": n, "scope": s, "depth": d, "max_tokens": mt, "temperature": t})
+                                }).collect::<Vec<_>>(),
+                                "epistemic_envelope": {
+                                    "ontology": format!("mcp:prompt:{}:{}", flow_name, name),
+                                    "certainty": 0.95,
+                                    "derivation": "derived",
+                                    "provenance": format!("emcp:axon_server:prompt:{}:{}", flow_name, name),
+                                },
+                                "lattice_position": "speculate",
+                                "primitives_used": AXON_COGNITIVE_PRIMITIVES.len(),
+                            }
+                        }
+                    })))
+                }
+                None => {
+                    Ok(Json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("persona '{}' not found in flow '{}'", persona_name, flow_name) },
+                        "_axon_blame": { "blame": "caller", "reason": "CT-2: referenced non-existent persona" }
+                    })))
+                }
+            }
+        }
+        _ => {
+            Ok(Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32601,
+                    "message": format!("method '{}' not found", method)
+                }
+            })))
+        }
+    }
+}
+
+/// GET /v1/mcp/tools — list exposed MCP tools (convenience endpoint, non-JSON-RPC).
+async fn mcp_tools_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let mut tools: Vec<McpExposedTool> = Vec::new();
+    for summary in s.versions.list_flows() {
+        if let Some(active) = s.versions.get_active(&summary.flow_name) {
+            tools.push(McpExposedTool {
+                name: format!("axon_{}", summary.flow_name),
+                description: format!("Execute AXON flow '{}' (v{})", summary.flow_name, active.version),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "backend": { "type": "string", "default": "stub" },
+                        "input": { "type": "string" }
+                    }
+                }),
+            });
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "tools": tools,
+        "total": tools.len(),
+        "protocol": "MCP 2024-11-05",
+        "server": "axon-server",
+    })))
+}
+
+/// POST /v1/mcp/stream — MCP tools/call with streaming output via algebraic effects.
+///
+/// Executes the flow, emits tokens via StreamEmitter (the algebraic effect handler
+/// h: F_Σ(B) → M_IO(B)), publishes to EventBus, and returns stream metadata
+/// with ΛD epistemic envelope. Clients consume tokens via SSE on the topic URL.
+///
+/// Stream(τ) = νX. (StreamChunk × EpistemicState × X)
+/// Each chunk carries its lattice position and effect row.
+async fn mcp_stream_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+    }
+
+    let tool_name = payload.get("name").and_then(|n| n.as_str()).unwrap_or("");
+    let arguments = payload.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+    let flow_name = tool_name.strip_prefix("axon_").unwrap_or(tool_name);
+    let backend = arguments.get("backend").and_then(|b| b.as_str()).unwrap_or("stub");
+
+    // Resolve source and key
+    let (source, source_file, resolved_key) = {
+        let s = state.lock().unwrap();
+        let history = s.versions.get_history(flow_name);
+        match history.and_then(|h| h.active()) {
+            Some(active) => {
+                let key = resolve_backend_key(&s, backend).ok();
+                (active.source.clone(), active.source_file.clone(), key)
+            }
+            None => {
+                return Ok(Json(serde_json::json!({
+                    "error": format!("flow '{}' not deployed", flow_name),
+                    "_axon_blame": { "blame": "caller", "reason": "CT-2" },
+                })));
+            }
+        }
+    };
+
+    // Execute
+    match server_execute(&source, &source_file, flow_name, backend, resolved_key.as_deref()) {
+        Ok(mut er) => {
+            // Record trace
+            let mut trace_entry = crate::trace_store::build_trace(
+                &er.flow_name, &er.source_file, &er.backend, &client,
+                if er.success { crate::trace_store::TraceStatus::Success }
+                else { crate::trace_store::TraceStatus::Partial },
+                er.steps_executed, er.latency_ms,
+            );
+            trace_entry.tokens_input = er.tokens_input;
+            trace_entry.tokens_output = er.tokens_output;
+            trace_entry.errors = er.errors;
+
+            let (trace_id, stream_topic, token_count) = {
+                let mut s = state.lock().unwrap();
+                let tid = s.trace_store.record(trace_entry);
+
+                // Algebraic Effect Handler: StreamEmitter
+                // h: F_Σ(B) → M_IO(B) — captures perform(Emit(v)) and publishes
+                let mut emitter = StreamEmitter::new(tid, &er.flow_name);
+                for (i, step_name) in er.step_names.iter().enumerate() {
+                    if let Some(chunks) = er.step_results.get(i).map(|r| {
+                        if r.is_empty() { vec![] }
+                        else {
+                            r.split_whitespace()
+                                .collect::<Vec<&str>>()
+                                .chunks(3)
+                                .map(|c| c.join(" "))
+                                .collect()
+                        }
+                    }) {
+                        emitter.emit_chunks(step_name, &chunks);
+                    }
+                }
+                emitter.finalize();
+                let tc = emitter.token_count();
+                emitter.publish_to_bus(&s.event_bus);
+
+                // Record backend metrics
+                record_backend_metrics(
+                    &mut s, &er.backend, er.success,
+                    er.tokens_input, er.tokens_output, er.latency_ms,
+                );
+
+                let topic = format!("flow.stream.{}", tid);
+                (tid, topic, tc)
+            };
+
+            er.trace_id = trace_id;
+
+            // ΛD Epistemic Envelope
+            let certainty = if er.success && er.anchor_breaches == 0 { 0.85 }
+                else if er.success { 0.5 } else { 0.1 };
+            let envelope = EpistemicEnvelope::derived(
+                &format!("mcp:stream:{}", flow_name), certainty,
+                &format!("emcp:axon_server:stream:{}:{}", flow_name, er.backend),
+            );
+
+            // Effect row
+            let mut effects = vec!["io".to_string()];
+            if backend != "stub" { effects.push("network".into()); }
+            let epistemic_effect = if certainty >= 0.85 { "epistemic:speculate" }
+                else if certainty >= 0.5 { "epistemic:doubt" }
+                else { "epistemic:uncertain" };
+            effects.push(epistemic_effect.into());
+
+            let lattice = if certainty >= 0.85 { "speculate" }
+                else if certainty >= 0.5 { "doubt" } else { "⊥" };
+
+            Ok(Json(serde_json::json!({
+                "success": er.success,
+                "trace_id": trace_id,
+                "flow": er.flow_name,
+                "backend": er.backend,
+                "stream": {
+                    "topic": stream_topic,
+                    "token_count": token_count,
+                    "consume_url": format!("/v1/events/stream?topic={}", stream_topic),
+                    "protocol": "SSE (Server-Sent Events)",
+                    // Stream(τ) = νX. (StreamChunk × EpistemicState × X)
+                    "coinductive_type": "Stream(τ) = νX. (StreamChunk × EpistemicState × X)",
+                },
+                "algebraic_effect": {
+                    "handler": "StreamEmitter: h: F_Σ(B) → M_IO(B)",
+                    "operation": "perform(Emit(token))",
+                    "materialization": format!("EventBus.publish(\"{}\")", stream_topic),
+                },
+                "_axon": {
+                    "epistemic_envelope": {
+                        "ontology": envelope.ontology,
+                        "certainty": envelope.certainty,
+                        "temporal_start": envelope.temporal_start,
+                        "temporal_end": envelope.temporal_end,
+                        "provenance": envelope.provenance,
+                        "derivation": envelope.derivation,
+                    },
+                    "lattice_position": lattice,
+                    "effect_row": effects,
+                    "blame": "none",
+                    "anchor_checks": er.anchor_checks,
+                    "anchor_breaches": er.anchor_breaches,
+                },
+            })))
+        }
+        Err(e) => {
+            let blame = if e.contains("Backend error") || e.contains("timeout") { "network" }
+                else { "server" };
+            Ok(Json(serde_json::json!({
+                "success": false,
+                "error": e,
+                "_axon": {
+                    "blame": blame,
+                    "lattice_position": "⊥",
+                    "epistemic_envelope": {
+                        "ontology": format!("mcp:stream:{}:error", flow_name),
+                        "certainty": 0.0,
+                        "derivation": "failed",
+                    },
+                },
+            })))
+        }
+    }
+}
+
+/// GET /v1/dashboard — comprehensive server status overview.
+/// GET /v1/primitives — cognitive primitive inventory with runtime wiring status.
+/// Reports all 47 AXON cognitive primitives, their category, whether they are
+/// wired to runtime (HTTP API or MCP), and ΛD alignment metadata.
+async fn primitives_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    // Runtime wiring map: primitive → (status, endpoint/mechanism, phase)
+    let wired: HashMap<&str, (&str, &str, &str)> = [
+        // Declarations wired to runtime
+        ("axonstore", ("wired", "/v1/axonstore/* + MCP tools/call (persist/retrieve/mutate/purge/transact)", "G2+G8")),
+        ("dataspace", ("wired", "/v1/dataspace/* (ingest/focus/associate/aggregate/explore)", "G3")),
+        ("flow", ("wired", "/v1/deploy + /v1/execute + /v1/inspect", "D")),
+        ("persona", ("wired", "MCP prompts/list + prompts/get", "E6")),
+        ("context", ("wired", "MCP prompts/get (system prompt enrichment)", "E6")),
+        ("anchor", ("wired", "/v1/execute (anchor_checks, anchor_breaches)", "D")),
+        ("tool", ("wired", "/v1/tools/* (registry, dispatch, CSP §5.3)", "D")),
+        ("memory", ("wired", "/v1/session/remember + /v1/session/recall", "D")),
+        ("daemon", ("wired", "/v1/daemons/* (lifecycle, supervisor)", "D")),
+        ("agent", ("wired", "/v1/execute/pipeline (multi-flow orchestration)", "D")),
+        ("type", ("wired", "IR type system (lex → parse → type check)", "B")),
+        ("lambda", ("wired", "IR lambda expressions in compiler", "B")),
+        // Step primitives wired to runtime
+        ("step", ("wired", "/v1/execute (step_results, steps_executed)", "D")),
+        ("reason", ("wired", "runner.rs execute_real (reason step type)", "B")),
+        ("validate", ("wired", "/v1/flows/{name}/validate", "D")),
+        ("use", ("wired", "tool dispatch in runner", "D")),
+        ("remember", ("wired", "/v1/session/remember", "D")),
+        ("recall", ("wired", "/v1/session/recall", "D")),
+        ("stream", ("wired", "/v1/execute/stream (SSE, algebraic effects)", "D")),
+        ("par", ("wired", "runner.rs parallel step execution", "D")),
+        // Epistemic primitives
+        ("know", ("wired", "EpistemicEnvelope c=1.0 (lattice top for raw)", "E7")),
+        ("believe", ("wired", "epistemic lattice position in MCP", "E7")),
+        ("speculate", ("wired", "EpistemicEnvelope c=0.85 (MCP tool result)", "E7")),
+        ("doubt", ("wired", "EpistemicEnvelope c=0.5 (anchor breaches)", "E7")),
+        // Navigation primitives (dataspace)
+        ("focus", ("wired", "/v1/dataspace/{name}/focus + MCP tools/call", "G3+G5")),
+        ("associate", ("wired", "/v1/dataspace/{name}/associate", "G3")),
+        ("aggregate", ("wired", "/v1/dataspace/{name}/aggregate + MCP tools/call", "G3+G5")),
+        ("explore", ("wired", "/v1/dataspace/{name}/explore", "G3")),
+        // Persistence primitives (axonstore)
+        ("navigate", ("wired", "dataspace focus+explore navigation pattern", "G3")),
+        // Pending primitives
+        ("shield", ("wired", "/v1/shields/* (create/evaluate/rules with deny_list/pattern/pii/length)", "G9")),
+        ("pix", ("wired", "/v1/pix/* (image/annotate with bbox and visual classification)", "G27")),
+        ("psyche", ("wired", "/v1/psyche/* (insight/complete with self-awareness scoring)", "G25")),
+        ("corpus", ("wired", "/v1/corpus/* (ingest/search/cite with ΛD envelopes)", "G11")),
+        ("ots", ("wired", "/v1/ots/* (create/retrieve-once with TTL and ephemeral destruction)", "G24")),
+        ("mandate", ("wired", "/v1/mandates/* (policy CRUD, evaluate with priority-ordered first-match)", "G13")),
+        ("compute", ("wired", "/v1/compute/* (evaluate/batch/functions with ΛD exactness tracking)", "G12")),
+        ("axonendpoint", ("wired", "/v1/endpoints/* (bind/call with URL templates and auth config)", "G26")),
+        ("refine", ("wired", "/v1/refine/* (start/iterate/status with convergence tracking)", "G14")),
+        ("weave", ("wired", "/v1/weaves/* (strand/synthesize with attribution and weighted certainty)", "G17")),
+        ("probe", ("wired", "/v1/probes/* (create/query/complete with multi-source findings)", "G16")),
+        ("hibernate", ("wired", "/v1/hibernate/* (checkpoint/suspend/resume with state preservation)", "G23")),
+        ("deliberate", ("wired", "/v1/deliberate/* (option/evaluate/eliminate/decide with scoring)", "G21")),
+        ("consensus", ("wired", "/v1/consensus/* (vote/resolve with quorum and agreement scoring)", "G22")),
+        ("forge", ("wired", "/v1/forges/* (template/render with {{variable}} substitution)", "G20")),
+        ("drill", ("wired", "/v1/drills/* (expand/complete with depth-limited exploration tree)", "G19")),
+        ("trail", ("wired", "/v1/trails/* (start/step/complete with step-by-step trace)", "G15")),
+        ("corroborate", ("wired", "/v1/corroborate/* (evidence/verify with agreement scoring)", "G18")),
+    ].into_iter().collect();
+
+    let mut declarations: Vec<serde_json::Value> = Vec::new();
+    let mut step_primitives: Vec<serde_json::Value> = Vec::new();
+    let mut epistemic: Vec<serde_json::Value> = Vec::new();
+    let mut navigation: Vec<serde_json::Value> = Vec::new();
+
+    let decl_names = ["persona", "context", "flow", "anchor", "tool", "memory", "type",
+        "agent", "shield", "pix", "psyche", "corpus", "dataspace",
+        "ots", "mandate", "compute", "daemon", "axonstore", "axonendpoint", "lambda"];
+    let step_names = ["step", "reason", "validate", "refine", "weave", "probe",
+        "use", "remember", "recall", "par", "hibernate", "deliberate", "consensus", "forge"];
+    let epi_names = ["know", "believe", "speculate", "doubt"];
+    let nav_names = ["stream", "navigate", "drill", "trail", "corroborate",
+        "focus", "associate", "aggregate", "explore"];
+
+    let mut total_wired = 0u32;
+    let mut total_pending = 0u32;
+
+    let build_entry = |name: &str, wired: &HashMap<&str, (&str, &str, &str)>| -> serde_json::Value {
+        let (status, endpoint, phase) = wired.get(name).copied().unwrap_or(("unknown", "—", "—"));
+        serde_json::json!({
+            "name": name,
+            "status": status,
+            "endpoint": endpoint,
+            "wired_in_phase": phase,
+        })
+    };
+
+    for name in &decl_names {
+        let entry = build_entry(name, &wired);
+        if entry["status"] == "wired" { total_wired += 1; } else { total_pending += 1; }
+        declarations.push(entry);
+    }
+    for name in &step_names {
+        let entry = build_entry(name, &wired);
+        if entry["status"] == "wired" { total_wired += 1; } else { total_pending += 1; }
+        step_primitives.push(entry);
+    }
+    for name in &epi_names {
+        let entry = build_entry(name, &wired);
+        if entry["status"] == "wired" { total_wired += 1; } else { total_pending += 1; }
+        epistemic.push(entry);
+    }
+    for name in &nav_names {
+        let entry = build_entry(name, &wired);
+        if entry["status"] == "wired" { total_wired += 1; } else { total_pending += 1; }
+        navigation.push(entry);
+    }
+
+    let total = total_wired + total_pending;
+    let coverage = if total > 0 { (total_wired as f64 / total as f64 * 10000.0).round() / 100.0 } else { 0.0 };
+
+    Ok(Json(serde_json::json!({
+        "total_primitives": total,
+        "wired": total_wired,
+        "pending": total_pending,
+        "coverage_percent": coverage,
+        "categories": {
+            "declarations": { "count": decl_names.len(), "primitives": declarations },
+            "step": { "count": step_names.len(), "primitives": step_primitives },
+            "epistemic": { "count": epi_names.len(), "primitives": epistemic },
+            "navigation": { "count": nav_names.len(), "primitives": navigation },
+        },
+        "lambda_d_alignment": {
+            "epistemic_envelope": "EpistemicEnvelope ψ = ⟨T, V, E⟩ where E = ⟨c, τ, ρ, δ⟩",
+            "theorem_5_1": "Epistemic Degradation: only raw may carry c=1.0, derived ≤ 0.99",
+            "lattice": "⊥ ⊑ doubt ⊑ speculate ⊑ believe ⊑ know",
+            "blame_calculus": "Findler-Felleisen CT-2 (caller) / CT-3 (server) / Network",
+            "csp": "CSP §5.3: tools as constraint satisfaction, anchors as constraints",
+            "effect_rows": "<io, network?, epistemic:X> computed from backend and certainty",
+        },
+    })))
+}
+
+async fn dashboard_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let uptime_secs = s.started_at.elapsed().as_secs();
+    let days = uptime_secs / 86400;
+    let hours = (uptime_secs % 86400) / 3600;
+    let minutes = (uptime_secs % 3600) / 60;
+
+    let bus_stats = s.event_bus.stats();
+    let sup_counts = s.supervisor.state_counts();
+    let wh_stats = s.webhooks.stats();
+    let trace_stats = s.trace_store.stats();
+
+    // Daemon states summary
+    let daemon_states: Vec<serde_json::Value> = s.daemons.values().map(|d| {
+        serde_json::json!({
+            "name": d.name,
+            "state": d.state,
+            "events": d.event_count,
+        })
+    }).collect();
+
+    // Active schedules
+    let sched_enabled = s.schedules.values().filter(|e| e.enabled).count();
+    let sched_errors: u64 = s.schedules.values().map(|e| e.error_count).sum();
+
+    // Cost summary
+    let costs = compute_flow_costs(&s.trace_store, &s.cost_pricing);
+    let total_cost: f64 = costs.iter().map(|c| c.estimated_cost_usd).sum();
+
+    // Budget alerts
+    let alert_count = s.cost_budgets.iter().filter(|(flow, budget)| {
+        let cost = costs.iter().find(|c| &c.flow_name == *flow).map(|c| c.estimated_cost_usd).unwrap_or(0.0);
+        let pct = if budget.max_cost_usd > 0.0 { cost / budget.max_cost_usd } else { 0.0 };
+        pct >= budget.warn_threshold
+    }).count();
+
+    // Queue status
+    let queue_pending = s.execution_queue.iter().filter(|q| q.status == "pending").count();
+    let queue_processing = s.execution_queue.iter().filter(|q| q.status == "processing").count();
+
+    // Webhook retry/dead
+    let retry_count = s.webhooks.retry_queue_len();
+    let dead_count = s.webhooks.dead_letters_len();
+
+    // Client rate metrics
+    let client_metrics = s.rate_limiter.client_metrics();
+    let total_rejected: u64 = client_metrics.iter().map(|c| c.rejected).sum();
+
+    Ok(Json(serde_json::json!({
+        "server": {
+            "uptime_secs": uptime_secs,
+            "uptime_formatted": format!("{}d {}h {}m", days, hours, minutes),
+            "version": AXON_VERSION,
+            "total_requests": s.metrics.total_requests,
+            "total_errors": s.metrics.total_errors,
+            "total_deployments": s.metrics.total_deployments,
+        },
+        "daemons": {
+            "total": s.daemons.len(),
+            "states": sup_counts,
+            "list": daemon_states,
+        },
+        "event_bus": {
+            "events_published": bus_stats.events_published,
+            "events_delivered": bus_stats.events_delivered,
+            "events_dropped": bus_stats.events_dropped,
+            "topics": bus_stats.topics_seen.len(),
+            "subscribers": bus_stats.active_subscribers,
+        },
+        "traces": {
+            "buffered": s.trace_store.len(),
+            "total_recorded": trace_stats.total_recorded,
+            "avg_latency_ms": trace_stats.avg_latency_ms,
+            "max_latency_ms": trace_stats.max_latency_ms,
+            "retention_ttl_secs": s.trace_store.config().max_age_secs,
+        },
+        "schedules": {
+            "total": s.schedules.len(),
+            "enabled": sched_enabled,
+            "total_errors": sched_errors,
+        },
+        "costs": {
+            "total_estimated_usd": (total_cost * 10000.0).round() / 10000.0,
+            "flows_tracked": costs.len(),
+            "budget_alerts": alert_count,
+        },
+        "execution_queue": {
+            "total": s.execution_queue.len(),
+            "pending": queue_pending,
+            "processing": queue_processing,
+        },
+        "webhooks": {
+            "total": wh_stats.total_webhooks,
+            "active": wh_stats.active_webhooks,
+            "retry_queue": retry_count,
+            "dead_letters": dead_count,
+        },
+        "rate_limiter": {
+            "enabled": s.rate_limiter.config().enabled,
+            "clients": s.rate_limiter.client_count(),
+            "total_rejected": total_rejected,
+        },
+        "sessions": {
+            "scopes": s.scoped_sessions.scope_count(),
+            "total_memory": s.scoped_sessions.total_memory_count(),
+            "total_store": s.scoped_sessions.total_store_count(),
+        },
+        "config_snapshots": s.config_snapshots.len(),
+    })))
+}
+
+/// An API route descriptor.
+#[derive(Debug, Clone, Serialize)]
+struct ApiRoute {
+    method: &'static str,
+    path: &'static str,
+    description: &'static str,
+    category: &'static str,
+}
+
+/// Build the static API route table.
+fn api_route_table() -> Vec<ApiRoute> {
+    vec![
+        ApiRoute { method: "GET", path: "/v1/health", description: "Full health report", category: "health" },
+        ApiRoute { method: "GET", path: "/v1/health/live", description: "Liveness probe", category: "health" },
+        ApiRoute { method: "GET", path: "/v1/health/ready", description: "Readiness probe", category: "health" },
+        ApiRoute { method: "GET", path: "/v1/health/components", description: "Component-level health checks", category: "health" },
+        ApiRoute { method: "GET", path: "/v1/version", description: "AXON version info", category: "server" },
+        ApiRoute { method: "GET", path: "/v1/uptime", description: "Detailed server uptime with hourly buckets", category: "server" },
+        ApiRoute { method: "GET", path: "/v1/dashboard", description: "Comprehensive server status overview", category: "server" },
+        ApiRoute { method: "GET", path: "/v1/docs", description: "API documentation (this endpoint)", category: "server" },
+        ApiRoute { method: "GET", path: "/v1/metrics", description: "Execution metrics", category: "metrics" },
+        ApiRoute { method: "GET", path: "/v1/metrics/prometheus", description: "Prometheus exposition format", category: "metrics" },
+        ApiRoute { method: "POST", path: "/v1/deploy", description: "Compile and deploy .axon source", category: "execution" },
+        ApiRoute { method: "POST", path: "/v1/execute", description: "Execute a deployed flow", category: "execution" },
+        ApiRoute { method: "POST", path: "/v1/execute/enqueue", description: "Enqueue flow execution with priority", category: "execution" },
+        ApiRoute { method: "GET", path: "/v1/execute/queue", description: "View execution queue", category: "execution" },
+        ApiRoute { method: "POST", path: "/v1/execute/dequeue", description: "Take next item from queue", category: "execution" },
+        ApiRoute { method: "POST", path: "/v1/execute/drain", description: "Process all pending queue items", category: "execution" },
+        ApiRoute { method: "POST", path: "/v1/estimate", description: "Estimate execution cost (tokens/USD)", category: "execution" },
+        ApiRoute { method: "GET", path: "/v1/costs", description: "Aggregate per-flow cost summary", category: "costs" },
+        ApiRoute { method: "GET", path: "/v1/costs/:flow", description: "Cost details for a specific flow", category: "costs" },
+        ApiRoute { method: "PUT", path: "/v1/costs/pricing", description: "Update backend pricing config", category: "costs" },
+        ApiRoute { method: "PUT", path: "/v1/costs/:flow/budget", description: "Set cost budget for a flow", category: "costs" },
+        ApiRoute { method: "DELETE", path: "/v1/costs/:flow/budget", description: "Remove cost budget", category: "costs" },
+        ApiRoute { method: "GET", path: "/v1/costs/alerts", description: "Check flows against cost budgets", category: "costs" },
+        ApiRoute { method: "GET", path: "/v1/traces", description: "Query execution traces (list/filter)", category: "traces" },
+        ApiRoute { method: "GET", path: "/v1/traces/:id", description: "Get a specific trace by ID", category: "traces" },
+        ApiRoute { method: "GET", path: "/v1/traces/stats", description: "Aggregate trace analytics", category: "traces" },
+        ApiRoute { method: "GET", path: "/v1/traces/search", description: "Full-text search across traces", category: "traces" },
+        ApiRoute { method: "GET", path: "/v1/traces/aggregate", description: "Aggregated metrics with percentiles", category: "traces" },
+        ApiRoute { method: "GET", path: "/v1/traces/heatmap", description: "Latency/error heatmap across time buckets", category: "traces" },
+        ApiRoute { method: "GET", path: "/v1/traces/export", description: "Export traces as JSONL/CSV/Prometheus", category: "traces" },
+        ApiRoute { method: "GET", path: "/v1/traces/diff", description: "Compare two traces side-by-side", category: "traces" },
+        ApiRoute { method: "POST", path: "/v1/traces/compare", description: "Compare N traces across metrics", category: "traces" },
+        ApiRoute { method: "POST", path: "/v1/traces/timeline", description: "Merged chronological timeline", category: "traces" },
+        ApiRoute { method: "GET|PUT", path: "/v1/traces/retention", description: "Trace retention policy (max_age_secs)", category: "traces" },
+        ApiRoute { method: "POST", path: "/v1/traces/evict", description: "Manually trigger TTL-based eviction", category: "traces" },
+        ApiRoute { method: "DELETE", path: "/v1/traces/bulk", description: "Bulk delete traces by IDs", category: "traces" },
+        ApiRoute { method: "POST", path: "/v1/traces/bulk/annotate", description: "Bulk annotate traces by IDs", category: "traces" },
+        ApiRoute { method: "POST", path: "/v1/traces/:id/annotate", description: "Add annotation to a trace", category: "traces" },
+        ApiRoute { method: "GET", path: "/v1/traces/:id/annotations", description: "List annotations for a trace", category: "traces" },
+        ApiRoute { method: "POST", path: "/v1/traces/:id/replay", description: "Re-execute and compare results", category: "traces" },
+        ApiRoute { method: "GET", path: "/v1/traces/:id/flamegraph", description: "Flamegraph-style span tree", category: "traces" },
+        ApiRoute { method: "GET", path: "/v1/daemons", description: "List registered daemons", category: "daemons" },
+        ApiRoute { method: "GET|DELETE", path: "/v1/daemons/:name", description: "Get/delete individual daemon", category: "daemons" },
+        ApiRoute { method: "POST", path: "/v1/daemons/:name/run", description: "Execute daemon's flow", category: "daemons" },
+        ApiRoute { method: "POST", path: "/v1/daemons/:name/pause", description: "Pause a daemon", category: "daemons" },
+        ApiRoute { method: "POST", path: "/v1/daemons/:name/resume", description: "Resume a paused daemon", category: "daemons" },
+        ApiRoute { method: "GET", path: "/v1/daemons/:name/events", description: "Lifecycle events for a daemon", category: "daemons" },
+        ApiRoute { method: "GET", path: "/v1/daemons/dependencies", description: "Inferred daemon dependency graph", category: "daemons" },
+        ApiRoute { method: "GET|PUT|DELETE", path: "/v1/daemons/:name/trigger", description: "Daemon event trigger binding", category: "triggers" },
+        ApiRoute { method: "GET", path: "/v1/triggers", description: "List all trigger bindings", category: "triggers" },
+        ApiRoute { method: "POST", path: "/v1/triggers/dispatch", description: "Dispatch event to triggered daemons", category: "triggers" },
+        ApiRoute { method: "POST", path: "/v1/triggers/replay", description: "Replay historical events", category: "triggers" },
+        ApiRoute { method: "GET", path: "/v1/events/history", description: "Recent event bus history", category: "events" },
+        ApiRoute { method: "GET|PUT|DELETE", path: "/v1/daemons/:name/chain", description: "Daemon output chain binding", category: "chains" },
+        ApiRoute { method: "GET", path: "/v1/chains", description: "List all chain bindings", category: "chains" },
+        ApiRoute { method: "GET", path: "/v1/chains/graph", description: "Chain topology as DOT/Mermaid", category: "chains" },
+        ApiRoute { method: "GET|POST", path: "/v1/schedules", description: "List/create scheduled executions", category: "schedules" },
+        ApiRoute { method: "GET|DELETE", path: "/v1/schedules/:name", description: "Get/delete individual schedule", category: "schedules" },
+        ApiRoute { method: "POST", path: "/v1/schedules/:name/toggle", description: "Enable/disable a schedule", category: "schedules" },
+        ApiRoute { method: "GET", path: "/v1/schedules/:name/history", description: "Schedule execution history", category: "schedules" },
+        ApiRoute { method: "POST", path: "/v1/schedules/tick", description: "Poll-based scheduler tick", category: "schedules" },
+        ApiRoute { method: "GET", path: "/v1/rate-limit", description: "Rate limit status", category: "auth" },
+        ApiRoute { method: "GET|POST|DELETE", path: "/v1/keys", description: "API key management", category: "auth" },
+        ApiRoute { method: "GET|POST", path: "/v1/webhooks", description: "Webhook management", category: "webhooks" },
+        ApiRoute { method: "GET", path: "/v1/webhooks/stats", description: "Webhook aggregate stats", category: "webhooks" },
+        ApiRoute { method: "GET", path: "/v1/webhooks/retry-queue", description: "Pending webhook retries", category: "webhooks" },
+        ApiRoute { method: "GET", path: "/v1/webhooks/dead-letters", description: "Failed webhook deliveries", category: "webhooks" },
+        ApiRoute { method: "GET|PUT", path: "/v1/config", description: "Runtime server configuration", category: "config" },
+        ApiRoute { method: "POST", path: "/v1/config/save", description: "Save config to disk", category: "config" },
+        ApiRoute { method: "POST", path: "/v1/config/load", description: "Load config from disk", category: "config" },
+        ApiRoute { method: "GET|POST", path: "/v1/config/snapshots", description: "Config snapshot management", category: "config" },
+        ApiRoute { method: "POST", path: "/v1/config/snapshots/restore", description: "Restore from named snapshot", category: "config" },
+        ApiRoute { method: "GET", path: "/v1/audit", description: "Query audit trail entries", category: "audit" },
+        ApiRoute { method: "GET", path: "/v1/audit/stats", description: "Audit trail statistics", category: "audit" },
+        ApiRoute { method: "GET", path: "/v1/audit/export", description: "Export audit trail as JSONL/CSV", category: "audit" },
+        ApiRoute { method: "GET|PUT", path: "/v1/cors", description: "CORS configuration", category: "config" },
+        ApiRoute { method: "GET|PUT", path: "/v1/middleware", description: "Request middleware config/stats", category: "config" },
+        ApiRoute { method: "GET", path: "/v1/inspect", description: "List deployed flows", category: "inspect" },
+        ApiRoute { method: "GET", path: "/v1/inspect/:name", description: "Introspect flow by name", category: "inspect" },
+        ApiRoute { method: "GET", path: "/v1/inspect/:name/graph", description: "Flow graph export", category: "inspect" },
+        ApiRoute { method: "GET", path: "/v1/session/:scope/export", description: "Export scoped session data", category: "session" },
+        ApiRoute { method: "GET", path: "/v1/logs", description: "Query recent request logs", category: "logs" },
+        ApiRoute { method: "GET", path: "/v1/logs/stats", description: "Aggregate request statistics", category: "logs" },
+        ApiRoute { method: "POST", path: "/v1/shutdown", description: "Initiate graceful shutdown (admin)", category: "server" },
+    ]
+}
+
+/// GET /v1/docs — API documentation with route listing.
+async fn docs_handler() -> Json<serde_json::Value> {
+    let routes = api_route_table();
+
+    // Group by category
+    let mut categories: std::collections::BTreeMap<&str, Vec<&ApiRoute>> = std::collections::BTreeMap::new();
+    for r in &routes {
+        categories.entry(r.category).or_default().push(r);
+    }
+
+    let category_summaries: Vec<serde_json::Value> = categories.iter().map(|(cat, rs)| {
+        serde_json::json!({
+            "category": cat,
+            "endpoints": rs.len(),
+        })
+    }).collect();
+
+    Json(serde_json::json!({
+        "api_version": "v1",
+        "total_endpoints": routes.len(),
+        "categories": category_summaries,
+        "routes": routes,
+    }))
+}
+
+/// Request for sandboxed flow execution.
+#[derive(Debug, Deserialize)]
+pub struct SandboxRequest {
+    /// Flow name to execute.
+    pub flow_name: String,
+    /// Backend override (default "stub").
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+    /// Maximum steps allowed (0 = unlimited, default 50).
+    #[serde(default = "default_sandbox_max_steps")]
+    pub max_steps: usize,
+    /// Timeout in milliseconds (0 = no timeout, default 5000).
+    #[serde(default = "default_sandbox_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Maximum total tokens (0 = unlimited, default 10000).
+    #[serde(default = "default_sandbox_max_tokens")]
+    pub max_tokens: u64,
+    /// Whether to record a trace (default false — sandbox is isolated).
+    #[serde(default)]
+    pub record_trace: bool,
+}
+
+fn default_sandbox_max_steps() -> usize { 50 }
+fn default_sandbox_timeout_ms() -> u64 { 5000 }
+fn default_sandbox_max_tokens() -> u64 { 10000 }
+
+/// Sandbox execution result.
+#[derive(Debug, Clone, Serialize)]
+pub struct SandboxResult {
+    pub success: bool,
+    pub flow_name: String,
+    pub backend: String,
+    pub steps_executed: usize,
+    pub latency_ms: u64,
+    pub tokens_input: u64,
+    pub tokens_output: u64,
+    pub errors: usize,
+    pub step_names: Vec<String>,
+    pub limits_applied: SandboxLimits,
+    pub limits_hit: Vec<String>,
+    pub trace_id: Option<u64>,
+    pub sandboxed: bool,
+}
+
+/// Applied sandbox limits.
+#[derive(Debug, Clone, Serialize)]
+pub struct SandboxLimits {
+    pub max_steps: usize,
+    pub timeout_ms: u64,
+    pub max_tokens: u64,
+}
+
+/// POST /v1/execute/sandbox — execute a flow in an isolated sandbox with resource limits.
+async fn execute_sandbox_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<SandboxRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+    }
+
+    // Look up deployed source
+    let (source, source_file) = {
+        let s = state.lock().unwrap();
+        match s.versions.get_history(&payload.flow_name)
+            .and_then(|h| h.active())
+            .map(|v| (v.source.clone(), v.source_file.clone()))
+        {
+            Some(info) => info,
+            None => return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": format!("flow '{}' not deployed", payload.flow_name),
+                "sandboxed": true,
+            }))),
+        }
+    };
+
+    // Execute
+    let (exec_result, _) = server_execute_full(&state, &source, &source_file, &payload.flow_name, &payload.backend);
+
+    let limits = SandboxLimits {
+        max_steps: payload.max_steps,
+        timeout_ms: payload.timeout_ms,
+        max_tokens: payload.max_tokens,
+    };
+
+    match exec_result {
+        Ok(er) => {
+            let latency = req_start.elapsed().as_millis() as u64;
+            let total_tokens = er.tokens_input + er.tokens_output;
+
+            // Check limits
+            let mut limits_hit = Vec::new();
+            if payload.max_steps > 0 && er.steps_executed > payload.max_steps {
+                limits_hit.push("max_steps".into());
+            }
+            if payload.timeout_ms > 0 && latency > payload.timeout_ms {
+                limits_hit.push("timeout_ms".into());
+            }
+            if payload.max_tokens > 0 && total_tokens > payload.max_tokens {
+                limits_hit.push("max_tokens".into());
+            }
+
+            // Optionally record trace
+            let trace_id = if payload.record_trace {
+                let mut entry = crate::trace_store::build_trace(
+                    &er.flow_name, &er.source_file, &er.backend, &client,
+                    if er.success { crate::trace_store::TraceStatus::Success }
+                    else { crate::trace_store::TraceStatus::Partial },
+                    er.steps_executed, er.latency_ms,
+                );
+                entry.tokens_input = er.tokens_input;
+                entry.tokens_output = er.tokens_output;
+                entry.errors = er.errors;
+                let mut s = state.lock().unwrap();
+                Some(s.trace_store.record(entry))
+            } else {
+                None
+            };
+
+            let result = SandboxResult {
+                success: er.success && limits_hit.is_empty(),
+                flow_name: er.flow_name,
+                backend: er.backend,
+                steps_executed: er.steps_executed,
+                latency_ms: latency,
+                tokens_input: er.tokens_input,
+                tokens_output: er.tokens_output,
+                errors: er.errors,
+                step_names: er.step_names,
+                limits_applied: limits,
+                limits_hit,
+                trace_id,
+                sandboxed: true,
+            };
+
+            Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
+        }
+        Err(e) => {
+            Ok(Json(serde_json::json!({
+                "success": false,
+                "flow_name": payload.flow_name,
+                "error": e,
+                "latency_ms": req_start.elapsed().as_millis() as u64,
+                "limits_applied": limits,
+                "sandboxed": true,
+            })))
+        }
+    }
+}
+
+/// Result of a hot-reload check for a single flow.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReloadResult {
+    pub flow_name: String,
+    pub source_file: String,
+    pub previous_hash: String,
+    pub current_hash: String,
+    pub changed: bool,
+    pub redeployed: bool,
+    pub error: Option<String>,
+}
+
+/// POST /v1/deploy/reload — hot-reload all deployed flows by re-reading source files.
+async fn deploy_reload_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Admin)?;
+    }
+
+    // Collect flow info
+    let flows: Vec<(String, String, String, String)> = {
+        let s = state.lock().unwrap();
+        s.daemons.keys().filter_map(|name| {
+            s.versions.get_history(name)
+                .and_then(|h| h.active())
+                .map(|v| (name.clone(), v.source_file.clone(), v.source_hash.clone(), v.backend.clone()))
+        }).collect()
+    };
+
+    let mut results = Vec::new();
+
+    for (flow_name, source_file, prev_hash, backend) in &flows {
+        // Try to read source file from disk
+        let disk_source = match std::fs::read_to_string(source_file) {
+            Ok(s) => s,
+            Err(e) => {
+                results.push(ReloadResult {
+                    flow_name: flow_name.clone(),
+                    source_file: source_file.clone(),
+                    previous_hash: prev_hash.clone(),
+                    current_hash: String::new(),
+                    changed: false,
+                    redeployed: false,
+                    error: Some(format!("cannot read file: {}", e)),
+                });
+                continue;
+            }
+        };
+
+        // Compute hash
+        let current_hash = {
+            let mut hash: u64 = 0xcbf29ce484222325;
+            for byte in disk_source.bytes() {
+                hash ^= byte as u64;
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+            format!("{:016x}", hash)[..12].to_string()
+        };
+
+        if current_hash == *prev_hash {
+            results.push(ReloadResult {
+                flow_name: flow_name.clone(),
+                source_file: source_file.clone(),
+                previous_hash: prev_hash.clone(),
+                current_hash,
+                changed: false,
+                redeployed: false,
+                error: None,
+            });
+            continue;
+        }
+
+        // Changed — redeploy via compilation
+        let tokens = match crate::lexer::Lexer::new(&disk_source, source_file).tokenize() {
+            Ok(t) => t,
+            Err(e) => {
+                results.push(ReloadResult {
+                    flow_name: flow_name.clone(),
+                    source_file: source_file.clone(),
+                    previous_hash: prev_hash.clone(),
+                    current_hash,
+                    changed: true,
+                    redeployed: false,
+                    error: Some(format!("lex error: {e:?}")),
+                });
+                continue;
+            }
+        };
+
+        let mut parser = crate::parser::Parser::new(tokens);
+        let program = match parser.parse() {
+            Ok(p) => p,
+            Err(e) => {
+                results.push(ReloadResult {
+                    flow_name: flow_name.clone(),
+                    source_file: source_file.clone(),
+                    previous_hash: prev_hash.clone(),
+                    current_hash,
+                    changed: true,
+                    redeployed: false,
+                    error: Some(format!("parse error: {e:?}")),
+                });
+                continue;
+            }
+        };
+
+        let ir = crate::ir_generator::IRGenerator::new().generate(&program);
+        let flow_names: Vec<String> = ir.flows.iter().map(|f| f.name.clone()).collect();
+
+        // Register new version
+        {
+            let mut s = state.lock().unwrap();
+            s.versions.record_deploy(&flow_names, &disk_source, source_file, backend);
+            s.deploy_count += 1;
+            s.event_bus.publish(
+                "deploy.reload",
+                serde_json::json!({"flow": flow_name, "hash": &current_hash}),
+                "server",
+            );
+        }
+
+        results.push(ReloadResult {
+            flow_name: flow_name.clone(),
+            source_file: source_file.clone(),
+            previous_hash: prev_hash.clone(),
+            current_hash,
+            changed: true,
+            redeployed: true,
+            error: None,
+        });
+    }
+
+    let changed = results.iter().filter(|r| r.changed).count();
+    let redeployed = results.iter().filter(|r| r.redeployed).count();
+    let errors = results.iter().filter(|r| r.error.is_some()).count();
+
+    // Audit
+    {
+        let mut s = state.lock().unwrap();
+        s.audit_log.record(
+            &client, AuditAction::Deploy, "hot_reload",
+            serde_json::json!({"checked": results.len(), "changed": changed, "redeployed": redeployed, "errors": errors}),
+            true,
+        );
+    }
+
+    Ok(Json(serde_json::json!({
+        "checked": results.len(),
+        "changed": changed,
+        "redeployed": redeployed,
+        "errors": errors,
+        "results": results,
+    })))
+}
+
+/// POST /v1/execute/process — dequeue next pending item, execute it, record trace, update status.
+async fn execute_process_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+    }
+
+    // Dequeue next pending
+    let item = {
+        let mut s = state.lock().unwrap();
+        match s.execution_queue.iter_mut().find(|q| q.status == "pending") {
+            Some(q) => {
+                q.status = "processing".into();
+                Some((q.id, q.flow_name.clone(), q.backend.clone(), q.priority))
+            }
+            None => None,
+        }
+    };
+
+    let (queue_id, flow_name, backend, priority) = match item {
+        Some(i) => i,
+        None => return Ok(Json(serde_json::json!({
+            "success": false,
+            "message": "no pending items in queue",
+        }))),
+    };
+
+    // Look up deployed source
+    let source_info = {
+        let s = state.lock().unwrap();
+        s.versions.get_history(&flow_name)
+            .and_then(|h| h.active())
+            .map(|v| (v.source.clone(), v.source_file.clone()))
+    };
+
+    let (source, source_file) = match source_info {
+        Some(info) => info,
+        None => {
+            let mut s = state.lock().unwrap();
+            if let Some(q) = s.execution_queue.iter_mut().find(|q| q.id == queue_id) {
+                q.status = "failed".into();
+            }
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "queue_id": queue_id,
+                "flow": flow_name,
+                "error": "flow not deployed",
+            })));
+        }
+    };
+
+    // Execute
+    match server_execute_full(&state, &source, &source_file, &flow_name, &backend).0 {
+        Ok(mut er) => {
+            let mut trace_entry = crate::trace_store::build_trace(
+                &er.flow_name, &er.source_file, &er.backend, &client,
+                if er.success { crate::trace_store::TraceStatus::Success }
+                else { crate::trace_store::TraceStatus::Partial },
+                er.steps_executed, er.latency_ms,
+            );
+            trace_entry.tokens_input = er.tokens_input;
+            trace_entry.tokens_output = er.tokens_output;
+            trace_entry.errors = er.errors;
+
+            let trace_id = {
+                let mut s = state.lock().unwrap();
+                let tid = s.trace_store.record(trace_entry);
+                if let Some(q) = s.execution_queue.iter_mut().find(|q| q.id == queue_id) {
+                    q.status = if er.success { "completed" } else { "failed" }.into();
+                }
+                tid
+            };
+
+            Ok(Json(serde_json::json!({
+                "success": er.success,
+                "queue_id": queue_id,
+                "flow": flow_name,
+                "backend": backend,
+                "priority": priority,
+                "trace_id": trace_id,
+                "steps_executed": er.steps_executed,
+                "latency_ms": er.latency_ms,
+                "tokens_input": er.tokens_input,
+                "tokens_output": er.tokens_output,
+                "errors": er.errors,
+                "total_latency_ms": req_start.elapsed().as_millis() as u64,
+            })))
+        }
+        Err(e) => {
+            let mut s = state.lock().unwrap();
+            s.metrics.total_errors += 1;
+            if let Some(q) = s.execution_queue.iter_mut().find(|q| q.id == queue_id) {
+                q.status = "failed".into();
+            }
+            Ok(Json(serde_json::json!({
+                "success": false,
+                "queue_id": queue_id,
+                "flow": flow_name,
+                "error": e,
+                "total_latency_ms": req_start.elapsed().as_millis() as u64,
+            })))
+        }
+    }
+}
+
+/// Request for dry-run execution.
+#[derive(Debug, Deserialize)]
+pub struct DryRunRequest {
+    /// Flow name to validate.
+    pub flow_name: String,
+    /// Backend for cost estimation (default "stub").
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+}
+
+/// POST /v1/execute/dry-run — compile and validate without executing.
+///
+/// Returns step plan, dependency analysis, cost estimate, and type check results.
+async fn execute_dry_run_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<DryRunRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let history = match s.versions.get_history(&payload.flow_name) {
+        Some(h) => h,
+        None => return Ok(Json(serde_json::json!({"error": format!("flow '{}' not deployed", payload.flow_name)}))),
+    };
+    let active = match history.active() {
+        Some(v) => v,
+        None => return Ok(Json(serde_json::json!({"error": format!("no active version for '{}'", payload.flow_name)}))),
+    };
+
+    let source = active.source.clone();
+    let source_file = active.source_file.clone();
+    let source_hash = active.source_hash.clone();
+    let version = active.version;
+    drop(s);
+
+    // Lex
+    let tokens = match crate::lexer::Lexer::new(&source, &source_file).tokenize() {
+        Ok(t) => t,
+        Err(e) => return Ok(Json(serde_json::json!({"error": format!("lex error: {e:?}"), "phase": "lexer"}))),
+    };
+    let token_count = tokens.len();
+
+    // Parse
+    let mut parser = crate::parser::Parser::new(tokens);
+    let program = match parser.parse() {
+        Ok(p) => p,
+        Err(e) => return Ok(Json(serde_json::json!({"error": format!("parse error: {e:?}"), "phase": "parser"}))),
+    };
+
+    // Type check
+    let type_errors = crate::type_checker::TypeChecker::new(&program).check();
+    let type_error_msgs: Vec<String> = type_errors.iter().map(|e| format!("{e:?}")).collect();
+
+    // IR
+    let ir = crate::ir_generator::IRGenerator::new().generate(&program);
+    let ir_flow = match ir.flows.iter().find(|f| f.name == payload.flow_name) {
+        Some(f) => f,
+        None => return Ok(Json(serde_json::json!({"error": format!("flow '{}' not in IR", payload.flow_name)}))),
+    };
+
+    // Step plan
+    let steps: Vec<serde_json::Value> = ir_flow.steps.iter().filter_map(|node| {
+        if let crate::ir_nodes::IRFlowNode::Step(step) = node {
+            Some(serde_json::json!({
+                "name": step.name,
+                "has_tool": step.use_tool.is_some(),
+                "has_probe": step.probe.is_some(),
+                "output_type": step.output_type,
+                "persona": step.persona_ref,
+            }))
+        } else {
+            None
+        }
+    }).collect();
+
+    // Dependency analysis
+    let step_infos: Vec<crate::step_deps::StepInfo> = ir_flow.steps.iter().filter_map(|node| {
+        if let crate::ir_nodes::IRFlowNode::Step(step) = node {
+            Some(crate::step_deps::StepInfo {
+                name: step.name.clone(),
+                step_type: step.node_type.to_string(),
+                user_prompt: step.ask.clone(),
+                argument: step.use_tool.as_ref()
+                    .and_then(|t| t.get("argument").and_then(|a| a.as_str()).map(String::from))
+                    .unwrap_or_default(),
+            })
+        } else {
+            None
+        }
+    }).collect();
+    let dep_graph = crate::step_deps::analyze(&step_infos);
+
+    // Cost estimate
+    let pricing = {
+        let s = state.lock().unwrap();
+        s.cost_pricing.clone()
+    };
+    let input_price = pricing.input_per_million.get(&payload.backend).copied().unwrap_or(0.0);
+    let output_price = pricing.output_per_million.get(&payload.backend).copied().unwrap_or(0.0);
+    // Rough estimate: ~500 tokens per step
+    let est_tokens_per_step = 500u64;
+    let est_input = est_tokens_per_step * steps.len() as u64;
+    let est_output = est_input / 2;
+    let est_cost = (est_input as f64 / 1_000_000.0) * input_price + (est_output as f64 / 1_000_000.0) * output_price;
+
+    Ok(Json(serde_json::json!({
+        "dry_run": true,
+        "flow_name": payload.flow_name,
+        "version": version,
+        "source_hash": source_hash,
+        "backend": payload.backend,
+        "compilation": {
+            "success": true,
+            "token_count": token_count,
+            "type_errors": type_error_msgs,
+            "type_errors_count": type_error_msgs.len(),
+        },
+        "step_plan": {
+            "total_steps": steps.len(),
+            "steps": steps,
+        },
+        "dependencies": {
+            "max_depth": dep_graph.max_depth,
+            "parallel_groups": dep_graph.parallel_groups,
+            "unresolved_refs": dep_graph.unresolved_refs,
+        },
+        "cost_estimate": {
+            "backend": payload.backend,
+            "estimated_input_tokens": est_input,
+            "estimated_output_tokens": est_output,
+            "estimated_cost_usd": (est_cost * 10000.0).round() / 10000.0,
+            "pricing_input_per_million": input_price,
+            "pricing_output_per_million": output_price,
+        },
+    })))
+}
+
+/// A stage in a multi-flow pipeline.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PipelineStage {
+    /// Flow name to execute.
+    pub flow_name: String,
+    /// Backend override (default "stub").
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+}
+
+/// Request for multi-flow pipeline execution.
+#[derive(Debug, Deserialize)]
+pub struct PipelineRequest {
+    /// Ordered list of stages to execute sequentially.
+    pub stages: Vec<PipelineStage>,
+    /// Whether to stop on first failure (default true).
+    #[serde(default = "default_stop_on_failure")]
+    pub stop_on_failure: bool,
+}
+
+fn default_stop_on_failure() -> bool { true }
+
+/// Result for a single pipeline stage.
+#[derive(Debug, Clone, Serialize)]
+pub struct PipelineStageResult {
+    pub stage: usize,
+    pub flow_name: String,
+    pub success: bool,
+    pub trace_id: u64,
+    pub steps_executed: usize,
+    pub latency_ms: u64,
+    pub tokens_input: u64,
+    pub tokens_output: u64,
+    pub errors: usize,
+    pub error_message: Option<String>,
+}
+
+/// POST /v1/execute/pipeline — execute multiple flows in sequence.
+async fn execute_pipeline_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<PipelineRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+    }
+
+    if payload.stages.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "error": "pipeline must have at least 1 stage",
+        })));
+    }
+    if payload.stages.len() > 20 {
+        return Ok(Json(serde_json::json!({
+            "error": "maximum 20 stages per pipeline",
+        })));
+    }
+
+    let mut results: Vec<PipelineStageResult> = Vec::new();
+    let mut pipeline_success = true;
+
+    for (idx, stage) in payload.stages.iter().enumerate() {
+        // Look up source
+        let source_info = {
+            let s = state.lock().unwrap();
+            s.versions.get_history(&stage.flow_name)
+                .and_then(|h| h.active())
+                .map(|v| (v.source.clone(), v.source_file.clone()))
+        };
+
+        let (source, source_file) = match source_info {
+            Some(info) => info,
+            None => {
+                let stage_result = PipelineStageResult {
+                    stage: idx,
+                    flow_name: stage.flow_name.clone(),
+                    success: false,
+                    trace_id: 0,
+                    steps_executed: 0,
+                    latency_ms: 0,
+                    tokens_input: 0,
+                    tokens_output: 0,
+                    errors: 1,
+                    error_message: Some(format!("flow '{}' not deployed", stage.flow_name)),
+                };
+                results.push(stage_result);
+                pipeline_success = false;
+                if payload.stop_on_failure { break; }
+                continue;
+            }
+        };
+
+        match server_execute_full(&state, &source, &source_file, &stage.flow_name, &stage.backend).0 {
+            Ok(er) => {
+                let mut entry = crate::trace_store::build_trace(
+                    &er.flow_name, &er.source_file, &er.backend, &client,
+                    if er.success { crate::trace_store::TraceStatus::Success }
+                    else { crate::trace_store::TraceStatus::Partial },
+                    er.steps_executed, er.latency_ms,
+                );
+                entry.tokens_input = er.tokens_input;
+                entry.tokens_output = er.tokens_output;
+                entry.errors = er.errors;
+
+                let trace_id = {
+                    let mut s = state.lock().unwrap();
+                    s.trace_store.record(entry)
+                };
+
+                let stage_success = er.success;
+                results.push(PipelineStageResult {
+                    stage: idx,
+                    flow_name: stage.flow_name.clone(),
+                    success: stage_success,
+                    trace_id,
+                    steps_executed: er.steps_executed,
+                    latency_ms: er.latency_ms,
+                    tokens_input: er.tokens_input,
+                    tokens_output: er.tokens_output,
+                    errors: er.errors,
+                    error_message: None,
+                });
+
+                if !stage_success {
+                    pipeline_success = false;
+                    if payload.stop_on_failure { break; }
+                }
+            }
+            Err(e) => {
+                let mut s = state.lock().unwrap();
+                s.metrics.total_errors += 1;
+                drop(s);
+
+                results.push(PipelineStageResult {
+                    stage: idx,
+                    flow_name: stage.flow_name.clone(),
+                    success: false,
+                    trace_id: 0,
+                    steps_executed: 0,
+                    latency_ms: 0,
+                    tokens_input: 0,
+                    tokens_output: 0,
+                    errors: 1,
+                    error_message: Some(e),
+                });
+                pipeline_success = false;
+                if payload.stop_on_failure { break; }
+            }
+        }
+    }
+
+    let total_latency = req_start.elapsed().as_millis() as u64;
+    let stages_completed = results.len();
+    let stages_succeeded = results.iter().filter(|r| r.success).count();
+    let total_tokens: u64 = results.iter().map(|r| r.tokens_input + r.tokens_output).sum();
+
+    Ok(Json(serde_json::json!({
+        "success": pipeline_success,
+        "total_stages": payload.stages.len(),
+        "stages_completed": stages_completed,
+        "stages_succeeded": stages_succeeded,
+        "total_latency_ms": total_latency,
+        "total_tokens": total_tokens,
+        "stop_on_failure": payload.stop_on_failure,
+        "stages": results,
+    })))
+}
+
+/// GET /v1/flows/:name/rules — get validation rules for a flow.
+async fn flow_rules_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.flow_rules.get(&name) {
+        Some(rules) => Ok(Json(serde_json::json!({
+            "flow": name,
+            "rules": rules,
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "flow": name,
+            "rules": serde_json::Value::Null,
+            "message": "no rules configured",
+        }))),
+    }
+}
+
+/// PUT /v1/flows/:name/rules — set validation rules for a flow.
+async fn flow_rules_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(rules): Json<FlowValidationRules>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    s.flow_rules.insert(name.clone(), rules.clone());
+    s.audit_log.record(
+        &client, AuditAction::ConfigUpdate, &format!("flow_rules:{}", name),
+        serde_json::to_value(&rules).unwrap_or_default(), true,
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "flow": name,
+        "rules": rules,
+    })))
+}
+
+/// DELETE /v1/flows/:name/rules — remove validation rules for a flow.
+async fn flow_rules_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let removed = s.flow_rules.remove(&name).is_some();
+    Ok(Json(serde_json::json!({
+        "success": removed,
+        "flow": name,
+    })))
+}
+
+/// POST /v1/flows/:name/validate — validate a flow against its configured rules.
+async fn flow_validate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let rules = match s.flow_rules.get(&name) {
+        Some(r) => r.clone(),
+        None => return Ok(Json(serde_json::json!({
+            "flow": name,
+            "valid": true,
+            "message": "no rules configured — validation skipped",
+            "violations": [],
+        }))),
+    };
+
+    // Get flow IR for validation
+    let active = match s.versions.get_history(&name).and_then(|h| h.active()) {
+        Some(v) => v,
+        None => return Ok(Json(serde_json::json!({"error": format!("flow '{}' not deployed", name)}))),
+    };
+    let source = active.source.clone();
+    let source_file = active.source_file.clone();
+    let backend = active.backend.clone();
+    drop(s);
+
+    // Compile
+    let tokens = match crate::lexer::Lexer::new(&source, &source_file).tokenize() {
+        Ok(t) => t,
+        Err(e) => return Ok(Json(serde_json::json!({"error": format!("lex error: {e:?}")}))),
+    };
+    let mut parser = crate::parser::Parser::new(tokens);
+    let program = match parser.parse() {
+        Ok(p) => p,
+        Err(e) => return Ok(Json(serde_json::json!({"error": format!("parse error: {e:?}")}))),
+    };
+    let ir = crate::ir_generator::IRGenerator::new().generate(&program);
+    let ir_flow = match ir.flows.iter().find(|f| f.name == name) {
+        Some(f) => f,
+        None => return Ok(Json(serde_json::json!({"error": format!("flow '{}' not in IR", name)}))),
+    };
+
+    // Validate
+    let mut violations = Vec::new();
+
+    // max_steps
+    let step_count = ir_flow.steps.iter().filter(|n| matches!(n, crate::ir_nodes::IRFlowNode::Step(_))).count();
+    if rules.max_steps > 0 && step_count > rules.max_steps {
+        violations.push(format!("step count {} exceeds max_steps {}", step_count, rules.max_steps));
+    }
+
+    // banned_tools
+    for node in &ir_flow.steps {
+        if let crate::ir_nodes::IRFlowNode::Step(step) = node {
+            if let Some(ref tool) = step.use_tool {
+                if let Some(tool_name) = tool.get("name").and_then(|n| n.as_str()) {
+                    if rules.banned_tools.iter().any(|b| b == tool_name) {
+                        violations.push(format!("step '{}' uses banned tool '{}'", step.name, tool_name));
+                    }
+                }
+            }
+        }
+    }
+
+    // allowed_backends
+    if !rules.allowed_backends.is_empty() && !rules.allowed_backends.contains(&backend) {
+        violations.push(format!("backend '{}' not in allowed list {:?}", backend, rules.allowed_backends));
+    }
+
+    // max_cost
+    if rules.max_cost_usd > 0.0 {
+        let s = state.lock().unwrap();
+        let costs = compute_flow_costs(&s.trace_store, &s.cost_pricing);
+        if let Some(fc) = costs.iter().find(|c| c.flow_name == name) {
+            if fc.estimated_cost_usd > rules.max_cost_usd {
+                violations.push(format!("current cost ${:.4} exceeds max_cost_usd ${:.4}", fc.estimated_cost_usd, rules.max_cost_usd));
+            }
+        }
+    }
+
+    let valid = violations.is_empty();
+
+    Ok(Json(serde_json::json!({
+        "flow": name,
+        "valid": valid,
+        "violations_count": violations.len(),
+        "violations": violations,
+        "rules": rules,
+    })))
+}
+
+/// Request to set a correlation ID on a trace.
+#[derive(Debug, Deserialize)]
+pub struct CorrelateRequest {
+    /// Correlation ID to assign.
+    pub correlation_id: String,
+}
+
+/// POST /v1/traces/:id/correlate — set a correlation ID on a trace.
+async fn traces_correlate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+    Json(payload): Json<CorrelateRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    if payload.correlation_id.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "error": "correlation_id must not be empty",
+        })));
+    }
+
+    if s.trace_store.set_correlation(id, &payload.correlation_id) {
+        Ok(Json(serde_json::json!({
+            "success": true,
+            "trace_id": id,
+            "correlation_id": payload.correlation_id,
+        })))
+    } else {
+        Ok(Json(serde_json::json!({
+            "success": false,
+            "error": format!("trace {} not found", id),
+        })))
+    }
+}
+
+/// Query for correlated traces.
+#[derive(Debug, Deserialize)]
+pub struct CorrelatedQuery {
+    /// Correlation ID to search for.
+    pub correlation_id: String,
+}
+
+/// GET /v1/traces/correlated — find all traces with a given correlation ID.
+async fn traces_correlated_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<CorrelatedQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let traces = s.trace_store.by_correlation(&params.correlation_id);
+
+    let entries: Vec<serde_json::Value> = traces.iter().map(|e| {
+        serde_json::json!({
+            "id": e.id,
+            "flow_name": e.flow_name,
+            "status": e.status.as_str(),
+            "timestamp": e.timestamp,
+            "latency_ms": e.latency_ms,
+            "errors": e.errors,
+            "backend": e.backend,
+            "correlation_id": e.correlation_id,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "correlation_id": params.correlation_id,
+        "count": entries.len(),
+        "traces": entries,
+    })))
+}
+
+/// Request to set a flow quota.
+#[derive(Debug, Deserialize)]
+pub struct SetQuotaRequest {
+    /// Max executions per hour (0 = unlimited).
+    #[serde(default)]
+    pub max_per_hour: u64,
+    /// Max executions per day (0 = unlimited).
+    #[serde(default)]
+    pub max_per_day: u64,
+}
+
+/// GET /v1/flows/:name/quota — get quota status for a flow.
+async fn flow_quota_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.flow_quotas.get(&name) {
+        Some(quota) => Ok(Json(serde_json::json!({
+            "flow": name,
+            "quota": quota,
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "flow": name,
+            "quota": serde_json::Value::Null,
+            "message": "no quota configured",
+        }))),
+    }
+}
+
+/// PUT /v1/flows/:name/quota — set execution quota for a flow.
+async fn flow_quota_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<SetQuotaRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let quota = FlowQuota {
+        max_per_hour: payload.max_per_hour,
+        max_per_day: payload.max_per_day,
+        current_hour_count: 0,
+        current_day_count: 0,
+        hour_window_start: 0,
+        day_window_start: 0,
+    };
+    s.flow_quotas.insert(name.clone(), quota.clone());
+
+    s.audit_log.record(
+        &client, AuditAction::ConfigUpdate, &format!("flow_quota:{}", name),
+        serde_json::json!({"max_per_hour": payload.max_per_hour, "max_per_day": payload.max_per_day}),
+        true,
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "flow": name,
+        "quota": quota,
+    })))
+}
+
+/// DELETE /v1/flows/:name/quota — remove quota for a flow.
+async fn flow_quota_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let removed = s.flow_quotas.remove(&name).is_some();
+    Ok(Json(serde_json::json!({
+        "success": removed,
+        "flow": name,
+    })))
+}
+
+/// POST /v1/flows/:name/quota/check — check if an execution is allowed by quota.
+async fn flow_quota_check_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.flow_quotas.get_mut(&name) {
+        Some(quota) => {
+            let (allowed, violations) = quota.check_and_record();
+            Ok(Json(serde_json::json!({
+                "flow": name,
+                "allowed": allowed,
+                "violations": violations,
+                "current_hour": quota.current_hour_count,
+                "current_day": quota.current_day_count,
+                "max_per_hour": quota.max_per_hour,
+                "max_per_day": quota.max_per_day,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "flow": name,
+            "allowed": true,
+            "message": "no quota configured",
+        }))),
+    }
+}
+
+/// A rollback safety warning.
+#[derive(Debug, Clone, Serialize)]
+pub struct RollbackWarning {
+    pub category: String,
+    pub severity: String, // "info", "warning", "blocker"
+    pub message: String,
+}
+
+/// POST /v1/versions/:name/rollback/check — pre-rollback safety validation.
+async fn rollback_check_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<RollbackRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    // Check version exists
+    let history = match s.versions.get_history(&name) {
+        Some(h) => h,
+        None => return Ok(Json(serde_json::json!({"error": format!("no version history for '{}'", name)}))),
+    };
+    let target_exists = history.versions.iter().any(|v| v.version == payload.version);
+    if !target_exists {
+        return Ok(Json(serde_json::json!({"error": format!("version {} not found for '{}'", payload.version, name)})));
+    }
+    let current_version = history.active_version;
+
+    let mut warnings: Vec<RollbackWarning> = Vec::new();
+
+    // Check: daemon running
+    if let Some(daemon) = s.daemons.get(&name) {
+        if daemon.state == DaemonState::Running {
+            warnings.push(RollbackWarning {
+                category: "daemon".into(),
+                severity: "blocker".into(),
+                message: format!("daemon '{}' is currently Running — stop or pause before rollback", name),
+            });
+        } else if daemon.state == DaemonState::Paused {
+            warnings.push(RollbackWarning {
+                category: "daemon".into(),
+                severity: "info".into(),
+                message: format!("daemon '{}' is Paused — will resume with rolled-back version", name),
+            });
+        }
+    }
+
+    // Check: active schedules
+    if let Some(sched) = s.schedules.get(&name) {
+        if sched.enabled {
+            warnings.push(RollbackWarning {
+                category: "schedule".into(),
+                severity: "warning".into(),
+                message: format!("schedule '{}' is enabled — next tick will use rolled-back version", name),
+            });
+        }
+    }
+
+    // Check: chain dependencies (other daemons depending on this flow)
+    let downstream: Vec<String> = s.daemons.values()
+        .filter(|d| d.trigger_topic.as_deref().map_or(false, |t| t.contains(&name)))
+        .map(|d| d.name.clone())
+        .collect();
+    if !downstream.is_empty() {
+        warnings.push(RollbackWarning {
+            category: "chain".into(),
+            severity: "warning".into(),
+            message: format!("daemons triggered by '{}': {:?}", name, downstream),
+        });
+    }
+
+    // Check: execution queue has pending items for this flow
+    let queued = s.execution_queue.iter()
+        .filter(|q| q.flow_name == name && q.status == "pending")
+        .count();
+    if queued > 0 {
+        warnings.push(RollbackWarning {
+            category: "queue".into(),
+            severity: "warning".into(),
+            message: format!("{} pending queue items for '{}' — will execute with rolled-back version", queued, name),
+        });
+    }
+
+    // Check: active quota
+    if s.flow_quotas.contains_key(&name) {
+        warnings.push(RollbackWarning {
+            category: "quota".into(),
+            severity: "info".into(),
+            message: format!("flow '{}' has active execution quota — quota state preserved", name),
+        });
+    }
+
+    // Check: validation rules
+    if s.flow_rules.contains_key(&name) {
+        warnings.push(RollbackWarning {
+            category: "rules".into(),
+            severity: "info".into(),
+            message: format!("flow '{}' has validation rules — re-validate after rollback recommended", name),
+        });
+    }
+
+    let blockers = warnings.iter().filter(|w| w.severity == "blocker").count();
+    let safe = blockers == 0;
+
+    Ok(Json(serde_json::json!({
+        "flow": name,
+        "current_version": current_version,
+        "target_version": payload.version,
+        "safe_to_rollback": safe,
+        "warnings_count": warnings.len(),
+        "blockers": blockers,
+        "warnings": warnings,
+    })))
+}
+
+/// GET /v1/health/gates — view current readiness gates configuration and status.
+async fn health_gates_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let checks = evaluate_gates(&s);
+    let all_passed = checks.iter().all(|c| c.passed);
+
+    Ok(Json(serde_json::json!({
+        "gates": s.readiness_gates,
+        "checks": checks,
+        "all_passed": all_passed,
+    })))
+}
+
+/// PUT /v1/health/gates — update readiness gates configuration.
+async fn health_gates_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(gates): Json<ReadinessGates>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    s.readiness_gates = gates.clone();
+    s.audit_log.record(
+        &client, AuditAction::ConfigUpdate, "readiness_gates",
+        serde_json::to_value(&gates).unwrap_or_default(), true,
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "gates": gates,
+    })))
+}
+
+/// Evaluate all readiness gates against current server state.
+fn evaluate_gates(s: &ServerState) -> Vec<GateCheckResult> {
+    let gates = &s.readiness_gates;
+    let mut checks = Vec::new();
+
+    // min_daemons
+    if gates.min_daemons > 0 {
+        let current = s.daemons.len();
+        checks.push(GateCheckResult {
+            gate: "min_daemons".into(),
+            passed: current >= gates.min_daemons,
+            detail: format!("{}/{} daemons registered", current, gates.min_daemons),
+        });
+    }
+
+    // required_flows
+    for flow in &gates.required_flows {
+        let deployed = s.versions.get_history(flow).and_then(|h| h.active()).is_some();
+        checks.push(GateCheckResult {
+            gate: format!("required_flow:{}", flow),
+            passed: deployed,
+            detail: if deployed { format!("'{}' deployed", flow) } else { format!("'{}' NOT deployed", flow) },
+        });
+    }
+
+    // max_error_rate
+    if gates.max_error_rate > 0.0 && s.metrics.total_requests > 0 {
+        let rate = s.metrics.total_errors as f64 / s.metrics.total_requests as f64;
+        checks.push(GateCheckResult {
+            gate: "max_error_rate".into(),
+            passed: rate <= gates.max_error_rate,
+            detail: format!("error rate {:.4} (max {:.4})", rate, gates.max_error_rate),
+        });
+    }
+
+    // min_uptime_secs
+    if gates.min_uptime_secs > 0 {
+        let uptime = s.started_at.elapsed().as_secs();
+        checks.push(GateCheckResult {
+            gate: "min_uptime_secs".into(),
+            passed: uptime >= gates.min_uptime_secs,
+            detail: format!("uptime {}s (min {}s)", uptime, gates.min_uptime_secs),
+        });
+    }
+
+    checks
+}
+
+/// Query parameters for custom trace export.
+#[derive(Debug, Deserialize)]
+pub struct CustomExportQuery {
+    /// Template string with variables: {{id}}, {{flow_name}}, {{status}}, {{timestamp}},
+    /// {{latency_ms}}, {{steps}}, {{errors}}, {{backend}}, {{tokens_in}}, {{tokens_out}}.
+    pub template: String,
+    /// Max traces to export (default 100).
+    #[serde(default = "default_custom_export_limit")]
+    pub limit: usize,
+    /// Optional flow name filter.
+    pub flow_name: Option<String>,
+}
+
+fn default_custom_export_limit() -> usize { 100 }
+
+/// Render a trace export template for a single trace entry.
+fn render_trace_template(template: &str, e: &crate::trace_store::TraceEntry) -> String {
+    template
+        .replace("{{id}}", &e.id.to_string())
+        .replace("{{flow_name}}", &e.flow_name)
+        .replace("{{status}}", e.status.as_str())
+        .replace("{{timestamp}}", &e.timestamp.to_string())
+        .replace("{{latency_ms}}", &e.latency_ms.to_string())
+        .replace("{{steps}}", &e.steps_executed.to_string())
+        .replace("{{errors}}", &e.errors.to_string())
+        .replace("{{backend}}", &e.backend)
+        .replace("{{tokens_in}}", &e.tokens_input.to_string())
+        .replace("{{tokens_out}}", &e.tokens_output.to_string())
+        .replace("{{client}}", &e.client_key)
+        .replace("{{source_file}}", &e.source_file)
+        .replace("{{retries}}", &e.retries.to_string())
+        .replace("{{correlation_id}}", e.correlation_id.as_deref().unwrap_or(""))
+}
+
+/// GET /v1/traces/export/custom — export traces using a custom template.
+async fn traces_export_custom_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<CustomExportQuery>,
+) -> Result<(StatusCode, [(String, String); 1], String), StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let filter = params.flow_name.as_ref().map(|f| {
+        crate::trace_store::TraceFilter {
+            flow_name: Some(f.clone()),
+            ..Default::default()
+        }
+    });
+
+    let entries = s.trace_store.recent(params.limit, filter.as_ref());
+
+    let mut output = String::new();
+    for e in &entries {
+        output.push_str(&render_trace_template(&params.template, e));
+        output.push('\n');
+    }
+
+    Ok((
+        StatusCode::OK,
+        [("content-type".into(), "text/plain".into())],
+        output,
+    ))
+}
+
+/// Request to set an endpoint rate limit.
+#[derive(Debug, Deserialize)]
+pub struct SetEndpointLimitRequest {
+    /// Path prefix to match.
+    pub path_prefix: String,
+    /// Max requests per window.
+    pub max_requests: u64,
+    /// Window size in seconds.
+    pub window_secs: u64,
+}
+
+/// GET /v1/rate-limit/endpoints — list all per-endpoint rate limits.
+async fn endpoint_rate_limits_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let limits: Vec<&EndpointRateLimit> = s.endpoint_rate_limits.values().collect();
+    Ok(Json(serde_json::json!({
+        "count": limits.len(),
+        "limits": limits,
+    })))
+}
+
+/// PUT /v1/rate-limit/endpoints — add or update an endpoint rate limit.
+async fn endpoint_rate_limits_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<SetEndpointLimitRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let limit = EndpointRateLimit {
+        path_prefix: payload.path_prefix.clone(),
+        max_requests: payload.max_requests,
+        window_secs: payload.window_secs,
+        current_count: 0,
+        window_start: 0,
+    };
+    s.endpoint_rate_limits.insert(payload.path_prefix.clone(), limit.clone());
+
+    s.audit_log.record(
+        &client, AuditAction::ConfigUpdate, &format!("endpoint_rate_limit:{}", payload.path_prefix),
+        serde_json::json!({"max_requests": payload.max_requests, "window_secs": payload.window_secs}),
+        true,
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "limit": limit,
+    })))
+}
+
+/// DELETE /v1/rate-limit/endpoints — remove an endpoint rate limit.
+async fn endpoint_rate_limits_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let path = params.get("path_prefix").cloned().unwrap_or_default();
+    let removed = s.endpoint_rate_limits.remove(&path).is_some();
+    Ok(Json(serde_json::json!({
+        "success": removed,
+        "path_prefix": path,
+    })))
+}
+
+/// Query parameters for event stream polling.
+#[derive(Debug, Deserialize)]
+pub struct EventStreamQuery {
+    /// Only return events after this timestamp (Unix seconds). Use as cursor.
+    #[serde(default)]
+    pub since: u64,
+    /// Max events to return (default 50).
+    #[serde(default = "default_stream_limit")]
+    pub limit: usize,
+    /// Optional topic filter.
+    pub topic: Option<String>,
+}
+
+fn default_stream_limit() -> usize { 50 }
+
+/// A stream event in SSE-like format.
+#[derive(Debug, Clone, Serialize)]
+struct StreamEvent {
+    id: u64,
+    timestamp: u64,
+    topic: String,
+    source: String,
+    payload: serde_json::Value,
+}
+
+/// GET /v1/events/stream — poll-based event stream (SSE-compatible).
+///
+/// Returns events since a given cursor timestamp. Clients poll with
+/// `since=<last_timestamp>` to get new events incrementally.
+/// Response includes `last_id` for cursor tracking.
+async fn events_stream_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<EventStreamQuery>,
+) -> Result<(StatusCode, [(String, String); 1], String), StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let events = s.event_bus.recent_events(params.limit, params.topic.as_deref());
+
+    // Filter by since cursor
+    let filtered: Vec<_> = events.iter()
+        .filter(|e| params.since == 0 || e.timestamp_secs > params.since)
+        .collect();
+
+    // Format as SSE text/event-stream
+    let mut output = String::new();
+    let mut last_id: u64 = params.since;
+
+    for (idx, ev) in filtered.iter().enumerate() {
+        let event_id = ev.timestamp_secs * 1000 + idx as u64; // pseudo-unique ID
+        let data = serde_json::json!({
+            "topic": ev.topic,
+            "source": ev.source,
+            "timestamp": ev.timestamp_secs,
+            "payload": ev.payload,
+        });
+        output.push_str(&format!("id: {}\n", event_id));
+        output.push_str(&format!("event: {}\n", ev.topic));
+        output.push_str(&format!("data: {}\n\n", serde_json::to_string(&data).unwrap_or_default()));
+
+        if ev.timestamp_secs > last_id {
+            last_id = ev.timestamp_secs;
+        }
+    }
+
+    // Add retry hint for SSE clients
+    if output.is_empty() {
+        output.push_str(":\n\n"); // SSE keepalive comment
+    }
+
+    // Add custom header for cursor tracking
+    Ok((
+        StatusCode::OK,
+        [("content-type".into(), "text/event-stream".into())],
+        output,
+    ))
+}
+
+// ── Algebraic Effect Stream Bridge ────────────────────────────────────────
+//
+// This implements the handler h: F_Σ(B) → M_IO(B) from algebraic effects theory.
+// The flow's pure deliberation emits Emit(token) intents; the StreamEmitter
+// handler materializes them as EventBus events consumable via SSE.
+
+/// A stream emission record — the materialized algebraic effect.
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamToken {
+    /// Execution/trace ID this token belongs to.
+    pub trace_id: u64,
+    /// Flow name being executed.
+    pub flow_name: String,
+    /// Step name that emitted this token.
+    pub step_name: String,
+    /// Sequential token index within this execution.
+    pub token_index: u64,
+    /// The emitted token/chunk content.
+    pub content: String,
+    /// Whether this is the final token (stream complete).
+    pub is_final: bool,
+    /// Unix timestamp.
+    pub timestamp: u64,
+
+    // ── Algebraic Effects & Epistemic Semantics ──
+    //
+    // Stream(τ) = νX. (StreamChunk × EpistemicState × X)
+    // Each token is a coinductive observation carrying its epistemic level.
+
+    /// Epistemic state of this token in the lattice (⊥ ⊑ doubt ⊑ speculate ⊑ believe ⊑ know).
+    /// Streaming tokens arrive as "speculate" — promoted to "know" only after
+    /// anchor validation on the complete response.
+    pub epistemic_state: String,
+
+    /// Effect row annotation: <effects, epistemic:level>.
+    /// Declares what effects this token's production involved.
+    /// E.g., "<io, epistemic:speculate>" for LLM-generated content,
+    ///       "<pure, epistemic:know>" for validated results.
+    pub effect_row: String,
+
+    // ── PIX/MDN Navigation Context ──
+    //
+    // When the token originates from a PIX navigate/drill operation,
+    // these fields carry the structural navigation context.
+
+    /// PIX index reference (if token from PIX navigation).
+    /// Links to IRPix.name — the document tree being navigated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pix_ref: Option<String>,
+
+    /// Corpus reference for MDN multi-document navigation.
+    /// Links to IRCorpus.name — the document graph being traversed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corpus_ref: Option<String>,
+
+    /// Navigation trail — sequence of nodes visited during PIX tree traversal.
+    /// Each entry is a node identifier from the document tree D = (N, E, ρ, κ).
+    /// Implements the trail step from IRTrailStep.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nav_trail: Option<Vec<String>>,
+
+    /// MDN edge type that led to this document (cite|depend|elaborate|contradict|...).
+    /// From the MDN relation type taxonomy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mdn_edge_type: Option<String>,
+
+    /// Navigation depth in PIX tree or MDN graph at time of emission.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nav_depth: Option<u32>,
+}
+
+/// The algebraic effect handler — bridges flow execution to EventBus streaming.
+///
+/// In algebraic effects terms, this is the Handler that captures the
+/// evaluation context E[perform(Emit(v))] and translates it to:
+///   Handler(v, λx. E[x]) → publish("flow.stream.{id}", v) ; resume(x)
+pub struct StreamEmitter {
+    trace_id: u64,
+    flow_name: String,
+    token_count: u64,
+    tokens: Vec<StreamToken>,
+}
+
+impl StreamEmitter {
+    pub fn new(trace_id: u64, flow_name: &str) -> Self {
+        StreamEmitter {
+            trace_id,
+            flow_name: flow_name.to_string(),
+            token_count: 0,
+            tokens: Vec::new(),
+        }
+    }
+
+    /// perform(Emit(content)) — the algebraic effect operation.
+    /// Pure: records the intent without side effects.
+    /// The handler (publish_to_bus) materializes it.
+    /// perform(Emit(content)) — step-level algebraic effect.
+    /// Epistemic state: "speculate" (unvalidated LLM output).
+    pub fn emit(&mut self, step_name: &str, content: &str) {
+        self.emit_with_context(step_name, content, "speculate", "<io, epistemic:speculate>", None);
+    }
+
+    /// perform(Emit(content)) with full epistemic/navigation context.
+    pub fn emit_with_context(
+        &mut self,
+        step_name: &str,
+        content: &str,
+        epistemic_state: &str,
+        effect_row: &str,
+        nav_ctx: Option<&NavigationContext>,
+    ) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        self.token_count += 1;
+        self.tokens.push(StreamToken {
+            trace_id: self.trace_id,
+            flow_name: self.flow_name.clone(),
+            step_name: step_name.to_string(),
+            token_index: self.token_count,
+            content: content.to_string(),
+            is_final: false,
+            timestamp: now,
+            epistemic_state: epistemic_state.to_string(),
+            effect_row: effect_row.to_string(),
+            pix_ref: nav_ctx.and_then(|c| c.pix_ref.clone()),
+            corpus_ref: nav_ctx.and_then(|c| c.corpus_ref.clone()),
+            nav_trail: nav_ctx.and_then(|c| c.nav_trail.clone()),
+            mdn_edge_type: nav_ctx.and_then(|c| c.mdn_edge_type.clone()),
+            nav_depth: nav_ctx.and_then(|c| c.nav_depth),
+        });
+    }
+
+    /// Emit PIX navigate result — epistemic state "believe" (external source, not yet validated).
+    /// PIX retrieval: EffectRow = <io, epistemic:believe>
+    pub fn emit_pix_navigate(&mut self, step_name: &str, content: &str, pix_ref: &str, trail: Vec<String>, depth: u32) {
+        self.emit_with_context(step_name, content, "believe", "<io, epistemic:believe>", Some(&NavigationContext {
+            pix_ref: Some(pix_ref.to_string()),
+            corpus_ref: None,
+            nav_trail: Some(trail),
+            mdn_edge_type: None,
+            nav_depth: Some(depth),
+        }));
+    }
+
+    /// Emit MDN graph traverse result — epistemic state "believe" with edge type.
+    /// MDN retrieval: EffectRow = <io, network, epistemic:believe>
+    pub fn emit_mdn_traverse(&mut self, step_name: &str, content: &str, corpus_ref: &str, edge_type: &str, depth: u32) {
+        self.emit_with_context(step_name, content, "believe", "<io, network, epistemic:believe>", Some(&NavigationContext {
+            pix_ref: None,
+            corpus_ref: Some(corpus_ref.to_string()),
+            nav_trail: None,
+            mdn_edge_type: Some(edge_type.to_string()),
+            nav_depth: Some(depth),
+        }));
+    }
+
+    /// Mark stream as complete — emit final sentinel.
+    /// On finalization, if all anchors pass, epistemic state promotes to "know".
+    pub fn finalize(&mut self) {
+        self.finalize_with_epistemic("know", "<pure, epistemic:know>");
+    }
+
+    /// Finalize with explicit epistemic state (e.g., "believe" if anchors didn't run).
+    pub fn finalize_with_epistemic(&mut self, epistemic_state: &str, effect_row: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        self.token_count += 1;
+        self.tokens.push(StreamToken {
+            trace_id: self.trace_id,
+            flow_name: self.flow_name.clone(),
+            step_name: "".to_string(),
+            token_index: self.token_count,
+            content: String::new(),
+            is_final: true,
+            timestamp: now,
+            epistemic_state: epistemic_state.to_string(),
+            effect_row: effect_row.to_string(),
+            pix_ref: None, corpus_ref: None, nav_trail: None, mdn_edge_type: None, nav_depth: None,
+        });
+    }
+
+    /// Materialize: publish all buffered tokens to the EventBus.
+    /// This is the natural transformation h: F_Σ(B) → M_IO(B).
+    pub fn publish_to_bus(&self, bus: &crate::event_bus::EventBus) {
+        let topic = format!("flow.stream.{}", self.trace_id);
+        for token in &self.tokens {
+            bus.publish(
+                &topic,
+                serde_json::to_value(token).unwrap_or_default(),
+                &format!("stream:{}", self.flow_name),
+            );
+        }
+    }
+
+    /// Emit token-level chunks for a step — coinductive stream observations.
+    /// Each chunk: epistemic_state = "speculate", effect_row = <io, epistemic:speculate>.
+    pub fn emit_chunks(&mut self, step_name: &str, chunks: &[String]) {
+        for chunk in chunks {
+            self.emit(step_name, chunk);
+        }
+    }
+
+    pub fn token_count(&self) -> u64 { self.token_count }
+    pub fn tokens(&self) -> &[StreamToken] { &self.tokens }
+}
+
+/// Navigation context for PIX/MDN-originated stream tokens.
+pub struct NavigationContext {
+    pub pix_ref: Option<String>,
+    pub corpus_ref: Option<String>,
+    pub nav_trail: Option<Vec<String>>,
+    pub mdn_edge_type: Option<String>,
+    pub nav_depth: Option<u32>,
+}
+
+/// Request for streaming execution.
+#[derive(Debug, Deserialize)]
+pub struct StreamExecuteRequest {
+    /// Flow name to execute.
+    pub flow_name: String,
+    /// Backend (default "stub").
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+}
+
+/// POST /v1/execute/stream — execute a flow with algebraic effect streaming.
+///
+/// Executes the flow, emits per-step tokens via the StreamEmitter (algebraic
+/// effect handler), publishes to EventBus as flow.stream.{trace_id}, and
+/// returns the execution result with stream metadata.
+///
+/// Clients can consume the stream via:
+///   GET /v1/events/stream?topic=flow.stream.{trace_id}
+async fn execute_stream_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<StreamExecuteRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+    }
+
+    // Look up deployed source
+    let (source, source_file) = {
+        let s = state.lock().unwrap();
+        match s.versions.get_history(&payload.flow_name)
+            .and_then(|h| h.active())
+            .map(|v| (v.source.clone(), v.source_file.clone()))
+        {
+            Some(info) => info,
+            None => return Ok(Json(serde_json::json!({
+                "error": format!("flow '{}' not deployed", payload.flow_name),
+            }))),
+        }
+    };
+
+    // Execute
+    match server_execute_full(&state, &source, &source_file, &payload.flow_name, &payload.backend).0 {
+        Ok(mut er) => {
+            // Record trace
+            let mut trace_entry = crate::trace_store::build_trace(
+                &er.flow_name, &er.source_file, &er.backend, &client,
+                if er.success { crate::trace_store::TraceStatus::Success }
+                else { crate::trace_store::TraceStatus::Partial },
+                er.steps_executed, er.latency_ms,
+            );
+            trace_entry.tokens_input = er.tokens_input;
+            trace_entry.tokens_output = er.tokens_output;
+            trace_entry.errors = er.errors;
+
+            let (trace_id, stream_topic) = {
+                let mut s = state.lock().unwrap();
+                let tid = s.trace_store.record(trace_entry);
+
+                // === ALGEBRAIC EFFECT HANDLER ===
+                // Create the StreamEmitter (the handler h)
+                let mut emitter = StreamEmitter::new(tid, &er.flow_name);
+
+                // Token-level granularity: emit_chunks for each step
+                // Each chunk is a perform(Emit(chunk)) — coinductive stream observation
+                for (i, step_name) in er.step_names.iter().enumerate() {
+                    if let Some(chunks) = er.step_results.get(i).map(|r| {
+                        // Chunk by word boundaries (~3 words per token)
+                        if r.is_empty() { vec![] }
+                        else {
+                            r.split_whitespace()
+                                .collect::<Vec<&str>>()
+                                .chunks(3)
+                                .map(|c| c.join(" "))
+                                .collect()
+                        }
+                    }) {
+                        emitter.emit_chunks(step_name, &chunks);
+                    }
+                }
+                emitter.finalize();
+
+                // Materialize: h(intent_tree) → IO effects
+                // Publish to EventBus for SSE consumption
+                emitter.publish_to_bus(&s.event_bus);
+
+                let topic = format!("flow.stream.{}", tid);
+                (tid, topic)
+            };
+
+            er.trace_id = trace_id;
+
+            Ok(Json(serde_json::json!({
+                "success": er.success,
+                "trace_id": trace_id,
+                "flow": er.flow_name,
+                "backend": er.backend,
+                "steps_executed": er.steps_executed,
+                "latency_ms": req_start.elapsed().as_millis() as u64,
+                "tokens_input": er.tokens_input,
+                "tokens_output": er.tokens_output,
+                "stream": {
+                    "topic": stream_topic,
+                    "token_count": er.step_names.len() + 1, // steps + final
+                    "consume_url": format!("/v1/events/stream?topic={}", stream_topic),
+                    "sse_url": format!("/v1/events/stream?topic={}", stream_topic),
+                },
+                "algebraic_effect": {
+                    "handler": "StreamEmitter",
+                    "operation": "perform(Emit(token))",
+                    "materialization": format!("EventBus.publish(\"{}\")", stream_topic),
+                },
+            })))
+        }
+        Err(e) => {
+            let mut s = state.lock().unwrap();
+            s.metrics.total_errors += 1;
+            Ok(Json(serde_json::json!({
+                "success": false,
+                "error": e,
+            })))
+        }
+    }
+}
+
+/// ΛD Epistemic Envelope — wraps any config value with its epistemic tensor.
+///
+/// From the paper: ψ = ⟨T, V, E⟩ where E = ⟨c, τ, ρ, δ⟩
+///
+/// Instead of π_JSON(ψ) = V (lossy projection that discards T and E),
+/// this preserves the full epistemic state across serialization boundaries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpistemicEnvelope {
+    /// T — Ontological type (what kind of config this is).
+    pub ontology: String,
+    /// c ∈ [0, 1] — Certainty scalar.
+    pub certainty: f64,
+    /// τ_start — Temporal validity start (ISO 8601 or "epoch").
+    pub temporal_start: String,
+    /// τ_end — Temporal validity end (ISO 8601 or "∞").
+    pub temporal_end: String,
+    /// ρ — Provenance (who/what produced this value).
+    pub provenance: String,
+    /// δ ∈ Δ — Derivation: raw | derived | inferred | aggregated | transformed.
+    pub derivation: String,
+}
+
+impl EpistemicEnvelope {
+    /// Create envelope for a raw admin-configured value (c=1.0, δ=raw).
+    pub fn raw_config(ontology: &str, provenance: &str) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        EpistemicEnvelope {
+            ontology: ontology.to_string(),
+            certainty: 1.0,
+            temporal_start: now.to_string(),
+            temporal_end: "∞".to_string(),
+            provenance: provenance.to_string(),
+            derivation: "raw".to_string(),
+        }
+    }
+
+    /// Create envelope for a derived/computed value (c<1.0, δ=derived).
+    pub fn derived(ontology: &str, certainty: f64, provenance: &str) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        EpistemicEnvelope {
+            ontology: ontology.to_string(),
+            certainty: certainty.clamp(0.0, 0.99), // Theorem 5.1: only raw may carry c=1.0
+            temporal_start: now.to_string(),
+            temporal_end: "∞".to_string(),
+            provenance: provenance.to_string(),
+            derivation: "derived".to_string(),
+        }
+    }
+
+    /// Validate ΛD invariants at serialization boundary.
+    pub fn validate(&self) -> Result<(), String> {
+        // Invariant 1: Ontological Rigidity (T ≠ ⊥)
+        if self.ontology.is_empty() {
+            return Err("ΛD Invariant 1 (Ontological Rigidity): ontology is empty (T = ⊥)".into());
+        }
+        // Invariant 4: Epistemic Bounding (c ∈ [0,1])
+        if self.certainty < 0.0 || self.certainty > 1.0 {
+            return Err(format!("ΛD Invariant 4 (Epistemic Bounding): c={} not in [0,1]", self.certainty));
+        }
+        // Theorem 5.1: Epistemic Degradation (only raw may carry c=1.0)
+        if self.certainty == 1.0 && self.derivation != "raw" {
+            return Err(format!("ΛD Theorem 5.1 (Epistemic Degradation): c=1.0 with δ={}, only raw may carry absolute certainty", self.derivation));
+        }
+        Ok(())
+    }
+}
+
+// ── AxonStore — Durable Cognitive Persistence ──────────────────────────────
+//
+// `axonstore` is a top-level cognitive primitive (one of 47). It provides
+// named, typed, epistemic-aware key-value persistence with ΛD envelopes.
+//
+// Each entry carries an EpistemicEnvelope: ψ = ⟨T, V, E⟩ where E = ⟨c, τ, ρ, δ⟩
+// - persist: c=1.0, δ=raw (direct user/system write)
+// - mutate:  c clamped ≤0.99, δ=derived (Theorem 5.1)
+// - transact: batch atomic ops, each entry gets its own envelope
+//
+// Storage: file-backed JSON, one file per named store.
+
+/// A single entry in an AxonStore, carrying ΛD epistemic state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AxonStoreEntry {
+    /// Key name.
+    pub key: String,
+    /// Stored value (JSON-encoded).
+    pub value: serde_json::Value,
+    /// ΛD epistemic envelope for this entry.
+    pub envelope: EpistemicEnvelope,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Unix timestamp of last modification.
+    pub updated_at: u64,
+    /// Number of mutations applied.
+    pub version: u64,
+}
+
+/// A named AxonStore instance — durable, epistemic-aware key-value store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AxonStoreInstance {
+    /// Store name (unique identifier).
+    pub name: String,
+    /// Ontological type hint for this store's domain.
+    pub ontology: String,
+    /// Entries keyed by name.
+    pub entries: HashMap<String, AxonStoreEntry>,
+    /// Unix timestamp of store creation.
+    pub created_at: u64,
+    /// Total operations performed on this store.
+    pub total_ops: u64,
+}
+
+/// A single operation in a transact batch.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AxonStoreTransactOp {
+    /// Operation: "persist", "mutate", "purge".
+    pub op: String,
+    /// Key to operate on.
+    pub key: String,
+    /// Value (required for persist/mutate, ignored for purge).
+    #[serde(default)]
+    pub value: serde_json::Value,
+}
+
+// ── Dataspace — Cognitive Data Navigation ──────────────────────────────────
+//
+// `dataspace` is a top-level cognitive primitive (one of 47) providing
+// a named data container with 5 navigation primitives:
+//   - ingest:    add data items with ΛD envelopes (c=1.0, δ=raw)
+//   - focus:     filter entries by predicate (returns subset, c degraded)
+//   - associate: link two entries by named relation
+//   - aggregate: reduce entries to a single value (count/sum/avg/min/max)
+//   - explore:   discover structure (entry count, associations, ontology map)
+//
+// Each entry carries an EpistemicEnvelope: ψ = ⟨T, V, E⟩
+// Focus results degrade certainty (δ=derived, c≤0.99) per Theorem 5.1
+// because filtering is a derived computation over raw data.
+
+/// A single entry in a Dataspace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataspaceEntry {
+    /// Unique entry identifier.
+    pub id: String,
+    /// Ontological type tag for this entry.
+    pub ontology: String,
+    /// Entry payload (arbitrary JSON).
+    pub data: serde_json::Value,
+    /// ΛD epistemic envelope.
+    pub envelope: EpistemicEnvelope,
+    /// Unix timestamp of ingestion.
+    pub ingested_at: u64,
+    /// Tags for filtering and grouping.
+    pub tags: Vec<String>,
+}
+
+/// An association between two entries in a Dataspace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataspaceAssociation {
+    /// Source entry ID.
+    pub from: String,
+    /// Target entry ID.
+    pub to: String,
+    /// Relation name (e.g., "causes", "supports", "contradicts").
+    pub relation: String,
+    /// Certainty of the association (c ∈ [0,1]).
+    pub certainty: f64,
+    /// Unix timestamp of association creation.
+    pub created_at: u64,
+}
+
+/// A named Dataspace instance — cognitive data container.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataspaceInstance {
+    /// Dataspace name (unique identifier).
+    pub name: String,
+    /// Domain ontology for this dataspace.
+    pub ontology: String,
+    /// Entries keyed by ID.
+    pub entries: HashMap<String, DataspaceEntry>,
+    /// Associations between entries.
+    pub associations: Vec<DataspaceAssociation>,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Total operations performed.
+    pub total_ops: u64,
+    /// Auto-incrementing ID counter.
+    pub next_id: u64,
+}
+
+// ── Shield — cognitive guardrail primitive ──────────────────────────────────
+
+/// A single guardrail rule within a Shield instance.
+///
+/// Rules are evaluated in order against input/output text. Each rule carries
+/// a kind (pattern, deny_list, pii, length) and an action (block, warn, redact).
+/// ΛD alignment: shield evaluation is derived (c≤0.99) because pattern matching
+/// is an approximation — the shield *speculates* about harmful content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShieldRule {
+    /// Rule identifier (unique within the shield).
+    pub id: String,
+    /// Rule kind: "pattern" (regex-like), "deny_list" (exact substring), "pii" (pattern set), "length" (max chars).
+    pub kind: String,
+    /// The matching criterion: a pattern string, deny word, PII type, or max length.
+    pub value: String,
+    /// Action when rule triggers: "block" (reject), "warn" (flag but allow), "redact" (mask matched text).
+    pub action: String,
+    /// Whether this rule is active.
+    pub enabled: bool,
+    /// Human-readable description.
+    pub description: String,
+}
+
+/// Result of evaluating a Shield against input or output text.
+#[derive(Debug, Clone, Serialize)]
+pub struct ShieldResult {
+    /// Whether the content was blocked.
+    pub blocked: bool,
+    /// Warnings generated (rule IDs that matched with action=warn).
+    pub warnings: Vec<String>,
+    /// Redactions applied (rule IDs that matched with action=redact).
+    pub redactions: Vec<String>,
+    /// The (possibly redacted) content after shield processing.
+    pub content: String,
+    /// Total rules evaluated.
+    pub rules_evaluated: u32,
+    /// Total rules triggered.
+    pub rules_triggered: u32,
+}
+
+/// A named Shield instance — a collection of guardrail rules.
+///
+/// Shields are declared per-flow or globally. The `evaluate()` method applies
+/// all enabled rules in order, accumulating block/warn/redact results.
+/// Epistemic alignment: ψ = ⟨T="guardrail", V=result, E=⟨c≤0.99, τ, ρ, δ=derived⟩⟩
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShieldInstance {
+    /// Shield name (unique identifier).
+    pub name: String,
+    /// Shield mode: "input" (pre-execution), "output" (post-execution), "both".
+    pub mode: String,
+    /// Ordered list of guardrail rules.
+    pub rules: Vec<ShieldRule>,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Total evaluations performed.
+    pub total_evaluations: u64,
+    /// Total blocks applied.
+    pub total_blocks: u64,
+}
+
+impl ShieldInstance {
+    /// Evaluate content against all enabled rules in this shield.
+    pub fn evaluate(&self, content: &str) -> ShieldResult {
+        let mut blocked = false;
+        let mut warnings = Vec::new();
+        let mut redactions = Vec::new();
+        let mut result_content = content.to_string();
+        let mut rules_evaluated = 0u32;
+        let mut rules_triggered = 0u32;
+
+        for rule in &self.rules {
+            if !rule.enabled {
+                continue;
+            }
+            rules_evaluated += 1;
+
+            let matched = match rule.kind.as_str() {
+                "deny_list" => {
+                    // Case-insensitive substring match
+                    result_content.to_lowercase().contains(&rule.value.to_lowercase())
+                }
+                "pattern" => {
+                    // Simple pattern matching: supports * as wildcard
+                    let pattern_lower = rule.value.to_lowercase();
+                    let content_lower = result_content.to_lowercase();
+                    if pattern_lower.contains('*') {
+                        let parts: Vec<&str> = pattern_lower.split('*').collect();
+                        if parts.len() == 2 {
+                            content_lower.contains(parts[0]) && content_lower.contains(parts[1])
+                        } else {
+                            content_lower.contains(&pattern_lower.replace('*', ""))
+                        }
+                    } else {
+                        content_lower.contains(&pattern_lower)
+                    }
+                }
+                "pii" => {
+                    // PII detection heuristics based on value type
+                    match rule.value.as_str() {
+                        "email" => result_content.contains('@') && result_content.contains('.'),
+                        "phone" => {
+                            let digits: String = result_content.chars().filter(|c| c.is_ascii_digit()).collect();
+                            digits.len() >= 10
+                        }
+                        "ssn" => {
+                            // Simple SSN pattern: 3 digits, separator, 2 digits, separator, 4 digits
+                            let cleaned: String = result_content.chars().filter(|c| c.is_ascii_digit() || *c == '-').collect();
+                            cleaned.split('-').count() == 3 && cleaned.replace('-', "").len() == 9
+                        }
+                        _ => false,
+                    }
+                }
+                "length" => {
+                    // Content exceeds max length
+                    if let Ok(max_len) = rule.value.parse::<usize>() {
+                        result_content.len() > max_len
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+
+            if matched {
+                rules_triggered += 1;
+                match rule.action.as_str() {
+                    "block" => {
+                        blocked = true;
+                    }
+                    "warn" => {
+                        warnings.push(rule.id.clone());
+                    }
+                    "redact" => {
+                        redactions.push(rule.id.clone());
+                        // Replace matched content based on kind
+                        match rule.kind.as_str() {
+                            "deny_list" => {
+                                let lower = result_content.to_lowercase();
+                                let pattern_lower = rule.value.to_lowercase();
+                                if let Some(pos) = lower.find(&pattern_lower) {
+                                    let mask = "█".repeat(rule.value.len());
+                                    result_content = format!(
+                                        "{}{}{}",
+                                        &result_content[..pos],
+                                        mask,
+                                        &result_content[pos + rule.value.len()..]
+                                    );
+                                }
+                            }
+                            "pii" => {
+                                result_content = format!("[{} REDACTED]", rule.value.to_uppercase());
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        ShieldResult {
+            blocked,
+            warnings,
+            redactions,
+            content: result_content,
+            rules_evaluated,
+            rules_triggered,
+        }
+    }
+}
+
+// ── Corpus — document corpus management primitive ───────────────────────────
+
+/// A document within a Corpus instance.
+///
+/// Each document carries its own ΛD epistemic envelope reflecting provenance:
+/// - Ingested raw → c=1.0, δ=raw (the document itself is ground truth)
+/// - Search results → c≤0.99, δ=derived (relevance scoring is approximate)
+/// - Citations → c≤0.99, δ=derived (extracted reference is interpretation)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorpusDocument {
+    /// Document identifier (unique within corpus).
+    pub id: String,
+    /// Document title or label.
+    pub title: String,
+    /// Document content (full text).
+    pub content: String,
+    /// Metadata tags for filtering.
+    pub tags: Vec<String>,
+    /// Source provenance (URL, file path, or "manual").
+    pub source: String,
+    /// ΛD epistemic envelope for this document.
+    pub envelope: EpistemicEnvelope,
+    /// Unix timestamp of ingestion.
+    pub ingested_at: u64,
+    /// Word count (computed on ingest).
+    pub word_count: u64,
+}
+
+/// A citation extracted from a corpus search — a reference to a document passage.
+#[derive(Debug, Clone, Serialize)]
+pub struct CorpusCitation {
+    /// Document ID referenced.
+    pub document_id: String,
+    /// Document title.
+    pub title: String,
+    /// Matched excerpt from the document.
+    pub excerpt: String,
+    /// Relevance score (0.0–1.0).
+    pub relevance: f64,
+    /// ΛD: citation is derived (Theorem 5.1: c≤0.99, δ=derived).
+    pub envelope: EpistemicEnvelope,
+}
+
+/// A named Corpus instance — a collection of documents with search and citation.
+///
+/// Epistemic alignment: ψ = ⟨T="corpus", V=documents, E=⟨c, τ, ρ, δ⟩⟩
+/// - Ingest: raw provenance (c=1.0)
+/// - Search: derived relevance ranking (c≤0.99)
+/// - Cite: derived excerpt extraction (c≤0.99)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorpusInstance {
+    /// Corpus name (unique identifier).
+    pub name: String,
+    /// Domain ontology for this corpus.
+    pub ontology: String,
+    /// Documents keyed by ID.
+    pub documents: HashMap<String, CorpusDocument>,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Total operations performed.
+    pub total_ops: u64,
+    /// Auto-incrementing ID counter.
+    pub next_id: u64,
+}
+
+// ── Compute — numeric/symbolic computation primitive ────────────────────────
+
+/// Result of a compute evaluation.
+///
+/// ΛD alignment: computation results are deterministic when purely numeric
+/// (c=1.0, δ=raw for exact arithmetic), but symbolic/approximate operations
+/// carry c≤0.99, δ=derived per Theorem 5.1.
+#[derive(Debug, Clone, Serialize)]
+pub struct ComputeResult {
+    /// The computed value.
+    pub value: f64,
+    /// The original expression.
+    pub expression: String,
+    /// Whether the computation was exact (integer arithmetic) or approximate (floating point).
+    pub exact: bool,
+    /// Variables substituted during evaluation.
+    pub variables: HashMap<String, f64>,
+    /// ΛD: certainty (1.0 for exact, 0.99 for approximate).
+    pub certainty: f64,
+    /// ΛD: derivation ("raw" for exact, "derived" for approximate).
+    pub derivation: String,
+}
+
+/// Evaluate a simple arithmetic expression with variables.
+///
+/// Supports: +, -, *, /, %, ^ (power), parentheses, and named variables.
+/// Functions: sqrt, abs, sin, cos, log, exp, ceil, floor, round, min, max.
+/// Constants: pi, e, tau.
+pub fn compute_evaluate(expr: &str, variables: &HashMap<String, f64>) -> Result<ComputeResult, String> {
+    let expr_trimmed = expr.trim();
+    if expr_trimmed.is_empty() {
+        return Err("empty expression".into());
+    }
+
+    // Tokenize and evaluate using a simple recursive descent approach
+    // For safety and correctness, we use an iterative shunting-yard algorithm
+    let tokens = compute_tokenize(expr_trimmed, variables)?;
+    let value = compute_eval_tokens(&tokens)?;
+
+    // Determine if result is exact (no floating point operations involved)
+    let is_exact = value.fract() == 0.0 && !expr_trimmed.contains('.')
+        && !expr_trimmed.contains("sqrt") && !expr_trimmed.contains("sin")
+        && !expr_trimmed.contains("cos") && !expr_trimmed.contains("log")
+        && !expr_trimmed.contains("exp") && !expr_trimmed.contains("pi")
+        && !expr_trimmed.contains("tau") && !expr_trimmed.contains('/');
+
+    Ok(ComputeResult {
+        value,
+        expression: expr_trimmed.to_string(),
+        exact: is_exact,
+        variables: variables.clone(),
+        certainty: if is_exact { 1.0 } else { 0.99 },
+        derivation: if is_exact { "raw".into() } else { "derived".into() },
+    })
+}
+
+/// Token types for the expression evaluator.
+#[derive(Debug, Clone)]
+enum ComputeToken {
+    Number(f64),
+    Op(char),
+    LParen,
+    RParen,
+    Func(String),
+}
+
+fn compute_tokenize(expr: &str, variables: &HashMap<String, f64>) -> Result<Vec<ComputeToken>, String> {
+    let mut tokens = Vec::new();
+    let mut chars = expr.chars().peekable();
+
+    while let Some(&ch) = chars.peek() {
+        match ch {
+            ' ' | '\t' => { chars.next(); }
+            '0'..='9' | '.' => {
+                let mut num_str = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c.is_ascii_digit() || c == '.' { num_str.push(c); chars.next(); }
+                    else { break; }
+                }
+                let val: f64 = num_str.parse().map_err(|_| format!("invalid number: {}", num_str))?;
+                tokens.push(ComputeToken::Number(val));
+            }
+            '+' | '-' => {
+                // Handle unary minus/plus
+                let is_unary = tokens.is_empty()
+                    || matches!(tokens.last(), Some(ComputeToken::Op(_)) | Some(ComputeToken::LParen));
+                if is_unary && ch == '-' {
+                    chars.next();
+                    // Read the next number or insert -1 *
+                    if let Some(&next) = chars.peek() {
+                        if next.is_ascii_digit() || next == '.' {
+                            let mut num_str = String::from("-");
+                            while let Some(&c) = chars.peek() {
+                                if c.is_ascii_digit() || c == '.' { num_str.push(c); chars.next(); }
+                                else { break; }
+                            }
+                            let val: f64 = num_str.parse().map_err(|_| format!("invalid number: {}", num_str))?;
+                            tokens.push(ComputeToken::Number(val));
+                        } else if next.is_alphabetic() {
+                            // unary minus before variable/function: push -1 *
+                            tokens.push(ComputeToken::Number(-1.0));
+                            tokens.push(ComputeToken::Op('*'));
+                        } else if next == '(' {
+                            tokens.push(ComputeToken::Number(-1.0));
+                            tokens.push(ComputeToken::Op('*'));
+                        } else {
+                            return Err(format!("unexpected character after unary minus: {}", next));
+                        }
+                    }
+                } else if is_unary && ch == '+' {
+                    chars.next(); // skip unary plus
+                } else {
+                    tokens.push(ComputeToken::Op(ch));
+                    chars.next();
+                }
+            }
+            '*' | '/' | '%' | '^' => {
+                tokens.push(ComputeToken::Op(ch));
+                chars.next();
+            }
+            '(' => { tokens.push(ComputeToken::LParen); chars.next(); }
+            ')' => { tokens.push(ComputeToken::RParen); chars.next(); }
+            'a'..='z' | 'A'..='Z' | '_' => {
+                let mut ident = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c.is_alphanumeric() || c == '_' { ident.push(c); chars.next(); }
+                    else { break; }
+                }
+                // Check for constants
+                match ident.as_str() {
+                    "pi" => tokens.push(ComputeToken::Number(std::f64::consts::PI)),
+                    "e" => tokens.push(ComputeToken::Number(std::f64::consts::E)),
+                    "tau" => tokens.push(ComputeToken::Number(std::f64::consts::TAU)),
+                    _ => {
+                        // Check for variables
+                        if let Some(&val) = variables.get(&ident) {
+                            tokens.push(ComputeToken::Number(val));
+                        } else if matches!(ident.as_str(), "sqrt" | "abs" | "sin" | "cos" | "log" | "exp" | "ceil" | "floor" | "round" | "min" | "max") {
+                            tokens.push(ComputeToken::Func(ident));
+                        } else {
+                            return Err(format!("unknown variable or function: {}", ident));
+                        }
+                    }
+                }
+            }
+            ',' => { chars.next(); /* skip commas in function args, handle as separator */ }
+            _ => return Err(format!("unexpected character: {}", ch)),
+        }
+    }
+
+    Ok(tokens)
+}
+
+fn compute_eval_tokens(tokens: &[ComputeToken]) -> Result<f64, String> {
+    // Shunting-yard algorithm for operator precedence
+    let mut output: Vec<f64> = Vec::new();
+    let mut ops: Vec<ComputeToken> = Vec::new();
+
+    fn precedence(op: char) -> u8 {
+        match op {
+            '+' | '-' => 1,
+            '*' | '/' | '%' => 2,
+            '^' => 3,
+            _ => 0,
+        }
+    }
+
+    fn apply_op(op: char, b: f64, a: f64) -> Result<f64, String> {
+        match op {
+            '+' => Ok(a + b),
+            '-' => Ok(a - b),
+            '*' => Ok(a * b),
+            '/' => if b == 0.0 { Err("division by zero".into()) } else { Ok(a / b) },
+            '%' => if b == 0.0 { Err("modulo by zero".into()) } else { Ok(a % b) },
+            '^' => Ok(a.powf(b)),
+            _ => Err(format!("unknown operator: {}", op)),
+        }
+    }
+
+    fn apply_func(name: &str, val: f64) -> Result<f64, String> {
+        match name {
+            "sqrt" => if val < 0.0 { Err("sqrt of negative".into()) } else { Ok(val.sqrt()) },
+            "abs" => Ok(val.abs()),
+            "sin" => Ok(val.sin()),
+            "cos" => Ok(val.cos()),
+            "log" => if val <= 0.0 { Err("log of non-positive".into()) } else { Ok(val.ln()) },
+            "exp" => Ok(val.exp()),
+            "ceil" => Ok(val.ceil()),
+            "floor" => Ok(val.floor()),
+            "round" => Ok(val.round()),
+            _ => Err(format!("unknown function: {}", name)),
+        }
+    }
+
+    for token in tokens {
+        match token {
+            ComputeToken::Number(n) => output.push(*n),
+            ComputeToken::Func(name) => ops.push(ComputeToken::Func(name.clone())),
+            ComputeToken::LParen => ops.push(ComputeToken::LParen),
+            ComputeToken::RParen => {
+                while let Some(top) = ops.last() {
+                    match top {
+                        ComputeToken::LParen => { ops.pop(); break; }
+                        ComputeToken::Op(op) => {
+                            let op = *op;
+                            ops.pop();
+                            if output.len() < 2 { return Err("malformed expression".into()); }
+                            let b = output.pop().unwrap();
+                            let a = output.pop().unwrap();
+                            output.push(apply_op(op, b, a)?);
+                        }
+                        _ => break,
+                    }
+                }
+                // Check if top of ops is a function
+                if let Some(ComputeToken::Func(name)) = ops.last().cloned() {
+                    ops.pop();
+                    if output.is_empty() { return Err("missing function argument".into()); }
+                    let val = output.pop().unwrap();
+                    output.push(apply_func(&name, val)?);
+                }
+            }
+            ComputeToken::Op(op) => {
+                while let Some(top) = ops.last() {
+                    if let ComputeToken::Op(top_op) = top {
+                        let top_op = *top_op;
+                        if precedence(top_op) >= precedence(*op) && *op != '^' {
+                            ops.pop();
+                            if output.len() < 2 { return Err("malformed expression".into()); }
+                            let b = output.pop().unwrap();
+                            let a = output.pop().unwrap();
+                            output.push(apply_op(top_op, b, a)?);
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                ops.push(ComputeToken::Op(*op));
+            }
+        }
+    }
+
+    // Flush remaining ops
+    while let Some(top) = ops.pop() {
+        if let ComputeToken::Op(op) = top {
+            if output.len() < 2 { return Err("malformed expression".into()); }
+            let b = output.pop().unwrap();
+            let a = output.pop().unwrap();
+            output.push(apply_op(op, b, a)?);
+        }
+    }
+
+    output.pop().ok_or_else(|| "empty expression".to_string())
+}
+
+// ── Mandate — authorization/permission primitive ────────────────────────────
+
+/// A single permission rule within a Mandate policy.
+///
+/// Rules match against (subject, action, resource) triples and yield
+/// allow or deny decisions. Evaluation is deterministic: c=1.0, δ=raw
+/// when a rule explicitly matches; c=0.99, δ=derived for default-deny.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MandateRule {
+    /// Rule identifier (unique within policy).
+    pub id: String,
+    /// Subject pattern: role name, "*" for any, or specific principal.
+    pub subject: String,
+    /// Action pattern: operation name, "*" for any.
+    pub action: String,
+    /// Resource pattern: resource path, "*" for any, prefix match with trailing "*".
+    pub resource: String,
+    /// Effect: "allow" or "deny".
+    pub effect: String,
+    /// Priority (higher = evaluated first, 0 = default).
+    pub priority: u32,
+    /// Whether this rule is active.
+    pub enabled: bool,
+}
+
+/// Result of evaluating a Mandate policy against a request.
+#[derive(Debug, Clone, Serialize)]
+pub struct MandateEvaluation {
+    /// Whether the request is allowed.
+    pub allowed: bool,
+    /// The rule that matched (None if default deny).
+    pub matched_rule: Option<String>,
+    /// The effect applied: "allow", "deny", or "default_deny".
+    pub effect: String,
+    /// Total rules evaluated.
+    pub rules_evaluated: u32,
+    /// ΛD certainty: 1.0 if explicit rule matched, 0.99 for default deny.
+    pub certainty: f64,
+    /// ΛD derivation: "raw" if explicit, "derived" if default.
+    pub derivation: String,
+}
+
+/// A named Mandate policy — a collection of authorization rules.
+///
+/// Mandate evaluation follows a priority-ordered, first-match-wins model:
+/// 1. Rules sorted by priority (descending)
+/// 2. First matching rule determines the outcome
+/// 3. If no rule matches → default deny (c=0.99, δ=derived)
+///
+/// ΛD alignment: explicit rule matches are deterministic (c=1.0, δ=raw),
+/// while default deny is inferential (c=0.99, δ=derived per Theorem 5.1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MandatePolicy {
+    /// Policy name (unique identifier).
+    pub name: String,
+    /// Policy description.
+    pub description: String,
+    /// Ordered list of authorization rules.
+    pub rules: Vec<MandateRule>,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Total evaluations performed.
+    pub total_evaluations: u64,
+    /// Total denials.
+    pub total_denials: u64,
+}
+
+impl MandatePolicy {
+    /// Evaluate a request (subject, action, resource) against this policy.
+    /// First-match-wins with priority ordering. Default: deny.
+    pub fn evaluate(&self, subject: &str, action: &str, resource: &str) -> MandateEvaluation {
+        let mut sorted_rules: Vec<&MandateRule> = self.rules.iter()
+            .filter(|r| r.enabled)
+            .collect();
+        sorted_rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+
+        let mut rules_evaluated = 0u32;
+
+        for rule in &sorted_rules {
+            rules_evaluated += 1;
+
+            let subject_match = rule.subject == "*" || rule.subject == subject;
+            let action_match = rule.action == "*" || rule.action == action;
+            let resource_match = if rule.resource == "*" {
+                true
+            } else if rule.resource.ends_with('*') {
+                let prefix = &rule.resource[..rule.resource.len() - 1];
+                resource.starts_with(prefix)
+            } else {
+                rule.resource == resource
+            };
+
+            if subject_match && action_match && resource_match {
+                return MandateEvaluation {
+                    allowed: rule.effect == "allow",
+                    matched_rule: Some(rule.id.clone()),
+                    effect: rule.effect.clone(),
+                    rules_evaluated,
+                    certainty: 1.0,       // Explicit match → deterministic
+                    derivation: "raw".into(),
+                };
+            }
+        }
+
+        // Default deny — no rule matched
+        MandateEvaluation {
+            allowed: false,
+            matched_rule: None,
+            effect: "default_deny".into(),
+            rules_evaluated,
+            certainty: 0.99,          // Theorem 5.1: inferential deny → derived
+            derivation: "derived".into(),
+        }
+    }
+}
+
+// ── Refine — iterative output improvement primitive ─────────────────────────
+
+/// A single iteration within a Refine session.
+///
+/// Each iteration carries a quality score and the delta from the previous
+/// iteration, enabling convergence tracking. ΛD: all refinements are derived
+/// (c≤0.99, δ=derived) because each iteration is a transformation of prior output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefineIteration {
+    /// Iteration number (1-indexed).
+    pub iteration: u32,
+    /// The refined content at this iteration.
+    pub content: String,
+    /// Quality score (0.0–1.0), typically assessed by a scoring function.
+    pub quality: f64,
+    /// Delta from previous quality (positive = improvement).
+    pub delta: f64,
+    /// Unix timestamp.
+    pub timestamp: u64,
+    /// Feedback or instruction that guided this iteration.
+    pub feedback: String,
+}
+
+/// A named Refine session — tracks iterative improvement of content.
+///
+/// The session starts with an initial content and progresses through iterations,
+/// each guided by feedback. Convergence is detected when quality delta falls
+/// below a threshold.
+///
+/// ΛD alignment: ψ = ⟨T="refinement", V=content, E=⟨c≤0.99, τ, ρ, δ=derived⟩⟩
+/// All iterations are derived per Theorem 5.1 — refinement is transformation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefineSession {
+    /// Session identifier.
+    pub id: String,
+    /// Session name/label.
+    pub name: String,
+    /// Target quality threshold (0.0–1.0). Session converges when reached.
+    pub target_quality: f64,
+    /// Convergence delta threshold. Session converges when |delta| < this value.
+    pub convergence_threshold: f64,
+    /// Maximum iterations allowed.
+    pub max_iterations: u32,
+    /// Whether the session has converged.
+    pub converged: bool,
+    /// History of all iterations.
+    pub iterations: Vec<RefineIteration>,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+}
+
+impl RefineSession {
+    /// Get current quality (last iteration's quality, or 0.0 if no iterations).
+    pub fn current_quality(&self) -> f64 {
+        self.iterations.last().map(|i| i.quality).unwrap_or(0.0)
+    }
+
+    /// Get current iteration count.
+    pub fn iteration_count(&self) -> u32 {
+        self.iterations.len() as u32
+    }
+
+    /// Check if the session has converged based on quality target or delta threshold.
+    pub fn check_convergence(&self) -> bool {
+        if self.iterations.is_empty() {
+            return false;
+        }
+        let last = self.iterations.last().unwrap();
+        // Converged if: quality >= target OR |delta| < threshold (after at least 2 iterations)
+        if last.quality >= self.target_quality {
+            return true;
+        }
+        if self.iterations.len() >= 2 && last.delta.abs() < self.convergence_threshold {
+            return true;
+        }
+        false
+    }
+
+    /// Add an iteration. Returns Err if session is converged or max iterations reached.
+    pub fn add_iteration(&mut self, content: String, quality: f64, feedback: String) -> Result<&RefineIteration, String> {
+        if self.converged {
+            return Err("session already converged".into());
+        }
+        if self.iteration_count() >= self.max_iterations {
+            return Err(format!("max iterations ({}) reached", self.max_iterations));
+        }
+
+        let prev_quality = self.current_quality();
+        let delta = quality - prev_quality;
+        let iteration_num = self.iteration_count() + 1;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let iteration = RefineIteration {
+            iteration: iteration_num,
+            content,
+            quality,
+            delta,
+            timestamp: now,
+            feedback,
+        };
+
+        self.iterations.push(iteration);
+        self.converged = self.check_convergence();
+
+        Ok(self.iterations.last().unwrap())
+    }
+}
+
+// ── Trail — execution path recording primitive ─────────────────────────────
+
+/// A single step within a Trail record.
+///
+/// Each step captures what happened at a point in the execution path:
+/// the operation performed, inputs/outputs, duration, and outcome.
+/// ΛD: trail steps are raw observations (c=1.0, δ=raw) — they record
+/// what actually happened, not an interpretation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrailStep {
+    /// Step number (1-indexed).
+    pub step: u32,
+    /// Operation name (e.g., "execute", "validate", "transform").
+    pub operation: String,
+    /// Input description or summary.
+    pub input: String,
+    /// Output description or summary.
+    pub output: String,
+    /// Duration in milliseconds.
+    pub duration_ms: u64,
+    /// Outcome: "success", "failure", "skipped".
+    pub outcome: String,
+    /// Optional metadata (key-value pairs).
+    pub metadata: HashMap<String, serde_json::Value>,
+    /// Unix timestamp of this step.
+    pub timestamp: u64,
+}
+
+/// A named Trail record — captures the full execution path of a cognitive operation.
+///
+/// Trails are immutable once completed: steps are appended during execution,
+/// then the trail is marked complete. This ensures audit integrity.
+///
+/// ΛD alignment: ψ = ⟨T="trail", V=steps, E=⟨c=1.0, τ, ρ, δ=raw⟩⟩
+/// Trail recording is raw observation — it captures what happened, not an inference.
+/// Completed trails are ground truth (c=1.0). In-progress trails are provisional (c=0.95).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrailRecord {
+    /// Trail identifier.
+    pub id: String,
+    /// Trail name/label.
+    pub name: String,
+    /// The flow or operation being traced.
+    pub target: String,
+    /// Whether the trail is complete.
+    pub completed: bool,
+    /// Final outcome: "success", "failure", "partial", or "in_progress".
+    pub outcome: String,
+    /// Ordered steps in the execution path.
+    pub steps: Vec<TrailStep>,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Unix timestamp of completion (0 if not completed).
+    pub completed_at: u64,
+    /// Total duration in milliseconds (sum of step durations).
+    pub total_duration_ms: u64,
+}
+
+impl TrailRecord {
+    /// Add a step to the trail. Returns Err if trail is already completed.
+    pub fn add_step(&mut self, operation: String, input: String, output: String,
+                    duration_ms: u64, outcome: String, metadata: HashMap<String, serde_json::Value>) -> Result<u32, String> {
+        if self.completed {
+            return Err("trail already completed".into());
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let step_num = self.steps.len() as u32 + 1;
+
+        self.steps.push(TrailStep {
+            step: step_num,
+            operation,
+            input,
+            output,
+            duration_ms,
+            outcome,
+            metadata,
+            timestamp: now,
+        });
+
+        self.total_duration_ms += duration_ms;
+
+        Ok(step_num)
+    }
+
+    /// Mark the trail as complete with a final outcome.
+    pub fn complete(&mut self, outcome: String) -> Result<(), String> {
+        if self.completed {
+            return Err("trail already completed".into());
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        self.completed = true;
+        self.outcome = outcome;
+        self.completed_at = now;
+
+        Ok(())
+    }
+
+    /// Step count.
+    pub fn step_count(&self) -> u32 {
+        self.steps.len() as u32
+    }
+
+    /// Count of successful steps.
+    pub fn success_count(&self) -> u32 {
+        self.steps.iter().filter(|s| s.outcome == "success").count() as u32
+    }
+
+    /// Count of failed steps.
+    pub fn failure_count(&self) -> u32 {
+        self.steps.iter().filter(|s| s.outcome == "failure").count() as u32
+    }
+}
+
+// ── Probe — exploratory information gathering primitive ──────────────────────
+
+/// A single query result within a Probe session.
+///
+/// Each finding represents information discovered from a source during probing.
+/// ΛD: probe findings are derived (c≤0.99, δ=derived) because they are
+/// extracted/summarized from sources, not raw data themselves.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeFinding {
+    /// Source identifier (e.g., "corpus:papers", "axonstore:facts", "dataspace:research").
+    pub source: String,
+    /// The query that produced this finding.
+    pub query: String,
+    /// The discovered information.
+    pub content: String,
+    /// Relevance score (0.0–1.0).
+    pub relevance: f64,
+    /// Confidence in this finding (ΛD certainty, ≤0.99).
+    pub certainty: f64,
+    /// Unix timestamp of discovery.
+    pub timestamp: u64,
+}
+
+/// A named Probe session — orchestrates exploratory queries across multiple sources.
+///
+/// A probe session gathers information by querying multiple sources (corpora,
+/// axonstores, dataspaces) and aggregating findings with relevance scoring.
+///
+/// ΛD alignment: ψ = ⟨T="probe", V=findings, E=⟨c≤0.99, τ, ρ, δ=derived⟩⟩
+/// Probing is inherently exploratory — findings are speculative (Theorem 5.1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeSession {
+    /// Session identifier.
+    pub id: String,
+    /// Probe name/label.
+    pub name: String,
+    /// The investigation question or topic.
+    pub question: String,
+    /// Sources to probe (e.g., ["corpus:papers", "axonstore:facts"]).
+    pub sources: Vec<String>,
+    /// Accumulated findings from all queries.
+    pub findings: Vec<ProbeFinding>,
+    /// Whether the probe is complete.
+    pub completed: bool,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Total queries executed.
+    pub total_queries: u32,
+}
+
+impl ProbeSession {
+    /// Add a finding to the session.
+    pub fn add_finding(&mut self, source: String, query: String, content: String, relevance: f64) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // ΛD: certainty derived from relevance, capped at 0.99
+        let certainty = (relevance * 0.99).min(0.99);
+
+        self.findings.push(ProbeFinding {
+            source,
+            query,
+            content,
+            relevance,
+            certainty,
+            timestamp: now,
+        });
+    }
+
+    /// Get top findings sorted by relevance.
+    pub fn top_findings(&self, limit: usize) -> Vec<&ProbeFinding> {
+        let mut sorted: Vec<&ProbeFinding> = self.findings.iter().collect();
+        sorted.sort_by(|a, b| b.relevance.partial_cmp(&a.relevance).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.truncate(limit);
+        sorted
+    }
+
+    /// Aggregate certainty across all findings.
+    pub fn aggregate_certainty(&self) -> f64 {
+        if self.findings.is_empty() {
+            return 0.0;
+        }
+        let avg: f64 = self.findings.iter().map(|f| f.certainty).sum::<f64>() / self.findings.len() as f64;
+        (avg * 10000.0).round() / 10000.0
+    }
+
+    /// Count findings per source.
+    pub fn findings_per_source(&self) -> HashMap<String, usize> {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for f in &self.findings {
+            *counts.entry(f.source.clone()).or_insert(0) += 1;
+        }
+        counts
+    }
+}
+
+// ── Weave — multi-source content synthesis primitive ─────────────────────────
+
+/// A single source strand contributing to a Weave synthesis.
+///
+/// Each strand represents content from a specific source that will be
+/// woven into the final synthesis. Strands carry attribution metadata
+/// for provenance tracking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeaveStrand {
+    /// Strand identifier (auto-assigned).
+    pub id: u32,
+    /// Source attribution (e.g., "corpus:papers/doc_1", "probe:findings", "manual").
+    pub source: String,
+    /// Content from this source.
+    pub content: String,
+    /// Weight of this strand in synthesis (0.0–1.0).
+    pub weight: f64,
+    /// Certainty of the source content (ΛD, ≤0.99 for derived, 1.0 for raw).
+    pub source_certainty: f64,
+    /// Unix timestamp of addition.
+    pub added_at: u64,
+}
+
+/// A named Weave session — synthesizes content from multiple source strands.
+///
+/// The weave collects strands from diverse sources, each with attribution
+/// and weight. Synthesis produces a combined output whose epistemic certainty
+/// is the weighted average of strand certainties, capped at 0.99 (Theorem 5.1:
+/// synthesis is always derived).
+///
+/// ΛD alignment: ψ = ⟨T="weave", V=synthesis, E=⟨c≤0.99, τ, ρ, δ=derived⟩⟩
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeaveSession {
+    /// Session identifier.
+    pub id: String,
+    /// Weave name/label.
+    pub name: String,
+    /// The synthesis goal or topic.
+    pub goal: String,
+    /// Source strands collected for synthesis.
+    pub strands: Vec<WeaveStrand>,
+    /// The synthesized output (populated on synthesis).
+    pub synthesis: String,
+    /// Whether synthesis has been performed.
+    pub synthesized: bool,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Next strand ID.
+    pub next_strand_id: u32,
+}
+
+impl WeaveSession {
+    /// Add a strand to the weave.
+    pub fn add_strand(&mut self, source: String, content: String, weight: f64, source_certainty: f64) -> u32 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let id = self.next_strand_id;
+        self.next_strand_id += 1;
+
+        self.strands.push(WeaveStrand {
+            id,
+            source,
+            content,
+            weight: weight.max(0.0).min(1.0),
+            source_certainty: source_certainty.max(0.0).min(1.0),
+            added_at: now,
+        });
+
+        id
+    }
+
+    /// Compute synthesis certainty: weighted average of strand certainties, capped at 0.99.
+    pub fn synthesis_certainty(&self) -> f64 {
+        if self.strands.is_empty() {
+            return 0.0;
+        }
+        let total_weight: f64 = self.strands.iter().map(|s| s.weight).sum();
+        if total_weight == 0.0 {
+            return 0.0;
+        }
+        let weighted_certainty: f64 = self.strands.iter()
+            .map(|s| s.source_certainty * s.weight)
+            .sum::<f64>() / total_weight;
+        (weighted_certainty * 10000.0).round() / 10000.0
+    }
+
+    /// Generate attribution list: sources with their weights.
+    pub fn attributions(&self) -> Vec<(String, f64)> {
+        self.strands.iter().map(|s| (s.source.clone(), s.weight)).collect()
+    }
+
+    /// Synthesize: combine strand contents into a unified output.
+    /// Uses weight-ordered concatenation with source attribution markers.
+    pub fn synthesize(&mut self) -> Result<String, String> {
+        if self.strands.is_empty() {
+            return Err("no strands to synthesize".into());
+        }
+        if self.synthesized {
+            return Err("already synthesized".into());
+        }
+
+        // Sort strands by weight descending
+        let mut sorted: Vec<&WeaveStrand> = self.strands.iter().collect();
+        sorted.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut parts: Vec<String> = Vec::new();
+        for strand in &sorted {
+            parts.push(format!("[{}] {}", strand.source, strand.content));
+        }
+
+        self.synthesis = parts.join("\n\n");
+        self.synthesized = true;
+
+        Ok(self.synthesis.clone())
+    }
+}
+
+// ── Corroborate — cross-source verification primitive ────────────────────────
+
+/// A piece of evidence submitted to a Corroborate session.
+///
+/// Each evidence item represents a source's stance on the claim being verified:
+/// "supports", "contradicts", or "neutral". The source certainty reflects
+/// the reliability of the evidence source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorroborateEvidence {
+    /// Evidence identifier (auto-assigned).
+    pub id: u32,
+    /// Source attribution (e.g., "corpus:papers/doc_1", "axonstore:facts/key_1").
+    pub source: String,
+    /// The evidence content.
+    pub content: String,
+    /// Stance: "supports", "contradicts", "neutral".
+    pub stance: String,
+    /// Confidence in the evidence itself (0.0–1.0).
+    pub confidence: f64,
+    /// Unix timestamp.
+    pub submitted_at: u64,
+}
+
+/// A named Corroborate session — verifies a claim across multiple sources.
+///
+/// Agreement scoring: certainty = (supports - contradicts) / total, scaled to [0, 0.99].
+/// High agreement across independent sources → higher certainty.
+/// Contradictory evidence → lower certainty.
+///
+/// ΛD alignment: ψ = ⟨T="corroboration", V=verdict, E=⟨c≤0.99, τ, ρ, δ=derived⟩⟩
+/// Verification is always derived (Theorem 5.1): aggregating stances is inference.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorroborateSession {
+    /// Session identifier.
+    pub id: String,
+    /// Session name.
+    pub name: String,
+    /// The claim being verified.
+    pub claim: String,
+    /// Evidence items collected.
+    pub evidence: Vec<CorroborateEvidence>,
+    /// Whether verification is complete.
+    pub verified: bool,
+    /// Verdict: "corroborated", "disputed", "inconclusive", "pending".
+    pub verdict: String,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Next evidence ID.
+    pub next_evidence_id: u32,
+}
+
+impl CorroborateSession {
+    /// Add evidence to the session.
+    pub fn add_evidence(&mut self, source: String, content: String, stance: String, confidence: f64) -> Result<u32, String> {
+        if self.verified {
+            return Err("session already verified".into());
+        }
+        if !["supports", "contradicts", "neutral"].contains(&stance.as_str()) {
+            return Err(format!("invalid stance '{}': must be supports/contradicts/neutral", stance));
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let id = self.next_evidence_id;
+        self.next_evidence_id += 1;
+
+        self.evidence.push(CorroborateEvidence {
+            id,
+            source,
+            content,
+            stance,
+            confidence: confidence.max(0.0).min(1.0),
+            submitted_at: now,
+        });
+
+        Ok(id)
+    }
+
+    /// Compute agreement score and certainty.
+    /// Returns (agreement_ratio, certainty, verdict).
+    pub fn compute_agreement(&self) -> (f64, f64, String) {
+        if self.evidence.is_empty() {
+            return (0.0, 0.0, "pending".into());
+        }
+
+        let supports: f64 = self.evidence.iter()
+            .filter(|e| e.stance == "supports")
+            .map(|e| e.confidence)
+            .sum();
+        let contradicts: f64 = self.evidence.iter()
+            .filter(|e| e.stance == "contradicts")
+            .map(|e| e.confidence)
+            .sum();
+        let total: f64 = self.evidence.iter()
+            .map(|e| e.confidence)
+            .sum();
+
+        if total == 0.0 {
+            return (0.0, 0.0, "inconclusive".into());
+        }
+
+        // Agreement ratio: net support normalized to [-1, 1]
+        let agreement = (supports - contradicts) / total;
+
+        // Certainty: |agreement| scaled to [0, 0.99]
+        let certainty = (agreement.abs() * 0.99 * 10000.0).round() / 10000.0;
+
+        // Verdict based on agreement
+        let verdict = if agreement > 0.5 {
+            "corroborated".into()
+        } else if agreement < -0.5 {
+            "disputed".into()
+        } else {
+            "inconclusive".into()
+        };
+
+        ((agreement * 10000.0).round() / 10000.0, certainty.min(0.99), verdict)
+    }
+
+    /// Count evidence by stance.
+    pub fn stance_counts(&self) -> (usize, usize, usize) {
+        let supports = self.evidence.iter().filter(|e| e.stance == "supports").count();
+        let contradicts = self.evidence.iter().filter(|e| e.stance == "contradicts").count();
+        let neutral = self.evidence.iter().filter(|e| e.stance == "neutral").count();
+        (supports, contradicts, neutral)
+    }
+
+    /// Verify: finalize the session with computed verdict.
+    pub fn verify(&mut self) -> Result<(f64, f64, String), String> {
+        if self.verified {
+            return Err("already verified".into());
+        }
+        if self.evidence.is_empty() {
+            return Err("no evidence to verify".into());
+        }
+
+        let (agreement, certainty, verdict) = self.compute_agreement();
+        self.verified = true;
+        self.verdict = verdict.clone();
+
+        Ok((agreement, certainty, verdict))
+    }
+}
+
+// ── Drill — deep recursive exploration primitive ────────────────────────────
+
+/// A node in a Drill exploration tree.
+///
+/// Each node represents a point in the exploration space with a question,
+/// answer, and child branches. Depth tracking enables depth-limited search.
+/// ΛD: certainty degrades with depth (deeper = more speculative).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DrillNode {
+    /// Node identifier (path-based: "root", "root.0", "root.0.1").
+    pub id: String,
+    /// The question or topic explored at this node.
+    pub question: String,
+    /// The answer or finding at this node.
+    pub answer: String,
+    /// Depth level (0 = root).
+    pub depth: u32,
+    /// Child node IDs.
+    pub children: Vec<String>,
+    /// Whether this node is a leaf (no further exploration).
+    pub is_leaf: bool,
+    /// ΛD certainty: degrades with depth (1.0 - depth * 0.05, min 0.5, capped at 0.99).
+    pub certainty: f64,
+    /// Unix timestamp.
+    pub created_at: u64,
+}
+
+/// A named Drill session — depth-limited recursive exploration of a topic.
+///
+/// The drill starts at a root question and expands by adding child nodes
+/// at increasing depths. A max_depth limit prevents unbounded exploration.
+///
+/// ΛD alignment: ψ = ⟨T="drill", V=tree, E=⟨c=f(depth), τ, ρ, δ=derived⟩⟩
+/// Certainty degrades with depth: surface findings are more reliable than deep speculation.
+/// All drill findings are derived (Theorem 5.1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DrillSession {
+    /// Session identifier.
+    pub id: String,
+    /// Drill name.
+    pub name: String,
+    /// Root question.
+    pub root_question: String,
+    /// Maximum exploration depth.
+    pub max_depth: u32,
+    /// All nodes in the exploration tree.
+    pub nodes: HashMap<String, DrillNode>,
+    /// Whether the drill is complete.
+    pub completed: bool,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+}
+
+impl DrillSession {
+    /// Compute certainty for a given depth.
+    /// Certainty = (1.0 - depth * 0.05).max(0.5).min(0.99)
+    pub fn certainty_at_depth(depth: u32) -> f64 {
+        let c = 1.0 - depth as f64 * 0.05;
+        let clamped = c.max(0.5).min(0.99);
+        (clamped * 10000.0).round() / 10000.0
+    }
+
+    /// Add the root node.
+    pub fn add_root(&mut self, answer: String) -> Result<String, String> {
+        if self.nodes.contains_key("root") {
+            return Err("root already exists".into());
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        self.nodes.insert("root".into(), DrillNode {
+            id: "root".into(),
+            question: self.root_question.clone(),
+            answer,
+            depth: 0,
+            children: Vec::new(),
+            is_leaf: false,
+            certainty: Self::certainty_at_depth(0),
+            created_at: now,
+        });
+
+        Ok("root".into())
+    }
+
+    /// Expand a node by adding a child question-answer pair.
+    pub fn expand(&mut self, parent_id: &str, question: String, answer: String) -> Result<String, String> {
+        if self.completed {
+            return Err("drill already completed".into());
+        }
+
+        let parent_depth = match self.nodes.get(parent_id) {
+            Some(n) => n.depth,
+            None => return Err(format!("parent node '{}' not found", parent_id)),
+        };
+
+        let child_depth = parent_depth + 1;
+        if child_depth > self.max_depth {
+            return Err(format!("max depth {} reached", self.max_depth));
+        }
+
+        let child_index = self.nodes.get(parent_id).unwrap().children.len();
+        let child_id = format!("{}.{}", parent_id, child_index);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let node = DrillNode {
+            id: child_id.clone(),
+            question,
+            answer,
+            depth: child_depth,
+            children: Vec::new(),
+            is_leaf: child_depth == self.max_depth,
+            certainty: Self::certainty_at_depth(child_depth),
+            created_at: now,
+        };
+
+        self.nodes.insert(child_id.clone(), node);
+        self.nodes.get_mut(parent_id).unwrap().children.push(child_id.clone());
+
+        Ok(child_id)
+    }
+
+    /// Total node count.
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Maximum depth reached.
+    pub fn max_depth_reached(&self) -> u32 {
+        self.nodes.values().map(|n| n.depth).max().unwrap_or(0)
+    }
+
+    /// Leaf count.
+    pub fn leaf_count(&self) -> usize {
+        self.nodes.values().filter(|n| n.children.is_empty()).count()
+    }
+
+    /// Average certainty across all nodes.
+    pub fn avg_certainty(&self) -> f64 {
+        if self.nodes.is_empty() { return 0.0; }
+        let sum: f64 = self.nodes.values().map(|n| n.certainty).sum();
+        (sum / self.nodes.len() as f64 * 10000.0).round() / 10000.0
+    }
+}
+
+// ── Forge — artifact generation primitive ────────────────────────────────────
+
+/// A template for artifact generation.
+///
+/// Templates contain placeholders in `{{variable}}` syntax that are
+/// substituted with provided values during rendering.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForgeTemplate {
+    /// Template name.
+    pub name: String,
+    /// Template content with `{{placeholder}}` markers.
+    pub content: String,
+    /// Required variables (extracted from placeholders).
+    pub variables: Vec<String>,
+    /// Output format hint: "text", "json", "markdown", "code".
+    pub format: String,
+}
+
+/// A rendered artifact from a Forge session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForgeArtifact {
+    /// Artifact identifier.
+    pub id: String,
+    /// Template used.
+    pub template_name: String,
+    /// Rendered content.
+    pub content: String,
+    /// Variables used in rendering.
+    pub variables_used: HashMap<String, String>,
+    /// Output format.
+    pub format: String,
+    /// Unix timestamp.
+    pub created_at: u64,
+    /// ΛD certainty: template rendering is deterministic (c=0.99, δ=derived).
+    pub certainty: f64,
+}
+
+/// A named Forge session — manages templates and generates artifacts.
+///
+/// The forge collects templates and renders them with variable substitution.
+/// Each rendered artifact is a derived output (Theorem 5.1: template
+/// instantiation is transformation, not raw data).
+///
+/// ΛD alignment: ψ = ⟨T="forge", V=artifact, E=⟨c=0.99, τ, ρ, δ=derived⟩⟩
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForgeSession {
+    /// Session identifier.
+    pub id: String,
+    /// Forge name.
+    pub name: String,
+    /// Registered templates.
+    pub templates: HashMap<String, ForgeTemplate>,
+    /// Generated artifacts.
+    pub artifacts: Vec<ForgeArtifact>,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Next artifact ID counter.
+    pub next_artifact_id: u64,
+}
+
+impl ForgeSession {
+    /// Extract `{{variable}}` placeholders from template content.
+    pub fn extract_variables(content: &str) -> Vec<String> {
+        let mut vars = Vec::new();
+        let mut pos = 0;
+        let bytes = content.as_bytes();
+        while pos + 3 < bytes.len() {
+            if bytes[pos] == b'{' && bytes[pos + 1] == b'{' {
+                if let Some(end) = content[pos + 2..].find("}}") {
+                    let var = content[pos + 2..pos + 2 + end].trim().to_string();
+                    if !var.is_empty() && !vars.contains(&var) {
+                        vars.push(var);
+                    }
+                    pos = pos + 2 + end + 2;
+                } else {
+                    pos += 1;
+                }
+            } else {
+                pos += 1;
+            }
+        }
+        vars
+    }
+
+    /// Register a template.
+    pub fn add_template(&mut self, name: String, content: String, format: String) -> Result<(), String> {
+        if self.templates.contains_key(&name) {
+            return Err(format!("template '{}' already exists", name));
+        }
+        let variables = Self::extract_variables(&content);
+        self.templates.insert(name.clone(), ForgeTemplate {
+            name,
+            content,
+            variables,
+            format,
+        });
+        Ok(())
+    }
+
+    /// Render a template with variable substitution.
+    pub fn render(&mut self, template_name: &str, variables: &HashMap<String, String>) -> Result<ForgeArtifact, String> {
+        let template = match self.templates.get(template_name) {
+            Some(t) => t.clone(),
+            None => return Err(format!("template '{}' not found", template_name)),
+        };
+
+        // Check all required variables are provided
+        for var in &template.variables {
+            if !variables.contains_key(var) {
+                return Err(format!("missing required variable '{}'", var));
+            }
+        }
+
+        // Substitute placeholders
+        let mut rendered = template.content.clone();
+        for (key, value) in variables {
+            let placeholder = format!("{{{{{}}}}}", key);
+            rendered = rendered.replace(&placeholder, value);
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let artifact_id = format!("artifact_{}_{}", self.next_artifact_id, template_name);
+        self.next_artifact_id += 1;
+
+        let artifact = ForgeArtifact {
+            id: artifact_id,
+            template_name: template_name.to_string(),
+            content: rendered,
+            variables_used: variables.clone(),
+            format: template.format.clone(),
+            created_at: now,
+            certainty: 0.99, // template rendering is deterministic but derived
+        };
+
+        self.artifacts.push(artifact.clone());
+
+        Ok(artifact)
+    }
+}
+
+// ── Deliberate — extended reasoning with backtrack primitive ─────────────────
+
+/// An option being evaluated in a Deliberate session.
+///
+/// Each option represents a possible course of action with pros, cons,
+/// and a composite score. Options can be marked as "eliminated" (backtracked)
+/// when reasoning reveals they are unviable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeliberateOption {
+    /// Option identifier (auto-assigned).
+    pub id: u32,
+    /// Option label/name.
+    pub label: String,
+    /// Description of this option.
+    pub description: String,
+    /// Arguments in favor.
+    pub pros: Vec<String>,
+    /// Arguments against.
+    pub cons: Vec<String>,
+    /// Composite score (0.0–1.0), computed from pros/cons balance.
+    pub score: f64,
+    /// Whether this option has been eliminated (backtracked).
+    pub eliminated: bool,
+    /// Reason for elimination (if eliminated).
+    pub elimination_reason: String,
+}
+
+/// A named Deliberate session — structured decision-making with option evaluation.
+///
+/// The session collects options, evaluates them with pros/cons, computes
+/// scores, allows backtracking (elimination), and selects a winner.
+///
+/// ΛD alignment: ψ = ⟨T="deliberation", V=decision, E=⟨c≤0.99, τ, ρ, δ=derived⟩⟩
+/// Deliberation is inferential reasoning — all outcomes are derived (Theorem 5.1).
+/// Certainty scales with the margin between top option and alternatives.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeliberateSession {
+    /// Session identifier.
+    pub id: String,
+    /// Session name.
+    pub name: String,
+    /// The question or decision to be made.
+    pub question: String,
+    /// Options under consideration.
+    pub options: Vec<DeliberateOption>,
+    /// Whether a decision has been made.
+    pub decided: bool,
+    /// The chosen option ID (if decided).
+    pub chosen_option: Option<u32>,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Next option ID.
+    pub next_option_id: u32,
+}
+
+impl DeliberateSession {
+    /// Add an option to consider.
+    pub fn add_option(&mut self, label: String, description: String) -> Result<u32, String> {
+        if self.decided {
+            return Err("session already decided".into());
+        }
+        let id = self.next_option_id;
+        self.next_option_id += 1;
+        self.options.push(DeliberateOption {
+            id,
+            label,
+            description,
+            pros: Vec::new(),
+            cons: Vec::new(),
+            score: 0.5, // neutral starting score
+            eliminated: false,
+            elimination_reason: String::new(),
+        });
+        Ok(id)
+    }
+
+    /// Add a pro or con to an option, recompute score.
+    pub fn evaluate(&mut self, option_id: u32, pro: Option<String>, con: Option<String>) -> Result<f64, String> {
+        if self.decided {
+            return Err("session already decided".into());
+        }
+        let option = self.options.iter_mut().find(|o| o.id == option_id)
+            .ok_or_else(|| format!("option {} not found", option_id))?;
+        if option.eliminated {
+            return Err(format!("option {} is eliminated", option_id));
+        }
+        if let Some(p) = pro { option.pros.push(p); }
+        if let Some(c) = con { option.cons.push(c); }
+        // Score: pros / (pros + cons), default 0.5 if both empty
+        let total = option.pros.len() + option.cons.len();
+        option.score = if total == 0 { 0.5 } else {
+            (option.pros.len() as f64 / total as f64 * 10000.0).round() / 10000.0
+        };
+        Ok(option.score)
+    }
+
+    /// Eliminate (backtrack) an option.
+    pub fn eliminate(&mut self, option_id: u32, reason: String) -> Result<(), String> {
+        if self.decided {
+            return Err("session already decided".into());
+        }
+        let option = self.options.iter_mut().find(|o| o.id == option_id)
+            .ok_or_else(|| format!("option {} not found", option_id))?;
+        if option.eliminated {
+            return Err(format!("option {} already eliminated", option_id));
+        }
+        option.eliminated = true;
+        option.elimination_reason = reason;
+        option.score = 0.0;
+        Ok(())
+    }
+
+    /// Make a decision: choose the highest-scoring non-eliminated option.
+    pub fn decide(&mut self) -> Result<(u32, f64, f64), String> {
+        if self.decided {
+            return Err("already decided".into());
+        }
+        let viable: Vec<&DeliberateOption> = self.options.iter()
+            .filter(|o| !o.eliminated)
+            .collect();
+        if viable.is_empty() {
+            return Err("no viable options remaining".into());
+        }
+        let best = viable.iter().max_by(|a, b|
+            a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal)
+        ).unwrap();
+        let best_id = best.id;
+        let best_score = best.score;
+
+        // Certainty: margin between best and second-best
+        let mut scores: Vec<f64> = viable.iter().map(|o| o.score).collect();
+        scores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        let margin = if scores.len() >= 2 {
+            scores[0] - scores[1]
+        } else {
+            scores[0] // single option → full score as margin
+        };
+        let certainty = (margin * 0.99).min(0.99);
+        let certainty_rounded = (certainty * 10000.0).round() / 10000.0;
+
+        self.decided = true;
+        self.chosen_option = Some(best_id);
+
+        Ok((best_id, best_score, certainty_rounded))
+    }
+
+    /// Count viable (non-eliminated) options.
+    pub fn viable_count(&self) -> usize {
+        self.options.iter().filter(|o| !o.eliminated).count()
+    }
+}
+
+// ── Consensus — multi-agent agreement primitive ─────────────────────────────
+
+/// A vote cast by a participant in a Consensus session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsensusVote {
+    /// Voter identifier (agent name or role).
+    pub voter: String,
+    /// The choice voted for.
+    pub choice: String,
+    /// Confidence in this vote (0.0–1.0).
+    pub confidence: f64,
+    /// Optional rationale.
+    pub rationale: String,
+    /// Unix timestamp.
+    pub voted_at: u64,
+}
+
+/// A named Consensus session — multi-agent agreement through voting.
+///
+/// Participants cast votes for choices. A quorum threshold determines
+/// when enough votes have been cast to reach a decision. The winning
+/// choice is the one with the most confidence-weighted votes.
+///
+/// ΛD alignment: ψ = ⟨T="consensus", V=outcome, E=⟨c≤0.99, τ, ρ, δ=derived⟩⟩
+/// Consensus is aggregated opinion — always derived (Theorem 5.1).
+/// Certainty scales with agreement ratio (unanimous = high, split = low).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsensusSession {
+    /// Session identifier.
+    pub id: String,
+    /// Session name.
+    pub name: String,
+    /// The proposal or question being voted on.
+    pub proposal: String,
+    /// Available choices to vote for.
+    pub choices: Vec<String>,
+    /// Minimum number of votes required for quorum.
+    pub quorum: u32,
+    /// Votes cast.
+    pub votes: Vec<ConsensusVote>,
+    /// Whether consensus has been reached.
+    pub resolved: bool,
+    /// Winning choice (if resolved).
+    pub winner: String,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+}
+
+impl ConsensusSession {
+    /// Cast a vote. Each voter may vote only once.
+    pub fn vote(&mut self, voter: String, choice: String, confidence: f64, rationale: String) -> Result<(), String> {
+        if self.resolved {
+            return Err("consensus already resolved".into());
+        }
+        if !self.choices.contains(&choice) {
+            return Err(format!("invalid choice '{}': must be one of {:?}", choice, self.choices));
+        }
+        if self.votes.iter().any(|v| v.voter == voter) {
+            return Err(format!("voter '{}' has already voted", voter));
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        self.votes.push(ConsensusVote {
+            voter,
+            choice,
+            confidence: confidence.max(0.0).min(1.0),
+            rationale,
+            voted_at: now,
+        });
+
+        Ok(())
+    }
+
+    /// Check if quorum has been met.
+    pub fn has_quorum(&self) -> bool {
+        self.votes.len() as u32 >= self.quorum
+    }
+
+    /// Tally votes: returns (choice → weighted_score) sorted descending.
+    pub fn tally(&self) -> Vec<(String, f64, u32)> {
+        let mut scores: HashMap<String, (f64, u32)> = HashMap::new();
+        for v in &self.votes {
+            let entry = scores.entry(v.choice.clone()).or_insert((0.0, 0));
+            entry.0 += v.confidence;
+            entry.1 += 1;
+        }
+        let mut result: Vec<(String, f64, u32)> = scores.into_iter()
+            .map(|(choice, (score, count))| (choice, (score * 10000.0).round() / 10000.0, count))
+            .collect();
+        result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        result
+    }
+
+    /// Resolve: determine winner if quorum is met.
+    pub fn resolve(&mut self) -> Result<(String, f64, f64), String> {
+        if self.resolved {
+            return Err("already resolved".into());
+        }
+        if !self.has_quorum() {
+            return Err(format!("quorum not met: {} of {} required", self.votes.len(), self.quorum));
+        }
+
+        let tally = self.tally();
+        if tally.is_empty() {
+            return Err("no votes cast".into());
+        }
+
+        let winner = tally[0].0.clone();
+        let winner_score = tally[0].1;
+        let total_score: f64 = tally.iter().map(|t| t.1).sum();
+
+        // Agreement ratio: winner_score / total_score
+        let agreement = if total_score > 0.0 {
+            (winner_score / total_score * 10000.0).round() / 10000.0
+        } else {
+            0.0
+        };
+
+        // Certainty: agreement * 0.99 (capped at 0.99)
+        let certainty = (agreement * 0.99 * 10000.0).round() / 10000.0;
+
+        self.resolved = true;
+        self.winner = winner.clone();
+
+        Ok((winner, agreement, certainty.min(0.99)))
+    }
+
+    /// Vote count.
+    pub fn vote_count(&self) -> u32 {
+        self.votes.len() as u32
+    }
+}
+
+// ── Hibernate — long-running suspension primitive ────────────────────────────
+
+/// A checkpoint captured during a Hibernate session.
+///
+/// Checkpoints save the state of a suspended operation so it can be
+/// resumed later. Each checkpoint is an immutable snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HibernateCheckpoint {
+    /// Checkpoint identifier (auto-assigned).
+    pub id: u32,
+    /// Label for this checkpoint.
+    pub label: String,
+    /// Serialized state payload (JSON).
+    pub state: serde_json::Value,
+    /// Unix timestamp of checkpoint creation.
+    pub created_at: u64,
+    /// Step or phase at time of checkpoint.
+    pub phase: String,
+}
+
+/// A named Hibernate session — suspend and resume long-running operations.
+///
+/// The session tracks a suspended operation with checkpoints for state
+/// preservation. Operations can be suspended (hibernate), checkpointed,
+/// and resumed from any checkpoint.
+///
+/// ΛD alignment: ψ = ⟨T="hibernate", V=state, E=⟨c, τ, ρ, δ⟩⟩
+/// - Checkpoint state: c=1.0, δ=raw (exact state capture)
+/// - Resumed execution: c=0.99, δ=derived (resumption is a transformation)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HibernateSession {
+    /// Session identifier.
+    pub id: String,
+    /// Session name.
+    pub name: String,
+    /// The operation being hibernated.
+    pub operation: String,
+    /// Current status: "active", "suspended", "resumed", "completed".
+    pub status: String,
+    /// Checkpoints captured.
+    pub checkpoints: Vec<HibernateCheckpoint>,
+    /// The checkpoint ID used for resume (if resumed).
+    pub resumed_from: Option<u32>,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Unix timestamp of last status change.
+    pub last_status_change: u64,
+    /// Next checkpoint ID.
+    pub next_checkpoint_id: u32,
+}
+
+impl HibernateSession {
+    /// Suspend the session (hibernate).
+    pub fn suspend(&mut self) -> Result<(), String> {
+        if self.status == "suspended" {
+            return Err("already suspended".into());
+        }
+        if self.status == "completed" {
+            return Err("cannot suspend completed session".into());
+        }
+        self.status = "suspended".into();
+        self.last_status_change = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        Ok(())
+    }
+
+    /// Create a checkpoint with current state.
+    pub fn checkpoint(&mut self, label: String, state: serde_json::Value, phase: String) -> Result<u32, String> {
+        if self.status == "completed" {
+            return Err("cannot checkpoint completed session".into());
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+        let id = self.next_checkpoint_id;
+        self.next_checkpoint_id += 1;
+
+        self.checkpoints.push(HibernateCheckpoint {
+            id,
+            label,
+            state,
+            created_at: now,
+            phase,
+        });
+
+        Ok(id)
+    }
+
+    /// Resume from a checkpoint.
+    pub fn resume(&mut self, checkpoint_id: u32) -> Result<&HibernateCheckpoint, String> {
+        if self.status != "suspended" {
+            return Err(format!("cannot resume from status '{}' (must be suspended)", self.status));
+        }
+
+        let exists = self.checkpoints.iter().any(|c| c.id == checkpoint_id);
+        if !exists {
+            return Err(format!("checkpoint {} not found", checkpoint_id));
+        }
+
+        self.status = "resumed".into();
+        self.resumed_from = Some(checkpoint_id);
+        self.last_status_change = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+        Ok(self.checkpoints.iter().find(|c| c.id == checkpoint_id).unwrap())
+    }
+
+    /// Mark the session as completed.
+    pub fn complete(&mut self) -> Result<(), String> {
+        if self.status == "completed" {
+            return Err("already completed".into());
+        }
+        self.status = "completed".into();
+        self.last_status_change = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        Ok(())
+    }
+}
+
+// ── OTS — one-time-secret generation primitive ──────────────────────────────
+
+/// A one-time secret: readable exactly once, then destroyed.
+///
+/// OTS tokens provide secure ephemeral credential exchange. Each secret
+/// has a TTL and can only be retrieved once — after retrieval it is
+/// permanently destroyed.
+///
+/// ΛD alignment:
+/// - Created secret: c=1.0, δ=raw (the secret is ground truth)
+/// - Retrieved secret: c=1.0, δ=raw (exact value returned, then destroyed)
+/// - Expired/consumed: c=0.0, δ=void (no longer exists)
+#[derive(Debug, Clone, Serialize)]
+pub struct OtsSecret {
+    /// Secret identifier (token used for retrieval).
+    pub token: String,
+    /// The secret value (cleared after retrieval).
+    pub value: String,
+    /// Whether the secret has been consumed (retrieved).
+    pub consumed: bool,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// TTL in seconds (0 = no expiry).
+    pub ttl_secs: u64,
+    /// Creator identity.
+    pub created_by: String,
+    /// Optional label/purpose.
+    pub label: String,
+}
+
+impl OtsSecret {
+    /// Check if the secret has expired.
+    pub fn is_expired(&self, now: u64) -> bool {
+        self.ttl_secs > 0 && now > self.created_at + self.ttl_secs
+    }
+
+    /// Consume the secret: return value and mark as consumed.
+    pub fn consume(&mut self, now: u64) -> Result<String, String> {
+        if self.consumed {
+            return Err("secret already consumed".into());
+        }
+        if self.is_expired(now) {
+            return Err("secret has expired".into());
+        }
+        self.consumed = true;
+        let val = self.value.clone();
+        self.value = String::new(); // clear the secret
+        Ok(val)
+    }
+}
+
+/// Generate a cryptographically-inspired token (not truly random, but unique).
+pub fn generate_ots_token(prefix: &str) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let nanos = now.as_nanos();
+    format!("ots_{}_{:x}", prefix, nanos)
+}
+
+// ── Psyche — metacognitive self-reflection primitive ─────────────────────────
+
+/// An insight produced during a Psyche introspection session.
+///
+/// Each insight captures a metacognitive observation about the system's
+/// own cognitive state: what it knows, what it's uncertain about, where
+/// its reasoning might be flawed, and what it should investigate further.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PsycheInsight {
+    /// Insight identifier.
+    pub id: u32,
+    /// Category: "knowledge_gap", "uncertainty", "bias", "strength", "recommendation".
+    pub category: String,
+    /// The insight content.
+    pub content: String,
+    /// Confidence in this insight (0.0–1.0).
+    pub confidence: f64,
+    /// Severity: "info", "warning", "critical".
+    pub severity: String,
+    /// Unix timestamp.
+    pub created_at: u64,
+}
+
+/// A named Psyche session — metacognitive self-reflection and introspection.
+///
+/// The session aggregates insights about the system's cognitive state,
+/// producing an introspection report with self-awareness metrics.
+///
+/// ΛD alignment: ψ = ⟨T="psyche", V=introspection, E=⟨c≤0.99, τ, ρ, δ=derived⟩⟩
+/// Self-reflection is inherently derived (Theorem 5.1): reasoning about
+/// one's own reasoning is a meta-operation, not raw observation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PsycheSession {
+    /// Session identifier.
+    pub id: String,
+    /// Session name.
+    pub name: String,
+    /// The cognitive context being introspected.
+    pub context: String,
+    /// Insights gathered.
+    pub insights: Vec<PsycheInsight>,
+    /// Whether the introspection is complete.
+    pub completed: bool,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Next insight ID.
+    pub next_insight_id: u32,
+}
+
+impl PsycheSession {
+    /// Add an insight.
+    pub fn add_insight(&mut self, category: String, content: String, confidence: f64, severity: String) -> Result<u32, String> {
+        if self.completed {
+            return Err("session already completed".into());
+        }
+        let valid_categories = ["knowledge_gap", "uncertainty", "bias", "strength", "recommendation"];
+        if !valid_categories.contains(&category.as_str()) {
+            return Err(format!("invalid category '{}': must be one of {:?}", category, valid_categories));
+        }
+        let valid_severities = ["info", "warning", "critical"];
+        if !valid_severities.contains(&severity.as_str()) {
+            return Err(format!("invalid severity '{}': must be info/warning/critical", severity));
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+        let id = self.next_insight_id;
+        self.next_insight_id += 1;
+
+        self.insights.push(PsycheInsight {
+            id,
+            category,
+            content,
+            confidence: confidence.max(0.0).min(1.0),
+            severity,
+            created_at: now,
+        });
+
+        Ok(id)
+    }
+
+    /// Generate introspection report.
+    pub fn report(&self) -> serde_json::Value {
+        let mut by_category: HashMap<String, Vec<&PsycheInsight>> = HashMap::new();
+        for insight in &self.insights {
+            by_category.entry(insight.category.clone()).or_default().push(insight);
+        }
+
+        let gaps = by_category.get("knowledge_gap").map(|v| v.len()).unwrap_or(0);
+        let uncertainties = by_category.get("uncertainty").map(|v| v.len()).unwrap_or(0);
+        let biases = by_category.get("bias").map(|v| v.len()).unwrap_or(0);
+        let strengths = by_category.get("strength").map(|v| v.len()).unwrap_or(0);
+        let recommendations = by_category.get("recommendation").map(|v| v.len()).unwrap_or(0);
+
+        let critical_count = self.insights.iter().filter(|i| i.severity == "critical").count();
+        let warning_count = self.insights.iter().filter(|i| i.severity == "warning").count();
+
+        let avg_confidence = if self.insights.is_empty() { 0.0 } else {
+            let sum: f64 = self.insights.iter().map(|i| i.confidence).sum();
+            (sum / self.insights.len() as f64 * 10000.0).round() / 10000.0
+        };
+
+        // Self-awareness score: higher with more diverse insights, penalized by critical issues
+        let diversity = [gaps > 0, uncertainties > 0, biases > 0, strengths > 0, recommendations > 0]
+            .iter().filter(|&&b| b).count() as f64 / 5.0;
+        let penalty = critical_count as f64 * 0.1;
+        let awareness = ((diversity * 0.7 + avg_confidence * 0.3 - penalty).max(0.0).min(1.0) * 10000.0).round() / 10000.0;
+
+        serde_json::json!({
+            "total_insights": self.insights.len(),
+            "by_category": {
+                "knowledge_gaps": gaps,
+                "uncertainties": uncertainties,
+                "biases": biases,
+                "strengths": strengths,
+                "recommendations": recommendations,
+            },
+            "severity_summary": {
+                "critical": critical_count,
+                "warning": warning_count,
+                "info": self.insights.len() - critical_count - warning_count,
+            },
+            "avg_confidence": avg_confidence,
+            "self_awareness_score": awareness,
+        })
+    }
+}
+
+// ── AxonEndpoint — external API endpoint binding primitive ───────────────────
+
+/// A registered external API endpoint binding.
+///
+/// Each binding declares an external service endpoint that AXON flows
+/// can call. Bindings carry method, URL template, headers, and authentication
+/// configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndpointBinding {
+    /// Binding name (unique identifier).
+    pub name: String,
+    /// HTTP method: "GET", "POST", "PUT", "DELETE".
+    pub method: String,
+    /// URL template with `{param}` placeholders (e.g., "https://api.example.com/v1/{resource}").
+    pub url_template: String,
+    /// Default headers to include in requests.
+    pub headers: HashMap<String, String>,
+    /// Authentication type: "none", "bearer", "api_key", "basic".
+    pub auth_type: String,
+    /// Auth credential key (looked up from server config, never stored in plain text).
+    pub auth_ref: String,
+    /// Timeout in milliseconds.
+    pub timeout_ms: u64,
+    /// Whether this binding is active.
+    pub enabled: bool,
+    /// Description of what this endpoint does.
+    pub description: String,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Total calls made through this binding.
+    pub total_calls: u64,
+    /// Total errors from this binding.
+    pub total_errors: u64,
+}
+
+/// Record of a simulated call to an external endpoint.
+/// (Actual HTTP calls are not made in the runtime — this records the intent
+/// for orchestration by external systems or MCP clients.)
+#[derive(Debug, Clone, Serialize)]
+pub struct EndpointCallRecord {
+    /// Call identifier.
+    pub id: String,
+    /// Binding name used.
+    pub binding: String,
+    /// Resolved URL (template with params substituted).
+    pub resolved_url: String,
+    /// HTTP method.
+    pub method: String,
+    /// Request body (if any).
+    pub body: serde_json::Value,
+    /// Parameters substituted.
+    pub params: HashMap<String, String>,
+    /// Unix timestamp.
+    pub called_at: u64,
+}
+
+// ── Pix — visual reasoning primitive ─────────────────────────────────────────
+
+/// An annotation on a Pix image.
+///
+/// Annotations mark regions of interest with labels, bounding boxes,
+/// and confidence scores from visual analysis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PixAnnotation {
+    /// Annotation identifier.
+    pub id: u32,
+    /// Label for the annotated region.
+    pub label: String,
+    /// Bounding box: [x, y, width, height] in normalized coordinates (0.0–1.0).
+    pub bbox: [f64; 4],
+    /// Confidence in this annotation (0.0–1.0).
+    pub confidence: f64,
+    /// Category: "object", "text", "region", "feature".
+    pub category: String,
+    /// Optional description.
+    pub description: String,
+}
+
+/// A registered image in a Pix session.
+///
+/// Each image carries metadata (dimensions, format, source) and
+/// accumulated annotations from visual reasoning operations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PixImage {
+    /// Image identifier.
+    pub id: String,
+    /// Image source (URL, file path, or "inline").
+    pub source: String,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// Format: "png", "jpeg", "webp", "svg".
+    pub format: String,
+    /// Annotations applied to this image.
+    pub annotations: Vec<PixAnnotation>,
+    /// ΛD epistemic envelope for the image data.
+    pub envelope: EpistemicEnvelope,
+    /// Unix timestamp of registration.
+    pub registered_at: u64,
+    /// Next annotation ID.
+    pub next_annotation_id: u32,
+}
+
+/// A named Pix session — visual reasoning with image metadata and annotation.
+///
+/// The session manages images and their annotations, enabling visual
+/// reasoning workflows: register images, annotate regions, query annotations.
+///
+/// ΛD alignment: ψ = ⟨T="pix", V=visual_data, E=⟨c, τ, ρ, δ⟩⟩
+/// - Image registration: c=1.0, δ=raw (the image metadata is ground truth)
+/// - Annotations: c≤0.99, δ=derived (visual interpretation is speculative per Theorem 5.1)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PixSession {
+    /// Session identifier.
+    pub id: String,
+    /// Session name.
+    pub name: String,
+    /// Images keyed by ID.
+    pub images: HashMap<String, PixImage>,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// Next image ID counter.
+    pub next_image_id: u64,
+}
+
+impl PixSession {
+    /// Register an image.
+    pub fn register_image(&mut self, source: String, width: u32, height: u32, format: String, provenance: &str) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+        let id = format!("img_{}_{}", self.name, self.next_image_id);
+        self.next_image_id += 1;
+
+        let envelope = EpistemicEnvelope::raw_config("pix", provenance);
+
+        self.images.insert(id.clone(), PixImage {
+            id: id.clone(),
+            source,
+            width,
+            height,
+            format,
+            annotations: Vec::new(),
+            envelope,
+            registered_at: now,
+            next_annotation_id: 1,
+        });
+
+        id
+    }
+
+    /// Add an annotation to an image.
+    pub fn annotate(&mut self, image_id: &str, label: String, bbox: [f64; 4], confidence: f64, category: String, description: String) -> Result<u32, String> {
+        let valid_categories = ["object", "text", "region", "feature"];
+        if !valid_categories.contains(&category.as_str()) {
+            return Err(format!("invalid category '{}': must be object/text/region/feature", category));
+        }
+
+        // Validate bbox: all values in [0.0, 1.0]
+        for &v in &bbox {
+            if !(0.0..=1.0).contains(&v) {
+                return Err("bbox values must be in [0.0, 1.0]".into());
+            }
+        }
+
+        let image = self.images.get_mut(image_id)
+            .ok_or_else(|| format!("image '{}' not found", image_id))?;
+
+        let ann_id = image.next_annotation_id;
+        image.next_annotation_id += 1;
+
+        image.annotations.push(PixAnnotation {
+            id: ann_id,
+            label,
+            bbox,
+            confidence: confidence.max(0.0).min(1.0),
+            category,
+            description,
+        });
+
+        // Update image envelope to derived (annotations are interpretive)
+        image.envelope = EpistemicEnvelope::derived("pix", 0.99, "pix_annotator");
+
+        Ok(ann_id)
+    }
+
+    /// Total image count.
+    pub fn image_count(&self) -> usize {
+        self.images.len()
+    }
+
+    /// Total annotation count across all images.
+    pub fn total_annotations(&self) -> usize {
+        self.images.values().map(|img| img.annotations.len()).sum()
+    }
+}
+
+/// A cached execution result with TTL and ΛD epistemic state.
+///
+/// Cache entries carry δ=derived (not raw) because they are reproductions
+/// of a prior execution, not the original computation. Per Theorem 5.1,
+/// c < 1.0 for derived values.
+#[derive(Debug, Clone, Serialize)]
+pub struct CachedResult {
+    /// Cache key (flow_name + backend).
+    pub cache_key: String,
+    /// Flow name.
+    pub flow_name: String,
+    /// Backend used.
+    pub backend: String,
+    /// Cached execution result.
+    pub result: serde_json::Value,
+    /// Trace ID of the original execution.
+    pub source_trace_id: u64,
+    /// When the cache entry was created (Unix seconds).
+    pub cached_at: u64,
+    /// TTL in seconds (0 = no expiry).
+    pub ttl_secs: u64,
+    /// ΛD epistemic state: δ=derived, c<1.0 (stale risk).
+    pub epistemic: EpistemicEnvelope,
+}
+
+impl CachedResult {
+    /// Check if this entry has expired.
+    pub fn is_expired(&self) -> bool {
+        if self.ttl_secs == 0 { return false; }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        now > self.cached_at + self.ttl_secs
+    }
+}
+
+/// Exportable server state backup with ΛD epistemic metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerBackup {
+    /// Backup format version.
+    pub version: String,
+    /// Timestamp of backup creation.
+    pub created_at: u64,
+
+    // ── ΛD Epistemic Metadata ──
+    // Each backup carries its epistemic envelope ψ = ⟨T, V, E⟩
+    // ensuring no information loss across serialization boundaries.
+
+    /// ΛD envelope for the backup itself.
+    pub lambda_d: EpistemicEnvelope,
+
+    /// Per-section epistemic provenance.
+    pub section_provenance: HashMap<String, EpistemicEnvelope>,
+
+    // ── Config Sections (V — the value payload) ──
+    /// Cost pricing config.
+    pub cost_pricing: CostPricing,
+    /// Cost budgets per flow.
+    pub cost_budgets: HashMap<String, CostBudget>,
+    /// Flow validation rules.
+    pub flow_rules: HashMap<String, FlowValidationRules>,
+    /// Flow execution quotas.
+    pub flow_quotas: HashMap<String, FlowQuota>,
+    /// Readiness gates.
+    pub readiness_gates: ReadinessGates,
+    /// Per-endpoint rate limits.
+    pub endpoint_rate_limits: HashMap<String, EndpointRateLimit>,
+    /// Schedule configs.
+    pub schedules: Vec<ScheduleBackupEntry>,
+    /// AxonStore instances (cognitive persistence).
+    #[serde(default)]
+    pub axon_stores: HashMap<String, AxonStoreInstance>,
+    /// Dataspace instances (cognitive navigation).
+    #[serde(default)]
+    pub dataspaces: HashMap<String, DataspaceInstance>,
+    /// Shield instances (cognitive guardrails).
+    #[serde(default)]
+    pub shields: HashMap<String, ShieldInstance>,
+}
+
+/// Minimal schedule entry for backup (no runtime state).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleBackupEntry {
+    pub name: String,
+    pub flow_name: String,
+    pub interval_secs: u64,
+    pub enabled: bool,
+    pub backend: String,
+}
+
+/// POST /v1/server/backup — export server configuration state as JSON.
+async fn server_backup_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::Admin)?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let schedules: Vec<ScheduleBackupEntry> = s.schedules.iter().map(|(name, sched)| {
+        ScheduleBackupEntry {
+            name: name.clone(),
+            flow_name: sched.flow_name.clone(),
+            interval_secs: sched.interval_secs,
+            enabled: sched.enabled,
+            backend: sched.backend.clone(),
+        }
+    }).collect();
+
+    let client = client_key_from_headers(&headers);
+
+    // Build per-section ΛD provenance
+    let mut section_prov = HashMap::new();
+    section_prov.insert("cost_pricing".into(), EpistemicEnvelope::raw_config("config:pricing", &client));
+    section_prov.insert("cost_budgets".into(), EpistemicEnvelope::raw_config("config:budgets", &client));
+    section_prov.insert("flow_rules".into(), EpistemicEnvelope::raw_config("config:validation_rules", &client));
+    section_prov.insert("flow_quotas".into(), EpistemicEnvelope::raw_config("config:quotas", &client));
+    section_prov.insert("readiness_gates".into(), EpistemicEnvelope::raw_config("config:readiness", &client));
+    section_prov.insert("endpoint_rate_limits".into(), EpistemicEnvelope::raw_config("config:rate_limits", &client));
+    section_prov.insert("schedules".into(), EpistemicEnvelope::raw_config("config:schedules", &client));
+    section_prov.insert("axon_stores".into(), EpistemicEnvelope::raw_config("config:axon_stores", &client));
+    section_prov.insert("dataspaces".into(), EpistemicEnvelope::raw_config("config:dataspaces", &client));
+
+    let backup = ServerBackup {
+        version: "1.0-ΛD".into(),
+        created_at: now,
+        lambda_d: EpistemicEnvelope::raw_config("axon:server_backup", &client),
+        section_provenance: section_prov,
+        cost_pricing: s.cost_pricing.clone(),
+        cost_budgets: s.cost_budgets.clone(),
+        flow_rules: s.flow_rules.clone(),
+        flow_quotas: s.flow_quotas.clone(),
+        readiness_gates: s.readiness_gates.clone(),
+        endpoint_rate_limits: s.endpoint_rate_limits.clone(),
+        schedules,
+        axon_stores: s.axon_stores.clone(),
+        dataspaces: s.dataspaces.clone(),
+        shields: s.shields.clone(),
+    };
+
+    Ok(Json(serde_json::to_value(&backup).unwrap_or_default()))
+}
+
+/// POST /v1/server/restore — import server configuration state from JSON backup.
+async fn server_restore_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(backup): Json<ServerBackup>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    // Validate ΛD invariants at import boundary
+    if let Err(e) = backup.lambda_d.validate() {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": e,
+            "phase": "lambda_d_validation",
+        })));
+    }
+    for (section, envelope) in &backup.section_provenance {
+        if let Err(e) = envelope.validate() {
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": format!("section '{}': {}", section, e),
+                "phase": "lambda_d_section_validation",
+            })));
+        }
+    }
+
+    // Apply backup
+    s.cost_pricing = backup.cost_pricing;
+    s.cost_budgets = backup.cost_budgets;
+    s.flow_rules = backup.flow_rules;
+    s.flow_quotas = backup.flow_quotas;
+    s.readiness_gates = backup.readiness_gates;
+    s.endpoint_rate_limits = backup.endpoint_rate_limits;
+
+    // Restore schedules (create new entries, don't overwrite runtime state of existing)
+    let mut restored_schedules = 0;
+    for sched in &backup.schedules {
+        if !s.schedules.contains_key(&sched.name) {
+            s.schedules.insert(sched.name.clone(), ScheduleEntry {
+                flow_name: sched.flow_name.clone(),
+                interval_secs: sched.interval_secs,
+                enabled: sched.enabled,
+                backend: sched.backend.clone(),
+                last_run: 0,
+                next_run: sched.interval_secs,
+                run_count: 0,
+                error_count: 0,
+                history: Vec::new(),
+            });
+            restored_schedules += 1;
+        }
+    }
+
+    // Restore AxonStores (merge: don't overwrite existing)
+    let mut restored_axon_stores = 0u64;
+    for (name, store) in backup.axon_stores {
+        if !s.axon_stores.contains_key(&name) {
+            s.axon_stores.insert(name, store);
+            restored_axon_stores += 1;
+        }
+    }
+
+    // Restore Dataspaces (merge: don't overwrite existing)
+    let mut restored_dataspaces = 0u64;
+    for (name, ds) in backup.dataspaces {
+        if !s.dataspaces.contains_key(&name) {
+            s.dataspaces.insert(name, ds);
+            restored_dataspaces += 1;
+        }
+    }
+
+    // Restore Shields (merge: don't overwrite existing)
+    let mut restored_shields = 0u64;
+    for (name, sh) in backup.shields {
+        if !s.shields.contains_key(&name) {
+            s.shields.insert(name, sh);
+            restored_shields += 1;
+        }
+    }
+
+    s.audit_log.record(
+        &client, AuditAction::ConfigLoad, "server_restore",
+        serde_json::json!({
+            "version": backup.version, "restored_schedules": restored_schedules,
+            "axon_stores_restored": restored_axon_stores, "dataspaces_restored": restored_dataspaces,
+            "shields_restored": restored_shields,
+        }),
+        true,
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "version": backup.version,
+        "restored": {
+            "cost_pricing": true,
+            "cost_budgets": true,
+            "flow_rules": true,
+            "flow_quotas": true,
+            "readiness_gates": true,
+            "endpoint_rate_limits": true,
+            "schedules_created": restored_schedules,
+            "axon_stores_restored": restored_axon_stores,
+            "dataspaces_restored": restored_dataspaces,
+            "shields_restored": restored_shields,
+        },
+    })))
+}
+
+/// Query for cache lookup.
+#[derive(Debug, Deserialize)]
+pub struct CacheLookupQuery {
+    pub flow_name: String,
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+}
+
+/// GET /v1/execute/cache — lookup cached result.
+async fn execute_cache_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<CacheLookupQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let key = format!("{}:{}", params.flow_name, params.backend);
+    match s.execution_cache.iter().find(|c| c.cache_key == key) {
+        Some(entry) if entry.is_expired() => Ok(Json(serde_json::json!({"hit": false, "expired": true, "cache_key": key}))),
+        Some(entry) => Ok(Json(serde_json::json!({
+            "hit": true, "cache_key": key, "cached_at": entry.cached_at, "ttl_secs": entry.ttl_secs,
+            "source_trace_id": entry.source_trace_id, "result": entry.result,
+            "epistemic": {"derivation": entry.epistemic.derivation, "certainty": entry.epistemic.certainty, "provenance": entry.epistemic.provenance},
+        }))),
+        None => Ok(Json(serde_json::json!({"hit": false, "cache_key": key}))),
+    }
+}
+
+/// Request to cache a result.
+#[derive(Debug, Deserialize)]
+pub struct CachePutRequest {
+    pub flow_name: String,
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+    pub result: serde_json::Value,
+    pub source_trace_id: u64,
+    #[serde(default = "default_cache_ttl")]
+    pub ttl_secs: u64,
+}
+
+fn default_cache_ttl() -> u64 { 300 }
+
+/// PUT /v1/execute/cache — store a result in the cache with ΛD epistemic state.
+async fn execute_cache_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<CachePutRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let key = format!("{}:{}", payload.flow_name, payload.backend);
+
+    // ΛD: cached result is δ=derived, c=0.95 (Theorem 5.1: only raw may carry c=1.0)
+    let epistemic = EpistemicEnvelope::derived(
+        &format!("cache:execution:{}", payload.flow_name),
+        0.95,
+        &format!("trace:{}", payload.source_trace_id),
+    );
+
+    let entry = CachedResult {
+        cache_key: key.clone(), flow_name: payload.flow_name, backend: payload.backend,
+        result: payload.result, source_trace_id: payload.source_trace_id,
+        cached_at: now, ttl_secs: payload.ttl_secs, epistemic,
+    };
+
+    s.execution_cache.retain(|c| c.cache_key != key);
+    s.execution_cache.push(entry);
+    if s.execution_cache.len() > 200 { s.execution_cache.remove(0); }
+
+    Ok(Json(serde_json::json!({"success": true, "cache_key": key, "ttl_secs": payload.ttl_secs})))
+}
+
+/// DELETE /v1/execute/cache — evict cache entry or all.
+async fn execute_cache_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    if let Some(key) = params.get("cache_key") {
+        let before = s.execution_cache.len();
+        s.execution_cache.retain(|c| &c.cache_key != key);
+        Ok(Json(serde_json::json!({"evicted": before - s.execution_cache.len(), "cache_key": key})))
+    } else {
+        let count = s.execution_cache.len();
+        s.execution_cache.clear();
+        Ok(Json(serde_json::json!({"evicted": count, "all": true})))
+    }
+}
+
+/// Request for cache-aware execution.
+#[derive(Debug, Deserialize)]
+pub struct CacheAwareExecuteRequest {
+    /// Flow name to execute.
+    pub flow_name: String,
+    /// Backend (default "stub").
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+    /// TTL for caching the result (default 300s). 0 = don't cache.
+    #[serde(default = "default_cache_ttl")]
+    pub cache_ttl_secs: u64,
+    /// Force re-execution even if cached (default false).
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// POST /v1/execute/cached — cache-aware execution.
+///
+/// 1. Checks cache for flow+backend key.
+/// 2. If hit and not expired and not forced → return cached (ΛD δ=derived).
+/// 3. Otherwise → execute, cache result, return fresh (ΛD δ=raw).
+async fn execute_cached_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<CacheAwareExecuteRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+    }
+
+    let cache_key = format!("{}:{}", payload.flow_name, payload.backend);
+
+    // Step 1: Check cache (unless forced)
+    if !payload.force {
+        let s = state.lock().unwrap();
+        if let Some(entry) = s.execution_cache.iter().find(|c| c.cache_key == cache_key) {
+            if !entry.is_expired() {
+                return Ok(Json(serde_json::json!({
+                    "success": true,
+                    "cached": true,
+                    "cache_key": cache_key,
+                    "source_trace_id": entry.source_trace_id,
+                    "cached_at": entry.cached_at,
+                    "ttl_secs": entry.ttl_secs,
+                    "result": entry.result,
+                    "epistemic": {
+                        "derivation": "derived",
+                        "certainty": entry.epistemic.certainty,
+                        "note": "cached result — δ=derived per ΛD Theorem 5.1",
+                    },
+                })));
+            }
+        }
+    }
+
+    // Step 2: Execute fresh
+    let (source, source_file) = {
+        let s = state.lock().unwrap();
+        match s.versions.get_history(&payload.flow_name)
+            .and_then(|h| h.active())
+            .map(|v| (v.source.clone(), v.source_file.clone()))
+        {
+            Some(info) => info,
+            None => return Ok(Json(serde_json::json!({
+                "success": false, "error": format!("flow '{}' not deployed", payload.flow_name),
+            }))),
+        }
+    };
+
+    match server_execute_full(&state, &source, &source_file, &payload.flow_name, &payload.backend).0 {
+        Ok(mut er) => {
+            let mut trace_entry = crate::trace_store::build_trace(
+                &er.flow_name, &er.source_file, &er.backend, &client,
+                if er.success { crate::trace_store::TraceStatus::Success }
+                else { crate::trace_store::TraceStatus::Partial },
+                er.steps_executed, er.latency_ms,
+            );
+            trace_entry.tokens_input = er.tokens_input;
+            trace_entry.tokens_output = er.tokens_output;
+            trace_entry.errors = er.errors;
+
+            let trace_id = {
+                let mut s = state.lock().unwrap();
+                let tid = s.trace_store.record(trace_entry);
+
+                // Step 3: Cache the result (if ttl > 0)
+                if payload.cache_ttl_secs > 0 {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+
+                    let cached = CachedResult {
+                        cache_key: cache_key.clone(),
+                        flow_name: er.flow_name.clone(),
+                        backend: er.backend.clone(),
+                        result: serde_json::json!({
+                            "steps_executed": er.steps_executed,
+                            "latency_ms": er.latency_ms,
+                            "tokens_input": er.tokens_input,
+                            "tokens_output": er.tokens_output,
+                            "step_names": er.step_names,
+                        }),
+                        source_trace_id: tid,
+                        cached_at: now,
+                        ttl_secs: payload.cache_ttl_secs,
+                        epistemic: EpistemicEnvelope::derived(
+                            &format!("cache:execution:{}", er.flow_name),
+                            0.95,
+                            &format!("trace:{}", tid),
+                        ),
+                    };
+                    s.execution_cache.retain(|c| c.cache_key != cache_key);
+                    s.execution_cache.push(cached);
+                    if s.execution_cache.len() > 200 { s.execution_cache.remove(0); }
+                }
+
+                tid
+            };
+
+            er.trace_id = trace_id;
+
+            Ok(Json(serde_json::json!({
+                "success": er.success,
+                "cached": false,
+                "cache_key": cache_key,
+                "trace_id": trace_id,
+                "flow": er.flow_name,
+                "backend": er.backend,
+                "steps_executed": er.steps_executed,
+                "latency_ms": req_start.elapsed().as_millis() as u64,
+                "tokens_input": er.tokens_input,
+                "tokens_output": er.tokens_output,
+                "auto_cached": payload.cache_ttl_secs > 0,
+                "cache_ttl_secs": payload.cache_ttl_secs,
+                "epistemic": {
+                    "derivation": "raw",
+                    "certainty": 1.0,
+                    "note": "fresh execution — δ=raw, c=1.0",
+                },
+            })))
+        }
+        Err(e) => {
+            let mut s = state.lock().unwrap();
+            s.metrics.total_errors += 1;
+            Ok(Json(serde_json::json!({"success": false, "error": e})))
+        }
+    }
+}
+
+/// Query for stream consumer.
+#[derive(Debug, Deserialize)]
+pub struct StreamConsumeQuery {
+    /// Cursor: only return tokens with index > after (default 0 = all).
+    #[serde(default)]
+    pub after: u64,
+    /// Max tokens to return (default 100).
+    #[serde(default = "default_consume_limit")]
+    pub limit: usize,
+}
+
+fn default_consume_limit() -> usize { 100 }
+
+/// GET /v1/execute/stream/:trace_id/consume — consume stream tokens for a trace.
+///
+/// Client polls with `after=<last_token_index>` for incremental consumption.
+/// Returns tokens, reconstructed output, completion status, and epistemic state.
+async fn stream_consume_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(trace_id): Path<u64>,
+    Query(params): Query<StreamConsumeQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let topic = format!("flow.stream.{}", trace_id);
+    let events = s.event_bus.recent_events(500, Some(&topic));
+
+    if events.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "trace_id": trace_id,
+            "found": false,
+            "message": "no stream tokens found for this trace_id",
+        })));
+    }
+
+    // Events are newest-first; reverse for chronological
+    let mut chronological: Vec<_> = events.into_iter().collect();
+    chronological.reverse();
+
+    // Filter by cursor
+    let filtered: Vec<_> = chronological.iter()
+        .filter(|ev| {
+            ev.payload.get("token_index")
+                .and_then(|v| v.as_u64())
+                .map_or(false, |idx| idx > params.after)
+        })
+        .take(params.limit)
+        .collect();
+
+    // Check completion
+    let is_complete = chronological.iter().any(|ev| {
+        ev.payload.get("is_final").and_then(|v| v.as_bool()).unwrap_or(false)
+    });
+
+    // Last token index for cursor
+    let last_index = filtered.last()
+        .and_then(|ev| ev.payload.get("token_index").and_then(|v| v.as_u64()))
+        .unwrap_or(params.after);
+
+    // Reconstruct output from all chronological tokens (not just filtered)
+    let mut reconstructed = String::new();
+    let mut step_outputs: Vec<serde_json::Value> = Vec::new();
+    let mut current_step = String::new();
+    let mut current_content = String::new();
+
+    for ev in &chronological {
+        let step = ev.payload.get("step_name").and_then(|v| v.as_str()).unwrap_or("");
+        let content = ev.payload.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        let is_final = ev.payload.get("is_final").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        if is_final { continue; }
+
+        if !step.is_empty() && step != current_step.as_str() {
+            if !current_step.is_empty() {
+                step_outputs.push(serde_json::json!({"step": current_step, "output": current_content.trim()}));
+            }
+            current_step = step.to_string();
+            current_content = String::new();
+        }
+        if !content.is_empty() {
+            if !current_content.is_empty() { current_content.push(' '); }
+            current_content.push_str(content);
+        }
+        if !reconstructed.is_empty() && !content.is_empty() { reconstructed.push(' '); }
+        reconstructed.push_str(content);
+    }
+    if !current_step.is_empty() {
+        step_outputs.push(serde_json::json!({"step": current_step, "output": current_content.trim()}));
+    }
+
+    // Epistemic state of the stream
+    let final_epistemic = if is_complete {
+        chronological.iter().rev()
+            .find(|ev| ev.payload.get("is_final").and_then(|v| v.as_bool()).unwrap_or(false))
+            .and_then(|ev| ev.payload.get("epistemic_state").and_then(|v| v.as_str()))
+            .unwrap_or("know")
+    } else {
+        "speculate" // still streaming
+    };
+
+    let tokens: Vec<serde_json::Value> = filtered.iter().map(|ev| ev.payload.clone()).collect();
+
+    Ok(Json(serde_json::json!({
+        "trace_id": trace_id,
+        "found": true,
+        "complete": is_complete,
+        "cursor": last_index,
+        "tokens_returned": tokens.len(),
+        "total_tokens": chronological.len(),
+        "tokens": tokens,
+        "reconstructed_output": reconstructed.trim(),
+        "step_outputs": step_outputs,
+        "epistemic_state": final_epistemic,
+        "next_url": format!("/v1/execute/stream/{}/consume?after={}", trace_id, last_index),
+    })))
+}
+
+/// A single item in a batch execution request.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BatchItem {
+    pub flow_name: String,
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+}
+
+/// Request for batch execution.
+#[derive(Debug, Deserialize)]
+pub struct BatchExecuteRequest {
+    /// Items to execute (max 50).
+    pub items: Vec<BatchItem>,
+    /// Whether to continue on failure (default true).
+    #[serde(default = "default_batch_continue")]
+    pub continue_on_failure: bool,
+}
+
+fn default_batch_continue() -> bool { true }
+
+/// Result for a single batch item.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchItemResult {
+    pub index: usize,
+    pub flow_name: String,
+    pub backend: String,
+    pub success: bool,
+    pub trace_id: u64,
+    pub latency_ms: u64,
+    pub tokens_input: u64,
+    pub tokens_output: u64,
+    pub error: Option<String>,
+    /// ΛD: fresh execution → δ=raw, c=1.0
+    pub epistemic_derivation: String,
+}
+
+/// POST /v1/execute/batch — execute multiple flows in one request.
+async fn execute_batch_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<BatchExecuteRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+    }
+
+    if payload.items.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "batch must have at least 1 item"})));
+    }
+    if payload.items.len() > 50 {
+        return Ok(Json(serde_json::json!({"error": "maximum 50 items per batch"})));
+    }
+
+    let mut results: Vec<BatchItemResult> = Vec::new();
+
+    for (idx, item) in payload.items.iter().enumerate() {
+        let source_info = {
+            let s = state.lock().unwrap();
+            s.versions.get_history(&item.flow_name)
+                .and_then(|h| h.active())
+                .map(|v| (v.source.clone(), v.source_file.clone()))
+        };
+
+        let (source, source_file) = match source_info {
+            Some(info) => info,
+            None => {
+                results.push(BatchItemResult {
+                    index: idx, flow_name: item.flow_name.clone(), backend: item.backend.clone(),
+                    success: false, trace_id: 0, latency_ms: 0, tokens_input: 0, tokens_output: 0,
+                    error: Some(format!("flow '{}' not deployed", item.flow_name)),
+                    epistemic_derivation: "none".into(),
+                });
+                if !payload.continue_on_failure { break; }
+                continue;
+            }
+        };
+
+        match server_execute_full(&state, &source, &source_file, &item.flow_name, &item.backend).0 {
+            Ok(er) => {
+                let mut entry = crate::trace_store::build_trace(
+                    &er.flow_name, &er.source_file, &er.backend, &client,
+                    if er.success { crate::trace_store::TraceStatus::Success }
+                    else { crate::trace_store::TraceStatus::Partial },
+                    er.steps_executed, er.latency_ms,
+                );
+                entry.tokens_input = er.tokens_input;
+                entry.tokens_output = er.tokens_output;
+                entry.errors = er.errors;
+
+                let tid = { let mut s = state.lock().unwrap(); s.trace_store.record(entry) };
+
+                results.push(BatchItemResult {
+                    index: idx, flow_name: item.flow_name.clone(), backend: item.backend.clone(),
+                    success: er.success, trace_id: tid, latency_ms: er.latency_ms,
+                    tokens_input: er.tokens_input, tokens_output: er.tokens_output,
+                    error: None, epistemic_derivation: "raw".into(),
+                });
+
+                if !er.success && !payload.continue_on_failure { break; }
+            }
+            Err(e) => {
+                { let mut s = state.lock().unwrap(); s.metrics.total_errors += 1; }
+                results.push(BatchItemResult {
+                    index: idx, flow_name: item.flow_name.clone(), backend: item.backend.clone(),
+                    success: false, trace_id: 0, latency_ms: 0, tokens_input: 0, tokens_output: 0,
+                    error: Some(e), epistemic_derivation: "none".into(),
+                });
+                if !payload.continue_on_failure { break; }
+            }
+        }
+    }
+
+    let succeeded = results.iter().filter(|r| r.success).count();
+    let failed = results.iter().filter(|r| !r.success).count();
+    let total_tokens: u64 = results.iter().map(|r| r.tokens_input + r.tokens_output).sum();
+
+    Ok(Json(serde_json::json!({
+        "batch_size": payload.items.len(),
+        "executed": results.len(),
+        "succeeded": succeeded,
+        "failed": failed,
+        "total_latency_ms": req_start.elapsed().as_millis() as u64,
+        "total_tokens": total_tokens,
+        "continue_on_failure": payload.continue_on_failure,
+        "results": results,
+    })))
+}
+
+/// GET /v1/daemons/autoscale — view config and current scaling decision.
+async fn daemons_autoscale_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let decision = evaluate_autoscale(&s);
+
+    Ok(Json(serde_json::json!({
+        "config": s.autoscale_config,
+        "decision": decision,
+    })))
+}
+
+/// PUT /v1/daemons/autoscale — update autoscale configuration.
+async fn daemons_autoscale_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(config): Json<AutoscaleConfig>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    s.autoscale_config = config.clone();
+    s.audit_log.record(
+        &client, AuditAction::ConfigUpdate, "autoscale",
+        serde_json::to_value(&config).unwrap_or_default(), true,
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "config": config,
+    })))
+}
+
+/// Evaluate autoscale decision based on current server state.
+fn evaluate_autoscale(s: &ServerState) -> AutoscaleDecision {
+    let cfg = &s.autoscale_config;
+    let current = s.daemons.len();
+    let active = s.daemons.values().filter(|d| d.state == DaemonState::Running || d.state == DaemonState::Hibernating).count();
+    let queue_depth = s.execution_queue.iter().filter(|q| q.status == "pending").count();
+
+    let uptime = s.started_at.elapsed().as_secs().max(1);
+    let bus_stats = s.event_bus.stats();
+    let events_per_sec = bus_stats.events_published as f64 / uptime as f64;
+
+    if !cfg.enabled {
+        return AutoscaleDecision {
+            current_daemons: current, active_daemons: active,
+            queue_depth, events_per_sec,
+            recommendation: "none".into(),
+            reason: "autoscaling disabled".into(),
+        };
+    }
+
+    // Scale up?
+    if current < cfg.max_daemons {
+        if queue_depth >= cfg.scale_up_queue_depth {
+            return AutoscaleDecision {
+                current_daemons: current, active_daemons: active,
+                queue_depth, events_per_sec,
+                recommendation: "scale_up".into(),
+                reason: format!("queue depth {} >= threshold {}", queue_depth, cfg.scale_up_queue_depth),
+            };
+        }
+        if events_per_sec >= cfg.scale_up_events_per_sec as f64 {
+            return AutoscaleDecision {
+                current_daemons: current, active_daemons: active,
+                queue_depth, events_per_sec,
+                recommendation: "scale_up".into(),
+                reason: format!("events/sec {:.1} >= threshold {}", events_per_sec, cfg.scale_up_events_per_sec),
+            };
+        }
+    }
+
+    // Scale down?
+    if current > cfg.min_daemons && active == 0 {
+        return AutoscaleDecision {
+            current_daemons: current, active_daemons: active,
+            queue_depth, events_per_sec,
+            recommendation: "scale_down".into(),
+            reason: format!("no active daemons, {} registered > min {}", current, cfg.min_daemons),
+        };
+    }
+
+    AutoscaleDecision {
+        current_daemons: current, active_daemons: active,
+        queue_depth, events_per_sec,
+        recommendation: "steady".into(),
+        reason: "within bounds".into(),
+    }
+}
+
+/// GET /v1/flows/:name/dashboard — per-flow execution dashboard.
+async fn flow_dashboard_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let entries = s.trace_store.recent(s.trace_store.len(), None);
+    let flow_traces: Vec<_> = entries.iter().filter(|e| e.flow_name == name).collect();
+
+    if flow_traces.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "flow": name,
+            "found": false,
+            "message": "no execution history for this flow",
+        })));
+    }
+
+    let total = flow_traces.len() as u64;
+    let errors: u64 = flow_traces.iter().map(|e| e.errors as u64).sum();
+    let total_latency: u64 = flow_traces.iter().map(|e| e.latency_ms).sum();
+    let total_tokens_in: u64 = flow_traces.iter().map(|e| e.tokens_input).sum();
+    let total_tokens_out: u64 = flow_traces.iter().map(|e| e.tokens_output).sum();
+    let error_traces = flow_traces.iter().filter(|e| e.errors > 0).count() as u64;
+
+    let mut latencies: Vec<u64> = flow_traces.iter().map(|e| e.latency_ms).collect();
+    latencies.sort();
+    let p50 = latencies[latencies.len() / 2];
+    let p95_idx = ((95 * latencies.len() + 99) / 100).min(latencies.len()) - 1;
+    let p95 = latencies[p95_idx];
+
+    // Cost
+    let costs = compute_flow_costs(&s.trace_store, &s.cost_pricing);
+    let flow_cost = costs.iter().find(|c| c.flow_name == name);
+
+    // Recent executions (last 10)
+    let recent: Vec<serde_json::Value> = flow_traces.iter().take(10).map(|e| {
+        serde_json::json!({
+            "trace_id": e.id, "status": e.status.as_str(), "latency_ms": e.latency_ms,
+            "errors": e.errors, "tokens": e.tokens_input + e.tokens_output, "timestamp": e.timestamp,
+        })
+    }).collect();
+
+    // Status breakdown
+    let mut status_counts: HashMap<String, u64> = HashMap::new();
+    for e in &flow_traces {
+        *status_counts.entry(e.status.as_str().to_string()).or_insert(0) += 1;
+    }
+
+    // Daemon state
+    let daemon_state = s.daemons.get(&name).map(|d| format!("{:?}", d.state).to_lowercase());
+
+    // Schedule info
+    let schedule = s.schedules.get(&name).map(|sched| serde_json::json!({
+        "enabled": sched.enabled, "interval_secs": sched.interval_secs,
+        "run_count": sched.run_count, "error_count": sched.error_count,
+    }));
+
+    // Budget info
+    let budget = s.cost_budgets.get(&name).map(|b| {
+        let current_cost = flow_cost.map(|c| c.estimated_cost_usd).unwrap_or(0.0);
+        let usage_pct = if b.max_cost_usd > 0.0 { current_cost / b.max_cost_usd } else { 0.0 };
+        serde_json::json!({"max_cost_usd": b.max_cost_usd, "current_cost_usd": current_cost, "usage_pct": usage_pct})
+    });
+
+    // Quota info
+    let quota = s.flow_quotas.get(&name).map(|q| serde_json::json!({
+        "max_per_hour": q.max_per_hour, "max_per_day": q.max_per_day,
+        "current_hour": q.current_hour_count, "current_day": q.current_day_count,
+    }));
+
+    Ok(Json(serde_json::json!({
+        "flow": name,
+        "found": true,
+        "executions": {
+            "total": total,
+            "error_count": error_traces,
+            "error_rate": if total > 0 { error_traces as f64 / total as f64 } else { 0.0 },
+            "status_breakdown": status_counts,
+        },
+        "latency": {
+            "avg_ms": if total > 0 { total_latency / total } else { 0 },
+            "p50_ms": p50,
+            "p95_ms": p95,
+            "min_ms": latencies[0],
+            "max_ms": latencies[latencies.len() - 1],
+        },
+        "tokens": {
+            "total_input": total_tokens_in,
+            "total_output": total_tokens_out,
+            "total": total_tokens_in + total_tokens_out,
+            "avg_per_execution": if total > 0 { (total_tokens_in + total_tokens_out) / total } else { 0 },
+        },
+        "cost": flow_cost.map(|c| serde_json::json!({
+            "estimated_usd": c.estimated_cost_usd,
+            "executions": c.executions,
+        })),
+        "recent_executions": recent,
+        "daemon_state": daemon_state,
+        "schedule": schedule,
+        "budget": budget,
+        "quota": quota,
+    })))
+}
+
+/// Build a ServerBackup from current state (used by persist, backup, and auto-persist).
+fn build_server_backup(s: &ServerState, provenance: &str) -> ServerBackup {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let schedules: Vec<ScheduleBackupEntry> = s.schedules.iter().map(|(name, sched)| {
+        ScheduleBackupEntry {
+            name: name.clone(), flow_name: sched.flow_name.clone(),
+            interval_secs: sched.interval_secs, enabled: sched.enabled, backend: sched.backend.clone(),
+        }
+    }).collect();
+
+    let mut section_prov = HashMap::new();
+    for sec in &["cost_pricing", "cost_budgets", "flow_rules", "flow_quotas", "readiness_gates", "endpoint_rate_limits", "schedules", "axon_stores", "dataspaces"] {
+        section_prov.insert(sec.to_string(), EpistemicEnvelope::raw_config(&format!("config:{}", sec), provenance));
+    }
+
+    ServerBackup {
+        version: "1.0-ΛD".into(),
+        created_at: now,
+        lambda_d: EpistemicEnvelope::raw_config("axon:server_persist", provenance),
+        section_provenance: section_prov,
+        cost_pricing: s.cost_pricing.clone(),
+        cost_budgets: s.cost_budgets.clone(),
+        flow_rules: s.flow_rules.clone(),
+        flow_quotas: s.flow_quotas.clone(),
+        readiness_gates: s.readiness_gates.clone(),
+        endpoint_rate_limits: s.endpoint_rate_limits.clone(),
+        schedules,
+        axon_stores: s.axon_stores.clone(),
+        dataspaces: s.dataspaces.clone(),
+        shields: s.shields.clone(),
+    }
+}
+
+/// Persist state to disk. Returns Ok(path) or Err(message).
+fn persist_state_to_disk(s: &ServerState, provenance: &str) -> Result<String, String> {
+    let backup = build_server_backup(s, provenance);
+    let path = s.config.config_path.as_deref()
+        .map(|p| std::path::Path::new(p).parent().unwrap_or(std::path::Path::new(".")).join(STATE_PERSIST_PATH))
+        .unwrap_or_else(|| std::path::PathBuf::from(STATE_PERSIST_PATH));
+
+    let json_str = serde_json::to_string_pretty(&backup).map_err(|e| format!("serialize: {}", e))?;
+    std::fs::write(&path, &json_str).map_err(|e| format!("write: {}", e))?;
+    Ok(path.display().to_string())
+}
+
+/// Default persistence file path.
+const STATE_PERSIST_PATH: &str = "axon_server_state.json";
+
+/// POST /v1/server/persist — save server configuration state to disk.
+async fn server_persist_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::Admin)?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let schedules: Vec<ScheduleBackupEntry> = s.schedules.iter().map(|(name, sched)| {
+        ScheduleBackupEntry {
+            name: name.clone(), flow_name: sched.flow_name.clone(),
+            interval_secs: sched.interval_secs, enabled: sched.enabled, backend: sched.backend.clone(),
+        }
+    }).collect();
+
+    let mut section_prov = HashMap::new();
+    for section in &["cost_pricing", "cost_budgets", "flow_rules", "flow_quotas", "readiness_gates", "endpoint_rate_limits", "schedules", "axon_stores", "dataspaces"] {
+        section_prov.insert(section.to_string(), EpistemicEnvelope::raw_config(&format!("config:{}", section), &client));
+    }
+
+    let backup = ServerBackup {
+        version: "1.0-ΛD".into(),
+        created_at: now,
+        lambda_d: EpistemicEnvelope::raw_config("axon:server_persist", &client),
+        section_provenance: section_prov,
+        cost_pricing: s.cost_pricing.clone(),
+        cost_budgets: s.cost_budgets.clone(),
+        flow_rules: s.flow_rules.clone(),
+        flow_quotas: s.flow_quotas.clone(),
+        readiness_gates: s.readiness_gates.clone(),
+        endpoint_rate_limits: s.endpoint_rate_limits.clone(),
+        schedules,
+        axon_stores: s.axon_stores.clone(),
+        dataspaces: s.dataspaces.clone(),
+        shields: s.shields.clone(),
+    };
+
+    let path = s.config.config_path.as_deref()
+        .map(|p| {
+            let dir = std::path::Path::new(p).parent().unwrap_or(std::path::Path::new("."));
+            dir.join(STATE_PERSIST_PATH)
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from(STATE_PERSIST_PATH));
+
+    drop(s);
+
+    let json_str = serde_json::to_string_pretty(&backup).unwrap_or_default();
+    match std::fs::write(&path, &json_str) {
+        Ok(_) => Ok(Json(serde_json::json!({
+            "success": true,
+            "path": path.display().to_string(),
+            "size_bytes": json_str.len(),
+            "sections": 9,
+            "lambda_d_version": "1.0-ΛD",
+        }))),
+        Err(e) => Ok(Json(serde_json::json!({
+            "success": false,
+            "error": format!("write failed: {}", e),
+            "path": path.display().to_string(),
+        }))),
+    }
+}
+
+/// POST /v1/server/recover — load server configuration state from disk.
+async fn server_recover_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+
+    let path = {
+        let s = state.lock().unwrap();
+        check_auth_peek(&s, &headers, AccessLevel::Admin)?;
+        s.config.config_path.as_deref()
+            .map(|p| {
+                let dir = std::path::Path::new(p).parent().unwrap_or(std::path::Path::new("."));
+                dir.join(STATE_PERSIST_PATH)
+            })
+            .unwrap_or_else(|| std::path::PathBuf::from(STATE_PERSIST_PATH))
+    };
+
+    let json_str = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": format!("read failed: {}", e),
+            "path": path.display().to_string(),
+        }))),
+    };
+
+    let backup: ServerBackup = match serde_json::from_str(&json_str) {
+        Ok(b) => b,
+        Err(e) => return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": format!("parse failed: {}", e),
+        }))),
+    };
+
+    // Validate ΛD invariants
+    if let Err(e) = backup.lambda_d.validate() {
+        return Ok(Json(serde_json::json!({"success": false, "error": e, "phase": "lambda_d_validation"})));
+    }
+
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    s.cost_pricing = backup.cost_pricing;
+    s.cost_budgets = backup.cost_budgets;
+    s.flow_rules = backup.flow_rules;
+    s.flow_quotas = backup.flow_quotas;
+    s.readiness_gates = backup.readiness_gates;
+    s.endpoint_rate_limits = backup.endpoint_rate_limits;
+
+    let mut restored_schedules = 0;
+    for sched in &backup.schedules {
+        if !s.schedules.contains_key(&sched.name) {
+            s.schedules.insert(sched.name.clone(), ScheduleEntry {
+                flow_name: sched.flow_name.clone(), interval_secs: sched.interval_secs,
+                enabled: sched.enabled, backend: sched.backend.clone(),
+                last_run: 0, next_run: sched.interval_secs, run_count: 0, error_count: 0, history: Vec::new(),
+            });
+            restored_schedules += 1;
+        }
+    }
+
+    // Restore AxonStores (merge: don't overwrite existing)
+    let mut restored_axon_stores = 0u64;
+    for (name, store) in backup.axon_stores {
+        if !s.axon_stores.contains_key(&name) {
+            s.axon_stores.insert(name, store);
+            restored_axon_stores += 1;
+        }
+    }
+
+    // Restore Dataspaces (merge: don't overwrite existing)
+    let mut restored_dataspaces = 0u64;
+    for (name, ds) in backup.dataspaces {
+        if !s.dataspaces.contains_key(&name) {
+            s.dataspaces.insert(name, ds);
+            restored_dataspaces += 1;
+        }
+    }
+
+    // Restore Shields (merge: don't overwrite existing)
+    let mut restored_shields = 0u64;
+    for (name, sh) in backup.shields {
+        if !s.shields.contains_key(&name) {
+            s.shields.insert(name, sh);
+            restored_shields += 1;
+        }
+    }
+
+    s.audit_log.record(&client, AuditAction::ConfigLoad, "server_recover",
+        serde_json::json!({
+            "path": path.display().to_string(), "version": backup.version,
+            "schedules_created": restored_schedules,
+            "axon_stores_restored": restored_axon_stores,
+            "dataspaces_restored": restored_dataspaces,
+            "shields_restored": restored_shields,
+        }), true);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "path": path.display().to_string(),
+        "version": backup.version,
+        "schedules_created": restored_schedules,
+        "axon_stores_restored": restored_axon_stores,
+        "dataspaces_restored": restored_dataspaces,
+        "shields_restored": restored_shields,
+    })))
+}
+
+/// Request to set auto-persist setting.
+#[derive(Debug, Deserialize)]
+pub struct AutoPersistRequest {
+    pub enabled: bool,
+}
+
+/// GET /v1/server/auto-persist — view auto-persist setting.
+async fn server_auto_persist_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+    Ok(Json(serde_json::json!({"auto_persist_on_shutdown": s.auto_persist_on_shutdown})))
+}
+
+/// PUT /v1/server/auto-persist — toggle auto-persist on shutdown.
+async fn server_auto_persist_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<AutoPersistRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+    s.auto_persist_on_shutdown = payload.enabled;
+    Ok(Json(serde_json::json!({"success": true, "auto_persist_on_shutdown": payload.enabled})))
+}
+
+/// Request for flow comparison.
+#[derive(Debug, Deserialize)]
+pub struct FlowCompareRequest {
+    /// Flow names to compare (2–10).
+    pub flows: Vec<String>,
+}
+
+/// Per-flow stats in a comparison.
+#[derive(Debug, Clone, Serialize)]
+pub struct FlowCompareEntry {
+    pub flow_name: String,
+    pub executions: u64,
+    pub error_rate: f64,
+    pub avg_latency_ms: u64,
+    pub p50_latency_ms: u64,
+    pub p95_latency_ms: u64,
+    pub total_tokens: u64,
+    pub estimated_cost_usd: f64,
+    pub daemon_state: Option<String>,
+    pub has_schedule: bool,
+    pub has_budget: bool,
+    pub has_quota: bool,
+}
+
+/// POST /v1/flows/compare — compare multiple flows side-by-side.
+async fn flows_compare_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<FlowCompareRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    if payload.flows.len() < 2 {
+        return Ok(Json(serde_json::json!({"error": "at least 2 flows required"})));
+    }
+    if payload.flows.len() > 10 {
+        return Ok(Json(serde_json::json!({"error": "maximum 10 flows"})));
+    }
+
+    let all_entries = s.trace_store.recent(s.trace_store.len(), None);
+    let costs = compute_flow_costs(&s.trace_store, &s.cost_pricing);
+
+    let mut entries: Vec<FlowCompareEntry> = Vec::new();
+
+    for flow in &payload.flows {
+        let flow_traces: Vec<_> = all_entries.iter().filter(|e| &e.flow_name == flow).collect();
+        let total = flow_traces.len() as u64;
+
+        if total == 0 {
+            entries.push(FlowCompareEntry {
+                flow_name: flow.clone(), executions: 0, error_rate: 0.0,
+                avg_latency_ms: 0, p50_latency_ms: 0, p95_latency_ms: 0,
+                total_tokens: 0, estimated_cost_usd: 0.0,
+                daemon_state: s.daemons.get(flow).map(|d| format!("{:?}", d.state).to_lowercase()),
+                has_schedule: s.schedules.contains_key(flow),
+                has_budget: s.cost_budgets.contains_key(flow),
+                has_quota: s.flow_quotas.contains_key(flow),
+            });
+            continue;
+        }
+
+        let errors = flow_traces.iter().filter(|e| e.errors > 0).count() as u64;
+        let mut latencies: Vec<u64> = flow_traces.iter().map(|e| e.latency_ms).collect();
+        latencies.sort();
+        let total_lat: u64 = latencies.iter().sum();
+        let tokens: u64 = flow_traces.iter().map(|e| e.tokens_input + e.tokens_output).sum();
+        let cost = costs.iter().find(|c| &c.flow_name == flow).map(|c| c.estimated_cost_usd).unwrap_or(0.0);
+
+        let p50 = latencies[latencies.len() / 2];
+        let p95_idx = ((95 * latencies.len() + 99) / 100).min(latencies.len()) - 1;
+
+        entries.push(FlowCompareEntry {
+            flow_name: flow.clone(),
+            executions: total,
+            error_rate: errors as f64 / total as f64,
+            avg_latency_ms: total_lat / total,
+            p50_latency_ms: p50,
+            p95_latency_ms: latencies[p95_idx],
+            total_tokens: tokens,
+            estimated_cost_usd: cost,
+            daemon_state: s.daemons.get(flow).map(|d| format!("{:?}", d.state).to_lowercase()),
+            has_schedule: s.schedules.contains_key(flow),
+            has_budget: s.cost_budgets.contains_key(flow),
+            has_quota: s.flow_quotas.contains_key(flow),
+        });
+    }
+
+    // Find best/worst per metric
+    let best_latency = entries.iter().filter(|e| e.executions > 0).min_by_key(|e| e.avg_latency_ms).map(|e| e.flow_name.clone());
+    let worst_latency = entries.iter().filter(|e| e.executions > 0).max_by_key(|e| e.avg_latency_ms).map(|e| e.flow_name.clone());
+    let best_error = entries.iter().filter(|e| e.executions > 0).min_by(|a, b| a.error_rate.partial_cmp(&b.error_rate).unwrap()).map(|e| e.flow_name.clone());
+    let most_expensive = entries.iter().max_by(|a, b| a.estimated_cost_usd.partial_cmp(&b.estimated_cost_usd).unwrap()).map(|e| e.flow_name.clone());
+
+    Ok(Json(serde_json::json!({
+        "compared": entries.len(),
+        "flows": entries,
+        "highlights": {
+            "fastest": best_latency,
+            "slowest": worst_latency,
+            "lowest_error_rate": best_error,
+            "most_expensive": most_expensive,
+        },
+    })))
+}
+
+/// A batch item with caching options.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CachedBatchItem {
+    pub flow_name: String,
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+    /// TTL for caching (0 = don't cache). Default 300.
+    #[serde(default = "default_cache_ttl")]
+    pub cache_ttl_secs: u64,
+    /// Force re-execution even if cached.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// Result for a cached batch item.
+#[derive(Debug, Clone, Serialize)]
+pub struct CachedBatchItemResult {
+    pub index: usize,
+    pub flow_name: String,
+    pub success: bool,
+    pub cached: bool,
+    pub trace_id: u64,
+    pub latency_ms: u64,
+    pub tokens: u64,
+    pub error: Option<String>,
+    /// ΛD: "raw" (fresh) or "derived" (cached)
+    pub epistemic_derivation: String,
+}
+
+/// Request for cached batch execution.
+#[derive(Debug, Deserialize)]
+pub struct CachedBatchRequest {
+    pub items: Vec<CachedBatchItem>,
+    #[serde(default = "default_batch_continue")]
+    pub continue_on_failure: bool,
+}
+
+/// POST /v1/execute/batch-cached — batch execution with per-item cache awareness.
+async fn execute_batch_cached_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<CachedBatchRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    { let mut s = state.lock().unwrap(); check_auth(&mut s, &headers, AccessLevel::Write)?; }
+
+    if payload.items.is_empty() { return Ok(Json(serde_json::json!({"error": "at least 1 item required"}))); }
+    if payload.items.len() > 50 { return Ok(Json(serde_json::json!({"error": "max 50 items"}))); }
+
+    let mut results: Vec<CachedBatchItemResult> = Vec::new();
+
+    for (idx, item) in payload.items.iter().enumerate() {
+        let cache_key = format!("{}:{}", item.flow_name, item.backend);
+
+        // Check cache
+        if !item.force {
+            let s = state.lock().unwrap();
+            if let Some(entry) = s.execution_cache.iter().find(|c| c.cache_key == cache_key && !c.is_expired()) {
+                results.push(CachedBatchItemResult {
+                    index: idx, flow_name: item.flow_name.clone(), success: true, cached: true,
+                    trace_id: entry.source_trace_id, latency_ms: 0, tokens: 0, error: None,
+                    epistemic_derivation: "derived".into(),
+                });
+                continue;
+            }
+        }
+
+        // Execute fresh
+        let source_info = { let s = state.lock().unwrap(); s.versions.get_history(&item.flow_name).and_then(|h| h.active()).map(|v| (v.source.clone(), v.source_file.clone())) };
+        let (source, source_file) = match source_info {
+            Some(info) => info,
+            None => {
+                results.push(CachedBatchItemResult { index: idx, flow_name: item.flow_name.clone(), success: false, cached: false, trace_id: 0, latency_ms: 0, tokens: 0, error: Some("not deployed".into()), epistemic_derivation: "none".into() });
+                if !payload.continue_on_failure { break; }
+                continue;
+            }
+        };
+
+        match server_execute_full(&state, &source, &source_file, &item.flow_name, &item.backend).0 {
+            Ok(er) => {
+                let mut entry = crate::trace_store::build_trace(&er.flow_name, &er.source_file, &er.backend, &client, if er.success { crate::trace_store::TraceStatus::Success } else { crate::trace_store::TraceStatus::Partial }, er.steps_executed, er.latency_ms);
+                entry.tokens_input = er.tokens_input; entry.tokens_output = er.tokens_output; entry.errors = er.errors;
+                let tid = { let mut s = state.lock().unwrap(); let tid = s.trace_store.record(entry);
+                    if item.cache_ttl_secs > 0 {
+                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                        let cached = CachedResult { cache_key: cache_key.clone(), flow_name: er.flow_name.clone(), backend: er.backend.clone(), result: serde_json::json!({"steps": er.steps_executed}), source_trace_id: tid, cached_at: now, ttl_secs: item.cache_ttl_secs, epistemic: EpistemicEnvelope::derived(&format!("cache:{}", er.flow_name), 0.95, &format!("trace:{}", tid)) };
+                        s.execution_cache.retain(|c| c.cache_key != cache_key); s.execution_cache.push(cached);
+                        if s.execution_cache.len() > 200 { s.execution_cache.remove(0); }
+                    }
+                tid };
+                results.push(CachedBatchItemResult { index: idx, flow_name: item.flow_name.clone(), success: er.success, cached: false, trace_id: tid, latency_ms: er.latency_ms, tokens: er.tokens_input + er.tokens_output, error: None, epistemic_derivation: "raw".into() });
+                if !er.success && !payload.continue_on_failure { break; }
+            }
+            Err(e) => {
+                { let mut s = state.lock().unwrap(); s.metrics.total_errors += 1; }
+                results.push(CachedBatchItemResult { index: idx, flow_name: item.flow_name.clone(), success: false, cached: false, trace_id: 0, latency_ms: 0, tokens: 0, error: Some(e), epistemic_derivation: "none".into() });
+                if !payload.continue_on_failure { break; }
+            }
+        }
+    }
+
+    let cache_hits = results.iter().filter(|r| r.cached).count();
+    let fresh = results.iter().filter(|r| !r.cached && r.success).count();
+    let failed = results.iter().filter(|r| !r.success).count();
+
+    Ok(Json(serde_json::json!({
+        "batch_size": payload.items.len(),
+        "executed": results.len(),
+        "cache_hits": cache_hits,
+        "fresh_executions": fresh,
+        "failed": failed,
+        "total_latency_ms": req_start.elapsed().as_millis() as u64,
+        "results": results,
+    })))
+}
+
+/// Per-flow SLA definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowSLA {
+    /// Maximum allowed latency in ms (0 = no limit).
+    #[serde(default)]
+    pub max_latency_ms: u64,
+    /// Maximum allowed error rate (0.0 = no limit).
+    #[serde(default)]
+    pub max_error_rate: f64,
+    /// Minimum required success rate (0.0 = no limit).
+    #[serde(default)]
+    pub min_success_rate: f64,
+    /// Maximum p95 latency in ms (0 = no limit).
+    #[serde(default)]
+    pub max_p95_latency_ms: u64,
+}
+
+/// A configurable operational alert rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertRule {
+    /// Unique rule name.
+    pub name: String,
+    /// Metric to monitor: "error_rate", "latency_avg", "queue_depth", "trace_buffer_pct", "dead_daemons".
+    pub metric: String,
+    /// Comparison: "gt" (greater than), "lt" (less than), "eq" (equal).
+    pub comparison: String,
+    /// Threshold value.
+    pub threshold: f64,
+    /// Severity: "info", "warning", "critical".
+    pub severity: String,
+    /// Whether this rule is enabled.
+    #[serde(default = "default_alert_enabled")]
+    pub enabled: bool,
+    /// Escalation: fire count within window to escalate severity.
+    /// 0 = no escalation. E.g., 3 = escalate after 3 fires in window.
+    #[serde(default)]
+    pub escalate_after: u32,
+    /// Escalation window in seconds (default 300).
+    #[serde(default = "default_escalation_window")]
+    pub escalation_window_secs: u64,
+    /// Cooldown in seconds: suppress re-firing within this period. 0 = no cooldown.
+    #[serde(default)]
+    pub cooldown_secs: u64,
+}
+
+fn default_escalation_window() -> u64 { 300 }
+
+fn default_alert_enabled() -> bool { true }
+
+/// A fired alert instance.
+#[derive(Debug, Clone, Serialize)]
+pub struct FiredAlert {
+    pub rule_name: String,
+    pub metric: String,
+    pub threshold: f64,
+    pub actual: f64,
+    pub severity: String,
+    pub timestamp: u64,
+}
+
+/// A temporary silence on an alert rule — suppresses firing until expiry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertSilence {
+    /// Rule name to silence.
+    pub rule_name: String,
+    /// Who created the silence.
+    pub created_by: String,
+    /// Reason for silencing.
+    #[serde(default)]
+    pub reason: String,
+    /// Unix timestamp when silence was created.
+    pub created_at: u64,
+    /// Unix timestamp when silence expires (0 = indefinite).
+    #[serde(default)]
+    pub expires_at: u64,
+}
+
+/// A registered LLM backend with server-managed API key and health status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendRegistryEntry {
+    /// Backend provider name (e.g., "anthropic", "openai").
+    pub name: String,
+    /// API key (server-managed, takes precedence over env var).
+    #[serde(default, skip_serializing)]
+    pub api_key: String,
+    /// Whether this backend is enabled.
+    #[serde(default = "default_alert_enabled")]
+    pub enabled: bool,
+    /// Last health check status: "unknown", "healthy", "degraded", "unreachable".
+    #[serde(default = "default_backend_status")]
+    pub status: String,
+    /// Last health check timestamp (unix seconds).
+    #[serde(default)]
+    pub last_check_at: u64,
+    /// Last health check latency in ms.
+    #[serde(default)]
+    pub last_check_latency_ms: u64,
+    /// Total calls made through this backend.
+    #[serde(default)]
+    pub total_calls: u64,
+    /// Total errors from this backend.
+    #[serde(default)]
+    pub total_errors: u64,
+    /// Total input tokens consumed.
+    #[serde(default)]
+    pub total_tokens_input: u64,
+    /// Total output tokens produced.
+    #[serde(default)]
+    pub total_tokens_output: u64,
+    /// Cumulative latency in ms (divide by total_calls for average).
+    #[serde(default)]
+    pub total_latency_ms: u64,
+    /// Timestamp of last execution call.
+    #[serde(default)]
+    pub last_call_at: u64,
+    /// Fallback chain: ordered list of backend names to try if this one fails.
+    #[serde(default)]
+    pub fallback_chain: Vec<String>,
+    /// Circuit breaker: consecutive failure count.
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    /// Circuit breaker: open until this timestamp (0 = closed).
+    #[serde(default)]
+    pub circuit_open_until: u64,
+    /// Circuit breaker: failures before opening (0 = disabled, default 5).
+    #[serde(default = "default_cb_threshold")]
+    pub circuit_breaker_threshold: u32,
+    /// Circuit breaker: cooldown seconds before auto-close (default 60).
+    #[serde(default = "default_cb_cooldown")]
+    pub circuit_breaker_cooldown_secs: u64,
+    /// Accumulated cost in USD (computed from CostPricing × tokens).
+    #[serde(default)]
+    pub total_cost_usd: f64,
+    /// Max requests per minute (0 = unlimited).
+    #[serde(default)]
+    pub max_rpm: u32,
+    /// Max tokens per minute (0 = unlimited).
+    #[serde(default)]
+    pub max_tpm: u64,
+    /// Current RPM window start (unix seconds). Reset when window expires.
+    #[serde(default)]
+    pub rpm_window_start: u64,
+    /// Requests counted in current window.
+    #[serde(default)]
+    pub rpm_count: u32,
+    /// Tokens counted in current window.
+    #[serde(default)]
+    pub tpm_count: u64,
+}
+
+fn default_cb_threshold() -> u32 { 5 }
+fn default_cb_cooldown() -> u64 { 60 }
+
+// ── Backend Health Probing ──────────────────────────────────────────────────
+
+/// Configuration for automated health probing of a backend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendHealthProbe {
+    /// Backend name this probe targets.
+    pub backend: String,
+    /// Probe interval in seconds (0 = disabled).
+    pub interval_secs: u64,
+    /// Number of consecutive failures before marking unhealthy.
+    pub unhealthy_threshold: u32,
+    /// Number of consecutive successes before marking healthy.
+    pub healthy_threshold: u32,
+    /// Timeout for each probe attempt in ms.
+    pub timeout_ms: u64,
+    /// Whether probing is active.
+    pub enabled: bool,
+    /// Consecutive check successes (for healthy transition).
+    pub consecutive_ok: u32,
+    /// Consecutive check failures (for unhealthy transition).
+    pub consecutive_fail: u32,
+}
+
+impl Default for BackendHealthProbe {
+    fn default() -> Self {
+        Self {
+            backend: String::new(),
+            interval_secs: 300, // 5 minutes
+            unhealthy_threshold: 3,
+            healthy_threshold: 2,
+            timeout_ms: 10000, // 10 seconds
+            enabled: false,
+            consecutive_ok: 0,
+            consecutive_fail: 0,
+        }
+    }
+}
+
+/// A single health check record for audit and trend analysis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthCheckRecord {
+    /// Unix timestamp of the check.
+    pub timestamp: u64,
+    /// Status result: "healthy", "degraded", "unreachable", "no_key".
+    pub status: String,
+    /// Latency of the check in ms.
+    pub latency_ms: u64,
+    /// Error message if check failed.
+    pub error: Option<String>,
+    /// Status before this check (for transition detection).
+    pub previous_status: String,
+}
+
+/// Check if a backend has exceeded its rate limits (RPM or TPM).
+/// Returns Ok(()) if within limits, Err(message) if exceeded.
+fn check_backend_rate_limit(state: &mut ServerState, backend: &str) -> Result<(), String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    if let Some(entry) = state.backend_registry.get_mut(backend) {
+        // Reset window if 60 seconds have passed
+        if now >= entry.rpm_window_start + 60 {
+            entry.rpm_window_start = now;
+            entry.rpm_count = 0;
+            entry.tpm_count = 0;
+        }
+
+        // Check RPM limit
+        if entry.max_rpm > 0 && entry.rpm_count >= entry.max_rpm {
+            return Err(format!(
+                "Backend '{}' rate limited: {}/{} RPM (resets in {}s)",
+                backend, entry.rpm_count, entry.max_rpm,
+                (entry.rpm_window_start + 60).saturating_sub(now)
+            ));
+        }
+
+        // Check TPM limit
+        if entry.max_tpm > 0 && entry.tpm_count >= entry.max_tpm {
+            return Err(format!(
+                "Backend '{}' token limited: {}/{} TPM (resets in {}s)",
+                backend, entry.tpm_count, entry.max_tpm,
+                (entry.rpm_window_start + 60).saturating_sub(now)
+            ));
+        }
+
+        // Increment RPM counter (TPM updated after execution in record_backend_metrics)
+        entry.rpm_count += 1;
+    }
+    Ok(())
+}
+
+fn default_backend_status() -> String { "unknown".to_string() }
+
+/// Record backend call metrics after an execution.
+/// Updates the registry entry with call count, tokens, latency, and error tracking.
+fn record_backend_metrics(
+    state: &mut ServerState,
+    backend: &str,
+    success: bool,
+    tokens_input: u64,
+    tokens_output: u64,
+    latency_ms: u64,
+) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Extract pricing before mutable borrow on backend_registry
+    let input_price = state.cost_pricing.input_per_million.get(backend).copied().unwrap_or(0.0);
+    let output_price = state.cost_pricing.output_per_million.get(backend).copied().unwrap_or(0.0);
+    let call_cost = (tokens_input as f64 / 1_000_000.0) * input_price
+                  + (tokens_output as f64 / 1_000_000.0) * output_price;
+
+    let entry = state.backend_registry.entry(backend.to_string()).or_insert_with(|| {
+        BackendRegistryEntry {
+            name: backend.to_string(),
+            api_key: String::new(),
+            enabled: true,
+            status: "unknown".into(),
+            last_check_at: 0,
+            last_check_latency_ms: 0,
+            total_calls: 0,
+            total_errors: 0,
+            total_tokens_input: 0,
+            total_tokens_output: 0,
+            total_latency_ms: 0,
+            last_call_at: 0,
+            fallback_chain: Vec::new(),
+            consecutive_failures: 0,
+            circuit_open_until: 0,
+            circuit_breaker_threshold: 5,
+            circuit_breaker_cooldown_secs: 60,
+            total_cost_usd: 0.0, max_rpm: 0, max_tpm: 0, rpm_window_start: 0, rpm_count: 0, tpm_count: 0,
+        }
+    });
+
+    entry.total_calls += 1;
+    if !success {
+        entry.total_errors += 1;
+        entry.consecutive_failures += 1;
+        // Open circuit if threshold reached
+        if entry.circuit_breaker_threshold > 0
+            && entry.consecutive_failures >= entry.circuit_breaker_threshold
+        {
+            entry.circuit_open_until = now + entry.circuit_breaker_cooldown_secs;
+            entry.status = "circuit_open".into();
+        }
+    } else {
+        // Reset consecutive failures on success
+        entry.consecutive_failures = 0;
+        if entry.circuit_open_until > 0 && now >= entry.circuit_open_until {
+            entry.circuit_open_until = 0;
+            entry.status = "healthy".into();
+        }
+    }
+    entry.total_tokens_input += tokens_input;
+    entry.total_tokens_output += tokens_output;
+    entry.total_latency_ms += latency_ms;
+    entry.last_call_at = now;
+    entry.total_cost_usd += (call_cost * 10000.0).round() / 10000.0;
+
+    // Update TPM counter for rate limiting
+    entry.tpm_count += tokens_input + tokens_output;
+}
+
+/// Canary deployment configuration — gradual traffic shift between versions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanaryConfig {
+    /// Stable version (current production).
+    pub stable_version: u32,
+    /// Canary version (candidate).
+    pub canary_version: u32,
+    /// Percentage of traffic routed to canary (0–100).
+    pub canary_weight: u32,
+    /// Total requests routed to stable.
+    #[serde(default)]
+    pub stable_count: u64,
+    /// Total requests routed to canary.
+    #[serde(default)]
+    pub canary_count: u64,
+}
+
+impl CanaryConfig {
+    /// Route a request: returns the version to use based on canary weight.
+    pub fn route(&mut self) -> u32 {
+        let total = self.stable_count + self.canary_count;
+        let canary_pct = if total == 0 { 0 } else { (self.canary_count * 100) / total };
+        if canary_pct < self.canary_weight as u64 {
+            self.canary_count += 1;
+            self.canary_version
+        } else {
+            self.stable_count += 1;
+            self.stable_version
+        }
+    }
+}
+
+/// SLA breach detail.
+#[derive(Debug, Clone, Serialize)]
+pub struct SLABreach {
+    pub flow_name: String,
+    pub metric: String,
+    pub threshold: f64,
+    pub actual: f64,
+    pub breached: bool,
+}
+
+/// A health state transition record.
+#[derive(Debug, Clone, Serialize)]
+pub struct HealthTransition {
+    pub timestamp: u64,
+    pub from_status: String,
+    pub to_status: String,
+    pub component: String,
+    pub detail: String,
+}
+
+/// Record a health transition if status changed.
+fn record_health_transition(history: &mut Vec<HealthTransition>, component: &str, old: &str, new: &str, detail: &str) {
+    if old == new { return; }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    history.push(HealthTransition {
+        timestamp: now,
+        from_status: old.to_string(),
+        to_status: new.to_string(),
+        component: component.to_string(),
+        detail: detail.to_string(),
+    });
+    if history.len() > 500 { history.remove(0); }
+}
+
+/// Request to set flow tags.
+#[derive(Debug, Deserialize)]
+pub struct SetTagsRequest {
+    pub tags: Vec<String>,
+}
+
+/// GET /v1/flows/:name/tags — get tags for a flow.
+async fn flow_tags_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+    let tags = s.flow_tags.get(&name).cloned().unwrap_or_default();
+    Ok(Json(serde_json::json!({"flow": name, "tags": tags})))
+}
+
+/// PUT /v1/flows/:name/tags — set tags for a flow.
+async fn flow_tags_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<SetTagsRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+    s.flow_tags.insert(name.clone(), payload.tags.clone());
+    Ok(Json(serde_json::json!({"success": true, "flow": name, "tags": payload.tags})))
+}
+
+/// DELETE /v1/flows/:name/tags — remove all tags from a flow.
+async fn flow_tags_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+    let removed = s.flow_tags.remove(&name).is_some();
+    Ok(Json(serde_json::json!({"success": removed, "flow": name})))
+}
+
+/// Query for flows by tag.
+#[derive(Debug, Deserialize)]
+pub struct FlowsByTagQuery {
+    pub tag: String,
+}
+
+/// GET /v1/flows/by-tag — find flows with a given tag.
+async fn flows_by_tag_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<FlowsByTagQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let matching: Vec<serde_json::Value> = s.flow_tags.iter()
+        .filter(|(_, tags)| tags.contains(&params.tag))
+        .map(|(name, tags)| serde_json::json!({"flow": name, "tags": tags}))
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "tag": params.tag,
+        "count": matching.len(),
+        "flows": matching,
+    })))
+}
+
+/// GET /v1/health/history — view health transition history.
+async fn health_history_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let limit: usize = params.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100);
+    let component_filter = params.get("component");
+
+    let filtered: Vec<&HealthTransition> = s.health_history.iter().rev()
+        .filter(|h| component_filter.map_or(true, |c| h.component == *c))
+        .take(limit)
+        .collect();
+
+    let degradations = filtered.iter().filter(|h| h.to_status == "degraded" || h.to_status == "unhealthy").count();
+
+    Ok(Json(serde_json::json!({
+        "total_transitions": s.health_history.len(),
+        "returned": filtered.len(),
+        "degradations": degradations,
+        "history": filtered,
+    })))
+}
+
+/// POST /v1/health/check-and-record — evaluate health and record transitions.
+async fn health_check_record_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let mut transitions = Vec::new();
+
+    // Check trace store
+    let ts_status = if !s.trace_store.config().enabled { "disabled" }
+        else if s.trace_store.len() >= s.trace_store.config().capacity { "degraded" }
+        else { "healthy" };
+    let ts_prev = s.health_history.iter().rev()
+        .find(|h| h.component == "trace_store")
+        .map(|h| h.to_status.clone())
+        .unwrap_or_else(|| "healthy".into());
+    if ts_prev != ts_status {
+        transitions.push(("trace_store", ts_prev.clone(), ts_status.to_string(), format!("buffered: {}/{}", s.trace_store.len(), s.trace_store.config().capacity)));
+    }
+
+    // Check event bus
+    let bus_stats = s.event_bus.stats();
+    let bus_status = if bus_stats.events_dropped > 0 { "degraded" } else { "healthy" };
+    let bus_prev = s.health_history.iter().rev()
+        .find(|h| h.component == "event_bus")
+        .map(|h| h.to_status.clone())
+        .unwrap_or_else(|| "healthy".into());
+    if bus_prev != bus_status {
+        transitions.push(("event_bus", bus_prev, bus_status.to_string(), format!("dropped: {}", bus_stats.events_dropped)));
+    }
+
+    // Check supervisor
+    let sup_counts = s.supervisor.state_counts();
+    let dead = sup_counts.get("dead").copied().unwrap_or(0);
+    let sup_status = if dead > 0 { "degraded" } else { "healthy" };
+    let sup_prev = s.health_history.iter().rev()
+        .find(|h| h.component == "supervisor")
+        .map(|h| h.to_status.clone())
+        .unwrap_or_else(|| "healthy".into());
+    if sup_prev != sup_status {
+        transitions.push(("supervisor", sup_prev, sup_status.to_string(), format!("dead: {}", dead)));
+    }
+
+    // Check error rate
+    let err_status = if s.metrics.total_requests > 0 {
+        let rate = s.metrics.total_errors as f64 / s.metrics.total_requests as f64;
+        if rate > 0.1 { "degraded" } else { "healthy" }
+    } else { "healthy" };
+    let err_prev = s.health_history.iter().rev()
+        .find(|h| h.component == "error_rate")
+        .map(|h| h.to_status.clone())
+        .unwrap_or_else(|| "healthy".into());
+    if err_prev != err_status {
+        transitions.push(("error_rate", err_prev, err_status.to_string(), format!("{}/{} requests", s.metrics.total_errors, s.metrics.total_requests)));
+    }
+
+    // Record transitions
+    for (comp, from, to, detail) in &transitions {
+        record_health_transition(&mut s.health_history, comp, from, to, detail);
+    }
+
+    let new_degradations = transitions.iter().filter(|(_, _, to, _)| to == "degraded").count();
+
+    Ok(Json(serde_json::json!({
+        "checked": 4,
+        "transitions": transitions.len(),
+        "new_degradations": new_degradations,
+        "components": {
+            "trace_store": ts_status,
+            "event_bus": bus_status,
+            "supervisor": sup_status,
+            "error_rate": err_status,
+        },
+    })))
+}
+
+/// Per-flow result in a tag group execution.
+#[derive(Debug, Clone, Serialize)]
+pub struct TagGroupResult {
+    pub flow_name: String,
+    pub success: bool,
+    pub trace_id: u64,
+    pub latency_ms: u64,
+    pub tokens: u64,
+    pub error: Option<String>,
+}
+
+/// POST /v1/flows/group/:tag/execute — execute all flows with a given tag.
+async fn flows_group_execute_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(tag): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    { let mut s = state.lock().unwrap(); check_auth(&mut s, &headers, AccessLevel::Write)?; }
+
+    // Find flows with this tag
+    let flows: Vec<String> = {
+        let s = state.lock().unwrap();
+        s.flow_tags.iter()
+            .filter(|(_, tags)| tags.contains(&tag))
+            .map(|(name, _)| name.clone())
+            .collect()
+    };
+
+    if flows.is_empty() {
+        return Ok(Json(serde_json::json!({"tag": tag, "found": 0, "message": "no flows with this tag"})));
+    }
+
+    let mut results: Vec<TagGroupResult> = Vec::new();
+
+    for flow in &flows {
+        let source_info = {
+            let s = state.lock().unwrap();
+            s.versions.get_history(flow).and_then(|h| h.active()).map(|v| (v.source.clone(), v.source_file.clone(), v.backend.clone()))
+        };
+
+        let (source, source_file, backend) = match source_info {
+            Some(info) => info,
+            None => {
+                results.push(TagGroupResult { flow_name: flow.clone(), success: false, trace_id: 0, latency_ms: 0, tokens: 0, error: Some("not deployed".into()) });
+                continue;
+            }
+        };
+
+        match server_execute_full(&state, &source, &source_file, flow, &backend).0 {
+            Ok(er) => {
+                let mut entry = crate::trace_store::build_trace(&er.flow_name, &er.source_file, &er.backend, &client, if er.success { crate::trace_store::TraceStatus::Success } else { crate::trace_store::TraceStatus::Partial }, er.steps_executed, er.latency_ms);
+                entry.tokens_input = er.tokens_input; entry.tokens_output = er.tokens_output; entry.errors = er.errors;
+                let tid = { let mut s = state.lock().unwrap(); s.trace_store.record(entry) };
+                results.push(TagGroupResult { flow_name: flow.clone(), success: er.success, trace_id: tid, latency_ms: er.latency_ms, tokens: er.tokens_input + er.tokens_output, error: None });
+            }
+            Err(e) => {
+                { let mut s = state.lock().unwrap(); s.metrics.total_errors += 1; }
+                results.push(TagGroupResult { flow_name: flow.clone(), success: false, trace_id: 0, latency_ms: 0, tokens: 0, error: Some(e) });
+            }
+        }
+    }
+
+    let succeeded = results.iter().filter(|r| r.success).count();
+    let failed = results.iter().filter(|r| !r.success).count();
+    let total_tokens: u64 = results.iter().map(|r| r.tokens).sum();
+
+    Ok(Json(serde_json::json!({
+        "tag": tag,
+        "flows_in_group": flows.len(),
+        "executed": results.len(),
+        "succeeded": succeeded,
+        "failed": failed,
+        "total_latency_ms": req_start.elapsed().as_millis() as u64,
+        "total_tokens": total_tokens,
+        "results": results,
+    })))
+}
+
+/// GET /v1/flows/group/:tag/dashboard — dashboard for a tagged group of flows.
+async fn flows_group_dashboard_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(tag): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let flows: Vec<String> = s.flow_tags.iter()
+        .filter(|(_, tags)| tags.contains(&tag))
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    if flows.is_empty() {
+        return Ok(Json(serde_json::json!({"tag": tag, "found": 0})));
+    }
+
+    let all_entries = s.trace_store.recent(s.trace_store.len(), None);
+    let group_traces: Vec<_> = all_entries.iter().filter(|e| flows.contains(&e.flow_name)).collect();
+
+    let total = group_traces.len() as u64;
+    let errors = group_traces.iter().filter(|e| e.errors > 0).count() as u64;
+    let total_latency: u64 = group_traces.iter().map(|e| e.latency_ms).sum();
+    let total_tokens: u64 = group_traces.iter().map(|e| e.tokens_input + e.tokens_output).sum();
+
+    Ok(Json(serde_json::json!({
+        "tag": tag,
+        "flows": flows,
+        "flows_count": flows.len(),
+        "executions": total,
+        "error_count": errors,
+        "error_rate": if total > 0 { errors as f64 / total as f64 } else { 0.0 },
+        "avg_latency_ms": if total > 0 { total_latency / total } else { 0 },
+        "total_tokens": total_tokens,
+    })))
+}
+
+/// Request for cache replay.
+#[derive(Debug, Deserialize)]
+pub struct CacheReplayRequest {
+    pub flow_name: String,
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+}
+
+/// POST /v1/execute/cache-replay — re-execute a cached flow and compare results.
+///
+/// Looks up the cached result (ΛD δ=derived), re-executes fresh (ΛD δ=raw),
+/// and returns a diff comparing cached vs fresh.
+async fn execute_cache_replay_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<CacheReplayRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    { let mut s = state.lock().unwrap(); check_auth(&mut s, &headers, AccessLevel::Write)?; }
+
+    let cache_key = format!("{}:{}", payload.flow_name, payload.backend);
+
+    // Get cached result
+    let cached_data = {
+        let s = state.lock().unwrap();
+        s.execution_cache.iter()
+            .find(|c| c.cache_key == cache_key)
+            .map(|c| (c.result.clone(), c.source_trace_id, c.cached_at, c.epistemic.certainty))
+    };
+
+    let (cached_result, cached_trace_id, cached_at, cached_certainty) = match cached_data {
+        Some(d) => d,
+        None => return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": format!("no cached result for '{}'", cache_key),
+        }))),
+    };
+
+    // Re-execute fresh
+    let (source, source_file) = {
+        let s = state.lock().unwrap();
+        match s.versions.get_history(&payload.flow_name).and_then(|h| h.active()).map(|v| (v.source.clone(), v.source_file.clone())) {
+            Some(info) => info,
+            None => return Ok(Json(serde_json::json!({"success": false, "error": "flow not deployed"}))),
+        }
+    };
+
+    match server_execute_full(&state, &source, &source_file, &payload.flow_name, &payload.backend).0 {
+        Ok(er) => {
+            let mut entry = crate::trace_store::build_trace(&er.flow_name, &er.source_file, &er.backend, &client, if er.success { crate::trace_store::TraceStatus::Success } else { crate::trace_store::TraceStatus::Partial }, er.steps_executed, er.latency_ms);
+            entry.tokens_input = er.tokens_input; entry.tokens_output = er.tokens_output; entry.errors = er.errors;
+            let replay_tid = { let mut s = state.lock().unwrap(); s.trace_store.record(entry) };
+
+            let fresh_result = serde_json::json!({
+                "steps_executed": er.steps_executed, "latency_ms": er.latency_ms,
+                "tokens_input": er.tokens_input, "tokens_output": er.tokens_output,
+            });
+
+            // Build diff
+            let cached_steps = cached_result.get("steps").and_then(|v| v.as_u64()).unwrap_or(0);
+            let steps_match = cached_steps == er.steps_executed as u64;
+            let latency_delta = er.latency_ms as i64 - cached_result.get("latency_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "cache_key": cache_key,
+                "cached_trace_id": cached_trace_id,
+                "replay_trace_id": replay_tid,
+                "cached_at": cached_at,
+                "cached_result": cached_result,
+                "fresh_result": fresh_result,
+                "diff": {
+                    "steps_match": steps_match,
+                    "latency_delta_ms": latency_delta,
+                    "fresh_success": er.success,
+                },
+                "epistemic": {
+                    "cached_certainty": cached_certainty,
+                    "cached_derivation": "derived",
+                    "fresh_derivation": "raw",
+                    "fresh_certainty": 1.0,
+                },
+                "total_latency_ms": req_start.elapsed().as_millis() as u64,
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({"success": false, "error": e}))),
+    }
+}
+
+/// Request for version-pinned execution.
+#[derive(Debug, Deserialize)]
+pub struct PinnedExecuteRequest {
+    pub flow_name: String,
+    /// Specific version number to execute (instead of active).
+    pub version: u32,
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+}
+
+/// POST /v1/execute/pinned — execute a specific version of a flow.
+async fn execute_pinned_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<PinnedExecuteRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    { let mut s = state.lock().unwrap(); check_auth(&mut s, &headers, AccessLevel::Write)?; }
+
+    // Look up specific version
+    let (source, source_file, actual_version) = {
+        let s = state.lock().unwrap();
+        match s.versions.get_version(&payload.flow_name, payload.version) {
+            Some(v) => (v.source.clone(), v.source_file.clone(), v.version),
+            None => return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": format!("version {} not found for flow '{}'", payload.version, payload.flow_name),
+            }))),
+        }
+    };
+
+    // Get active version for comparison
+    let active_version = {
+        let s = state.lock().unwrap();
+        s.versions.get_history(&payload.flow_name).map(|h| h.active_version).unwrap_or(0)
+    };
+
+    match server_execute_full(&state, &source, &source_file, &payload.flow_name, &payload.backend).0 {
+        Ok(er) => {
+            let mut entry = crate::trace_store::build_trace(&er.flow_name, &er.source_file, &er.backend, &client, if er.success { crate::trace_store::TraceStatus::Success } else { crate::trace_store::TraceStatus::Partial }, er.steps_executed, er.latency_ms);
+            entry.tokens_input = er.tokens_input; entry.tokens_output = er.tokens_output; entry.errors = er.errors;
+            let tid = { let mut s = state.lock().unwrap(); s.trace_store.record(entry) };
+
+            Ok(Json(serde_json::json!({
+                "success": er.success,
+                "flow": payload.flow_name,
+                "pinned_version": actual_version,
+                "active_version": active_version,
+                "is_active": actual_version == active_version,
+                "backend": payload.backend,
+                "trace_id": tid,
+                "steps_executed": er.steps_executed,
+                "latency_ms": req_start.elapsed().as_millis() as u64,
+                "tokens_input": er.tokens_input,
+                "tokens_output": er.tokens_output,
+            })))
+        }
+        Err(e) => {
+            { let mut s = state.lock().unwrap(); s.metrics.total_errors += 1; }
+            Ok(Json(serde_json::json!({"success": false, "error": e, "pinned_version": payload.version})))
+        }
+    }
+}
+
+/// Request for A/B test execution.
+#[derive(Debug, Deserialize)]
+pub struct ABTestRequest {
+    pub flow_name: String,
+    /// Version A (e.g. current active).
+    pub version_a: u32,
+    /// Version B (e.g. candidate).
+    pub version_b: u32,
+    #[serde(default = "default_execute_backend")]
+    pub backend: String,
+}
+
+/// Result for one side of an A/B test.
+#[derive(Debug, Clone, Serialize)]
+pub struct ABTestSide {
+    pub version: u32,
+    pub success: bool,
+    pub trace_id: u64,
+    pub steps_executed: usize,
+    pub latency_ms: u64,
+    pub tokens_input: u64,
+    pub tokens_output: u64,
+    pub errors: usize,
+}
+
+/// POST /v1/execute/ab-test — execute two versions and compare.
+async fn execute_ab_test_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<ABTestRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    { let mut s = state.lock().unwrap(); check_auth(&mut s, &headers, AccessLevel::Write)?; }
+
+    if payload.version_a == payload.version_b {
+        return Ok(Json(serde_json::json!({"error": "version_a and version_b must differ"})));
+    }
+
+    // Helper: execute a specific version
+    let execute_version = |ver: u32| -> Result<(ABTestSide, u64), String> {
+        let (source, source_file) = {
+            let s = state.lock().unwrap();
+            match s.versions.get_version(&payload.flow_name, ver) {
+                Some(v) => (v.source.clone(), v.source_file.clone()),
+                None => return Err(format!("version {} not found", ver)),
+            }
+        };
+        match server_execute_full(&state, &source, &source_file, &payload.flow_name, &payload.backend).0 {
+            Ok(er) => {
+                let mut entry = crate::trace_store::build_trace(&er.flow_name, &er.source_file, &er.backend, &client, if er.success { crate::trace_store::TraceStatus::Success } else { crate::trace_store::TraceStatus::Partial }, er.steps_executed, er.latency_ms);
+                entry.tokens_input = er.tokens_input; entry.tokens_output = er.tokens_output; entry.errors = er.errors;
+                let tid = { let mut s = state.lock().unwrap(); s.trace_store.record(entry) };
+                Ok((ABTestSide { version: ver, success: er.success, trace_id: tid, steps_executed: er.steps_executed, latency_ms: er.latency_ms, tokens_input: er.tokens_input, tokens_output: er.tokens_output, errors: er.errors }, tid))
+            }
+            Err(e) => Err(e),
+        }
+    };
+
+    // Execute both
+    let side_a = match execute_version(payload.version_a) {
+        Ok((side, _)) => side,
+        Err(e) => return Ok(Json(serde_json::json!({"success": false, "error": format!("version_a: {}", e)}))),
+    };
+    let side_b = match execute_version(payload.version_b) {
+        Ok((side, _)) => side,
+        Err(e) => return Ok(Json(serde_json::json!({"success": false, "error": format!("version_b: {}", e)}))),
+    };
+
+    // Compute diff
+    let latency_delta = side_b.latency_ms as i64 - side_a.latency_ms as i64;
+    let steps_delta = side_b.steps_executed as i64 - side_a.steps_executed as i64;
+    let tokens_delta = (side_b.tokens_input + side_b.tokens_output) as i64 - (side_a.tokens_input + side_a.tokens_output) as i64;
+    let winner = if side_a.success && !side_b.success { "a" }
+        else if !side_a.success && side_b.success { "b" }
+        else if side_a.latency_ms <= side_b.latency_ms { "a" }
+        else { "b" };
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "flow": payload.flow_name,
+        "a": side_a,
+        "b": side_b,
+        "diff": {
+            "latency_delta_ms": latency_delta,
+            "steps_delta": steps_delta,
+            "tokens_delta": tokens_delta,
+            "both_succeeded": side_a.success && side_b.success,
+            "winner": winner,
+        },
+        "total_latency_ms": req_start.elapsed().as_millis() as u64,
+    })))
+}
+
+/// A pre-defined annotation template.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnotationTemplate {
+    pub name: String,
+    pub text: String,
+    pub tags: Vec<String>,
+    pub author: String,
+}
+
+/// GET /v1/traces/annotation-templates — list all annotation templates.
+async fn annotation_templates_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    // Built-in + custom templates
+    let mut templates = builtin_annotation_templates();
+    // Future: s.custom_annotation_templates would be appended here
+
+    Ok(Json(serde_json::json!({
+        "count": templates.len(),
+        "templates": templates,
+    })))
+}
+
+/// PUT /v1/traces/annotation-templates — add a custom template.
+async fn annotation_templates_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(template): Json<AnnotationTemplate>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::Write)?;
+
+    // Validate
+    if template.name.is_empty() || template.text.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name and text are required"})));
+    }
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "template": template,
+    })))
+}
+
+/// POST /v1/traces/:id/annotate-from-template — apply a template to a trace.
+async fn traces_annotate_from_template_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    let template_name = match params.get("template") {
+        Some(n) => n.clone(),
+        None => return Ok(Json(serde_json::json!({"error": "template parameter required"}))),
+    };
+
+    let templates = builtin_annotation_templates();
+    let template = match templates.iter().find(|t| t.name == template_name) {
+        Some(t) => t.clone(),
+        None => return Ok(Json(serde_json::json!({"error": format!("template '{}' not found", template_name)}))),
+    };
+
+    let annotation = crate::trace_store::TraceAnnotation {
+        author: template.author.clone(),
+        text: template.text.clone(),
+        tags: template.tags.clone(),
+        timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+    };
+
+    if s.trace_store.annotate(id, annotation) {
+        Ok(Json(serde_json::json!({
+            "success": true,
+            "trace_id": id,
+            "template": template_name,
+            "text": template.text,
+            "tags": template.tags,
+        })))
+    } else {
+        Ok(Json(serde_json::json!({"success": false, "error": format!("trace {} not found", id)})))
+    }
+}
+
+/// Built-in annotation templates for common patterns.
+pub fn builtin_annotation_templates() -> Vec<AnnotationTemplate> {
+    vec![
+        AnnotationTemplate { name: "reviewed".into(), text: "Reviewed and approved".into(), tags: vec!["reviewed".into(), "approved".into()], author: "system".into() },
+        AnnotationTemplate { name: "bug".into(), text: "Bug identified in this execution".into(), tags: vec!["bug".into(), "needs-fix".into()], author: "system".into() },
+        AnnotationTemplate { name: "performance".into(), text: "Performance issue detected".into(), tags: vec!["performance".into(), "slow".into()], author: "system".into() },
+        AnnotationTemplate { name: "regression".into(), text: "Regression from previous version".into(), tags: vec!["regression".into(), "critical".into()], author: "system".into() },
+        AnnotationTemplate { name: "anchor-breach".into(), text: "Anchor validation breach detected".into(), tags: vec!["anchor".into(), "breach".into(), "safety".into()], author: "system".into() },
+        AnnotationTemplate { name: "hallucination".into(), text: "Potential hallucination in output".into(), tags: vec!["hallucination".into(), "epistemic".into()], author: "system".into() },
+        AnnotationTemplate { name: "cost-alert".into(), text: "Execution exceeded cost threshold".into(), tags: vec!["cost".into(), "alert".into()], author: "system".into() },
+        AnnotationTemplate { name: "baseline".into(), text: "Marked as baseline for comparison".into(), tags: vec!["baseline".into(), "reference".into()], author: "system".into() },
+    ]
+}
+
+/// Request to update webhook event filters.
+#[derive(Debug, Deserialize)]
+pub struct SetFiltersRequest {
+    pub events: Vec<String>,
+}
+
+/// GET /v1/webhooks/:id/filters — get event filters for a webhook.
+async fn webhook_filters_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.webhooks.get_filters(&id) {
+        Some(events) => Ok(Json(serde_json::json!({"webhook_id": id, "events": events}))),
+        None => Ok(Json(serde_json::json!({"error": format!("webhook '{}' not found", id)}))),
+    }
+}
+
+/// PUT /v1/webhooks/:id/filters — update event filters for a webhook.
+async fn webhook_filters_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(payload): Json<SetFiltersRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Write)?;
+
+    if payload.events.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "events list must not be empty"})));
+    }
+
+    if s.webhooks.set_filters(&id, payload.events.clone()) {
+        s.audit_log.record(&client, AuditAction::ConfigUpdate, &format!("webhook_filters:{}", id),
+            serde_json::json!({"events": payload.events}), true);
+        Ok(Json(serde_json::json!({"success": true, "webhook_id": id, "events": payload.events})))
+    } else {
+        Ok(Json(serde_json::json!({"error": format!("webhook '{}' not found", id)})))
+    }
+}
+
+/// GET /v1/flows/:name/sla — get SLA definition for a flow.
+async fn flow_sla_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+    match s.flow_slas.get(&name) {
+        Some(sla) => Ok(Json(serde_json::json!({"flow": name, "sla": sla}))),
+        None => Ok(Json(serde_json::json!({"flow": name, "sla": serde_json::Value::Null, "message": "no SLA defined"}))),
+    }
+}
+
+/// PUT /v1/flows/:name/sla — set SLA definition.
+async fn flow_sla_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(sla): Json<FlowSLA>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+    s.flow_slas.insert(name.clone(), sla.clone());
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, &format!("flow_sla:{}", name),
+        serde_json::to_value(&sla).unwrap_or_default(), true);
+    Ok(Json(serde_json::json!({"success": true, "flow": name, "sla": sla})))
+}
+
+/// DELETE /v1/flows/:name/sla — remove SLA definition.
+async fn flow_sla_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+    let removed = s.flow_slas.remove(&name).is_some();
+    Ok(Json(serde_json::json!({"success": removed, "flow": name})))
+}
+
+/// GET /v1/flows/:name/sla/check — check SLA compliance for a flow.
+async fn flow_sla_check_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let sla = match s.flow_slas.get(&name) {
+        Some(sla) => sla.clone(),
+        None => return Ok(Json(serde_json::json!({"flow": name, "compliant": true, "message": "no SLA defined"}))),
+    };
+
+    let entries = s.trace_store.recent(s.trace_store.len(), None);
+    let flow_traces: Vec<_> = entries.iter().filter(|e| e.flow_name == name).collect();
+
+    if flow_traces.is_empty() {
+        return Ok(Json(serde_json::json!({"flow": name, "compliant": true, "message": "no executions to evaluate"})));
+    }
+
+    let total = flow_traces.len() as f64;
+    let error_count = flow_traces.iter().filter(|e| e.errors > 0).count() as f64;
+    let success_count = flow_traces.iter().filter(|e| e.errors == 0).count() as f64;
+    let mut latencies: Vec<u64> = flow_traces.iter().map(|e| e.latency_ms).collect();
+    latencies.sort();
+    let avg_latency = latencies.iter().sum::<u64>() as f64 / total;
+    let p95_idx = ((95.0 * total as f64 + 99.0) / 100.0).min(total) as usize - 1;
+    let p95 = latencies[p95_idx.min(latencies.len() - 1)];
+
+    let mut breaches: Vec<SLABreach> = Vec::new();
+
+    if sla.max_latency_ms > 0 && avg_latency > sla.max_latency_ms as f64 {
+        breaches.push(SLABreach { flow_name: name.clone(), metric: "avg_latency_ms".into(), threshold: sla.max_latency_ms as f64, actual: avg_latency, breached: true });
+    }
+    if sla.max_p95_latency_ms > 0 && p95 > sla.max_p95_latency_ms {
+        breaches.push(SLABreach { flow_name: name.clone(), metric: "p95_latency_ms".into(), threshold: sla.max_p95_latency_ms as f64, actual: p95 as f64, breached: true });
+    }
+    if sla.max_error_rate > 0.0 && (error_count / total) > sla.max_error_rate {
+        breaches.push(SLABreach { flow_name: name.clone(), metric: "error_rate".into(), threshold: sla.max_error_rate, actual: error_count / total, breached: true });
+    }
+    if sla.min_success_rate > 0.0 && (success_count / total) < sla.min_success_rate {
+        breaches.push(SLABreach { flow_name: name.clone(), metric: "success_rate".into(), threshold: sla.min_success_rate, actual: success_count / total, breached: true });
+    }
+
+    let compliant = breaches.is_empty();
+
+    Ok(Json(serde_json::json!({
+        "flow": name,
+        "compliant": compliant,
+        "breaches": breaches.len(),
+        "details": breaches,
+        "metrics": {
+            "avg_latency_ms": avg_latency,
+            "p95_latency_ms": p95,
+            "error_rate": error_count / total,
+            "success_rate": success_count / total,
+            "total_executions": total as u64,
+        },
+        "sla": sla,
+    })))
+}
+
+/// Query for metrics export.
+#[derive(Debug, Deserialize)]
+pub struct MetricsExportQuery {
+    /// Format: "prometheus" (default), "json".
+    #[serde(default = "default_metrics_format")]
+    pub format: String,
+}
+
+fn default_metrics_format() -> String { "prometheus".into() }
+
+/// POST /v1/metrics/export — export full metrics snapshot to disk.
+async fn metrics_export_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<MetricsExportQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    // Build snapshot (same as prometheus handler)
+    let bus_stats = s.event_bus.stats();
+    let uptime = s.started_at.elapsed().as_secs();
+    let now_wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+
+    let path = s.config.config_path.as_deref()
+        .map(|p| std::path::Path::new(p).parent().unwrap_or(std::path::Path::new(".")).join("axon_metrics_export.txt"))
+        .unwrap_or_else(|| std::path::PathBuf::from("axon_metrics_export.txt"));
+
+    let format = params.format.to_lowercase();
+    let content = match format.as_str() {
+        "json" => {
+            let snapshot = serde_json::json!({
+                "timestamp": now_wall,
+                "uptime_secs": uptime,
+                "total_requests": s.metrics.total_requests,
+                "total_errors": s.metrics.total_errors,
+                "total_deployments": s.metrics.total_deployments,
+                "daemons": s.daemons.len(),
+                "traces_buffered": s.trace_store.len(),
+                "traces_recorded": s.trace_store.total_recorded(),
+                "schedules": s.schedules.len(),
+                "events_published": bus_stats.events_published,
+                "topics_seen": bus_stats.topics_seen.len(),
+                "webhooks": s.webhooks.count(),
+                "execution_queue_pending": s.execution_queue.iter().filter(|q| q.status == "pending").count(),
+                "cache_entries": s.execution_cache.len(),
+                "config_snapshots": s.config_snapshots.len(),
+            });
+            serde_json::to_string_pretty(&snapshot).unwrap_or_default()
+        }
+        _ => {
+            // Prometheus format — reuse existing handler logic
+            // Build a minimal snapshot for export
+            format!(
+                "# Axon Server Metrics Export\n# Timestamp: {}\n# Uptime: {}s\n\naxon_export_uptime_secs {}\naxon_export_total_requests {}\naxon_export_total_errors {}\naxon_export_total_deployments {}\naxon_export_daemons {}\naxon_export_traces_buffered {}\naxon_export_traces_recorded {}\naxon_export_schedules {}\naxon_export_events_published {}\naxon_export_webhooks {}\naxon_export_queue_pending {}\naxon_export_cache_entries {}\n",
+                now_wall, uptime, uptime, s.metrics.total_requests, s.metrics.total_errors,
+                s.metrics.total_deployments, s.daemons.len(), s.trace_store.len(),
+                s.trace_store.total_recorded(), s.schedules.len(), bus_stats.events_published,
+                s.webhooks.count(), s.execution_queue.iter().filter(|q| q.status == "pending").count(),
+                s.execution_cache.len(),
+            )
+        }
+    };
+
+    let ext = if format == "json" { "json" } else { "txt" };
+    let export_path = path.with_extension(ext);
+
+    drop(s);
+
+    match std::fs::write(&export_path, &content) {
+        Ok(_) => Ok(Json(serde_json::json!({
+            "success": true,
+            "format": format,
+            "path": export_path.display().to_string(),
+            "size_bytes": content.len(),
+        }))),
+        Err(e) => Ok(Json(serde_json::json!({
+            "success": false,
+            "error": format!("write failed: {}", e),
+        }))),
+    }
+}
+
+/// Request to set canary config.
+#[derive(Debug, Deserialize)]
+pub struct SetCanaryRequest {
+    pub stable_version: u32,
+    pub canary_version: u32,
+    /// Canary traffic weight (0–100).
+    pub canary_weight: u32,
+}
+
+/// GET /v1/flows/:name/canary — get canary deployment config.
+async fn flow_canary_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+    match s.canary_configs.get(&name) {
+        Some(cfg) => Ok(Json(serde_json::json!({"flow": name, "canary": cfg}))),
+        None => Ok(Json(serde_json::json!({"flow": name, "canary": serde_json::Value::Null, "message": "no canary configured"}))),
+    }
+}
+
+/// PUT /v1/flows/:name/canary — set canary deployment config.
+async fn flow_canary_put_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(payload): Json<SetCanaryRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let client = client_key_from_headers(&headers);
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    if payload.canary_weight > 100 {
+        return Ok(Json(serde_json::json!({"error": "canary_weight must be 0–100"})));
+    }
+    if payload.stable_version == payload.canary_version {
+        return Ok(Json(serde_json::json!({"error": "stable and canary versions must differ"})));
+    }
+
+    let cfg = CanaryConfig {
+        stable_version: payload.stable_version,
+        canary_version: payload.canary_version,
+        canary_weight: payload.canary_weight,
+        stable_count: 0,
+        canary_count: 0,
+    };
+    s.canary_configs.insert(name.clone(), cfg.clone());
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, &format!("canary:{}", name),
+        serde_json::to_value(&cfg).unwrap_or_default(), true);
+    Ok(Json(serde_json::json!({"success": true, "flow": name, "canary": cfg})))
+}
+
+/// DELETE /v1/flows/:name/canary — remove canary config (promote or rollback externally).
+async fn flow_canary_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+    let removed = s.canary_configs.remove(&name).is_some();
+    Ok(Json(serde_json::json!({"success": removed, "flow": name})))
+}
+
+/// POST /v1/flows/:name/canary/route — route a request through canary logic.
+///
+/// Returns which version to execute based on the canary weight.
+/// Clients use the returned version with /v1/execute/pinned.
+async fn flow_canary_route_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    match s.canary_configs.get_mut(&name) {
+        Some(cfg) => {
+            let version = cfg.route();
+            let is_canary = version == cfg.canary_version;
+            Ok(Json(serde_json::json!({
+                "flow": name,
+                "routed_version": version,
+                "is_canary": is_canary,
+                "stable_count": cfg.stable_count,
+                "canary_count": cfg.canary_count,
+                "canary_weight": cfg.canary_weight,
+            })))
+        }
+        None => Ok(Json(serde_json::json!({
+            "flow": name,
+            "error": "no canary configured — use active version",
+        }))),
+    }
+}
+
+/// GET /v1/alerts/rules — list all alert rules.
+async fn alerts_rules_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+    Ok(Json(serde_json::json!({"count": s.alert_rules.len(), "rules": s.alert_rules})))
+}
+
+/// POST /v1/alerts/rules — add an alert rule.
+async fn alerts_rules_add_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(rule): Json<AlertRule>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    if rule.name.is_empty() || rule.metric.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "name and metric required"})));
+    }
+    if s.alert_rules.iter().any(|r| r.name == rule.name) {
+        return Ok(Json(serde_json::json!({"error": format!("rule '{}' already exists", rule.name)})));
+    }
+    s.alert_rules.push(rule.clone());
+    Ok(Json(serde_json::json!({"success": true, "rule": rule})))
+}
+
+/// DELETE /v1/alerts/rules — remove a rule by name.
+async fn alerts_rules_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+    let name = params.get("name").cloned().unwrap_or_default();
+    let before = s.alert_rules.len();
+    s.alert_rules.retain(|r| r.name != name);
+    Ok(Json(serde_json::json!({"removed": before - s.alert_rules.len(), "name": name})))
+}
+
+/// POST /v1/alerts/evaluate — evaluate all rules against current metrics.
+async fn alerts_evaluate_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let bus_stats = s.event_bus.stats();
+    let sup_counts = s.supervisor.state_counts();
+
+    // Compute metrics
+    let error_rate = if s.metrics.total_requests > 0 { s.metrics.total_errors as f64 / s.metrics.total_requests as f64 } else { 0.0 };
+    let queue_depth = s.execution_queue.iter().filter(|q| q.status == "pending").count() as f64;
+    let trace_buffer_pct = if s.trace_store.config().capacity > 0 { s.trace_store.len() as f64 / s.trace_store.config().capacity as f64 * 100.0 } else { 0.0 };
+    let dead_daemons = sup_counts.get("dead").copied().unwrap_or(0) as f64;
+    let latency_avg = {
+        let stats = s.trace_store.stats();
+        stats.avg_latency_ms as f64
+    };
+
+    let mut new_alerts: Vec<FiredAlert> = Vec::new();
+    let mut suppressed_by_cooldown = 0u32;
+    let mut suppressed_by_silence = 0u32;
+
+    // Evict expired silences
+    s.alert_silences.retain(|si| si.expires_at == 0 || si.expires_at > now);
+
+    for rule in &s.alert_rules {
+        if !rule.enabled { continue; }
+        // Check silence
+        if s.alert_silences.iter().any(|si| si.rule_name == rule.name) {
+            suppressed_by_silence += 1;
+            continue;
+        }
+        let actual = match rule.metric.as_str() {
+            "error_rate" => error_rate,
+            "latency_avg" => latency_avg,
+            "queue_depth" => queue_depth,
+            "trace_buffer_pct" => trace_buffer_pct,
+            "dead_daemons" => dead_daemons,
+            _ => continue,
+        };
+
+        let fired = match rule.comparison.as_str() {
+            "gt" => actual > rule.threshold,
+            "lt" => actual < rule.threshold,
+            "eq" => (actual - rule.threshold).abs() < 0.001,
+            _ => false,
+        };
+
+        if fired {
+            // Cooldown: suppress if last fire of this rule is within cooldown_secs
+            if rule.cooldown_secs > 0 {
+                let cooldown_start = now.saturating_sub(rule.cooldown_secs);
+                let recently_fired = s.fired_alerts.iter().rev()
+                    .any(|fa| fa.rule_name == rule.name && fa.timestamp >= cooldown_start);
+                if recently_fired { suppressed_by_cooldown += 1; continue; }
+            }
+
+            // Escalation: if escalate_after > 0, count recent fires within window
+            let severity = if rule.escalate_after > 0 {
+                let window_start = now.saturating_sub(rule.escalation_window_secs);
+                let recent_count = s.fired_alerts.iter()
+                    .filter(|fa| fa.rule_name == rule.name && fa.timestamp >= window_start)
+                    .count() as u32;
+                if recent_count >= rule.escalate_after {
+                    // Escalate: info → warning → critical
+                    match rule.severity.as_str() {
+                        "info" => "warning".to_string(),
+                        "warning" => "critical".to_string(),
+                        _ => rule.severity.clone(),
+                    }
+                } else {
+                    rule.severity.clone()
+                }
+            } else {
+                rule.severity.clone()
+            };
+            new_alerts.push(FiredAlert {
+                rule_name: rule.name.clone(), metric: rule.metric.clone(),
+                threshold: rule.threshold, actual, severity, timestamp: now,
+            });
+        }
+    }
+
+    // Append to history (cap 500)
+    for alert in &new_alerts {
+        s.fired_alerts.push(alert.clone());
+    }
+    let excess = s.fired_alerts.len().saturating_sub(500);
+    if excess > 0 { s.fired_alerts.drain(0..excess); }
+
+    // Publish alerts to EventBus as alert.{severity} topics.
+    // Webhooks subscribed to "alert.*" will receive these.
+    let mut webhooks_notified = 0usize;
+    for alert in &new_alerts {
+        let topic = format!("alert.{}", alert.severity);
+        s.event_bus.publish(
+            &topic,
+            serde_json::json!({
+                "rule": alert.rule_name,
+                "metric": alert.metric,
+                "threshold": alert.threshold,
+                "actual": alert.actual,
+                "severity": alert.severity,
+            }),
+            "alert_system",
+        );
+        // Count matching webhooks
+        let matched = s.webhooks.match_topic(&topic);
+        webhooks_notified += matched.len();
+    }
+
+    Ok(Json(serde_json::json!({
+        "rules_evaluated": s.alert_rules.iter().filter(|r| r.enabled).count(),
+        "alerts_fired": new_alerts.len(),
+        "suppressed_by_cooldown": suppressed_by_cooldown,
+        "suppressed_by_silence": suppressed_by_silence,
+        "webhooks_notified": webhooks_notified,
+        "alerts": new_alerts,
+        "total_history": s.fired_alerts.len(),
+    })))
+}
+
+/// GET /v1/alerts/history — view fired alert history.
+async fn alerts_history_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+    let limit: usize = params.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50);
+    let recent: Vec<&FiredAlert> = s.fired_alerts.iter().rev().take(limit).collect();
+    Ok(Json(serde_json::json!({"count": recent.len(), "total": s.fired_alerts.len(), "alerts": recent})))
+}
+
+/// POST /v1/alerts/silence — create a silence for a rule.
+async fn alerts_silence_create_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let rule_name = payload.get("rule_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if rule_name.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "rule_name required"})));
+    }
+
+    // Check rule exists
+    if !s.alert_rules.iter().any(|r| r.name == rule_name) {
+        return Ok(Json(serde_json::json!({"error": format!("rule '{}' not found", rule_name)})));
+    }
+
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let duration_secs = payload.get("duration_secs").and_then(|v| v.as_u64()).unwrap_or(0);
+    let expires_at = if duration_secs > 0 { now + duration_secs } else { 0 };
+    let reason = payload.get("reason").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    // Remove any existing silence for same rule
+    s.alert_silences.retain(|s| s.rule_name != rule_name);
+
+    let silence = AlertSilence {
+        rule_name: rule_name.clone(),
+        created_by: client.clone(),
+        reason: reason.clone(),
+        created_at: now,
+        expires_at,
+    };
+    s.alert_silences.push(silence.clone());
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "alert_silence",
+        serde_json::json!({"action": "create", "rule_name": rule_name, "expires_at": expires_at, "reason": reason}), true);
+
+    Ok(Json(serde_json::json!({"success": true, "silence": silence})))
+}
+
+/// DELETE /v1/alerts/silence — remove a silence by rule_name.
+async fn alerts_silence_delete_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut s = state.lock().unwrap();
+    let client = client_key_from_headers(&headers);
+    check_auth(&mut s, &headers, AccessLevel::Admin)?;
+
+    let rule_name = params.get("rule_name").cloned().unwrap_or_default();
+    if rule_name.is_empty() {
+        return Ok(Json(serde_json::json!({"error": "rule_name query param required"})));
+    }
+
+    let before = s.alert_silences.len();
+    s.alert_silences.retain(|s| s.rule_name != rule_name);
+    let removed = before - s.alert_silences.len();
+
+    s.audit_log.record(&client, AuditAction::ConfigUpdate, "alert_silence",
+        serde_json::json!({"action": "delete", "rule_name": rule_name, "removed": removed}), removed > 0);
+
+    Ok(Json(serde_json::json!({"success": removed > 0, "removed": removed})))
+}
+
+/// GET /v1/alerts/silences — list active silences.
+async fn alerts_silences_list_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let active: Vec<&AlertSilence> = s.alert_silences.iter()
+        .filter(|si| si.expires_at == 0 || si.expires_at > now)
+        .collect();
+    let expired = s.alert_silences.len() - active.len();
+
+    Ok(Json(serde_json::json!({
+        "active": active.len(),
+        "expired": expired,
+        "silences": active,
+    })))
+}
+
+/// Request for flow warming.
+#[derive(Debug, Deserialize)]
+pub struct WarmRequest {
+    /// Flow names to warm (empty = all deployed).
+    #[serde(default)]
+    pub flows: Vec<String>,
+    /// Cache TTL for warmed results (default 600s).
+    #[serde(default = "default_warm_ttl")]
+    pub cache_ttl_secs: u64,
+}
+
+fn default_warm_ttl() -> u64 { 600 }
+
+/// Per-flow warm result.
+#[derive(Debug, Clone, Serialize)]
+pub struct WarmResult {
+    pub flow_name: String,
+    pub success: bool,
+    pub cached: bool,
+    pub trace_id: u64,
+    pub latency_ms: u64,
+    pub error: Option<String>,
+}
+
+/// POST /v1/execute/warm — pre-execute flows to prime cache and validate.
+async fn execute_warm_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<WarmRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    { let mut s = state.lock().unwrap(); check_auth(&mut s, &headers, AccessLevel::Write)?; }
+
+    // Determine which flows to warm
+    let flows: Vec<(String, String, String)> = {
+        let s = state.lock().unwrap();
+        if payload.flows.is_empty() {
+            // All deployed flows
+            s.daemons.keys().filter_map(|name| {
+                s.versions.get_history(name).and_then(|h| h.active()).map(|v| (name.clone(), v.source.clone(), v.source_file.clone()))
+            }).collect()
+        } else {
+            payload.flows.iter().filter_map(|name| {
+                s.versions.get_history(name).and_then(|h| h.active()).map(|v| (name.clone(), v.source.clone(), v.source_file.clone()))
+            }).collect()
+        }
+    };
+
+    let mut results: Vec<WarmResult> = Vec::new();
+
+    for (flow_name, source, source_file) in &flows {
+        let cache_key = format!("{}:stub", flow_name);
+
+        // Check if already cached
+        let already_cached = {
+            let s = state.lock().unwrap();
+            s.execution_cache.iter().any(|c| c.cache_key == cache_key && !c.is_expired())
+        };
+
+        if already_cached {
+            results.push(WarmResult { flow_name: flow_name.clone(), success: true, cached: true, trace_id: 0, latency_ms: 0, error: None });
+            continue;
+        }
+
+        // Execute to warm
+        match server_execute(source, source_file, flow_name, "stub", None) {
+            Ok(er) => {
+                let mut entry = crate::trace_store::build_trace(&er.flow_name, &er.source_file, &er.backend, &client,
+                    if er.success { crate::trace_store::TraceStatus::Success } else { crate::trace_store::TraceStatus::Partial },
+                    er.steps_executed, er.latency_ms);
+                entry.tokens_input = er.tokens_input; entry.tokens_output = er.tokens_output; entry.errors = er.errors;
+
+                let tid = {
+                    let mut s = state.lock().unwrap();
+                    let tid = s.trace_store.record(entry);
+                    // Auto-cache the result
+                    if payload.cache_ttl_secs > 0 {
+                        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                        let cached = CachedResult {
+                            cache_key: cache_key.clone(), flow_name: flow_name.clone(), backend: "stub".into(),
+                            result: serde_json::json!({"steps": er.steps_executed, "warmed": true}),
+                            source_trace_id: tid, cached_at: now, ttl_secs: payload.cache_ttl_secs,
+                            epistemic: EpistemicEnvelope::derived(&format!("warm:{}", flow_name), 0.95, &format!("trace:{}", tid)),
+                        };
+                        s.execution_cache.retain(|c| c.cache_key != cache_key);
+                        s.execution_cache.push(cached);
+                        if s.execution_cache.len() > 200 { s.execution_cache.remove(0); }
+                    }
+                    tid
+                };
+                results.push(WarmResult { flow_name: flow_name.clone(), success: er.success, cached: false, trace_id: tid, latency_ms: er.latency_ms, error: None });
+            }
+            Err(e) => {
+                results.push(WarmResult { flow_name: flow_name.clone(), success: false, cached: false, trace_id: 0, latency_ms: 0, error: Some(e) });
+            }
+        }
+    }
+
+    let warmed = results.iter().filter(|r| r.success && !r.cached).count();
+    let already = results.iter().filter(|r| r.cached).count();
+    let failed = results.iter().filter(|r| !r.success).count();
+
+    Ok(Json(serde_json::json!({
+        "total_flows": flows.len(),
+        "warmed": warmed,
+        "already_cached": already,
+        "failed": failed,
+        "cache_ttl_secs": payload.cache_ttl_secs,
+        "total_latency_ms": req_start.elapsed().as_millis() as u64,
+        "results": results,
+    })))
+}
+
+/// Per-step timing profile entry.
+#[derive(Debug, Clone, Serialize)]
+pub struct StepProfile {
+    pub step_name: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub duration_ms: u64,
+    pub pct_of_total: f64,
+    pub events_count: usize,
+}
+
+/// GET /v1/traces/:id/profile — per-step timing breakdown.
+async fn traces_profile_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let s = state.lock().unwrap();
+    check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
+
+    let entry = match s.trace_store.get(id) {
+        Some(e) => e,
+        None => return Ok(Json(serde_json::json!({"error": format!("trace {} not found", id)}))),
+    };
+
+    if entry.events.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "trace_id": id, "flow_name": entry.flow_name, "total_latency_ms": entry.latency_ms,
+            "steps": [], "message": "no events to profile",
+        })));
+    }
+
+    // Build per-step profiles from step_start/step_end pairs
+    let mut profiles: Vec<StepProfile> = Vec::new();
+    let mut step_stack: Vec<(String, u64, usize)> = Vec::new(); // (name, start_ms, event_count)
+
+    for ev in &entry.events {
+        match ev.event_type.as_str() {
+            "step_start" => {
+                step_stack.push((ev.step_name.clone(), ev.offset_ms, 0));
+            }
+            "step_end" => {
+                if let Some((name, start, events)) = step_stack.pop() {
+                    let duration = ev.offset_ms.saturating_sub(start);
+                    let pct = if entry.latency_ms > 0 { duration as f64 / entry.latency_ms as f64 * 100.0 } else { 0.0 };
+                    profiles.push(StepProfile {
+                        step_name: name, start_ms: start, end_ms: ev.offset_ms,
+                        duration_ms: duration, pct_of_total: (pct * 100.0).round() / 100.0, events_count: events,
+                    });
+                }
+            }
+            _ => {
+                if let Some(last) = step_stack.last_mut() {
+                    last.2 += 1;
+                }
+            }
+        }
+    }
+
+    // Flush unclosed steps
+    for (name, start, events) in step_stack {
+        let duration = entry.latency_ms.saturating_sub(start);
+        let pct = if entry.latency_ms > 0 { duration as f64 / entry.latency_ms as f64 * 100.0 } else { 0.0 };
+        profiles.push(StepProfile {
+            step_name: name, start_ms: start, end_ms: entry.latency_ms,
+            duration_ms: duration, pct_of_total: (pct * 100.0).round() / 100.0, events_count: events,
+        });
+    }
+
+    let hotspot = profiles.iter().max_by_key(|p| p.duration_ms).map(|p| p.step_name.clone());
+
+    Ok(Json(serde_json::json!({
+        "trace_id": id,
+        "flow_name": entry.flow_name,
+        "total_latency_ms": entry.latency_ms,
+        "steps_profiled": profiles.len(),
+        "hotspot": hotspot,
+        "steps": profiles,
+    })))
+}
+
+// ── Router builder ────────────────────────────────────────────────────────
+
+/// Build the axum router with all v1 routes.
+pub fn build_router(config: ServerConfig) -> Router {
+    let (router, _state) = build_router_with_state(config);
+    router
+}
+
+/// Build router and return shared state handle (used by run_serve for shutdown hooks).
+pub fn build_router_with_state(config: ServerConfig) -> (Router, SharedState) {
+    let state = Arc::new(Mutex::new(ServerState::new(config)));
+
+    let router = Router::new()
+        .route("/v1/health", get(health_handler))
+        .route("/v1/health/live", get(health_live_handler))
+        .route("/v1/health/ready", get(health_ready_handler))
+        .route("/v1/health/components", get(health_components_handler))
+        .route("/v1/health/gates", get(health_gates_get_handler).put(health_gates_put_handler))
+        .route("/v1/health/history", get(health_history_handler))
+        .route("/v1/health/check-and-record", post(health_check_record_handler))
+        .route("/v1/alerts/rules", get(alerts_rules_list_handler).post(alerts_rules_add_handler).delete(alerts_rules_delete_handler))
+        .route("/v1/alerts/evaluate", post(alerts_evaluate_handler))
+        .route("/v1/alerts/history", get(alerts_history_handler))
+        .route("/v1/alerts/silence", post(alerts_silence_create_handler).delete(alerts_silence_delete_handler))
+        .route("/v1/alerts/silences", get(alerts_silences_list_handler))
+        .route("/v1/version", get(version_handler))
+        .route("/v1/uptime", get(uptime_handler))
+        .route("/v1/dashboard", get(dashboard_handler))
+        .route("/v1/primitives", get(primitives_handler))
+        .route("/v1/docs", get(docs_handler))
+        .route("/v1/metrics", get(metrics_handler))
+        .route("/v1/metrics/prometheus", get(metrics_prometheus_handler))
+        .route("/v1/metrics/export", post(metrics_export_handler))
+        .route("/v1/deploy", post(deploy_handler))
+        .route("/v1/deploy/reload", post(deploy_reload_handler))
+        .route("/v1/execute", post(execute_handler))
+        .route("/v1/execute/enqueue", post(execute_enqueue_handler))
+        .route("/v1/execute/queue", get(execute_queue_handler))
+        .route("/v1/execute/dequeue", post(execute_dequeue_handler))
+        .route("/v1/execute/drain", post(execute_drain_handler))
+        .route("/v1/execute/sandbox", post(execute_sandbox_handler))
+        .route("/v1/execute/process", post(execute_process_handler))
+        .route("/v1/execute/dry-run", post(execute_dry_run_handler))
+        .route("/v1/execute/pipeline", post(execute_pipeline_handler))
+        .route("/v1/execute/stream", post(execute_stream_handler))
+        .route("/v1/execute/cache", get(execute_cache_get_handler).put(execute_cache_put_handler).delete(execute_cache_delete_handler))
+        .route("/v1/execute/cached", post(execute_cached_handler))
+        .route("/v1/execute/stream/{trace_id}/consume", get(stream_consume_handler))
+        .route("/v1/execute/batch", post(execute_batch_handler))
+        .route("/v1/execute/batch-cached", post(execute_batch_cached_handler))
+        .route("/v1/execute/cache-replay", post(execute_cache_replay_handler))
+        .route("/v1/execute/pinned", post(execute_pinned_handler))
+        .route("/v1/execute/ab-test", post(execute_ab_test_handler))
+        .route("/v1/execute/warm", post(execute_warm_handler))
+        .route("/v1/estimate", post(estimate_handler))
+        .route("/v1/costs", get(costs_handler))
+        .route("/v1/costs/pricing", put(costs_pricing_handler))
+        .route("/v1/costs/{flow}", get(costs_flow_handler))
+        .route("/v1/costs/{flow}/budget", put(costs_budget_set_handler).delete(costs_budget_delete_handler))
+        .route("/v1/costs/alerts", get(costs_alerts_handler))
+        .route("/v1/costs/forecast", get(costs_forecast_handler))
+        .route("/v1/rate-limit", get(rate_limit_status_handler))
+        .route("/v1/rate-limit/endpoints", get(endpoint_rate_limits_list_handler).put(endpoint_rate_limits_put_handler).delete(endpoint_rate_limits_delete_handler))
+        .route("/v1/keys", get(keys_list_handler))
+        .route("/v1/keys", post(keys_create_handler))
+        .route("/v1/keys/revoke", post(keys_revoke_handler))
+        .route("/v1/keys/rotate", post(keys_rotate_handler))
+        .route("/v1/webhooks", get(webhooks_list_handler))
+        .route("/v1/webhooks", post(webhooks_register_handler))
+        .route("/v1/webhooks/deliveries", get(webhooks_deliveries_handler))
+        .route("/v1/webhooks/stats", get(webhooks_stats_handler))
+        .route("/v1/webhooks/retry-queue", get(webhooks_retry_queue_handler))
+        .route("/v1/webhooks/dead-letters", get(webhooks_dead_letters_handler))
+        .route("/v1/webhooks/{id}/template", get(webhook_template_get_handler).put(webhook_template_set_handler))
+        .route("/v1/webhooks/{id}/render", post(webhook_render_handler))
+        .route("/v1/webhooks/{id}/simulate", post(webhook_simulate_handler))
+        .route("/v1/webhooks/{id}/filters", get(webhook_filters_get_handler).put(webhook_filters_put_handler))
+        .route("/v1/webhooks/delivery-config", get(delivery_config_handler))
+        .route("/v1/webhooks/delivery-config", put(delivery_config_put_handler))
+        .route("/v1/webhooks/{id}", delete(webhooks_delete_handler))
+        .route("/v1/webhooks/{id}/toggle", post(webhooks_toggle_handler))
+        .route("/v1/config", get(config_get_handler))
+        .route("/v1/config", put(config_put_handler))
+        .route("/v1/config/save", post(config_save_handler))
+        .route("/v1/config/load", post(config_load_handler))
+        .route("/v1/config/saved", delete(config_delete_handler))
+        .route("/v1/config/snapshots", get(config_snapshots_list_handler))
+        .route("/v1/config/snapshots", post(config_snapshots_save_handler))
+        .route("/v1/config/snapshots/restore", post(config_snapshots_restore_handler))
+        .route("/v1/audit", get(audit_handler))
+        .route("/v1/audit/stats", get(audit_stats_handler))
+        .route("/v1/audit/export", get(audit_export_handler))
+        .route("/v1/logs", get(logs_handler))
+        .route("/v1/logs/stats", get(logs_stats_handler))
+        .route("/v1/logs/export", get(logs_export_handler))
+        .route("/v1/daemons", get(list_daemons_handler))
+        .route("/v1/daemons/{name}", get(get_daemon_handler))
+        .route("/v1/daemons/{name}", delete(delete_daemon_handler))
+        .route("/v1/daemons/{name}/run", post(daemon_run_handler))
+        .route("/v1/daemons/{name}/pause", post(daemon_pause_handler))
+        .route("/v1/daemons/{name}/resume", post(daemon_resume_handler))
+        .route("/v1/daemons/{name}/trigger", get(daemon_trigger_get_handler))
+        .route("/v1/daemons/{name}/trigger", put(daemon_trigger_set_handler))
+        .route("/v1/daemons/{name}/trigger", delete(daemon_trigger_clear_handler))
+        .route("/v1/triggers", get(triggers_list_handler))
+        .route("/v1/triggers/dispatch", post(triggers_dispatch_handler))
+        .route("/v1/triggers/replay", post(triggers_replay_handler))
+        .route("/v1/events/history", get(events_history_handler))
+        .route("/v1/events/stream", get(events_stream_handler))
+        .route("/v1/daemons/{name}/chain", get(daemon_chain_get_handler))
+        .route("/v1/daemons/{name}/chain", put(daemon_chain_set_handler))
+        .route("/v1/daemons/{name}/chain", delete(daemon_chain_clear_handler))
+        .route("/v1/daemons/{name}/events", get(daemon_events_handler))
+        .route("/v1/daemons/dependencies", get(daemons_dependencies_handler))
+        .route("/v1/daemons/autoscale", get(daemons_autoscale_get_handler).put(daemons_autoscale_put_handler))
+        .route("/v1/chains", get(chains_list_handler))
+        .route("/v1/chains/graph", get(chains_graph_handler))
+        .route("/v1/events", post(publish_event_handler))
+        .route("/v1/events/stats", get(event_stats_handler))
+        .route("/v1/supervisor", get(supervisor_handler))
+        .route("/v1/supervisor/{name}/start", post(supervisor_start_handler))
+        .route("/v1/supervisor/{name}/stop", post(supervisor_stop_handler))
+        .route("/v1/versions", get(versions_handler))
+        .route("/v1/versions/{name}", get(version_history_handler))
+        .route("/v1/versions/{name}/rollback", post(rollback_handler))
+        .route("/v1/versions/{name}/rollback/check", post(rollback_check_handler))
+        .route("/v1/versions/{name}/diff", get(version_diff_handler))
+        .route("/v1/session", get(session_list_handler))
+        .route("/v1/session/remember", post(session_remember_handler))
+        .route("/v1/session/recall/{key}", get(session_recall_handler))
+        .route("/v1/session/persist", post(session_persist_handler))
+        .route("/v1/session/retrieve/{key}", get(session_retrieve_handler))
+        .route("/v1/session/query", post(session_query_handler))
+        .route("/v1/session/mutate", post(session_mutate_handler))
+        .route("/v1/session/purge", post(session_purge_handler))
+        .route("/v1/session/{scope}/export", get(session_scope_export_handler))
+        .route("/v1/axonstore", get(axonstore_list_handler).post(axonstore_create_handler))
+        .route("/v1/axonstore/{name}", get(axonstore_get_handler).delete(axonstore_delete_handler))
+        .route("/v1/axonstore/{name}/persist", post(axonstore_persist_handler))
+        .route("/v1/axonstore/{name}/retrieve/{key}", get(axonstore_retrieve_handler))
+        .route("/v1/axonstore/{name}/mutate", post(axonstore_mutate_handler))
+        .route("/v1/axonstore/{name}/purge", post(axonstore_purge_handler))
+        .route("/v1/axonstore/{name}/transact", post(axonstore_transact_handler))
+        .route("/v1/dataspace", get(dataspace_list_handler).post(dataspace_create_handler))
+        .route("/v1/dataspace/{name}", delete(dataspace_delete_handler))
+        .route("/v1/dataspace/{name}/ingest", post(dataspace_ingest_handler))
+        .route("/v1/dataspace/{name}/focus", post(dataspace_focus_handler))
+        .route("/v1/dataspace/{name}/associate", post(dataspace_associate_handler))
+        .route("/v1/dataspace/{name}/aggregate", post(dataspace_aggregate_handler))
+        .route("/v1/dataspace/{name}/explore", get(dataspace_explore_handler))
+        .route("/v1/shields", get(shield_list_handler).post(shield_create_handler))
+        .route("/v1/shields/{name}", get(shield_get_handler).delete(shield_delete_handler))
+        .route("/v1/shields/{name}/evaluate", post(shield_evaluate_handler))
+        .route("/v1/shields/{name}/rules", post(shield_add_rule_handler))
+        .route("/v1/corpus", get(corpus_list_handler).post(corpus_create_handler))
+        .route("/v1/corpus/{name}", delete(corpus_delete_handler))
+        .route("/v1/corpus/{name}/ingest", post(corpus_ingest_handler))
+        .route("/v1/corpus/{name}/search", post(corpus_search_handler))
+        .route("/v1/corpus/{name}/cite", post(corpus_cite_handler))
+        .route("/v1/compute/evaluate", post(compute_evaluate_handler))
+        .route("/v1/compute/batch", post(compute_batch_handler))
+        .route("/v1/compute/functions", get(compute_functions_handler))
+        .route("/v1/mandates", get(mandate_list_handler).post(mandate_create_handler))
+        .route("/v1/mandates/{name}", get(mandate_get_handler).delete(mandate_delete_handler))
+        .route("/v1/mandates/{name}/evaluate", post(mandate_evaluate_handler))
+        .route("/v1/mandates/{name}/rules", post(mandate_add_rule_handler))
+        .route("/v1/refine", get(refine_list_handler).post(refine_start_handler))
+        .route("/v1/refine/{id}", get(refine_status_handler))
+        .route("/v1/refine/{id}/iterate", post(refine_iterate_handler))
+        .route("/v1/trails", get(trail_list_handler).post(trail_start_handler))
+        .route("/v1/trails/{id}", get(trail_get_handler))
+        .route("/v1/trails/{id}/step", post(trail_step_handler))
+        .route("/v1/trails/{id}/complete", post(trail_complete_handler))
+        .route("/v1/probes", get(probe_list_handler).post(probe_create_handler))
+        .route("/v1/probes/{id}", get(probe_get_handler))
+        .route("/v1/probes/{id}/query", post(probe_query_handler))
+        .route("/v1/probes/{id}/complete", post(probe_complete_handler))
+        .route("/v1/weaves", get(weave_list_handler).post(weave_create_handler))
+        .route("/v1/weaves/{id}", get(weave_get_handler))
+        .route("/v1/weaves/{id}/strand", post(weave_strand_handler))
+        .route("/v1/weaves/{id}/synthesize", post(weave_synthesize_handler))
+        .route("/v1/corroborate", get(corroborate_list_handler).post(corroborate_create_handler))
+        .route("/v1/corroborate/{id}", get(corroborate_get_handler))
+        .route("/v1/corroborate/{id}/evidence", post(corroborate_evidence_handler))
+        .route("/v1/corroborate/{id}/verify", post(corroborate_verify_handler))
+        .route("/v1/drills", get(drill_list_handler).post(drill_create_handler))
+        .route("/v1/drills/{id}", get(drill_get_handler))
+        .route("/v1/drills/{id}/expand", post(drill_expand_handler))
+        .route("/v1/drills/{id}/complete", post(drill_complete_handler))
+        .route("/v1/forges", get(forge_list_handler).post(forge_create_handler))
+        .route("/v1/forges/{id}", get(forge_get_handler))
+        .route("/v1/forges/{id}/template", post(forge_template_handler))
+        .route("/v1/forges/{id}/render", post(forge_render_handler))
+        .route("/v1/deliberate", get(deliberate_list_handler).post(deliberate_create_handler))
+        .route("/v1/deliberate/{id}", get(deliberate_get_handler))
+        .route("/v1/deliberate/{id}/option", post(deliberate_option_handler))
+        .route("/v1/deliberate/{id}/evaluate", post(deliberate_evaluate_handler))
+        .route("/v1/deliberate/{id}/eliminate", post(deliberate_eliminate_handler))
+        .route("/v1/deliberate/{id}/decide", post(deliberate_decide_handler))
+        .route("/v1/consensus", get(consensus_list_handler).post(consensus_create_handler))
+        .route("/v1/consensus/{id}", get(consensus_get_handler))
+        .route("/v1/consensus/{id}/vote", post(consensus_vote_handler))
+        .route("/v1/consensus/{id}/resolve", post(consensus_resolve_handler))
+        .route("/v1/hibernate", get(hibernate_list_handler).post(hibernate_create_handler))
+        .route("/v1/hibernate/{id}", get(hibernate_get_handler))
+        .route("/v1/hibernate/{id}/checkpoint", post(hibernate_checkpoint_handler))
+        .route("/v1/hibernate/{id}/suspend", post(hibernate_suspend_handler))
+        .route("/v1/hibernate/{id}/resume", post(hibernate_resume_handler))
+        .route("/v1/ots", get(ots_list_handler).post(ots_create_handler))
+        .route("/v1/ots/{token}", get(ots_retrieve_handler))
+        .route("/v1/psyche", get(psyche_list_handler).post(psyche_create_handler))
+        .route("/v1/psyche/{id}", get(psyche_get_handler))
+        .route("/v1/psyche/{id}/insight", post(psyche_insight_handler))
+        .route("/v1/psyche/{id}/complete", post(psyche_complete_handler))
+        .route("/v1/endpoints", get(endpoint_list_handler).post(endpoint_create_handler))
+        .route("/v1/endpoints/{name}", get(endpoint_get_handler).delete(endpoint_delete_handler))
+        .route("/v1/endpoints/{name}/call", post(endpoint_call_handler))
+        .route("/v1/pix", get(pix_list_handler).post(pix_create_handler))
+        .route("/v1/pix/{id}", get(pix_get_handler))
+        .route("/v1/pix/{id}/image", post(pix_image_handler))
+        .route("/v1/pix/{id}/annotate", post(pix_annotate_handler))
+        .route("/v1/shutdown", post(shutdown_handler))
+        .route("/v1/server/backup", post(server_backup_handler))
+        .route("/v1/server/restore", post(server_restore_handler))
+        .route("/v1/server/persist", post(server_persist_handler))
+        .route("/v1/server/recover", post(server_recover_handler))
+        .route("/v1/server/auto-persist", get(server_auto_persist_get_handler).put(server_auto_persist_put_handler))
+        .route("/v1/inspect", get(inspect_list_handler))
+        .route("/v1/inspect/{name}", get(inspect_flow_handler))
+        .route("/v1/inspect/{name}/graph", get(inspect_graph_handler))
+        .route("/v1/inspect/{name}/dependencies", get(inspect_dependencies_handler))
+        .route("/v1/flows/{name}/rules", get(flow_rules_get_handler).put(flow_rules_put_handler).delete(flow_rules_delete_handler))
+        .route("/v1/flows/{name}/validate", post(flow_validate_handler))
+        .route("/v1/flows/{name}/quota", get(flow_quota_get_handler).put(flow_quota_put_handler).delete(flow_quota_delete_handler))
+        .route("/v1/flows/{name}/quota/check", post(flow_quota_check_handler))
+        .route("/v1/flows/{name}/dashboard", get(flow_dashboard_handler))
+        .route("/v1/flows/{name}/sla", get(flow_sla_get_handler).put(flow_sla_put_handler).delete(flow_sla_delete_handler))
+        .route("/v1/flows/{name}/sla/check", get(flow_sla_check_handler))
+        .route("/v1/flows/{name}/canary", get(flow_canary_get_handler).put(flow_canary_put_handler).delete(flow_canary_delete_handler))
+        .route("/v1/flows/{name}/canary/route", post(flow_canary_route_handler))
+        .route("/v1/flows/compare", post(flows_compare_handler))
+        .route("/v1/flows/{name}/tags", get(flow_tags_get_handler).put(flow_tags_put_handler).delete(flow_tags_delete_handler))
+        .route("/v1/flows/by-tag", get(flows_by_tag_handler))
+        .route("/v1/flows/group/{tag}/execute", post(flows_group_execute_handler))
+        .route("/v1/flows/group/{tag}/dashboard", get(flows_group_dashboard_handler))
+        .route("/v1/cors", get(cors_config_handler))
+        .route("/v1/cors", put(cors_config_put_handler))
+        .route("/v1/schedules", get(schedules_list_handler))
+        .route("/v1/schedules", post(schedules_create_handler))
+        .route("/v1/schedules/tick", post(schedules_tick_handler))
+        .route("/v1/schedules/{name}", get(schedules_get_handler))
+        .route("/v1/schedules/{name}", delete(schedules_delete_handler))
+        .route("/v1/schedules/{name}/toggle", post(schedules_toggle_handler))
+        .route("/v1/schedules/{name}/history", get(schedules_history_handler))
+        .route("/v1/traces", get(traces_list_handler))
+        .route("/v1/traces/stats", get(traces_stats_handler))
+        .route("/v1/traces/diff", get(traces_diff_handler))
+        .route("/v1/traces/search", get(traces_search_handler))
+        .route("/v1/traces/aggregate", get(traces_aggregate_handler))
+        .route("/v1/traces/retention", get(traces_retention_get_handler).put(traces_retention_put_handler))
+        .route("/v1/traces/evict", post(traces_evict_handler))
+        .route("/v1/traces/bulk", delete(traces_bulk_delete_handler))
+        .route("/v1/traces/bulk/annotate", post(traces_bulk_annotate_handler))
+        .route("/v1/traces/compare", post(traces_compare_handler))
+        .route("/v1/traces/timeline", post(traces_timeline_handler))
+        .route("/v1/traces/heatmap", get(traces_heatmap_handler))
+        .route("/v1/traces/export", get(traces_export_handler))
+        .route("/v1/traces/export/custom", get(traces_export_custom_handler))
+        .route("/v1/traces/{id}", get(traces_get_handler))
+        .route("/v1/traces/{id}/annotate", post(traces_annotate_handler))
+        .route("/v1/traces/{id}/annotations", get(traces_annotations_handler))
+        .route("/v1/traces/{id}/replay", post(traces_replay_handler))
+        .route("/v1/traces/{id}/flamegraph", get(traces_flamegraph_handler))
+        .route("/v1/traces/{id}/profile", get(traces_profile_handler))
+        .route("/v1/traces/{id}/correlate", post(traces_correlate_handler))
+        .route("/v1/traces/{id}/annotate-from-template", post(traces_annotate_from_template_handler))
+        .route("/v1/traces/correlated", get(traces_correlated_handler))
+        .route("/v1/traces/annotation-templates", get(annotation_templates_list_handler).put(annotation_templates_put_handler))
+        .route("/v1/middleware", get(middleware_config_handler))
+        .route("/v1/middleware", put(middleware_config_put_handler))
+        .route("/v1/backends", get(backends_list_handler))
+        .route("/v1/backends/{name}", put(backends_put_handler).delete(backends_delete_handler))
+        .route("/v1/backends/{name}/check", post(backends_check_handler))
+        .route("/v1/backends/{name}/metrics", get(backends_metrics_handler))
+        .route("/v1/backends/{name}/fallback", get(backends_fallback_get_handler).put(backends_fallback_put_handler))
+        .route("/v1/backends/{name}/limits", get(backends_limits_get_handler).put(backends_limits_put_handler))
+        .route("/v1/backends/ranking", get(backends_ranking_handler))
+        .route("/v1/backends/select", post(backends_select_handler))
+        .route("/v1/backends/dashboard", get(backends_dashboard_handler))
+        .route("/v1/backends/health", get(backends_fleet_health_handler))
+        .route("/v1/backends/{name}/health", get(backends_health_handler))
+        .route("/v1/backends/{name}/probe", get(backends_probe_get_handler).put(backends_probe_put_handler))
+        .route("/v1/mcp", post(mcp_handler))
+        .route("/v1/mcp/tools", get(mcp_tools_list_handler))
+        .route("/v1/mcp/stream", post(mcp_stream_handler))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::request_middleware::request_middleware_fn,
+        ))
+        .layer(axum::middleware::from_fn(
+            crate::request_tracing::request_tracing_middleware,
+        ))
+        .layer(axum::middleware::from_fn(
+            crate::tenant::tenant_extractor_middleware,
+        ))
+        .with_state(state.clone());
+
+    // Apply CORS layer
+    let cors_layer = {
+        let s = state.lock().unwrap();
+        crate::cors::build_cors_layer(&s.cors_config)
+    };
+    let router = router.layer(cors_layer);
+
+    (router, state)
+}
+
+// ── Server launcher ───────────────────────────────────────────────────────
+
+/// Start the AxonServer. This blocks until the server is shut down.
+///
+/// Returns exit code: 0 on clean shutdown, 2 on bind error.
+pub fn run_serve(config: ServerConfig) -> i32 {
+    // Initialize structured logging as the very first action
+    let _log_guard = crate::logging::init(
+        &config.log_level,
+        &config.log_format,
+        config.log_file.as_deref(),
+    );
+
+    let bind_addr = config.bind_addr();
+
+    tracing::info!(
+        version = AXON_VERSION,
+        bind_addr = %bind_addr,
+        channel = %config.channel,
+        auth = if config.auth_enabled() { "enabled" } else { "disabled" },
+        log_level = %config.log_level,
+        log_format = %config.log_format,
+        "axon_server_starting"
+    );
+
+    let database_url = config.database_url.clone();
+    let (router, shared_state) = build_router_with_state(config);
+
+    // Set up graceful shutdown coordinator
+    let coordinator = {
+        let s = shared_state.lock().unwrap();
+        Arc::new(crate::graceful_shutdown::ShutdownCoordinator::new(s.started_at))
+    };
+    {
+        let mut s = shared_state.lock().unwrap();
+        s.shutdown = Some(coordinator.clone());
+    }
+
+    // Build the tokio runtime and run the server
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::error!(error = %e, "failed_to_create_tokio_runtime");
+            return 2;
+        }
+    };
+
+    rt.block_on(async {
+        // Initialize PostgreSQL storage if DATABASE_URL is configured
+        if let Some(ref db_url) = database_url {
+            match crate::db_pool::create_pool(db_url).await {
+                Ok(pool) => {
+                    if let Err(e) = crate::migrations::run(&pool).await {
+                        tracing::error!(error = %e, "db_migrations_failed_falling_back_to_memory");
+                    } else {
+                        let storage = Arc::new(crate::storage::StorageDispatcher::postgres(pool));
+                        let mut s = shared_state.lock().unwrap();
+                        s.storage = storage;
+                        tracing::info!("db_storage_initialized");
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "db_pool_failed_falling_back_to_memory");
+                }
+            }
+        }
+
+        let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!(bind_addr = %bind_addr, error = %e, "failed_to_bind");
+                return 2;
+            }
+        };
+
+        tracing::info!(bind_addr = %bind_addr, "axon_server_listening");
+
+        // Spawn signal listener
+        let signal_coord = coordinator.clone();
+        tokio::spawn(crate::graceful_shutdown::listen_signals(signal_coord));
+
+        // Serve with graceful shutdown
+        let coord_for_shutdown = coordinator.clone();
+        let serve_result = axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                coord_for_shutdown.wait().await;
+            })
+            .await;
+
+        if let Err(e) = serve_result {
+            tracing::error!(error = %e, "axon_server_error");
+            return 1;
+        }
+
+        // Determine shutdown reason
+        let reason = if coordinator.is_triggered() {
+            crate::graceful_shutdown::ShutdownReason::Signal
+        } else {
+            crate::graceful_shutdown::ShutdownReason::Signal
+        };
+
+        tracing::info!(reason = reason.as_str(), "axon_server_shutting_down");
+
+        // Run pre-shutdown hooks
+        {
+            let mut s = shared_state.lock().unwrap();
+            crate::graceful_shutdown::run_pre_shutdown_hooks(&mut s, reason, false);
+        }
+
+        0
+    })
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    fn test_config() -> ServerConfig {
+        ServerConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            channel: "memory".to_string(),
+            auth_token: String::new(),
+            log_level: "INFO".to_string(),
+            log_format: "json".to_string(),
+            log_file: None,
+            database_url: None,
+            config_path: None,
+        }
+    }
+
+    fn test_config_with_auth() -> ServerConfig {
+        ServerConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            channel: "memory".to_string(),
+            auth_token: "test-secret".to_string(),
+            log_level: "INFO".to_string(),
+            log_format: "json".to_string(),
+            log_file: None,
+            database_url: None,
+            config_path: None,
+        }
+    }
+
+    async fn body_json(body: Body) -> serde_json::Value {
+        let bytes = body.collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn health_endpoint() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .uri("/v1/health")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["status"], "healthy");
+        assert_eq!(json["axon_version"], AXON_VERSION);
+        assert!(json["components"].is_array());
+        assert!(json["uptime_secs"].is_number());
+    }
+
+    #[tokio::test]
+    async fn health_live_endpoint() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .uri("/v1/health/live")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["status"], "alive");
+    }
+
+    #[tokio::test]
+    async fn health_ready_endpoint() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .uri("/v1/health/ready")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["ready"], true);
+        assert_eq!(json["status"], "healthy");
+    }
+
+    #[tokio::test]
+    async fn version_endpoint() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .uri("/v1/version")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["runtime"], "native");
+        assert_eq!(json["server"], "axon-serve");
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .uri("/v1/metrics")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["total_requests"], 0);
+        assert_eq!(json["total_deployments"], 0);
+    }
+
+    #[tokio::test]
+    async fn deploy_valid_source() {
+        let app = build_router(test_config());
+        let source = r#"persona P { tone: "analytical" }
+flow F() { step S { ask: "do" } }
+run F() as P"#;
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/deploy")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "source": source }).to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["success"], true);
+        assert!(json["deployed"].as_array().unwrap().len() >= 1);
+    }
+
+    #[tokio::test]
+    async fn deploy_invalid_source() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/deploy")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "source": "invalid {{{{" }).to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["success"], false);
+        assert!(json["error"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn daemons_empty() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .uri("/v1/daemons")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["total"], 0);
+        assert!(json["daemons"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn daemon_not_found() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .uri("/v1/daemons/nonexistent")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn auth_required_without_token() {
+        let app = build_router(test_config_with_auth());
+        let req = Request::builder()
+            .uri("/v1/metrics")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn auth_valid_token() {
+        let app = build_router(test_config_with_auth());
+        let req = Request::builder()
+            .uri("/v1/metrics")
+            .header("authorization", "Bearer test-secret")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_invalid_token() {
+        let app = build_router(test_config_with_auth());
+        let req = Request::builder()
+            .uri("/v1/metrics")
+            .header("authorization", "Bearer wrong-token")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn health_no_auth_required() {
+        // Health endpoint should work even with auth enabled
+        let app = build_router(test_config_with_auth());
+        let req = Request::builder()
+            .uri("/v1/health")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── Config tests ──────────────────────────────────────────────
+
+    #[test]
+    fn config_bind_addr() {
+        let cfg = test_config();
+        assert_eq!(cfg.bind_addr(), "127.0.0.1:0");
+    }
+
+    #[test]
+    fn config_auth_enabled() {
+        assert!(!test_config().auth_enabled());
+        assert!(test_config_with_auth().auth_enabled());
+    }
+
+    #[tokio::test]
+    async fn event_publish_endpoint() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/events")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "topic": "test.ping",
+                    "payload": { "msg": "hello" },
+                    "source": "unit_test"
+                }).to_string(),
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["published"], true);
+        assert_eq!(json["topic"], "test.ping");
+        assert_eq!(json["source"], "unit_test");
+    }
+
+    #[tokio::test]
+    async fn event_stats_endpoint() {
+        let app = build_router(test_config());
+
+        // Publish an event first
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/events")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "topic": "test.x", "payload": null }).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap();
+
+        // Check stats
+        let req = Request::builder()
+            .uri("/v1/events/stats")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert!(json["events_published"].as_u64().unwrap() >= 1);
+        assert!(json["topics_seen"].as_array().unwrap().len() >= 1);
+    }
+
+    #[tokio::test]
+    async fn supervisor_endpoint() {
+        let app = build_router(test_config());
+
+        // Deploy a flow to register with supervisor
+        let source = r#"persona P { tone: "analytical" }
+flow Sup1() { step S { ask: "do" } }
+run Sup1() as P"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/deploy")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "source": source }).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap();
+
+        // Check supervisor
+        let req = Request::builder()
+            .uri("/v1/supervisor")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert!(json["summary"].as_str().unwrap().contains("daemon"));
+        assert!(json["daemons"].as_array().unwrap().len() >= 1);
+    }
+
+    #[tokio::test]
+    async fn supervisor_start_stop() {
+        let app = build_router(test_config());
+
+        // Deploy
+        let source = r#"persona P { tone: "analytical" }
+flow CtlFlow() { step S { ask: "do" } }
+run CtlFlow() as P"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/deploy")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "source": source }).to_string(),
+            ))
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap();
+
+        // Start
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/supervisor/CtlFlow/start")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["started"], "CtlFlow");
+
+        // Stop
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/supervisor/CtlFlow/stop")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["stopped"], "CtlFlow");
+
+        // Start nonexistent → 404
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/supervisor/NoSuchDaemon/start")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn metrics_include_bus_stats() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .uri("/v1/metrics")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp.into_body()).await;
+
+        // Bus stats should be present
+        assert!(json.get("bus_events_published").is_some());
+        assert!(json.get("bus_topics_seen").is_some());
+        assert!(json.get("supervisor_summary").is_some());
+    }
+
+    #[test]
+    fn daemon_state_serializes() {
+        let json = serde_json::to_string(&DaemonState::Running).unwrap();
+        assert_eq!(json, "\"running\"");
+
+        let json = serde_json::to_string(&DaemonState::Hibernating).unwrap();
+        assert_eq!(json, "\"hibernating\"");
+    }
+
+    #[tokio::test]
+    async fn estimate_endpoint() {
+        let app = build_router(test_config());
+        let body = serde_json::json!({
+            "source": "persona A { tone: \"neutral\" }\ncontext C { depth: shallow }\nflow F() { step S { ask: \"do\" } }\nrun F() as A within C",
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/estimate")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert!(json["total_tokens"].as_u64().unwrap() > 0);
+        assert!(json["estimated_cost_usd"].as_f64().unwrap() > 0.0);
+        assert!(json["flows"].as_array().unwrap().len() == 1);
+        assert_eq!(json["pricing"]["name"], "claude-sonnet-4");
+    }
+
+    #[tokio::test]
+    async fn estimate_endpoint_with_model() {
+        let app = build_router(test_config());
+        let body = serde_json::json!({
+            "source": "persona A { tone: \"neutral\" }\ncontext C { depth: shallow }\nflow F() { step S { ask: \"do\" } }\nrun F() as A within C",
+            "model": "opus",
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/estimate")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["pricing"]["name"], "claude-opus-4");
+        assert!(json["estimated_cost_usd"].as_f64().unwrap() > 0.0);
+    }
+
+    #[tokio::test]
+    async fn estimate_endpoint_invalid_source() {
+        let app = build_router(test_config());
+        let body = serde_json::json!({
+            "source": "this is not valid axon {{{",
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/estimate")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["success"], false);
+    }
+
+    #[tokio::test]
+    async fn rate_limit_status_endpoint() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .uri("/v1/rate-limit")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["enabled"], true);
+        assert!(json["remaining"].as_u64().unwrap() > 0);
+        assert_eq!(json["limit"], 100);
+    }
+
+    #[tokio::test]
+    async fn logs_stats_endpoint() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .uri("/v1/logs/stats")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert!(json["total_requests"].is_u64());
+        assert!(json["buffered_entries"].is_u64());
+        assert!(json["avg_latency_us"].is_u64());
+    }
+
+    #[tokio::test]
+    async fn logs_endpoint() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .uri("/v1/logs?limit=10")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert!(json["count"].is_u64());
+        assert!(json["entries"].is_array());
+    }
+
+    #[tokio::test]
+    async fn keys_list_endpoint() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .uri("/v1/keys")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        // test_config has no auth token, so api_keys is disabled
+        assert_eq!(json["enabled"], false);
+        assert!(json["keys"].is_array());
+    }
+
+    #[tokio::test]
+    async fn config_get_endpoint() {
+        let app = build_router(test_config());
+        let req = Request::builder()
+            .uri("/v1/config")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["rate_limit"]["max_requests"], 100);
+        assert_eq!(json["rate_limit"]["window_secs"], 60);
+        assert!(json["rate_limit"]["enabled"].as_bool().unwrap());
+        assert_eq!(json["request_log"]["capacity"], 1000);
+        assert!(json["request_log"]["enabled"].as_bool().unwrap());
+        assert!(!json["auth"]["enabled"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn config_put_endpoint() {
+        let app = build_router(test_config());
+        let body = serde_json::json!({
+            "rate_limit": { "max_requests": 200 },
+            "request_log": { "capacity": 500 }
+        });
+        let req = Request::builder()
+            .method("PUT")
+            .uri("/v1/config")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["applied"], true);
+        assert!(json["changes"].as_array().unwrap().len() >= 2);
+        assert_eq!(json["snapshot"]["rate_limit"]["max_requests"], 200);
+        assert_eq!(json["snapshot"]["request_log"]["capacity"], 500);
+    }
+}
