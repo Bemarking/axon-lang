@@ -75,25 +75,26 @@ variable "ecs_desired_count" {
 # ============================================================================
 
 variable "rds_instance_class" {
-  description = "Clase de instancia RDS. Producción multi-tenant: db.t3.small (2 GB RAM, mejor buffer pool). db.t3.micro solo para dev/staging."
+  description = "Clase de instancia RDS. Actual: db.t3.micro (free tier). Upgrade a db.t3.small cuando se actualice el plan AWS."
   type        = string
-  default     = "db.t3.small"
-  # M5 evaluation: upgraded from db.t3.micro → db.t3.small
+  default     = "db.t3.micro"
+  # M5 evaluation (PENDIENTE): db.t3.micro → db.t3.small cuando se active paid tier
   # Rationale: multi-tenant RLS adds per-row SET LOCAL calls on every transaction.
-  # db.t3.micro (1 GB RAM) shows shared_buffer exhaustion under concurrent tenants.
-  # db.t3.small (2 GB RAM) gives ~500 MB shared_buffers — sufficient for early prod.
+  # db.t3.micro (1 GB RAM) may show shared_buffer pressure under concurrent tenants.
+  # db.t3.small (2 GB RAM) gives ~500 MB shared_buffers — target for early prod.
+  # ACTION: upgrade AWS account plan, then change default to "db.t3.small".
   # Next threshold: db.t3.medium when active tenants > 20 or p99 latency > 200ms.
 }
 
 variable "rds_multi_az" {
-  description = "Habilitar Multi-AZ en RDS. Requerido en producción para continuidad del servicio ante fallo AZ."
+  description = "Habilitar Multi-AZ en RDS. Requiere paid AWS tier. Mantener false en free tier."
   type        = bool
-  default     = true
-  # M5 evaluation: enabled Multi-AZ (was false)
+  default     = false
+  # M5 evaluation (PENDIENTE): enable cuando se active paid tier
   # Rationale: Axon Enterprise SaaS must meet 99.9% uptime SLA for early adopters
   # (Kivi KAS). Single-AZ RDS has no failover; an AZ outage means full downtime.
   # Cost delta: ~$35/month for db.t3.small Multi-AZ vs $17/month single-AZ.
-  # Disable for staging/dev via tfvars override: rds_multi_az = false
+  # ACTION: set to true after upgrading AWS account and instance class.
 }
 
 variable "rds_allocated_storage_gb" {
