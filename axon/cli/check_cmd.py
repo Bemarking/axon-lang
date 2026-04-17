@@ -19,6 +19,7 @@ from argparse import Namespace
 from pathlib import Path
 
 from axon.cli.display import format_cli_path, safe_text
+from axon.compiler import frontend
 
 # ── ANSI colors ──────────────────────────────────────────────────
 
@@ -58,44 +59,27 @@ def cmd_check(args: Namespace) -> int:
 
     source = path.read_text(encoding="utf-8")
 
-    # ── Phase 1: Lex ──────────────────────────────────────────
-    from axon.compiler.errors import AxonError, AxonLexerError
-    from axon.compiler.lexer import Lexer
+    result = frontend.check_source(source, str(path))
 
-    try:
-        tokens = Lexer(source, filename=str(path)).tokenize()
-    except AxonLexerError as exc:
-        _print_error(exc, path, no_color=no_color)
-        return 1
+    if result.diagnostics:
+        first = result.diagnostics[0]
+        if first.stage in {"lexer", "parser"}:
+            _print_frontend_diagnostic(first, path, no_color=no_color)
+            return 1
 
-    token_count = len(tokens)
-
-    # ── Phase 2: Parse ────────────────────────────────────────
-    from axon.compiler.parser import Parser
-
-    try:
-        ast = Parser(tokens).parse()
-    except AxonError as exc:
-        _print_error(exc, path, no_color=no_color)
-        return 1
-
-    decl_count = len(ast.declarations) if hasattr(ast, "declarations") else 0
-
-    # ── Phase 3: Type-check ───────────────────────────────────
-    from axon.compiler.type_checker import TypeChecker
-
-    checker = TypeChecker(ast)
-    errors = checker.check()
-
-    if errors:
         print(
             _c(f"✗ {path.name}", _RED + _BOLD, no_color=no_color)
-            + f"  — {len(errors)} type error(s)"
+            + f"  — {len(result.diagnostics)} type error(s)"
         )
-        for err in errors:
-            line_info = f"  line {err.line}" if err.line else ""
+        for diagnostic in result.diagnostics:
+            line_info = f"  line {diagnostic.line}" if diagnostic.line else ""
             severity = _c("error", _RED, no_color=no_color)
-            print(safe_text(f"  {severity}{line_info}: {err.message}", sys.stdout))
+            print(
+                safe_text(
+                    f"  {severity}{line_info}: {diagnostic.message}",
+                    sys.stdout,
+                )
+            )
         return 1
 
     # ── Success ───────────────────────────────────────────────
@@ -103,7 +87,7 @@ def cmd_check(args: Namespace) -> int:
         _c("✓", _GREEN + _BOLD, no_color=no_color)
         + f" {_c(path.name, _BOLD, no_color=no_color)}"
         + _c(
-            f"  {token_count} tokens · {decl_count} declarations · 0 errors",
+            f"  {result.token_count} tokens · {result.declaration_count} declarations · 0 errors",
             _DIM,
             no_color=no_color,
         )
@@ -111,24 +95,18 @@ def cmd_check(args: Namespace) -> int:
     return 0
 
 
-def _print_error(exc: Exception, path: Path, *, no_color: bool) -> None:
-    """Format a compile-time error for terminal display."""
-    from axon.compiler.errors import AxonError
+def _print_frontend_diagnostic(diagnostic: object, path: Path, *, no_color: bool) -> None:
+    """Format a frontend diagnostic for terminal display."""
+    loc = ""
+    line = getattr(diagnostic, "line", 0)
+    column = getattr(diagnostic, "column", 0)
+    if line:
+        loc = f":{line}"
+        if column:
+            loc += f":{column}"
 
-    if isinstance(exc, AxonError):
-        loc = ""
-        if exc.line:
-            loc = f":{exc.line}"
-            if exc.column:
-                loc += f":{exc.column}"
-        print(
-            _c(f"✗ {path.name}{loc}", _RED + _BOLD, no_color=no_color)
-            + safe_text(f"  {exc.message}", sys.stderr),
-            file=sys.stderr,
-        )
-    else:
-        print(
-            _c(f"✗ {path.name}", _RED + _BOLD, no_color=no_color)
-            + safe_text(f"  {exc}", sys.stderr),
-            file=sys.stderr,
-        )
+    print(
+        _c(f"✗ {path.name}{loc}", _RED + _BOLD, no_color=no_color)
+        + safe_text(f"  {getattr(diagnostic, 'message', diagnostic)}", sys.stderr),
+        file=sys.stderr,
+    )

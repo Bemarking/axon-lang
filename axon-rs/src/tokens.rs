@@ -1,0 +1,237 @@
+//! AXON token types and keyword lookup table.
+//! Direct port of axon/compiler/tokens.py.
+
+/// A single token produced by the AXON lexer.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct Token {
+    pub ttype: TokenType,
+    pub value: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TokenType {
+    // ── Keywords ──────────────────────────────────────────────────
+    Persona, Context, Intent, Flow, Reason, Anchor, Validate, Refine,
+    Memory, Tool, Probe, Weave, Step, Type, Import, Run, If, Else,
+    Use, Remember, Recall,
+    // Epistemic
+    Know, Believe, Speculate, Doubt,
+    // Parallel / yielding
+    Par, Consolidate, Hibernate, Deliberate, Consensus,
+    // Creative synthesis
+    Forge,
+    // OTS
+    Ots, Teleology, HomotopySearch, LinearConstraints, LossFunction,
+    // Streaming & effects
+    Stream, OnChunk, OnComplete, Effects, Pure, Network,
+    // Agent
+    Agent, Goal, Tools, Budget, Strategy, OnStuck,
+    // Shield
+    Shield, Scan, OnBreach, Severity, Allow, Deny, Sandbox, Quarantine, Redact,
+    // PIX
+    Pix, Navigate, Drill, Trail,
+    // Psyche
+    Psyche, Dimensions, Manifold, Quantum, Inference,
+    // MDN
+    Corpus, Corroborate, EdgeFilter,
+    // Data Science
+    Dataspace, Ingest, Focus, Associate, Aggregate, Explore,
+    // EMCP
+    Mcp, Taint,
+    // Mandate
+    Mandate, Constraint, Kp, Ki, Kd, Tolerance, MaxSteps, OnViolation,
+    // Daemon
+    Daemon, Listen, BudgetPerEvent,
+    // Compute
+    Compute, Logic,
+    // Lambda Data
+    Lambda, Ontology, Certainty, TemporalFrame, Provenance, Derivation,
+    // AxonStore
+    AxonStore, Schema, Persist, Retrieve, Mutate, Purge, Transact,
+    // AxonEndpoint
+    AxonEndpoint,
+    // Modifiers
+    As, Within, ConstrainedBy, OnFailure, OutputTo, Effort,
+    // Contextual
+    For, In, Into, Against, About, From, Where, Let, Return, Or,
+    // Field keywords
+    Given, Ask, Output,
+
+    // ── Literals ──────────────────────────────────────────────────
+    StringLit, Integer, Float, Bool, Duration, Identifier,
+
+    // ── Symbols ───────────────────────────────────────────────────
+    LBrace, RBrace, LParen, RParen, LBracket, RBracket,
+    Colon, Comma, Dot, Arrow, DotDot, Question, At,
+    Lt, Gt, Lte, Gte, Eq, Neq, Assign,
+    Plus, Minus, Star, Slash,
+
+    // ── Special ───────────────────────────────────────────────────
+    Eof,
+}
+
+pub fn keyword_type(word: &str) -> TokenType {
+    match word {
+        "persona"          => TokenType::Persona,
+        "context"          => TokenType::Context,
+        "intent"           => TokenType::Intent,
+        "flow"             => TokenType::Flow,
+        "reason"           => TokenType::Reason,
+        "anchor"           => TokenType::Anchor,
+        "validate"         => TokenType::Validate,
+        "refine"           => TokenType::Refine,
+        "memory"           => TokenType::Memory,
+        "tool"             => TokenType::Tool,
+        "probe"            => TokenType::Probe,
+        "weave"            => TokenType::Weave,
+        "step"             => TokenType::Step,
+        "type"             => TokenType::Type,
+        "import"           => TokenType::Import,
+        "run"              => TokenType::Run,
+        "if"               => TokenType::If,
+        "else"             => TokenType::Else,
+        "use"              => TokenType::Use,
+        "remember"         => TokenType::Remember,
+        "recall"           => TokenType::Recall,
+        "know"             => TokenType::Know,
+        "believe"          => TokenType::Believe,
+        "speculate"        => TokenType::Speculate,
+        "doubt"            => TokenType::Doubt,
+        "par"              => TokenType::Par,
+        "consolidate"      => TokenType::Consolidate,
+        "hibernate"        => TokenType::Hibernate,
+        "deliberate"       => TokenType::Deliberate,
+        "consensus"        => TokenType::Consensus,
+        "forge"            => TokenType::Forge,
+        "ots"              => TokenType::Ots,
+        "teleology"        => TokenType::Teleology,
+        "homotopy_search"  => TokenType::HomotopySearch,
+        "linear_constraints" => TokenType::LinearConstraints,
+        "loss_function"    => TokenType::LossFunction,
+        "stream"           => TokenType::Stream,
+        "on_chunk"         => TokenType::OnChunk,
+        "on_complete"      => TokenType::OnComplete,
+        "effects"          => TokenType::Effects,
+        "pure"             => TokenType::Pure,
+        "network"          => TokenType::Network,
+        "agent"            => TokenType::Agent,
+        "goal"             => TokenType::Goal,
+        "tools"            => TokenType::Tools,
+        "budget"           => TokenType::Budget,
+        "strategy"         => TokenType::Strategy,
+        "on_stuck"         => TokenType::OnStuck,
+        "shield"           => TokenType::Shield,
+        "scan"             => TokenType::Scan,
+        "on_breach"        => TokenType::OnBreach,
+        "severity"         => TokenType::Severity,
+        "allow"            => TokenType::Allow,
+        "deny"             => TokenType::Deny,
+        "sandbox"          => TokenType::Sandbox,
+        "quarantine"       => TokenType::Quarantine,
+        "redact"           => TokenType::Redact,
+        "pix"              => TokenType::Pix,
+        "navigate"         => TokenType::Navigate,
+        "drill"            => TokenType::Drill,
+        "trail"            => TokenType::Trail,
+        "psyche"           => TokenType::Psyche,
+        "dimensions"       => TokenType::Dimensions,
+        "manifold"         => TokenType::Manifold,
+        "quantum"          => TokenType::Quantum,
+        "inference"        => TokenType::Inference,
+        "corpus"           => TokenType::Corpus,
+        "corroborate"      => TokenType::Corroborate,
+        "edge_filter"      => TokenType::EdgeFilter,
+        "dataspace"        => TokenType::Dataspace,
+        "ingest"           => TokenType::Ingest,
+        "focus"            => TokenType::Focus,
+        "associate"        => TokenType::Associate,
+        "aggregate"        => TokenType::Aggregate,
+        "explore"          => TokenType::Explore,
+        "mcp"              => TokenType::Mcp,
+        "taint"            => TokenType::Taint,
+        "mandate"          => TokenType::Mandate,
+        "constraint"       => TokenType::Constraint,
+        "kp"               => TokenType::Kp,
+        "ki"               => TokenType::Ki,
+        "kd"               => TokenType::Kd,
+        "tolerance"        => TokenType::Tolerance,
+        "max_steps"        => TokenType::MaxSteps,
+        "on_violation"     => TokenType::OnViolation,
+        "daemon"           => TokenType::Daemon,
+        "listen"           => TokenType::Listen,
+        "budget_per_event" => TokenType::BudgetPerEvent,
+        "compute"          => TokenType::Compute,
+        "logic"            => TokenType::Logic,
+        "lambda"           => TokenType::Lambda,
+        "ontology"         => TokenType::Ontology,
+        "certainty"        => TokenType::Certainty,
+        "temporal_frame"   => TokenType::TemporalFrame,
+        "provenance"       => TokenType::Provenance,
+        "derivation"       => TokenType::Derivation,
+        "axonstore"        => TokenType::AxonStore,
+        "schema"           => TokenType::Schema,
+        "persist"          => TokenType::Persist,
+        "retrieve"         => TokenType::Retrieve,
+        "mutate"           => TokenType::Mutate,
+        "purge"            => TokenType::Purge,
+        "transact"         => TokenType::Transact,
+        "axonendpoint" | "axpoint" => TokenType::AxonEndpoint,
+        "as"               => TokenType::As,
+        "within"           => TokenType::Within,
+        "constrained_by"   => TokenType::ConstrainedBy,
+        "on_failure"       => TokenType::OnFailure,
+        "output_to"        => TokenType::OutputTo,
+        "effort"           => TokenType::Effort,
+        "for"              => TokenType::For,
+        "in"               => TokenType::In,
+        "into"             => TokenType::Into,
+        "against"          => TokenType::Against,
+        "about"            => TokenType::About,
+        "from"             => TokenType::From,
+        "where"            => TokenType::Where,
+        "let"              => TokenType::Let,
+        "return"           => TokenType::Return,
+        "or"               => TokenType::Or,
+        "given"            => TokenType::Given,
+        "ask"              => TokenType::Ask,
+        "output"           => TokenType::Output,
+        "true" | "false"   => TokenType::Bool,
+        _                  => TokenType::Identifier,
+    }
+}
+
+/// Returns true for keywords that open a top-level declaration.
+/// Used by the structural declaration counter (depth-0 scan).
+pub fn is_declaration_keyword(tt: &TokenType) -> bool {
+    matches!(
+        tt,
+        TokenType::Persona
+            | TokenType::Flow
+            | TokenType::Anchor
+            | TokenType::Context
+            | TokenType::Intent
+            | TokenType::Type
+            | TokenType::Memory
+            | TokenType::Tool
+            | TokenType::Probe
+            | TokenType::Weave
+            | TokenType::Agent
+            | TokenType::Shield
+            | TokenType::Pix
+            | TokenType::Psyche
+            | TokenType::Corpus
+            | TokenType::Dataspace
+            | TokenType::Mcp
+            | TokenType::Daemon
+            | TokenType::Compute
+            | TokenType::Mandate
+            | TokenType::Lambda
+            | TokenType::AxonStore
+            | TokenType::AxonEndpoint
+            | TokenType::Import
+            | TokenType::Run
+    )
+}

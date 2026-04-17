@@ -31,3 +31,20 @@ coverage.xml
 .idea/
 *.swp
 *.swo
+
+# Terraform runtime artifacts
+infrastructure/terraform/.terraform/
+infrastructure/terraform/terraform.exe
+infrastructure/terraform/tfplan
+infrastructure/terraform/*.tfstate
+infrastructure/terraform/*.tfstate.backup
+
+# Claude session files
+.claude/
+
+# Temp files
+temp_*.py
+temp_*.json
+
+# SDK (not part of this repo)
+sdk/

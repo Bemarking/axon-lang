@@ -35,6 +35,128 @@ jobs:
           axon check examples/contract_analyzer.axon
           axon compile examples/contract_analyzer.axon --stdout > /dev/null
 
+  rust-native:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_name: axon-linux-x86_64
+            binary_path: axon-rs/target/release/axon
+          - os: windows-latest
+            artifact_name: axon-windows-x86_64
+            binary_path: axon-rs/target/release/axon.exe
+          - os: macos-latest
+            artifact_name: axon-macos-arm64
+            binary_path: axon-rs/target/release/axon
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            axon-rs/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('axon-rs/Cargo.lock', 'axon-rs/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run cargo test
+        working-directory: axon-rs
+        run: cargo test --verbose
+
+      - name: Build release binary
+        working-directory: axon-rs
+        run: cargo build --release
+
+      - name: Validate native CLI (Linux/macOS)
+        if: runner.os != 'Windows'
+        working-directory: axon-rs
+        run: |
+          ./target/release/axon version
+          ./target/release/axon check ../examples/contract_analyzer.axon
+          ./target/release/axon compile ../examples/contract_analyzer.axon --stdout > /dev/null
+          ./target/release/axon run ../examples/contract_analyzer.axon --tool-mode stub
+          ./target/release/axon trace ../examples/sample.trace.json --no-color
+          ./target/release/axon inspect anchors
+          ./target/release/axon inspect NoHallucination
+          echo '.quit' | ./target/release/axon repl
+
+      - name: Validate native CLI (Windows)
+        if: runner.os == 'Windows'
+        working-directory: axon-rs
+        shell: pwsh
+        run: |
+          .\target\release\axon.exe version
+          .\target\release\axon.exe check ..\examples\contract_analyzer.axon
+          .\target\release\axon.exe compile ..\examples\contract_analyzer.axon --stdout | Out-Null
+          .\target\release\axon.exe run ..\examples\contract_analyzer.axon --tool-mode stub
+          .\target\release\axon.exe trace ..\examples\sample.trace.json --no-color
+          .\target\release\axon.exe inspect anchors
+          .\target\release\axon.exe inspect NoHallucination
+          echo '.quit' | .\target\release\axon.exe repl
+
+      - name: Upload native binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.binary_path }}
+          if-no-files-found: error
+
+  # ── Release ───────────────────────────────────────────────────────────────
+  # Triggered only on version tags (v*). Downloads artifacts from rust-native
+  # and creates a GitHub Release with platform binaries attached.
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, rust-native]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          cd release-artifacts
+          # Linux
+          if [ -d axon-linux-x86_64 ]; then
+            chmod +x axon-linux-x86_64/axon
+            tar czf ../release-assets/axon-linux-x86_64.tar.gz -C axon-linux-x86_64 axon
+          fi
+          # macOS
+          if [ -d axon-macos-arm64 ]; then
+            chmod +x axon-macos-arm64/axon
+            tar czf ../release-assets/axon-macos-arm64.tar.gz -C axon-macos-arm64 axon
+          fi
+          # Windows
+          if [ -d axon-windows-x86_64 ]; then
+            (cd axon-windows-x86_64 && zip ../../release-assets/axon-windows-x86_64.zip axon.exe)
+          fi
+          ls -la ../release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+
   windows-mvp-executable:
     runs-on: windows-latest
 
