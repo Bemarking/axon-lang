@@ -1107,7 +1107,7 @@ fn run_contract_analyzer_with_trace() {
         .expect("trace file should be written");
     let trace: serde_json::Value = serde_json::from_str(&trace_json)
         .expect("trace should be valid JSON");
-    assert!(trace["_meta"]["axon_version"].as_str().unwrap().starts_with("0.30"));
+    assert!(trace["_meta"]["axon_version"].as_str().unwrap().starts_with("1.0"));
     assert!(trace["events"].as_array().unwrap().len() >= 3); // unit_start + steps + unit_complete
 
     // Clean up
@@ -2924,7 +2924,7 @@ fn plan_export_schema_header() {
 
     assert_eq!(parsed["_schema"]["type"], "axon.plan");
     assert_eq!(parsed["_schema"]["version"], "1.0.0");
-    assert!(parsed["_schema"]["axon_version"].as_str().unwrap().starts_with("0.30"));
+    assert!(parsed["_schema"]["axon_version"].as_str().unwrap().starts_with("1.0"));
 }
 
 #[test]
@@ -3061,7 +3061,7 @@ fn execution_report_has_schema_header() {
 
     assert_eq!(parsed["_schema"]["type"], "axon.report");
     assert_eq!(parsed["_schema"]["version"], "1.0.0");
-    assert!(parsed["_schema"]["axon_version"].as_str().unwrap().starts_with("0.30"));
+    assert!(parsed["_schema"]["axon_version"].as_str().unwrap().starts_with("1.0"));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3400,7 +3400,7 @@ async fn server_health_endpoint() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["status"], "healthy");
-    assert!(json["axon_version"].as_str().unwrap().starts_with("0.30"));
+    assert!(json["axon_version"].as_str().unwrap().starts_with("1.0"));
 }
 
 #[tokio::test]
