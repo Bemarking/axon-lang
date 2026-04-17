@@ -279,6 +279,8 @@ pub struct ServerState {
     pub storage: Arc<crate::storage::StorageDispatcher>,
     /// Resilient backend for LLM calls with retry, circuit breaker, and fallback.
     pub resilient_backend: Arc<crate::resilient_backend::ResilientBackend>,
+    /// Per-tenant API key resolver (AWS Secrets Manager + in-memory cache).
+    pub tenant_secrets: Arc<crate::tenant_secrets::TenantSecretsClient>,
 }
 
 /// A queued flow execution request with priority.
@@ -820,6 +822,7 @@ impl ServerState {
             shutdown: None,
             storage: Arc::new(crate::storage::StorageDispatcher::in_memory()),
             resilient_backend: Arc::new(crate::resilient_backend::ResilientBackend::new()),
+            tenant_secrets: Arc::new(crate::tenant_secrets::TenantSecretsClient::new_stub()),
         }
     }
 }
@@ -12763,7 +12766,7 @@ fn server_execute_full(
 }
 
 pub fn resolve_backend_key(state: &ServerState, backend: &str) -> Result<String, String> {
-    // Check server registry first
+    // 1. Server registry (inline key, enabled check, circuit breaker)
     if let Some(entry) = state.backend_registry.get(backend) {
         if !entry.enabled {
             return Err(format!("Backend '{}' is disabled in registry", backend));
@@ -12787,7 +12790,14 @@ pub fn resolve_backend_key(state: &ServerState, backend: &str) -> Result<String,
             return Ok(entry.api_key.clone());
         }
     }
-    // Fallback to env
+
+    // 2. Per-tenant AWS SM cache (sync, zero-latency fast path)
+    let tenant_id = crate::tenant::current_tenant_id();
+    if let Some(key) = state.tenant_secrets.get_cached(&tenant_id, backend) {
+        return Ok(key);
+    }
+
+    // 3. Global env-var fallback
     crate::backend::get_api_key(backend).map_err(|e| e.message)
 }
 
@@ -14196,14 +14206,15 @@ async fn mcp_handler(
             let backend = arguments.get("backend").and_then(|b| b.as_str()).unwrap_or("stub");
 
             // Resolve source and key — blame: Caller if flow not found
-            let (source, source_file, resolved_key) = {
+            let (source, source_file, resolved_key, tenant_secrets_arc) = {
                 let s = state.lock().unwrap();
                 check_auth_peek(&s, &headers, AccessLevel::ReadOnly)?;
                 let history = s.versions.get_history(flow_name);
+                let ts = s.tenant_secrets.clone();
                 match history.and_then(|h| h.active()) {
                     Some(active) => {
                         let key = resolve_backend_key(&s, backend).ok();
-                        (active.source.clone(), active.source_file.clone(), key)
+                        (active.source.clone(), active.source_file.clone(), key, ts)
                     }
                     None => {
                         // Blame::Caller (CT-2) — invalid tool name
@@ -14222,6 +14233,14 @@ async fn mcp_handler(
                         })));
                     }
                 }
+            };
+
+            // Async SM fetch for cold cache (M3): if registry + cache both miss, try SM now
+            let resolved_key = if resolved_key.is_none() {
+                let tenant_id = crate::tenant::current_tenant_id();
+                tenant_secrets_arc.get_api_key(&tenant_id, backend).await.ok()
+            } else {
+                resolved_key
             };
 
             // Execute
@@ -15274,13 +15293,14 @@ async fn mcp_stream_handler(
     let backend = arguments.get("backend").and_then(|b| b.as_str()).unwrap_or("stub");
 
     // Resolve source and key
-    let (source, source_file, resolved_key) = {
+    let (source, source_file, resolved_key, tenant_secrets_arc) = {
         let s = state.lock().unwrap();
+        let ts = s.tenant_secrets.clone();
         let history = s.versions.get_history(flow_name);
         match history.and_then(|h| h.active()) {
             Some(active) => {
                 let key = resolve_backend_key(&s, backend).ok();
-                (active.source.clone(), active.source_file.clone(), key)
+                (active.source.clone(), active.source_file.clone(), key, ts)
             }
             None => {
                 return Ok(Json(serde_json::json!({
@@ -15289,6 +15309,14 @@ async fn mcp_stream_handler(
                 })));
             }
         }
+    };
+
+    // Async SM fetch for cold cache (M3)
+    let resolved_key = if resolved_key.is_none() {
+        let tenant_id = crate::tenant::current_tenant_id();
+        tenant_secrets_arc.get_api_key(&tenant_id, backend).await.ok()
+    } else {
+        resolved_key
     };
 
     // Execute
@@ -23790,6 +23818,13 @@ pub fn run_serve(config: ServerConfig) -> i32 {
                     tracing::error!(error = %e, "db_pool_failed_falling_back_to_memory");
                 }
             }
+        }
+
+        // Initialize AWS Secrets Manager client for per-tenant key resolution (M3)
+        {
+            let ts = Arc::new(crate::tenant_secrets::TenantSecretsClient::new().await);
+            let mut s = shared_state.lock().unwrap();
+            s.tenant_secrets = ts;
         }
 
         let listener = match tokio::net::TcpListener::bind(&bind_addr).await {

@@ -60,6 +60,7 @@ pub mod storage;
 pub mod storage_postgres;
 pub mod stdlib;
 pub mod tenant;
+pub mod tenant_secrets;
 pub mod tokens;
 pub mod tool_executor;
 pub mod tool_registry;
