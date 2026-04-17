@@ -167,7 +167,7 @@ use crate::request_middleware::{RequestIdGenerator, MiddlewareConfig};
 use crate::trace_store::{TraceStore, TraceStoreConfig, TraceFilter};
 use crate::event_bus::{DaemonSupervisor, EventBus, RestartPolicy};
 use crate::flow_version::VersionRegistry;
-use crate::rate_limiter::{RateLimiter, RateLimitConfig};
+use crate::rate_limiter::{RateLimiter, RateLimitConfig, TenantRateLimiter};
 use crate::request_log::{RequestLogger, RequestLogConfig, LogFilter};
 use crate::runner::AXON_VERSION;
 use crate::session_scope::ScopedSessionManager;
@@ -222,6 +222,8 @@ pub struct ServerState {
     pub session: SessionStore,
     pub scoped_sessions: ScopedSessionManager,
     pub rate_limiter: RateLimiter,
+    /// Per-tenant request-rate + daily token quota enforcement (M4).
+    pub tenant_rate_limiter: TenantRateLimiter,
     pub request_logger: RequestLogger,
     pub api_keys: ApiKeyManager,
     pub webhooks: WebhookRegistry,
@@ -767,6 +769,7 @@ impl ServerState {
             session: SessionStore::new("axon-server"),
             scoped_sessions: ScopedSessionManager::new("axon-server"),
             rate_limiter,
+            tenant_rate_limiter: TenantRateLimiter::new(),
             request_logger,
             api_keys: ApiKeyManager::new(master_token.as_deref()),
             webhooks: WebhookRegistry::new(),
@@ -872,14 +875,32 @@ fn client_key_from_headers(headers: &HeaderMap) -> String {
 }
 
 /// Check rate limit for a request. Returns Err(429) if over limit.
+/// Enforces both the global per-client sliding window and the per-tenant plan quota (M4).
 fn check_rate_limit(state: &mut ServerState, headers: &HeaderMap) -> Result<(), StatusCode> {
+    // Global per-client limit (existing behavior)
     let key = client_key_from_headers(headers);
     let result = state.rate_limiter.check(&key);
-    if result.allowed {
-        Ok(())
-    } else {
-        Err(StatusCode::TOO_MANY_REQUESTS)
+    if !result.allowed {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
     }
+
+    // Per-tenant quota enforcement (M4)
+    let tenant_id = crate::tenant::current_tenant_id();
+    let plan = crate::tenant::TenantPlan::from_str(
+        if tenant_id == "default" { "enterprise" } else { "starter" }
+    );
+    let tenant_result = state.tenant_rate_limiter.check_request(&tenant_id, &plan);
+    if !tenant_result.allowed {
+        tracing::warn!(
+            tenant_id = %tenant_id,
+            remaining = tenant_result.remaining,
+            reset_secs = tenant_result.reset_secs,
+            "tenant_rate_limit_exceeded"
+        );
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    Ok(())
 }
 
 // ── Webhook async delivery ───────────────────────────────────────────────
