@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars and adjust per environment.
+# Production defaults are set in variables.tf; override here for staging/dev.
+
+# ── Staging overrides ─────────────────────────────────────────────────────────
+# environment            = "staging"
+# rds_instance_class     = "db.t3.micro"   # save cost on staging
+# rds_multi_az           = false           # single-AZ acceptable for staging
+# rds_backup_retention_days = 1
+# ecs_desired_count      = 1               # one task is enough for staging
+
+# ── Scaling thresholds (production) ──────────────────────────────────────────
+# Upgrade rds_instance_class to db.t3.medium when:
+#   - active tenants > 20, OR
+#   - RDS CloudWatch FreeableMemory < 200 MB sustained, OR
+#   - p99 query latency > 200 ms (visible in RDS Performance Insights)
+#
+# Enable rds_multi_az = true for ALL production environments.

@@ -8,7 +8,7 @@
 | M2 | Data Isolation (PostgreSQL RLS) | ✅ Completo |
 | M3 | Secrets per Tenant (AWS Secrets Manager) | ✅ Completo |
 | M4 | Backend Isolation (circuit breakers + metering) | ✅ Completo |
-| M5 | Terraform — onboarding de tenants | ⏳ Pendiente |
+| M5 | Terraform — onboarding de tenants | ✅ Completo |
 
 ---
 
@@ -140,9 +140,18 @@ axon/tenants/{tenant_id}/groq_api_key
 **Objetivo:** onboarding de nuevos tenants sin intervención manual.
 
 ### Entregables
-- `infrastructure/terraform/modules/tenant/` — crea paths SM para un tenant
+- `infrastructure/terraform/modules/tenant/` — crea paths SM para un tenant (for_each sobre providers)
 - `infrastructure/scripts/onboard_tenant.sh` — crea tenant en DB + secretos vacíos + API key inicial
-- Evaluar upgrade RDS de `t3.micro` a `t3.small` + Multi-AZ para carga multi-tenant real
+- RDS upgrade: `db.t3.micro` → `db.t3.small`, `multi_az = true` (decisión documentada en variables.tf)
+- `infrastructure/terraform/iam.tf` — Task Role ahora tiene permiso `axon/tenants/*` en SM (requerido por TenantSecretsClient)
+
+### Decisión RDS
+| Dimensión | Antes | Después |
+|-----------|-------|---------|
+| Instancia | db.t3.micro (1 GB) | db.t3.small (2 GB) |
+| Multi-AZ | false | true |
+| Motivo | Free tier / dev | SLA 99.9% multi-tenant; RLS agrega overhead por transacción |
+| Siguiente umbral | — | db.t3.medium cuando tenants > 20 o p99 > 200 ms |
 
 ---
 
