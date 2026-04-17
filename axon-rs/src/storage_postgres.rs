@@ -1,45 +1,79 @@
 //! PostgreSQL Storage Backend — full persistent storage for AxonServer.
 //!
-//! Implements `StorageBackend` trait using sqlx runtime queries against PostgreSQL.
-//! All queries use runtime parameters (not compile-time macros) so no database
-//! is required at build time.
+//! Every data method:
+//!   1. Reads the active tenant from `crate::tenant::current_tenant_id()` (task-local)
+//!   2. Opens a transaction
+//!   3. Executes `SET LOCAL axon.current_tenant = '<tenant>'` so Postgres RLS
+//!      policies activate for the duration of that transaction
+//!   4. Runs the actual DML
+//!   5. Commits
 //!
-//! Architecture ready for future backends (Oracle, MariaDB, MySQL) — each simply
-//! implements the same `StorageBackend` trait.
-//!
-//! Uses UPSERT (ON CONFLICT ... DO UPDATE) for idempotent saves.
-//! JSONB columns for nested structures (events, annotations, entries, checkpoints).
+//! This means RLS isolation is enforced even if application code forgets to
+//! filter by tenant_id — Postgres blocks the query at the row level.
 
 use sqlx::PgPool;
 use sqlx::Row;
 use crate::storage::*;
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Open a transaction and activate RLS for the current tenant.
+/// Every data method must call this instead of `pool.begin()` directly.
+macro_rules! begin_tenant_tx {
+    ($pool:expr, $tenant:expr, $op:literal) => {{
+        let mut tx = $pool.begin().await.map_err(|e| {
+            StorageError::ConnectionError(format!("{}: begin tx: {e}", $op))
+        })?;
+        sqlx::query("SET LOCAL axon.current_tenant = $1")
+            .bind($tenant)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::QueryError(format!("{}: set_tenant: {e}", $op)))?;
+        tx
+    }};
+}
+
+macro_rules! commit_tx {
+    ($tx:expr, $op:literal) => {
+        $tx.commit().await.map_err(|e| {
+            StorageError::QueryError(format!("{}: commit: {e}", $op))
+        })?
+    };
+}
+
+// ── PostgresBackend ───────────────────────────────────────────────────────────
+
 /// PostgreSQL implementation of StorageBackend.
 pub struct PostgresBackend {
-    pool: PgPool,
+    pub pool: PgPool,
 }
 
 impl PostgresBackend {
     pub fn new(pool: PgPool) -> Self {
-        PostgresBackend { pool }
+        Self { pool }
     }
 }
 
 impl StorageBackend for PostgresBackend {
-    // ── Traces ──
+
+    // ── Traces ────────────────────────────────────────────────────────────────
 
     async fn save_trace(&self, trace: &TraceRow) -> Result<(), StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "save_trace");
         sqlx::query(
-            "INSERT INTO traces (trace_id, flow_name, status, steps_executed, latency_ms, \
-             tokens_input, tokens_output, anchor_checks, anchor_breaches, errors, retries, \
-             source_file, backend, client_key, replay_of, correlation_id, events, annotations) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) \
-             ON CONFLICT (trace_id) DO UPDATE SET \
+            "INSERT INTO traces \
+             (tenant_id, trace_id, flow_name, status, steps_executed, latency_ms, \
+              tokens_input, tokens_output, anchor_checks, anchor_breaches, errors, retries, \
+              source_file, backend, client_key, replay_of, correlation_id, events, annotations) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) \
+             ON CONFLICT (tenant_id, trace_id) DO UPDATE SET \
              status = EXCLUDED.status, steps_executed = EXCLUDED.steps_executed, \
              latency_ms = EXCLUDED.latency_ms, tokens_input = EXCLUDED.tokens_input, \
              tokens_output = EXCLUDED.tokens_output, events = EXCLUDED.events, \
              annotations = EXCLUDED.annotations"
         )
+        .bind(&tid)
         .bind(trace.trace_id as i64)
         .bind(&trace.flow_name)
         .bind(&trace.status)
@@ -58,25 +92,28 @@ impl StorageBackend for PostgresBackend {
         .bind(&trace.correlation_id)
         .bind(&trace.events)
         .bind(&trace.annotations)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("save_trace: {e}")))?;
+        commit_tx!(tx, "save_trace");
         Ok(())
     }
 
     async fn load_traces(&self, limit: usize, offset: usize) -> Result<Vec<TraceRow>, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "load_traces");
         let rows = sqlx::query(
-            "SELECT trace_id, flow_name, status, steps_executed, latency_ms, \
+            "SELECT tenant_id, trace_id, flow_name, status, steps_executed, latency_ms, \
              tokens_input, tokens_output, anchor_checks, anchor_breaches, errors, retries, \
-             source_file, backend, client_key, replay_of, correlation_id, events, annotations, tenant_id \
+             source_file, backend, client_key, replay_of, correlation_id, events, annotations \
              FROM traces ORDER BY timestamp_utc DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit as i64)
         .bind(offset as i64)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("load_traces: {e}")))?;
-
+        commit_tx!(tx, "load_traces");
         Ok(rows.iter().map(|r| TraceRow {
             tenant_id: r.get("tenant_id"),
             trace_id: r.get::<i64, _>("trace_id") as u64,
@@ -101,17 +138,19 @@ impl StorageBackend for PostgresBackend {
     }
 
     async fn get_trace(&self, trace_id: u64) -> Result<Option<TraceRow>, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "get_trace");
         let row = sqlx::query(
-            "SELECT trace_id, flow_name, status, steps_executed, latency_ms, \
+            "SELECT tenant_id, trace_id, flow_name, status, steps_executed, latency_ms, \
              tokens_input, tokens_output, anchor_checks, anchor_breaches, errors, retries, \
-             source_file, backend, client_key, replay_of, correlation_id, events, annotations, tenant_id \
+             source_file, backend, client_key, replay_of, correlation_id, events, annotations \
              FROM traces WHERE trace_id = $1"
         )
         .bind(trace_id as i64)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("get_trace: {e}")))?;
-
+        commit_tx!(tx, "get_trace");
         Ok(row.map(|r| TraceRow {
             tenant_id: r.get("tenant_id"),
             trace_id: r.get::<i64, _>("trace_id") as u64,
@@ -136,39 +175,52 @@ impl StorageBackend for PostgresBackend {
     }
 
     async fn delete_traces(&self, ids: &[u64]) -> Result<u64, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
         let ids_i64: Vec<i64> = ids.iter().map(|&id| id as i64).collect();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "delete_traces");
         let result = sqlx::query("DELETE FROM traces WHERE trace_id = ANY($1)")
             .bind(&ids_i64)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::QueryError(format!("delete_traces: {e}")))?;
+        commit_tx!(tx, "delete_traces");
         Ok(result.rows_affected())
     }
 
-    // ── Sessions ──
+    // ── Sessions ──────────────────────────────────────────────────────────────
 
     async fn save_session(&self, entry: &SessionRow) -> Result<(), StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "save_session");
         sqlx::query(
-            "INSERT INTO sessions (scope, key, value, source_step) VALUES ($1,$2,$3,$4) \
-             ON CONFLICT (scope, key) DO UPDATE SET value = EXCLUDED.value, source_step = EXCLUDED.source_step"
+            "INSERT INTO sessions (tenant_id, scope, key, value, source_step) \
+             VALUES ($1,$2,$3,$4,$5) \
+             ON CONFLICT (tenant_id, scope, key) DO UPDATE SET \
+             value = EXCLUDED.value, source_step = EXCLUDED.source_step"
         )
+        .bind(&tid)
         .bind(&entry.scope)
         .bind(&entry.key)
         .bind(&entry.value)
         .bind(&entry.source_step)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("save_session: {e}")))?;
+        commit_tx!(tx, "save_session");
         Ok(())
     }
 
     async fn load_sessions(&self, scope: &str) -> Result<Vec<SessionRow>, StorageError> {
-        let rows = sqlx::query("SELECT scope, key, value, source_step, tenant_id FROM sessions WHERE scope = $1")
-            .bind(scope)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| StorageError::QueryError(format!("load_sessions: {e}")))?;
-
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "load_sessions");
+        let rows = sqlx::query(
+            "SELECT tenant_id, scope, key, value, source_step FROM sessions WHERE scope = $1"
+        )
+        .bind(scope)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| StorageError::QueryError(format!("load_sessions: {e}")))?;
+        commit_tx!(tx, "load_sessions");
         Ok(rows.iter().map(|r| SessionRow {
             tenant_id: r.get("tenant_id"),
             scope: r.get("scope"),
@@ -179,24 +231,33 @@ impl StorageBackend for PostgresBackend {
     }
 
     async fn delete_session(&self, scope: &str, key: &str) -> Result<bool, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "delete_session");
         let result = sqlx::query("DELETE FROM sessions WHERE scope = $1 AND key = $2")
             .bind(scope)
             .bind(key)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::QueryError(format!("delete_session: {e}")))?;
+        commit_tx!(tx, "delete_session");
         Ok(result.rows_affected() > 0)
     }
 
-    // ── Daemons ──
+    // ── Daemons ───────────────────────────────────────────────────────────────
 
     async fn save_daemon(&self, daemon: &DaemonRow) -> Result<(), StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "save_daemon");
         sqlx::query(
-            "INSERT INTO daemons (name, state, source_file, flow_name, event_count, restart_count, \
-             trigger_topic, output_topic, lifecycle_events) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) \
-             ON CONFLICT (name) DO UPDATE SET state = EXCLUDED.state, event_count = EXCLUDED.event_count, \
+            "INSERT INTO daemons \
+             (tenant_id, name, state, source_file, flow_name, event_count, restart_count, \
+              trigger_topic, output_topic, lifecycle_events) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
+             ON CONFLICT (tenant_id, name) DO UPDATE SET \
+             state = EXCLUDED.state, event_count = EXCLUDED.event_count, \
              restart_count = EXCLUDED.restart_count, lifecycle_events = EXCLUDED.lifecycle_events"
         )
+        .bind(&tid)
         .bind(&daemon.name)
         .bind(&daemon.state)
         .bind(&daemon.source_file)
@@ -206,21 +267,24 @@ impl StorageBackend for PostgresBackend {
         .bind(&daemon.trigger_topic)
         .bind(&daemon.output_topic)
         .bind(&daemon.lifecycle_events)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("save_daemon: {e}")))?;
+        commit_tx!(tx, "save_daemon");
         Ok(())
     }
 
     async fn load_daemons(&self) -> Result<Vec<DaemonRow>, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "load_daemons");
         let rows = sqlx::query(
-            "SELECT name, state, source_file, flow_name, event_count, restart_count, \
-             trigger_topic, output_topic, lifecycle_events, tenant_id FROM daemons"
+            "SELECT tenant_id, name, state, source_file, flow_name, event_count, \
+             restart_count, trigger_topic, output_topic, lifecycle_events FROM daemons"
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("load_daemons: {e}")))?;
-
+        commit_tx!(tx, "load_daemons");
         Ok(rows.iter().map(|r| DaemonRow {
             tenant_id: r.get("tenant_id"),
             name: r.get("name"),
@@ -236,39 +300,50 @@ impl StorageBackend for PostgresBackend {
     }
 
     async fn delete_daemon(&self, name: &str) -> Result<bool, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "delete_daemon");
         let result = sqlx::query("DELETE FROM daemons WHERE name = $1")
             .bind(name)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::QueryError(format!("delete_daemon: {e}")))?;
+        commit_tx!(tx, "delete_daemon");
         Ok(result.rows_affected() > 0)
     }
 
-    // ── Audit ──
+    // ── Audit ─────────────────────────────────────────────────────────────────
 
     async fn append_audit(&self, entry: &AuditRow) -> Result<(), StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "append_audit");
         sqlx::query(
-            "INSERT INTO audit_log (action, actor, target, detail) VALUES ($1,$2,$3,$4)"
+            "INSERT INTO audit_log (tenant_id, action, actor, target, detail) \
+             VALUES ($1,$2,$3,$4,$5)"
         )
+        .bind(&tid)
         .bind(&entry.action)
         .bind(&entry.actor)
         .bind(&entry.target)
         .bind(&entry.detail)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("append_audit: {e}")))?;
+        commit_tx!(tx, "append_audit");
         Ok(())
     }
 
     async fn query_audit(&self, limit: usize) -> Result<Vec<AuditRow>, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "query_audit");
         let rows = sqlx::query(
-            "SELECT action, actor, target, detail, tenant_id FROM audit_log ORDER BY timestamp_utc DESC LIMIT $1"
+            "SELECT tenant_id, action, actor, target, detail \
+             FROM audit_log ORDER BY timestamp_utc DESC LIMIT $1"
         )
         .bind(limit as i64)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("query_audit: {e}")))?;
-
+        commit_tx!(tx, "query_audit");
         Ok(rows.iter().map(|r| AuditRow {
             tenant_id: r.get("tenant_id"),
             action: r.get("action"),
@@ -278,30 +353,40 @@ impl StorageBackend for PostgresBackend {
         }).collect())
     }
 
-    // ── AxonStores ──
+    // ── AxonStores ────────────────────────────────────────────────────────────
 
     async fn save_axon_store(&self, store: &AxonStoreRow) -> Result<(), StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "save_axon_store");
         sqlx::query(
-            "INSERT INTO axon_stores (name, ontology, entries, created_at, total_ops) VALUES ($1,$2,$3,$4,$5) \
-             ON CONFLICT (name) DO UPDATE SET entries = EXCLUDED.entries, total_ops = EXCLUDED.total_ops"
+            "INSERT INTO axon_stores (tenant_id, name, ontology, entries, created_at, total_ops) \
+             VALUES ($1,$2,$3,$4,$5,$6) \
+             ON CONFLICT (tenant_id, name) DO UPDATE SET \
+             entries = EXCLUDED.entries, total_ops = EXCLUDED.total_ops"
         )
+        .bind(&tid)
         .bind(&store.name)
         .bind(&store.ontology)
         .bind(&store.entries)
         .bind(store.created_at as i64)
         .bind(store.total_ops as i64)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("save_axon_store: {e}")))?;
+        commit_tx!(tx, "save_axon_store");
         Ok(())
     }
 
     async fn load_axon_stores(&self) -> Result<Vec<AxonStoreRow>, StorageError> {
-        let rows = sqlx::query("SELECT name, ontology, entries, created_at, total_ops, tenant_id FROM axon_stores")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| StorageError::QueryError(format!("load_axon_stores: {e}")))?;
-
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "load_axon_stores");
+        let rows = sqlx::query(
+            "SELECT tenant_id, name, ontology, entries, created_at, total_ops FROM axon_stores"
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| StorageError::QueryError(format!("load_axon_stores: {e}")))?;
+        commit_tx!(tx, "load_axon_stores");
         Ok(rows.iter().map(|r| AxonStoreRow {
             tenant_id: r.get("tenant_id"),
             name: r.get("name"),
@@ -313,23 +398,31 @@ impl StorageBackend for PostgresBackend {
     }
 
     async fn delete_axon_store(&self, name: &str) -> Result<bool, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "delete_axon_store");
         let result = sqlx::query("DELETE FROM axon_stores WHERE name = $1")
             .bind(name)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::QueryError(format!("delete_axon_store: {e}")))?;
+        commit_tx!(tx, "delete_axon_store");
         Ok(result.rows_affected() > 0)
     }
 
-    // ── Dataspaces ──
+    // ── Dataspaces ────────────────────────────────────────────────────────────
 
     async fn save_dataspace(&self, ds: &DataspaceRow) -> Result<(), StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "save_dataspace");
         sqlx::query(
-            "INSERT INTO dataspaces (name, ontology, entries, associations, created_at, total_ops, next_id) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7) \
-             ON CONFLICT (name) DO UPDATE SET entries = EXCLUDED.entries, associations = EXCLUDED.associations, \
+            "INSERT INTO dataspaces \
+             (tenant_id, name, ontology, entries, associations, created_at, total_ops, next_id) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) \
+             ON CONFLICT (tenant_id, name) DO UPDATE SET \
+             entries = EXCLUDED.entries, associations = EXCLUDED.associations, \
              total_ops = EXCLUDED.total_ops, next_id = EXCLUDED.next_id"
         )
+        .bind(&tid)
         .bind(&ds.name)
         .bind(&ds.ontology)
         .bind(&ds.entries)
@@ -337,20 +430,24 @@ impl StorageBackend for PostgresBackend {
         .bind(ds.created_at as i64)
         .bind(ds.total_ops as i64)
         .bind(ds.next_id as i64)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("save_dataspace: {e}")))?;
+        commit_tx!(tx, "save_dataspace");
         Ok(())
     }
 
     async fn load_dataspaces(&self) -> Result<Vec<DataspaceRow>, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "load_dataspaces");
         let rows = sqlx::query(
-            "SELECT name, ontology, entries, associations, created_at, total_ops, next_id, tenant_id FROM dataspaces"
+            "SELECT tenant_id, name, ontology, entries, associations, \
+             created_at, total_ops, next_id FROM dataspaces"
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("load_dataspaces: {e}")))?;
-
+        commit_tx!(tx, "load_dataspaces");
         Ok(rows.iter().map(|r| DataspaceRow {
             tenant_id: r.get("tenant_id"),
             name: r.get("name"),
@@ -364,24 +461,34 @@ impl StorageBackend for PostgresBackend {
     }
 
     async fn delete_dataspace(&self, name: &str) -> Result<bool, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "delete_dataspace");
         let result = sqlx::query("DELETE FROM dataspaces WHERE name = $1")
             .bind(name)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::QueryError(format!("delete_dataspace: {e}")))?;
+        commit_tx!(tx, "delete_dataspace");
         Ok(result.rows_affected() > 0)
     }
 
-    // ── Hibernations ──
+    // ── Hibernations ──────────────────────────────────────────────────────────
 
     async fn save_hibernation(&self, session: &HibernationRow) -> Result<(), StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "save_hibernation");
         sqlx::query(
-            "INSERT INTO hibernations (id, name, operation, status, checkpoints, resumed_from, \
-             created_at, last_status_change, next_checkpoint_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) \
-             ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, checkpoints = EXCLUDED.checkpoints, \
-             resumed_from = EXCLUDED.resumed_from, last_status_change = EXCLUDED.last_status_change, \
+            "INSERT INTO hibernations \
+             (tenant_id, id, name, operation, status, checkpoints, resumed_from, \
+              created_at, last_status_change, next_checkpoint_id) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
+             ON CONFLICT (tenant_id, id) DO UPDATE SET \
+             status = EXCLUDED.status, checkpoints = EXCLUDED.checkpoints, \
+             resumed_from = EXCLUDED.resumed_from, \
+             last_status_change = EXCLUDED.last_status_change, \
              next_checkpoint_id = EXCLUDED.next_checkpoint_id"
         )
+        .bind(&tid)
         .bind(&session.id)
         .bind(&session.name)
         .bind(&session.operation)
@@ -391,21 +498,24 @@ impl StorageBackend for PostgresBackend {
         .bind(session.created_at as i64)
         .bind(session.last_status_change as i64)
         .bind(session.next_checkpoint_id as i32)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("save_hibernation: {e}")))?;
+        commit_tx!(tx, "save_hibernation");
         Ok(())
     }
 
     async fn load_hibernations(&self) -> Result<Vec<HibernationRow>, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "load_hibernations");
         let rows = sqlx::query(
-            "SELECT id, name, operation, status, checkpoints, resumed_from, \
-             created_at, last_status_change, next_checkpoint_id, tenant_id FROM hibernations"
+            "SELECT tenant_id, id, name, operation, status, checkpoints, resumed_from, \
+             created_at, last_status_change, next_checkpoint_id FROM hibernations"
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("load_hibernations: {e}")))?;
-
+        commit_tx!(tx, "load_hibernations");
         Ok(rows.iter().map(|r| HibernationRow {
             tenant_id: r.get("tenant_id"),
             id: r.get("id"),
@@ -420,42 +530,50 @@ impl StorageBackend for PostgresBackend {
         }).collect())
     }
 
-    // ── Events ──
+    // ── Events ────────────────────────────────────────────────────────────────
 
     async fn append_event(&self, event: &EventRow) -> Result<(), StorageError> {
-        sqlx::query("INSERT INTO event_history (topic, source, payload) VALUES ($1,$2,$3)")
-            .bind(&event.topic)
-            .bind(&event.source)
-            .bind(&event.payload)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| StorageError::QueryError(format!("append_event: {e}")))?;
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "append_event");
+        sqlx::query(
+            "INSERT INTO event_history (tenant_id, topic, source, payload) VALUES ($1,$2,$3,$4)"
+        )
+        .bind(&tid)
+        .bind(&event.topic)
+        .bind(&event.source)
+        .bind(&event.payload)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::QueryError(format!("append_event: {e}")))?;
+        commit_tx!(tx, "append_event");
         Ok(())
     }
 
     async fn query_events(&self, topic: Option<&str>, limit: usize) -> Result<Vec<EventRow>, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "query_events");
         let rows = match topic {
             Some(t) => {
                 sqlx::query(
-                    "SELECT topic, source, payload, tenant_id FROM event_history WHERE topic = $1 \
-                     ORDER BY timestamp_utc DESC LIMIT $2"
+                    "SELECT tenant_id, topic, source, payload FROM event_history \
+                     WHERE topic = $1 ORDER BY timestamp_utc DESC LIMIT $2"
                 )
                 .bind(t)
                 .bind(limit as i64)
-                .fetch_all(&self.pool)
+                .fetch_all(&mut *tx)
                 .await
             }
             None => {
                 sqlx::query(
-                    "SELECT topic, source, payload, tenant_id FROM event_history \
+                    "SELECT tenant_id, topic, source, payload FROM event_history \
                      ORDER BY timestamp_utc DESC LIMIT $1"
                 )
                 .bind(limit as i64)
-                .fetch_all(&self.pool)
+                .fetch_all(&mut *tx)
                 .await
             }
         }.map_err(|e| StorageError::QueryError(format!("query_events: {e}")))?;
-
+        commit_tx!(tx, "query_events");
         Ok(rows.iter().map(|r| EventRow {
             tenant_id: r.get("tenant_id"),
             topic: r.get("topic"),
@@ -464,34 +582,43 @@ impl StorageBackend for PostgresBackend {
         }).collect())
     }
 
-    // ── Cache ──
+    // ── Cache ─────────────────────────────────────────────────────────────────
 
     async fn save_cache_entry(&self, entry: &CacheRow) -> Result<(), StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "save_cache_entry");
         sqlx::query(
-            "INSERT INTO execution_cache (flow_name, cache_key, result, ttl_secs, hit_count) \
-             VALUES ($1,$2,$3,$4,$5) \
-             ON CONFLICT (cache_key) DO UPDATE SET result = EXCLUDED.result, \
-             ttl_secs = EXCLUDED.ttl_secs, hit_count = EXCLUDED.hit_count"
+            "INSERT INTO execution_cache \
+             (tenant_id, flow_name, cache_key, result, ttl_secs, hit_count) \
+             VALUES ($1,$2,$3,$4,$5,$6) \
+             ON CONFLICT (tenant_id, cache_key) DO UPDATE SET \
+             result = EXCLUDED.result, ttl_secs = EXCLUDED.ttl_secs, \
+             hit_count = EXCLUDED.hit_count"
         )
+        .bind(&tid)
         .bind(&entry.flow_name)
         .bind(&entry.cache_key)
         .bind(&entry.result)
         .bind(entry.ttl_secs)
         .bind(entry.hit_count as i64)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("save_cache_entry: {e}")))?;
+        commit_tx!(tx, "save_cache_entry");
         Ok(())
     }
 
     async fn load_cache_entries(&self) -> Result<Vec<CacheRow>, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "load_cache_entries");
         let rows = sqlx::query(
-            "SELECT flow_name, cache_key, result, ttl_secs, hit_count, tenant_id FROM execution_cache"
+            "SELECT tenant_id, flow_name, cache_key, result, ttl_secs, hit_count \
+             FROM execution_cache"
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("load_cache_entries: {e}")))?;
-
+        commit_tx!(tx, "load_cache_entries");
         Ok(rows.iter().map(|r| CacheRow {
             tenant_id: r.get("tenant_id"),
             flow_name: r.get("flow_name"),
@@ -503,57 +630,68 @@ impl StorageBackend for PostgresBackend {
     }
 
     async fn evict_expired_cache(&self) -> Result<u64, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "evict_expired_cache");
         let result = sqlx::query(
             "DELETE FROM execution_cache WHERE ttl_secs IS NOT NULL AND \
              created_at + (ttl_secs || ' seconds')::interval < NOW()"
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("evict_expired_cache: {e}")))?;
+        commit_tx!(tx, "evict_expired_cache");
         Ok(result.rows_affected())
     }
 
-    // ── Cost tracking ──
+    // ── Cost tracking ─────────────────────────────────────────────────────────
 
     async fn record_cost(&self, cost: &CostRow) -> Result<(), StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "record_cost");
         sqlx::query(
-            "INSERT INTO cost_tracking (flow_name, backend, input_tokens, output_tokens, cost_usd) \
-             VALUES ($1,$2,$3,$4,$5)"
+            "INSERT INTO cost_tracking \
+             (tenant_id, flow_name, backend, input_tokens, output_tokens, cost_usd) \
+             VALUES ($1,$2,$3,$4,$5,$6)"
         )
+        .bind(&tid)
         .bind(&cost.flow_name)
         .bind(&cost.backend)
         .bind(cost.input_tokens as i64)
         .bind(cost.output_tokens as i64)
         .bind(cost.cost_usd)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("record_cost: {e}")))?;
+        commit_tx!(tx, "record_cost");
         Ok(())
     }
 
     async fn query_costs(&self, flow: Option<&str>, limit: usize) -> Result<Vec<CostRow>, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "query_costs");
         let rows = match flow {
             Some(f) => {
                 sqlx::query(
-                    "SELECT flow_name, backend, input_tokens, output_tokens, cost_usd, tenant_id \
-                     FROM cost_tracking WHERE flow_name = $1 ORDER BY timestamp_utc DESC LIMIT $2"
+                    "SELECT tenant_id, flow_name, backend, input_tokens, output_tokens, cost_usd \
+                     FROM cost_tracking WHERE flow_name = $1 \
+                     ORDER BY timestamp_utc DESC LIMIT $2"
                 )
                 .bind(f)
                 .bind(limit as i64)
-                .fetch_all(&self.pool)
+                .fetch_all(&mut *tx)
                 .await
             }
             None => {
                 sqlx::query(
-                    "SELECT flow_name, backend, input_tokens, output_tokens, cost_usd, tenant_id \
+                    "SELECT tenant_id, flow_name, backend, input_tokens, output_tokens, cost_usd \
                      FROM cost_tracking ORDER BY timestamp_utc DESC LIMIT $1"
                 )
                 .bind(limit as i64)
-                .fetch_all(&self.pool)
+                .fetch_all(&mut *tx)
                 .await
             }
         }.map_err(|e| StorageError::QueryError(format!("query_costs: {e}")))?;
-
+        commit_tx!(tx, "query_costs");
         Ok(rows.iter().map(|r| CostRow {
             tenant_id: r.get("tenant_id"),
             flow_name: r.get("flow_name"),
@@ -564,16 +702,22 @@ impl StorageBackend for PostgresBackend {
         }).collect())
     }
 
-    // ── Schedules ──
+    // ── Schedules ─────────────────────────────────────────────────────────────
 
     async fn save_schedule(&self, schedule: &ScheduleRow) -> Result<(), StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "save_schedule");
         sqlx::query(
-            "INSERT INTO schedules (name, flow_name, interval_secs, enabled, backend, \
-             last_run, next_run, run_count, error_count) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) \
-             ON CONFLICT (name) DO UPDATE SET enabled = EXCLUDED.enabled, \
-             last_run = EXCLUDED.last_run, next_run = EXCLUDED.next_run, \
-             run_count = EXCLUDED.run_count, error_count = EXCLUDED.error_count"
+            "INSERT INTO schedules \
+             (tenant_id, name, flow_name, interval_secs, enabled, backend, \
+              last_run, next_run, run_count, error_count) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
+             ON CONFLICT (tenant_id, name) DO UPDATE SET \
+             enabled = EXCLUDED.enabled, last_run = EXCLUDED.last_run, \
+             next_run = EXCLUDED.next_run, run_count = EXCLUDED.run_count, \
+             error_count = EXCLUDED.error_count"
         )
+        .bind(&tid)
         .bind(&schedule.name)
         .bind(&schedule.flow_name)
         .bind(schedule.interval_secs as i64)
@@ -583,21 +727,24 @@ impl StorageBackend for PostgresBackend {
         .bind(schedule.next_run as i64)
         .bind(schedule.run_count as i64)
         .bind(schedule.error_count as i64)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("save_schedule: {e}")))?;
+        commit_tx!(tx, "save_schedule");
         Ok(())
     }
 
     async fn load_schedules(&self) -> Result<Vec<ScheduleRow>, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "load_schedules");
         let rows = sqlx::query(
-            "SELECT name, flow_name, interval_secs, enabled, backend, \
-             last_run, next_run, run_count, error_count, tenant_id FROM schedules"
+            "SELECT tenant_id, name, flow_name, interval_secs, enabled, backend, \
+             last_run, next_run, run_count, error_count FROM schedules"
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| StorageError::QueryError(format!("load_schedules: {e}")))?;
-
+        commit_tx!(tx, "load_schedules");
         Ok(rows.iter().map(|r| ScheduleRow {
             tenant_id: r.get("tenant_id"),
             name: r.get("name"),
@@ -613,15 +760,18 @@ impl StorageBackend for PostgresBackend {
     }
 
     async fn delete_schedule(&self, name: &str) -> Result<bool, StorageError> {
+        let tid = crate::tenant::current_tenant_id();
+        let mut tx = begin_tenant_tx!(&self.pool, &tid, "delete_schedule");
         let result = sqlx::query("DELETE FROM schedules WHERE name = $1")
             .bind(name)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::QueryError(format!("delete_schedule: {e}")))?;
+        commit_tx!(tx, "delete_schedule");
         Ok(result.rows_affected() > 0)
     }
 
-    // ── Health ──
+    // ── Health ────────────────────────────────────────────────────────────────
 
     async fn is_healthy(&self) -> bool {
         crate::db_pool::check_health(&self.pool).await
