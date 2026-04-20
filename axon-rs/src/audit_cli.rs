@@ -21,7 +21,7 @@ use crate::ir_nodes::IRProgram;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 
-const AXON_VERSION: &str = "1.0.0";
+const AXON_VERSION: &str = "1.3.1";
 
 /// Two-space-indented, key-sorted JSON emission matching Python's
 /// `json.dumps(..., indent=2, sort_keys=True)` with default `ensure_ascii=True`:
@@ -188,8 +188,11 @@ pub fn run_audit(file: &str, framework: &str, output: Option<&str>) -> i32 {
             for (name, a) in &analyses {
                 frameworks.insert(name.clone(), a.to_value());
                 let mut s = serde_json::Map::new();
-                s.insert("readiness_percent".into(), ((a.readiness_percent() * 100.0).round() / 100.0).into());
-                s.insert("ready".into(), ((a.ready as f64 / a.total_controls as f64 >= 0.75) as i64 == 1).into());
+                // Parity with Python audit_cmd.py — `readiness_percent` is the
+                // full-precision float (no rounding), `ready` is the integer
+                // count of ready controls (NOT a boolean predicate).
+                s.insert("readiness_percent".into(), a.readiness_percent().into());
+                s.insert("ready".into(), (a.ready as i64).into());
                 s.insert("total".into(), (a.total_controls as i64).into());
                 s.insert("pending_code".into(), (a.pending_code as i64).into());
                 s.insert("pending_external".into(), (a.pending_external as i64).into());

@@ -90,7 +90,7 @@ def _j(payload: Any) -> bytes:
 def build_evidence_package(
     program: IRProgram,
     *,
-    axon_version: str = "1.0.0",
+    axon_version: str | None = None,
     provenance_chain: ProvenanceChain | None = None,
     provenance_payloads: Iterable[dict[str, Any]] | None = None,
     source_files: dict[str, str] | None = None,
@@ -115,6 +115,9 @@ def build_evidence_package(
     auditor_note : str
         Free-form preface text embedded in the README.
     """
+    if axon_version is None:
+        from axon.runtime.esk.attestation import _axon_version
+        axon_version = _axon_version()
     sbom = generate_sbom(program, axon_version=axon_version)
     dossier = generate_dossier(program, axon_version=axon_version)
     in_toto = generate_in_toto_statement(program, axon_version=axon_version)
