@@ -3,6 +3,7 @@
 //! All 14 commands handled natively. Python is no longer required.
 //!   Active:  version, check, compile, run, trace, repl, inspect, ld, serve, deploy, diff, replay, stats, graph
 
+use axon::audit_cli;
 use axon::axon_server;
 use axon::checker;
 use axon::cost_estimator;
@@ -21,7 +22,7 @@ use axon::tracer;
 use clap::{Parser, Subcommand};
 use std::process;
 
-const AXON_VERSION: &str = "0.30.6";
+const AXON_VERSION: &str = "1.0.0";
 
 // ── Estructura CLI (espejo del CLI Python) ────────────────────────────────────
 
@@ -182,6 +183,36 @@ enum Commands {
         #[arg(long, default_value = "")]
         auth_token: String,
     },
+    /// Generate a JSON compliance dossier from an .axon file (§ESK Fase 6.6).
+    Dossier {
+        file: String,
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Generate a JSON Software Bill of Materials from an .axon file.
+    Sbom {
+        file: String,
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Gap analysis against SOC 2 / ISO 27001 / FIPS 140-3 / CC EAL 4+.
+    Audit {
+        file: String,
+        #[arg(long, default_value = "all")]
+        framework: String,
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Assemble a deterministic audit evidence ZIP for external auditors.
+    #[command(name = "evidence-package")]
+    EvidencePackage {
+        file: String,
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Free-form auditor intake note embedded in README.md.
+        #[arg(long, default_value = "")]
+        note: String,
+    },
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -261,6 +292,14 @@ fn main() {
             backend,
             auth_token,
         }),
+        Commands::Dossier { file, output } => audit_cli::run_dossier(&file, output.as_deref()),
+        Commands::Sbom { file, output } => audit_cli::run_sbom(&file, output.as_deref()),
+        Commands::Audit { file, framework, output } => {
+            audit_cli::run_audit(&file, &framework, output.as_deref())
+        }
+        Commands::EvidencePackage { file, output, note } => {
+            audit_cli::run_evidence_package(&file, output.as_deref(), &note)
+        }
     };
 
     process::exit(exit_code);
