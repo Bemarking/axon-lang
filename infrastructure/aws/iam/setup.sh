@@ -57,8 +57,13 @@ skip() { printf '\033[1;33m -\033[0m %s\n' "$*"; }
 # ─── 1. Render policy templates ────────────────────────────────────
 log "Rendering policy templates with AWS_ACCOUNT_ID, AWS_REGION, ECR_REPO, GITHUB_ORG, GITHUB_REPO"
 export AWS_ACCOUNT_ID AWS_REGION ECR_REPO GITHUB_ORG GITHUB_REPO
-envsubst < "${TRUST_TPL}" > "${TRUST_JSON}"
-envsubst < "${PERM_TPL}"  > "${PERM_JSON}"
+TRUST_POLICY="$(envsubst < "${TRUST_TPL}")"
+PERM_POLICY="$(envsubst < "${PERM_TPL}")"
+# Also write to disk for debugging + audit, but pass content inline to
+# AWS CLI so the script works uniformly on Linux/macOS/Git-Bash-on-Windows
+# (Windows-native AWS CLI cannot resolve /tmp/... paths via file://).
+printf '%s\n' "$TRUST_POLICY" > "${TRUST_JSON}"
+printf '%s\n' "$PERM_POLICY"  > "${PERM_JSON}"
 
 # ─── 2. Ensure GitHub OIDC provider exists ────────────────────────
 OIDC_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com"
@@ -79,13 +84,13 @@ log "Checking IAM role ${ROLE_NAME}"
 if aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
     aws iam update-assume-role-policy \
         --role-name "${ROLE_NAME}" \
-        --policy-document "file://${TRUST_JSON}" >/dev/null
+        --policy-document "${TRUST_POLICY}" >/dev/null
     ok  "Updated trust policy on existing role ${ROLE_NAME}"
 else
     aws iam create-role \
         --role-name "${ROLE_NAME}" \
-        --assume-role-policy-document "file://${TRUST_JSON}" \
-        --description "GitHub Actions OIDC publisher for ${GITHUB_ORG}/${GITHUB_REPO} → ECR ${ECR_REPO}" \
+        --assume-role-policy-document "${TRUST_POLICY}" \
+        --description "GitHub Actions OIDC publisher for ${GITHUB_ORG}/${GITHUB_REPO} -> ECR ${ECR_REPO}" \
         --max-session-duration 3600 >/dev/null
     ok "Created role ${ROLE_NAME}"
 fi
@@ -95,7 +100,7 @@ log "Putting inline policy ecr-publisher on ${ROLE_NAME}"
 aws iam put-role-policy \
     --role-name "${ROLE_NAME}" \
     --policy-name ecr-publisher \
-    --policy-document "file://${PERM_JSON}" >/dev/null
+    --policy-document "${PERM_POLICY}" >/dev/null
 ok "Inline policy ecr-publisher applied"
 
 # ─── 5. Create ECR repository if missing ─────────────────────────
