@@ -52,6 +52,7 @@ from axon.compiler.ir_nodes import (
     IRDrill,
     IREndpoint,
     IREffectRow,
+    IRFabric,
     IREpistemicBlock,
     IRExplore,
     IRFlow,
@@ -105,6 +106,23 @@ from axon.compiler.ir_nodes import (
     IRWeave,
     IROtsDefinition,
     IROtsApply,
+    IRResource,
+    IRManifest,
+    IRObserve,
+    IRIntentionTree,
+    IRReconcile,
+    IRLease,
+    IREnsemble,
+    IRSession,
+    IRSessionRole,
+    IRSessionStep,
+    IRTopology,
+    IRTopologyEdge,
+    IRImmune,
+    IRReflex,
+    IRHeal,
+    IRComponent,
+    IRView,
 )
 
 
@@ -156,6 +174,26 @@ class IRGenerator:
         self._compute_specs: dict[str, IRCompute] = {}
         self._axonstore_specs: dict[str, IRAxonStore] = {}
         self._endpoints: dict[str, IREndpoint] = {}
+        # I/O Cognitivo (λ-L-E) — Fase 1
+        self._resources: dict[str, IRResource] = {}
+        self._fabrics: dict[str, IRFabric] = {}
+        self._manifests: dict[str, IRManifest] = {}
+        self._observations: dict[str, IRObserve] = {}
+        self._intention_operations: list[IRNode] = []
+        # Control Cognitivo (λ-L-E) — Fase 3
+        self._reconciles: dict[str, IRReconcile] = {}
+        self._leases: dict[str, IRLease] = {}
+        self._ensembles: dict[str, IREnsemble] = {}
+        # Topology & Session (λ-L-E) — Fase 4
+        self._sessions: dict[str, IRSession] = {}
+        self._topologies: dict[str, IRTopology] = {}
+        # Cognitive Immune System (λ-L-E) — Fase 5
+        self._immunes: dict[str, IRImmune] = {}
+        self._reflexes: dict[str, IRReflex] = {}
+        self._heals: dict[str, IRHeal] = {}
+        # UI Cognitiva (λ-L-E) — Fase 9
+        self._components: dict[str, IRComponent] = {}
+        self._views: dict[str, IRView] = {}
 
         # EMS: Module registry for cross-file symbol resolution
         self._registry = module_registry
@@ -184,6 +222,14 @@ class IRGenerator:
             self._resolve_run(run) for run in self._runs
         )
 
+        intention_tree: IRIntentionTree | None = None
+        if self._intention_operations:
+            intention_tree = IRIntentionTree(
+                source_line=program.line,
+                source_column=program.column,
+                operations=tuple(self._intention_operations),
+            )
+
         return IRProgram(
             source_line=program.line,
             source_column=program.column,
@@ -208,6 +254,21 @@ class IRGenerator:
             compute_specs=tuple(self._compute_specs.values()),
             axonstore_specs=tuple(self._axonstore_specs.values()),
             endpoints=tuple(self._endpoints.values()),
+            resources=tuple(self._resources.values()),
+            fabrics=tuple(self._fabrics.values()),
+            manifests=tuple(self._manifests.values()),
+            observations=tuple(self._observations.values()),
+            intention_tree=intention_tree,
+            reconciles=tuple(self._reconciles.values()),
+            leases=tuple(self._leases.values()),
+            ensembles=tuple(self._ensembles.values()),
+            sessions=tuple(self._sessions.values()),
+            topologies=tuple(self._topologies.values()),
+            immunes=tuple(self._immunes.values()),
+            reflexes=tuple(self._reflexes.values()),
+            heals=tuple(self._heals.values()),
+            components=tuple(self._components.values()),
+            views=tuple(self._views.values()),
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -292,6 +353,24 @@ class IRGenerator:
         ast.PurgeNode: "_visit_purge",
         ast.TransactNode: "_visit_transact",
         ast.AxonEndpointDefinition: "_visit_axonendpoint",
+        # I/O Cognitivo (λ-L-E) — Fase 1
+        ast.ResourceDefinition: "_visit_resource",
+        ast.FabricDefinition: "_visit_fabric",
+        ast.ManifestDefinition: "_visit_manifest",
+        ast.ObserveDefinition: "_visit_observe",
+        # Control Cognitivo (λ-L-E) — Fase 3
+        ast.ReconcileDefinition: "_visit_reconcile",
+        ast.LeaseDefinition: "_visit_lease",
+        ast.EnsembleDefinition: "_visit_ensemble",
+        # Topology & Session (λ-L-E) — Fase 4
+        ast.SessionDefinition: "_visit_session",
+        ast.TopologyDefinition: "_visit_topology",
+        # Immune System (λ-L-E) — Fase 5
+        ast.ImmuneDefinition: "_visit_immune",
+        ast.ReflexDefinition: "_visit_reflex",
+        ast.HealDefinition: "_visit_heal",
+        ast.ComponentDefinition: "_visit_component",
+        ast.ViewDefinition: "_visit_view",
     }
 
     def _visit(self, node: ast.ASTNode) -> IRNode:
@@ -545,6 +624,7 @@ class IRGenerator:
             range_min=range_min,
             range_max=range_max,
             where_expression=where_expr,
+            compliance=tuple(node.compliance),
         )
         self._types[node.name] = ir_type
         return ir_type
@@ -1224,6 +1304,7 @@ class IRGenerator:
             redact=tuple(node.redact),
             log=node.log,
             deflect_message=node.deflect_message,
+            compliance=tuple(node.compliance),
         )
         self._shields[node.name] = ir_shield
         return ir_shield
@@ -1477,6 +1558,19 @@ class IRGenerator:
         self._agents.clear()
         self._shields.clear()
         self._daemons.clear()
+        self._resources.clear()
+        self._fabrics.clear()
+        self._manifests.clear()
+        self._observations.clear()
+        self._intention_operations.clear()
+        self._reconciles.clear()
+        self._leases.clear()
+        self._ensembles.clear()
+        self._sessions.clear()
+        self._topologies.clear()
+        self._immunes.clear()
+        self._reflexes.clear()
+        self._heals.clear()
 
     # ═════════════════════════════════════════════════════════════════
     #  PIX VISITORS — Structured Cognitive Retrieval
@@ -1961,6 +2055,271 @@ class IRGenerator:
             shield_ref=node.shield_ref,
             retries=node.retries,
             timeout=node.timeout,
+            compliance=tuple(node.compliance),
         )
         self._endpoints[node.name] = ir_endpoint
         return ir_endpoint
+
+    # ═══════════════════════════════════════════════════════════════
+    #  I/O COGNITIVO VISITORS — λ-L-E · Fase 1
+    #
+    #  Each primitive is lowered to its IR counterpart and appended to
+    #  the Intention Tree (Free Monad F_Σ(X)).  The tree is consumed
+    #  by Handlers in Fase 2; in Fase 1 it is inert but observable for
+    #  verification and serialization.
+    # ═══════════════════════════════════════════════════════════════
+
+    def _visit_resource(self, node: ast.ResourceDefinition) -> IRResource:
+        """Lower ResourceDefinition → IRResource (declarative token)."""
+        ir = IRResource(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            kind=node.kind,
+            endpoint=node.endpoint,
+            capacity=node.capacity,
+            lifetime=node.lifetime,
+            certainty_floor=node.certainty_floor,
+            shield_ref=node.shield_ref,
+        )
+        self._resources[node.name] = ir
+        return ir
+
+    def _visit_fabric(self, node: ast.FabricDefinition) -> IRFabric:
+        """Lower FabricDefinition → IRFabric (topological substrate)."""
+        ir = IRFabric(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            provider=node.provider,
+            region=node.region,
+            zones=node.zones,
+            ephemeral=node.ephemeral,
+            shield_ref=node.shield_ref,
+        )
+        self._fabrics[node.name] = ir
+        return ir
+
+    def _visit_manifest(self, node: ast.ManifestDefinition) -> IRManifest:
+        """Lower ManifestDefinition → IRManifest, append to Intention Tree."""
+        ir = IRManifest(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            resources=tuple(node.resources),
+            fabric_ref=node.fabric_ref,
+            region=node.region,
+            zones=node.zones,
+            compliance=tuple(node.compliance),
+        )
+        self._manifests[node.name] = ir
+        # Manifests are provisioning intentions — they become nodes in the
+        # Free Monad tree so a Handler can interpret them.
+        self._intention_operations.append(ir)
+        return ir
+
+    def _visit_observe(self, node: ast.ObserveDefinition) -> IRObserve:
+        """Lower ObserveDefinition → IRObserve, append to Intention Tree."""
+        ir = IRObserve(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            target=node.target,
+            sources=tuple(node.sources),
+            quorum=node.quorum,
+            timeout=node.timeout,
+            on_partition=node.on_partition,
+            certainty_floor=node.certainty_floor,
+        )
+        self._observations[node.name] = ir
+        self._intention_operations.append(ir)
+        return ir
+
+    # ═══════════════════════════════════════════════════════════════
+    #  CONTROL COGNITIVO VISITORS — Fase 3 (reconcile / lease / ensemble)
+    # ═══════════════════════════════════════════════════════════════
+
+    def _visit_reconcile(self, node: ast.ReconcileDefinition) -> IRReconcile:
+        """Lower ReconcileDefinition → IRReconcile. Not added to the
+        Intention Tree: reconcile is a control-loop declaration, executed
+        periodically by `ReconcileLoop`, not β-reduced as a one-shot."""
+        ir = IRReconcile(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            observe_ref=node.observe_ref,
+            threshold=node.threshold,
+            tolerance=node.tolerance,
+            on_drift=node.on_drift,
+            shield_ref=node.shield_ref,
+            mandate_ref=node.mandate_ref,
+            max_retries=node.max_retries,
+        )
+        self._reconciles[node.name] = ir
+        return ir
+
+    def _visit_lease(self, node: ast.LeaseDefinition) -> IRLease:
+        """Lower LeaseDefinition → IRLease. Consumed by LeaseKernel at runtime."""
+        ir = IRLease(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            resource_ref=node.resource_ref,
+            duration=node.duration,
+            acquire=node.acquire,
+            on_expire=node.on_expire,
+        )
+        self._leases[node.name] = ir
+        return ir
+
+    def _visit_ensemble(self, node: ast.EnsembleDefinition) -> IREnsemble:
+        """Lower EnsembleDefinition → IREnsemble. Consumed by EnsembleAggregator."""
+        ir = IREnsemble(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            observations=tuple(node.observations),
+            quorum=node.quorum,
+            aggregation=node.aggregation,
+            certainty_mode=node.certainty_mode,
+        )
+        self._ensembles[node.name] = ir
+        return ir
+
+    # ═══════════════════════════════════════════════════════════════
+    #  TOPOLOGY & SESSION VISITORS — Fase 4 (π-calculus binary sessions)
+    # ═══════════════════════════════════════════════════════════════
+
+    def _visit_session(self, node: ast.SessionDefinition) -> IRSession:
+        """Lower SessionDefinition → IRSession (immutable, dual-by-construction)."""
+        roles = tuple(
+            IRSessionRole(
+                source_line=role.line,
+                source_column=role.column,
+                name=role.name,
+                steps=tuple(
+                    IRSessionStep(
+                        source_line=step.line,
+                        source_column=step.column,
+                        op=step.op,
+                        message_type=step.message_type,
+                    )
+                    for step in role.steps
+                ),
+            )
+            for role in node.roles
+        )
+        ir = IRSession(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            roles=roles,
+        )
+        self._sessions[node.name] = ir
+        return ir
+
+    def _visit_topology(self, node: ast.TopologyDefinition) -> IRTopology:
+        """Lower TopologyDefinition → IRTopology (typed graph, deadlock-free by construction)."""
+        edges = tuple(
+            IRTopologyEdge(
+                source_line=edge.line,
+                source_column=edge.column,
+                source=edge.source,
+                target=edge.target,
+                session_ref=edge.session_ref,
+            )
+            for edge in node.edges
+        )
+        ir = IRTopology(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            nodes=tuple(node.nodes),
+            edges=edges,
+        )
+        self._topologies[node.name] = ir
+        return ir
+
+    # ═══════════════════════════════════════════════════════════════
+    #  COGNITIVE IMMUNE SYSTEM VISITORS — Fase 5 (paper_inmune.md)
+    # ═══════════════════════════════════════════════════════════════
+
+    def _visit_immune(self, node: ast.ImmuneDefinition) -> IRImmune:
+        """Lower ImmuneDefinition → IRImmune. Consumed by AnomalyDetector."""
+        ir = IRImmune(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            watch=tuple(node.watch),
+            sensitivity=node.sensitivity,
+            baseline=node.baseline,
+            window=node.window,
+            scope=node.scope,
+            tau=node.tau,
+            decay=node.decay,
+        )
+        self._immunes[node.name] = ir
+        return ir
+
+    def _visit_reflex(self, node: ast.ReflexDefinition) -> IRReflex:
+        """Lower ReflexDefinition → IRReflex. Consumed by ReflexEngine."""
+        ir = IRReflex(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            trigger=node.trigger,
+            on_level=node.on_level,
+            action=node.action,
+            scope=node.scope,
+            sla=node.sla,
+        )
+        self._reflexes[node.name] = ir
+        return ir
+
+    def _visit_heal(self, node: ast.HealDefinition) -> IRHeal:
+        """Lower HealDefinition → IRHeal. Consumed by HealKernel."""
+        ir = IRHeal(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            source=node.source,
+            on_level=node.on_level,
+            mode=node.mode,
+            scope=node.scope,
+            review_sla=node.review_sla,
+            shield_ref=node.shield_ref,
+            max_patches=node.max_patches,
+        )
+        self._heals[node.name] = ir
+        return ir
+
+    # ═══════════════════════════════════════════════════════════════
+    #  UI COGNITIVA VISITORS — Fase 9 (component / view)
+    # ═══════════════════════════════════════════════════════════════
+
+    def _visit_component(self, node: ast.ComponentDefinition) -> IRComponent:
+        """Lower ComponentDefinition → IRComponent."""
+        ir = IRComponent(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            renders=node.renders,
+            via_shield=node.via_shield,
+            on_interact=node.on_interact,
+            render_hint=node.render_hint,
+        )
+        self._components[node.name] = ir
+        return ir
+
+    def _visit_view(self, node: ast.ViewDefinition) -> IRView:
+        """Lower ViewDefinition → IRView."""
+        ir = IRView(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            title=node.title,
+            components=tuple(node.components),
+            route=node.route,
+        )
+        self._views[node.name] = ir
+        return ir

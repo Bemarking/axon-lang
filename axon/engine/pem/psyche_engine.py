@@ -30,7 +30,6 @@ Lifecycle:
 Mathematical references:
     See docs/psychological_epistemic_modeling.md §1-§4.
 
-Author: Ricardo Velit (theoretical framework)
 """
 
 from __future__ import annotations

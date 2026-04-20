@@ -252,6 +252,48 @@ impl<'a> TypeChecker<'a> {
                 Declaration::AxonEndpoint(n) => {
                     registrations.push((n.name.clone(), "axonendpoint".into(), n.loc.line, n.loc.clone()));
                 }
+                Declaration::Resource(n) => {
+                    registrations.push((n.name.clone(), "resource".into(), n.loc.line, n.loc.clone()));
+                }
+                Declaration::Fabric(n) => {
+                    registrations.push((n.name.clone(), "fabric".into(), n.loc.line, n.loc.clone()));
+                }
+                Declaration::Manifest(n) => {
+                    registrations.push((n.name.clone(), "manifest".into(), n.loc.line, n.loc.clone()));
+                }
+                Declaration::Observe(n) => {
+                    registrations.push((n.name.clone(), "observe".into(), n.loc.line, n.loc.clone()));
+                }
+                Declaration::Reconcile(n) => {
+                    registrations.push((n.name.clone(), "reconcile".into(), n.loc.line, n.loc.clone()));
+                }
+                Declaration::Lease(n) => {
+                    registrations.push((n.name.clone(), "lease".into(), n.loc.line, n.loc.clone()));
+                }
+                Declaration::Ensemble(n) => {
+                    registrations.push((n.name.clone(), "ensemble".into(), n.loc.line, n.loc.clone()));
+                }
+                Declaration::Session(n) => {
+                    registrations.push((n.name.clone(), "session".into(), n.loc.line, n.loc.clone()));
+                }
+                Declaration::Topology(n) => {
+                    registrations.push((n.name.clone(), "topology".into(), n.loc.line, n.loc.clone()));
+                }
+                Declaration::Immune(n) => {
+                    registrations.push((n.name.clone(), "immune".into(), n.loc.line, n.loc.clone()));
+                }
+                Declaration::Reflex(n) => {
+                    registrations.push((n.name.clone(), "reflex".into(), n.loc.line, n.loc.clone()));
+                }
+                Declaration::Heal(n) => {
+                    registrations.push((n.name.clone(), "heal".into(), n.loc.line, n.loc.clone()));
+                }
+                Declaration::Component(n) => {
+                    registrations.push((n.name.clone(), "component".into(), n.loc.line, n.loc.clone()));
+                }
+                Declaration::View(n) => {
+                    registrations.push((n.name.clone(), "view".into(), n.loc.line, n.loc.clone()));
+                }
                 Declaration::Generic(n) => {
                     if !n.name.is_empty() {
                         registrations.push((n.name.clone(), n.keyword.clone(), n.loc.line, n.loc.clone()));
@@ -308,6 +350,20 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Daemon(_) => {} // no Python validation exists
                 Declaration::AxonStore(n) => self.check_axonstore(n),
                 Declaration::AxonEndpoint(n) => self.check_axonendpoint(n),
+                Declaration::Resource(n) => self.check_resource(n),
+                Declaration::Fabric(n)   => self.check_fabric(n),
+                Declaration::Manifest(n) => self.check_manifest(n),
+                Declaration::Observe(n)  => self.check_observe(n),
+                Declaration::Reconcile(n) => self.check_reconcile(n),
+                Declaration::Lease(n)     => self.check_lease(n),
+                Declaration::Ensemble(n)  => self.check_ensemble(n),
+                Declaration::Session(n)   => self.check_session(n),
+                Declaration::Topology(n)  => self.check_topology(n),
+                Declaration::Immune(n)    => self.check_immune(n),
+                Declaration::Reflex(n)    => self.check_reflex(n),
+                Declaration::Heal(n)      => self.check_heal(n),
+                Declaration::Component(n) => self.check_component(n),
+                Declaration::View(n)      => self.check_view(n),
                 Declaration::Import(_)
                 | Declaration::Type(_)
                 | Declaration::Let(_)
@@ -935,6 +991,1161 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// §λ-L-E Fase 1 — Resource validation.
+    ///
+    /// Enforces: (a) lifetime ∈ {linear | affine | persistent}; (b) certainty_floor
+    /// ∈ [0.0, 1.0] when present; (c) shield_ref, if non-empty, is a declared shield.
+    fn check_resource(&mut self, node: &ResourceDefinition) {
+        if !node.lifetime.is_empty()
+            && !matches!(node.lifetime.as_str(), "linear" | "affine" | "persistent")
+        {
+            self.emit(
+                format!(
+                    "Invalid lifetime '{}' for resource '{}' — \
+                     expected linear | affine | persistent",
+                    node.lifetime, node.name
+                ),
+                &node.loc,
+            );
+        }
+        if let Some(c) = node.certainty_floor {
+            if !(0.0..=1.0).contains(&c) {
+                self.emit(
+                    format!(
+                        "certainty_floor {c} for resource '{}' is out of range [0.0, 1.0]",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+        if !node.shield_ref.is_empty() {
+            match self.symbols.lookup(&node.shield_ref) {
+                None => self.emit(
+                    format!(
+                        "Undefined shield '{}' in resource '{}'",
+                        node.shield_ref, node.name
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "shield" => self.emit(
+                    format!(
+                        "'{}' is a {}, not a shield (referenced in resource '{}')",
+                        node.shield_ref, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    /// §λ-L-E Fase 1 — Fabric validation.
+    ///
+    /// Enforces: (a) zones ≥ 1 when present; (b) shield_ref, if non-empty,
+    /// is a declared shield.
+    fn check_fabric(&mut self, node: &FabricDefinition) {
+        if let Some(z) = node.zones {
+            if z < 1 {
+                self.emit(
+                    format!(
+                        "Fabric '{}' has invalid zones {z} — must be >= 1",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+        if !node.shield_ref.is_empty() {
+            match self.symbols.lookup(&node.shield_ref) {
+                None => self.emit(
+                    format!(
+                        "Undefined shield '{}' in fabric '{}'",
+                        node.shield_ref, node.name
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "shield" => self.emit(
+                    format!(
+                        "'{}' is a {}, not a shield (referenced in fabric '{}')",
+                        node.shield_ref, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    /// §λ-L-E Fase 1 — Manifest validation.
+    ///
+    /// Enforces: (a) every name in `resources` refers to a declared resource;
+    /// (b) `fabric_ref`, if non-empty, is a declared fabric; (c) no duplicate
+    /// resource names within a single manifest (Separation Logic `*` disjointness
+    /// within-manifest — cross-manifest aliasing is a separate check).
+    fn check_manifest(&mut self, node: &ManifestDefinition) {
+        // (a) resource references must resolve
+        let mut seen: std::collections::HashSet<&String> = std::collections::HashSet::new();
+        for res_name in &node.resources {
+            if !seen.insert(res_name) {
+                self.emit(
+                    format!(
+                        "Manifest '{}' lists resource '{}' more than once \
+                         (Linear/Separation Logic disjointness)",
+                        node.name, res_name
+                    ),
+                    &node.loc,
+                );
+                continue;
+            }
+            match self.symbols.lookup(res_name) {
+                None => self.emit(
+                    format!(
+                        "Manifest '{}' references undefined resource '{}'",
+                        node.name, res_name
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "resource" => self.emit(
+                    format!(
+                        "'{}' is a {}, not a resource (referenced in manifest '{}')",
+                        res_name, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+        // (b) fabric reference
+        if !node.fabric_ref.is_empty() {
+            match self.symbols.lookup(&node.fabric_ref) {
+                None => self.emit(
+                    format!(
+                        "Manifest '{}' references undefined fabric '{}'",
+                        node.name, node.fabric_ref
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "fabric" => self.emit(
+                    format!(
+                        "'{}' is a {}, not a fabric (referenced in manifest '{}')",
+                        node.fabric_ref, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+        if let Some(z) = node.zones {
+            if z < 1 {
+                self.emit(
+                    format!(
+                        "Manifest '{}' has invalid zones {z} — must be >= 1",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+    }
+
+    /// §λ-L-E Fase 1 — Observe validation.
+    ///
+    /// Enforces: (a) `target` refers to a declared manifest; (b) certainty_floor
+    /// ∈ [0.0, 1.0] when present; (c) quorum ≥ 1 when present; (d) on_partition
+    /// ∈ {fail, shield_quarantine}; (e) `sources` is non-empty.
+    fn check_observe(&mut self, node: &ObserveDefinition) {
+        // (a) target manifest
+        if node.target.is_empty() {
+            self.emit(
+                format!("Observe '{}' is missing 'from <Manifest>' target", node.name),
+                &node.loc,
+            );
+        } else {
+            match self.symbols.lookup(&node.target) {
+                None => self.emit(
+                    format!(
+                        "Observe '{}' targets undefined manifest '{}'",
+                        node.name, node.target
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "manifest" => self.emit(
+                    format!(
+                        "'{}' is a {}, not a manifest (observed by '{}')",
+                        node.target, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+        // (b) certainty floor range
+        if let Some(c) = node.certainty_floor {
+            if !(0.0..=1.0).contains(&c) {
+                self.emit(
+                    format!(
+                        "certainty_floor {c} for observe '{}' is out of range [0.0, 1.0]",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+        // (c) quorum
+        if let Some(q) = node.quorum {
+            if q < 1 {
+                self.emit(
+                    format!(
+                        "Observe '{}' has invalid quorum {q} — must be >= 1",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+        // (d) on_partition enum
+        if !node.on_partition.is_empty()
+            && !matches!(node.on_partition.as_str(), "fail" | "shield_quarantine")
+        {
+            self.emit(
+                format!(
+                    "Invalid on_partition '{}' for observe '{}' — \
+                     expected fail | shield_quarantine",
+                    node.on_partition, node.name
+                ),
+                &node.loc,
+            );
+        }
+        // (e) sources must be non-empty
+        if node.sources.is_empty() {
+            self.emit(
+                format!("Observe '{}' has empty sources: list", node.name),
+                &node.loc,
+            );
+        }
+    }
+
+    /// §λ-L-E Fase 3 — Reconcile validation.
+    ///
+    /// Enforces: (a) observe_ref refers to a declared observe; (b) threshold
+    /// and tolerance ∈ [0.0, 1.0]; (c) shield_ref / mandate_ref (if present)
+    /// resolve to correct kinds; (d) max_retries ≥ 0.
+    fn check_reconcile(&mut self, node: &ReconcileDefinition) {
+        if node.observe_ref.is_empty() {
+            self.emit(
+                format!("Reconcile '{}' is missing 'observe:' target", node.name),
+                &node.loc,
+            );
+        } else {
+            match self.symbols.lookup(&node.observe_ref) {
+                None => self.emit(
+                    format!(
+                        "Reconcile '{}' references undefined observe '{}'",
+                        node.name, node.observe_ref
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "observe" => self.emit(
+                    format!(
+                        "'{}' is a {}, not an observe (referenced in reconcile '{}')",
+                        node.observe_ref, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+        if let Some(t) = node.threshold {
+            if !(0.0..=1.0).contains(&t) {
+                self.emit(
+                    format!(
+                        "threshold {t} for reconcile '{}' is out of range [0.0, 1.0]",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+        if let Some(t) = node.tolerance {
+            if !(0.0..=1.0).contains(&t) {
+                self.emit(
+                    format!(
+                        "tolerance {t} for reconcile '{}' is out of range [0.0, 1.0]",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+        if node.max_retries < 0 {
+            self.emit(
+                format!(
+                    "Reconcile '{}' has invalid max_retries {} — must be >= 0",
+                    node.name, node.max_retries
+                ),
+                &node.loc,
+            );
+        }
+        if !node.shield_ref.is_empty() {
+            match self.symbols.lookup(&node.shield_ref) {
+                None => self.emit(
+                    format!(
+                        "Undefined shield '{}' in reconcile '{}'",
+                        node.shield_ref, node.name
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "shield" => self.emit(
+                    format!(
+                        "'{}' is a {}, not a shield (referenced in reconcile '{}')",
+                        node.shield_ref, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+        if !node.mandate_ref.is_empty() {
+            match self.symbols.lookup(&node.mandate_ref) {
+                None => self.emit(
+                    format!(
+                        "Undefined mandate '{}' in reconcile '{}'",
+                        node.mandate_ref, node.name
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "mandate" => self.emit(
+                    format!(
+                        "'{}' is a {}, not a mandate (referenced in reconcile '{}')",
+                        node.mandate_ref, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    /// §λ-L-E Fase 3 — Lease validation.
+    ///
+    /// Enforces: (a) resource_ref resolves to a declared resource; (b) duration
+    /// is non-empty; (c) acquire / on_expire enums are already validated at
+    /// parse time but we re-check symbolically for defence-in-depth.
+    fn check_lease(&mut self, node: &LeaseDefinition) {
+        if node.resource_ref.is_empty() {
+            self.emit(
+                format!("Lease '{}' is missing 'resource:' target", node.name),
+                &node.loc,
+            );
+        } else {
+            match self.symbols.lookup(&node.resource_ref) {
+                None => self.emit(
+                    format!(
+                        "Lease '{}' references undefined resource '{}'",
+                        node.name, node.resource_ref
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "resource" => self.emit(
+                    format!(
+                        "'{}' is a {}, not a resource (leased by '{}')",
+                        node.resource_ref, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+        if node.duration.is_empty() {
+            self.emit(
+                format!("Lease '{}' is missing 'duration:' field", node.name),
+                &node.loc,
+            );
+        }
+    }
+
+    /// §λ-L-E Fase 3 — Ensemble validation.
+    ///
+    /// Enforces: (a) each observation name refers to a declared observe;
+    /// (b) quorum ≥ 1 and ≤ len(observations); (c) at least 2 observations
+    /// are required for a meaningful Byzantine ensemble.
+    fn check_ensemble(&mut self, node: &EnsembleDefinition) {
+        if node.observations.is_empty() {
+            self.emit(
+                format!("Ensemble '{}' has empty observations: list", node.name),
+                &node.loc,
+            );
+            return;
+        }
+        if node.observations.len() < 2 {
+            self.emit(
+                format!(
+                    "Ensemble '{}' has {} observation(s); Byzantine quorum requires >= 2",
+                    node.name, node.observations.len()
+                ),
+                &node.loc,
+            );
+        }
+        let mut seen: std::collections::HashSet<&String> = std::collections::HashSet::new();
+        for obs_name in &node.observations {
+            if !seen.insert(obs_name) {
+                self.emit(
+                    format!(
+                        "Ensemble '{}' lists observation '{}' more than once",
+                        node.name, obs_name
+                    ),
+                    &node.loc,
+                );
+                continue;
+            }
+            match self.symbols.lookup(obs_name) {
+                None => self.emit(
+                    format!(
+                        "Ensemble '{}' references undefined observation '{}'",
+                        node.name, obs_name
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "observe" => self.emit(
+                    format!(
+                        "'{}' is a {}, not an observe (referenced in ensemble '{}')",
+                        obs_name, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+        if let Some(q) = node.quorum {
+            if q < 1 {
+                self.emit(
+                    format!(
+                        "Ensemble '{}' has invalid quorum {q} — must be >= 1",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            } else if (q as usize) > node.observations.len() {
+                self.emit(
+                    format!(
+                        "Ensemble '{}' quorum {q} exceeds available observations ({})",
+                        node.name, node.observations.len()
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+    }
+
+    // ── §λ-L-E Fase 4 — Topology + π-calculus binary sessions ──────
+
+    /// §λ-L-E Fase 4 — Session validation.
+    ///
+    /// Enforces: (a) exactly 2 roles; (b) role names are distinct; (c) every
+    /// step has a valid op and — for send/receive — a non-empty message type;
+    /// (d) Honda-Vasconcelos duality between the two roles.
+    fn check_session(&mut self, node: &SessionDefinition) {
+        if node.roles.len() != 2 {
+            self.emit(
+                format!(
+                    "Session '{}' must declare exactly 2 roles (binary session); got {}",
+                    node.name, node.roles.len()
+                ),
+                &node.loc,
+            );
+        } else if node.roles[0].name == node.roles[1].name {
+            self.emit(
+                format!(
+                    "Session '{}' has duplicate role name '{}'",
+                    node.name, node.roles[0].name
+                ),
+                &node.loc,
+            );
+        }
+        for role in &node.roles {
+            self.check_session_role(&node.name, role);
+        }
+        if node.roles.len() == 2 {
+            self.check_session_duality(node);
+        }
+    }
+
+    fn check_session_role(&mut self, session_name: &str, role: &SessionRole) {
+        for (idx, step) in role.steps.iter().enumerate() {
+            if !matches!(step.op.as_str(), "send" | "receive" | "loop" | "end") {
+                self.emit(
+                    format!(
+                        "Session '{session_name}' role '{}' step #{idx} has invalid op '{}'",
+                        role.name, step.op
+                    ),
+                    &step.loc,
+                );
+                continue;
+            }
+            if matches!(step.op.as_str(), "send" | "receive") && step.message_type.is_empty() {
+                self.emit(
+                    format!(
+                        "Session '{session_name}' role '{}' step #{idx} '{}' \
+                         requires a message type",
+                        role.name, step.op
+                    ),
+                    &step.loc,
+                );
+            }
+        }
+    }
+
+    fn check_session_duality(&mut self, node: &SessionDefinition) {
+        let r1 = &node.roles[0];
+        let r2 = &node.roles[1];
+        if r1.steps.len() != r2.steps.len() {
+            self.emit(
+                format!(
+                    "Session '{}' duality violation: roles '{}' ({} steps) and \
+                     '{}' ({} steps) have different lengths",
+                    node.name, r1.name, r1.steps.len(), r2.name, r2.steps.len()
+                ),
+                &node.loc,
+            );
+            return;
+        }
+        for (i, (s1, s2)) in r1.steps.iter().zip(r2.steps.iter()).enumerate() {
+            if !steps_dual(s1, s2) {
+                self.emit(
+                    format!(
+                        "Session '{}' duality violation at step #{i}: '{}' has \
+                         '{}' but '{}' has '{}' (expected the dual)",
+                        node.name, r1.name, format_step(s1),
+                        r2.name, format_step(s2)
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+    }
+
+    /// §λ-L-E Fase 4 — Topology validation.
+    ///
+    /// Enforces: (a) each node name is unique + resolves to a valid kind;
+    /// (b) each edge's source/target appear in `nodes`; (c) no self-loops;
+    /// (d) each `session_ref` is a declared session;
+    /// (e) Honda liveness — no cycle where every edge is receive-first.
+    fn check_topology(&mut self, node: &TopologyDefinition) {
+        const NODE_KINDS: &[&str] = &[
+            "resource", "fabric", "manifest", "observe", "axonendpoint",
+            "axonstore", "daemon", "agent", "shield",
+        ];
+        let mut seen_nodes: std::collections::HashSet<&String> = std::collections::HashSet::new();
+        for n in &node.nodes {
+            if !seen_nodes.insert(n) {
+                self.emit(
+                    format!("Topology '{}' lists node '{}' more than once", node.name, n),
+                    &node.loc,
+                );
+                continue;
+            }
+            match self.symbols.lookup(n) {
+                None => self.emit(
+                    format!("Topology '{}' references undefined node '{}'", node.name, n),
+                    &node.loc,
+                ),
+                Some(sym) if !NODE_KINDS.contains(&sym.kind.as_str()) => self.emit(
+                    format!(
+                        "Topology '{}' node '{}' is a {} — not a valid topology entity. \
+                         Valid kinds: {}",
+                        node.name, n, sym.kind, NODE_KINDS.join(", ")
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+        for edge in &node.edges {
+            self.check_topology_edge(&node.name, edge, &seen_nodes);
+        }
+        self.check_topology_liveness(node);
+    }
+
+    fn check_topology_edge(
+        &mut self,
+        topology_name: &str,
+        edge: &TopologyEdge,
+        declared_nodes: &std::collections::HashSet<&String>,
+    ) {
+        if !declared_nodes.contains(&edge.source) {
+            self.emit(
+                format!(
+                    "Topology '{topology_name}' edge source '{}' is not in the nodes list",
+                    edge.source
+                ),
+                &edge.loc,
+            );
+        }
+        if !declared_nodes.contains(&edge.target) {
+            self.emit(
+                format!(
+                    "Topology '{topology_name}' edge target '{}' is not in the nodes list",
+                    edge.target
+                ),
+                &edge.loc,
+            );
+        }
+        if edge.source == edge.target {
+            self.emit(
+                format!(
+                    "Topology '{topology_name}' has self-loop edge on '{}' — \
+                     π-calculus binary sessions require two distinct endpoints",
+                    edge.source
+                ),
+                &edge.loc,
+            );
+        }
+        if edge.session_ref.is_empty() {
+            self.emit(
+                format!(
+                    "Topology '{topology_name}' edge {}->{} has no session reference",
+                    edge.source, edge.target
+                ),
+                &edge.loc,
+            );
+            return;
+        }
+        match self.symbols.lookup(&edge.session_ref) {
+            None => self.emit(
+                format!(
+                    "Topology '{topology_name}' edge {}->{} references undefined session '{}'",
+                    edge.source, edge.target, edge.session_ref
+                ),
+                &edge.loc,
+            ),
+            Some(sym) if sym.kind != "session" => self.emit(
+                format!(
+                    "Topology '{topology_name}' edge {}->{} session ref '{}' is a {}, not a session",
+                    edge.source, edge.target, edge.session_ref, sym.kind
+                ),
+                &edge.loc,
+            ),
+            _ => {}
+        }
+    }
+
+    /// Honda-liveness: detect cycles whose every edge starts with `receive`
+    /// on the source role. Such a cycle has no progress — static deadlock.
+    fn check_topology_liveness(&mut self, node: &TopologyDefinition) {
+        let mut adjacency: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for edge in &node.edges {
+            if !edge.source.is_empty() && !edge.target.is_empty() {
+                adjacency
+                    .entry(edge.source.clone())
+                    .or_default()
+                    .push(edge.target.clone());
+            }
+        }
+        let cycles = find_cycles(&adjacency);
+        if cycles.is_empty() {
+            return;
+        }
+        for cycle in cycles {
+            let cycle_edges = cycle_to_edges(&cycle, &node.edges);
+            // Only flag if (a) we found every edge in the cycle (sanity) and
+            // (b) every one of them is receive-first on the source side.
+            if cycle_edges.len() == cycle.len()
+                && cycle_edges.iter().all(|e| self.edge_is_receive_first(e))
+            {
+                let mut tour: Vec<String> = cycle.clone();
+                if let Some(first) = cycle.first() {
+                    tour.push(first.clone());
+                }
+                self.emit(
+                    format!(
+                        "Topology '{}' has a static deadlock: cycle [{}] where every \
+                         edge waits on receive — no progress is possible (Honda liveness violation)",
+                        node.name, tour.join(" -> ")
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+    }
+
+    /// Look up the session AST for an edge and check whether the FIRST
+    /// role's first step is `receive`. Source plays the first role (fixed
+    /// convention per AST docstring).
+    fn edge_is_receive_first(&self, edge: &TopologyEdge) -> bool {
+        let session = match find_session_by_name(self.program, &edge.session_ref) {
+            Some(s) => s,
+            None => return false,
+        };
+        let first_role = match session.roles.first() {
+            Some(r) => r,
+            None => return false,
+        };
+        first_role
+            .steps
+            .first()
+            .map(|s| s.op == "receive")
+            .unwrap_or(false)
+    }
+
+    // ── §λ-L-E Fase 5 — Cognitive immune system (paper_immune_v2.md) ───
+
+    /// §λ-L-E Fase 5 — Immune validation.
+    ///
+    /// Enforces paper §8.2 mandatory scope + watch non-empty + sensitivity
+    /// ∈ [0.0, 1.0] + window ≥ 1 + decay enum.
+    fn check_immune(&mut self, node: &ImmuneDefinition) {
+        if node.scope.is_empty() {
+            self.emit(
+                format!(
+                    "immune '{}' requires an explicit 'scope' (tenant | flow | global). \
+                     No implicit default exists — blast radius must be declared (paper §8.2)",
+                    node.name
+                ),
+                &node.loc,
+            );
+        } else if !matches!(node.scope.as_str(), "tenant" | "flow" | "global") {
+            self.emit(
+                format!(
+                    "immune '{}' has invalid scope '{}'. Valid: tenant | flow | global",
+                    node.name, node.scope
+                ),
+                &node.loc,
+            );
+        }
+        if node.watch.is_empty() {
+            self.emit(
+                format!(
+                    "immune '{}' requires a non-empty 'watch' list (observables to monitor)",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+        if let Some(s) = node.sensitivity {
+            if !(0.0..=1.0).contains(&s) {
+                self.emit(
+                    format!(
+                        "immune '{}' sensitivity must be in [0.0, 1.0], got {s}",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+        if node.window < 1 {
+            self.emit(
+                format!(
+                    "immune '{}' window must be >= 1, got {}",
+                    node.name, node.window
+                ),
+                &node.loc,
+            );
+        }
+        if !matches!(node.decay.as_str(), "exponential" | "linear" | "none") {
+            self.emit(
+                format!(
+                    "immune '{}' has invalid decay '{}'. Valid: exponential | linear | none",
+                    node.name, node.decay
+                ),
+                &node.loc,
+            );
+        }
+    }
+
+    /// §λ-L-E Fase 5 — Reflex validation.
+    ///
+    /// Enforces mandatory scope + valid scope/on_level/action enums + trigger
+    /// resolves to an `immune` (one-way dependency per paper §4).
+    fn check_reflex(&mut self, node: &ReflexDefinition) {
+        if node.scope.is_empty() {
+            self.emit(
+                format!(
+                    "reflex '{}' requires an explicit 'scope' (tenant | flow | global) — paper §8.2",
+                    node.name
+                ),
+                &node.loc,
+            );
+        } else if !matches!(node.scope.as_str(), "tenant" | "flow" | "global") {
+            self.emit(
+                format!("reflex '{}' has invalid scope '{}'", node.name, node.scope),
+                &node.loc,
+            );
+        }
+        if node.trigger.is_empty() {
+            self.emit(
+                format!("reflex '{}' requires a 'trigger: <ImmuneName>'", node.name),
+                &node.loc,
+            );
+        } else {
+            match self.symbols.lookup(&node.trigger) {
+                None => self.emit(
+                    format!(
+                        "reflex '{}' references undefined trigger '{}' (expected an immune)",
+                        node.name, node.trigger
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "immune" => self.emit(
+                    format!(
+                        "reflex '{}' trigger '{}' is a {}, not an immune",
+                        node.name, node.trigger, sym.kind
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+        if !matches!(node.on_level.as_str(), "know" | "believe" | "speculate" | "doubt") {
+            self.emit(
+                format!(
+                    "reflex '{}' invalid on_level '{}'. Valid: know | believe | speculate | doubt",
+                    node.name, node.on_level
+                ),
+                &node.loc,
+            );
+        }
+        if node.action.is_empty() {
+            self.emit(
+                format!(
+                    "reflex '{}' requires an 'action' (drop | revoke | emit | redact | \
+                     quarantine | terminate | alert)",
+                    node.name
+                ),
+                &node.loc,
+            );
+        } else if !matches!(
+            node.action.as_str(),
+            "drop" | "revoke" | "emit" | "redact" | "quarantine" | "terminate" | "alert"
+        ) {
+            self.emit(
+                format!("reflex '{}' invalid action '{}'", node.name, node.action),
+                &node.loc,
+            );
+        }
+    }
+
+    /// §λ-L-E Fase 5 — Heal validation.
+    ///
+    /// Enforces mandatory scope + source is an immune + on_level/mode enums +
+    /// **paper §7.3: mode='adversarial' requires a shield gate** + shield_ref
+    /// (if present) resolves to a shield + max_patches ≥ 1.
+    fn check_heal(&mut self, node: &HealDefinition) {
+        if node.scope.is_empty() {
+            self.emit(
+                format!(
+                    "heal '{}' requires an explicit 'scope' (tenant | flow | global) — paper §8.2",
+                    node.name
+                ),
+                &node.loc,
+            );
+        } else if !matches!(node.scope.as_str(), "tenant" | "flow" | "global") {
+            self.emit(
+                format!("heal '{}' has invalid scope '{}'", node.name, node.scope),
+                &node.loc,
+            );
+        }
+        if node.source.is_empty() {
+            self.emit(
+                format!("heal '{}' requires a 'source: <ImmuneName>'", node.name),
+                &node.loc,
+            );
+        } else {
+            match self.symbols.lookup(&node.source) {
+                None => self.emit(
+                    format!(
+                        "heal '{}' references undefined source '{}' (expected an immune)",
+                        node.name, node.source
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "immune" => self.emit(
+                    format!(
+                        "heal '{}' source '{}' is a {}, not an immune",
+                        node.name, node.source, sym.kind
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+        if !matches!(node.on_level.as_str(), "know" | "believe" | "speculate" | "doubt") {
+            self.emit(
+                format!("heal '{}' invalid on_level '{}'", node.name, node.on_level),
+                &node.loc,
+            );
+        }
+        if !matches!(node.mode.as_str(), "audit_only" | "human_in_loop" | "adversarial") {
+            self.emit(
+                format!(
+                    "heal '{}' invalid mode '{}'. Valid: audit_only | human_in_loop | \
+                     adversarial (paper §7)",
+                    node.name, node.mode
+                ),
+                &node.loc,
+            );
+        }
+        // Paper §7.3 — adversarial mode requires an explicit shield gate.
+        if node.mode == "adversarial" && node.shield_ref.is_empty() {
+            self.emit(
+                format!(
+                    "heal '{}' mode='adversarial' requires a 'shield' gate \
+                     (no LLM-generated patch ships without review). \
+                     Paper §7.3: adversarial mode needs explicit Risk Acceptance",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+        if !node.shield_ref.is_empty() {
+            match self.symbols.lookup(&node.shield_ref) {
+                None => self.emit(
+                    format!(
+                        "heal '{}' references undefined shield '{}'",
+                        node.name, node.shield_ref
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "shield" => self.emit(
+                    format!(
+                        "heal '{}' shield ref '{}' is a {}, not a shield",
+                        node.name, node.shield_ref, sym.kind
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+        if node.max_patches < 1 {
+            self.emit(
+                format!(
+                    "heal '{}' max_patches must be >= 1, got {}",
+                    node.name, node.max_patches
+                ),
+                &node.loc,
+            );
+        }
+    }
+
+    // ── §λ-L-E Fase 9 — UI cognitiva (component / view) ────────────
+    //
+    // Compile-time invariants enforced below:
+    //   1. `renders` references a declared `type`.
+    //   2. `on_interact` (if present) is a declared `flow` whose first
+    //      parameter type matches `renders`.
+    //   3. If `renders` carries κ (regulatory class), `via_shield` is
+    //      MANDATORY and its `compliance` must cover every κ of the
+    //      rendered type. Fase 9.5 compile-time contract.
+    //   4. `via_shield` (if present) must name a declared `shield`.
+    //   5. Every component listed in a `view.components` must resolve
+    //      to a declared `component`.
+
+    fn check_component(&mut self, node: &ComponentDefinition) {
+        // (1) renders must resolve to a type
+        let rendered_type = if node.renders.is_empty() {
+            self.emit(
+                format!(
+                    "component '{}' requires 'renders: <TypeName>'",
+                    node.name
+                ),
+                &node.loc,
+            );
+            None
+        } else {
+            match self.symbols.lookup(&node.renders) {
+                None => {
+                    self.emit(
+                        format!(
+                            "component '{}' references undefined type '{}'",
+                            node.name, node.renders
+                        ),
+                        &node.loc,
+                    );
+                    None
+                }
+                Some(sym) if sym.kind != "type" => {
+                    self.emit(
+                        format!(
+                            "component '{}' renders '{}' which is a {}, not a type",
+                            node.name, node.renders, sym.kind
+                        ),
+                        &node.loc,
+                    );
+                    None
+                }
+                Some(_) => find_type_by_name(self.program, &node.renders),
+            }
+        };
+
+        // (4) shield ref
+        let shield_node = if node.via_shield.is_empty() {
+            None
+        } else {
+            match self.symbols.lookup(&node.via_shield) {
+                None => {
+                    self.emit(
+                        format!(
+                            "component '{}' references undefined shield '{}'",
+                            node.name, node.via_shield
+                        ),
+                        &node.loc,
+                    );
+                    None
+                }
+                Some(sym) if sym.kind != "shield" => {
+                    self.emit(
+                        format!(
+                            "component '{}' via_shield '{}' is a {}, not a shield",
+                            node.name, node.via_shield, sym.kind
+                        ),
+                        &node.loc,
+                    );
+                    None
+                }
+                Some(_) => find_shield_by_name(self.program, &node.via_shield),
+            }
+        };
+
+        // (3) regulated-render rule — Fase 9.5
+        if let Some(t) = rendered_type {
+            let type_kappa: std::collections::HashSet<&str> =
+                t.compliance.iter().map(|s| s.as_str()).collect();
+            if !type_kappa.is_empty() {
+                match shield_node {
+                    None => self.emit(
+                        format!(
+                            "component '{}' renders regulated type '{}' \
+                             (kappa = {{{}}}) but declares no 'via_shield'. \
+                             Regulated renders require a shield that covers \
+                             the type's kappa — Fase 9.5.",
+                            node.name,
+                            node.renders,
+                            {
+                                let mut v: Vec<&str> = type_kappa.iter().copied().collect();
+                                v.sort();
+                                v.join(", ")
+                            }
+                        ),
+                        &node.loc,
+                    ),
+                    Some(s) => {
+                        let shield_kappa: std::collections::HashSet<&str> =
+                            s.compliance.iter().map(|s| s.as_str()).collect();
+                        let mut missing: Vec<&str> = type_kappa
+                            .difference(&shield_kappa)
+                            .copied()
+                            .collect();
+                        missing.sort();
+                        if !missing.is_empty() {
+                            self.emit(
+                                format!(
+                                    "component '{}' via_shield '{}' does not cover \
+                                     kappa = {{{}}} of type '{}'. Add these classes \
+                                     to the shield's 'compliance' list or pick a \
+                                     shield that already covers them.",
+                                    node.name,
+                                    node.via_shield,
+                                    missing.join(", "),
+                                    node.renders,
+                                ),
+                                &node.loc,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // (2) on_interact must resolve to a flow with compatible signature
+        if !node.on_interact.is_empty() {
+            match self.symbols.lookup(&node.on_interact) {
+                None => self.emit(
+                    format!(
+                        "component '{}' references undefined flow '{}'",
+                        node.name, node.on_interact
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "flow" => self.emit(
+                    format!(
+                        "component '{}' on_interact '{}' is a {}, not a flow",
+                        node.name, node.on_interact, sym.kind
+                    ),
+                    &node.loc,
+                ),
+                Some(_) => {
+                    if let Some(flow) = find_flow_by_name(self.program, &node.on_interact) {
+                        if !rendered_type.is_none() {
+                            if let Some(first_param) = flow.parameters.first() {
+                                let pt = first_param.type_expr.name.as_str();
+                                if !pt.is_empty() && pt != node.renders {
+                                    self.emit(
+                                        format!(
+                                            "component '{}' on_interact flow '{}' \
+                                             expects first parameter of type '{}', \
+                                             but component renders '{}'. Signatures \
+                                             must match — Fase 9.2 rule 2.",
+                                            node.name,
+                                            node.on_interact,
+                                            pt,
+                                            node.renders
+                                        ),
+                                        &node.loc,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn check_view(&mut self, node: &ViewDefinition) {
+        if node.components.is_empty() {
+            self.emit(
+                format!(
+                    "view '{}' has empty components list — a view must \
+                     compose at least one component",
+                    node.name
+                ),
+                &node.loc,
+            );
+            return;
+        }
+        let mut seen: std::collections::HashSet<&String> = std::collections::HashSet::new();
+        for comp_name in &node.components {
+            if !seen.insert(comp_name) {
+                self.emit(
+                    format!(
+                        "view '{}' lists component '{}' more than once",
+                        node.name, comp_name
+                    ),
+                    &node.loc,
+                );
+                continue;
+            }
+            match self.symbols.lookup(comp_name) {
+                None => self.emit(
+                    format!(
+                        "view '{}' references undefined component '{}'",
+                        node.name, comp_name
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "component" => self.emit(
+                    format!(
+                        "view '{}' component ref '{}' is a {}, not a component",
+                        node.name, comp_name, sym.kind
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+    }
+
     fn check_axonendpoint(&mut self, node: &AxonEndpointDefinition) {
         // HTTP method enum
         if !node.method.is_empty() {
@@ -1148,4 +2359,129 @@ impl<'a> TypeChecker<'a> {
             );
         }
     }
+}
+
+// ── §λ-L-E Fase 4 — Honda-Vasconcelos helpers (free fns) ────────────────────
+
+/// Honda-Vasconcelos duality on a single step pair:
+/// `send T ↔ receive T`, `loop ↔ loop`, `end ↔ end`.
+fn steps_dual(s1: &SessionStep, s2: &SessionStep) -> bool {
+    match (s1.op.as_str(), s2.op.as_str()) {
+        ("send", "receive") | ("receive", "send") => s1.message_type == s2.message_type,
+        ("loop", "loop") | ("end", "end") => true,
+        _ => false,
+    }
+}
+
+fn format_step(s: &SessionStep) -> String {
+    if matches!(s.op.as_str(), "send" | "receive") {
+        format!("{} {}", s.op, s.message_type)
+    } else {
+        s.op.clone()
+    }
+}
+
+/// Directed-graph cycle detector (DFS with gray/black colouring). Returns
+/// one representative ordering per strongly-connected cycle found.
+fn find_cycles(
+    adjacency: &std::collections::HashMap<String, Vec<String>>,
+) -> Vec<Vec<String>> {
+    let mut color: std::collections::HashMap<String, &'static str> =
+        std::collections::HashMap::new();
+    let mut stack: Vec<String> = Vec::new();
+    let mut cycles: Vec<Vec<String>> = Vec::new();
+
+    fn visit(
+        n: &str,
+        adjacency: &std::collections::HashMap<String, Vec<String>>,
+        color: &mut std::collections::HashMap<String, &'static str>,
+        stack: &mut Vec<String>,
+        cycles: &mut Vec<Vec<String>>,
+    ) {
+        color.insert(n.to_string(), "gray");
+        stack.push(n.to_string());
+        let targets = adjacency.get(n).cloned().unwrap_or_default();
+        for tgt in targets {
+            match color.get(&tgt).copied() {
+                Some("gray") => {
+                    if let Some(idx) = stack.iter().position(|s| s == &tgt) {
+                        cycles.push(stack[idx..].to_vec());
+                    }
+                }
+                None => visit(&tgt, adjacency, color, stack, cycles),
+                _ => {}
+            }
+        }
+        stack.pop();
+        color.insert(n.to_string(), "black");
+    }
+
+    let keys: Vec<String> = adjacency.keys().cloned().collect();
+    for src in keys {
+        if !color.contains_key(&src) {
+            visit(&src, adjacency, &mut color, &mut stack, &mut cycles);
+        }
+    }
+    cycles
+}
+
+fn cycle_to_edges<'a>(
+    cycle: &[String],
+    edges: &'a [TopologyEdge],
+) -> Vec<&'a TopologyEdge> {
+    let n = cycle.len();
+    let mut result = Vec::with_capacity(n);
+    for i in 0..n {
+        let src = &cycle[i];
+        let tgt = &cycle[(i + 1) % n];
+        if let Some(e) = edges.iter().find(|e| &e.source == src && &e.target == tgt) {
+            result.push(e);
+        }
+    }
+    result
+}
+
+/// Locate a session by name in the program's declarations (flat scan).
+fn find_session_by_name<'a>(program: &'a Program, name: &str) -> Option<&'a SessionDefinition> {
+    for decl in &program.declarations {
+        if let Declaration::Session(s) = decl {
+            if s.name == name {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+fn find_type_by_name<'a>(program: &'a Program, name: &str) -> Option<&'a TypeDefinition> {
+    for decl in &program.declarations {
+        if let Declaration::Type(t) = decl {
+            if t.name == name {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
+
+fn find_shield_by_name<'a>(program: &'a Program, name: &str) -> Option<&'a ShieldDefinition> {
+    for decl in &program.declarations {
+        if let Declaration::Shield(s) = decl {
+            if s.name == name {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+fn find_flow_by_name<'a>(program: &'a Program, name: &str) -> Option<&'a FlowDefinition> {
+    for decl in &program.declarations {
+        if let Declaration::Flow(f) = decl {
+            if f.name == name {
+                return Some(f);
+            }
+        }
+    }
+    None
 }

@@ -52,8 +52,290 @@ pub enum Declaration {
     Daemon(DaemonDefinition),
     AxonStore(AxonStoreDefinition),
     AxonEndpoint(AxonEndpointDefinition),
+    /// §λ-L-E Fase 1 — I/O cognitivo primitives.
+    Resource(ResourceDefinition),
+    Fabric(FabricDefinition),
+    Manifest(ManifestDefinition),
+    Observe(ObserveDefinition),
+    /// §λ-L-E Fase 3 — Control cognitivo primitives.
+    Reconcile(ReconcileDefinition),
+    Lease(LeaseDefinition),
+    Ensemble(EnsembleDefinition),
+    /// §λ-L-E Fase 4 — Topology + π-calculus binary sessions.
+    Session(SessionDefinition),
+    Topology(TopologyDefinition),
+    /// §λ-L-E Fase 5 — Cognitive immune system (per docs/paper_immune_v2.md).
+    Immune(ImmuneDefinition),
+    Reflex(ReflexDefinition),
+    Heal(HealDefinition),
+    /// §λ-L-E Fase 9 — UI cognitiva declarativa.
+    Component(ComponentDefinition),
+    View(ViewDefinition),
     /// Tier 3+ declarations parsed structurally (balanced braces, no detailed AST).
     Generic(GenericDeclaration),
+}
+
+// ── §λ-L-E Fase 1 — Resource primitive ───────────────────────────────────────
+
+/// `resource Name { kind, endpoint, capacity, lifetime, certainty_floor, shield }`
+///
+/// An infrastructure resource declared as a linear, affine, or persistent
+/// token. Linear/affine resources cannot be aliased across manifests
+/// (Separation Logic `*` disjointness).
+#[derive(Debug, Default)]
+pub struct ResourceDefinition {
+    pub name: String,
+    pub kind: String,                 // postgres | redis | s3 | vpc | gpu | compute | file | custom
+    pub endpoint: String,             // connection URI
+    pub capacity: Option<i64>,        // pool size / instance count hint
+    pub lifetime: String,             // linear | affine | persistent (default: affine)
+    pub certainty_floor: Option<f64>, // epistemic gate c ∈ [0.0, 1.0]
+    pub shield_ref: String,           // optional shield reference
+    pub loc: Loc,
+}
+
+/// `fabric Name { provider, region, zones, ephemeral, shield }`
+///
+/// A tagged substrate — the topological container where resources are
+/// provisioned. Maps to VPC / cluster / namespace.
+#[derive(Debug, Default)]
+pub struct FabricDefinition {
+    pub name: String,
+    pub provider: String,            // aws | gcp | azure | kubernetes | bare_metal | custom
+    pub region: String,              // provider-specific region id
+    pub zones: Option<i64>,          // number of availability zones
+    pub ephemeral: Option<bool>,     // true = destroy on program end
+    pub shield_ref: String,          // optional shield reference
+    pub loc: Loc,
+}
+
+/// `manifest Name { resources, fabric, region, zones, compliance }`
+///
+/// A declarative specification of desired shape — not a "desired state" in
+/// the Terraform sense, a *belief* about structure. Linear/affine resources
+/// in `resources` must be disjoint (Separation Logic `*`).
+#[derive(Debug, Default)]
+pub struct ManifestDefinition {
+    pub name: String,
+    pub resources: Vec<String>,      // references to ResourceDefinition names
+    pub fabric_ref: String,          // reference to FabricDefinition name
+    pub region: String,
+    pub zones: Option<i64>,
+    pub compliance: Vec<String>,     // κ — regulatory class (Fase 6.1)
+    pub loc: Loc,
+}
+
+/// `observe Name from Manifest { sources, quorum, timeout, on_partition, certainty_floor }`
+///
+/// A quorum-gated observation of a manifest's real state. Each output
+/// carries ΛD envelope E = ⟨c, τ, ρ, δ⟩; `τ` records observation lag.
+/// `on_partition: fail` raises a CT-3 (Network Error) — partitions are ⊥ void.
+#[derive(Debug, Default)]
+pub struct ObserveDefinition {
+    pub name: String,
+    pub target: String,              // name of ManifestDefinition being observed
+    pub sources: Vec<String>,
+    pub quorum: Option<i64>,         // Byzantine quorum threshold
+    pub timeout: String,             // duration literal "5s", "100ms"
+    pub on_partition: String,        // fail (CT-3) | shield_quarantine
+    pub certainty_floor: Option<f64>,
+    pub loc: Loc,
+}
+
+// ── §λ-L-E Fase 3 — Control cognitivo primitives ─────────────────────────────
+
+/// `reconcile Name { observe, threshold, tolerance, on_drift, shield, mandate, max_retries }`
+///
+/// A cognitive control loop that minimises variational free energy
+/// `F = D_KL(q(s) || p(s, o))` between a manifest belief and an observe
+/// evidence. Acting on the environment (`on_drift: provision`) is one of
+/// the two classical routes to reducing F (the other is belief revision).
+#[derive(Debug, Default)]
+pub struct ReconcileDefinition {
+    pub name: String,
+    pub observe_ref: String,
+    pub threshold: Option<f64>,       // epistemic gate c ∈ [0.0, 1.0]
+    pub tolerance: Option<f64>,       // drift tolerance [0.0, 1.0]
+    pub on_drift: String,             // provision | alert | refine (default: provision)
+    pub shield_ref: String,
+    pub mandate_ref: String,
+    pub max_retries: i64,             // default: 3
+    pub loc: Loc,
+}
+
+/// `lease Name { resource, duration, acquire, on_expire }`
+///
+/// Affine/linear lease on a resource, with explicit Δt encoded in the `τ`
+/// of the ΛD envelope. Runtime materializes each lease as a revocable
+/// token; use post-expiry raises `LeaseExpiredError` (CT-2) per D2.
+#[derive(Debug, Default)]
+pub struct LeaseDefinition {
+    pub name: String,
+    pub resource_ref: String,
+    pub duration: String,             // "30s", "5m", "2h"
+    pub acquire: String,              // on_start | on_demand (default: on_start)
+    pub on_expire: String,            // anchor_breach | release | extend (default: anchor_breach)
+    pub loc: Loc,
+}
+
+/// `ensemble Name { observations, quorum, aggregation, certainty_mode }`
+///
+/// Byzantine quorum aggregator over ≥2 independent observations. Yields
+/// common knowledge `Cφ` (Fagin-Halpern) when at least `quorum` observers
+/// agree. Failed observations are excluded; below quorum raises CT-3.
+#[derive(Debug, Default)]
+pub struct EnsembleDefinition {
+    pub name: String,
+    pub observations: Vec<String>,
+    pub quorum: Option<i64>,
+    pub aggregation: String,          // majority | weighted | byzantine (default: majority)
+    pub certainty_mode: String,       // min | weighted | harmonic (default: min)
+    pub loc: Loc,
+}
+
+// ── §λ-L-E Fase 4 — Topology + π-calculus binary sessions ──────────────────
+
+/// One step in a session protocol: `send T` | `receive T` | `loop` | `end`.
+#[derive(Debug, Clone, Default)]
+pub struct SessionStep {
+    pub op: String,             // send | receive | loop | end
+    pub message_type: String,   // only meaningful for send / receive
+    pub loc: Loc,
+}
+
+/// One role in a binary session — name + ordered list of steps.
+#[derive(Debug, Default)]
+pub struct SessionRole {
+    pub name: String,
+    pub steps: Vec<SessionStep>,
+    pub loc: Loc,
+}
+
+/// `session Name { role1: [step, …]  role2: [step, …] }`
+///
+/// A binary session type — exactly two roles whose protocols MUST be
+/// pairwise Honda-Vasconcelos dual. Duality is verified by the type
+/// checker; non-dual programs are rejected at compile time.
+#[derive(Debug, Default)]
+pub struct SessionDefinition {
+    pub name: String,
+    pub roles: Vec<SessionRole>,
+    pub loc: Loc,
+}
+
+/// `source -> target : Session` — one directed edge of a topology.
+///
+/// Convention: the source plays the FIRST role of the session; the target
+/// plays the SECOND role. Fixed so assignment is unambiguous.
+#[derive(Debug, Default)]
+pub struct TopologyEdge {
+    pub source: String,
+    pub target: String,
+    pub session_ref: String,
+    pub loc: Loc,
+}
+
+/// `topology Name { nodes: […]  edges: [A -> B : Session, …] }`
+///
+/// A typed directed graph over Axon entities. Edges carry session references
+/// whose duality the type checker enforces; the graph is statically analysed
+/// for Honda-liveness (deadlock-prone cycles).
+#[derive(Debug, Default)]
+pub struct TopologyDefinition {
+    pub name: String,
+    pub nodes: Vec<String>,
+    pub edges: Vec<TopologyEdge>,
+    pub loc: Loc,
+}
+
+// ── §λ-L-E Fase 5 — Cognitive immune system (per paper_immune_v2.md) ────────
+
+/// `immune Name { watch, sensitivity, baseline, window, scope, tau, decay }`
+///
+/// A continuous anomaly sensor over a declared observation vector.
+/// Computes D_KL(q_baseline || p_observed) (paper §3.2) and emits a
+/// HealthReport at an epistemic level derived from the KL magnitude.
+///
+/// Pure sensor — `immune` takes NO action. Actions belong to `reflex`
+/// and `heal`, which consume its HealthReport.
+#[derive(Debug, Default)]
+pub struct ImmuneDefinition {
+    pub name: String,
+    pub watch: Vec<String>,          // observe / ensemble / any declared ref
+    pub sensitivity: Option<f64>,    // [0.0, 1.0]
+    pub baseline: String,            // "learned" (default) or name of a prior
+    pub window: i64,                 // samples used to estimate baseline (default: 100)
+    pub scope: String,               // tenant | flow | global (MANDATORY, paper §8.2)
+    pub tau: String,                 // duration half-life
+    pub decay: String,               // exponential (default) | linear | none
+    pub loc: Loc,
+}
+
+/// `reflex Name { trigger, on_level, action, scope, sla }`
+///
+/// Deterministic, O(1) motor response. Contract invariants (paper §4.2):
+/// never invokes an LLM; no long-running I/O; every activation emits a
+/// signed_trace; idempotent on the same HealthReport.
+#[derive(Debug, Default)]
+pub struct ReflexDefinition {
+    pub name: String,
+    pub trigger: String,             // immune name (MANDATORY)
+    pub on_level: String,            // know | believe | speculate | doubt (default: doubt)
+    pub action: String,              // drop | revoke | emit | redact | quarantine | terminate | alert
+    pub scope: String,               // MANDATORY, paper §8.2
+    pub sla: String,                 // duration budget (e.g. "1ms")
+    pub loc: Loc,
+}
+
+/// `heal Name { source, on_level, mode, scope, review_sla, shield, max_patches }`
+///
+/// Linear-Logic one-shot patch synthesis. Patch type:
+/// `!Synthesized ⊸ Applied ⊸ Collapsed` (paper §6) — each transition
+/// consumes its predecessor, guaranteeing single application + forced collapse.
+///
+/// Mode ∈ {audit_only | human_in_loop | adversarial} controls automation
+/// (paper §7); `adversarial` REQUIRES a shield gate (paper §7.3).
+#[derive(Debug, Default)]
+pub struct HealDefinition {
+    pub name: String,
+    pub source: String,              // immune name (MANDATORY)
+    pub on_level: String,            // know | believe | speculate | doubt
+    pub mode: String,                // audit_only | human_in_loop | adversarial
+    pub scope: String,               // MANDATORY
+    pub review_sla: String,          // duration
+    pub shield_ref: String,          // optional shield gate (required for adversarial)
+    pub max_patches: i64,            // bounded heal attempts (default: 3)
+    pub loc: Loc,
+}
+
+// ── §λ-L-E Fase 9 — UI cognitiva (component / view) ─────────────────────────
+
+/// `component Name { renders, via_shield, on_interact, render_hint }`.
+///
+/// A reusable UI fragment. `renders` is the data type the component
+/// visualizes; if that type has κ, `via_shield` is mandatory and its
+/// compliance set MUST cover the type's κ (compile-time enforcement).
+#[derive(Debug, Default)]
+pub struct ComponentDefinition {
+    pub name: String,
+    pub renders: String,
+    pub via_shield: String,
+    pub on_interact: String,
+    pub render_hint: String,   // card | list | form | chart | custom
+    pub loc: Loc,
+}
+
+/// `view Name { title, components: [...], route }`.
+///
+/// A top-level screen. `components` is an ordered list of declared
+/// `component` names composed in the view's primary layout.
+#[derive(Debug, Default)]
+pub struct ViewDefinition {
+    pub name: String,
+    pub title: String,
+    pub components: Vec<String>,
+    pub route: String,
+    pub loc: Loc,
 }
 
 // ── Tier 2+ structural fallback ──────────────────────────────────────────────
@@ -104,6 +386,8 @@ pub struct ShieldDefinition {
     pub log: String,
     pub deflect_message: String,
     pub taint: String,
+    /// §ESK Fase 6.1 — regulatory coverage (HIPAA, PCI_DSS, GDPR, …).
+    pub compliance: Vec<String>,
     pub loc: Loc,
 }
 
@@ -230,6 +514,8 @@ pub struct AxonEndpointDefinition {
     pub shield_ref: String,
     pub retries: Option<i64>,
     pub timeout: String,
+    /// §ESK Fase 6.1 — regulatory coverage on the boundary.
+    pub compliance: Vec<String>,
     pub loc: Loc,
 }
 
@@ -329,6 +615,8 @@ pub struct TypeDefinition {
     pub fields: Vec<TypeField>,
     pub range_constraint: Option<RangeConstraint>,
     pub where_clause: Option<WhereClause>,
+    /// §ESK Fase 6.1 — κ regulatory class attached to a type.
+    pub compliance: Vec<String>,
     pub loc: Loc,
 }
 

@@ -99,6 +99,21 @@ class IRProgram(IRNode):
     compute_specs: tuple['IRCompute', ...] = ()
     axonstore_specs: tuple['IRAxonStore', ...] = ()
     endpoints: tuple['IREndpoint', ...] = ()
+    resources: tuple['IRResource', ...] = ()
+    fabrics: tuple['IRFabric', ...] = ()
+    manifests: tuple['IRManifest', ...] = ()
+    observations: tuple['IRObserve', ...] = ()
+    intention_tree: 'IRIntentionTree | None' = None
+    reconciles: tuple['IRReconcile', ...] = ()
+    leases: tuple['IRLease', ...] = ()
+    ensembles: tuple['IREnsemble', ...] = ()
+    sessions: tuple['IRSession', ...] = ()
+    topologies: tuple['IRTopology', ...] = ()
+    immunes: tuple['IRImmune', ...] = ()
+    reflexes: tuple['IRReflex', ...] = ()
+    heals: tuple['IRHeal', ...] = ()
+    components: tuple['IRComponent', ...] = ()
+    views: tuple['IRView', ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -251,6 +266,7 @@ class IRType(IRNode):
     range_min: float | None = None
     range_max: float | None = None
     where_expression: str = ""
+    compliance: tuple[str, ...] = ()  # ESK Fase 6.1 — regulatory κ
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -894,6 +910,7 @@ class IRShield(IRNode):
     redact: tuple[str, ...] = ()                # PII fields to redact
     log: str = ""                               # logging directive
     deflect_message: str = ""                   # canned deflection
+    compliance: tuple[str, ...] = ()            # ESK Fase 6.1 — covered regulatory classes
 
 
 @dataclass(frozen=True)
@@ -1535,3 +1552,246 @@ class IREndpoint(IRNode):
     shield_ref: str = ""
     retries: int = 0
     timeout: str = ""
+    compliance: tuple[str, ...] = ()  # ESK Fase 6.1 — regulatory κ
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  I/O COGNITIVO IR NODES — Cálculo Lambda Lineal Epistémico (λ-L-E)
+#  (Plan: docs/plan_io_cognitivo.md · Fase 1)
+#
+#  IR counterparts of the four cognitive I/O primitives:
+#    IRResource / IRFabric / IRManifest / IRObserve
+#
+#  Plus IRIntentionTree — the Free Monad F_Σ(X) that packages I/O
+#  intentions as a pure, composable description.  A Handler (Fase 2)
+#  interprets the tree into physical calls via CPS.
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRResource(IRNode):
+    """Compiled resource declaration — linear/affine infrastructure token."""
+    node_type: str = "resource"
+    name: str = ""
+    kind: str = ""
+    endpoint: str = ""
+    capacity: int | None = None
+    lifetime: str = "affine"          # linear | affine | persistent
+    certainty_floor: float | None = None
+    shield_ref: str = ""
+
+
+@dataclass(frozen=True)
+class IRFabric(IRNode):
+    """Compiled fabric declaration — topological substrate for resources."""
+    node_type: str = "fabric"
+    name: str = ""
+    provider: str = ""
+    region: str = ""
+    zones: int | None = None
+    ephemeral: bool | None = None
+    shield_ref: str = ""
+
+
+@dataclass(frozen=True)
+class IRManifest(IRNode):
+    """Compiled manifest declaration — declarative belief about desired shape."""
+    node_type: str = "manifest"
+    name: str = ""
+    resources: tuple[str, ...] = ()   # resolved resource names
+    fabric_ref: str = ""
+    region: str = ""
+    zones: int | None = None
+    compliance: tuple[str, ...] = ()  # κ — regulatory class
+
+
+@dataclass(frozen=True)
+class IRObserve(IRNode):
+    """Compiled observe declaration — quorum-gated observation with lag τ."""
+    node_type: str = "observe"
+    name: str = ""
+    target: str = ""                  # manifest name being observed
+    sources: tuple[str, ...] = ()
+    quorum: int | None = None
+    timeout: str = ""
+    on_partition: str = "fail"        # fail (CT-3) | shield_quarantine
+    certainty_floor: float | None = None
+
+
+@dataclass(frozen=True)
+class IRIntentionTree(IRNode):
+    """
+    The Free Monad F_Σ(X) — a pure description of I/O intentions.
+
+    A program's infrastructure section is lowered to this tree so that
+    a Handler (Fase 2) can interpret it via CPS transformation.  The
+    tree is intentionally flat in Fase 1; nested continuations become
+    meaningful once handlers and reconcile loops land in later phases.
+    """
+    node_type: str = "intention_tree"
+    operations: tuple[IRNode, ...] = ()
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  CONTROL COGNITIVO IR NODES — Fase 3 of the λ-L-E calculus
+#  IRReconcile / IRLease / IREnsemble
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRReconcile(IRNode):
+    """
+    Compiled reconcile declaration — a free-energy-minimizing control
+    loop that closes the gap between a manifest (belief) and an observe
+    (evidence).  Runtime consumption is via `ReconcileLoop.tick(handler)`.
+    """
+    node_type: str = "reconcile"
+    name: str = ""
+    observe_ref: str = ""
+    threshold: float | None = None
+    tolerance: float | None = None
+    on_drift: str = "provision"
+    shield_ref: str = ""
+    mandate_ref: str = ""
+    max_retries: int = 3
+
+
+@dataclass(frozen=True)
+class IRLease(IRNode):
+    """
+    Compiled lease declaration — a τ-decaying affine resource token.
+    Runtime materialization is via `LeaseKernel.acquire(ir_lease)`.
+    """
+    node_type: str = "lease"
+    name: str = ""
+    resource_ref: str = ""
+    duration: str = ""
+    acquire: str = "on_start"
+    on_expire: str = "anchor_breach"
+
+
+@dataclass(frozen=True)
+class IREnsemble(IRNode):
+    """
+    Compiled ensemble declaration — a Byzantine quorum aggregator.
+    Runtime fusion is via `EnsembleAggregator.aggregate(outcomes)`.
+    """
+    node_type: str = "ensemble"
+    name: str = ""
+    observations: tuple[str, ...] = ()
+    quorum: int | None = None
+    aggregation: str = "majority"
+    certainty_mode: str = "min"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  TOPOLOGY & SESSION TYPES IR — Fase 4 of the λ-L-E calculus
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRSessionStep(IRNode):
+    """One operation in a session protocol — send / receive / loop / end."""
+    node_type: str = "session_step"
+    op: str = ""
+    message_type: str = ""
+
+
+@dataclass(frozen=True)
+class IRSessionRole(IRNode):
+    """A role's name and its ordered protocol steps."""
+    node_type: str = "session_role"
+    name: str = ""
+    steps: tuple['IRSessionStep', ...] = ()
+
+
+@dataclass(frozen=True)
+class IRSession(IRNode):
+    """Compiled binary session — exactly two dual roles (verified at type-check)."""
+    node_type: str = "session"
+    name: str = ""
+    roles: tuple['IRSessionRole', ...] = ()
+
+
+@dataclass(frozen=True)
+class IRTopologyEdge(IRNode):
+    """Directed, session-typed edge between two topology nodes."""
+    node_type: str = "topology_edge"
+    source: str = ""
+    target: str = ""
+    session_ref: str = ""
+
+
+@dataclass(frozen=True)
+class IRTopology(IRNode):
+    """Compiled topology — typed graph over Axon entities."""
+    node_type: str = "topology"
+    name: str = ""
+    nodes: tuple[str, ...] = ()
+    edges: tuple['IRTopologyEdge', ...] = ()
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  COGNITIVE IMMUNE SYSTEM IR — Fase 5 (per docs/paper_inmune.md)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRImmune(IRNode):
+    """Compiled immune sensor — KL+FEP anomaly detector descriptor."""
+    node_type: str = "immune"
+    name: str = ""
+    watch: tuple[str, ...] = ()
+    sensitivity: float | None = None
+    baseline: str = "learned"
+    window: int = 100
+    scope: str = ""
+    tau: str = ""
+    decay: str = "exponential"
+
+
+@dataclass(frozen=True)
+class IRReflex(IRNode):
+    """Compiled reflex — deterministic O(1) motor response descriptor."""
+    node_type: str = "reflex"
+    name: str = ""
+    trigger: str = ""
+    on_level: str = "doubt"
+    action: str = ""
+    scope: str = ""
+    sla: str = ""
+
+
+@dataclass(frozen=True)
+class IRHeal(IRNode):
+    """Compiled heal — Linear Logic one-shot patch kernel descriptor."""
+    node_type: str = "heal"
+    name: str = ""
+    source: str = ""
+    on_level: str = "doubt"
+    mode: str = "human_in_loop"
+    scope: str = ""
+    review_sla: str = ""
+    shield_ref: str = ""
+    max_patches: int = 3
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  UI COGNITIVA IR NODES — Fase 9 (component / view)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class IRComponent(IRNode):
+    """Compiled UI component — reusable fragment over a typed data source."""
+    node_type: str = "component"
+    name: str = ""
+    renders: str = ""
+    via_shield: str = ""
+    on_interact: str = ""
+    render_hint: str = "custom"
+
+
+@dataclass(frozen=True)
+class IRView(IRNode):
+    """Compiled UI view — top-level screen composing declared components."""
+    node_type: str = "view"
+    name: str = ""
+    title: str = ""
+    components: tuple[str, ...] = ()
+    route: str = ""

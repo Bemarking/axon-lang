@@ -34,7 +34,35 @@ pub struct IRProgram {
     pub compute_specs: Vec<IRCompute>,
     pub axonstore_specs: Vec<IRAxonStore>,
     pub endpoints: Vec<IRAxonEndpoint>,
+    /// Local-only: IRDataspace specs are computed during IR generation so
+    /// the cost estimator and inspectors can reach them, but Python's
+    /// reference IRProgram does not serialise this field. Hidden from JSON
+    /// output for byte-identical parity (§8.2.h.1).
+    #[serde(skip)]
     pub dataspace_specs: Vec<IRDataspace>,
+    /// §λ-L-E Fase 1 — I/O cognitivo primitives (compiled).
+    pub resources: Vec<IRResource>,
+    pub fabrics: Vec<IRFabric>,
+    pub manifests: Vec<IRManifest>,
+    pub observations: Vec<IRObserve>,
+    /// §λ-L-E Fase 1 (Free Monad root) — populated when the program
+    /// declares manifests/observes. `None` ⇒ serialises as `null`
+    /// (matches Python when the field is `None`).
+    pub intention_tree: Option<IRIntentionTree>,
+    /// §λ-L-E Fase 3 — Control cognitivo primitives (compiled).
+    pub reconciles: Vec<IRReconcile>,
+    pub leases: Vec<IRLease>,
+    pub ensembles: Vec<IREnsemble>,
+    /// §λ-L-E Fase 4 — Topology + Session (compiled).
+    pub sessions: Vec<IRSession>,
+    pub topologies: Vec<IRTopology>,
+    /// §λ-L-E Fase 5 — Immune system (compiled).
+    pub immunes: Vec<IRImmune>,
+    pub reflexes: Vec<IRReflex>,
+    pub heals: Vec<IRHeal>,
+    /// §λ-L-E Fase 9 — UI cognitiva declarativa (compiled).
+    pub components: Vec<IRComponent>,
+    pub views: Vec<IRView>,
 }
 
 impl IRProgram {
@@ -65,8 +93,306 @@ impl IRProgram {
             axonstore_specs: Vec::new(),
             endpoints: Vec::new(),
             dataspace_specs: Vec::new(),
+            resources: Vec::new(),
+            fabrics: Vec::new(),
+            manifests: Vec::new(),
+            observations: Vec::new(),
+            intention_tree: None,
+            reconciles: Vec::new(),
+            leases: Vec::new(),
+            ensembles: Vec::new(),
+            sessions: Vec::new(),
+            topologies: Vec::new(),
+            immunes: Vec::new(),
+            reflexes: Vec::new(),
+            heals: Vec::new(),
+            components: Vec::new(),
+            views: Vec::new(),
         }
     }
+}
+
+// ── §λ-L-E Fase 1 — IRResource ──────────────────────────────────────────────
+
+/// Compiled resource declaration — linear/affine infrastructure token.
+///
+/// Python counterpart: `axon.compiler.ir_nodes.IRResource`.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRResource {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub kind: String,
+    pub endpoint: String,
+    pub capacity: Option<i64>,
+    pub lifetime: String,             // linear | affine | persistent
+    pub certainty_floor: Option<f64>, // c ∈ [0.0, 1.0]
+    pub shield_ref: String,
+}
+
+impl IRResource {
+    pub fn new(name: String, line: u32, column: u32) -> Self {
+        IRResource {
+            node_type: "resource",
+            source_line: line,
+            source_column: column,
+            name,
+            kind: String::new(),
+            endpoint: String::new(),
+            capacity: None,
+            lifetime: "affine".to_string(),
+            certainty_floor: None,
+            shield_ref: String::new(),
+        }
+    }
+}
+
+// ── §λ-L-E Fase 1 — IRFabric ────────────────────────────────────────────────
+
+/// Compiled fabric declaration — topological substrate for resources.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRFabric {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub provider: String,
+    pub region: String,
+    pub zones: Option<i64>,
+    pub ephemeral: Option<bool>,
+    pub shield_ref: String,
+}
+
+// ── §λ-L-E Fase 1 — IRManifest ──────────────────────────────────────────────
+
+/// Compiled manifest declaration — declarative belief about desired shape.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRManifest {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub resources: Vec<String>,
+    pub fabric_ref: String,
+    pub region: String,
+    pub zones: Option<i64>,
+    pub compliance: Vec<String>,
+}
+
+// ── §λ-L-E Fase 1 — IRObserve ───────────────────────────────────────────────
+
+// ── §λ-L-E Fase 1 — IRIntentionTree (Free Monad root) ──────────────────────
+
+/// A single operation node in the intention tree.
+///
+/// Operations are heterogeneous IR nodes (manifests, observes) that the
+/// Handler layer (Fase 2) interprets via CPS. The enum is `#[serde(untagged)]`
+/// so JSON output is just the inner struct — matching Python's `asdict`
+/// behaviour on a polymorphic `tuple[IRNode, ...]`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum IRIntentionOperation {
+    Manifest(IRManifest),
+    Observe(IRObserve),
+}
+
+/// The Free Monad F_Σ(X) — a pure description of I/O intentions. Flat in
+/// Fase 1; nested continuations arrive with handlers + reconcile loops.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRIntentionTree {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub operations: Vec<IRIntentionOperation>,
+}
+
+/// Compiled observe declaration — quorum-gated observation with lag τ.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRObserve {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub target: String,
+    pub sources: Vec<String>,
+    pub quorum: Option<i64>,
+    pub timeout: String,
+    pub on_partition: String,
+    pub certainty_floor: Option<f64>,
+}
+
+// ── §λ-L-E Fase 3 — IRReconcile / IRLease / IREnsemble ──────────────────────
+
+/// Compiled reconcile declaration — free-energy minimizing control loop.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRReconcile {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub observe_ref: String,
+    pub threshold: Option<f64>,
+    pub tolerance: Option<f64>,
+    pub on_drift: String,
+    pub shield_ref: String,
+    pub mandate_ref: String,
+    pub max_retries: i64,
+}
+
+/// Compiled lease declaration — τ-decaying affine resource token.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRLease {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub resource_ref: String,
+    pub duration: String,
+    pub acquire: String,
+    pub on_expire: String,
+}
+
+/// Compiled ensemble declaration — Byzantine quorum aggregator.
+#[derive(Debug, Clone, Serialize)]
+pub struct IREnsemble {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub observations: Vec<String>,
+    pub quorum: Option<i64>,
+    pub aggregation: String,
+    pub certainty_mode: String,
+}
+
+// ── §λ-L-E Fase 4 — IRSession / IRTopology ──────────────────────────────────
+
+/// One operation in a compiled session protocol (send / receive / loop / end).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRSessionStep {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub op: String,
+    pub message_type: String,
+}
+
+/// A role's name and its ordered protocol steps.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRSessionRole {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub steps: Vec<IRSessionStep>,
+}
+
+/// Compiled binary session — exactly two dual roles (verified at type-check).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRSession {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub roles: Vec<IRSessionRole>,
+}
+
+/// Directed, session-typed edge between two topology nodes.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRTopologyEdge {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub source: String,
+    pub target: String,
+    pub session_ref: String,
+}
+
+/// Compiled topology — typed graph over Axon entities.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRTopology {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub nodes: Vec<String>,
+    pub edges: Vec<IRTopologyEdge>,
+}
+
+// ── §λ-L-E Fase 5 — IRImmune / IRReflex / IRHeal ────────────────────────────
+
+/// Compiled immune sensor — KL+FEP anomaly detector descriptor.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRImmune {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub watch: Vec<String>,
+    pub sensitivity: Option<f64>,
+    pub baseline: String,
+    pub window: i64,
+    pub scope: String,
+    pub tau: String,
+    pub decay: String,
+}
+
+/// Compiled reflex — deterministic O(1) motor response descriptor.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRReflex {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub trigger: String,
+    pub on_level: String,
+    pub action: String,
+    pub scope: String,
+    pub sla: String,
+}
+
+/// Compiled heal — Linear-Logic one-shot patch kernel descriptor.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRHeal {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub source: String,
+    pub on_level: String,
+    pub mode: String,
+    pub scope: String,
+    pub review_sla: String,
+    pub shield_ref: String,
+    pub max_patches: i64,
+}
+
+// ── §λ-L-E Fase 9 — IRComponent / IRView ────────────────────────────────────
+
+/// Compiled UI component — reusable fragment over a typed data source.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRComponent {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub renders: String,
+    pub via_shield: String,
+    pub on_interact: String,
+    pub render_hint: String,
+}
+
+/// Compiled UI view — top-level screen composing declared components.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRView {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub title: String,
+    pub components: Vec<String>,
+    pub route: String,
 }
 
 // ── Import ───────────────────────────────────────────────────────────────────
@@ -187,6 +513,8 @@ pub struct IRType {
     pub range_min: Option<f64>,
     pub range_max: Option<f64>,
     pub where_expression: String,
+    /// §ESK Fase 6.1 — κ regulatory class.
+    pub compliance: Vec<String>,
 }
 
 // ── Flow ─────────────────────────────────────────────────────────────────────
@@ -720,15 +1048,22 @@ pub struct IRShield {
     pub on_breach: String,
     pub severity: String,
     pub quarantine: String,
-    pub max_retries: Option<i64>,
-    pub confidence_threshold: Option<f64>,
+    /// §8.2.h.3 — Python emits concrete 0, not null. AST keeps `Option<i64>`
+    /// so the parser can distinguish "not set"; IR lowering collapses.
+    pub max_retries: i64,
+    pub confidence_threshold: f64,
     pub allow_tools: Vec<String>,
     pub deny_tools: Vec<String>,
-    pub sandbox: Option<bool>,
+    pub sandbox: bool,
     pub redact: Vec<String>,
     pub log: String,
     pub deflect_message: String,
+    // `taint` exists on `ShieldDefinition` (AST) but Python's reference
+    // IRShield doesn't emit it. Hidden from JSON output for §8.2.h parity.
+    #[serde(skip)]
     pub taint: String,
+    /// §ESK Fase 6.1 — covered regulatory classes for this shield.
+    pub compliance: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -853,6 +1188,9 @@ pub struct IRAxonEndpoint {
     pub execute_flow: String,
     pub output_type: String,
     pub shield_ref: String,
-    pub retries: Option<i64>,
+    /// §8.2.h.3 — Python emits concrete `0`; AST stays `Option<i64>`.
+    pub retries: i64,
     pub timeout: String,
+    /// §ESK Fase 6.1 — κ regulatory class on the boundary.
+    pub compliance: Vec<String>,
 }

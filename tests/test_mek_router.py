@@ -35,7 +35,7 @@ def main():
     print("\n[Ronda 1] Llegada de Tensor de Baja Entropía (Ej. Saludo o Tarea Trivial)")
     # Simulamos baja entropía inicializando un tensor con poca varianza
     low_variance_tensor = torch.zeros((1, 512)) + 0.1
-    state_simple = LatentState(tensor=low_variance_tensor, origin_model_id="kivi_agent")
+    state_simple = LatentState(tensor=low_variance_tensor, origin_model_id="example_agent")
     state_simple.entropy = 3.5  # Forzamos valor para prueba
     
     winner_simple = BayesianRouter.select_optimal_provider(state_simple, profiles)
@@ -45,7 +45,7 @@ def main():
     print("\n[Ronda 2] Llegada de Tensor de Alta Entropía (Ej. Análisis Recursivo Complejo)")
     # Simulamos alta entropía con puro ruido
     high_variance_tensor = torch.randn((1, 1024)) * 10 
-    state_complex = LatentState(tensor=high_variance_tensor, origin_model_id="kivi_agent")
+    state_complex = LatentState(tensor=high_variance_tensor, origin_model_id="example_agent")
     state_complex.entropy = 12.0 # Forzamos valor para prueba
     
     winner_complex = BayesianRouter.select_optimal_provider(state_complex, profiles)

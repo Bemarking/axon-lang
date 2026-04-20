@@ -17,6 +17,12 @@ pub struct IRGenerator {
     anchors: HashMap<String, IRAnchor>,
     flows: HashMap<String, IRFlow>,
     lambda_data_specs: HashMap<String, IRLambdaData>,
+    /// §λ-L-E Fase 1 (Free Monad root) — Manifests / Observes, in
+    /// declaration order, become nodes the Handler layer will interpret.
+    intention_ops: Vec<IRIntentionOperation>,
+    /// Anchor for the intention tree's own source position.
+    program_line: u32,
+    program_column: u32,
 }
 
 impl IRGenerator {
@@ -27,11 +33,16 @@ impl IRGenerator {
             anchors: HashMap::new(),
             flows: HashMap::new(),
             lambda_data_specs: HashMap::new(),
+            intention_ops: Vec::new(),
+            program_line: 1,
+            program_column: 1,
         }
     }
 
     pub fn generate(mut self, program: &Program) -> IRProgram {
         let mut ir = IRProgram::new();
+        self.program_line = program.loc.line;
+        self.program_column = program.loc.column;
 
         // Phase 1: visit all declarations
         for decl in &program.declarations {
@@ -54,6 +65,18 @@ impl IRGenerator {
                     run.resolved_anchors.push(anchor.clone());
                 }
             }
+        }
+
+        // Phase 3 (§8.2.h.2): assemble the intention tree if the program
+        // declared any Fase-1 cognitive-I/O operations. Empty ⇒ `None`
+        // (JSON `null`), matching Python's reference behaviour.
+        if !self.intention_ops.is_empty() {
+            ir.intention_tree = Some(IRIntentionTree {
+                node_type: "intention_tree",
+                source_line: self.program_line,
+                source_column: self.program_column,
+                operations: std::mem::take(&mut self.intention_ops),
+            });
         }
 
         ir
@@ -104,6 +127,31 @@ impl IRGenerator {
             Declaration::Daemon(n) => ir.daemons.push(self.visit_daemon(n)),
             Declaration::AxonStore(n) => ir.axonstore_specs.push(self.visit_axonstore(n)),
             Declaration::AxonEndpoint(n) => ir.endpoints.push(self.visit_axonendpoint(n)),
+            Declaration::Resource(n) => ir.resources.push(self.visit_resource(n)),
+            Declaration::Fabric(n)   => ir.fabrics.push(self.visit_fabric(n)),
+            Declaration::Manifest(n) => {
+                let m = self.visit_manifest(n);
+                // §λ-L-E Fase 1 — manifest is a provisioning intention
+                // (goes to the Free-Monad tree for the Handler layer).
+                self.intention_ops.push(IRIntentionOperation::Manifest(m.clone()));
+                ir.manifests.push(m);
+            }
+            Declaration::Observe(n) => {
+                let o = self.visit_observe(n);
+                // §λ-L-E Fase 1 — observations are intentions too.
+                self.intention_ops.push(IRIntentionOperation::Observe(o.clone()));
+                ir.observations.push(o);
+            }
+            Declaration::Reconcile(n) => ir.reconciles.push(self.visit_reconcile(n)),
+            Declaration::Lease(n)     => ir.leases.push(self.visit_lease(n)),
+            Declaration::Ensemble(n)  => ir.ensembles.push(self.visit_ensemble(n)),
+            Declaration::Session(n)   => ir.sessions.push(self.visit_session(n)),
+            Declaration::Topology(n)  => ir.topologies.push(self.visit_topology(n)),
+            Declaration::Immune(n)    => ir.immunes.push(self.visit_immune(n)),
+            Declaration::Reflex(n)    => ir.reflexes.push(self.visit_reflex(n)),
+            Declaration::Heal(n)      => ir.heals.push(self.visit_heal(n)),
+            Declaration::Component(n) => ir.components.push(self.visit_component(n)),
+            Declaration::View(n)      => ir.views.push(self.visit_view(n)),
             Declaration::Epistemic(eb) => {
                 for child in &eb.body {
                     self.visit_declaration(child, ir);
@@ -260,6 +308,7 @@ impl IRGenerator {
             range_min,
             range_max,
             where_expression,
+            compliance: n.compliance.clone(),
         }
     }
 
@@ -582,14 +631,21 @@ impl IRGenerator {
     }
 
     fn visit_shield(&self, n: &ShieldDefinition) -> IRShield {
+        // §8.2.h — Python parity: strategy defaults "pattern"; Option<T> collapses to concrete zeros.
+        let strategy = if n.strategy.is_empty() { "pattern".to_string() } else { n.strategy.clone() };
         IRShield {
             node_type: "shield", source_line: n.loc.line, source_column: n.loc.column,
-            name: n.name.clone(), scan: n.scan.clone(), strategy: n.strategy.clone(),
+            name: n.name.clone(), scan: n.scan.clone(), strategy,
             on_breach: n.on_breach.clone(), severity: n.severity.clone(),
-            quarantine: n.quarantine.clone(), max_retries: n.max_retries,
-            confidence_threshold: n.confidence_threshold, allow_tools: n.allow_tools.clone(),
-            deny_tools: n.deny_tools.clone(), sandbox: n.sandbox, redact: n.redact.clone(),
+            quarantine: n.quarantine.clone(),
+            max_retries: n.max_retries.unwrap_or(0),
+            confidence_threshold: n.confidence_threshold.unwrap_or(0.0),
+            allow_tools: n.allow_tools.clone(),
+            deny_tools: n.deny_tools.clone(),
+            sandbox: n.sandbox.unwrap_or(false),
+            redact: n.redact.clone(),
             log: n.log.clone(), deflect_message: n.deflect_message.clone(), taint: n.taint.clone(),
+            compliance: n.compliance.clone(),
         }
     }
 
@@ -670,12 +726,272 @@ impl IRGenerator {
     }
 
     fn visit_axonendpoint(&self, n: &AxonEndpointDefinition) -> IRAxonEndpoint {
+        // §8.2.h — Python emits `node_type: "endpoint"`; retries collapses Option<i64> → i64.
         IRAxonEndpoint {
-            node_type: "axonendpoint", source_line: n.loc.line, source_column: n.loc.column,
+            node_type: "endpoint", source_line: n.loc.line, source_column: n.loc.column,
             name: n.name.clone(), method: n.method.clone(), path: n.path.clone(),
             body_type: n.body_type.clone(), execute_flow: n.execute_flow.clone(),
             output_type: n.output_type.clone(), shield_ref: n.shield_ref.clone(),
-            retries: n.retries, timeout: n.timeout.clone(),
+            retries: n.retries.unwrap_or(0), timeout: n.timeout.clone(),
+            compliance: n.compliance.clone(),
+        }
+    }
+
+    /// §λ-L-E Fase 1 — Resource IR lowering.
+    fn visit_resource(&self, n: &ResourceDefinition) -> IRResource {
+        IRResource {
+            node_type: "resource",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            kind: n.kind.clone(),
+            endpoint: n.endpoint.clone(),
+            capacity: n.capacity,
+            lifetime: n.lifetime.clone(),
+            certainty_floor: n.certainty_floor,
+            shield_ref: n.shield_ref.clone(),
+        }
+    }
+
+    /// §λ-L-E Fase 1 — Fabric IR lowering.
+    fn visit_fabric(&self, n: &FabricDefinition) -> IRFabric {
+        IRFabric {
+            node_type: "fabric",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            provider: n.provider.clone(),
+            region: n.region.clone(),
+            zones: n.zones,
+            ephemeral: n.ephemeral,
+            shield_ref: n.shield_ref.clone(),
+        }
+    }
+
+    /// §λ-L-E Fase 1 — Manifest IR lowering.
+    fn visit_manifest(&self, n: &ManifestDefinition) -> IRManifest {
+        IRManifest {
+            node_type: "manifest",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            resources: n.resources.clone(),
+            fabric_ref: n.fabric_ref.clone(),
+            region: n.region.clone(),
+            zones: n.zones,
+            compliance: n.compliance.clone(),
+        }
+    }
+
+    /// §λ-L-E Fase 1 — Observe IR lowering.
+    fn visit_observe(&self, n: &ObserveDefinition) -> IRObserve {
+        IRObserve {
+            node_type: "observe",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            target: n.target.clone(),
+            sources: n.sources.clone(),
+            quorum: n.quorum,
+            timeout: n.timeout.clone(),
+            on_partition: if n.on_partition.is_empty() {
+                "fail".to_string()
+            } else {
+                n.on_partition.clone()
+            },
+            certainty_floor: n.certainty_floor,
+        }
+    }
+
+    /// §λ-L-E Fase 3 — Reconcile IR lowering.
+    fn visit_reconcile(&self, n: &ReconcileDefinition) -> IRReconcile {
+        IRReconcile {
+            node_type: "reconcile",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            observe_ref: n.observe_ref.clone(),
+            threshold: n.threshold,
+            tolerance: n.tolerance,
+            on_drift: if n.on_drift.is_empty() { "provision".to_string() } else { n.on_drift.clone() },
+            shield_ref: n.shield_ref.clone(),
+            mandate_ref: n.mandate_ref.clone(),
+            max_retries: n.max_retries,
+        }
+    }
+
+    /// §λ-L-E Fase 3 — Lease IR lowering.
+    fn visit_lease(&self, n: &LeaseDefinition) -> IRLease {
+        IRLease {
+            node_type: "lease",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            resource_ref: n.resource_ref.clone(),
+            duration: n.duration.clone(),
+            acquire: if n.acquire.is_empty() { "on_start".to_string() } else { n.acquire.clone() },
+            on_expire: if n.on_expire.is_empty() {
+                "anchor_breach".to_string()
+            } else {
+                n.on_expire.clone()
+            },
+        }
+    }
+
+    /// §λ-L-E Fase 5 — Immune IR lowering.
+    fn visit_immune(&self, n: &ImmuneDefinition) -> IRImmune {
+        IRImmune {
+            node_type: "immune",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            watch: n.watch.clone(),
+            sensitivity: n.sensitivity,
+            baseline: if n.baseline.is_empty() { "learned".to_string() } else { n.baseline.clone() },
+            window: n.window,
+            scope: n.scope.clone(),
+            tau: n.tau.clone(),
+            decay: if n.decay.is_empty() { "exponential".to_string() } else { n.decay.clone() },
+        }
+    }
+
+    /// §λ-L-E Fase 5 — Reflex IR lowering.
+    fn visit_reflex(&self, n: &ReflexDefinition) -> IRReflex {
+        IRReflex {
+            node_type: "reflex",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            trigger: n.trigger.clone(),
+            on_level: if n.on_level.is_empty() { "doubt".to_string() } else { n.on_level.clone() },
+            action: n.action.clone(),
+            scope: n.scope.clone(),
+            sla: n.sla.clone(),
+        }
+    }
+
+    /// §λ-L-E Fase 5 — Heal IR lowering.
+    fn visit_heal(&self, n: &HealDefinition) -> IRHeal {
+        IRHeal {
+            node_type: "heal",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            source: n.source.clone(),
+            on_level: if n.on_level.is_empty() { "doubt".to_string() } else { n.on_level.clone() },
+            mode: if n.mode.is_empty() { "human_in_loop".to_string() } else { n.mode.clone() },
+            scope: n.scope.clone(),
+            review_sla: n.review_sla.clone(),
+            shield_ref: n.shield_ref.clone(),
+            max_patches: n.max_patches,
+        }
+    }
+
+    /// §λ-L-E Fase 9 — Component IR lowering.
+    fn visit_component(&self, n: &ComponentDefinition) -> IRComponent {
+        IRComponent {
+            node_type: "component",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            renders: n.renders.clone(),
+            via_shield: n.via_shield.clone(),
+            on_interact: n.on_interact.clone(),
+            render_hint: if n.render_hint.is_empty() {
+                "custom".to_string()
+            } else {
+                n.render_hint.clone()
+            },
+        }
+    }
+
+    /// §λ-L-E Fase 9 — View IR lowering.
+    fn visit_view(&self, n: &ViewDefinition) -> IRView {
+        IRView {
+            node_type: "view",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            title: n.title.clone(),
+            components: n.components.clone(),
+            route: n.route.clone(),
+        }
+    }
+
+    /// §λ-L-E Fase 4 — Session IR lowering.
+    fn visit_session(&self, n: &SessionDefinition) -> IRSession {
+        let roles = n
+            .roles
+            .iter()
+            .map(|r| IRSessionRole {
+                node_type: "session_role",
+                source_line: r.loc.line,
+                source_column: r.loc.column,
+                name: r.name.clone(),
+                steps: r
+                    .steps
+                    .iter()
+                    .map(|s| IRSessionStep {
+                        node_type: "session_step",
+                        source_line: s.loc.line,
+                        source_column: s.loc.column,
+                        op: s.op.clone(),
+                        message_type: s.message_type.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        IRSession {
+            node_type: "session",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            roles,
+        }
+    }
+
+    /// §λ-L-E Fase 4 — Topology IR lowering.
+    fn visit_topology(&self, n: &TopologyDefinition) -> IRTopology {
+        IRTopology {
+            node_type: "topology",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            nodes: n.nodes.clone(),
+            edges: n
+                .edges
+                .iter()
+                .map(|e| IRTopologyEdge {
+                    node_type: "topology_edge",
+                    source_line: e.loc.line,
+                    source_column: e.loc.column,
+                    source: e.source.clone(),
+                    target: e.target.clone(),
+                    session_ref: e.session_ref.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    /// §λ-L-E Fase 3 — Ensemble IR lowering.
+    fn visit_ensemble(&self, n: &EnsembleDefinition) -> IREnsemble {
+        IREnsemble {
+            node_type: "ensemble",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            observations: n.observations.clone(),
+            quorum: n.quorum,
+            aggregation: if n.aggregation.is_empty() {
+                "majority".to_string()
+            } else {
+                n.aggregation.clone()
+            },
+            certainty_mode: if n.certainty_mode.is_empty() {
+                "min".to_string()
+            } else {
+                n.certainty_mode.clone()
+            },
         }
     }
 

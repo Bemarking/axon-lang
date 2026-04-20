@@ -372,3 +372,103 @@ impl Lexer {
         self.emit(ttype, &word, start_line, start_col);
     }
 }
+
+#[cfg(test)]
+mod fase_1_to_5_end_to_end {
+    //! Lexer integration tests covering the new Fase 1–5 keywords end-to-end.
+    //! These feed real source text through the lexer and assert the emitted
+    //! TokenTypes — closing the loop beyond the unit tests in `tokens.rs`.
+    use super::*;
+
+    fn kinds(source: &str) -> Vec<TokenType> {
+        Lexer::new(source, "<test>")
+            .tokenize()
+            .expect("lex ok")
+            .into_iter()
+            .map(|t| t.ttype)
+            .collect()
+    }
+
+    #[test]
+    fn resource_decl_tokenizes() {
+        let kinds = kinds("resource Db { kind: postgres lifetime: linear }");
+        assert!(kinds.contains(&TokenType::Resource));
+        assert!(kinds.contains(&TokenType::LBrace));
+        assert!(kinds.contains(&TokenType::RBrace));
+    }
+
+    #[test]
+    fn fabric_manifest_observe_tokenize() {
+        let src = r#"
+            fabric Vpc { provider: aws region: "us-east-1" zones: 2 }
+            manifest M { resources: [Db] fabric: Vpc }
+            observe O { sources: [M] quorum: 1 on_partition: degrade }
+        "#;
+        let k = kinds(src);
+        assert!(k.contains(&TokenType::Fabric));
+        assert!(k.contains(&TokenType::Manifest));
+        assert!(k.contains(&TokenType::Observe));
+    }
+
+    #[test]
+    fn reconcile_lease_ensemble_tokenize() {
+        let src = r#"
+            reconcile R { manifest: M observe: O max_retries: 3 period: "60s" }
+            lease L { resource: Db ttl: "30m" renewable: true }
+            ensemble E { daemons: [] quorum: 1 disagreement: degrade }
+        "#;
+        let k = kinds(src);
+        assert!(k.contains(&TokenType::Reconcile));
+        assert!(k.contains(&TokenType::Lease));
+        assert!(k.contains(&TokenType::Ensemble));
+    }
+
+    #[test]
+    fn topology_and_session_pi_calculus_tokenize() {
+        let src = r#"
+            session S {
+              client: [send Request end]
+              server: [receive Request end]
+            }
+            topology T { nodes: [A, B] edges: [A -> B : S] }
+        "#;
+        let k = kinds(src);
+        assert!(k.contains(&TokenType::Session));
+        assert!(k.contains(&TokenType::Send));
+        assert!(k.contains(&TokenType::Receive));
+        assert!(k.contains(&TokenType::End));
+        assert!(k.contains(&TokenType::Topology));
+    }
+
+    #[test]
+    fn immune_reflex_heal_tokenize() {
+        let src = r#"
+            immune I { sensitivity: 0.5 window: "1m" baseline: "7d" action: alert }
+            reflex Rf { on: drift action: throttle }
+            heal H { target: I max_patches: 3 rollback_on: divergence }
+        "#;
+        let k = kinds(src);
+        assert!(k.contains(&TokenType::Immune));
+        assert!(k.contains(&TokenType::Reflex));
+        assert!(k.contains(&TokenType::Heal));
+    }
+
+    #[test]
+    fn new_keywords_do_not_collide_with_identifiers() {
+        // Identifiers that look similar must still lex as Identifier, not keyword.
+        let k = kinds("resource_group manifested observer reconciled leased");
+        for tt in k.iter() {
+            assert!(
+                !matches!(
+                    tt,
+                    TokenType::Resource
+                        | TokenType::Manifest
+                        | TokenType::Observe
+                        | TokenType::Reconcile
+                        | TokenType::Lease
+                ),
+                "near-match identifier wrongly classified as keyword: {tt:?}"
+            );
+        }
+    }
+}
