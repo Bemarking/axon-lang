@@ -1,0 +1,55 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Python build / test artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.venv/
+venv/
+env/
+
+# Docs and repo-only material (not needed at runtime)
+docs/
+STRUCTURE.md
+tests/
+
+# Infrastructure (deployed from the host, not baked into the image)
+infrastructure/
+
+# Local agent / IDE workspaces
+.claude/
+.agent/
+.axon-dev/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (belt-and-suspenders — the image must never carry these)
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.yaml
+secrets.yml
+
+# CI / workflow config (not runtime code)
+.github/

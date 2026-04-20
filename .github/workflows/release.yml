@@ -1,0 +1,179 @@
+name: Enterprise Release
+
+# Builds and publishes the axon-enterprise container image to Amazon ECR
+# Private on every `v*` tag.  The image bundles the pinned axon-lang
+# Rust binary with the Python enterprise layer (RBAC, SSO, Audit,
+# Metering, Observability, Studio).
+#
+# ─── Prerequisites (configured once, out-of-band) ──────────────────
+#
+# 1. Amazon ECR Private repository:
+#        aws ecr create-repository \
+#          --repository-name axon-enterprise \
+#          --image-scanning-configuration scanOnPush=true \
+#          --image-tag-mutability IMMUTABLE
+#
+# 2. IAM role `github-actions-enterprise-publisher` in the account
+#    that owns the ECR repo, with:
+#
+#      • Trust policy: GitHub OIDC provider
+#        (token.actions.githubusercontent.com), condition
+#        `sub: repo:Bemarking/axon-enterprise:ref:refs/tags/v*`
+#
+#      • Permission policy: ecr:GetAuthorizationToken (resource: *)
+#        plus push permissions on the `axon-enterprise` repo ARN:
+#          ecr:BatchCheckLayerAvailability,
+#          ecr:InitiateLayerUpload, ecr:UploadLayerPart,
+#          ecr:CompleteLayerUpload, ecr:PutImage, ecr:BatchGetImage
+#
+# 3. Repository-level GitHub variables:
+#      AWS_ACCOUNT_ID   — 12-digit AWS account owning the ECR repo
+#      AWS_REGION       — region of the ECR repo (e.g., us-east-1)
+#
+# 4. Grant pull permission to each enterprise customer via an ECR
+#    repository policy (cross-account) or per-customer IAM user.
+#
+# Tagging strategy:
+#   - vX.Y.Z  (exact, immutable — the canonical production tag)
+#   - X.Y     (floats forward within a minor — operator convenience)
+#   - latest  intentionally NOT published: operators must pin.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to release (e.g. v1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write   # Required for OIDC → AWS STS
+
+env:
+  ECR_REPOSITORY: axon-enterprise
+
+jobs:
+  build-and-push:
+    name: Build + push multi-arch image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: ver
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.version }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([.-].+)?$'; then
+            echo "Invalid tag: $TAG (expected vX.Y.Z or vX.Y.Z-suffix)" >&2
+            exit 1
+          fi
+          VER="${TAG#v}"
+          MINOR="$(echo "$VER" | cut -d. -f1-2)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
+          echo "Release: tag=$TAG version=$VER minor=$MINOR"
+
+      - name: Resolve pinned axon-lang version from pyproject
+        id: axon
+        run: |
+          set -euo pipefail
+          AXON=$(python - <<'PY'
+          import tomllib, sys
+          with open("pyproject.toml", "rb") as f:
+              t = tomllib.load(f)
+          for dep in t["project"]["dependencies"]:
+              if dep.startswith("axon-lang"):
+                  # Supports >=, ==, ~= specifiers.
+                  for op in (">=", "==", "~="):
+                      if op in dep:
+                          print(dep.split(op, 1)[1].strip())
+                          sys.exit(0)
+              # Fallthrough: unknown spec format
+          sys.exit("Could not parse axon-lang pin from pyproject.toml")
+          PY
+          )
+          echo "version=$AXON" >> "$GITHUB_OUTPUT"
+          echo "axon-lang pin: $AXON"
+
+      - name: Set build metadata
+        id: meta
+        run: |
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "vcs_ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU (multi-arch emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-enterprise-publisher
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-enterprise-${{ steps.ver.outputs.version }}
+
+      - name: Login to Amazon ECR Private
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Verify ECR repository exists
+        run: |
+          set -euo pipefail
+          aws ecr describe-repositories \
+            --repository-names "${{ env.ECR_REPOSITORY }}" \
+            --region "${{ vars.AWS_REGION }}" >/dev/null
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.enterprise
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            AXON_VERSION=${{ steps.axon.outputs.version }}
+            IMAGE_VERSION=${{ steps.ver.outputs.version }}
+            VCS_REF=${{ steps.meta.outputs.vcs_ref }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.ver.outputs.version }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.ver.outputs.minor }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.version=${{ steps.ver.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.meta.outputs.vcs_ref }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.build_date }}
+
+      - name: Image pull commands (summary)
+        run: |
+          REG="${{ steps.login-ecr.outputs.registry }}"
+          REPO="${{ env.ECR_REPOSITORY }}"
+          VER="${{ steps.ver.outputs.version }}"
+          MINOR="${{ steps.ver.outputs.minor }}"
+          {
+            echo "## Published image"
+            echo ""
+            echo "| Tag | Pull command |"
+            echo "|---|---|"
+            echo "| \`${VER}\` | \`docker pull ${REG}/${REPO}:${VER}\` |"
+            echo "| \`${MINOR}\` | \`docker pull ${REG}/${REPO}:${MINOR}\` |"
+            echo ""
+            echo "bundles \`axon-lang\` **${{ steps.axon.outputs.version }}** (Rust binary) + axon-enterprise **${VER}**"
+          } >> "$GITHUB_STEP_SUMMARY"

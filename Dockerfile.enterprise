@@ -1,0 +1,100 @@
+# ═══════════════════════════════════════════════════════════════════
+#  Axon Enterprise — production container image
+#
+#  Stage 1  (axon-binary):  fetch self-contained Rust binary for the
+#                           pinned axon-lang version from the upstream
+#                           GitHub release asset.  Architecture is
+#                           resolved from Docker's TARGETARCH so the
+#                           same Dockerfile builds amd64 and arm64.
+#
+#  Stage 2  (python-layer): install the axon_enterprise Python package
+#                           into an isolated prefix; keeps runtime image
+#                           free of build tooling.
+#
+#  Stage 3  (runtime):      minimal Python 3.12 slim base with the
+#                           Rust binary on PATH and the enterprise
+#                           layer importable.  Runs as a non-root
+#                           user on ports 8000 (HTTP) / 8001 (WS).
+# ═══════════════════════════════════════════════════════════════════
+
+# ─── Stage 1: axon-lang Rust binary ──────────────────────────────────
+FROM debian:bookworm-slim AS axon-binary
+ARG AXON_VERSION=1.3.1
+ARG TARGETARCH
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates tar \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) AXON_ARCH=linux-x86_64 ;; \
+      arm64) AXON_ARCH=linux-aarch64 ;; \
+      *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    URL="https://github.com/Bemarking/axon-lang/releases/download/v${AXON_VERSION}/axon-${AXON_ARCH}.tar.gz"; \
+    echo "Downloading ${URL}"; \
+    curl --fail --location --silent --show-error "${URL}" -o /tmp/axon.tar.gz; \
+    mkdir -p /opt/axon; \
+    tar -xzf /tmp/axon.tar.gz -C /opt/axon --strip-components=0; \
+    chmod +x /opt/axon/axon; \
+    /opt/axon/axon --version
+
+# ─── Stage 2: Python enterprise layer ────────────────────────────────
+FROM python:3.12-slim AS python-layer
+WORKDIR /build
+
+COPY pyproject.toml README.md ./
+COPY axon_enterprise ./axon_enterprise
+
+# Install into an isolated prefix so the runtime stage only copies
+# what it needs (no build tooling, no pip cache).
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir --prefix=/opt/enterprise .
+
+# ─── Stage 3: runtime ────────────────────────────────────────────────
+FROM python:3.12-slim
+
+# Non-root user for the service process.
+RUN groupadd --system axon \
+    && useradd --system --gid axon --home-dir /app --shell /usr/sbin/nologin axon \
+    && mkdir -p /app /app/config /app/logs \
+    && chown -R axon:axon /app
+
+# Bring in the Rust binary and the Python enterprise layer.
+COPY --from=axon-binary /opt/axon/axon /usr/local/bin/axon
+COPY --from=python-layer /opt/enterprise /usr/local
+
+# Feature flags (override at deploy time).
+ENV AXON_RBAC_ENABLED=true \
+    AXON_SSO_PROVIDER=saml \
+    AXON_AUDIT_ENABLED=true \
+    AXON_METERING_ENABLED=true \
+    LOG_LEVEL=info \
+    LOG_FORMAT=json \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+USER axon
+
+# 8000 = HTTP API, 8001 = WebSocket.
+EXPOSE 8000 8001
+
+# Default to serving the axon-lang runtime on 0.0.0.0:8000.  Operators
+# can override CMD to run migrations, one-off tools, etc.
+ENTRYPOINT ["/usr/local/bin/axon"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8000"]
+
+# Metadata (OCI labels) — consumed by registries and scanners.
+ARG VCS_REF=""
+ARG BUILD_DATE=""
+ARG IMAGE_VERSION=""
+LABEL org.opencontainers.image.title="axon-enterprise" \
+      org.opencontainers.image.description="Axon Enterprise Edition — RBAC, SSO, Audit, Metering" \
+      org.opencontainers.image.vendor="Bemarking AI S.A.S." \
+      org.opencontainers.image.source="https://github.com/Bemarking/axon-enterprise" \
+      org.opencontainers.image.licenses="Commercial" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
