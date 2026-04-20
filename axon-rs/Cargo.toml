@@ -1,9 +1,9 @@
 [package]
 name = "axon"
-version = "1.0.0"
+version = "1.3.1"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
 edition = "2021"
-description = "AXON v1.0.0 - Native Rust runtime (production-hardened with Phase K systems)"
+description = "AXON v1.3.1 — Native Rust runtime with byte-identical parity vs Python reference; Cognitive I/O (§λ-L-E Fases 1-9) including component/view UI primitives with compile-time compliance"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

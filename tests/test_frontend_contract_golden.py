@@ -161,7 +161,10 @@ def test_compile_stdout_golden_contract() -> None:
     assert meta["source"].endswith("examples/contract_analyzer.axon")
     assert "/" in meta["source"]
     assert meta["backend"] == "anthropic"
-    assert meta["axon_version"] == "1.0.0"
+    # Lives in lockstep with `axon.__version__` and `pyproject.toml`.
+    # Bumped to 1.3.1 alongside Fase 8 (Rust runtime + byte-identical
+    # parity) and Fase 9 (UI cognitiva — component/view primitives).
+    assert meta["axon_version"] == "1.3.1"
 
     _assert_ir_node_shape(payload["personas"][0], "name")
     _assert_ir_node_shape(payload["contexts"][0], "name", "memory_scope", "language", "depth")

@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>AXON</strong> <em>v1.0.0</em><br>
+  <strong>AXON</strong> <em>v1.3.1</em><br>
   The first formal cognitive language for AI — now with <strong>Cognitive I/O</strong>
   for compile-time compliant infrastructure.
 </p>
@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.0.0-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.3.1-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-production-brightgreen" alt="Status: Production">
   <img src="https://img.shields.io/badge/rust-native-orange" alt="Rust Native">
   <img src="https://img.shields.io/badge/rust%20parity-byte--identical-brightgreen" alt="Byte-identical Rust parity">
@@ -138,7 +138,7 @@ Remove the `shield` line and `axon check` fails with *"endpoint 'Api' sends regu
 
 ## Production Status (Phase K + Phases 1–9)
 
-AXON v1.0.0 is **production-ready**. The full stack is cross-validated:
+AXON v1.3.1 is **production-ready**. The full stack is cross-validated:
 
 - ✅ All 47 cognitive primitives + 18 Cognitive-I/O primitives wired and cross-validated
 - ✅ 282 HTTP routes tested end-to-end
@@ -204,9 +204,9 @@ flow AnalyzeContract(doc: Document) -> StructuredReport {
 
 ---
 
-## Native Rust Runtime (v1.0.0)
+## Native Rust Runtime (v1.3.x — byte-identical with Python reference)
 
-AXON v1.0.0 ships a **production-hardened** native Rust runtime server with **282 HTTP routes**, **47/47 cognitive primitives** wired to runtime, a full **ℰMCP** (Epistemic Model Context Protocol) implementation, **PostgreSQL persistence**, **structured observability via tracing**, and **LLM call resilience** (retry + circuit breaker + fallback chains).
+AXON v1.3.1 ships a **production-hardened** native Rust runtime server with **282 HTTP routes**, **65 primitives** (47 cognitive + 18 Cognitive I/O) wired to runtime, a full **ℰMCP** (Epistemic Model Context Protocol) implementation, **PostgreSQL persistence**, **structured observability via tracing**, **LLM call resilience** (retry + circuit breaker + fallback chains), and — since v1.3.0 — **byte-identical CLI parity with the Python reference implementation** for `check`, `compile`, `dossier`, `sbom`, `audit`, and `evidence-package` (verified on every push by `.github/workflows/rust_parity.yml`).
 
 **Production Foundation (Phase K):**
 - **Observability**: JSON structured logging with request tracing, daily log rotation, configurable levels
@@ -245,9 +245,9 @@ curl -X POST http://localhost:3000/v1/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-### Phase K — Production Hardening for v1.0.0
+### Phase K — Production Hardening (v1.0.0 foundation)
 
-AXON v1.0.0 launched with three production-critical systems:
+AXON v1.0.0 launched with three production-critical systems that remain the foundation of every subsequent minor release:
 
 #### 1. Observability (K1)
 - **Structured logging** via `tracing` crate with JSON output
@@ -4392,9 +4392,19 @@ know {
                               Typed Output (validated, traced, epistemic)
 ```
 
-**v1.0.0 metrics: 58,389 source lines · 26,968 test lines · 282 routes · 179 structs · 738 tests · 47/47 primitives**
+**v1.3.1 metrics: ~96K source lines · ~40K test lines · 282 routes · 65 primitives · 3,740 Python + 1,758 Rust = 5,498 tests passing · 108 mapped external-audit controls across 4 frameworks**
 
-### 47 Cognitive Primitives (100% wired to runtime)
+> **Versioning trail (semver MINOR bumps, all backward-compatible):**
+> - **v1.0.0** — Initial Phase K production release (47 cognitive primitives, 738 tests)
+> - **v1.1.0** — Fases 1–5 Cognitive I/O: `resource` / `fabric` / `manifest` / `observe` / `reconcile` / `lease` / `ensemble` / `topology` / `session` / `immune` / `reflex` / `heal`
+> - **v1.2.0** — Fases 6–7.x ESK: `compliance` annotations + Regulatory Type Theory + audit engine (108 controls across SOC 2 / ISO 27001 / FIPS 140-3 / CC EAL 4+)
+> - **v1.3.0** — Fase 8: native Rust runtime with byte-identical parity + CLI parity (`dossier` / `sbom` / `audit` / `evidence-package`) + binary distribution
+> - **v1.3.1** — Fase 9: UI cognitiva declarativa core primitives (`component` / `view` + compile-time compliance contract); renderers deferred to v1.4.x
+
+### 65 Primitives — 47 Cognitive + 18 Cognitive I/O (100% wired to runtime)
+
+**Block 1 — the 47 original Cognitive Primitives:**
+
 
 | Primitive  | Keyword      | What it represents                                   |
 | ---------- | ------------ | ---------------------------------------------------- |
@@ -4448,6 +4458,29 @@ know {
 | AxonEndpoint | `axonendpoint` (`axpoint`) | Native HTTP boundary primitive — typed ingress, flow dispatch, and holographic endpoint telemetry |
 | AxonStore  | `axonstore`  | Transactional persistence — ACID-guaranteed CRUD with HoTT schema validation     |
 | APX        | `apx`        | Epistemic dependency manager — MEC/PCC verification, EPR ranking, quarantine, and compliance gates |
+
+**Block 2 — the 18 Cognitive I/O primitives (Fases 1–9, λ-L-E calculus):**
+
+| Primitive  | Keyword       | Phase | What it represents                                           |
+| ---------- | ------------- | ----- | ------------------------------------------------------------ |
+| Resource   | `resource`    | 1     | Linear/affine/persistent infrastructure token (DB, cache, bucket, GPU) under Linear Logic |
+| Fabric     | `fabric`      | 1     | Topological substrate (VPC, cluster, namespace) under Separation Logic `*` disjointness  |
+| Manifest   | `manifest`    | 1     | Declarative belief about desired shape + κ (regulatory class) annotations |
+| Observe    | `observe`     | 1     | Quorum-gated state snapshot producing a ΛD envelope ⟨c, τ, ρ, δ⟩; `on_partition: fail` ≡ void (D4) |
+| Reconcile  | `reconcile`   | 3     | Active-Inference control loop: observe → Jaccard drift → shield gate → on_drift action (Free Energy Principle) |
+| Lease      | `lease`       | 3     | τ-decaying affine capability; post-expiry use is a CT-2 *Anchor Breach* (D2) |
+| Ensemble   | `ensemble`    | 3     | Byzantine quorum aggregator with common-knowledge `Cφ` fusion (Fagin–Halpern) |
+| Topology   | `topology`    | 4     | Typed directed graph over declared entities with Honda-liveness deadlock detection |
+| Session    | `session`     | 4     | π-calculus binary session type — Honda–Vasconcelos duality enforced at compile time |
+| Send       | `send`        | 4     | Session step — emit a message of type T                      |
+| Receive    | `receive`     | 4     | Session step — block-await a message of type T               |
+| Immune     | `immune`      | 5     | KL-divergence + Free-Energy anomaly sensor with temporal decay (paper §5.2–5.3) |
+| Reflex     | `reflex`      | 5     | Deterministic O(1) LLM-free motor response with HMAC-signed traces + idempotency (paper §4.2) |
+| Heal       | `heal`        | 5     | Linear-Logic one-shot patch kernel with `audit_only` / `human_in_loop` / `adversarial` modes (paper §6–7) |
+| Compliance | `compliance`  | 6.1   | κ regulatory class annotation (HIPAA, PCI_DSS, GDPR, SOX, SOC2, ISO27001, FISMA, GxP, CCPA, NIST_800_53) enforced at compile time |
+| Endpoint   | `axonendpoint`| 6.1   | HTTP boundary with compile-time `shield.compliance ⊇ type.compliance` coverage rule (Regulatory Type Theory) |
+| Component  | `component`   | 9     | Reusable UI fragment with `renders` + `via_shield` + `on_interact` — regulated types require shield coverage at compile time |
+| View       | `view`        | 9     | Top-level UI screen composing declared components with optional `route` + session-typed reactivity (deferred to §9.3.b/§9.4.b renderers) |
 
 ### Epistemic Type System (Partial Order Lattice)
 
@@ -4548,9 +4581,11 @@ axon-constructor/
 
 ## Installation
 
-> **Migrating from a previous version?** Axon is no longer distributed via `pip`.
-> `pip install axon-lang` is retired. Axon v1.0.0 is a self-contained native binary
-> built in Rust — no Python, no interpreter, no runtime dependencies.
+> **Two equivalent channels as of v1.3.0** — pick whichever fits your toolchain:
+> - **Python** via `pip install axon-lang` — the formal reference implementation. All 65 primitives, full CLI, PyPI-published.
+> - **Rust** via the pre-built native binary (see Option 1 below). Byte-identical output on `check` / `compile` / `dossier` / `sbom` / `audit` / `evidence-package` — no Python interpreter required. Rust still depends on a Python install only if you run `axon run` with an LLM backend (external API call).
+>
+> A CI parity gate (`.github/workflows/rust_parity.yml`) enforces byte-identical equivalence on every push, so you can switch channels mid-project without observable differences in audit artefacts.
 
 ### Option 1 — Download the binary (recommended)
 

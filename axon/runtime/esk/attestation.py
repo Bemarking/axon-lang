@@ -33,6 +33,21 @@ from .compliance import REGISTRY as COMPLIANCE_REGISTRY, classify_sector
 from .provenance import canonical_bytes, content_hash
 
 
+def _axon_version() -> str:
+    """Resolve the live axon package version at call time.
+
+    Imported lazily so `attestation.py` does not fail if `axon/__init__.py`
+    imports this module during package initialisation. Falls back to a
+    static fallback only if the package is unimportable (never expected
+    in production).
+    """
+    try:
+        from axon import __version__ as _v
+        return _v
+    except Exception:  # noqa: BLE001
+        return "1.3.1"
+
+
 @dataclass(frozen=True)
 class SbomEntry:
     """One declaration in the SBOM."""
@@ -123,7 +138,9 @@ def _ir_node_hash(node: Any) -> str:
     return content_hash(payload)
 
 
-def generate_sbom(program: IRProgram, *, axon_version: str = "1.0.0") -> SupplyChainSBOM:
+def generate_sbom(program: IRProgram, *, axon_version: str | None = None) -> SupplyChainSBOM:
+    if axon_version is None:
+        axon_version = _axon_version()
     """Build an SBOM from an IRProgram — pure function, deterministic."""
     entries: list[SbomEntry] = []
     for kind, attr in _KIND_TO_ATTR:
@@ -179,9 +196,11 @@ class ComplianceDossier:
 def generate_dossier(
     program: IRProgram,
     *,
-    axon_version: str = "1.0.0",
+    axon_version: str | None = None,
 ) -> ComplianceDossier:
     """Distill an IRProgram into a regulatory dossier for audits."""
+    if axon_version is None:
+        axon_version = _axon_version()
     all_classes: set[str] = set()
     entries_per_class: dict[str, int] = {}
 
@@ -272,10 +291,12 @@ class InTotoStatement:
 def generate_in_toto_statement(
     program: IRProgram,
     *,
-    axon_version: str = "1.0.0",
+    axon_version: str | None = None,
     builder_id: str = "https://axon-lang.io/builders/compiler@v1",
     subject_name: str = "axon-program",
 ) -> InTotoStatement:
+    if axon_version is None:
+        axon_version = _axon_version()
     """Emit an in-toto v1 Statement whose predicate is SLSA Provenance v1.
 
     The predicate captures:
