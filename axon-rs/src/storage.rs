@@ -476,7 +476,7 @@ mod tests {
         let hib = HibernationRow {
             tenant_id: "default".into(),
             id: "h1".into(),
-            name: "kivi_agent".into(),
+            name: "example_agent".into(),
             operation: "process_document".into(),
             status: "active".into(),
             checkpoints: serde_json::json!([]),

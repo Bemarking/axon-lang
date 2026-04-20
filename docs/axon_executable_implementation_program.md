@@ -128,7 +128,7 @@ Esto evita que el historial de versiones internas confunda actividad con progres
 
 ## Regla de Early Adopter
 
-`KiviEnterprise` se asume como primer early adopter exigente de produccion.
+Se asume un early adopter empresarial exigente de produccion como referencia mental.
 
 Eso significa:
 

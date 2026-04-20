@@ -91,8 +91,8 @@ variable "rds_multi_az" {
   type        = bool
   default     = false
   # M5 evaluation (PENDIENTE): enable cuando se active paid tier
-  # Rationale: Axon Enterprise SaaS must meet 99.9% uptime SLA for early adopters
-  # (Kivi KAS). Single-AZ RDS has no failover; an AZ outage means full downtime.
+  # Rationale: Axon Enterprise SaaS must meet 99.9% uptime SLA for production
+  # adopters. Single-AZ RDS has no failover; an AZ outage means full downtime.
   # Cost delta: ~$35/month for db.t3.small Multi-AZ vs $17/month single-AZ.
   # ACTION: set to true after upgrading AWS account and instance class.
 }

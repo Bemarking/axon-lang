@@ -36,7 +36,7 @@ import axon.security.{NoHallucination, NoBias}
 The lexer tokenized them, the parser produced `ImportNode` AST nodes, the type checker validated them, and the IR generator lowered them to `IRImport` — but **nothing resolved them**. The `_resolve_run()` method in `ir_generator.py` only searched local symbol tables (`self._personas`, `self._anchors`, etc.), meaning any cross-file reference required duplicate inline stubs:
 
 ```axon
-// kivi_brain.axon — the canonical source
+// expert_module.axon — the canonical source
 persona Expert {
     domain ["medicine", "diagnostics"]
     tone "precise"

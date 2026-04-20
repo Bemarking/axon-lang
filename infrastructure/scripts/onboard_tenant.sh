@@ -13,7 +13,7 @@
 #   export AWS_REGION="us-east-1"                  # optional, default us-east-1
 #   export AXON_API_URL="https://your-axon-server"  # optional, for key registration
 #
-#   ./onboard_tenant.sh --id kivi-kas --name "Kivi KAS" --plan enterprise
+#   ./onboard_tenant.sh --id example-tenant --name "Example Tenant" --plan enterprise
 #
 # Options:
 #   -i | --id       Tenant slug (required, lowercase alphanumeric + hyphens)

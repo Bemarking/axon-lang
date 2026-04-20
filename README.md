@@ -44,7 +44,7 @@ It is **not** a Python library, a LangChain wrapper, or a YAML DSL.
 
 ## Production Status (Phase K)
 
-AXON v1.0.0 is **production-ready** and powering **Kivi KAS**, the first early-adopter SaaS cognitive agent. Kivi KAS validates the full stack:
+AXON v1.0.0 is **production-ready**. The full stack is cross-validated:
 
 - ✅ All 47 cognitive primitives wired and cross-validated
 - ✅ 282 HTTP routes tested end-to-end
@@ -54,7 +54,7 @@ AXON v1.0.0 is **production-ready** and powering **Kivi KAS**, the first early-a
 - ✅ 1,466 tests passing (0 failures)
 - ✅ Zero "por ahora", zero "lo mínimo" — production-complete
 
-Built by **Bemarking AI S.A.S.** for cognitive AI applications that require formal semantics, reliability, and epistemic rigor.
+Designed for cognitive AI applications that require formal semantics, reliability, and epistemic rigor.
 
 ```axon
 persona LegalExpert {
@@ -4461,7 +4461,7 @@ Pre-built executables for Linux, macOS, and Windows are available on the
 
 ```bash
 # Add to PATH, then:
-axon run kivi_brain.axon
+axon run program.axon
 ```
 
 ### Option 2 — Build from source
@@ -4478,7 +4478,7 @@ cd axon/axon-rs
 cargo build --release
 
 # Run a program
-./target/release/axon run kivi_brain.axon
+./target/release/axon run program.axon
 ```
 
 ### Option 3 — Serve mode (HTTP API)
@@ -4617,7 +4617,7 @@ cargo test --test integration              # Integration tests only
 | `test_k5_resilient_backend_all_providers_initialized` | 7 providers in Closed state |
 | `test_k5_resilient_backend_circuit_reset` | Manual reset via admin endpoint |
 | `test_k5_storage_dispatcher_in_memory` | Save/load round-trip (in-memory) |
-| `test_k5_hibernation_lifecycle_kivi_kas` | Create → checkpoint → suspend → resume |
+| `test_k5_hibernation_lifecycle_agent` | Create → checkpoint → suspend → resume |
 | `test_k5_server_config_new_fields` | `log_format`, `log_file`, `database_url` |
 | `test_k5_server_state_has_storage_and_resilient_backend` | Storage + resilience in ServerState |
 | `test_k5_health_endpoint_with_tracing_middleware` | `/v1/health` with request tracing |

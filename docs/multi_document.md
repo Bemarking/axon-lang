@@ -1,7 +1,7 @@
 # Multi-Document Navigation: A Formal Framework for Cross-Corpus Cognitive Retrieval
 
 **AXON Research Paper — Feature Proposal v0.16**\
-**Authors:** Ricardo Velit, AXON Core Team\
+**Authors:** AXON Core Team\
 **Date:** March 16, 2026\
 **Status:** Research & Design Phase\
 **Classification:** Epistemology · Graph Theory · Modal Logic · Type Theory
