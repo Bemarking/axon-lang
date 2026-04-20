@@ -112,10 +112,13 @@ jobs:
           (cd . && sha256sum *.json *.zip) > EVIDENCE_SHA256.txt
           cat EVIDENCE_SHA256.txt
 
-      - name: Fail the build if readiness < threshold
-        # Optional guard: keep merges green only if the code-side
-        # controls already pass.  Pending_external is tolerated — it
-        # requires an accredited lab / CPA firm.
+      - name: Fail the build if code-side readiness < threshold
+        # Keep merges green only if the code-side controls already pass.
+        # Pending_external is excluded from the denominator — those
+        # controls (CAVP lab, CMVP submission, on-module KATs, power-on
+        # self-tests) require an accredited lab / CPA firm and are
+        # inherently out of engineering's reach.  Raw `readiness_percent`
+        # is printed for visibility but the gate uses code-side-only.
         env:
           READINESS_FLOOR: "80"
         run: |
@@ -126,12 +129,21 @@ jobs:
           floor = float(os.environ["READINESS_FLOOR"])
           failed = []
           for name, summary in data["summary"].items():
-              pct = summary["readiness_percent"]
-              print(f"{name}: {pct:.1f}% ready ({summary['ready']}/{summary['total']})")
-              if pct < floor:
-                  failed.append((name, pct))
+              raw = summary["readiness_percent"]
+              total = summary["total"]
+              ready = summary["ready"]
+              pending_external = summary.get("pending_external", 0)
+              code_side_total = total - pending_external
+              code_side_pct = (ready / code_side_total * 100.0) if code_side_total else 100.0
+              print(
+                  f"{name}: code-side {code_side_pct:.1f}% "
+                  f"({ready}/{code_side_total}), raw {raw:.1f}% "
+                  f"({ready}/{total}, {pending_external} pending_external)"
+              )
+              if code_side_pct < floor:
+                  failed.append((name, code_side_pct))
           if failed:
-              print("Frameworks below floor:", failed, file=sys.stderr)
+              print("Frameworks below code-side floor:", failed, file=sys.stderr)
               sys.exit(1)
           PY
 
