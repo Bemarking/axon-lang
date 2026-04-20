@@ -1,0 +1,194 @@
+// ═══════════════════════════════════════════════════════════════════
+//  AXON Enterprise — Banking Reference Program
+//
+//  Production-grade template for regulated financial services:
+//    • PCI-DSS 4.0      — cardholder data protection
+//    • SOX              — financial reporting integrity
+//    • SOC 2 Type II    — service-organization controls
+//
+//  Exercises the full Axon stack: types, flows, shields, resources,
+//  manifests, observes, reconcile, lease, immune, reflex, heal —
+//  wired with compile-time compliance coverage (ESK Fase 6.1).
+//
+//  Adopters: change the provider (aws/gcp/azure), the region, and the
+//  specific resource sizing to fit their deployment.  Every other
+//  construct is meant to remain as-is.
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Regulated data types ──────────────────────────────────────────
+// A type carrying compliance [κ] can only flow through a shield whose
+// compliance list covers κ — verified at compile time.
+
+type CardholderData compliance [PCI_DSS] {
+  pan:         String
+  cvv:         String
+  holder_name: String
+}
+
+type TransactionRecord compliance [PCI_DSS, SOX] {
+  amount:      Decimal
+  timestamp:   String
+  merchant_id: String
+}
+
+type FraudScore { risk: RiskScore }
+type RiskScore(0.0..1.0)
+
+// ── Flows ─────────────────────────────────────────────────────────
+
+flow ScorePayment(tx: TransactionRecord) -> FraudScore {
+  step Analyze {
+    ask: "Classify this transaction as legitimate vs fraudulent"
+    output: FraudScore
+  }
+}
+
+flow ProcessPayment(card: CardholderData) -> TransactionRecord {
+  step Charge {
+    ask: "Process payment through the card network"
+    output: TransactionRecord
+  }
+}
+
+// ── Shields (compile-time compliance gates) ───────────────────────
+
+shield PaymentShield {
+  scan:       [prompt_injection, pii_leak, data_exfil]
+  on_breach:  quarantine
+  severity:   critical
+  compliance: [PCI_DSS, SOX, SOC2]
+}
+
+shield ReportingShield {
+  scan:       [prompt_injection, data_exfil]
+  on_breach:  halt
+  severity:   high
+  compliance: [PCI_DSS, SOX, SOC2]
+}
+
+// ── Infrastructure resources ──────────────────────────────────────
+
+resource PrimaryLedger {
+  kind:             postgres
+  endpoint:         "ledger.internal:5432"
+  capacity:         500
+  lifetime:         linear
+  certainty_floor:  0.95
+  shield:           PaymentShield
+}
+
+resource AuditArchive {
+  kind:      s3
+  endpoint:  "s3://bank-audit-archive"
+  lifetime:  persistent
+  shield:    ReportingShield
+}
+
+resource FraudEngine {
+  kind:      compute
+  endpoint:  "fraud-ml.internal:8080"
+  capacity:  8
+  lifetime:  affine
+}
+
+// ── Fabric + manifest ─────────────────────────────────────────────
+
+fabric RegulatedVPC {
+  provider:   aws
+  region:     "us-east-1"
+  zones:      3
+  ephemeral:  false
+  shield:     PaymentShield
+}
+
+manifest ProductionBanking {
+  resources:   [PrimaryLedger, AuditArchive, FraudEngine]
+  fabric:      RegulatedVPC
+  region:      "us-east-1"
+  zones:       3
+  compliance:  [PCI_DSS, SOX, SOC2]
+}
+
+// ── Quorum-gated observation (Fagin-Halpern Cφ) ───────────────────
+
+observe BankingHealth from ProductionBanking {
+  sources:         [prometheus, cloudwatch, healthcheck]
+  quorum:          2
+  timeout:         5s
+  on_partition:    fail
+  certainty_floor: 0.90
+}
+
+// ── Control cognitivo (Fase 3) ────────────────────────────────────
+
+reconcile LedgerReconciler {
+  observe:      BankingHealth
+  threshold:    0.90
+  tolerance:    0.05
+  on_drift:     provision
+  shield:       PaymentShield
+  max_retries:  3
+}
+
+lease WriteWindow {
+  resource:    PrimaryLedger
+  duration:    30s
+  acquire:     on_start
+  on_expire:   anchor_breach
+}
+
+// ── Cognitive Immune System (Fase 5) ──────────────────────────────
+
+immune BankingVigil {
+  watch:        [BankingHealth]
+  sensitivity:  0.85
+  baseline:     learned
+  window:       500
+  scope:        tenant
+  tau:          300s
+  decay:        exponential
+}
+
+reflex BlockSuspicious {
+  trigger:   BankingVigil
+  on_level:  doubt
+  action:    quarantine
+  scope:     tenant
+  sla:       1ms
+}
+
+heal PatchVulnerability {
+  source:       BankingVigil
+  on_level:     doubt
+  mode:         human_in_loop
+  scope:        tenant
+  review_sla:   24h
+  shield:       PaymentShield
+  max_patches:  3
+}
+
+// ── HTTP boundary — compliance-gated endpoint ─────────────────────
+
+axonendpoint PaymentsAPI {
+  method:      post
+  path:        "/v1/payments"
+  body:        CardholderData
+  execute:     ProcessPayment
+  output:      TransactionRecord
+  shield:      PaymentShield
+  compliance:  [PCI_DSS, SOX]
+  retries:     1
+  timeout:     30s
+}
+
+axonendpoint FraudAPI {
+  method:      post
+  path:        "/v1/fraud/score"
+  body:        TransactionRecord
+  execute:     ScorePayment
+  output:      FraudScore
+  shield:      ReportingShield
+  compliance:  [SOX, SOC2]
+  retries:     2
+  timeout:     5s
+}

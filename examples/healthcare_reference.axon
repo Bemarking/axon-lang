@@ -1,0 +1,178 @@
+// ═══════════════════════════════════════════════════════════════════
+//  AXON Enterprise — Healthcare Reference Program
+//
+//  Production-grade template for regulated healthcare services:
+//    • HIPAA     — US Protected Health Information
+//    • GDPR      — EU personal data protection
+//    • GxP       — clinical/pharma quality guidelines
+//    • SOC 2     — service-organization controls
+//
+//  Exercises Axon's full stack with compile-time κ coverage for
+//  hospitals, telemedicine, diagnostics, and clinical-trial systems.
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Regulated data types ──────────────────────────────────────────
+
+type PatientRecord compliance [HIPAA, GDPR] {
+  patient_id:     String
+  ssn:            String
+  diagnosis_code: String
+  dob:            String
+}
+
+type ClinicalTrial compliance [HIPAA, GxP] {
+  trial_id:      String
+  participant_id: String
+  observation:    String
+}
+
+type DiagnosticReport { summary: String }
+
+// ── Flows ─────────────────────────────────────────────────────────
+
+flow SummarizeRecord(rec: PatientRecord) -> DiagnosticReport {
+  step Review {
+    ask: "Produce a clinical summary for the attending physician"
+    output: DiagnosticReport
+  }
+}
+
+flow AnalyzeTrial(entry: ClinicalTrial) -> DiagnosticReport {
+  step Analyze {
+    ask: "Analyze this trial observation against protocol"
+    output: DiagnosticReport
+  }
+}
+
+// ── Shields — PHI / clinical gates ────────────────────────────────
+
+shield PHIShield {
+  scan:       [prompt_injection, pii_leak, data_exfil]
+  on_breach:  quarantine
+  severity:   critical
+  redact:     [ssn, dob]
+  compliance: [HIPAA, GDPR, SOC2]
+}
+
+shield TrialShield {
+  scan:       [prompt_injection, pii_leak]
+  on_breach:  halt
+  severity:   critical
+  compliance: [HIPAA, GxP, SOC2]
+}
+
+// ── Infrastructure ────────────────────────────────────────────────
+
+resource EHRDatabase {
+  kind:             postgres
+  endpoint:         "ehr.clinical.internal:5432"
+  capacity:         300
+  lifetime:         linear
+  certainty_floor:  0.95
+  shield:           PHIShield
+}
+
+resource TrialArchive {
+  kind:      s3
+  endpoint:  "s3://clinical-trial-archive"
+  lifetime:  persistent
+  shield:    TrialShield
+}
+
+resource InferenceEngine {
+  kind:      compute
+  endpoint:  "dx-ml.internal:9090"
+  capacity:  4
+  lifetime:  affine
+}
+
+fabric ClinicalCloud {
+  provider:   aws
+  region:     "us-east-1"
+  zones:      3
+  ephemeral:  false
+  shield:     PHIShield
+}
+
+manifest ProductionHealthcare {
+  resources:   [EHRDatabase, TrialArchive, InferenceEngine]
+  fabric:      ClinicalCloud
+  region:      "us-east-1"
+  zones:       3
+  compliance:  [HIPAA, GDPR, GxP, SOC2]
+}
+
+// ── Observation + control ─────────────────────────────────────────
+
+observe ClinicalHealth from ProductionHealthcare {
+  sources:         [prometheus, cloudwatch, healthcheck]
+  quorum:          2
+  timeout:         5s
+  on_partition:    fail
+  certainty_floor: 0.92
+}
+
+reconcile EHRReconciler {
+  observe:      ClinicalHealth
+  threshold:    0.92
+  tolerance:    0.05
+  on_drift:     provision
+  shield:       PHIShield
+  max_retries:  3
+}
+
+// ── Immune system — PHI exfiltration defense ──────────────────────
+
+immune ClinicalVigil {
+  watch:        [ClinicalHealth]
+  sensitivity:  0.90
+  baseline:     learned
+  window:       800
+  scope:        tenant
+  tau:          300s
+  decay:        exponential
+}
+
+reflex QuarantineExfil {
+  trigger:   ClinicalVigil
+  on_level:  speculate
+  action:    quarantine
+  scope:     tenant
+  sla:       1ms
+}
+
+heal MitigateExposure {
+  source:       ClinicalVigil
+  on_level:     doubt
+  mode:         human_in_loop
+  scope:        tenant
+  review_sla:   1h
+  shield:       PHIShield
+  max_patches:  3
+}
+
+// ── HTTP boundaries ───────────────────────────────────────────────
+
+axonendpoint PatientAPI {
+  method:      post
+  path:        "/v1/patients/summary"
+  body:        PatientRecord
+  execute:     SummarizeRecord
+  output:      DiagnosticReport
+  shield:      PHIShield
+  compliance:  [HIPAA, GDPR]
+  retries:     1
+  timeout:     15s
+}
+
+axonendpoint ClinicalTrialAPI {
+  method:      post
+  path:        "/v1/trials/entry"
+  body:        ClinicalTrial
+  execute:     AnalyzeTrial
+  output:      DiagnosticReport
+  shield:      TrialShield
+  compliance:  [HIPAA, GxP]
+  retries:     2
+  timeout:     10s
+}

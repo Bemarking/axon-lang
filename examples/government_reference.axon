@@ -1,0 +1,174 @@
+// ═══════════════════════════════════════════════════════════════════
+//  AXON Enterprise — Government Digital Services Reference
+//
+//  Production-grade template for public-sector digital services:
+//    • FISMA         — Federal Information Security Management Act
+//    • NIST 800-53   — security and privacy controls catalog
+//    • SOC 2         — service-organization controls
+//
+//  Exercises Axon's full stack with compile-time regulatory coverage
+//  suited for government cloud deployments (GovCloud, FedRAMP High).
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Regulated data types ──────────────────────────────────────────
+
+type CitizenRecord compliance [FISMA, NIST_800_53] {
+  citizen_id:     String
+  case_number:    String
+  submitted_text: String
+}
+
+type ClassifiedReport compliance [FISMA, NIST_800_53, SOC2] {
+  report_id:       String
+  classification:  String
+  summary:         String
+}
+
+// ── Flows ─────────────────────────────────────────────────────────
+
+flow TriageCase(record: CitizenRecord) -> ClassifiedReport {
+  step Classify {
+    ask: "Route this citizen submission to the correct department"
+    output: ClassifiedReport
+  }
+}
+
+flow IssueResponse(report: ClassifiedReport) -> ClassifiedReport {
+  step Compose {
+    ask: "Compose an official response letter"
+    output: ClassifiedReport
+  }
+}
+
+// ── Shields — government-grade gates ──────────────────────────────
+
+shield FederalGate {
+  scan:       [prompt_injection, pii_leak, data_exfil]
+  on_breach:  quarantine
+  severity:   critical
+  compliance: [FISMA, NIST_800_53, SOC2]
+}
+
+shield PublicRecordShield {
+  scan:       [prompt_injection, data_exfil]
+  on_breach:  halt
+  severity:   high
+  compliance: [FISMA, NIST_800_53]
+}
+
+// ── Infrastructure ────────────────────────────────────────────────
+
+resource CaseVault {
+  kind:             postgres
+  endpoint:         "cases.govcloud.internal:5432"
+  capacity:         200
+  lifetime:         linear
+  certainty_floor:  0.95
+  shield:           FederalGate
+}
+
+resource DocumentStore {
+  kind:      s3
+  endpoint:  "s3://gov-case-documents"
+  lifetime:  persistent
+  shield:    PublicRecordShield
+}
+
+fabric GovCloudVPC {
+  provider:   aws
+  region:     "us-gov-east-1"
+  zones:      3
+  ephemeral:  false
+  shield:     FederalGate
+}
+
+manifest ProductionGov {
+  resources:   [CaseVault, DocumentStore]
+  fabric:      GovCloudVPC
+  region:      "us-gov-east-1"
+  zones:       3
+  compliance:  [FISMA, NIST_800_53, SOC2]
+}
+
+// ── Observation + control ─────────────────────────────────────────
+
+observe GovHealth from ProductionGov {
+  sources:         [prometheus, cloudwatch, healthcheck, siem_feed]
+  quorum:          3
+  timeout:         5s
+  on_partition:    fail
+  certainty_floor: 0.92
+}
+
+reconcile CaseReconciler {
+  observe:      GovHealth
+  threshold:    0.92
+  tolerance:    0.05
+  on_drift:     alert
+  shield:       FederalGate
+  max_retries:  2
+}
+
+// ── Immune system — classified-data threat detection ──────────────
+
+immune GovVigil {
+  watch:        [GovHealth]
+  sensitivity:  0.90
+  baseline:     learned
+  window:       1000
+  scope:        tenant
+  tau:          600s
+  decay:        exponential
+}
+
+reflex EmitToSOC {
+  trigger:   GovVigil
+  on_level:  speculate
+  action:    emit
+  scope:     tenant
+  sla:       1ms
+}
+
+reflex LockOnDoubt {
+  trigger:   GovVigil
+  on_level:  doubt
+  action:    quarantine
+  scope:     tenant
+  sla:       1ms
+}
+
+heal IncidentResponse {
+  source:       GovVigil
+  on_level:     doubt
+  mode:         human_in_loop
+  scope:        tenant
+  review_sla:   2h
+  shield:       FederalGate
+  max_patches:  2
+}
+
+// ── HTTP boundaries ───────────────────────────────────────────────
+
+axonendpoint CaseIntakeAPI {
+  method:      post
+  path:        "/v1/cases"
+  body:        CitizenRecord
+  execute:     TriageCase
+  output:      ClassifiedReport
+  shield:      FederalGate
+  compliance:  [FISMA, NIST_800_53]
+  retries:     2
+  timeout:     15s
+}
+
+axonendpoint ResponseAPI {
+  method:      post
+  path:        "/v1/cases/respond"
+  body:        ClassifiedReport
+  execute:     IssueResponse
+  output:      ClassifiedReport
+  shield:      FederalGate
+  compliance:  [FISMA, NIST_800_53, SOC2]
+  retries:     1
+  timeout:     30s
+}
