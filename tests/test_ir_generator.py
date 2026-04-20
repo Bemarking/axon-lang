@@ -1322,3 +1322,409 @@ class TestIRGeneratorDAG:
         flow = _flow(steps=steps)
         with pytest.raises(AxonIRError, match="Cycle detected"):
             gen.generate(_program(flow))
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  I/O COGNITIVO — λ-L-E Fase 1: IR lowering + Intention Tree
+# ═══════════════════════════════════════════════════════════════════
+
+
+from axon.compiler.lexer import Lexer
+from axon.compiler.parser import Parser
+from axon.compiler.ir_nodes import (
+    IRFabric,
+    IRIntentionTree,
+    IRManifest,
+    IRObserve,
+    IRResource,
+)
+
+
+def _compile(source: str):
+    """Lex + parse + generate IR. Assumes source is type-check-clean."""
+    tokens = Lexer(source).tokenize()
+    tree = Parser(tokens).parse()
+    return IRGenerator().generate(tree)
+
+
+class TestIOCognitivoIR:
+    """IR Generator lowers I/O primitives to IR nodes and an Intention Tree."""
+
+    def test_resource_lowered(self):
+        ir = _compile('''resource Db {
+  kind: postgres
+  endpoint: "db:5432"
+  capacity: 10
+  lifetime: linear
+  certainty_floor: 0.9
+}''')
+        assert len(ir.resources) == 1
+        r = ir.resources[0]
+        assert isinstance(r, IRResource)
+        assert r.name == "Db"
+        assert r.kind == "postgres"
+        assert r.lifetime == "linear"
+        assert r.certainty_floor == 0.9
+
+    def test_fabric_lowered(self):
+        ir = _compile('''fabric Vpc {
+  provider: aws
+  region: "us-east-1"
+  zones: 2
+  ephemeral: true
+}''')
+        assert len(ir.fabrics) == 1
+        f = ir.fabrics[0]
+        assert isinstance(f, IRFabric)
+        assert f.provider == "aws"
+        assert f.zones == 2
+        assert f.ephemeral is True
+
+    def test_manifest_lowered_and_added_to_intention_tree(self):
+        ir = _compile('''resource Db { kind: postgres }
+manifest M { resources: [Db] }''')
+        assert len(ir.manifests) == 1
+        m = ir.manifests[0]
+        assert isinstance(m, IRManifest)
+        assert m.resources == ("Db",)
+        # The manifest is a provisioning intention — must be in the tree
+        assert ir.intention_tree is not None
+        assert isinstance(ir.intention_tree, IRIntentionTree)
+        assert any(op.name == "M" for op in ir.intention_tree.operations)
+
+    def test_observe_lowered_and_added_to_intention_tree(self):
+        ir = _compile('''resource Db { kind: postgres }
+manifest M { resources: [Db] }
+observe S from M {
+  sources: [prometheus, cloudwatch]
+  quorum: 1
+  timeout: 3s
+  on_partition: shield_quarantine
+  certainty_floor: 0.8
+}''')
+        assert len(ir.observations) == 1
+        o = ir.observations[0]
+        assert isinstance(o, IRObserve)
+        assert o.target == "M"
+        assert o.sources == ("prometheus", "cloudwatch")
+        assert o.on_partition == "shield_quarantine"
+        # Intention tree contains both manifest M and observation S
+        tree = ir.intention_tree
+        assert tree is not None
+        names = {op.name for op in tree.operations}
+        assert names == {"M", "S"}
+
+    def test_intention_tree_is_none_when_no_io_declared(self):
+        ir = _compile('''persona E { tone: precise }''')
+        assert ir.intention_tree is None
+        assert ir.manifests == ()
+        assert ir.observations == ()
+
+    def test_ir_program_serializes_intention_tree(self):
+        ir = _compile('''resource Db { kind: postgres }
+manifest M { resources: [Db] }''')
+        d = ir.to_dict()
+        assert d["intention_tree"]["node_type"] == "intention_tree"
+        assert len(d["intention_tree"]["operations"]) == 1
+        assert d["intention_tree"]["operations"][0]["node_type"] == "manifest"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  CONTROL COGNITIVO — Fase 3 IR lowering (reconcile, lease, ensemble)
+# ═══════════════════════════════════════════════════════════════════
+
+
+from axon.compiler.ir_nodes import IREnsemble, IRLease, IRReconcile
+
+
+_IR_PROLOGUE = '''
+resource Db { kind: postgres lifetime: affine }
+resource Db2 { kind: postgres lifetime: affine }
+manifest M { resources: [Db] }
+manifest M2 { resources: [Db2] }
+observe O from M { sources: [prometheus] quorum: 1 timeout: 5s }
+observe O2 from M2 { sources: [prometheus] quorum: 1 timeout: 5s }
+'''
+
+
+class TestControlCognitivoIR:
+
+    def test_reconcile_lowered(self):
+        ir = _compile(_IR_PROLOGUE + '''
+reconcile R { observe: O threshold: 0.85 tolerance: 0.1 on_drift: provision max_retries: 5 }
+''')
+        assert len(ir.reconciles) == 1
+        r = ir.reconciles[0]
+        assert isinstance(r, IRReconcile)
+        assert r.observe_ref == "O"
+        assert r.threshold == 0.85
+        assert r.tolerance == 0.10
+        assert r.on_drift == "provision"
+        assert r.max_retries == 5
+        # Reconcile is NOT auto-added to the Intention Tree — it is a
+        # control-loop declaration, not a one-shot intention.
+        tree = ir.intention_tree
+        assert tree is not None
+        assert all(op.node_type != "reconcile" for op in tree.operations)
+
+    def test_lease_lowered(self):
+        ir = _compile(_IR_PROLOGUE + '''
+lease L { resource: Db duration: 30s acquire: on_start on_expire: anchor_breach }
+''')
+        assert len(ir.leases) == 1
+        lease = ir.leases[0]
+        assert isinstance(lease, IRLease)
+        assert lease.resource_ref == "Db"
+        assert lease.duration == "30s"
+        assert lease.on_expire == "anchor_breach"
+
+    def test_ensemble_lowered(self):
+        ir = _compile(_IR_PROLOGUE + '''
+ensemble E { observations: [O, O2] quorum: 2 aggregation: byzantine certainty_mode: harmonic }
+''')
+        assert len(ir.ensembles) == 1
+        e = ir.ensembles[0]
+        assert isinstance(e, IREnsemble)
+        assert e.observations == ("O", "O2")
+        assert e.aggregation == "byzantine"
+        assert e.certainty_mode == "harmonic"
+
+    def test_ir_program_serializes_control_cognitivo(self):
+        ir = _compile(_IR_PROLOGUE + '''
+reconcile R { observe: O }
+lease L { resource: Db duration: 1s }
+ensemble E { observations: [O, O2] }
+''')
+        d = ir.to_dict()
+        assert len(d["reconciles"]) == 1
+        assert len(d["leases"]) == 1
+        assert len(d["ensembles"]) == 1
+        assert d["reconciles"][0]["node_type"] == "reconcile"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  TOPOLOGY & SESSION TYPES — Fase 4 IR lowering
+# ═══════════════════════════════════════════════════════════════════
+
+
+from axon.compiler.ir_nodes import IRSession, IRTopology
+
+
+class TestTopologySessionIR:
+
+    _IR_PROLOGUE = '''
+resource A { kind: postgres }
+resource B { kind: redis }
+session DbSess {
+  client: [send Query, receive Result, end]
+  server: [receive Query, send Result, end]
+}
+'''
+
+    def test_session_lowered_with_dual_roles(self):
+        ir = _compile(self._IR_PROLOGUE)
+        assert len(ir.sessions) == 1
+        s = ir.sessions[0]
+        assert isinstance(s, IRSession)
+        assert s.name == "DbSess"
+        assert len(s.roles) == 2
+        client, server = s.roles
+        assert client.name == "client"
+        assert server.name == "server"
+        assert client.steps[0].op == "send"
+        assert client.steps[0].message_type == "Query"
+
+    def test_topology_lowered(self):
+        ir = _compile(self._IR_PROLOGUE + '''
+topology Prod {
+  nodes: [A, B]
+  edges: [A -> B : DbSess]
+}''')
+        assert len(ir.topologies) == 1
+        t = ir.topologies[0]
+        assert isinstance(t, IRTopology)
+        assert t.name == "Prod"
+        assert t.nodes == ("A", "B")
+        assert len(t.edges) == 1
+        assert (t.edges[0].source, t.edges[0].target, t.edges[0].session_ref) == (
+            "A", "B", "DbSess",
+        )
+
+    def test_ir_program_serializes_topology_and_session(self):
+        ir = _compile(self._IR_PROLOGUE + '''
+topology Prod { nodes: [A, B] edges: [A -> B : DbSess] }''')
+        d = ir.to_dict()
+        assert len(d["sessions"]) == 1
+        assert len(d["topologies"]) == 1
+        assert d["sessions"][0]["node_type"] == "session"
+        assert d["topologies"][0]["edges"][0]["node_type"] == "topology_edge"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  COMPOSITION TEST — Fase 4 closing criterion (endpoint↔daemon↔resource)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestPhase4Composition:
+    """End-to-end: an axonendpoint, a daemon, and a resource composed in
+    a single typed topology that compiles cleanly and reaches the IR."""
+
+    _SRC = '''
+type ContractInput { sql: String }
+type ContractReport { rows: integer }
+
+flow AnalyzeContract(req: ContractInput) -> ContractReport {
+  step S { ask: "Analyze" output: ContractReport }
+}
+
+resource PrimaryDb { kind: postgres lifetime: linear }
+
+shield EdgeShield {
+  scan: [prompt_injection]
+  on_breach: quarantine
+  severity: medium
+}
+
+axonendpoint ContractsAPI {
+  method: post
+  path: "/api/contracts"
+  body: ContractInput
+  execute: AnalyzeContract
+  output: ContractReport
+  shield: EdgeShield
+}
+
+daemon OrdersDaemon(input: String) -> String {
+  goal: "Process order events"
+  listen "orders" as evt {
+    step Process {
+      ask: "Process: {{evt}}"
+      output: String
+    }
+  }
+}
+
+session ApiToDb {
+  client: [send Query, receive Result, end]
+  server: [receive Query, send Result, end]
+}
+
+session DaemonToDb {
+  client: [send Event, receive Ack, end]
+  server: [receive Event, send Ack, end]
+}
+
+topology ProdSurface {
+  nodes: [ContractsAPI, OrdersDaemon, PrimaryDb]
+  edges: [
+    ContractsAPI -> PrimaryDb : ApiToDb,
+    OrdersDaemon -> PrimaryDb : DaemonToDb
+  ]
+}
+'''
+
+    def test_endpoint_daemon_resource_compose_into_topology(self):
+        ir = _compile(self._SRC)
+        # All five entities in the IR.
+        assert len(ir.endpoints) == 1
+        assert len(ir.daemons) == 1
+        assert len(ir.resources) == 1
+        assert len(ir.sessions) == 2
+        assert len(ir.topologies) == 1
+
+        topo = ir.topologies[0]
+        # The topology connects the endpoint and the daemon to the same
+        # resource through two distinct typed sessions.
+        edges_by_target = {(e.source, e.target): e.session_ref for e in topo.edges}
+        assert edges_by_target[("ContractsAPI", "PrimaryDb")] == "ApiToDb"
+        assert edges_by_target[("OrdersDaemon", "PrimaryDb")] == "DaemonToDb"
+
+    def test_composition_is_deadlock_free(self):
+        """No cycles, no duality violations → type-check passes cleanly."""
+        from axon.compiler.lexer import Lexer
+        from axon.compiler.parser import Parser
+        from axon.compiler.type_checker import TypeChecker
+        tree = Parser(Lexer(self._SRC).tokenize()).parse()
+        errors = TypeChecker(tree).check()
+        assert errors == []
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  COGNITIVE IMMUNE SYSTEM — Fase 5 IR lowering
+# ═══════════════════════════════════════════════════════════════════
+
+
+from axon.compiler.ir_nodes import IRHeal, IRImmune, IRReflex
+
+
+class TestImmuneSystemIR:
+
+    _SRC = '''
+shield S { scan: [prompt_injection] on_breach: quarantine severity: medium }
+immune Vigil {
+  watch: [Traffic, Queries]
+  sensitivity: 0.9
+  baseline: learned
+  window: 200
+  scope: tenant
+  tau: 300s
+  decay: exponential
+}
+reflex Drop {
+  trigger: Vigil
+  on_level: doubt
+  action: drop
+  scope: tenant
+  sla: 1ms
+}
+heal Patch {
+  source: Vigil
+  on_level: doubt
+  mode: human_in_loop
+  scope: tenant
+  review_sla: 24h
+  shield: S
+  max_patches: 3
+}
+'''
+
+    def test_immune_lowered(self):
+        ir = _compile(self._SRC)
+        assert len(ir.immunes) == 1
+        imm = ir.immunes[0]
+        assert isinstance(imm, IRImmune)
+        assert imm.name == "Vigil"
+        assert imm.watch == ("Traffic", "Queries")
+        assert imm.sensitivity == 0.9
+        assert imm.window == 200
+        assert imm.scope == "tenant"
+        assert imm.decay == "exponential"
+
+    def test_reflex_lowered(self):
+        ir = _compile(self._SRC)
+        assert len(ir.reflexes) == 1
+        r = ir.reflexes[0]
+        assert isinstance(r, IRReflex)
+        assert r.trigger == "Vigil"
+        assert r.on_level == "doubt"
+        assert r.action == "drop"
+
+    def test_heal_lowered(self):
+        ir = _compile(self._SRC)
+        assert len(ir.heals) == 1
+        h = ir.heals[0]
+        assert isinstance(h, IRHeal)
+        assert h.source == "Vigil"
+        assert h.mode == "human_in_loop"
+        assert h.shield_ref == "S"
+        assert h.max_patches == 3
+
+    def test_immune_system_serializes(self):
+        ir = _compile(self._SRC)
+        d = ir.to_dict()
+        assert len(d["immunes"]) == 1
+        assert len(d["reflexes"]) == 1
+        assert len(d["heals"]) == 1
+        assert d["immunes"][0]["node_type"] == "immune"
+        assert d["reflexes"][0]["node_type"] == "reflex"
+        assert d["heals"][0]["node_type"] == "heal"

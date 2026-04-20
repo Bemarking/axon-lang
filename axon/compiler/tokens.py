@@ -161,6 +161,34 @@ class TokenType(Enum):
     # ── AXONENDPOINT KEYWORDS (Reactive Boundary Primitive §AE) ──
     AXONENDPOINT = auto()     # axonendpoint declaration
 
+    # ── I/O COGNITIVO PRIMITIVES (§λ-L-E — Cálculo Lambda Lineal Epistémico) ──
+    RESOURCE = auto()         # resource Name { kind, endpoint, lifetime: linear|affine|persistent, ... }
+    FABRIC = auto()           # fabric Name { provider, region, zones, ephemeral, ... }
+    MANIFEST = auto()         # manifest Name { resources: [...], fabric, compliance: [...], ... }
+    OBSERVE = auto()          # observe Name from Manifest { sources, quorum, timeout, on_partition, ... }
+
+    # ── CONTROL COGNITIVO PRIMITIVES (§λ-L-E Fase 3 — Active-Inference control) ──
+    RECONCILE = auto()        # reconcile Name { observe, threshold, tolerance, on_drift, shield, mandate, max_retries }
+    LEASE = auto()            # lease Name { resource, duration, acquire, on_expire }
+    ENSEMBLE = auto()         # ensemble Name { observations: [...], quorum, aggregation, certainty_mode }
+
+    # ── TOPOLOGY & SESSION PRIMITIVES (§λ-L-E Fase 4 — π-calculus / session types) ──
+    TOPOLOGY = auto()         # topology Name { nodes: [...], edges: [A -> B : Sess, ...] }
+    SESSION = auto()          # session Name { role1: [send T, receive U, ...], role2: [...] }
+    SEND = auto()             # send T (session step)
+    RECEIVE = auto()          # receive T (session step)
+    LOOP = auto()             # loop (session step — repeat from start)
+    END = auto()              # end (session step — terminate)
+
+    # ── IMMUNE SYSTEM PRIMITIVES (§λ-L-E Fase 5 — Cognitive Immune System, per paper_inmune.md) ──
+    IMMUNE = auto()           # immune Name { watch: [...], sensitivity, baseline, scope, tau, decay }
+    REFLEX = auto()           # reflex Name { trigger, on_level, action, scope, sla }
+    HEAL = auto()             # heal Name { source, on_level, mode, scope, review_sla, shield, max_patches }
+
+    # ── UI COGNITIVA DECLARATIVA (§λ-L-E Fase 9 — 100% .axon applications) ──
+    COMPONENT = auto()        # component Name { renders, via_shield, on_interact, render_hint }
+    VIEW = auto()             # view Name { title, components: [...] }
+
     # ── MODIFIERS (run statement modifiers) ───────────────────────
     AS = auto()
     WITHIN = auto()
@@ -378,6 +406,29 @@ KEYWORDS: dict[str, TokenType] = {
     # AxonEndpoint (Reactive Boundary Primitive §AE)
     "axonendpoint": TokenType.AXONENDPOINT,
     "axpoint": TokenType.AXONENDPOINT,
+    # I/O Cognitivo (§λ-L-E — Cálculo Lambda Lineal Epistémico)
+    "resource": TokenType.RESOURCE,
+    "fabric": TokenType.FABRIC,
+    "manifest": TokenType.MANIFEST,
+    "observe": TokenType.OBSERVE,
+    # Control Cognitivo (§λ-L-E Fase 3)
+    "reconcile": TokenType.RECONCILE,
+    "lease": TokenType.LEASE,
+    "ensemble": TokenType.ENSEMBLE,
+    # Topology & Session (§λ-L-E Fase 4)
+    "topology": TokenType.TOPOLOGY,
+    "session": TokenType.SESSION,
+    "send": TokenType.SEND,
+    "receive": TokenType.RECEIVE,
+    "loop": TokenType.LOOP,
+    "end": TokenType.END,
+    # Immune System (§λ-L-E Fase 5)
+    "immune": TokenType.IMMUNE,
+    "reflex": TokenType.REFLEX,
+    "heal": TokenType.HEAL,
+    # UI Cognitiva (§λ-L-E Fase 9)
+    "component": TokenType.COMPONENT,
+    "view":      TokenType.VIEW,
 }
 
 # Duration suffixes recognized by the lexer

@@ -31,7 +31,6 @@ Implementation notes:
     - Anti-windup: integral term clamped to [-100, 100]
     - Thread-safe (stateless between calls)
 
-Author: Ricardo Velit (theoretical framework)
 """
 
 from __future__ import annotations

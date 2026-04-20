@@ -34,28 +34,37 @@ from .ast_nodes import (
     ContextDefinition,
     CorpusDefinition,
     CorroborateNode,
+    DaemonDefinition,
     DataSpaceDefinition,
     DeliberateBlock,
     DrillNode,
     EffectRowNode,
     EpistemicBlock,
+    EnsembleDefinition,
     ExploreNode,
+    FabricDefinition,
     FlowDefinition,
     FocusNode,
     ForInStatement,
     ForgeBlock,
+    ComponentDefinition,
+    HealDefinition,
     HibernateNode,
+    ImmuneDefinition,
     ImportNode,
     IngestNode,
     IntentNode,
     LambdaDataApplyNode,
     LambdaDataDefinition,
+    LeaseDefinition,
     LetStatement,
     MandateApplyNode,
     MandateDefinition,
+    ManifestDefinition,
     MemoryDefinition,
     MutateNode,
     NavigateNode,
+    ObserveDefinition,
     OtsApplyNode,
     OtsDefinition,
     ParallelBlock,
@@ -68,9 +77,14 @@ from .ast_nodes import (
     PurgeNode,
     ReasonChain,
     RecallNode,
+    ReconcileDefinition,
+    ReflexDefinition,
     RefineBlock,
     RememberNode,
+    ResourceDefinition,
     RetrieveNode,
+    SessionDefinition,
+    SessionStep,
     ReturnStatement,
     RunStatement,
     ShieldApplyNode,
@@ -78,10 +92,13 @@ from .ast_nodes import (
     StepNode,
     StreamDefinition,
     ToolDefinition,
+    TopologyDefinition,
+    TopologyEdge,
     TrailNode,
     TransactNode,
     TypeDefinition,
     ValidateGate,
+    ViewDefinition,
     WeaveNode,
 )
 from .errors import AxonTypeError
@@ -393,10 +410,16 @@ class TypeChecker:
         self._symbols = SymbolTable()
         self._errors: list[AxonTypeError] = []
         self._user_types: dict[str, TypeDefinition] = {}
+        # I/O Cognitivo Phase 1 — Linear Logic tracker (λ-L-E)
+        # Maps: resource_name → list of (manifest_name, node_referencing) tuples.
+        # Used to enforce Separation Logic disjointness across manifests:
+        # a `linear` or `affine` resource can belong to at most one manifest.
+        self._resource_usage: dict[str, list[tuple[str, ASTNode]]] = {}
 
     def check(self) -> list[AxonTypeError]:
         """Full type-check pass. Returns all semantic errors found."""
         self._errors = []
+        self._resource_usage = {}
 
         # Phase 1: Register all declarations in the symbol table
         self._register_declarations()
@@ -404,6 +427,12 @@ class TypeChecker:
         # Phase 2: Validate each declaration's body
         for decl in self._program.declarations:
             self._check_declaration(decl)
+
+        # Phase 3: Cross-declaration linearity (Linear + Separation Logic)
+        self._check_resource_linearity()
+
+        # Phase 4: Regulatory coverage (ESK Fase 6.1 — Compile-time Compliance)
+        self._check_regulatory_compliance()
 
         return self._errors
 
@@ -485,8 +514,38 @@ class TypeChecker:
                     pass  # PIX flow-level commands, not declarations
                 case AxonStoreDefinition(name=name):
                     self._register(name, "axonstore", decl)
+                case DaemonDefinition(name=name):
+                    self._register(name, "daemon", decl)
                 case AxonEndpointDefinition(name=name):
                     self._register(name, "axonendpoint", decl)
+                case ResourceDefinition(name=name):
+                    self._register(name, "resource", decl)
+                case FabricDefinition(name=name):
+                    self._register(name, "fabric", decl)
+                case ManifestDefinition(name=name):
+                    self._register(name, "manifest", decl)
+                case ObserveDefinition(name=name):
+                    self._register(name, "observe", decl)
+                case ReconcileDefinition(name=name):
+                    self._register(name, "reconcile", decl)
+                case LeaseDefinition(name=name):
+                    self._register(name, "lease", decl)
+                case EnsembleDefinition(name=name):
+                    self._register(name, "ensemble", decl)
+                case SessionDefinition(name=name):
+                    self._register(name, "session", decl)
+                case TopologyDefinition(name=name):
+                    self._register(name, "topology", decl)
+                case ImmuneDefinition(name=name):
+                    self._register(name, "immune", decl)
+                case ReflexDefinition(name=name):
+                    self._register(name, "reflex", decl)
+                case HealDefinition(name=name):
+                    self._register(name, "heal", decl)
+                case ComponentDefinition(name=name):
+                    self._register(name, "component", decl)
+                case ViewDefinition(name=name):
+                    self._register(name, "view", decl)
                 case PersistNode() | RetrieveNode() | MutateNode() | PurgeNode() | TransactNode():
                     pass  # axonstore CRUD ops validated at Phase 2
 
@@ -567,6 +626,34 @@ class TypeChecker:
                 self._check_axonstore(decl)
             case AxonEndpointDefinition():
                 self._check_axonendpoint(decl)
+            case ResourceDefinition():
+                self._check_resource(decl)
+            case FabricDefinition():
+                self._check_fabric(decl)
+            case ManifestDefinition():
+                self._check_manifest(decl)
+            case ObserveDefinition():
+                self._check_observe(decl)
+            case ReconcileDefinition():
+                self._check_reconcile(decl)
+            case LeaseDefinition():
+                self._check_lease(decl)
+            case EnsembleDefinition():
+                self._check_ensemble(decl)
+            case SessionDefinition():
+                self._check_session(decl)
+            case TopologyDefinition():
+                self._check_topology(decl)
+            case ImmuneDefinition():
+                self._check_immune(decl)
+            case ReflexDefinition():
+                self._check_reflex(decl)
+            case HealDefinition():
+                self._check_heal(decl)
+            case ComponentDefinition():
+                self._check_component(decl)
+            case ViewDefinition():
+                self._check_view(decl)
             case PersistNode() | RetrieveNode() | MutateNode() | PurgeNode() | TransactNode():
                 self._check_store_crud(decl)
             case LetStatement():
@@ -1271,6 +1358,1215 @@ class TypeChecker:
                 f"axonendpoint '{node.name}' retries must be >= 0, got {node.retries}",
                 node,
             )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  I/O COGNITIVO — Cálculo Lambda Lineal Epistémico (λ-L-E) · Fase 1
+    #
+    #  Validates the four infrastructure primitives against:
+    #    • Linear Logic (Girard 1987)     — affine/linear resource usage
+    #    • Separation Logic (O'Hearn)     — resource disjointness (*)
+    #    • Epistemic Lattice (Fagin et al) — c, quorum, partition semantics
+    # ═══════════════════════════════════════════════════════════════
+
+    _VALID_RESOURCE_LIFETIMES = frozenset({"linear", "affine", "persistent"})
+    _VALID_PARTITION_POLICIES = frozenset({"fail", "shield_quarantine"})
+    _VALID_PROVIDERS = frozenset({
+        "aws", "gcp", "azure", "kubernetes", "bare_metal", "custom",
+    })
+
+    def _check_resource(self, node: ResourceDefinition) -> None:
+        if not node.name:
+            self._emit("resource requires a name", node)
+
+        if not node.kind:
+            self._emit(f"resource '{node.name}' requires 'kind: <provider-kind>'", node)
+
+        if node.lifetime not in self._VALID_RESOURCE_LIFETIMES:
+            self._emit(
+                f"resource '{node.name}' has invalid lifetime '{node.lifetime}'. "
+                f"Valid: linear | affine | persistent",
+                node,
+            )
+
+        if node.certainty_floor is not None:
+            if not 0.0 <= node.certainty_floor <= 1.0:
+                self._emit(
+                    f"resource '{node.name}' certainty_floor must be in [0.0, 1.0], "
+                    f"got {node.certainty_floor}",
+                    node,
+                )
+
+        if node.capacity is not None and node.capacity < 0:
+            self._emit(
+                f"resource '{node.name}' capacity must be >= 0, got {node.capacity}",
+                node,
+            )
+
+        if node.shield_ref:
+            sym = self._symbols.lookup(node.shield_ref)
+            if sym is None:
+                self._emit(
+                    f"resource '{node.name}' references undefined shield "
+                    f"'{node.shield_ref}'",
+                    node,
+                )
+            elif sym.kind != "shield":
+                self._emit(
+                    f"resource '{node.name}' shield ref '{node.shield_ref}' "
+                    f"is a {sym.kind}, not a shield",
+                    node,
+                )
+
+    def _check_fabric(self, node: FabricDefinition) -> None:
+        if not node.name:
+            self._emit("fabric requires a name", node)
+
+        if node.provider and node.provider not in self._VALID_PROVIDERS:
+            self._emit(
+                f"fabric '{node.name}' has unknown provider '{node.provider}'. "
+                f"Valid: {', '.join(sorted(self._VALID_PROVIDERS))}",
+                node,
+            )
+
+        if node.zones is not None and node.zones < 1:
+            self._emit(
+                f"fabric '{node.name}' zones must be >= 1, got {node.zones}",
+                node,
+            )
+
+        if node.shield_ref:
+            sym = self._symbols.lookup(node.shield_ref)
+            if sym is None:
+                self._emit(
+                    f"fabric '{node.name}' references undefined shield "
+                    f"'{node.shield_ref}'",
+                    node,
+                )
+            elif sym.kind != "shield":
+                self._emit(
+                    f"fabric '{node.name}' shield ref '{node.shield_ref}' "
+                    f"is a {sym.kind}, not a shield",
+                    node,
+                )
+
+    def _check_manifest(self, node: ManifestDefinition) -> None:
+        if not node.name:
+            self._emit("manifest requires a name", node)
+
+        # Separation Logic (*): resources listed in a single manifest must be
+        # pairwise disjoint — no name may appear twice.
+        seen: set[str] = set()
+        for res_name in node.resources:
+            if res_name in seen:
+                self._emit(
+                    f"manifest '{node.name}' lists resource '{res_name}' "
+                    f"more than once (Separation Logic disjointness violation)",
+                    node,
+                )
+                continue
+            seen.add(res_name)
+
+            sym = self._symbols.lookup(res_name)
+            if sym is None:
+                self._emit(
+                    f"manifest '{node.name}' references undefined resource "
+                    f"'{res_name}'",
+                    node,
+                )
+                continue
+            if sym.kind != "resource":
+                self._emit(
+                    f"manifest '{node.name}' reference '{res_name}' is a "
+                    f"{sym.kind}, not a resource",
+                    node,
+                )
+                continue
+
+            # Register usage for Phase 3 cross-manifest linearity check.
+            self._resource_usage.setdefault(res_name, []).append(
+                (node.name, node)
+            )
+
+        if node.fabric_ref:
+            sym = self._symbols.lookup(node.fabric_ref)
+            if sym is None:
+                self._emit(
+                    f"manifest '{node.name}' references undefined fabric "
+                    f"'{node.fabric_ref}'",
+                    node,
+                )
+            elif sym.kind != "fabric":
+                self._emit(
+                    f"manifest '{node.name}' fabric ref '{node.fabric_ref}' "
+                    f"is a {sym.kind}, not a fabric",
+                    node,
+                )
+
+        if node.zones is not None and node.zones < 1:
+            self._emit(
+                f"manifest '{node.name}' zones must be >= 1, got {node.zones}",
+                node,
+            )
+
+        # compliance κ values are free-form identifiers (HIPAA, PCI_DSS, GDPR,
+        # SOX, FINRA, ISO27001, ...). Validation is deferred to Fase 6.1
+        # where the regulatory type lattice is formalized.
+
+    def _check_observe(self, node: ObserveDefinition) -> None:
+        if not node.name:
+            self._emit("observe requires a name", node)
+
+        if not node.target:
+            self._emit(
+                f"observe '{node.name}' requires 'from <ManifestName>'",
+                node,
+            )
+        else:
+            sym = self._symbols.lookup(node.target)
+            if sym is None:
+                self._emit(
+                    f"observe '{node.name}' references undefined manifest "
+                    f"'{node.target}'",
+                    node,
+                )
+            elif sym.kind != "manifest":
+                self._emit(
+                    f"observe '{node.name}' target '{node.target}' is a "
+                    f"{sym.kind}, not a manifest",
+                    node,
+                )
+
+        if not node.sources:
+            self._emit(
+                f"observe '{node.name}' requires at least one source "
+                f"(sources: [prometheus, ...])",
+                node,
+            )
+
+        if node.quorum is not None:
+            if node.quorum < 1:
+                self._emit(
+                    f"observe '{node.name}' quorum must be >= 1, got {node.quorum}",
+                    node,
+                )
+            elif node.sources and node.quorum > len(node.sources):
+                self._emit(
+                    f"observe '{node.name}' quorum ({node.quorum}) exceeds "
+                    f"number of sources ({len(node.sources)})",
+                    node,
+                )
+
+        if node.on_partition not in self._VALID_PARTITION_POLICIES:
+            # Decision D4 (plan_io_cognitivo.md): partition = ⊥ void = CT-3.
+            # `fail` raises a structural Network Error; `shield_quarantine`
+            # isolates the observation without aborting the program.
+            self._emit(
+                f"observe '{node.name}' has invalid on_partition "
+                f"'{node.on_partition}'. Valid: fail | shield_quarantine",
+                node,
+            )
+
+        if node.certainty_floor is not None:
+            if not 0.0 <= node.certainty_floor <= 1.0:
+                self._emit(
+                    f"observe '{node.name}' certainty_floor must be in "
+                    f"[0.0, 1.0], got {node.certainty_floor}",
+                    node,
+                )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  CONTROL COGNITIVO — Fase 3 (reconcile / lease / ensemble)
+    # ═══════════════════════════════════════════════════════════════
+
+    _VALID_ON_DRIFT = frozenset({"provision", "alert", "refine"})
+    _VALID_LEASE_ACQUIRE = frozenset({"on_start", "on_demand"})
+    _VALID_LEASE_ON_EXPIRE = frozenset({"anchor_breach", "release", "extend"})
+    _VALID_AGGREGATION = frozenset({"majority", "weighted", "byzantine"})
+    _VALID_CERTAINTY_MODE = frozenset({"min", "weighted", "harmonic"})
+
+    def _check_reconcile(self, node: ReconcileDefinition) -> None:
+        if not node.name:
+            self._emit("reconcile requires a name", node)
+
+        if not node.observe_ref:
+            self._emit(
+                f"reconcile '{node.name}' requires 'observe: <ObserveName>'",
+                node,
+            )
+        else:
+            sym = self._symbols.lookup(node.observe_ref)
+            if sym is None:
+                self._emit(
+                    f"reconcile '{node.name}' references undefined observe "
+                    f"'{node.observe_ref}'",
+                    node,
+                )
+            elif sym.kind != "observe":
+                self._emit(
+                    f"reconcile '{node.name}' observe ref '{node.observe_ref}' "
+                    f"is a {sym.kind}, not an observe",
+                    node,
+                )
+
+        if node.threshold is not None and not 0.0 <= node.threshold <= 1.0:
+            self._emit(
+                f"reconcile '{node.name}' threshold must be in [0.0, 1.0], "
+                f"got {node.threshold}",
+                node,
+            )
+
+        if node.tolerance is not None and not 0.0 <= node.tolerance <= 1.0:
+            self._emit(
+                f"reconcile '{node.name}' tolerance must be in [0.0, 1.0], "
+                f"got {node.tolerance}",
+                node,
+            )
+
+        if node.on_drift not in self._VALID_ON_DRIFT:
+            self._emit(
+                f"reconcile '{node.name}' has invalid on_drift "
+                f"'{node.on_drift}'. Valid: provision | alert | refine",
+                node,
+            )
+
+        if node.shield_ref:
+            sym = self._symbols.lookup(node.shield_ref)
+            if sym is None:
+                self._emit(
+                    f"reconcile '{node.name}' references undefined shield "
+                    f"'{node.shield_ref}'",
+                    node,
+                )
+            elif sym.kind != "shield":
+                self._emit(
+                    f"reconcile '{node.name}' shield ref '{node.shield_ref}' "
+                    f"is a {sym.kind}, not a shield",
+                    node,
+                )
+
+        if node.mandate_ref:
+            sym = self._symbols.lookup(node.mandate_ref)
+            if sym is None:
+                self._emit(
+                    f"reconcile '{node.name}' references undefined mandate "
+                    f"'{node.mandate_ref}'",
+                    node,
+                )
+            elif sym.kind != "mandate":
+                self._emit(
+                    f"reconcile '{node.name}' mandate ref '{node.mandate_ref}' "
+                    f"is a {sym.kind}, not a mandate",
+                    node,
+                )
+
+        if node.max_retries < 0:
+            self._emit(
+                f"reconcile '{node.name}' max_retries must be >= 0, got "
+                f"{node.max_retries}",
+                node,
+            )
+
+    def _check_lease(self, node: LeaseDefinition) -> None:
+        if not node.name:
+            self._emit("lease requires a name", node)
+
+        if not node.resource_ref:
+            self._emit(
+                f"lease '{node.name}' requires 'resource: <ResourceName>'",
+                node,
+            )
+        else:
+            sym = self._symbols.lookup(node.resource_ref)
+            if sym is None:
+                self._emit(
+                    f"lease '{node.name}' references undefined resource "
+                    f"'{node.resource_ref}'",
+                    node,
+                )
+            elif sym.kind != "resource":
+                self._emit(
+                    f"lease '{node.name}' resource ref '{node.resource_ref}' "
+                    f"is a {sym.kind}, not a resource",
+                    node,
+                )
+            else:
+                # Decision D2: a `persistent` resource is the exponential `!A`,
+                # which does NOT need leasing — its τ is infinite.  Emit an
+                # error to stop the operator from making a meaningless lease.
+                resource_node = sym.node
+                if isinstance(resource_node, ResourceDefinition):
+                    if resource_node.lifetime == "persistent":
+                        self._emit(
+                            f"lease '{node.name}' targets resource "
+                            f"'{node.resource_ref}' with lifetime 'persistent' "
+                            f"— persistent (!A) resources do not require "
+                            f"leasing; use 'linear' or 'affine' lifetime",
+                            node,
+                        )
+
+        if not node.duration:
+            self._emit(
+                f"lease '{node.name}' requires a 'duration' (e.g. 30s, 5m, 2h)",
+                node,
+            )
+
+        if node.acquire not in self._VALID_LEASE_ACQUIRE:
+            self._emit(
+                f"lease '{node.name}' has invalid acquire '{node.acquire}'. "
+                f"Valid: on_start | on_demand",
+                node,
+            )
+
+        if node.on_expire not in self._VALID_LEASE_ON_EXPIRE:
+            self._emit(
+                f"lease '{node.name}' has invalid on_expire "
+                f"'{node.on_expire}'. Valid: anchor_breach | release | extend",
+                node,
+            )
+
+    def _check_ensemble(self, node: EnsembleDefinition) -> None:
+        if not node.name:
+            self._emit("ensemble requires a name", node)
+
+        if len(node.observations) < 2:
+            self._emit(
+                f"ensemble '{node.name}' requires at least 2 observations "
+                f"for a meaningful Byzantine quorum (got {len(node.observations)})",
+                node,
+            )
+
+        # Separation Logic: observations in an ensemble must be pairwise
+        # distinct — aggregating the same observation N times is a fake
+        # quorum.
+        seen: set[str] = set()
+        for obs_ref in node.observations:
+            if obs_ref in seen:
+                self._emit(
+                    f"ensemble '{node.name}' lists observation '{obs_ref}' "
+                    f"more than once (disjointness violation)",
+                    node,
+                )
+                continue
+            seen.add(obs_ref)
+
+            sym = self._symbols.lookup(obs_ref)
+            if sym is None:
+                self._emit(
+                    f"ensemble '{node.name}' references undefined observe "
+                    f"'{obs_ref}'",
+                    node,
+                )
+                continue
+            if sym.kind != "observe":
+                self._emit(
+                    f"ensemble '{node.name}' member '{obs_ref}' is a "
+                    f"{sym.kind}, not an observe",
+                    node,
+                )
+
+        if node.quorum is not None:
+            if node.quorum < 1:
+                self._emit(
+                    f"ensemble '{node.name}' quorum must be >= 1, got "
+                    f"{node.quorum}",
+                    node,
+                )
+            elif node.observations and node.quorum > len(node.observations):
+                self._emit(
+                    f"ensemble '{node.name}' quorum ({node.quorum}) exceeds "
+                    f"number of observations ({len(node.observations)})",
+                    node,
+                )
+
+        if node.aggregation not in self._VALID_AGGREGATION:
+            self._emit(
+                f"ensemble '{node.name}' has invalid aggregation "
+                f"'{node.aggregation}'. Valid: majority | weighted | byzantine",
+                node,
+            )
+
+        if node.certainty_mode not in self._VALID_CERTAINTY_MODE:
+            self._emit(
+                f"ensemble '{node.name}' has invalid certainty_mode "
+                f"'{node.certainty_mode}'. Valid: min | weighted | harmonic",
+                node,
+            )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  TOPOLOGY & SESSION TYPES — Fase 4 (π-calculus binary sessions)
+    #
+    #  Compile-time guarantees enforced here:
+    #    1. Duality   — exactly two roles per session, dual pairwise.
+    #    2. Closure   — nodes/sessions/types referenced are declared.
+    #    3. Liveness  — directed cycles whose every edge is `receive`-
+    #                   first are flagged as static deadlocks.
+    # ═══════════════════════════════════════════════════════════════
+
+    _NODE_KINDS = frozenset({
+        "resource", "fabric", "manifest", "observe", "axonendpoint",
+        "axonstore", "daemon", "agent", "shield",
+    })
+
+    def _check_session(self, node: SessionDefinition) -> None:
+        if not node.name:
+            self._emit("session requires a name", node)
+
+        # Binary sessions only — exactly two roles.
+        if len(node.roles) != 2:
+            self._emit(
+                f"session '{node.name}' must declare exactly 2 roles "
+                f"(binary session); got {len(node.roles)}",
+                node,
+            )
+            # Cannot duality-check without two roles, but continue with
+            # per-role validation.
+        else:
+            # Role names must be distinct.
+            r1, r2 = node.roles[0], node.roles[1]
+            if r1.name == r2.name:
+                self._emit(
+                    f"session '{node.name}' has duplicate role name "
+                    f"'{r1.name}'",
+                    node,
+                )
+
+        # Per-role: validate every step's op + message_type reference.
+        for role in node.roles:
+            self._check_session_role(node.name, role)
+
+        # Duality is a property of the pair.
+        if len(node.roles) == 2:
+            self._check_session_duality(node)
+
+    def _check_session_role(self, session_name: str, role) -> None:
+        for idx, step in enumerate(role.steps):
+            if step.op not in {"send", "receive", "loop", "end"}:
+                self._emit(
+                    f"session '{session_name}' role '{role.name}' step "
+                    f"#{idx} has invalid op '{step.op}'",
+                    step,
+                )
+                continue
+            if step.op in ("send", "receive") and not step.message_type:
+                self._emit(
+                    f"session '{session_name}' role '{role.name}' step "
+                    f"#{idx} '{step.op}' requires a message type",
+                    step,
+                )
+
+    def _check_session_duality(self, node: SessionDefinition) -> None:
+        r1, r2 = node.roles[0], node.roles[1]
+        if len(r1.steps) != len(r2.steps):
+            self._emit(
+                f"session '{node.name}' duality violation: roles "
+                f"'{r1.name}' ({len(r1.steps)} steps) and '{r2.name}' "
+                f"({len(r2.steps)} steps) have different lengths",
+                node,
+            )
+            return
+        for i, (s1, s2) in enumerate(zip(r1.steps, r2.steps)):
+            if not self._steps_dual(s1, s2):
+                self._emit(
+                    f"session '{node.name}' duality violation at step #{i}: "
+                    f"'{r1.name}' has '{self._format_step(s1)}' but "
+                    f"'{r2.name}' has '{self._format_step(s2)}' "
+                    f"(expected the dual)",
+                    node,
+                )
+
+    @staticmethod
+    def _steps_dual(s1: SessionStep, s2: SessionStep) -> bool:
+        """Honda-Vasconcelos duality: send T ↔ receive T; loop ↔ loop; end ↔ end."""
+        if s1.op == "send" and s2.op == "receive":
+            return s1.message_type == s2.message_type
+        if s1.op == "receive" and s2.op == "send":
+            return s1.message_type == s2.message_type
+        if s1.op == "loop" and s2.op == "loop":
+            return True
+        if s1.op == "end" and s2.op == "end":
+            return True
+        return False
+
+    @staticmethod
+    def _format_step(step: SessionStep) -> str:
+        if step.op in ("send", "receive"):
+            return f"{step.op} {step.message_type}"
+        return step.op
+
+    def _check_topology(self, node: TopologyDefinition) -> None:
+        if not node.name:
+            self._emit("topology requires a name", node)
+
+        seen_nodes: set[str] = set()
+        for n in node.nodes:
+            if n in seen_nodes:
+                self._emit(
+                    f"topology '{node.name}' lists node '{n}' more than once",
+                    node,
+                )
+                continue
+            seen_nodes.add(n)
+
+            sym = self._symbols.lookup(n)
+            if sym is None:
+                self._emit(
+                    f"topology '{node.name}' references undefined node '{n}'",
+                    node,
+                )
+                continue
+            if sym.kind not in self._NODE_KINDS:
+                self._emit(
+                    f"topology '{node.name}' node '{n}' is a {sym.kind} — "
+                    f"not a valid topology entity. Valid kinds: "
+                    f"{', '.join(sorted(self._NODE_KINDS))}",
+                    node,
+                )
+
+        # Edges
+        for edge in node.edges:
+            self._check_topology_edge(node.name, edge, seen_nodes)
+
+        # Liveness: detect deadlock-prone cycles.
+        self._check_topology_liveness(node)
+
+    def _check_topology_edge(
+        self, topology_name: str, edge: TopologyEdge, declared_nodes: set[str]
+    ) -> None:
+        if edge.source not in declared_nodes:
+            self._emit(
+                f"topology '{topology_name}' edge source '{edge.source}' is "
+                f"not in the topology's nodes list",
+                edge,
+            )
+        if edge.target not in declared_nodes:
+            self._emit(
+                f"topology '{topology_name}' edge target '{edge.target}' is "
+                f"not in the topology's nodes list",
+                edge,
+            )
+        if edge.source == edge.target:
+            self._emit(
+                f"topology '{topology_name}' has self-loop edge on "
+                f"'{edge.source}' — π-calculus binary sessions require "
+                f"two distinct endpoints",
+                edge,
+            )
+
+        if not edge.session_ref:
+            self._emit(
+                f"topology '{topology_name}' edge {edge.source}->{edge.target} "
+                f"has no session reference",
+                edge,
+            )
+            return
+        sym = self._symbols.lookup(edge.session_ref)
+        if sym is None:
+            self._emit(
+                f"topology '{topology_name}' edge {edge.source}->{edge.target} "
+                f"references undefined session '{edge.session_ref}'",
+                edge,
+            )
+        elif sym.kind != "session":
+            self._emit(
+                f"topology '{topology_name}' edge {edge.source}->{edge.target} "
+                f"session ref '{edge.session_ref}' is a {sym.kind}, not a session",
+                edge,
+            )
+
+    def _check_topology_liveness(self, node: TopologyDefinition) -> None:
+        """Detect cycles whose every edge starts with `receive` on the source.
+
+        A directed cycle in the topology graph is a *static deadlock* if
+        every node in the cycle is waiting (receive-first) before doing
+        anything else.  A cycle that contains at least one `send`-first
+        edge has progress and is liveness-preserving.
+        """
+        adjacency: dict[str, list[TopologyEdge]] = {}
+        for edge in node.edges:
+            if edge.source and edge.target:
+                adjacency.setdefault(edge.source, []).append(edge)
+
+        cycles = self._find_cycles(adjacency)
+        if not cycles:
+            return
+
+        for cycle in cycles:
+            cycle_edges = self._cycle_to_edges(cycle, node.edges)
+            if all(self._edge_is_receive_first(e) for e in cycle_edges):
+                cycle_str = " -> ".join(cycle + [cycle[0]])
+                self._emit(
+                    f"topology '{node.name}' has a static deadlock: cycle "
+                    f"[{cycle_str}] where every edge waits on receive — "
+                    f"no progress is possible (Honda liveness violation)",
+                    node,
+                )
+
+    def _find_cycles(
+        self, adjacency: dict[str, list[TopologyEdge]]
+    ) -> list[list[str]]:
+        """Tarjan-flavoured DFS that yields one representative per strongly
+        connected component containing at least one back-edge."""
+        color: dict[str, str] = {}
+        stack: list[str] = []
+        cycles: list[list[str]] = []
+
+        def visit(n: str) -> None:
+            color[n] = "gray"
+            stack.append(n)
+            for edge in adjacency.get(n, []):
+                tgt = edge.target
+                if color.get(tgt) == "gray":
+                    if tgt in stack:
+                        idx = stack.index(tgt)
+                        cycles.append(stack[idx:])
+                elif color.get(tgt) is None:
+                    visit(tgt)
+            stack.pop()
+            color[n] = "black"
+
+        for src in list(adjacency.keys()):
+            if color.get(src) is None:
+                visit(src)
+        return cycles
+
+    @staticmethod
+    def _cycle_to_edges(
+        cycle: list[str], edges: list[TopologyEdge]
+    ) -> list[TopologyEdge]:
+        result: list[TopologyEdge] = []
+        n = len(cycle)
+        for i in range(n):
+            src = cycle[i]
+            tgt = cycle[(i + 1) % n]
+            for e in edges:
+                if e.source == src and e.target == tgt:
+                    result.append(e)
+                    break
+        return result
+
+    def _edge_is_receive_first(self, edge: TopologyEdge) -> bool:
+        """Return True if the source role's first step is `receive`.
+
+        Convention (per AST docstring): the source plays the FIRST role
+        of the session; the target plays the SECOND.  An edge is
+        receive-first when the source's role starts by waiting.
+        """
+        sym = self._symbols.lookup(edge.session_ref)
+        if sym is None or not isinstance(sym.node, SessionDefinition):
+            return False  # cannot decide — defer to other checks
+        session = sym.node
+        if not session.roles:
+            return False
+        first_role_steps = session.roles[0].steps
+        if not first_role_steps:
+            return False
+        return first_role_steps[0].op == "receive"
+
+    # ═══════════════════════════════════════════════════════════════
+    #  COGNITIVE IMMUNE SYSTEM — Fase 5 (immune / reflex / heal)
+    #  Per docs/paper_inmune.md §4, §7, §8.  Key regulatory invariants:
+    #    • `scope` is MANDATORY (paper §8.2 — no implicit blast radius).
+    #    • `immune` references must resolve to kind=immune.
+    #    • `reflex.trigger` must be an immune (one-way dependency).
+    #    • `heal.source` must be an immune; mode defaults to
+    #      human_in_loop (compliance, paper §7.2).
+    # ═══════════════════════════════════════════════════════════════
+
+    _VALID_EPISTEMIC_LEVELS = frozenset({"know", "believe", "speculate", "doubt"})
+    _VALID_REFLEX_ACTIONS = frozenset({
+        "drop", "revoke", "emit", "redact", "quarantine", "terminate", "alert",
+    })
+    _VALID_HEAL_MODES = frozenset({"audit_only", "human_in_loop", "adversarial"})
+    _VALID_IMMUNE_SCOPES = frozenset({"tenant", "flow", "global"})
+    _VALID_DECAY = frozenset({"exponential", "linear", "none"})
+
+    def _check_immune(self, node: ImmuneDefinition) -> None:
+        if not node.name:
+            self._emit("immune requires a name", node)
+
+        # Paper §8.2 — scope is mandatory, no implicit global default.
+        if not node.scope:
+            self._emit(
+                f"immune '{node.name}' requires an explicit 'scope' "
+                f"(tenant | flow | global). No implicit default exists — "
+                f"blast radius must be declared (paper §8.2)",
+                node,
+            )
+        elif node.scope not in self._VALID_IMMUNE_SCOPES:
+            self._emit(
+                f"immune '{node.name}' has invalid scope '{node.scope}'. "
+                f"Valid: {', '.join(sorted(self._VALID_IMMUNE_SCOPES))}",
+                node,
+            )
+
+        if not node.watch:
+            self._emit(
+                f"immune '{node.name}' requires a non-empty 'watch' list "
+                f"(observables to monitor)",
+                node,
+            )
+
+        if node.sensitivity is not None:
+            if not 0.0 <= node.sensitivity <= 1.0:
+                self._emit(
+                    f"immune '{node.name}' sensitivity must be in [0.0, 1.0], "
+                    f"got {node.sensitivity}",
+                    node,
+                )
+
+        if node.window < 1:
+            self._emit(
+                f"immune '{node.name}' window must be >= 1, got {node.window}",
+                node,
+            )
+
+        if node.decay not in self._VALID_DECAY:
+            self._emit(
+                f"immune '{node.name}' has invalid decay '{node.decay}'. "
+                f"Valid: exponential | linear | none",
+                node,
+            )
+
+    def _check_reflex(self, node: ReflexDefinition) -> None:
+        if not node.name:
+            self._emit("reflex requires a name", node)
+
+        if not node.scope:
+            self._emit(
+                f"reflex '{node.name}' requires an explicit 'scope' "
+                f"(tenant | flow | global) — paper §8.2",
+                node,
+            )
+        elif node.scope not in self._VALID_IMMUNE_SCOPES:
+            self._emit(
+                f"reflex '{node.name}' has invalid scope '{node.scope}'",
+                node,
+            )
+
+        if not node.trigger:
+            self._emit(
+                f"reflex '{node.name}' requires a 'trigger: <ImmuneName>'",
+                node,
+            )
+        else:
+            sym = self._symbols.lookup(node.trigger)
+            if sym is None:
+                self._emit(
+                    f"reflex '{node.name}' references undefined trigger "
+                    f"'{node.trigger}' (expected an immune)",
+                    node,
+                )
+            elif sym.kind != "immune":
+                self._emit(
+                    f"reflex '{node.name}' trigger '{node.trigger}' is a "
+                    f"{sym.kind}, not an immune",
+                    node,
+                )
+
+        if node.on_level not in self._VALID_EPISTEMIC_LEVELS:
+            self._emit(
+                f"reflex '{node.name}' invalid on_level '{node.on_level}'. "
+                f"Valid: know | believe | speculate | doubt",
+                node,
+            )
+
+        if not node.action:
+            self._emit(
+                f"reflex '{node.name}' requires an 'action' "
+                f"(drop | revoke | emit | redact | quarantine | terminate | alert)",
+                node,
+            )
+        elif node.action not in self._VALID_REFLEX_ACTIONS:
+            self._emit(
+                f"reflex '{node.name}' invalid action '{node.action}'",
+                node,
+            )
+
+    def _check_heal(self, node: HealDefinition) -> None:
+        if not node.name:
+            self._emit("heal requires a name", node)
+
+        if not node.scope:
+            self._emit(
+                f"heal '{node.name}' requires an explicit 'scope' "
+                f"(tenant | flow | global) — paper §8.2",
+                node,
+            )
+        elif node.scope not in self._VALID_IMMUNE_SCOPES:
+            self._emit(
+                f"heal '{node.name}' has invalid scope '{node.scope}'",
+                node,
+            )
+
+        if not node.source:
+            self._emit(
+                f"heal '{node.name}' requires a 'source: <ImmuneName>'",
+                node,
+            )
+        else:
+            sym = self._symbols.lookup(node.source)
+            if sym is None:
+                self._emit(
+                    f"heal '{node.name}' references undefined source "
+                    f"'{node.source}' (expected an immune)",
+                    node,
+                )
+            elif sym.kind != "immune":
+                self._emit(
+                    f"heal '{node.name}' source '{node.source}' is a "
+                    f"{sym.kind}, not an immune",
+                    node,
+                )
+
+        if node.on_level not in self._VALID_EPISTEMIC_LEVELS:
+            self._emit(
+                f"heal '{node.name}' invalid on_level '{node.on_level}'",
+                node,
+            )
+
+        if node.mode not in self._VALID_HEAL_MODES:
+            self._emit(
+                f"heal '{node.name}' invalid mode '{node.mode}'. "
+                f"Valid: audit_only | human_in_loop | adversarial (paper §7)",
+                node,
+            )
+
+        # Paper §7.3 — `adversarial` mode is opt-in and requires explicit
+        # opt-in.  We flag it here as a warning-style error for the operator
+        # to confirm the Risk Acceptance Statement is in place.  For Fase 5
+        # we only require the shield gate; a future phase can wire the RAS
+        # attestation directly.
+        if node.mode == "adversarial" and not node.shield_ref:
+            self._emit(
+                f"heal '{node.name}' mode='adversarial' requires a 'shield' "
+                f"gate (no LLM-generated patch ships without review). "
+                f"Paper §7.3: adversarial mode needs explicit Risk Acceptance",
+                node,
+            )
+
+        if node.shield_ref:
+            sym = self._symbols.lookup(node.shield_ref)
+            if sym is None:
+                self._emit(
+                    f"heal '{node.name}' references undefined shield "
+                    f"'{node.shield_ref}'",
+                    node,
+                )
+            elif sym.kind != "shield":
+                self._emit(
+                    f"heal '{node.name}' shield ref '{node.shield_ref}' "
+                    f"is a {sym.kind}, not a shield",
+                    node,
+                )
+
+        if node.max_patches < 1:
+            self._emit(
+                f"heal '{node.name}' max_patches must be >= 1, got "
+                f"{node.max_patches}",
+                node,
+            )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  UI COGNITIVA — Fase 9 (component / view)
+    #
+    #  Invariants enforced at compile time:
+    #    1. `renders` references a declared `type`.
+    #    2. `on_interact` (if present) references a declared `flow` whose
+    #       first parameter type matches `renders`.
+    #    3. If `renders` carries κ (regulatory class), `via_shield` is
+    #       MANDATORY and its `compliance` set must cover every κ of
+    #       the rendered type. Missing classes are compile errors.
+    #    4. `via_shield` (if present) must name a declared `shield`.
+    #    5. Every component listed in a `view.components` must be a
+    #       declared `component`.
+    # ═══════════════════════════════════════════════════════════════
+
+    def _check_component(self, node: ComponentDefinition) -> None:
+        # (1) renders must resolve to a type
+        rendered_type = None
+        if not node.renders:
+            self._emit(
+                f"component '{node.name}' requires 'renders: <TypeName>'",
+                node,
+            )
+        else:
+            sym = self._symbols.lookup(node.renders)
+            if sym is None:
+                self._emit(
+                    f"component '{node.name}' references undefined type "
+                    f"'{node.renders}'",
+                    node,
+                )
+            elif sym.kind != "type":
+                self._emit(
+                    f"component '{node.name}' renders '{node.renders}' which is "
+                    f"a {sym.kind}, not a type",
+                    node,
+                )
+            else:
+                rendered_type = sym.node
+
+        # (4) shield ref kind
+        shield_node = None
+        if node.via_shield:
+            sym = self._symbols.lookup(node.via_shield)
+            if sym is None:
+                self._emit(
+                    f"component '{node.name}' references undefined shield "
+                    f"'{node.via_shield}'",
+                    node,
+                )
+            elif sym.kind != "shield":
+                self._emit(
+                    f"component '{node.name}' via_shield '{node.via_shield}' is "
+                    f"a {sym.kind}, not a shield",
+                    node,
+                )
+            else:
+                shield_node = sym.node
+
+        # (3) regulated-render rule — Fase 9.5 compile-time contract
+        if rendered_type is not None:
+            type_kappa = set(getattr(rendered_type, "compliance", ()) or ())
+            if type_kappa:
+                if not shield_node:
+                    self._emit(
+                        f"component '{node.name}' renders regulated type "
+                        f"'{node.renders}' (κ = {{{', '.join(sorted(type_kappa))}}}) "
+                        f"but declares no 'via_shield'. Regulated renders require "
+                        f"a shield that covers the type's κ — Fase 9.5.",
+                        node,
+                    )
+                else:
+                    shield_kappa = set(getattr(shield_node, "compliance", ()) or ())
+                    missing = type_kappa - shield_kappa
+                    if missing:
+                        self._emit(
+                            f"component '{node.name}' via_shield "
+                            f"'{node.via_shield}' does not cover κ = "
+                            f"{{{', '.join(sorted(missing))}}} of type "
+                            f"'{node.renders}'. Add these classes to the "
+                            f"shield's 'compliance' list or pick a shield "
+                            f"that already covers them.",
+                            node,
+                        )
+
+        # (2) on_interact must resolve to a flow with compatible signature
+        if node.on_interact:
+            sym = self._symbols.lookup(node.on_interact)
+            if sym is None:
+                self._emit(
+                    f"component '{node.name}' references undefined flow "
+                    f"'{node.on_interact}'",
+                    node,
+                )
+            elif sym.kind != "flow":
+                self._emit(
+                    f"component '{node.name}' on_interact '{node.on_interact}' "
+                    f"is a {sym.kind}, not a flow",
+                    node,
+                )
+            elif rendered_type is not None:
+                # The flow's first parameter must accept the rendered type.
+                flow_node = sym.node
+                params = list(getattr(flow_node, "parameters", []) or [])
+                if params:
+                    first_param = params[0]
+                    param_type = getattr(first_param, "type_name", "") \
+                        or getattr(first_param, "type_expr", None)
+                    if hasattr(param_type, "name"):
+                        param_type = param_type.name
+                    if param_type and param_type != node.renders:
+                        self._emit(
+                            f"component '{node.name}' on_interact flow "
+                            f"'{node.on_interact}' expects first parameter of "
+                            f"type '{param_type}', but component renders "
+                            f"'{node.renders}'. Signatures must match — "
+                            f"Fase 9.2 rule 2.",
+                            node,
+                        )
+
+    def _check_view(self, node: ViewDefinition) -> None:
+        if not node.components:
+            self._emit(
+                f"view '{node.name}' has empty components list — a view must "
+                f"compose at least one component",
+                node,
+            )
+            return
+        seen: set[str] = set()
+        for comp_name in node.components:
+            if comp_name in seen:
+                self._emit(
+                    f"view '{node.name}' lists component '{comp_name}' more "
+                    f"than once",
+                    node,
+                )
+                continue
+            seen.add(comp_name)
+            sym = self._symbols.lookup(comp_name)
+            if sym is None:
+                self._emit(
+                    f"view '{node.name}' references undefined component "
+                    f"'{comp_name}'",
+                    node,
+                )
+            elif sym.kind != "component":
+                self._emit(
+                    f"view '{node.name}' component ref '{comp_name}' is a "
+                    f"{sym.kind}, not a component",
+                    node,
+                )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  EPISTEMIC SECURITY KERNEL — Fase 6.1 (Compile-time Compliance)
+    #
+    #  Regulatory Type Theory: a type carrying κ = {HIPAA, PCI_DSS, ...}
+    #  may only cross a boundary gated by a shield whose compliance set
+    #  covers κ.  Programs that violate coverage are rejected at
+    #  compile time — reducing external audit work from months of review
+    #  to zero, because the compiler itself is the auditor.
+    #
+    #  Coverage rules (per plan_io_cognitivo.md §6.1 "Compliance-as-a-Type"):
+    #    1. axonendpoint.body_type / output_type with κ ≠ ∅ must be
+    #       gated by a shield whose compliance ⊇ κ.
+    #    2. axonendpoint.compliance declares the boundary's own class;
+    #       the shield must cover it too.
+    #    3. A program may have types with κ that never appear in an
+    #       endpoint (internal use) — those do not trigger the check.
+    # ═══════════════════════════════════════════════════════════════
+
+    # Regulatory class registry.  Expanded in §6.x; the symbol table
+    # only accepts declared classes to catch typos at compile time
+    # ("GDRP" instead of "GDPR").
+    _REGULATORY_CLASSES = frozenset({
+        "HIPAA", "PCI_DSS", "GDPR", "SOX", "FINRA", "ISO27001",
+        "SOC2", "FISMA", "GxP", "CCPA", "NIST_800_53",
+    })
+
+    def _check_regulatory_compliance(self) -> None:
+        """Phase 4 post-pass: verify shield coverage for every type
+        carrying a regulatory class.  Each violation is reported with
+        the offending type, endpoint, and missing κ entries so the
+        operator can remediate without re-reading the whole program.
+        """
+        # 1. Validate every compliance label is a known regulatory class.
+        for decl in self._program.declarations:
+            self._validate_compliance_labels(decl)
+
+        # 2. For every axonendpoint, compute required κ = union of
+        #    (endpoint.compliance, body_type.compliance, output_type.compliance).
+        #    The shield's compliance must be ⊇ this union.
+        for decl in self._program.declarations:
+            if isinstance(decl, AxonEndpointDefinition):
+                self._check_endpoint_compliance_coverage(decl)
+
+    def _validate_compliance_labels(self, decl: ASTNode) -> None:
+        labels = getattr(decl, "compliance", None)
+        if not labels:
+            return
+        # Manifests already allow any label — compliance there is
+        # forward-looking (Fase 6.1 ESK dossier), not enforced coverage.
+        for label in labels:
+            if label not in self._REGULATORY_CLASSES:
+                name = getattr(decl, "name", "<unknown>")
+                self._emit(
+                    f"'{name}' declares unknown regulatory class '{label}'. "
+                    f"Known classes: {', '.join(sorted(self._REGULATORY_CLASSES))}. "
+                    f"Typos are compile-time errors per ESK Fase 6.1.",
+                    decl,
+                )
+
+    def _check_endpoint_compliance_coverage(
+        self, node: AxonEndpointDefinition
+    ) -> None:
+        required: set[str] = set(node.compliance)
+
+        # Inherit compliance from body_type and output_type if they are
+        # declared TypeDefinitions with κ ≠ ∅.
+        body_compliance = self._type_compliance(node.body_type)
+        output_compliance = self._type_compliance(node.output_type)
+        required |= body_compliance | output_compliance
+
+        if not required:
+            return  # No regulatory obligation — no check needed.
+
+        if not node.shield_ref:
+            self._emit(
+                f"axonendpoint '{node.name}' handles regulated data "
+                f"(compliance: {sorted(required)}) but declares no shield. "
+                f"ESK Fase 6.1 requires a shield whose compliance ⊇ "
+                f"{sorted(required)} — this is a compile-time block, not a "
+                f"runtime warning.",
+                node,
+            )
+            return
+
+        sym = self._symbols.lookup(node.shield_ref)
+        if sym is None or sym.kind != "shield":
+            # Already reported by _check_axonendpoint — don't double-flag.
+            return
+
+        shield_node = sym.node
+        provided: set[str] = set(getattr(shield_node, "compliance", []) or [])
+        missing = required - provided
+        if missing:
+            self._emit(
+                f"axonendpoint '{node.name}' shield '{node.shield_ref}' does "
+                f"not cover regulatory class(es) {sorted(missing)}. "
+                f"Required κ: {sorted(required)}; shield provides: "
+                f"{sorted(provided) or '∅'}. "
+                f"Add '{sorted(missing)}' to the shield's compliance list, "
+                f"or remove the regulatory annotation from the source type "
+                f"(ESK Fase 6.1 — Compile-time Compliance).",
+                node,
+            )
+
+    def _type_compliance(self, type_name: str) -> set[str]:
+        if not type_name:
+            return set()
+        sym = self._symbols.lookup(type_name)
+        if sym is None or sym.kind != "type":
+            return set()
+        type_node = sym.node
+        if not isinstance(type_node, TypeDefinition):
+            return set()
+        return set(type_node.compliance or [])
+
+    def _check_resource_linearity(self) -> None:
+        """
+        Phase 3 post-pass: enforce Linear/Affine cross-manifest constraint.
+
+        Under Girard's Linear Logic:
+          • A `linear`   resource must be consumed exactly once (treated here as
+            "referenced from exactly one manifest" for Fase 1 scope).
+          • An `affine`  resource may be referenced at most once across manifests.
+          • A `persistent` resource (!A) may be referenced freely.
+
+        Aliasing a non-persistent resource across manifests is a Separation
+        Logic violation (heap regions must be disjoint — the `*` connector).
+        """
+        for res_name, usages in self._resource_usage.items():
+            if len(usages) <= 1:
+                continue
+            sym = self._symbols.lookup(res_name)
+            if sym is None or sym.kind != "resource":
+                continue
+            resource_node = sym.node
+            if not isinstance(resource_node, ResourceDefinition):
+                continue
+            lifetime = resource_node.lifetime
+            if lifetime == "persistent":
+                continue  # !A — unrestricted exponential, no violation.
+            manifests = ", ".join(f"'{m}'" for m, _ in usages)
+            for _manifest_name, referencing_node in usages:
+                self._emit(
+                    f"resource '{res_name}' (lifetime: {lifetime}) is aliased "
+                    f"across multiple manifests [{manifests}]. Linear/affine "
+                    f"resources must be disjoint across manifests. Declare it "
+                    f"as 'lifetime: persistent' to allow sharing.",
+                    referencing_node,
+                )
 
     # ── DELIBERATE validation ─────────────────────────────────────────
 

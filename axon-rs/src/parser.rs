@@ -393,6 +393,30 @@ impl Parser {
             TokenType::AxonStore => self.parse_axonstore().map(Declaration::AxonStore),
             TokenType::AxonEndpoint => self.parse_axonendpoint().map(Declaration::AxonEndpoint),
 
+            // ── §λ-L-E Fase 1 — I/O cognitivo ───────────────────
+            TokenType::Resource => self.parse_resource().map(Declaration::Resource),
+            TokenType::Fabric => self.parse_fabric().map(Declaration::Fabric),
+            TokenType::Manifest => self.parse_manifest().map(Declaration::Manifest),
+            TokenType::Observe => self.parse_observe().map(Declaration::Observe),
+
+            // ── §λ-L-E Fase 3 — Control cognitivo ───────────────
+            TokenType::Reconcile => self.parse_reconcile().map(Declaration::Reconcile),
+            TokenType::Lease => self.parse_lease().map(Declaration::Lease),
+            TokenType::Ensemble => self.parse_ensemble().map(Declaration::Ensemble),
+
+            // ── §λ-L-E Fase 4 — Topology + π-calculus sessions ─
+            TokenType::Session => self.parse_session_definition().map(Declaration::Session),
+            TokenType::Topology => self.parse_topology().map(Declaration::Topology),
+
+            // ── §λ-L-E Fase 5 — Cognitive immune system ─────────
+            TokenType::Immune => self.parse_immune().map(Declaration::Immune),
+            TokenType::Reflex => self.parse_reflex().map(Declaration::Reflex),
+            TokenType::Heal => self.parse_heal().map(Declaration::Heal),
+
+            // ── §λ-L-E Fase 9 — UI cognitiva ────────────────────
+            TokenType::Component => self.parse_component().map(Declaration::Component),
+            TokenType::View => self.parse_view().map(Declaration::View),
+
             // ── Tier 3+ structural fallback ─────────────────────
             // Store operations: keyword target { ... } or keyword target ...
             TokenType::Ingest
@@ -751,6 +775,7 @@ impl Parser {
             fields: Vec::new(),
             range_constraint: None,
             where_clause: None,
+            compliance: Vec::new(),
             loc: loc.clone(),
         };
 
@@ -782,6 +807,13 @@ impl Parser {
                 expression: expr_parts.join(" "),
                 loc: loc.clone(),
             });
+        }
+
+        // Optional ESK Fase 6.1 — `compliance [HIPAA, ...]` prefix modifier
+        // between `type Name` / `range` / `where` and the body `{`.
+        if self.check(TokenType::Identifier) && self.current().value == "compliance" {
+            self.advance();
+            node.compliance = self.parse_bracketed_identifiers()?;
         }
 
         // Optional body: { field: Type, ... }
@@ -1835,6 +1867,7 @@ impl Parser {
             confidence_threshold: None, allow_tools: Vec::new(), deny_tools: Vec::new(),
             sandbox: None, redact: Vec::new(), log: String::new(), deflect_message: String::new(),
             taint: String::new(),
+            compliance: Vec::new(),
             loc: Loc { line: tok.line, column: tok.column },
         };
         self.consume(TokenType::LBrace)?;
@@ -1858,6 +1891,8 @@ impl Parser {
                     "log" => node.log = self.consume_any_ident_or_kw()?.value.clone(),
                     "deflect_message" => node.deflect_message = self.consume(TokenType::StringLit)?.value.clone(),
                     "taint" => node.taint = self.consume_any_ident_or_kw()?.value.clone(),
+                    // ESK Fase 6.1 — covered regulatory classes.
+                    "compliance" => node.compliance = self.parse_bracketed_identifiers()?,
                     _ => self.skip_value(),
                 }
             } else if self.check(TokenType::LBrace) {
@@ -2157,6 +2192,906 @@ impl Parser {
         Ok(node)
     }
 
+    // ── §λ-L-E Fase 1 — Resource primitive ────────────────────────
+
+    /// Parse: `resource Name { kind, endpoint, capacity, lifetime, certainty_floor, shield }`.
+    ///
+    /// Mirrors `axon.compiler.parser.Parser._parse_resource`. Unknown fields
+    /// are silently skipped (keeps the grammar forward-compatible).
+    fn parse_resource(&mut self) -> Result<ResourceDefinition, ParseError> {
+        let tok = self.consume(TokenType::Resource)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = ResourceDefinition {
+            name,
+            kind: String::new(),
+            endpoint: String::new(),
+            capacity: None,
+            lifetime: "affine".to_string(),
+            certainty_floor: None,
+            shield_ref: String::new(),
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_tok = self.current().clone();
+            let field_name = field_tok.value.clone();
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                // Tolerate stray brace or unknown layout.
+                if self.check(TokenType::LBrace) {
+                    self.skip_braced_block()?;
+                }
+                continue;
+            }
+            self.advance(); // past ':'
+            match field_name.as_str() {
+                "kind" => node.kind = self.consume_any_ident_or_kw()?.value,
+                "endpoint" => node.endpoint = self.consume(TokenType::StringLit)?.value,
+                "capacity" => {
+                    node.capacity = self.parse_optional_int();
+                }
+                "lifetime" => {
+                    let lt_tok = self.consume_any_ident_or_kw()?;
+                    let lt = lt_tok.value;
+                    if !matches!(lt.as_str(), "linear" | "affine" | "persistent") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid lifetime '{lt}' in resource '{}' — \
+                                 expected linear | affine | persistent",
+                                node.name
+                            ),
+                            line: lt_tok.line,
+                            column: lt_tok.column,
+                        });
+                    }
+                    node.lifetime = lt;
+                }
+                "certainty_floor" => {
+                    node.certainty_floor = self.parse_optional_float();
+                }
+                "shield" => node.shield_ref = self.consume_any_ident_or_kw()?.value,
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// Parse: `fabric Name { provider, region, zones, ephemeral, shield }`.
+    fn parse_fabric(&mut self) -> Result<FabricDefinition, ParseError> {
+        let tok = self.consume(TokenType::Fabric)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = FabricDefinition {
+            name,
+            provider: String::new(),
+            region: String::new(),
+            zones: None,
+            ephemeral: None,
+            shield_ref: String::new(),
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.current().value.clone();
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                continue;
+            }
+            self.advance(); // past ':'
+            match field_name.as_str() {
+                "provider" => node.provider = self.consume_any_ident_or_kw()?.value,
+                "region"   => node.region = self.consume(TokenType::StringLit)?.value,
+                "zones"    => node.zones = self.parse_optional_int(),
+                "ephemeral" => {
+                    let b = self.parse_bool()?;
+                    node.ephemeral = Some(b);
+                }
+                "shield"   => node.shield_ref = self.consume_any_ident_or_kw()?.value,
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// Parse: `manifest Name { resources, fabric, region, zones, compliance }`.
+    fn parse_manifest(&mut self) -> Result<ManifestDefinition, ParseError> {
+        let tok = self.consume(TokenType::Manifest)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = ManifestDefinition {
+            name,
+            resources: Vec::new(),
+            fabric_ref: String::new(),
+            region: String::new(),
+            zones: None,
+            compliance: Vec::new(),
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.current().value.clone();
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                continue;
+            }
+            self.advance();
+            match field_name.as_str() {
+                "resources"  => node.resources = self.parse_bracketed_identifiers()?,
+                "fabric"     => node.fabric_ref = self.consume_any_ident_or_kw()?.value,
+                "region"     => node.region = self.consume(TokenType::StringLit)?.value,
+                "zones"      => node.zones = self.parse_optional_int(),
+                "compliance" => node.compliance = self.parse_bracketed_identifiers()?,
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// Parse: `observe Name from Manifest { sources, quorum, timeout, on_partition, certainty_floor }`.
+    fn parse_observe(&mut self) -> Result<ObserveDefinition, ParseError> {
+        let tok = self.consume(TokenType::Observe)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        // `from <Manifest>` — required per Python grammar.
+        self.consume(TokenType::From)?;
+        let target = self.consume(TokenType::Identifier)?.value;
+        let mut node = ObserveDefinition {
+            name,
+            target,
+            sources: Vec::new(),
+            quorum: None,
+            timeout: String::new(),
+            on_partition: "fail".to_string(),
+            certainty_floor: None,
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.current().value.clone();
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                continue;
+            }
+            self.advance();
+            match field_name.as_str() {
+                "sources" => node.sources = self.parse_bracketed_identifiers()?,
+                "quorum"  => node.quorum = self.parse_optional_int(),
+                "timeout" => {
+                    let t = self.current().clone();
+                    match t.ttype {
+                        TokenType::Duration | TokenType::StringLit => {
+                            self.advance();
+                            node.timeout = t.value;
+                        }
+                        _ => node.timeout = self.consume_any_ident_or_kw()?.value,
+                    }
+                }
+                "on_partition" => {
+                    let p_tok = self.consume_any_ident_or_kw()?;
+                    let p = p_tok.value;
+                    if !matches!(p.as_str(), "fail" | "shield_quarantine") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid on_partition '{p}' in observe '{}' — \
+                                 expected fail | shield_quarantine",
+                                node.name
+                            ),
+                            line: p_tok.line,
+                            column: p_tok.column,
+                        });
+                    }
+                    node.on_partition = p;
+                }
+                "certainty_floor" => node.certainty_floor = self.parse_optional_float(),
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    // ── §λ-L-E Fase 3 — Control cognitivo ─────────────────────────
+
+    /// Parse: `reconcile Name { observe, threshold, tolerance, on_drift, shield, mandate, max_retries }`.
+    fn parse_reconcile(&mut self) -> Result<ReconcileDefinition, ParseError> {
+        let tok = self.consume(TokenType::Reconcile)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = ReconcileDefinition {
+            name,
+            observe_ref: String::new(),
+            threshold: None,
+            tolerance: None,
+            on_drift: "provision".to_string(),
+            shield_ref: String::new(),
+            mandate_ref: String::new(),
+            max_retries: 3,
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.current().value.clone();
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                continue;
+            }
+            self.advance();
+            match field_name.as_str() {
+                "observe"     => node.observe_ref = self.consume_any_ident_or_kw()?.value,
+                "threshold"   => node.threshold = self.parse_optional_float(),
+                "tolerance"   => node.tolerance = self.parse_optional_float(),
+                "on_drift" => {
+                    let d_tok = self.consume_any_ident_or_kw()?;
+                    let d = d_tok.value;
+                    if !matches!(d.as_str(), "provision" | "alert" | "refine") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid on_drift '{d}' in reconcile '{}' — \
+                                 expected provision | alert | refine",
+                                node.name
+                            ),
+                            line: d_tok.line,
+                            column: d_tok.column,
+                        });
+                    }
+                    node.on_drift = d;
+                }
+                "shield"      => node.shield_ref = self.consume_any_ident_or_kw()?.value,
+                "mandate"     => node.mandate_ref = self.consume_any_ident_or_kw()?.value,
+                "max_retries" => {
+                    if let Some(v) = self.parse_optional_int() {
+                        node.max_retries = v;
+                    }
+                }
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// Parse: `lease Name { resource, duration, acquire, on_expire }`.
+    fn parse_lease(&mut self) -> Result<LeaseDefinition, ParseError> {
+        let tok = self.consume(TokenType::Lease)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = LeaseDefinition {
+            name,
+            resource_ref: String::new(),
+            duration: String::new(),
+            acquire: "on_start".to_string(),
+            on_expire: "anchor_breach".to_string(),
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.current().value.clone();
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                continue;
+            }
+            self.advance();
+            match field_name.as_str() {
+                "resource" => node.resource_ref = self.consume_any_ident_or_kw()?.value,
+                "duration" => {
+                    let t = self.current().clone();
+                    match t.ttype {
+                        TokenType::Duration | TokenType::StringLit => {
+                            self.advance();
+                            node.duration = t.value;
+                        }
+                        _ => node.duration = self.consume_any_ident_or_kw()?.value,
+                    }
+                }
+                "acquire" => {
+                    let a_tok = self.consume_any_ident_or_kw()?;
+                    let a = a_tok.value;
+                    if !matches!(a.as_str(), "on_start" | "on_demand") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid acquire '{a}' in lease '{}' — \
+                                 expected on_start | on_demand",
+                                node.name
+                            ),
+                            line: a_tok.line,
+                            column: a_tok.column,
+                        });
+                    }
+                    node.acquire = a;
+                }
+                "on_expire" => {
+                    let e_tok = self.consume_any_ident_or_kw()?;
+                    let e = e_tok.value;
+                    if !matches!(e.as_str(), "anchor_breach" | "release" | "extend") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid on_expire '{e}' in lease '{}' — \
+                                 expected anchor_breach | release | extend",
+                                node.name
+                            ),
+                            line: e_tok.line,
+                            column: e_tok.column,
+                        });
+                    }
+                    node.on_expire = e;
+                }
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// Parse: `ensemble Name { observations, quorum, aggregation, certainty_mode }`.
+    fn parse_ensemble(&mut self) -> Result<EnsembleDefinition, ParseError> {
+        let tok = self.consume(TokenType::Ensemble)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = EnsembleDefinition {
+            name,
+            observations: Vec::new(),
+            quorum: None,
+            aggregation: "majority".to_string(),
+            certainty_mode: "min".to_string(),
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.current().value.clone();
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                continue;
+            }
+            self.advance();
+            match field_name.as_str() {
+                "observations" => node.observations = self.parse_bracketed_identifiers()?,
+                "quorum" => node.quorum = self.parse_optional_int(),
+                "aggregation" => {
+                    let a_tok = self.consume_any_ident_or_kw()?;
+                    let a = a_tok.value;
+                    if !matches!(a.as_str(), "majority" | "weighted" | "byzantine") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid aggregation '{a}' in ensemble '{}' — \
+                                 expected majority | weighted | byzantine",
+                                node.name
+                            ),
+                            line: a_tok.line,
+                            column: a_tok.column,
+                        });
+                    }
+                    node.aggregation = a;
+                }
+                "certainty_mode" => {
+                    let c_tok = self.consume_any_ident_or_kw()?;
+                    let c = c_tok.value;
+                    if !matches!(c.as_str(), "min" | "weighted" | "harmonic") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid certainty_mode '{c}' in ensemble '{}' — \
+                                 expected min | weighted | harmonic",
+                                node.name
+                            ),
+                            line: c_tok.line,
+                            column: c_tok.column,
+                        });
+                    }
+                    node.certainty_mode = c;
+                }
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    // ── §λ-L-E Fase 4 — Topology + π-calculus binary sessions ─────
+
+    /// Parse: `session Name { role1: [step, …]  role2: [step, …] }`.
+    ///
+    /// The enclosing `parse_session_definition` disambiguates from the session
+    /// step token `session` (which does not exist) by always entering from the
+    /// top-level dispatch; the identifier role name is consumed after `{`.
+    fn parse_session_definition(&mut self) -> Result<SessionDefinition, ParseError> {
+        let tok = self.consume(TokenType::Session)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = SessionDefinition {
+            name,
+            roles: Vec::new(),
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let role_tok = self.consume_any_ident_or_kw()?;
+            self.consume(TokenType::Colon)?;
+            let steps = self.parse_session_steps()?;
+            node.roles.push(SessionRole {
+                name: role_tok.value,
+                steps,
+                loc: Loc { line: role_tok.line, column: role_tok.column },
+            });
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// Parse: `[send T, receive U, loop, end]`.
+    fn parse_session_steps(&mut self) -> Result<Vec<SessionStep>, ParseError> {
+        self.consume(TokenType::LBracket)?;
+        let mut steps = Vec::new();
+        while !self.check(TokenType::RBracket) && !self.check(TokenType::Eof) {
+            steps.push(self.parse_session_step()?);
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBracket)?;
+        Ok(steps)
+    }
+
+    fn parse_session_step(&mut self) -> Result<SessionStep, ParseError> {
+        let tok = self.current().clone();
+        match tok.ttype {
+            TokenType::Send => {
+                self.advance();
+                let msg = self.consume_any_ident_or_kw()?;
+                Ok(SessionStep {
+                    op: "send".to_string(),
+                    message_type: msg.value,
+                    loc: Loc { line: tok.line, column: tok.column },
+                })
+            }
+            TokenType::Receive => {
+                self.advance();
+                let msg = self.consume_any_ident_or_kw()?;
+                Ok(SessionStep {
+                    op: "receive".to_string(),
+                    message_type: msg.value,
+                    loc: Loc { line: tok.line, column: tok.column },
+                })
+            }
+            TokenType::Loop => {
+                self.advance();
+                Ok(SessionStep {
+                    op: "loop".to_string(),
+                    message_type: String::new(),
+                    loc: Loc { line: tok.line, column: tok.column },
+                })
+            }
+            TokenType::End => {
+                self.advance();
+                Ok(SessionStep {
+                    op: "end".to_string(),
+                    message_type: String::new(),
+                    loc: Loc { line: tok.line, column: tok.column },
+                })
+            }
+            _ => Err(ParseError {
+                message: format!(
+                    "Invalid session step '{}' — expected send | receive | loop | end",
+                    tok.value
+                ),
+                line: tok.line,
+                column: tok.column,
+            }),
+        }
+    }
+
+    /// Parse: `topology Name { nodes: [A, B, …]  edges: [A -> B : Session, …] }`.
+    fn parse_topology(&mut self) -> Result<TopologyDefinition, ParseError> {
+        let tok = self.consume(TokenType::Topology)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = TopologyDefinition {
+            name,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.current().value.clone();
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                continue;
+            }
+            self.advance();
+            match field_name.as_str() {
+                "nodes" => node.nodes = self.parse_bracketed_identifiers()?,
+                "edges" => node.edges = self.parse_topology_edges()?,
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    fn parse_topology_edges(&mut self) -> Result<Vec<TopologyEdge>, ParseError> {
+        self.consume(TokenType::LBracket)?;
+        let mut edges = Vec::new();
+        while !self.check(TokenType::RBracket) && !self.check(TokenType::Eof) {
+            edges.push(self.parse_topology_edge()?);
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBracket)?;
+        Ok(edges)
+    }
+
+    fn parse_topology_edge(&mut self) -> Result<TopologyEdge, ParseError> {
+        let src_tok = self.consume_any_ident_or_kw()?;
+        self.consume(TokenType::Arrow)?;
+        let tgt_tok = self.consume_any_ident_or_kw()?;
+        self.consume(TokenType::Colon)?;
+        let sess_tok = self.consume_any_ident_or_kw()?;
+        Ok(TopologyEdge {
+            source: src_tok.value,
+            target: tgt_tok.value,
+            session_ref: sess_tok.value,
+            loc: Loc { line: src_tok.line, column: src_tok.column },
+        })
+    }
+
+    // ── §λ-L-E Fase 5 — Cognitive immune system (paper_immune_v2.md) ────
+
+    /// Parse: `immune Name { watch, sensitivity, baseline, window, scope, tau, decay }`.
+    fn parse_immune(&mut self) -> Result<ImmuneDefinition, ParseError> {
+        let tok = self.consume(TokenType::Immune)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = ImmuneDefinition {
+            name,
+            watch: Vec::new(),
+            sensitivity: None,
+            baseline: "learned".to_string(),
+            window: 100,
+            scope: String::new(),
+            tau: String::new(),
+            decay: "exponential".to_string(),
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.current().value.clone();
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                continue;
+            }
+            self.advance();
+            match field_name.as_str() {
+                "watch" => node.watch = self.parse_bracketed_identifiers()?,
+                "sensitivity" => node.sensitivity = self.parse_optional_float(),
+                "baseline" => node.baseline = self.consume_any_ident_or_kw()?.value,
+                "window" => {
+                    if let Some(v) = self.parse_optional_int() {
+                        node.window = v;
+                    }
+                }
+                "scope" => {
+                    let s_tok = self.consume_any_ident_or_kw()?;
+                    let s = s_tok.value;
+                    if !matches!(s.as_str(), "tenant" | "flow" | "global") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid scope '{s}' in immune '{}' — \
+                                 expected tenant | flow | global",
+                                node.name
+                            ),
+                            line: s_tok.line,
+                            column: s_tok.column,
+                        });
+                    }
+                    node.scope = s;
+                }
+                "tau" => {
+                    let t = self.current().clone();
+                    match t.ttype {
+                        TokenType::Duration | TokenType::StringLit => {
+                            self.advance();
+                            node.tau = t.value;
+                        }
+                        _ => node.tau = self.consume_any_ident_or_kw()?.value,
+                    }
+                }
+                "decay" => {
+                    let d_tok = self.consume_any_ident_or_kw()?;
+                    let d = d_tok.value;
+                    if !matches!(d.as_str(), "exponential" | "linear" | "none") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid decay '{d}' in immune '{}' — \
+                                 expected exponential | linear | none",
+                                node.name
+                            ),
+                            line: d_tok.line,
+                            column: d_tok.column,
+                        });
+                    }
+                    node.decay = d;
+                }
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// Parse: `reflex Name { trigger, on_level, action, scope, sla }`.
+    fn parse_reflex(&mut self) -> Result<ReflexDefinition, ParseError> {
+        let tok = self.consume(TokenType::Reflex)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = ReflexDefinition {
+            name,
+            trigger: String::new(),
+            on_level: "doubt".to_string(),
+            action: String::new(),
+            scope: String::new(),
+            sla: String::new(),
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.current().value.clone();
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                continue;
+            }
+            self.advance();
+            match field_name.as_str() {
+                "trigger" => node.trigger = self.consume_any_ident_or_kw()?.value,
+                "on_level" => {
+                    let l_tok = self.consume_any_ident_or_kw()?;
+                    let l = l_tok.value;
+                    if !matches!(l.as_str(), "know" | "believe" | "speculate" | "doubt") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid on_level '{l}' in reflex '{}' — \
+                                 expected know | believe | speculate | doubt",
+                                node.name
+                            ),
+                            line: l_tok.line,
+                            column: l_tok.column,
+                        });
+                    }
+                    node.on_level = l;
+                }
+                "action" => {
+                    let a_tok = self.consume_any_ident_or_kw()?;
+                    let a = a_tok.value;
+                    if !matches!(
+                        a.as_str(),
+                        "drop" | "revoke" | "emit" | "redact"
+                        | "quarantine" | "terminate" | "alert"
+                    ) {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid action '{a}' in reflex '{}' — \
+                                 expected drop | revoke | emit | redact | \
+                                 quarantine | terminate | alert",
+                                node.name
+                            ),
+                            line: a_tok.line,
+                            column: a_tok.column,
+                        });
+                    }
+                    node.action = a;
+                }
+                "scope" => {
+                    let s_tok = self.consume_any_ident_or_kw()?;
+                    let s = s_tok.value;
+                    if !matches!(s.as_str(), "tenant" | "flow" | "global") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid scope '{s}' in reflex '{}' — \
+                                 expected tenant | flow | global",
+                                node.name
+                            ),
+                            line: s_tok.line,
+                            column: s_tok.column,
+                        });
+                    }
+                    node.scope = s;
+                }
+                "sla" => {
+                    let t = self.current().clone();
+                    match t.ttype {
+                        TokenType::Duration | TokenType::StringLit => {
+                            self.advance();
+                            node.sla = t.value;
+                        }
+                        _ => node.sla = self.consume_any_ident_or_kw()?.value,
+                    }
+                }
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// Parse: `heal Name { source, on_level, mode, scope, review_sla, shield, max_patches }`.
+    fn parse_heal(&mut self) -> Result<HealDefinition, ParseError> {
+        let tok = self.consume(TokenType::Heal)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = HealDefinition {
+            name,
+            source: String::new(),
+            on_level: "doubt".to_string(),
+            mode: "human_in_loop".to_string(),
+            scope: String::new(),
+            review_sla: String::new(),
+            shield_ref: String::new(),
+            max_patches: 3,
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.current().value.clone();
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                continue;
+            }
+            self.advance();
+            match field_name.as_str() {
+                "source" => node.source = self.consume_any_ident_or_kw()?.value,
+                "on_level" => {
+                    let l_tok = self.consume_any_ident_or_kw()?;
+                    let l = l_tok.value;
+                    if !matches!(l.as_str(), "know" | "believe" | "speculate" | "doubt") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid on_level '{l}' in heal '{}' — \
+                                 expected know | believe | speculate | doubt",
+                                node.name
+                            ),
+                            line: l_tok.line,
+                            column: l_tok.column,
+                        });
+                    }
+                    node.on_level = l;
+                }
+                "mode" => {
+                    let m_tok = self.consume_any_ident_or_kw()?;
+                    let m = m_tok.value;
+                    if !matches!(m.as_str(), "audit_only" | "human_in_loop" | "adversarial") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid mode '{m}' in heal '{}' — \
+                                 expected audit_only | human_in_loop | adversarial",
+                                node.name
+                            ),
+                            line: m_tok.line,
+                            column: m_tok.column,
+                        });
+                    }
+                    node.mode = m;
+                }
+                "scope" => {
+                    let s_tok = self.consume_any_ident_or_kw()?;
+                    let s = s_tok.value;
+                    if !matches!(s.as_str(), "tenant" | "flow" | "global") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid scope '{s}' in heal '{}' — \
+                                 expected tenant | flow | global",
+                                node.name
+                            ),
+                            line: s_tok.line,
+                            column: s_tok.column,
+                        });
+                    }
+                    node.scope = s;
+                }
+                "review_sla" => {
+                    let t = self.current().clone();
+                    match t.ttype {
+                        TokenType::Duration | TokenType::StringLit => {
+                            self.advance();
+                            node.review_sla = t.value;
+                        }
+                        _ => node.review_sla = self.consume_any_ident_or_kw()?.value,
+                    }
+                }
+                "shield" => node.shield_ref = self.consume_any_ident_or_kw()?.value,
+                "max_patches" => {
+                    if let Some(v) = self.parse_optional_int() {
+                        node.max_patches = v;
+                    }
+                }
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    // ── §λ-L-E Fase 9 — UI cognitiva (component / view) ────────────
+
+    /// Parse: `component Name { renders, via_shield, on_interact, render_hint }`.
+    fn parse_component(&mut self) -> Result<ComponentDefinition, ParseError> {
+        let tok = self.consume(TokenType::Component)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = ComponentDefinition {
+            name,
+            renders: String::new(),
+            via_shield: String::new(),
+            on_interact: String::new(),
+            render_hint: "custom".to_string(),
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.current().value.clone();
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                continue;
+            }
+            self.advance();
+            match field_name.as_str() {
+                "renders"     => node.renders = self.consume_any_ident_or_kw()?.value,
+                "via_shield"  => node.via_shield = self.consume_any_ident_or_kw()?.value,
+                "on_interact" => node.on_interact = self.consume_any_ident_or_kw()?.value,
+                "render_hint" => {
+                    let h_tok = self.consume_any_ident_or_kw()?;
+                    let h = h_tok.value;
+                    if !matches!(h.as_str(), "card" | "list" | "form" | "chart" | "custom") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid render_hint '{h}' in component '{}' — \
+                                 expected card | list | form | chart | custom",
+                                node.name
+                            ),
+                            line: h_tok.line,
+                            column: h_tok.column,
+                        });
+                    }
+                    node.render_hint = h;
+                }
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// Parse: `view Name { title, components: [...], route }`.
+    fn parse_view(&mut self) -> Result<ViewDefinition, ParseError> {
+        let tok = self.consume(TokenType::View)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = ViewDefinition {
+            name,
+            title: String::new(),
+            components: Vec::new(),
+            route: String::new(),
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.current().value.clone();
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                continue;
+            }
+            self.advance();
+            match field_name.as_str() {
+                "title"      => node.title = self.consume(TokenType::StringLit)?.value,
+                "components" => node.components = self.parse_bracketed_identifiers()?,
+                "route"      => node.route = self.consume(TokenType::StringLit)?.value,
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
     fn parse_axonendpoint(&mut self) -> Result<AxonEndpointDefinition, ParseError> {
         let tok = self.consume(TokenType::AxonEndpoint)?;
         let name = self.consume(TokenType::Identifier)?.value;
@@ -2164,6 +3099,7 @@ impl Parser {
             name, method: String::new(), path: String::new(), body_type: String::new(),
             execute_flow: String::new(), output_type: String::new(), shield_ref: String::new(),
             retries: None, timeout: String::new(),
+            compliance: Vec::new(),
             loc: Loc { line: tok.line, column: tok.column },
         };
         self.consume(TokenType::LBrace)?;
@@ -2188,6 +3124,7 @@ impl Parser {
                         self.advance();
                         node.timeout = t.value.clone();
                     }
+                    "compliance" => node.compliance = self.parse_bracketed_identifiers()?,
                     _ => self.skip_value(),
                 }
             } else if self.check(TokenType::LBrace) {

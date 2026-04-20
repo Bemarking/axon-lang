@@ -34,12 +34,17 @@ from .ast_nodes import (
     DrillNode,
     EffectRowNode,
     EpistemicBlock,
+    EnsembleDefinition,
     ExploreNode,
+    FabricDefinition,
     FlowDefinition,
     FocusNode,
     ForInStatement,
     ForgeBlock,
+    ComponentDefinition,
+    HealDefinition,
     HibernateNode,
+    ImmuneDefinition,
     ImportNode,
     IngestNode,
     IntentNode,
@@ -47,13 +52,16 @@ from .ast_nodes import (
     ComputeDefinition,
     LambdaDataApplyNode,
     LambdaDataDefinition,
+    LeaseDefinition,
     LetStatement,
     ListenBlock,
     MandateApplyNode,
     MandateDefinition,
+    ManifestDefinition,
     MemoryDefinition,
     MutateNode,
     NavigateNode,
+    ObserveDefinition,
     OtsApplyNode,
     OtsDefinition,
     ParallelBlock,
@@ -68,9 +76,15 @@ from .ast_nodes import (
     RangeConstraint,
     ReasonChain,
     RecallNode,
+    ReconcileDefinition,
+    ReflexDefinition,
     RefineBlock,
     RememberNode,
+    ResourceDefinition,
     RetrieveNode,
+    SessionDefinition,
+    SessionRole,
+    SessionStep,
     ReturnStatement,
     RunStatement,
     ShieldApplyNode,
@@ -78,6 +92,8 @@ from .ast_nodes import (
     StepNode,
     StoreColumnNode,
     StoreSchemaNode,
+    TopologyDefinition,
+    TopologyEdge,
     StreamDefinition,
     StreamHandlerNode,
     ToolDefinition,
@@ -89,6 +105,7 @@ from .ast_nodes import (
     UseToolNode,
     ValidateGate,
     ValidateRule,
+    ViewDefinition,
     WeaveNode,
     WhereClause,
 )
@@ -171,6 +188,34 @@ class Parser:
                 return self._parse_axonstore()
             case TokenType.AXONENDPOINT:
                 return self._parse_axonendpoint()
+            case TokenType.RESOURCE:
+                return self._parse_resource()
+            case TokenType.FABRIC:
+                return self._parse_fabric()
+            case TokenType.MANIFEST:
+                return self._parse_manifest()
+            case TokenType.OBSERVE:
+                return self._parse_observe()
+            case TokenType.RECONCILE:
+                return self._parse_reconcile()
+            case TokenType.LEASE:
+                return self._parse_lease()
+            case TokenType.ENSEMBLE:
+                return self._parse_ensemble()
+            case TokenType.SESSION:
+                return self._parse_session()
+            case TokenType.TOPOLOGY:
+                return self._parse_topology()
+            case TokenType.IMMUNE:
+                return self._parse_immune()
+            case TokenType.REFLEX:
+                return self._parse_reflex()
+            case TokenType.HEAL:
+                return self._parse_heal()
+            case TokenType.COMPONENT:
+                return self._parse_component()
+            case TokenType.VIEW:
+                return self._parse_view()
             case TokenType.PERSIST:
                 return self._parse_persist()
             case TokenType.RETRIEVE:
@@ -188,7 +233,7 @@ class Parser:
                     f"Unexpected token at top level",
                     line=tok.line,
                     column=tok.column,
-                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, ots, mandate, lambda, daemon, axonstore, run, know, speculate, ...)",
+                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, ots, mandate, lambda, daemon, axonstore, axonendpoint, resource, fabric, manifest, observe, reconcile, lease, ensemble, session, topology, immune, reflex, heal, run, know, speculate, ...)",
                     found=tok.value,
                 )
 
@@ -540,6 +585,11 @@ class Parser:
                 line=tok.line,
                 column=tok.column,
             )
+
+        # optional ESK Fase 6.1 compliance annotation: compliance [HIPAA, ...]
+        if self._check(TokenType.IDENTIFIER) and self._current().value == "compliance":
+            self._advance()
+            node.compliance = self._parse_bracketed_identifiers()
 
         # optional body: { field: Type, ... }
         if self._check(TokenType.LBRACE):
@@ -2948,6 +2998,9 @@ class Parser:
                             node.log = self._consume_any_identifier_or_keyword().value
                         case "deflect_message":
                             node.deflect_message = self._consume(TokenType.STRING).value
+                        case "compliance":
+                            # ESK Fase 6.1 — regulatory coverage list
+                            node.compliance = self._parse_bracketed_identifiers()
                         case _:
                             self._skip_value()
 
@@ -3623,6 +3676,697 @@ class Parser:
                         node.timeout = self._advance().value
                     else:
                         node.timeout = self._consume_any_identifier_or_keyword().value
+                case "compliance":
+                    # ESK Fase 6.1 — regulatory coverage for this HTTP boundary
+                    node.compliance = self._parse_bracketed_identifiers()
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    # ═══════════════════════════════════════════════════════════════
+    #  I/O COGNITIVO — Cálculo Lambda Lineal Epistémico (λ-L-E) · Fase 1
+    # ═══════════════════════════════════════════════════════════════
+
+    _VALID_LIFETIMES = frozenset({"linear", "affine", "persistent"})
+    _VALID_PARTITION_POLICIES = frozenset({"fail", "shield_quarantine"})
+
+    def _parse_resource(self) -> ResourceDefinition:
+        """Parse: resource Name { kind, endpoint, capacity, lifetime, certainty_floor, shield }."""
+        tok = self._consume(TokenType.RESOURCE)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = ResourceDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "kind":
+                    node.kind = self._consume_any_identifier_or_keyword().value
+                case "endpoint":
+                    node.endpoint = self._consume(TokenType.STRING).value
+                case "capacity":
+                    node.capacity = int(self._consume(TokenType.INTEGER).value)
+                case "lifetime":
+                    lt_tok = self._consume_any_identifier_or_keyword()
+                    lt = lt_tok.value
+                    if lt not in self._VALID_LIFETIMES:
+                        raise AxonParseError(
+                            f"Invalid lifetime '{lt}' in resource '{name.value}'",
+                            line=lt_tok.line, column=lt_tok.column,
+                            expected="linear | affine | persistent",
+                            found=lt,
+                        )
+                    node.lifetime = lt
+                case "certainty_floor":
+                    node.certainty_floor = self._parse_number_value()
+                case "shield":
+                    node.shield_ref = self._consume_any_identifier_or_keyword().value
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_fabric(self) -> FabricDefinition:
+        """Parse: fabric Name { provider, region, zones, ephemeral, shield }."""
+        tok = self._consume(TokenType.FABRIC)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = FabricDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "provider":
+                    node.provider = self._consume_any_identifier_or_keyword().value
+                case "region":
+                    node.region = self._consume(TokenType.STRING).value
+                case "zones":
+                    node.zones = int(self._consume(TokenType.INTEGER).value)
+                case "ephemeral":
+                    tok_val = self._consume(TokenType.BOOL)
+                    node.ephemeral = (tok_val.value.lower() == "true")
+                case "shield":
+                    node.shield_ref = self._consume_any_identifier_or_keyword().value
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_manifest(self) -> ManifestDefinition:
+        """Parse: manifest Name { resources, fabric, region, zones, compliance }."""
+        tok = self._consume(TokenType.MANIFEST)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = ManifestDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "resources":
+                    node.resources = self._parse_bracketed_identifiers()
+                case "fabric":
+                    node.fabric_ref = self._consume_any_identifier_or_keyword().value
+                case "region":
+                    node.region = self._consume(TokenType.STRING).value
+                case "zones":
+                    node.zones = int(self._consume(TokenType.INTEGER).value)
+                case "compliance":
+                    node.compliance = self._parse_bracketed_identifiers()
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_observe(self) -> ObserveDefinition:
+        """Parse: observe Name from Manifest { sources, quorum, timeout, on_partition, certainty_floor }."""
+        tok = self._consume(TokenType.OBSERVE)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = ObserveDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.FROM)
+        target = self._consume(TokenType.IDENTIFIER)
+        node.target = target.value
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "sources":
+                    node.sources = self._parse_bracketed_identifiers()
+                case "quorum":
+                    node.quorum = int(self._consume(TokenType.INTEGER).value)
+                case "timeout":
+                    if self._check(TokenType.DURATION):
+                        node.timeout = self._advance().value
+                    else:
+                        node.timeout = self._consume_any_identifier_or_keyword().value
+                case "on_partition":
+                    p_tok = self._consume_any_identifier_or_keyword()
+                    p = p_tok.value
+                    if p not in self._VALID_PARTITION_POLICIES:
+                        raise AxonParseError(
+                            f"Invalid on_partition '{p}' in observe '{name.value}'",
+                            line=p_tok.line, column=p_tok.column,
+                            expected="fail | shield_quarantine",
+                            found=p,
+                        )
+                    node.on_partition = p
+                case "certainty_floor":
+                    node.certainty_floor = self._parse_number_value()
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_number_value(self) -> float:
+        """Consume an INTEGER or FLOAT and return it as float."""
+        tok = self._advance()
+        if tok.type in (TokenType.FLOAT, TokenType.INTEGER):
+            return float(tok.value)
+        raise AxonParseError(
+            "Expected numeric value",
+            line=tok.line, column=tok.column,
+            expected="FLOAT or INTEGER",
+            found=tok.value,
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  CONTROL COGNITIVO — Fase 3 of λ-L-E (reconcile / lease / ensemble)
+    # ═══════════════════════════════════════════════════════════════
+
+    _VALID_ON_DRIFT = frozenset({"provision", "alert", "refine"})
+    _VALID_LEASE_ACQUIRE = frozenset({"on_start", "on_demand"})
+    _VALID_LEASE_ON_EXPIRE = frozenset({"anchor_breach", "release", "extend"})
+    _VALID_AGGREGATION = frozenset({"majority", "weighted", "byzantine"})
+    _VALID_CERTAINTY_MODE = frozenset({"min", "weighted", "harmonic"})
+
+    def _parse_reconcile(self) -> ReconcileDefinition:
+        """Parse: reconcile Name { observe, threshold, tolerance, on_drift, shield, mandate, max_retries }."""
+        tok = self._consume(TokenType.RECONCILE)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = ReconcileDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "observe":
+                    node.observe_ref = self._consume_any_identifier_or_keyword().value
+                case "threshold":
+                    node.threshold = self._parse_number_value()
+                case "tolerance":
+                    node.tolerance = self._parse_number_value()
+                case "on_drift":
+                    d_tok = self._consume_any_identifier_or_keyword()
+                    if d_tok.value not in self._VALID_ON_DRIFT:
+                        raise AxonParseError(
+                            f"Invalid on_drift '{d_tok.value}' in reconcile '{name.value}'",
+                            line=d_tok.line, column=d_tok.column,
+                            expected="provision | alert | refine",
+                            found=d_tok.value,
+                        )
+                    node.on_drift = d_tok.value
+                case "shield":
+                    node.shield_ref = self._consume_any_identifier_or_keyword().value
+                case "mandate":
+                    node.mandate_ref = self._consume_any_identifier_or_keyword().value
+                case "max_retries":
+                    node.max_retries = int(self._consume(TokenType.INTEGER).value)
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_lease(self) -> LeaseDefinition:
+        """Parse: lease Name { resource, duration, acquire, on_expire }."""
+        tok = self._consume(TokenType.LEASE)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = LeaseDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "resource":
+                    node.resource_ref = self._consume_any_identifier_or_keyword().value
+                case "duration":
+                    if self._check(TokenType.DURATION):
+                        node.duration = self._advance().value
+                    else:
+                        node.duration = self._consume_any_identifier_or_keyword().value
+                case "acquire":
+                    a_tok = self._consume_any_identifier_or_keyword()
+                    if a_tok.value not in self._VALID_LEASE_ACQUIRE:
+                        raise AxonParseError(
+                            f"Invalid acquire '{a_tok.value}' in lease '{name.value}'",
+                            line=a_tok.line, column=a_tok.column,
+                            expected="on_start | on_demand",
+                            found=a_tok.value,
+                        )
+                    node.acquire = a_tok.value
+                case "on_expire":
+                    e_tok = self._consume_any_identifier_or_keyword()
+                    if e_tok.value not in self._VALID_LEASE_ON_EXPIRE:
+                        raise AxonParseError(
+                            f"Invalid on_expire '{e_tok.value}' in lease '{name.value}'",
+                            line=e_tok.line, column=e_tok.column,
+                            expected="anchor_breach | release | extend",
+                            found=e_tok.value,
+                        )
+                    node.on_expire = e_tok.value
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    # ═══════════════════════════════════════════════════════════════
+    #  TOPOLOGY & SESSION TYPES — Fase 4 of λ-L-E (π-calculus binary sessions)
+    # ═══════════════════════════════════════════════════════════════
+
+    _VALID_SESSION_OPS = frozenset({"send", "receive", "loop", "end"})
+
+    def _parse_session(self) -> SessionDefinition:
+        """Parse: session Name { role1: [step, ...]   role2: [step, ...] }."""
+        tok = self._consume(TokenType.SESSION)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = SessionDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            role_tok = self._consume_any_identifier_or_keyword()
+            self._consume(TokenType.COLON)
+            steps = self._parse_session_steps()
+            node.roles.append(SessionRole(
+                name=role_tok.value,
+                steps=steps,
+                line=role_tok.line,
+                column=role_tok.column,
+            ))
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_session_steps(self) -> list[SessionStep]:
+        """Parse: [send T, receive U, loop, end]."""
+        steps: list[SessionStep] = []
+        self._consume(TokenType.LBRACKET)
+        while not self._check(TokenType.RBRACKET):
+            step = self._parse_session_step()
+            steps.append(step)
+            if self._check(TokenType.COMMA):
+                self._advance()
+        self._consume(TokenType.RBRACKET)
+        return steps
+
+    def _parse_session_step(self) -> SessionStep:
+        """Parse a single step: 'send T' | 'receive T' | 'loop' | 'end'."""
+        op_tok = self._current()
+        match op_tok.type:
+            case TokenType.SEND:
+                self._advance()
+                msg = self._consume_any_identifier_or_keyword()
+                return SessionStep(
+                    op="send", message_type=msg.value,
+                    line=op_tok.line, column=op_tok.column,
+                )
+            case TokenType.RECEIVE:
+                self._advance()
+                msg = self._consume_any_identifier_or_keyword()
+                return SessionStep(
+                    op="receive", message_type=msg.value,
+                    line=op_tok.line, column=op_tok.column,
+                )
+            case TokenType.LOOP:
+                self._advance()
+                return SessionStep(
+                    op="loop", line=op_tok.line, column=op_tok.column,
+                )
+            case TokenType.END:
+                self._advance()
+                return SessionStep(
+                    op="end", line=op_tok.line, column=op_tok.column,
+                )
+            case _:
+                raise AxonParseError(
+                    f"Invalid session step",
+                    line=op_tok.line, column=op_tok.column,
+                    expected="send | receive | loop | end",
+                    found=op_tok.value,
+                )
+
+    def _parse_topology(self) -> TopologyDefinition:
+        """Parse: topology Name { nodes: [A, B, ...] edges: [A -> B : Sess, ...] }."""
+        tok = self._consume(TokenType.TOPOLOGY)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = TopologyDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "nodes":
+                    node.nodes = self._parse_bracketed_identifiers()
+                case "edges":
+                    node.edges = self._parse_topology_edges()
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_topology_edges(self) -> list[TopologyEdge]:
+        """Parse: [A -> B : Sess, C -> D : Sess2]."""
+        edges: list[TopologyEdge] = []
+        self._consume(TokenType.LBRACKET)
+        while not self._check(TokenType.RBRACKET):
+            edge = self._parse_topology_edge()
+            edges.append(edge)
+            if self._check(TokenType.COMMA):
+                self._advance()
+        self._consume(TokenType.RBRACKET)
+        return edges
+
+    def _parse_topology_edge(self) -> TopologyEdge:
+        """Parse: source -> target : SessionName."""
+        src_tok = self._consume_any_identifier_or_keyword()
+        self._consume(TokenType.ARROW)
+        tgt_tok = self._consume_any_identifier_or_keyword()
+        self._consume(TokenType.COLON)
+        sess_tok = self._consume_any_identifier_or_keyword()
+        return TopologyEdge(
+            source=src_tok.value,
+            target=tgt_tok.value,
+            session_ref=sess_tok.value,
+            line=src_tok.line,
+            column=src_tok.column,
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  COGNITIVE IMMUNE SYSTEM — Fase 5 of λ-L-E (immune / reflex / heal)
+    #  Formal spec: docs/paper_inmune.md
+    # ═══════════════════════════════════════════════════════════════
+
+    _VALID_EPISTEMIC_LEVELS = frozenset({"know", "believe", "speculate", "doubt"})
+    _VALID_REFLEX_ACTIONS = frozenset({
+        "drop", "revoke", "emit", "redact", "quarantine", "terminate", "alert",
+    })
+    _VALID_HEAL_MODES = frozenset({"audit_only", "human_in_loop", "adversarial"})
+    _VALID_SCOPES = frozenset({"tenant", "flow", "global"})
+    _VALID_DECAY = frozenset({"exponential", "linear", "none"})
+
+    def _parse_immune(self) -> ImmuneDefinition:
+        """Parse: immune Name { watch, sensitivity, baseline, window, scope, tau, decay }."""
+        tok = self._consume(TokenType.IMMUNE)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = ImmuneDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "watch":
+                    node.watch = self._parse_bracketed_identifiers()
+                case "sensitivity":
+                    node.sensitivity = self._parse_number_value()
+                case "baseline":
+                    node.baseline = self._consume_any_identifier_or_keyword().value
+                case "window":
+                    node.window = int(self._consume(TokenType.INTEGER).value)
+                case "scope":
+                    s_tok = self._consume_any_identifier_or_keyword()
+                    if s_tok.value not in self._VALID_SCOPES:
+                        raise AxonParseError(
+                            f"Invalid scope '{s_tok.value}' in immune '{name.value}'",
+                            line=s_tok.line, column=s_tok.column,
+                            expected="tenant | flow | global",
+                            found=s_tok.value,
+                        )
+                    node.scope = s_tok.value
+                case "tau":
+                    if self._check(TokenType.DURATION):
+                        node.tau = self._advance().value
+                    else:
+                        node.tau = self._consume_any_identifier_or_keyword().value
+                case "decay":
+                    d_tok = self._consume_any_identifier_or_keyword()
+                    if d_tok.value not in self._VALID_DECAY:
+                        raise AxonParseError(
+                            f"Invalid decay '{d_tok.value}' in immune '{name.value}'",
+                            line=d_tok.line, column=d_tok.column,
+                            expected="exponential | linear | none",
+                            found=d_tok.value,
+                        )
+                    node.decay = d_tok.value
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_reflex(self) -> ReflexDefinition:
+        """Parse: reflex Name { trigger, on_level, action, scope, sla }."""
+        tok = self._consume(TokenType.REFLEX)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = ReflexDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "trigger":
+                    node.trigger = self._consume_any_identifier_or_keyword().value
+                case "on_level":
+                    l_tok = self._consume_any_identifier_or_keyword()
+                    if l_tok.value not in self._VALID_EPISTEMIC_LEVELS:
+                        raise AxonParseError(
+                            f"Invalid on_level '{l_tok.value}' in reflex '{name.value}'",
+                            line=l_tok.line, column=l_tok.column,
+                            expected="know | believe | speculate | doubt",
+                            found=l_tok.value,
+                        )
+                    node.on_level = l_tok.value
+                case "action":
+                    a_tok = self._consume_any_identifier_or_keyword()
+                    if a_tok.value not in self._VALID_REFLEX_ACTIONS:
+                        raise AxonParseError(
+                            f"Invalid action '{a_tok.value}' in reflex '{name.value}'",
+                            line=a_tok.line, column=a_tok.column,
+                            expected="drop | revoke | emit | redact | quarantine | terminate | alert",
+                            found=a_tok.value,
+                        )
+                    node.action = a_tok.value
+                case "scope":
+                    s_tok = self._consume_any_identifier_or_keyword()
+                    if s_tok.value not in self._VALID_SCOPES:
+                        raise AxonParseError(
+                            f"Invalid scope '{s_tok.value}' in reflex '{name.value}'",
+                            line=s_tok.line, column=s_tok.column,
+                            expected="tenant | flow | global",
+                            found=s_tok.value,
+                        )
+                    node.scope = s_tok.value
+                case "sla":
+                    if self._check(TokenType.DURATION):
+                        node.sla = self._advance().value
+                    else:
+                        node.sla = self._consume_any_identifier_or_keyword().value
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_heal(self) -> HealDefinition:
+        """Parse: heal Name { source, on_level, mode, scope, review_sla, shield, max_patches }."""
+        tok = self._consume(TokenType.HEAL)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = HealDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "source":
+                    node.source = self._consume_any_identifier_or_keyword().value
+                case "on_level":
+                    l_tok = self._consume_any_identifier_or_keyword()
+                    if l_tok.value not in self._VALID_EPISTEMIC_LEVELS:
+                        raise AxonParseError(
+                            f"Invalid on_level '{l_tok.value}' in heal '{name.value}'",
+                            line=l_tok.line, column=l_tok.column,
+                            expected="know | believe | speculate | doubt",
+                            found=l_tok.value,
+                        )
+                    node.on_level = l_tok.value
+                case "mode":
+                    m_tok = self._consume_any_identifier_or_keyword()
+                    if m_tok.value not in self._VALID_HEAL_MODES:
+                        raise AxonParseError(
+                            f"Invalid mode '{m_tok.value}' in heal '{name.value}'",
+                            line=m_tok.line, column=m_tok.column,
+                            expected="audit_only | human_in_loop | adversarial",
+                            found=m_tok.value,
+                        )
+                    node.mode = m_tok.value
+                case "scope":
+                    s_tok = self._consume_any_identifier_or_keyword()
+                    if s_tok.value not in self._VALID_SCOPES:
+                        raise AxonParseError(
+                            f"Invalid scope '{s_tok.value}' in heal '{name.value}'",
+                            line=s_tok.line, column=s_tok.column,
+                            expected="tenant | flow | global",
+                            found=s_tok.value,
+                        )
+                    node.scope = s_tok.value
+                case "review_sla":
+                    if self._check(TokenType.DURATION):
+                        node.review_sla = self._advance().value
+                    else:
+                        node.review_sla = self._consume_any_identifier_or_keyword().value
+                case "shield":
+                    node.shield_ref = self._consume_any_identifier_or_keyword().value
+                case "max_patches":
+                    node.max_patches = int(self._consume(TokenType.INTEGER).value)
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    # ═══════════════════════════════════════════════════════════════
+    #  UI COGNITIVA — Fase 9 of λ-L-E (component / view)
+    # ═══════════════════════════════════════════════════════════════
+
+    _VALID_RENDER_HINTS = frozenset({"card", "list", "form", "chart", "custom"})
+
+    def _parse_component(self) -> ComponentDefinition:
+        """Parse: component Name { renders, via_shield, on_interact, render_hint }."""
+        tok = self._consume(TokenType.COMPONENT)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = ComponentDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "renders":
+                    node.renders = self._consume_any_identifier_or_keyword().value
+                case "via_shield":
+                    node.via_shield = self._consume_any_identifier_or_keyword().value
+                case "on_interact":
+                    node.on_interact = self._consume_any_identifier_or_keyword().value
+                case "render_hint":
+                    h_tok = self._consume_any_identifier_or_keyword()
+                    if h_tok.value not in self._VALID_RENDER_HINTS:
+                        raise AxonParseError(
+                            f"Invalid render_hint '{h_tok.value}' in component '{name.value}'",
+                            line=h_tok.line, column=h_tok.column,
+                            expected="card | list | form | chart | custom",
+                            found=h_tok.value,
+                        )
+                    node.render_hint = h_tok.value
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_view(self) -> ViewDefinition:
+        """Parse: view Name { title, components: [...], route }."""
+        tok = self._consume(TokenType.VIEW)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = ViewDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "title":
+                    node.title = self._consume(TokenType.STRING).value
+                case "components":
+                    node.components = self._parse_bracketed_identifiers()
+                case "route":
+                    node.route = self._consume(TokenType.STRING).value
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_ensemble(self) -> EnsembleDefinition:
+        """Parse: ensemble Name { observations, quorum, aggregation, certainty_mode }."""
+        tok = self._consume(TokenType.ENSEMBLE)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = EnsembleDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "observations":
+                    node.observations = self._parse_bracketed_identifiers()
+                case "quorum":
+                    node.quorum = int(self._consume(TokenType.INTEGER).value)
+                case "aggregation":
+                    a_tok = self._consume_any_identifier_or_keyword()
+                    if a_tok.value not in self._VALID_AGGREGATION:
+                        raise AxonParseError(
+                            f"Invalid aggregation '{a_tok.value}' in ensemble '{name.value}'",
+                            line=a_tok.line, column=a_tok.column,
+                            expected="majority | weighted | byzantine",
+                            found=a_tok.value,
+                        )
+                    node.aggregation = a_tok.value
+                case "certainty_mode":
+                    c_tok = self._consume_any_identifier_or_keyword()
+                    if c_tok.value not in self._VALID_CERTAINTY_MODE:
+                        raise AxonParseError(
+                            f"Invalid certainty_mode '{c_tok.value}' in ensemble '{name.value}'",
+                            line=c_tok.line, column=c_tok.column,
+                            expected="min | weighted | harmonic",
+                            found=c_tok.value,
+                        )
+                    node.certainty_mode = c_tok.value
                 case _:
                     self._skip_value()
 

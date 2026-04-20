@@ -310,12 +310,25 @@ class TypeDefinition(ASTNode):
     type Party { name: FactualClaim, role: FactualClaim }
     type HighConfidenceClaim where confidence >= 0.85
 
-    A semantic type declaration with optional fields, range, or where clause.
+    type PatientRecord compliance [HIPAA] {
+        name: String
+        ssn: String
+    }
+
+    A semantic type declaration with optional fields, range, where
+    clause, and regulatory compliance annotations (ESK Fase 6.1).
+
+    When `compliance` is non-empty, the type carries a **regulatory
+    class κ** (per paper ΛD v6 and plan_io_cognitivo.md §6.1).  The
+    compiler enforces that any flow/endpoint consuming such a type
+    must be gated by a shield whose compliance list ⊇ this type's
+    compliance set — a *compile-time* proof of regulatory coverage.
     """
     name: str = ""
     fields: list[TypeFieldNode] = field(default_factory=list)
     range_constraint: RangeConstraint | None = None
     where_clause: WhereClause | None = None
+    compliance: list[str] = field(default_factory=list)  # κ — regulatory class (ESK)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1126,6 +1139,7 @@ class ShieldDefinition(ASTNode):
     deflect_message: str = ""          # canned response for deflect
     budget: AgentBudget | None = None  # optional resource constraints
     taint: str = ""                    # EMCP: expected taint label
+    compliance: list[str] = field(default_factory=list)  # ESK Fase 6.1 — regulatory coverage
 
 
 @dataclass
@@ -1733,12 +1747,18 @@ class AxonEndpointDefinition(ASTNode):
         execute: AnalyzeContract
         output: ContractReport
         shield: EdgeShield
+        compliance: [HIPAA, PCI_DSS]
         retries: 2
         timeout: 10s
     }
 
     Declarative HTTP boundary primitive that binds transport ingress
     to a validated AXON flow execution target.
+
+    The optional `compliance` field (ESK Fase 6.1) declares the
+    regulatory classes handled by this boundary.  The type checker
+    verifies that the endpoint's shield covers every declared class
+    AND that the body/output types' compliance sets are covered.
     """
     name: str = ""
     method: str = "POST"
@@ -1749,6 +1769,7 @@ class AxonEndpointDefinition(ASTNode):
     shield_ref: str = ""
     retries: int = 0
     timeout: str = ""
+    compliance: list[str] = field(default_factory=list)  # ESK Fase 6.1
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1908,3 +1929,485 @@ class TransactNode(ASTNode):
     consumes the token and reverts all mutations.
     """
     body: list[ASTNode] = field(default_factory=list)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  I/O COGNITIVO PRIMITIVES — Cálculo Lambda Lineal Epistémico (λ-L-E)
+#  (Plan: docs/plan_io_cognitivo.md · Fase 1)
+#
+#  Four cognitive I/O primitives that model infrastructure as
+#  linear/affine resources with epistemic state:
+#
+#    resource  — an affine/linear infrastructure token
+#                (A, !A, A ⊸ B under Girard's Linear Logic)
+#    fabric    — a tagged substrate / namespace (region, zones)
+#                (topological container for resources)
+#    manifest  — a declarative belief about desired shape
+#                (refinement spec, not imperative state)
+#    observe   — a quorum-gated observation with lag τ
+#                (Fagin-Halpern common knowledge `Cφ` aggregation)
+#
+#  The primitives return a pure Intention Tree (Free Monad); a
+#  Handler interprets it (Fase 2).  Separation Logic disjointness
+#  and affine-type linearity are enforced at compile-time.
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class ResourceDefinition(ASTNode):
+    """
+    resource DatabasePool {
+        kind: postgres
+        endpoint: "db.internal:5432"
+        capacity: 100
+        lifetime: linear
+        certainty_floor: 0.85
+        shield: DBShield
+    }
+
+    An infrastructure resource declared as a linear, affine, or
+    persistent token.  Linear/affine resources cannot be aliased
+    across manifests (Separation Logic `*` disjointness).
+    """
+    name: str = ""
+    kind: str = ""                       # postgres | redis | s3 | vpc | gpu | compute | custom
+    endpoint: str = ""                   # connection URI
+    capacity: int | None = None          # hint for pool size / instance count
+    lifetime: str = "affine"             # linear | affine | persistent
+    certainty_floor: float | None = None # epistemic gate c ∈ [0.0, 1.0]
+    shield_ref: str = ""                 # optional shield reference
+
+
+@dataclass
+class FabricDefinition(ASTNode):
+    """
+    fabric AWS_VPC {
+        provider: aws
+        region: "us-east-1"
+        zones: 3
+        ephemeral: true
+        shield: NetworkShield
+    }
+
+    A tagged substrate — the topological container where
+    resources are provisioned. Maps to VPC / cluster / namespace.
+    """
+    name: str = ""
+    provider: str = ""                   # aws | gcp | azure | kubernetes | bare_metal | custom
+    region: str = ""                     # provider-specific region id
+    zones: int | None = None             # number of availability zones
+    ephemeral: bool | None = None        # true = destroy on program end
+    shield_ref: str = ""                 # optional shield reference
+
+
+@dataclass
+class ManifestDefinition(ASTNode):
+    """
+    manifest ProductionCluster {
+        resources: [DatabasePool, RedisCache]
+        fabric: AWS_VPC
+        region: "us-east-1"
+        zones: 3
+        compliance: [HIPAA, PCI_DSS]
+    }
+
+    A declarative specification of desired shape.  Not a "desired
+    state" in the Terraform sense — a *belief* about structure.
+    Resources listed here must be disjoint (no aliasing); linear
+    and affine resources can belong to only one manifest.
+    """
+    name: str = ""
+    resources: list[str] = field(default_factory=list)   # references to ResourceDefinition names
+    fabric_ref: str = ""                                 # reference to FabricDefinition name
+    region: str = ""
+    zones: int | None = None
+    compliance: list[str] = field(default_factory=list)  # κ — regulatory class (Fase 6.1)
+
+
+@dataclass
+class ObserveDefinition(ASTNode):
+    """
+    observe ClusterState from ProductionCluster {
+        sources: [prometheus, cloudwatch, healthcheck]
+        quorum: 2
+        timeout: 5s
+        on_partition: fail
+        certainty_floor: 0.90
+    }
+
+    A quorum-gated observation of a manifest's real state.  Each
+    output carries ΛD envelope E = ⟨c, τ, ρ, δ⟩; `τ` records the
+    observation lag explicitly.  `on_partition: fail` raises a
+    CT-3 (Network Error) — partitions are ⊥ void, not `doubt`.
+    """
+    name: str = ""
+    target: str = ""                     # name of ManifestDefinition being observed
+    sources: list[str] = field(default_factory=list)
+    quorum: int | None = None            # Byzantine quorum threshold (default: len(sources))
+    timeout: str = ""                    # duration literal "5s", "100ms", etc.
+    on_partition: str = "fail"           # fail (CT-3) | shield_quarantine
+    certainty_floor: float | None = None
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  CONTROL COGNITIVO PRIMITIVES — Fase 3 of the λ-L-E calculus
+#  (Plan: docs/plan_io_cognitivo.md)
+#
+#  Three control-layer primitives that close the Active Inference loop:
+#
+#    reconcile — free-energy-minimizing control loop that closes the
+#                gap between a manifest (belief) and an observe
+#                (evidence), gated by shield + epistemic threshold
+#    lease     — affine/linear resource token with explicit τ-decay,
+#                raising CT-2 Anchor Breach on post-expiry access
+#    ensemble  — Byzantine quorum aggregator that fuses multiple
+#                observations into a single `Cφ` common-knowledge
+#                outcome
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class ReconcileDefinition(ASTNode):
+    """
+    reconcile ProductionReconciler {
+        observe: ClusterHealth
+        threshold: 0.85
+        tolerance: 0.10
+        on_drift: provision
+        shield: ReconcileShield
+        mandate: ClusterPid
+        max_retries: 3
+    }
+
+    A cognitive control loop over a manifest/observe pair.  Each tick
+    consumes the latest observation, computes a drift metric against
+    the manifest's belief, and — if certainty > threshold AND drift >
+    tolerance AND shield approves — triggers `on_drift`.
+
+    Formally: the loop minimizes variational free energy
+        F = D_KL(q(s) || p(s, o))
+    where `q(s)` is the manifest's belief and `p(s, o)` is the joint
+    distribution evidenced by `observe`.  Acting on the environment
+    (provision) is one of the two classical routes to reducing F, the
+    other being belief revision (`refine`).
+    """
+    name: str = ""
+    observe_ref: str = ""
+    threshold: float | None = None       # epistemic gate [0.0, 1.0]
+    tolerance: float | None = None       # drift tolerance [0.0, 1.0]
+    on_drift: str = "provision"          # provision | alert | refine
+    shield_ref: str = ""
+    mandate_ref: str = ""
+    max_retries: int = 3
+
+
+@dataclass
+class LeaseDefinition(ASTNode):
+    """
+    lease DbWriteLease {
+        resource: PrimaryDatabase
+        duration: 30s
+        acquire: on_start
+        on_expire: anchor_breach
+    }
+
+    An affine/linear lease on a resource, with an explicit Δt window
+    encoded in the `τ` of the ΛD envelope.  The runtime LeaseKernel
+    materializes each lease as a revocable token; use post-expiry
+    raises `LeaseExpiredError` (CT-2) per decision D2.
+    """
+    name: str = ""
+    resource_ref: str = ""
+    duration: str = ""                   # duration literal "30s", "5m", "2h"
+    acquire: str = "on_start"            # on_start | on_demand
+    on_expire: str = "anchor_breach"     # anchor_breach | release | extend
+
+
+@dataclass
+class EnsembleDefinition(ASTNode):
+    """
+    ensemble ClusterTruth {
+        observations: [ClusterProm, ClusterCW, ClusterHC]
+        quorum: 2
+        aggregation: majority
+        certainty_mode: min
+    }
+
+    A Byzantine quorum aggregator over >=2 independent observations.
+    Computes common knowledge `Cφ` (Fagin-Halpern) when at least
+    `quorum` observers agree.  Failed/partitioned observations are
+    excluded; if fewer than `quorum` outcomes remain, the ensemble
+    raises a CT-3 structural failure.
+    """
+    name: str = ""
+    observations: list[str] = field(default_factory=list)
+    quorum: int | None = None
+    aggregation: str = "majority"        # majority | weighted | byzantine
+    certainty_mode: str = "min"          # min | weighted | harmonic
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  TOPOLOGY & SESSION TYPES — Fase 4 of the λ-L-E calculus
+#  (Plan: docs/plan_io_cognitivo.md)
+#
+#  A topology is a typed directed graph over already-declared Axon
+#  entities (resources, fabrics, manifests, observes, axonendpoints,
+#  daemons, agents, axonstores).  Each edge carries a `session`
+#  reference: a binary protocol descriptor in the style of
+#  Honda-Vasconcelos-Yoshida session types.
+#
+#  Compile-time guarantees (Fase 4 acceptance criterion):
+#    1. Duality   — the two roles of every session are dual: zipped
+#                   pairwise, every (send T, receive T) opposes a
+#                   (receive T, send T), and loop/end positions match.
+#    2. Closure   — every node referenced in `nodes` is a declared
+#                   entity; every edge endpoint is in `nodes`; every
+#                   `session_ref` resolves to a SessionDefinition.
+#    3. Liveness  — directed cycles whose every edge is `receive`-first
+#                   are flagged as static deadlocks.  Cycles that
+#                   contain at least one `send`-first edge are
+#                   liveness-preserving and pass.
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class SessionStep(ASTNode):
+    """
+    A single primitive in a session protocol:
+
+        send T      — emit a message of type T
+        receive T   — block-await a message of type T
+        loop        — branch back to the protocol's first step
+        end         — terminate the session
+
+    Steps are ordered; a role's protocol is a flat list of steps.
+    """
+    op: str = ""              # "send" | "receive" | "loop" | "end"
+    message_type: str = ""    # only meaningful for send / receive
+
+
+@dataclass
+class SessionRole(ASTNode):
+    """
+    One side of a binary session — name + ordered list of steps.
+
+        client: [send Query, receive Result, end]
+    """
+    name: str = ""
+    steps: list[SessionStep] = field(default_factory=list)
+
+
+@dataclass
+class SessionDefinition(ASTNode):
+    """
+    session DbSession {
+        client: [send Query, receive Result, end]
+        server: [receive Query, send Result, end]
+    }
+
+    A binary session type — exactly two roles whose protocols MUST be
+    pairwise dual.  Duality is verified by the type checker, so any
+    program that uses a non-dual session is rejected at compile time.
+    """
+    name: str = ""
+    roles: list[SessionRole] = field(default_factory=list)
+
+
+@dataclass
+class TopologyEdge(ASTNode):
+    """
+    A directed, session-typed edge between two nodes:
+
+        AppServer -> PrimaryDb : DbSession
+
+    The source plays the FIRST role of the session; the target plays
+    the SECOND role.  Convention is fixed so that an Axon program
+    has a single, unambiguous protocol assignment per edge.
+    """
+    source: str = ""
+    target: str = ""
+    session_ref: str = ""
+
+
+@dataclass
+class TopologyDefinition(ASTNode):
+    """
+    topology ProductionTopology {
+        nodes: [PrimaryDb, AppServer, ContractsAPI, OrdersDaemon]
+        edges: [
+            AppServer -> PrimaryDb : DbSession,
+            ContractsAPI -> AppServer : RequestSession,
+            OrdersDaemon -> AppServer : OrderEventStream
+        ]
+    }
+
+    A typed directed graph over Axon entities.  Edges carry session
+    references whose duality the type checker enforces, and the
+    overall graph is statically analyzed for liveness deadlocks.
+    """
+    name: str = ""
+    nodes: list[str] = field(default_factory=list)
+    edges: list[TopologyEdge] = field(default_factory=list)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  COGNITIVE IMMUNE SYSTEM — Fase 5 of the λ-L-E calculus
+#  (Formalization: docs/paper_inmune.md — Jerne + Friston FEP)
+#
+#  Three composable primitives that form Axon's active defense layer:
+#
+#    immune — anomaly detector via KL divergence + Free Energy Principle.
+#             Emits a HealthReport (ΛD envelope) but takes no action.
+#             Reuses the `psyche` FEP solver (per paper §3.3).
+#    reflex — deterministic, O(1), LLM-free motor response.
+#             Fires when the HealthReport crosses an epistemic threshold
+#             (know / believe / speculate / doubt).
+#    heal   — Linear Logic one-shot patch synthesis.  Three compliance
+#             modes: audit_only / human_in_loop / adversarial (paper §7).
+#
+#  MANDATORY `scope` — per paper §8.2, the compiler REJECTS any immune,
+#  reflex, or heal without an explicit `scope` declaration.  No implicit
+#  `global` default exists; blast radius must be a conscious decision.
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class ImmuneDefinition(ASTNode):
+    """
+    immune AppVigilante {
+        watch: [network_traffic, sql_queries, auth_logs]
+        sensitivity: 0.9
+        baseline: learned
+        window: 200
+        scope: tenant
+        tau: 300s
+        decay: exponential
+    }
+
+    A continuous anomaly sensor over a declared observation vector.
+    Computes D_KL(q_baseline || p_observed) per paper §3.2 and emits
+    a HealthReport with an epistemic level derived from the KL magnitude
+    (paper §5.2 lattice: [0,0.3)→know, [0.3,0.6)→believe,
+    [0.6,0.9)→speculate, [0.9,1.0]→doubt).
+
+    IMPORTANT: `immune` takes NO action — it is a pure sensor.  Action
+    is delegated to `reflex` and `heal` which consume its HealthReport.
+    """
+    name: str = ""
+    watch: list[str] = field(default_factory=list)   # observe / ensemble / any ref names
+    sensitivity: float | None = None                 # [0.0, 1.0]
+    baseline: str = "learned"                        # "learned" or name of a prior
+    window: int = 100                                # samples used to estimate baseline
+    scope: str = ""                                  # tenant | flow | global (MANDATORY)
+    tau: str = ""                                    # duration half-life
+    decay: str = "exponential"                       # exponential | linear | none
+
+
+@dataclass
+class ReflexDefinition(ASTNode):
+    """
+    reflex TerminateConnection {
+        trigger: AppVigilante
+        on_level: doubt
+        action: drop
+        scope: tenant
+        sla: 1ms
+    }
+
+    Deterministic, O(1) motor response that fires when a referenced
+    `immune` sensor's HealthReport reaches the declared epistemic level.
+    Contract invariants (per paper §4.2):
+      • never invokes an LLM
+      • no long-running blocking I/O
+      • every activation emits a signed_trace
+      • idempotent — same HealthReport ⇒ same effect, no duplication
+    """
+    name: str = ""
+    trigger: str = ""                                 # immune name
+    on_level: str = "doubt"                           # know | believe | speculate | doubt
+    action: str = ""                                  # drop | revoke | emit | redact | quarantine | terminate | alert
+    scope: str = ""                                   # MANDATORY
+    sla: str = ""                                     # duration budget, e.g. "1ms"
+
+
+@dataclass
+class HealDefinition(ASTNode):
+    """
+    heal ZeroDayPatcher {
+        source: AppVigilante
+        on_level: doubt
+        mode: human_in_loop
+        scope: tenant
+        review_sla: 24h
+        shield: HealShield
+        max_patches: 3
+    }
+
+    Linear-Logic one-shot patch synthesis.  Per paper §6 the patch has
+    type !Synthesized ⊸ Applied ⊸ Collapsed — each transition consumes
+    its predecessor, guaranteeing single application and forced collapse.
+
+    Three compliance modes (paper §7) control the level of automation:
+      audit_only     — patches synthesized but NEVER applied
+      human_in_loop  — default; requires explicit human approval
+      adversarial    — autonomous application (opt-in, risk-accepted)
+    """
+    name: str = ""
+    source: str = ""                                  # immune name (MANDATORY)
+    on_level: str = "doubt"                           # know | believe | speculate | doubt
+    mode: str = "human_in_loop"                       # audit_only | human_in_loop | adversarial
+    scope: str = ""                                   # MANDATORY
+    review_sla: str = ""                              # duration
+    shield_ref: str = ""                              # optional shield gate
+    max_patches: int = 3                              # bounded heal attempts
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  UI COGNITIVA — Fase 9 of the λ-L-E calculus
+#  (Plan: docs/plan_io_cognitivo.md Fase 9)
+#
+#  A component renders a declared Axon type. If the type carries κ
+#  (regulatory class), the component MUST declare a `via_shield` that
+#  covers that κ — the type-checker rejects unshielded regulated
+#  renders at compile time. Events route to declared flows with the
+#  signature enforced against the component's render type.
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class ComponentDefinition(ASTNode):
+    """
+    component PatientCard {
+        renders:     PatientRecord
+        via_shield:  PHIShield
+        on_interact: SummarizeRecord
+        render_hint: card          # card | list | form | chart | custom
+    }
+
+    A reusable UI fragment. `renders` is the data type the component
+    visualizes; if that type has κ, `via_shield` is mandatory and its
+    compliance set MUST cover the type's κ (compile-time enforcement).
+    `on_interact` is optional: when present, it must be a flow whose
+    first parameter type matches `renders`.
+    """
+    name: str = ""
+    renders: str = ""                  # type name this component visualizes
+    via_shield: str = ""               # shield that gates user input + redacts output
+    on_interact: str = ""              # optional flow triggered by user interaction
+    render_hint: str = "custom"        # card | list | form | chart | custom
+
+
+@dataclass
+class ViewDefinition(ASTNode):
+    """
+    view PatientDashboard {
+        title:      "Patient Dashboard"
+        components: [PatientCard, TrialList]
+        route:      "/patients"
+    }
+
+    A top-level screen. `components` is an ordered list of declared
+    `component` names composed in the view's primary layout. `route`
+    is an optional URL path; the renderer wires this into the
+    browser/desktop app shell.
+    """
+    name: str = ""
+    title: str = ""
+    components: list[str] = field(default_factory=list)
+    route: str = ""

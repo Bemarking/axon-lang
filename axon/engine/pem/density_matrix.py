@@ -38,7 +38,6 @@ Mathematical references:
     - Busemeyer & Bruza (2012), "Quantum Models of Cognition and Decision"
     - See docs/psychological_epistemic_modeling.md §2
 
-Author: Ricardo Velit (theoretical framework)
 """
 
 from __future__ import annotations

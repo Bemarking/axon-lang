@@ -30,7 +30,6 @@ Usage:
     >>> from axon.engine.pem import create_therapeutic_engine
     >>> engine = create_therapeutic_engine()
 
-Author: Ricardo Velit (theoretical framework)
 """
 
 from __future__ import annotations

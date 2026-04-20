@@ -33,7 +33,6 @@ Mathematical references:
     - Friston (2010), "The Free-Energy Principle: A Unified Brain Theory?"
     - See docs/psychological_epistemic_modeling.md §3
 
-Author: Ricardo Velit (theoretical framework)
 """
 
 from __future__ import annotations

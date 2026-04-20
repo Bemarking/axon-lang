@@ -13,21 +13,33 @@ from axon.compiler.ast_nodes import (
     AnchorConstraint,
     ConditionalNode,
     ContextDefinition,
+    EnsembleDefinition,
+    FabricDefinition,
     FlowDefinition,
     ForInStatement,
+    HealDefinition,
+    ImmuneDefinition,
     ImportNode,
+    LeaseDefinition,
     LetStatement,
     IntentNode,
+    ManifestDefinition,
     MemoryDefinition,
+    ObserveDefinition,
     PersonaDefinition,
     ProbeDirective,
     ProgramNode,
     ReasonChain,
     RecallNode,
+    ReconcileDefinition,
+    ReflexDefinition,
     RememberNode,
+    ResourceDefinition,
     RunStatement,
+    SessionDefinition,
     StepNode,
     ToolDefinition,
+    TopologyDefinition,
     TypeDefinition,
     ValidateGate,
     WeaveNode,
@@ -990,3 +1002,419 @@ class TestStaticToolBinding:
         tree = _parse(source)
         step = tree.declarations[0].body[0]
         assert step.use_tool.static_args == {"strategy": "pix.document_tree"}
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  I/O COGNITIVO — λ-L-E Fase 1 (resource, fabric, manifest, observe)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestResource:
+    """Parser handles resource declarations (Linear/Affine infrastructure tokens)."""
+
+    def test_resource_full(self):
+        source = '''resource DatabasePool {
+  kind: postgres
+  endpoint: "db.internal:5432"
+  capacity: 100
+  lifetime: linear
+  certainty_floor: 0.85
+  shield: DBShield
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert isinstance(node, ResourceDefinition)
+        assert node.name == "DatabasePool"
+        assert node.kind == "postgres"
+        assert node.endpoint == "db.internal:5432"
+        assert node.capacity == 100
+        assert node.lifetime == "linear"
+        assert node.certainty_floor == 0.85
+        assert node.shield_ref == "DBShield"
+
+    def test_resource_defaults_to_affine(self):
+        tree = _parse('resource Cache { kind: redis }')
+        node = tree.declarations[0]
+        assert isinstance(node, ResourceDefinition)
+        assert node.lifetime == "affine"
+        assert node.certainty_floor is None
+
+    def test_resource_invalid_lifetime_rejected(self):
+        source = '''resource Bad {
+  kind: redis
+  lifetime: eternal
+}'''
+        with pytest.raises(AxonParseError, match="Invalid lifetime"):
+            _parse(source)
+
+
+class TestFabric:
+    """Parser handles fabric declarations (topological substrate)."""
+
+    def test_fabric_full(self):
+        source = '''fabric AWS_VPC {
+  provider: aws
+  region: "us-east-1"
+  zones: 3
+  ephemeral: true
+  shield: NetworkShield
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert isinstance(node, FabricDefinition)
+        assert node.name == "AWS_VPC"
+        assert node.provider == "aws"
+        assert node.region == "us-east-1"
+        assert node.zones == 3
+        assert node.ephemeral is True
+        assert node.shield_ref == "NetworkShield"
+
+
+class TestManifest:
+    """Parser handles manifest declarations (declarative shape beliefs)."""
+
+    def test_manifest_full(self):
+        source = '''manifest ProductionCluster {
+  resources: [DatabasePool, RedisCache]
+  fabric: AWS_VPC
+  region: "us-east-1"
+  zones: 3
+  compliance: [HIPAA, PCI_DSS]
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert isinstance(node, ManifestDefinition)
+        assert node.name == "ProductionCluster"
+        assert node.resources == ["DatabasePool", "RedisCache"]
+        assert node.fabric_ref == "AWS_VPC"
+        assert node.region == "us-east-1"
+        assert node.zones == 3
+        assert node.compliance == ["HIPAA", "PCI_DSS"]
+
+    def test_manifest_single_resource(self):
+        tree = _parse('manifest Single { resources: [Db] }')
+        node = tree.declarations[0]
+        assert node.resources == ["Db"]
+
+
+class TestObserve:
+    """Parser handles observe declarations (quorum-gated observation)."""
+
+    def test_observe_full(self):
+        source = '''observe ClusterState from ProductionCluster {
+  sources: [prometheus, cloudwatch, healthcheck]
+  quorum: 2
+  timeout: 5s
+  on_partition: fail
+  certainty_floor: 0.90
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert isinstance(node, ObserveDefinition)
+        assert node.name == "ClusterState"
+        assert node.target == "ProductionCluster"
+        assert node.sources == ["prometheus", "cloudwatch", "healthcheck"]
+        assert node.quorum == 2
+        assert node.timeout == "5s"
+        assert node.on_partition == "fail"
+        assert node.certainty_floor == 0.90
+
+    def test_observe_default_on_partition_is_fail(self):
+        source = '''observe S from M {
+  sources: [prometheus]
+  timeout: 3s
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        # D4 (plan_io_cognitivo.md): default partition policy is CT-3 failure
+        assert node.on_partition == "fail"
+
+    def test_observe_invalid_on_partition_rejected(self):
+        source = '''observe S from M {
+  sources: [prometheus]
+  on_partition: ignore
+}'''
+        with pytest.raises(AxonParseError, match="Invalid on_partition"):
+            _parse(source)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  CONTROL COGNITIVO — λ-L-E Fase 3 (reconcile, lease, ensemble)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestReconcile:
+    """Parser handles reconcile declarations."""
+
+    def test_reconcile_full(self):
+        source = '''reconcile ProdReconciler {
+  observe: ClusterHealth
+  threshold: 0.85
+  tolerance: 0.10
+  on_drift: provision
+  shield: ReconcileShield
+  mandate: ClusterPid
+  max_retries: 5
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert isinstance(node, ReconcileDefinition)
+        assert node.name == "ProdReconciler"
+        assert node.observe_ref == "ClusterHealth"
+        assert node.threshold == 0.85
+        assert node.tolerance == 0.10
+        assert node.on_drift == "provision"
+        assert node.shield_ref == "ReconcileShield"
+        assert node.mandate_ref == "ClusterPid"
+        assert node.max_retries == 5
+
+    def test_reconcile_defaults(self):
+        tree = _parse('reconcile R { observe: O }')
+        node = tree.declarations[0]
+        assert isinstance(node, ReconcileDefinition)
+        assert node.on_drift == "provision"
+        assert node.max_retries == 3
+        assert node.threshold is None
+
+    def test_reconcile_invalid_on_drift_rejected(self):
+        with pytest.raises(AxonParseError, match="Invalid on_drift"):
+            _parse('reconcile R { observe: O on_drift: erase }')
+
+
+class TestLease:
+    """Parser handles lease declarations."""
+
+    def test_lease_full(self):
+        source = '''lease DbWriteLease {
+  resource: PrimaryDb
+  duration: 30s
+  acquire: on_start
+  on_expire: anchor_breach
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert isinstance(node, LeaseDefinition)
+        assert node.name == "DbWriteLease"
+        assert node.resource_ref == "PrimaryDb"
+        assert node.duration == "30s"
+        assert node.acquire == "on_start"
+        assert node.on_expire == "anchor_breach"
+
+    def test_lease_defaults(self):
+        tree = _parse('lease L { resource: R duration: 5m }')
+        node = tree.declarations[0]
+        assert node.acquire == "on_start"
+        assert node.on_expire == "anchor_breach"
+
+    def test_lease_invalid_acquire_rejected(self):
+        with pytest.raises(AxonParseError, match="Invalid acquire"):
+            _parse('lease L { resource: R duration: 1s acquire: forever }')
+
+    def test_lease_invalid_on_expire_rejected(self):
+        with pytest.raises(AxonParseError, match="Invalid on_expire"):
+            _parse('lease L { resource: R duration: 1s on_expire: explode }')
+
+
+class TestEnsemble:
+    """Parser handles ensemble declarations."""
+
+    def test_ensemble_full(self):
+        source = '''ensemble ClusterTruth {
+  observations: [ObsA, ObsB, ObsC]
+  quorum: 2
+  aggregation: byzantine
+  certainty_mode: harmonic
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert isinstance(node, EnsembleDefinition)
+        assert node.name == "ClusterTruth"
+        assert node.observations == ["ObsA", "ObsB", "ObsC"]
+        assert node.quorum == 2
+        assert node.aggregation == "byzantine"
+        assert node.certainty_mode == "harmonic"
+
+    def test_ensemble_defaults(self):
+        tree = _parse('ensemble E { observations: [A, B] }')
+        node = tree.declarations[0]
+        assert node.aggregation == "majority"
+        assert node.certainty_mode == "min"
+
+    def test_ensemble_invalid_aggregation_rejected(self):
+        with pytest.raises(AxonParseError, match="Invalid aggregation"):
+            _parse('ensemble E { observations: [A, B] aggregation: vote }')
+
+    def test_ensemble_invalid_certainty_mode_rejected(self):
+        with pytest.raises(AxonParseError, match="Invalid certainty_mode"):
+            _parse('ensemble E { observations: [A, B] certainty_mode: mean }')
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  TOPOLOGY & SESSION TYPES — λ-L-E Fase 4 (π-calculus)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestSession:
+    """Parser handles binary session declarations."""
+
+    def test_session_full(self):
+        source = '''session DbSession {
+  client: [send Query, receive Result, end]
+  server: [receive Query, send Result, end]
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert isinstance(node, SessionDefinition)
+        assert node.name == "DbSession"
+        assert len(node.roles) == 2
+        client, server = node.roles
+        assert client.name == "client"
+        assert [(s.op, s.message_type) for s in client.steps] == [
+            ("send", "Query"), ("receive", "Result"), ("end", ""),
+        ]
+        assert server.name == "server"
+        assert [(s.op, s.message_type) for s in server.steps] == [
+            ("receive", "Query"), ("send", "Result"), ("end", ""),
+        ]
+
+    def test_session_with_loop(self):
+        source = '''session EventStream {
+  producer: [send Event, loop]
+  consumer: [receive Event, loop]
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert node.roles[0].steps[1].op == "loop"
+        assert node.roles[1].steps[1].op == "loop"
+
+    def test_session_invalid_step_rejected(self):
+        with pytest.raises(AxonParseError, match="Invalid session step"):
+            _parse('session S { client: [transmit Q] server: [end] }')
+
+
+class TestTopology:
+    """Parser handles topology declarations."""
+
+    def test_topology_full(self):
+        source = '''topology Prod {
+  nodes: [A, B, C]
+  edges: [
+    A -> B : SessAB,
+    B -> C : SessBC
+  ]
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert isinstance(node, TopologyDefinition)
+        assert node.name == "Prod"
+        assert node.nodes == ["A", "B", "C"]
+        assert len(node.edges) == 2
+        e1, e2 = node.edges
+        assert (e1.source, e1.target, e1.session_ref) == ("A", "B", "SessAB")
+        assert (e2.source, e2.target, e2.session_ref) == ("B", "C", "SessBC")
+
+    def test_topology_single_edge(self):
+        source = '''topology T {
+  nodes: [X, Y]
+  edges: [X -> Y : S]
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert len(node.edges) == 1
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  COGNITIVE IMMUNE SYSTEM — λ-L-E Fase 5 (paper_inmune.md)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestImmune:
+    """Parser handles immune declarations."""
+
+    def test_immune_full(self):
+        source = '''immune Vigil {
+  watch: [Traffic, Queries, Auth]
+  sensitivity: 0.9
+  baseline: learned
+  window: 200
+  scope: tenant
+  tau: 300s
+  decay: exponential
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert isinstance(node, ImmuneDefinition)
+        assert node.name == "Vigil"
+        assert node.watch == ["Traffic", "Queries", "Auth"]
+        assert node.sensitivity == 0.9
+        assert node.window == 200
+        assert node.scope == "tenant"
+        assert node.tau == "300s"
+        assert node.decay == "exponential"
+
+    def test_immune_invalid_scope_rejected(self):
+        with pytest.raises(AxonParseError, match="Invalid scope"):
+            _parse('immune V { watch: [A] scope: everywhere }')
+
+    def test_immune_invalid_decay_rejected(self):
+        with pytest.raises(AxonParseError, match="Invalid decay"):
+            _parse('immune V { watch: [A] scope: tenant decay: quadratic }')
+
+
+class TestReflex:
+    """Parser handles reflex declarations."""
+
+    def test_reflex_full(self):
+        source = '''reflex Drop {
+  trigger: Vigil
+  on_level: doubt
+  action: drop
+  scope: tenant
+  sla: 1ms
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert isinstance(node, ReflexDefinition)
+        assert node.name == "Drop"
+        assert node.trigger == "Vigil"
+        assert node.on_level == "doubt"
+        assert node.action == "drop"
+        assert node.scope == "tenant"
+        assert node.sla == "1ms"
+
+    def test_reflex_invalid_on_level_rejected(self):
+        with pytest.raises(AxonParseError, match="Invalid on_level"):
+            _parse('reflex R { trigger: V on_level: certain action: drop scope: tenant }')
+
+    def test_reflex_invalid_action_rejected(self):
+        with pytest.raises(AxonParseError, match="Invalid action"):
+            _parse('reflex R { trigger: V on_level: doubt action: explode scope: tenant }')
+
+
+class TestHeal:
+    """Parser handles heal declarations."""
+
+    def test_heal_full(self):
+        source = '''heal Patch {
+  source: Vigil
+  on_level: doubt
+  mode: human_in_loop
+  scope: tenant
+  review_sla: 24h
+  shield: S
+  max_patches: 3
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert isinstance(node, HealDefinition)
+        assert node.name == "Patch"
+        assert node.source == "Vigil"
+        assert node.mode == "human_in_loop"
+        assert node.scope == "tenant"
+        assert node.review_sla == "24h"
+        assert node.shield_ref == "S"
+        assert node.max_patches == 3
+
+    def test_heal_invalid_mode_rejected(self):
+        with pytest.raises(AxonParseError, match="Invalid mode"):
+            _parse('heal H { source: V mode: reckless scope: tenant }')

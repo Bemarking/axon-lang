@@ -53,6 +53,16 @@ pub enum TokenType {
     AxonStore, Schema, Persist, Retrieve, Mutate, Purge, Transact,
     // AxonEndpoint
     AxonEndpoint,
+    // I/O Cognitivo (§λ-L-E Fase 1 — Resources)
+    Resource, Fabric, Manifest, Observe,
+    // Control Cognitivo (§λ-L-E Fase 3)
+    Reconcile, Lease, Ensemble,
+    // Topology & Session (§λ-L-E Fase 4 — π-calculus)
+    Topology, Session, Send, Receive, Loop, End,
+    // Immune System (§λ-L-E Fase 5)
+    Immune, Reflex, Heal,
+    // UI Cognitiva (§λ-L-E Fase 9 — 100% .axon apps)
+    Component, View,
     // Modifiers
     As, Within, ConstrainedBy, OnFailure, OutputTo, Effort,
     // Contextual
@@ -179,6 +189,29 @@ pub fn keyword_type(word: &str) -> TokenType {
         "purge"            => TokenType::Purge,
         "transact"         => TokenType::Transact,
         "axonendpoint" | "axpoint" => TokenType::AxonEndpoint,
+        // I/O Cognitivo (§λ-L-E Fase 1 — Resources)
+        "resource"         => TokenType::Resource,
+        "fabric"           => TokenType::Fabric,
+        "manifest"         => TokenType::Manifest,
+        "observe"          => TokenType::Observe,
+        // Control Cognitivo (§λ-L-E Fase 3)
+        "reconcile"        => TokenType::Reconcile,
+        "lease"            => TokenType::Lease,
+        "ensemble"         => TokenType::Ensemble,
+        // Topology & Session (§λ-L-E Fase 4 — π-calculus)
+        "topology"         => TokenType::Topology,
+        "session"          => TokenType::Session,
+        "send"             => TokenType::Send,
+        "receive"          => TokenType::Receive,
+        "loop"             => TokenType::Loop,
+        "end"              => TokenType::End,
+        // Immune System (§λ-L-E Fase 5)
+        "immune"           => TokenType::Immune,
+        "reflex"           => TokenType::Reflex,
+        "heal"             => TokenType::Heal,
+        // UI Cognitiva (§λ-L-E Fase 9)
+        "component"        => TokenType::Component,
+        "view"             => TokenType::View,
         "as"               => TokenType::As,
         "within"           => TokenType::Within,
         "constrained_by"   => TokenType::ConstrainedBy,
@@ -233,5 +266,91 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             | TokenType::AxonEndpoint
             | TokenType::Import
             | TokenType::Run
+            // §λ-L-E Fase 1–5 — I/O cognitivo, control, topology, immune
+            | TokenType::Resource
+            | TokenType::Fabric
+            | TokenType::Manifest
+            | TokenType::Observe
+            | TokenType::Reconcile
+            | TokenType::Lease
+            | TokenType::Ensemble
+            | TokenType::Topology
+            | TokenType::Session
+            | TokenType::Immune
+            | TokenType::Reflex
+            | TokenType::Heal
+            // §λ-L-E Fase 9 — UI cognitiva
+            | TokenType::Component
+            | TokenType::View
     )
+}
+
+#[cfg(test)]
+mod tests_lang_extensions {
+    //! Regression tests for the Fase 1–5 keyword additions.
+    use super::*;
+
+    fn check(word: &str, expected: TokenType) {
+        assert_eq!(keyword_type(word), expected, "keyword '{word}'");
+    }
+
+    #[test]
+    fn fase1_io_cognitivo_keywords() {
+        check("resource", TokenType::Resource);
+        check("fabric",   TokenType::Fabric);
+        check("manifest", TokenType::Manifest);
+        check("observe",  TokenType::Observe);
+    }
+
+    #[test]
+    fn fase3_control_keywords() {
+        check("reconcile", TokenType::Reconcile);
+        check("lease",     TokenType::Lease);
+        check("ensemble",  TokenType::Ensemble);
+    }
+
+    #[test]
+    fn fase4_topology_and_session_keywords() {
+        check("topology", TokenType::Topology);
+        check("session",  TokenType::Session);
+        check("send",     TokenType::Send);
+        check("receive",  TokenType::Receive);
+        check("loop",     TokenType::Loop);
+        check("end",      TokenType::End);
+    }
+
+    #[test]
+    fn fase5_immune_keywords() {
+        check("immune", TokenType::Immune);
+        check("reflex", TokenType::Reflex);
+        check("heal",   TokenType::Heal);
+    }
+
+    #[test]
+    fn new_decl_keywords_are_declaration_level() {
+        for tt in [
+            TokenType::Resource, TokenType::Fabric, TokenType::Manifest, TokenType::Observe,
+            TokenType::Reconcile, TokenType::Lease, TokenType::Ensemble,
+            TokenType::Topology, TokenType::Session,
+            TokenType::Immune, TokenType::Reflex, TokenType::Heal,
+        ] {
+            assert!(is_declaration_keyword(&tt), "{tt:?} must be a top-level decl");
+        }
+    }
+
+    #[test]
+    fn session_body_keywords_are_not_declaration_level() {
+        for tt in [TokenType::Send, TokenType::Receive, TokenType::Loop, TokenType::End] {
+            assert!(
+                !is_declaration_keyword(&tt),
+                "{tt:?} is a session-body step, not a top-level decl"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_words_fall_back_to_identifier() {
+        assert_eq!(keyword_type("frobnicate"), TokenType::Identifier);
+        assert_eq!(keyword_type("PatientRecord"), TokenType::Identifier);
+    }
 }

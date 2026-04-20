@@ -576,7 +576,7 @@ class TestPersonaDescriptionSurvivesImport:
     def test_description_in_persona_signature(self):
         """PersonaSignature carries description field."""
         sig = PersonaSignature(
-            name="Kivi",
+            name="Expert",
             domain=("sales",),
             description="{{company_name}} AI assistant",
         )
@@ -588,45 +588,45 @@ class TestPersonaDescriptionSurvivesImport:
         from pathlib import Path
 
         iface = CognitiveInterface(
-            module_path=("kivi", "brain"),
+            module_path=("example", "brain"),
             content_hash="abc",
         )
-        iface.personas["Kivi"] = PersonaSignature(
-            name="Kivi",
+        iface.personas["Expert"] = PersonaSignature(
+            name="Expert",
             domain=("sales",),
             description="{{company_name}} support agent",
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "kivi_brain.axi"
+            path = Path(tmpdir) / "example_brain.axi"
             iface.save(path)
             loaded = CognitiveInterface.load(path)
 
-        assert loaded.personas["Kivi"].description == "{{company_name}} support agent"
+        assert loaded.personas["Expert"].description == "{{company_name}} support agent"
 
     def test_description_injected_into_stub(self):
         """Imported persona stub gets description from PersonaSignature."""
         from axon.compiler.ir_generator import IRGenerator
 
-        iface = CognitiveInterface(module_path=("kivi", "brain"))
-        iface.personas["Kivi"] = PersonaSignature(
-            name="Kivi",
+        iface = CognitiveInterface(module_path=("example", "brain"))
+        iface.personas["Expert"] = PersonaSignature(
+            name="Expert",
             domain=("sales",),
             description="{{company_name}} closer",
         )
         registry = ModuleRegistry()
-        registry.register(("kivi", "brain"), iface)
+        registry.register(("example", "brain"), iface)
 
         gen = IRGenerator(module_registry=registry)
         from axon.compiler.ast_nodes import ImportNode
         node = ImportNode(
             line=1, column=0,
-            module_path=["kivi", "brain"],
-            names=["Kivi"],
+            module_path=["example", "brain"],
+            names=["Expert"],
         )
         gen._visit_import(node)
 
-        stub = gen._personas["Kivi"]
+        stub = gen._personas["Expert"]
         assert stub.description == "{{company_name}} closer"
 
 
