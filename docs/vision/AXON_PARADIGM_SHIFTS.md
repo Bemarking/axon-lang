@@ -95,11 +95,11 @@ active memory, and later resume exactly where they left off.
 - **Executor (Runtime) & KAS Base Memory:**
   1. **Serialization:** Upon hitting `hibernate`, the `Executor` serializes the
      current Call Stack, local variables, and the exact IR Node pointer.
-  2. **Persistence:** This serialized state is dumped into the KiviMemory (or a
+  2. **Persistence:** This serialized state is dumped into the AgentMemory (or a
      persistent database like Redis/Postgres).
   3. **Resumption:** When the VPS or a webhook triggers the agent via a unique
      correlation ID, the `Executor` deserializes the state, reconstructs the
-     `KiviMemory` context window, and resumes AST execution at the next node.
+     `AgentMemory` context window, and resumes AST execution at the next node.
 - **Infinite Memory Context:** This requires the KAS (Knowledge Access System)
   to intelligently compress and retrieve the preceding conversational/execution
   context so the LLM doesn't lose the thread of thought after waking up.

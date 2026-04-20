@@ -1,7 +1,7 @@
 # Memory-Augmented Multi-Document Navigation: Structural Learning via Epistemic Graph Transformation
 
 **AXON Research Paper — Feature Proposal v0.17**\
-**Authors:** Ricardo Velit, AXON Core Team\
+**Authors:** AXON Core Team\
 **Date:** March 17, 2026\
 **Status:** Research & Design Phase\
 **Classification:** Epistemology · Graph Theory · Category Theory · Adaptive Systems\

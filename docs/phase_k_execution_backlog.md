@@ -4,7 +4,7 @@ Este archivo lista las sesiones planeadas y ejecutadas para la Fase K (Launch �
 
 ## Objetivo de Fase
 
-Cerrar las 3 brechas criticas de produccion para que Axon v1.0.0 pueda sostener Kivi KAS (primer early adopter SaaS de Bemarking AI S.A.S.) sin compromisos. Politica: cero "por ahora", cero "lo minimo" — todo production-complete.
+Cerrar las 3 brechas criticas de produccion para que Axon v1.0.0 pueda sostener adoptores empresariales de produccion sin compromisos. Politica: cero "por ahora", cero "lo minimo" — todo production-complete.
 
 **Las 3 brechas:**
 1. Persistencia (PostgreSQL full) — los datos no pueden perderse al reiniciar
@@ -170,7 +170,7 @@ Cerrar las 3 brechas criticas de produccion para que Axon v1.0.0 pueda sostener 
 7. `test_k5_resilient_backend_all_providers_initialized` — 7 providers en Closed
 8. `test_k5_resilient_backend_circuit_reset` — reset manual
 9. `test_k5_storage_dispatcher_in_memory` — save/load round-trip
-10. `test_k5_hibernation_lifecycle_kivi_kas` — create → checkpoint → suspend → resume
+10. `test_k5_hibernation_lifecycle_agent` — create → checkpoint → suspend → resume
 11. `test_k5_server_config_new_fields` — log_format, log_file, database_url
 12. `test_k5_server_state_has_storage_and_resilient_backend` — fields present in state
 13. `test_k5_health_endpoint_with_tracing_middleware` — /v1/health funciona con tracing layer

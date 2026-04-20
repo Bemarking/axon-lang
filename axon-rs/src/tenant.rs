@@ -232,13 +232,13 @@ mod tests {
 
     #[test]
     fn test_tenant_id_from_bearer_valid() {
-        let jwt = make_jwt(r#"{"tenant_id":"kivi-kas"}"#);
+        let jwt = make_jwt(r#"{"tenant_id":"example-tenant"}"#);
         let mut headers = HeaderMap::new();
         headers.insert(
             "authorization",
             format!("Bearer {}", jwt).parse().unwrap(),
         );
-        assert_eq!(tenant_id_from_bearer(&headers), Some("kivi-kas".to_string()));
+        assert_eq!(tenant_id_from_bearer(&headers), Some("example-tenant".to_string()));
     }
 
     #[test]
@@ -266,9 +266,9 @@ mod tests {
     #[tokio::test]
     async fn test_current_tenant_id_inside_scope() {
         let result = CURRENT_TENANT_ID
-            .scope("kivi-kas".to_string(), async { current_tenant_id() })
+            .scope("example-tenant".to_string(), async { current_tenant_id() })
             .await;
-        assert_eq!(result, "kivi-kas");
+        assert_eq!(result, "example-tenant");
     }
 
     #[tokio::test]

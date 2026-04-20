@@ -1,0 +1,103 @@
+// ═══════════════════════════════════════════════════════════════════
+//  AXON UI — Healthcare Console
+//
+//  §λ-L-E Fase 9 reference: a 100%-.axon clinical dashboard on top of
+//  examples/healthcare_reference.axon. The UI shares the same κ
+//  (regulatory class) discipline as the backend — the compiler rejects
+//  any component that renders a regulated type without a shield whose
+//  `compliance` set covers the type's κ. PII redaction happens at
+//  render time inside whichever renderer consumes the compiled UI IR
+//  (WASM + DOM, desktop wgpu, or future targets).
+//
+//  Scope: HIPAA + GDPR + GxP + SOC2. Same as the backend reference.
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Regulated data types ──────────────────────────────────────────
+
+type PatientRecord compliance [HIPAA, GDPR] {
+  patient_id:     String
+  ssn:            String
+  diagnosis_code: String
+  dob:            String
+}
+
+type ClinicalTrial compliance [HIPAA, GxP] {
+  trial_id:       String
+  participant_id: String
+  observation:    String
+}
+
+type DiagnosticReport { summary: String }
+
+// ── Flows invoked by UI events ────────────────────────────────────
+
+flow SummarizeRecord(rec: PatientRecord) -> DiagnosticReport {
+  step Review {
+    ask: "Produce a clinical summary for the attending physician"
+    output: DiagnosticReport
+  }
+}
+
+flow AnalyzeTrial(entry: ClinicalTrial) -> DiagnosticReport {
+  step Assess {
+    ask: "Evaluate compliance with the trial protocol"
+    output: DiagnosticReport
+  }
+}
+
+// ── Security shields (regulated κ coverage) ───────────────────────
+
+shield PHIShield {
+  scan:       [prompt_injection, pii_leak, data_exfil]
+  on_breach:  quarantine
+  severity:   critical
+  redact:     [ssn, dob]
+  compliance: [HIPAA, GDPR, SOC2]
+}
+
+shield TrialShield {
+  scan:       [prompt_injection, pii_leak]
+  on_breach:  halt
+  severity:   critical
+  compliance: [HIPAA, GxP, SOC2]
+}
+
+// ── UI components (Fase 9 primitives) ─────────────────────────────
+//
+//  Each component's `renders` target carries κ; its `via_shield`
+//  MUST cover that κ — otherwise the compiler rejects the program.
+//  The `on_interact` flow's first parameter type must match `renders`.
+
+component PatientCard {
+  renders:     PatientRecord
+  via_shield:  PHIShield
+  on_interact: SummarizeRecord
+  render_hint: card
+}
+
+component TrialEntry {
+  renders:     ClinicalTrial
+  via_shield:  TrialShield
+  on_interact: AnalyzeTrial
+  render_hint: list
+}
+
+// Unregulated summary — no shield required.
+component DiagnosticPanel {
+  renders:     DiagnosticReport
+  render_hint: form
+}
+
+// ── Views (top-level screens) ─────────────────────────────────────
+
+view ClinicianDashboard {
+  title:      "Clinician Dashboard"
+  components: [PatientCard, DiagnosticPanel]
+  route:      "/clinician"
+}
+
+view TrialOversight {
+  title:      "Clinical Trial Oversight"
+  components: [TrialEntry, DiagnosticPanel]
+  route:      "/trials"
+}

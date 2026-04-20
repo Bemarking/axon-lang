@@ -1,5 +1,5 @@
 variable "tenant_id" {
-  description = "Unique tenant identifier (slug format, e.g. 'kivi-kas')"
+  description = "Unique tenant identifier (slug format, e.g. 'example-tenant')"
   type        = string
 
   validation {

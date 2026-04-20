@@ -36,6 +36,7 @@ coverage.xml
 infrastructure/terraform/.terraform/
 infrastructure/terraform/terraform.exe
 infrastructure/terraform/tfplan
+infrastructure/terraform/tfplan*
 infrastructure/terraform/*.tfstate
 infrastructure/terraform/*.tfstate.backup
 

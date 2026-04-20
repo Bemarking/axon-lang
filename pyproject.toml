@@ -13,7 +13,6 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 authors = [
-    { name = "Ricardo Velit", email = "ricardo@bemarking.com.co" },
     { name = "Bemarking AI S.A.S." },
 ]
 keywords = [
@@ -102,9 +101,42 @@ sqlite-async = [
 ]
 aws = [
     "aiobotocore>=2.15",
+    "boto3>=1.34",
+    "botocore>=1.34",
+]
+docker = [
+    "docker>=7.0",
+]
+kubernetes = [
+    "kubernetes>=30.1",
 ]
 redis = [
     "redis[hiredis]>=5.2",
+]
+# ── ESK Fase 6 optional crypto backends ───────────────────────────
+pq = [
+    # Post-Quantum signatures (ML-DSA-65 / Dilithium3, FIPS 204).
+    # Requires liboqs (Open Quantum Safe) native library — see
+    # https://github.com/open-quantum-safe/liboqs for build instructions.
+    "liboqs-python>=0.10",
+]
+fhe = [
+    # Homomorphic Encryption (CKKS) via Microsoft SEAL binding.
+    "tenseal>=0.3",
+]
+vault = [
+    # HashiCorp Vault secret provider.
+    "hvac>=2.0",
+]
+keyvault = [
+    # Azure Key Vault secret provider.
+    "azure-keyvault-secrets>=4.7",
+    "azure-identity>=1.15",
+]
+grpc = [
+    # gRPC handler for the Free-Monad Handler protocol (Fase 2).
+    "grpcio>=1.60",
+    "grpcio-tools>=1.60",
 ]
 server = [
     "uvicorn[standard]>=0.32",
@@ -122,8 +154,15 @@ all = [
     "axon-lang[postgresql]",
     "axon-lang[sqlite-async]",
     "axon-lang[aws]",
+    "axon-lang[docker]",
+    "axon-lang[kubernetes]",
     "axon-lang[redis]",
     "axon-lang[server]",
+    "axon-lang[pq]",
+    "axon-lang[fhe]",
+    "axon-lang[vault]",
+    "axon-lang[keyvault]",
+    "axon-lang[grpc]",
 ]
 dev = [
     "pytest>=8.0",

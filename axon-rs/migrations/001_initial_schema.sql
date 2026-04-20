@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS dataspaces (
     next_id      BIGINT NOT NULL DEFAULT 1
 );
 
--- Hibernation sessions (immortal agents — pause/resume for Kivi KAS)
+-- Hibernation sessions (immortal agents — pause/resume lifecycle)
 CREATE TABLE IF NOT EXISTS hibernations (
     id                  TEXT PRIMARY KEY,
     name                TEXT NOT NULL,

@@ -186,8 +186,8 @@ mod tests {
             "axon/tenants/acme-corp/anthropic_api_key"
         );
         assert_eq!(
-            TenantSecretsClient::secret_path("kivi-kas", "openai"),
-            "axon/tenants/kivi-kas/openai_api_key"
+            TenantSecretsClient::secret_path("example-tenant", "openai"),
+            "axon/tenants/example-tenant/openai_api_key"
         );
     }
 
