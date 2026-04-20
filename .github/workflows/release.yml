@@ -143,7 +143,10 @@ jobs:
         with:
           context: .
           file: Dockerfile.enterprise
-          platforms: linux/amd64,linux/arm64
+          # linux/arm64 is deferred until axon-lang publishes an
+          # `axon-linux-aarch64.tar.gz` release asset.  Adding it back
+          # is a one-line change once upstream ships the binary.
+          platforms: linux/amd64
           push: true
           provenance: mode=max
           sbom: true
