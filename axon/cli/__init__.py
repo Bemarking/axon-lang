@@ -194,6 +194,73 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Bearer token for AxonServer authentication",
     )
 
+    # ── axon dossier ──────────────────────────────────────────
+    # Emit an ESK Fase 6.1 + 6.6 regulatory compliance dossier (JSON).
+    dossier = sub.add_parser(
+        "dossier",
+        help="Generate a JSON compliance dossier from an .axon file.",
+    )
+    dossier.add_argument("file", help=_SOURCE_FILE_HELP)
+    dossier.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Output path (default: stdout)",
+    )
+
+    # ── axon sbom ─────────────────────────────────────────────
+    # Emit an ESK Fase 6.6 SupplyChainSBOM (JSON, deterministic).
+    sbom = sub.add_parser(
+        "sbom",
+        help="Generate a JSON Software Bill of Materials from an .axon file.",
+    )
+    sbom.add_argument("file", help=_SOURCE_FILE_HELP)
+    sbom.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Output path (default: stdout)",
+    )
+
+    # ── axon audit ────────────────────────────────────────────
+    # Run a gap analysis against external audit frameworks.
+    audit = sub.add_parser(
+        "audit",
+        help="Gap analysis against SOC 2 / ISO 27001 / FIPS 140-3 / CC EAL 4+.",
+    )
+    audit.add_argument("file", help=_SOURCE_FILE_HELP)
+    audit.add_argument(
+        "--framework",
+        default="all",
+        choices=["all", "soc2", "iso27001", "fips", "cc"],
+        help="Framework to analyse (default: all)",
+    )
+    audit.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Output path (default: stdout)",
+    )
+
+    # ── axon evidence-package ─────────────────────────────────
+    # Bundle every audit artifact into a deterministic ZIP.
+    evidence = sub.add_parser(
+        "evidence-package",
+        help="Assemble a deterministic audit evidence ZIP for external auditors.",
+    )
+    evidence.add_argument("file", help=_SOURCE_FILE_HELP)
+    evidence.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Output ZIP path (default: <file>.evidence.zip)",
+    )
+    evidence.add_argument(
+        "--note",
+        default="",
+        help="Free-form auditor intake note embedded in README.md",
+    )
+
     return parser
 
 
@@ -256,6 +323,26 @@ def main(argv: list[str] | None = None) -> int:
         from axon.cli.deploy_cmd import cmd_deploy
 
         return cmd_deploy(args)
+
+    if args.command == "dossier":
+        from axon.cli.dossier_cmd import cmd_dossier
+
+        return cmd_dossier(args)
+
+    if args.command == "sbom":
+        from axon.cli.sbom_cmd import cmd_sbom
+
+        return cmd_sbom(args)
+
+    if args.command == "audit":
+        from axon.cli.audit_cmd import cmd_audit
+
+        return cmd_audit(args)
+
+    if args.command == "evidence-package":
+        from axon.cli.evidence_package_cmd import cmd_evidence_package
+
+        return cmd_evidence_package(args)
 
     parser.print_help()
     return 1

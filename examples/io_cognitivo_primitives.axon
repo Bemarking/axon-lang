@@ -1,0 +1,84 @@
+// ═══════════════════════════════════════════════════════════════════
+//  I/O Cognitivo — Cálculo Lambda Lineal Epistémico (λ-L-E), Fase 1
+//  Plan: docs/plan_io_cognitivo.md
+//
+//  A complete example exercising the four new primitives:
+//    resource · fabric · manifest · observe
+//
+//  Validates under `axon check`:
+//    • Linear Logic affinity (no cross-manifest aliasing of non-persistent)
+//    • Separation Logic disjointness (no duplicate resource within manifest)
+//    • Epistemic gating (certainty_floor in [0.0, 1.0])
+//    • D4 partition semantics (on_partition: fail → CT-3 exception)
+// ═══════════════════════════════════════════════════════════════════
+
+shield NetworkShield {
+  scan: [prompt_injection, pii_leak]
+  on_breach: quarantine
+  severity: high
+}
+
+// ── Resources ──────────────────────────────────────────────────────
+// Each resource is an affine/linear infrastructure token.  The type
+// checker enforces that linear and affine resources belong to at most
+// one manifest (Separation Logic disjointness across heaps).
+
+resource PrimaryDatabase {
+  kind: postgres
+  endpoint: "db.primary.internal:5432"
+  capacity: 200
+  lifetime: linear
+  certainty_floor: 0.90
+  shield: NetworkShield
+}
+
+resource SessionCache {
+  kind: redis
+  endpoint: "cache.internal:6379"
+  capacity: 10000
+  lifetime: affine
+}
+
+resource SharedTelemetry {
+  kind: custom
+  endpoint: "telemetry.internal:9090"
+  lifetime: persistent
+}
+
+// ── Fabric (topological substrate) ─────────────────────────────────
+
+fabric ProductionVPC {
+  provider: aws
+  region: "us-east-1"
+  zones: 3
+  ephemeral: false
+  shield: NetworkShield
+}
+
+// ── Manifests (declarative belief about desired shape) ─────────────
+
+manifest ProductionCluster {
+  resources: [PrimaryDatabase, SessionCache, SharedTelemetry]
+  fabric: ProductionVPC
+  region: "us-east-1"
+  zones: 3
+  compliance: [HIPAA, PCI_DSS, SOC2]
+}
+
+manifest ObservabilityPlane {
+  resources: [SharedTelemetry]
+  region: "us-east-1"
+  compliance: [SOC2]
+}
+
+// ── Observation (quorum-gated, ΛD-enveloped) ───────────────────────
+// Each output carries E = ⟨c, τ, ρ, δ⟩. Partition semantics follow
+// D4: network partition raises a CT-3 structural exception, not `doubt`.
+
+observe ClusterHealth from ProductionCluster {
+  sources: [prometheus, cloudwatch, healthcheck]
+  quorum: 2
+  timeout: 5s
+  on_partition: fail
+  certainty_floor: 0.85
+}
