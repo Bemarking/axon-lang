@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  # Axon server
+  axon-server:
+    image: bemarking/axon-enterprise:latest
+    container_name: axon-server
+    ports:
+      - "8000:8000"      # HTTP
+      - "8001:8001"      # WebSocket
+    environment:
+      - DATABASE_URL=postgresql://axon_user:axon_password@postgres:5432/axon_enterprise
+      - REDIS_URL=redis://redis:6379
+      - AXON_RBAC_ENABLED=true
+      - AXON_SSO_PROVIDER=saml
+      - AXON_AUDIT_ENABLED=true
+      - AXON_METERING_ENABLED=true
+      - LOG_LEVEL=info
+      - LOG_FORMAT=json
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+    networks:
+      - axon-network
+    restart: unless-stopped
+
+  # PostgreSQL database
+  postgres:
+    image: postgres:16-alpine
+    container_name: axon-postgres
+    environment:
+      - POSTGRES_USER=axon_user
+      - POSTGRES_PASSWORD=axon_password
+      - POSTGRES_DB=axon_enterprise
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - axon-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axon_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis for session/cache
+  redis:
+    image: redis:7-alpine
+    container_name: axon-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - axon-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: axon-pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@axon.local
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    ports:
+      - "5050:80"
+    networks:
+      - axon-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  axon-network:
+    driver: bridge
