@@ -37,7 +37,7 @@ set -euo pipefail
 GITHUB_ORG="${GITHUB_ORG:-Bemarking}"
 GITHUB_REPO="${GITHUB_REPO:-axon-enterprise}"
 ROLE_NAME="${ROLE_NAME:-github-actions-enterprise-publisher}"
-ECR_REPO="${ECR_REPO:-axon-enterprise}"
+ECR_REPO="${ECR_REPO:-axon/axon-enterprise}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRUST_TPL="${SCRIPT_DIR}/trust-policy.json.tpl"

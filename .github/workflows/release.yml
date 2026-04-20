@@ -7,9 +7,10 @@ name: Enterprise Release
 #
 # ─── Prerequisites (configured once, out-of-band) ──────────────────
 #
-# 1. Amazon ECR Private repository:
+# 1. Amazon ECR Private repository (namespace matches the
+#    account-wide convention: `axon/<component>`):
 #        aws ecr create-repository \
-#          --repository-name axon-enterprise \
+#          --repository-name axon/axon-enterprise \
 #          --image-scanning-configuration scanOnPush=true \
 #          --image-tag-mutability IMMUTABLE
 #
@@ -21,7 +22,7 @@ name: Enterprise Release
 #        `sub: repo:Bemarking/axon-enterprise:ref:refs/tags/v*`
 #
 #      • Permission policy: ecr:GetAuthorizationToken (resource: *)
-#        plus push permissions on the `axon-enterprise` repo ARN:
+#        plus push permissions on the `axon/axon-enterprise` repo ARN:
 #          ecr:BatchCheckLayerAvailability,
 #          ecr:InitiateLayerUpload, ecr:UploadLayerPart,
 #          ecr:CompleteLayerUpload, ecr:PutImage, ecr:BatchGetImage
@@ -53,7 +54,7 @@ permissions:
   id-token: write   # Required for OIDC → AWS STS
 
 env:
-  ECR_REPOSITORY: axon-enterprise
+  ECR_REPOSITORY: axon/axon-enterprise
 
 jobs:
   build-and-push:

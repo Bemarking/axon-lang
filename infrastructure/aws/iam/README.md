@@ -27,7 +27,7 @@ Optional overrides (environment variables):
 | `GITHUB_ORG` | `Bemarking` | GitHub organization owning the repo |
 | `GITHUB_REPO` | `axon-enterprise` | Repository name |
 | `ROLE_NAME` | `github-actions-enterprise-publisher` | IAM role name |
-| `ECR_REPO` | `axon-enterprise` | ECR repository name |
+| `ECR_REPO` | `axon/axon-enterprise` | ECR repository name (account-wide `axon/<component>` convention) |
 
 The script is idempotent — re-running it updates the trust policy and
 inline permissions without recreating anything.
@@ -55,7 +55,7 @@ Attach a repository policy that allows pull from their account:
 
 ```bash
 aws ecr set-repository-policy \
-  --repository-name axon-enterprise \
+  --repository-name axon/axon-enterprise \
   --region us-east-1 \
   --policy-text '{
     "Version": "2012-10-17",
@@ -97,7 +97,7 @@ aws iam put-user-policy \
           "ecr:BatchGetImage",
           "ecr:BatchCheckLayerAvailability"
         ],
-        "Resource": "arn:aws:ecr:us-east-1:<ACCOUNT_ID>:repository/axon-enterprise"
+        "Resource": "arn:aws:ecr:us-east-1:<ACCOUNT_ID>:repository/axon/axon-enterprise"
       }
     ]
   }'
