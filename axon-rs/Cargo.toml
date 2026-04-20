@@ -24,3 +24,9 @@ chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-secretsmanager = "1"
+# §λ-L-E Fase 5 — cognitive immune system needs SHA-256 + HMAC for signed traces.
+sha2 = "0.10"
+hmac = "0.12"
+rand = "0.9"
+# §ESK Fase 6.6 — deterministic ZIP bundle for the audit evidence packager.
+zip = { version = "2", default-features = false, features = ["deflate"] }

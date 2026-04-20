@@ -27856,7 +27856,7 @@ async fn test_k5_storage_dispatcher_in_memory() {
     let trace = TraceRow {
         tenant_id: "default".into(),
         trace_id: 42,
-        flow_name: "kivi_kas_agent".into(),
+        flow_name: "example_agent".into(),
         status: "success".into(),
         steps_executed: 5,
         latency_ms: 2500,
@@ -27868,7 +27868,7 @@ async fn test_k5_storage_dispatcher_in_memory() {
         retries: 0,
         source_file: "agent.axon".into(),
         backend: "anthropic".into(),
-        client_key: "kivi-prod".into(),
+        client_key: "example-prod".into(),
         replay_of: None,
         correlation_id: Some("corr-001".into()),
         events: serde_json::json!([]),
@@ -27879,19 +27879,19 @@ async fn test_k5_storage_dispatcher_in_memory() {
     assert!(storage.is_healthy().await);
 }
 
-// ── K5.7: Persistence — Hibernation for Kivi KAS ────────────────────────
+// ── K5.7: Persistence — Hibernation lifecycle ───────────────────────────
 
 #[tokio::test]
-async fn test_k5_hibernation_lifecycle_kivi_kas() {
+async fn test_k5_hibernation_lifecycle_agent() {
     use axon::storage::{StorageBackend, StorageDispatcher, HibernationRow};
 
     let storage = StorageDispatcher::in_memory();
 
-    // Create hibernation session for Kivi KAS agent
+    // Create hibernation session for a long-running agent
     let hib = HibernationRow {
         tenant_id: "default".into(),
-        id: "kivi-agent-001".into(),
-        name: "kivi_document_processor".into(),
+        id: "agent-001".into(),
+        name: "document_processor".into(),
         operation: "analyze_medical_research".into(),
         status: "active".into(),
         checkpoints: serde_json::json!([
@@ -28047,4 +28047,1900 @@ fn test_k5_storage_error_types() {
         let msg = format!("{err}");
         assert!(!msg.is_empty());
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §λ-L-E Fase 1 — Resource primitive (end-to-end: lex → parse → type-check → IR)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn fase1_resource_minimal_end_to_end() {
+    let ir = compile_json(r#"
+        resource Db {
+            kind: postgres
+            lifetime: linear
+        }
+    "#);
+    let res = &ir["resources"][0];
+    assert_eq!(res["node_type"], "resource");
+    assert_eq!(res["name"], "Db");
+    assert_eq!(res["kind"], "postgres");
+    assert_eq!(res["lifetime"], "linear");
+    // Defaults propagate for unspecified fields.
+    assert_eq!(res["endpoint"], "");
+    assert_eq!(res["capacity"], serde_json::Value::Null);
+    assert_eq!(res["certainty_floor"], serde_json::Value::Null);
+    assert_eq!(res["shield_ref"], "");
+}
+
+#[test]
+fn fase1_resource_full_fields() {
+    let ir = compile_json(r#"
+        shield DBShield {
+            scan: [prompt_injection]
+            on_breach: halt
+            severity: high
+        }
+        resource Db {
+            kind: postgres
+            endpoint: "postgres://db.internal:5432/app"
+            capacity: 100
+            lifetime: linear
+            certainty_floor: 0.85
+            shield: DBShield
+        }
+    "#);
+    let res = &ir["resources"][0];
+    assert_eq!(res["endpoint"], "postgres://db.internal:5432/app");
+    assert_eq!(res["capacity"], 100);
+    assert_eq!(res["certainty_floor"], 0.85);
+    assert_eq!(res["shield_ref"], "DBShield");
+    assert_eq!(res["lifetime"], "linear");
+}
+
+#[test]
+fn fase1_resource_default_lifetime_is_affine() {
+    let ir = compile_json("resource Pool { kind: redis }");
+    assert_eq!(ir["resources"][0]["lifetime"], "affine");
+}
+
+#[test]
+fn fase1_resource_invalid_lifetime_rejected_by_parser() {
+    let tokens = lex("resource X { lifetime: eternal }");
+    let mut parser = Parser::new(tokens);
+    let result = parser.parse();
+    assert!(
+        result.is_err(),
+        "parser must reject invalid lifetime 'eternal'"
+    );
+}
+
+#[test]
+fn fase1_resource_out_of_range_certainty_floor_type_error() {
+    let src = r#"resource X { kind: gpu certainty_floor: 1.5 }"#;
+    let errors = type_check(src);
+    assert!(
+        errors.iter().any(|e| e.message.contains("certainty_floor")
+            && e.message.contains("out of range")),
+        "expected range-violation error, got {errors:?}"
+    );
+}
+
+#[test]
+fn fase1_resource_unknown_shield_is_type_error() {
+    let src = r#"resource X { kind: gpu shield: NonExistent }"#;
+    let errors = type_check(src);
+    assert!(
+        errors.iter().any(|e| e.message.contains("Undefined shield 'NonExistent'")
+            && e.message.contains("resource 'X'")),
+        "expected undefined-shield error, got {errors:?}"
+    );
+}
+
+#[test]
+fn fase1_resource_duplicate_name_rejected() {
+    let src = r#"
+        resource Db { kind: postgres }
+        resource Db { kind: redis }
+    "#;
+    let errors = type_check(src);
+    assert!(
+        !errors.is_empty(),
+        "duplicate resource 'Db' must be rejected by symbol table"
+    );
+}
+
+#[test]
+fn fase1_resource_irprogram_has_nonempty_resources_vector() {
+    let ir = compile_ir("resource R { kind: compute lifetime: persistent }");
+    assert_eq!(ir.resources.len(), 1);
+    assert_eq!(ir.resources[0].name, "R");
+    assert_eq!(ir.resources[0].lifetime, "persistent");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §λ-L-E Fase 1 — Fabric primitive (end-to-end)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn fase1_fabric_minimal_end_to_end() {
+    let ir = compile_json(r#"
+        fabric Vpc { provider: aws region: "us-east-1" zones: 3 }
+    "#);
+    let f = &ir["fabrics"][0];
+    assert_eq!(f["node_type"], "fabric");
+    assert_eq!(f["name"], "Vpc");
+    assert_eq!(f["provider"], "aws");
+    assert_eq!(f["region"], "us-east-1");
+    assert_eq!(f["zones"], 3);
+}
+
+#[test]
+fn fase1_fabric_with_ephemeral_and_shield() {
+    let ir = compile_json(r#"
+        shield NetShield {
+            scan: [prompt_injection]
+            on_breach: halt
+            severity: high
+        }
+        fabric Vpc {
+            provider: aws
+            region: "eu-west-2"
+            zones: 2
+            ephemeral: true
+            shield: NetShield
+        }
+    "#);
+    let f = &ir["fabrics"][0];
+    assert_eq!(f["ephemeral"], true);
+    assert_eq!(f["shield_ref"], "NetShield");
+}
+
+#[test]
+fn fase1_fabric_zero_zones_is_type_error() {
+    let errors = type_check(r#"fabric F { provider: aws zones: 0 }"#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("Fabric 'F'") && e.message.contains("zones 0")),
+        "expected zones-range error, got {errors:?}"
+    );
+}
+
+#[test]
+fn fase1_fabric_unknown_shield_is_type_error() {
+    let errors = type_check(r#"fabric F { provider: gcp shield: NonExistent }"#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("Undefined shield 'NonExistent'")
+            && e.message.contains("fabric 'F'")),
+        "expected undefined-shield error, got {errors:?}"
+    );
+}
+
+#[test]
+fn fase1_fabric_duplicate_name_rejected() {
+    let errors = type_check(r#"
+        fabric F { provider: aws }
+        fabric F { provider: gcp }
+    "#);
+    assert!(!errors.is_empty(), "duplicate fabric 'F' must be rejected");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §λ-L-E Fase 1 — Manifest primitive (end-to-end)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn fase1_manifest_minimal_end_to_end() {
+    let ir = compile_json(r#"
+        resource Db { kind: postgres lifetime: linear }
+        fabric Vpc { provider: aws region: "us-east-1" zones: 2 }
+        manifest Cluster {
+            resources: [Db]
+            fabric: Vpc
+        }
+    "#);
+    let m = &ir["manifests"][0];
+    assert_eq!(m["node_type"], "manifest");
+    assert_eq!(m["name"], "Cluster");
+    assert_eq!(m["resources"][0], "Db");
+    assert_eq!(m["fabric_ref"], "Vpc");
+}
+
+#[test]
+fn fase1_manifest_with_compliance_annotation() {
+    let ir = compile_json(r#"
+        resource Db { kind: postgres lifetime: linear }
+        fabric Vpc { provider: aws region: "us-east-1" zones: 2 }
+        manifest Prod {
+            resources: [Db]
+            fabric: Vpc
+            region: "us-east-1"
+            zones: 3
+            compliance: [HIPAA, PCI_DSS]
+        }
+    "#);
+    let m = &ir["manifests"][0];
+    assert_eq!(m["region"], "us-east-1");
+    assert_eq!(m["zones"], 3);
+    assert_eq!(m["compliance"][0], "HIPAA");
+    assert_eq!(m["compliance"][1], "PCI_DSS");
+}
+
+#[test]
+fn fase1_manifest_undefined_resource_is_type_error() {
+    let errors = type_check(r#"
+        fabric Vpc { provider: aws }
+        manifest M { resources: [Ghost] fabric: Vpc }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("undefined resource 'Ghost'")),
+        "expected undefined-resource error, got {errors:?}"
+    );
+}
+
+#[test]
+fn fase1_manifest_undefined_fabric_is_type_error() {
+    let errors = type_check(r#"
+        resource Db { kind: postgres }
+        manifest M { resources: [Db] fabric: NoSuchFabric }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("undefined fabric 'NoSuchFabric'")),
+        "expected undefined-fabric error, got {errors:?}"
+    );
+}
+
+#[test]
+fn fase1_manifest_duplicate_resource_rejected_by_separation_logic() {
+    // Within-manifest aliasing of a linear resource violates Separation Logic `*`.
+    let errors = type_check(r#"
+        resource Db { kind: postgres lifetime: linear }
+        fabric Vpc { provider: aws }
+        manifest M { resources: [Db, Db] fabric: Vpc }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("more than once")
+            && e.message.contains("disjointness")),
+        "expected separation-logic error, got {errors:?}"
+    );
+}
+
+#[test]
+fn fase1_manifest_wrong_kind_reference_is_type_error() {
+    // `fabric: MyResource` where MyResource is a resource, not a fabric.
+    let errors = type_check(r#"
+        resource R { kind: postgres }
+        manifest M { resources: [R] fabric: R }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("is a resource, not a fabric")),
+        "expected wrong-kind error, got {errors:?}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §λ-L-E Fase 1 — Observe primitive (end-to-end)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn fase1_observe_minimal_end_to_end() {
+    let ir = compile_json(r#"
+        resource Db { kind: postgres }
+        fabric Vpc { provider: aws }
+        manifest Cluster { resources: [Db] fabric: Vpc }
+        observe State from Cluster {
+            sources: [prometheus, cloudwatch]
+            quorum: 2
+        }
+    "#);
+    let o = &ir["observations"][0];
+    assert_eq!(o["node_type"], "observe");
+    assert_eq!(o["name"], "State");
+    assert_eq!(o["target"], "Cluster");
+    assert_eq!(o["sources"][0], "prometheus");
+    assert_eq!(o["quorum"], 2);
+    // Default on_partition is "fail" (CT-3 / void semantics, Decision D4).
+    assert_eq!(o["on_partition"], "fail");
+}
+
+#[test]
+fn fase1_observe_full_fields() {
+    let ir = compile_json(r#"
+        resource Db { kind: postgres }
+        fabric Vpc { provider: aws }
+        manifest Cluster { resources: [Db] fabric: Vpc }
+        observe State from Cluster {
+            sources: [prometheus]
+            quorum: 1
+            timeout: 5s
+            on_partition: shield_quarantine
+            certainty_floor: 0.9
+        }
+    "#);
+    let o = &ir["observations"][0];
+    assert_eq!(o["timeout"], "5s");
+    assert_eq!(o["on_partition"], "shield_quarantine");
+    assert_eq!(o["certainty_floor"], 0.9);
+}
+
+#[test]
+fn fase1_observe_invalid_on_partition_rejected_by_parser() {
+    let tokens = lex(r#"
+        resource Db { kind: postgres }
+        fabric Vpc { provider: aws }
+        manifest M { resources: [Db] fabric: Vpc }
+        observe O from M { sources: [x] on_partition: wait }
+    "#);
+    let mut parser = Parser::new(tokens);
+    let result = parser.parse();
+    assert!(
+        result.is_err(),
+        "parser must reject on_partition 'wait' (D4: not in {{fail, shield_quarantine}})"
+    );
+}
+
+#[test]
+fn fase1_observe_undefined_target_is_type_error() {
+    let errors = type_check(r#"
+        observe O from NoSuchManifest { sources: [x] quorum: 1 }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("undefined manifest 'NoSuchManifest'")),
+        "expected undefined-target error, got {errors:?}"
+    );
+}
+
+#[test]
+fn fase1_observe_target_must_be_manifest() {
+    let errors = type_check(r#"
+        resource Db { kind: postgres }
+        observe O from Db { sources: [x] quorum: 1 }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("is a resource, not a manifest")),
+        "expected wrong-kind error on observe target, got {errors:?}"
+    );
+}
+
+#[test]
+fn fase1_observe_missing_sources_is_type_error() {
+    // Omitting `sources:` entirely parses fine but fails type-check —
+    // an observation without sources has no ground truth.
+    let errors = type_check(r#"
+        resource Db { kind: postgres }
+        fabric Vpc { provider: aws }
+        manifest M { resources: [Db] fabric: Vpc }
+        observe O from M { quorum: 1 }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("empty sources")),
+        "expected empty-sources error, got {errors:?}"
+    );
+}
+
+#[test]
+fn fase1_observe_certainty_floor_out_of_range_type_error() {
+    let errors = type_check(r#"
+        resource Db { kind: postgres }
+        fabric Vpc { provider: aws }
+        manifest M { resources: [Db] fabric: Vpc }
+        observe O from M { sources: [x] quorum: 1 certainty_floor: -0.1 }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("certainty_floor")
+            && e.message.contains("out of range")),
+        "expected range-violation error, got {errors:?}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §λ-L-E Fase 3 — Reconcile primitive (end-to-end)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Boilerplate that produces a valid `observe` symbol the Fase-3 tests can reference.
+fn fase3_observe_prelude() -> &'static str {
+    r#"
+        resource Db { kind: postgres lifetime: linear }
+        fabric Vpc { provider: aws }
+        manifest M { resources: [Db] fabric: Vpc }
+        observe Health from M { sources: [prom] quorum: 1 }
+    "#
+}
+
+#[test]
+fn fase3_reconcile_minimal_end_to_end() {
+    let src = format!(
+        "{}\nreconcile R {{ observe: Health }}",
+        fase3_observe_prelude()
+    );
+    let ir = compile_json(&src);
+    let r = &ir["reconciles"][0];
+    assert_eq!(r["node_type"], "reconcile");
+    assert_eq!(r["name"], "R");
+    assert_eq!(r["observe_ref"], "Health");
+    assert_eq!(r["on_drift"], "provision"); // default
+    assert_eq!(r["max_retries"], 3);        // default
+}
+
+#[test]
+fn fase3_reconcile_full_fields() {
+    let src = format!(
+        r#"{}
+        shield Guard {{
+            scan: [prompt_injection]
+            on_breach: halt
+            severity: high
+        }}
+        reconcile R {{
+            observe: Health
+            threshold: 0.85
+            tolerance: 0.1
+            on_drift: alert
+            shield: Guard
+            max_retries: 5
+        }}"#,
+        fase3_observe_prelude()
+    );
+    let ir = compile_json(&src);
+    let r = &ir["reconciles"][0];
+    assert_eq!(r["threshold"], 0.85);
+    assert_eq!(r["tolerance"], 0.1);
+    assert_eq!(r["on_drift"], "alert");
+    assert_eq!(r["shield_ref"], "Guard");
+    assert_eq!(r["max_retries"], 5);
+}
+
+#[test]
+fn fase3_reconcile_invalid_on_drift_rejected_by_parser() {
+    let src = format!(
+        "{}\nreconcile R {{ observe: Health on_drift: celebrate }}",
+        fase3_observe_prelude()
+    );
+    let tokens = lex(&src);
+    let mut parser = Parser::new(tokens);
+    assert!(parser.parse().is_err());
+}
+
+#[test]
+fn fase3_reconcile_undefined_observe_is_type_error() {
+    let errors = type_check("reconcile R { observe: Ghost }");
+    assert!(
+        errors.iter().any(|e| e.message.contains("undefined observe 'Ghost'")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase3_reconcile_threshold_out_of_range_type_error() {
+    let src = format!(
+        "{}\nreconcile R {{ observe: Health threshold: 1.2 }}",
+        fase3_observe_prelude()
+    );
+    let errors = type_check(&src);
+    assert!(
+        errors.iter().any(|e| e.message.contains("threshold")
+            && e.message.contains("out of range")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase3_reconcile_wrong_observe_kind_is_type_error() {
+    // Pointing `observe:` at a manifest is a kind mismatch.
+    let errors = type_check(r#"
+        resource Db { kind: postgres }
+        fabric Vpc { provider: aws }
+        manifest M { resources: [Db] fabric: Vpc }
+        reconcile R { observe: M }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("is a manifest, not an observe")),
+        "got {errors:?}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §λ-L-E Fase 3 — Lease primitive (end-to-end)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn fase3_lease_minimal_end_to_end() {
+    let ir = compile_json(r#"
+        resource Db { kind: postgres lifetime: linear }
+        lease DbWrite { resource: Db duration: 30s }
+    "#);
+    let l = &ir["leases"][0];
+    assert_eq!(l["node_type"], "lease");
+    assert_eq!(l["name"], "DbWrite");
+    assert_eq!(l["resource_ref"], "Db");
+    assert_eq!(l["duration"], "30s");
+    assert_eq!(l["acquire"], "on_start");       // default
+    assert_eq!(l["on_expire"], "anchor_breach"); // default (D2)
+}
+
+#[test]
+fn fase3_lease_full_fields() {
+    let ir = compile_json(r#"
+        resource Db { kind: postgres }
+        lease DbWrite {
+            resource: Db
+            duration: 5m
+            acquire: on_demand
+            on_expire: extend
+        }
+    "#);
+    let l = &ir["leases"][0];
+    assert_eq!(l["duration"], "5m");
+    assert_eq!(l["acquire"], "on_demand");
+    assert_eq!(l["on_expire"], "extend");
+}
+
+#[test]
+fn fase3_lease_invalid_acquire_rejected_by_parser() {
+    let tokens = lex(r#"
+        resource Db { kind: postgres }
+        lease L { resource: Db duration: 30s acquire: eventually }
+    "#);
+    let mut parser = Parser::new(tokens);
+    assert!(parser.parse().is_err());
+}
+
+#[test]
+fn fase3_lease_invalid_on_expire_rejected_by_parser() {
+    let tokens = lex(r#"
+        resource Db { kind: postgres }
+        lease L { resource: Db duration: 30s on_expire: forget }
+    "#);
+    let mut parser = Parser::new(tokens);
+    assert!(parser.parse().is_err());
+}
+
+#[test]
+fn fase3_lease_undefined_resource_is_type_error() {
+    let errors = type_check("lease L { resource: Ghost duration: 30s }");
+    assert!(
+        errors.iter().any(|e| e.message.contains("undefined resource 'Ghost'")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase3_lease_wrong_kind_reference_is_type_error() {
+    // Pointing `resource:` at a fabric is a kind mismatch.
+    let errors = type_check(r#"
+        fabric Vpc { provider: aws }
+        lease L { resource: Vpc duration: 30s }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("is a fabric, not a resource")),
+        "got {errors:?}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §λ-L-E Fase 3 — Ensemble primitive (end-to-end)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Two distinct `observe` symbols the Fase-3 ensemble tests can reference.
+fn fase3_two_observations_prelude() -> &'static str {
+    r#"
+        resource Db { kind: postgres }
+        fabric Vpc { provider: aws }
+        manifest M { resources: [Db] fabric: Vpc }
+        observe O1 from M { sources: [prom] quorum: 1 }
+        observe O2 from M { sources: [cw]   quorum: 1 }
+    "#
+}
+
+#[test]
+fn fase3_ensemble_minimal_end_to_end() {
+    let src = format!(
+        "{}\nensemble E {{ observations: [O1, O2] quorum: 2 }}",
+        fase3_two_observations_prelude()
+    );
+    let ir = compile_json(&src);
+    let e = &ir["ensembles"][0];
+    assert_eq!(e["node_type"], "ensemble");
+    assert_eq!(e["name"], "E");
+    assert_eq!(e["observations"][0], "O1");
+    assert_eq!(e["observations"][1], "O2");
+    assert_eq!(e["quorum"], 2);
+    assert_eq!(e["aggregation"], "majority"); // default
+    assert_eq!(e["certainty_mode"], "min");   // default
+}
+
+#[test]
+fn fase3_ensemble_full_fields() {
+    let src = format!(
+        r#"{}
+        ensemble E {{
+            observations: [O1, O2]
+            quorum: 2
+            aggregation: byzantine
+            certainty_mode: harmonic
+        }}"#,
+        fase3_two_observations_prelude()
+    );
+    let ir = compile_json(&src);
+    let e = &ir["ensembles"][0];
+    assert_eq!(e["aggregation"], "byzantine");
+    assert_eq!(e["certainty_mode"], "harmonic");
+}
+
+#[test]
+fn fase3_ensemble_invalid_aggregation_rejected_by_parser() {
+    let src = format!(
+        "{}\nensemble E {{ observations: [O1, O2] aggregation: democracy }}",
+        fase3_two_observations_prelude()
+    );
+    let tokens = lex(&src);
+    let mut parser = Parser::new(tokens);
+    assert!(parser.parse().is_err());
+}
+
+#[test]
+fn fase3_ensemble_single_observation_is_type_error() {
+    let errors = type_check(&format!(
+        "{}\nensemble E {{ observations: [O1] }}",
+        fase3_two_observations_prelude()
+    ));
+    assert!(
+        errors.iter().any(|e| e.message.contains("Byzantine quorum requires >= 2")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase3_ensemble_quorum_exceeds_observations_is_type_error() {
+    let src = format!(
+        "{}\nensemble E {{ observations: [O1, O2] quorum: 5 }}",
+        fase3_two_observations_prelude()
+    );
+    let errors = type_check(&src);
+    assert!(
+        errors.iter().any(|e| e.message.contains("exceeds available observations")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase3_ensemble_undefined_observation_is_type_error() {
+    let errors = type_check(&format!(
+        "{}\nensemble E {{ observations: [O1, Ghost] quorum: 2 }}",
+        fase3_two_observations_prelude()
+    ));
+    assert!(
+        errors.iter().any(|e| e.message.contains("undefined observation 'Ghost'")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase3_ensemble_duplicate_observation_is_type_error() {
+    let errors = type_check(&format!(
+        "{}\nensemble E {{ observations: [O1, O1] quorum: 2 }}",
+        fase3_two_observations_prelude()
+    ));
+    assert!(
+        errors.iter().any(|e| e.message.contains("more than once")),
+        "got {errors:?}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §λ-L-E Fase 4 — Session + Topology (π-calculus + Honda-Vasconcelos duality)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Two valid Fase-4 topology node kinds from the declared-symbols allow-list.
+fn fase4_nodes_prelude() -> &'static str {
+    // resource + axonendpoint are both on the NODE_KINDS allow-list
+    r#"
+        type Data { payload: String }
+        flow Noop() -> Data {
+            step Run {
+                ask: "noop"
+                output: Data
+            }
+        }
+        resource Db { kind: postgres }
+        axonendpoint Api { method: GET path: "/x" execute: Noop output: Data }
+    "#
+}
+
+#[test]
+fn fase4_session_minimal_dual_compiles_clean() {
+    let ir = compile_json(r#"
+        session S {
+            client: [send Req, receive Rep, end]
+            server: [receive Req, send Rep, end]
+        }
+    "#);
+    let s = &ir["sessions"][0];
+    assert_eq!(s["node_type"], "session");
+    assert_eq!(s["name"], "S");
+    assert_eq!(s["roles"].as_array().unwrap().len(), 2);
+    assert_eq!(s["roles"][0]["steps"][0]["op"], "send");
+    assert_eq!(s["roles"][0]["steps"][0]["message_type"], "Req");
+    assert_eq!(s["roles"][1]["steps"][0]["op"], "receive");
+}
+
+#[test]
+fn fase4_session_not_binary_is_type_error() {
+    let errors = type_check(r#"
+        session S {
+            only_role: [send M, end]
+        }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("must declare exactly 2 roles")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase4_session_duality_send_receive_mismatch_is_type_error() {
+    // Both sides `send` — no duality.
+    let errors = type_check(r#"
+        session S {
+            a: [send M, end]
+            b: [send M, end]
+        }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("duality violation")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase4_session_duality_message_type_mismatch_is_type_error() {
+    let errors = type_check(r#"
+        session S {
+            a: [send Foo, end]
+            b: [receive Bar, end]
+        }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("duality violation")),
+        "expected message-type duality error, got {errors:?}"
+    );
+}
+
+#[test]
+fn fase4_session_different_length_is_type_error() {
+    let errors = type_check(r#"
+        session S {
+            a: [send M, end]
+            b: [receive M, send N, end]
+        }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("different lengths")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase4_session_invalid_step_op_rejected_by_parser() {
+    let tokens = lex("session S { a: [foo Bar] }");
+    let mut parser = Parser::new(tokens);
+    assert!(parser.parse().is_err());
+}
+
+#[test]
+fn fase4_session_loop_and_end_are_dual() {
+    // loop<->loop, end<->end, and send/receive with matching types.
+    let ir = compile_ir(r#"
+        session Pingpong {
+            cl: [send Ping, receive Pong, loop, end]
+            sv: [receive Ping, send Pong, loop, end]
+        }
+    "#);
+    assert_eq!(ir.sessions.len(), 1);
+    assert_eq!(ir.sessions[0].roles[0].steps.len(), 4);
+}
+
+#[test]
+fn fase4_topology_minimal_compiles_clean() {
+    let ir = compile_json(&format!(r#"{}
+        session S {{
+            a: [send M, end]
+            b: [receive M, end]
+        }}
+        topology T {{
+            nodes: [Db, Api]
+            edges: [Api -> Db : S]
+        }}
+    "#, fase4_nodes_prelude()));
+    let t = &ir["topologies"][0];
+    assert_eq!(t["node_type"], "topology");
+    assert_eq!(t["name"], "T");
+    assert_eq!(t["nodes"][0], "Db");
+    assert_eq!(t["edges"][0]["source"], "Api");
+    assert_eq!(t["edges"][0]["target"], "Db");
+    assert_eq!(t["edges"][0]["session_ref"], "S");
+}
+
+#[test]
+fn fase4_topology_undefined_node_is_type_error() {
+    let errors = type_check(r#"
+        session S { a: [send M, end] b: [receive M, end] }
+        topology T {
+            nodes: [Ghost]
+            edges: []
+        }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("undefined node 'Ghost'")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase4_topology_invalid_node_kind_is_type_error() {
+    // `session` is NOT in the NODE_KINDS allow-list; listing one in `nodes:` is illegal.
+    let errors = type_check(r#"
+        session Inner { a: [send M, end] b: [receive M, end] }
+        topology T {
+            nodes: [Inner]
+            edges: []
+        }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("is a session") &&
+            e.message.contains("not a valid topology entity")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase4_topology_self_loop_is_type_error() {
+    let errors = type_check(&format!(r#"{}
+        session S {{ a: [send M, end] b: [receive M, end] }}
+        topology T {{
+            nodes: [Db]
+            edges: [Db -> Db : S]
+        }}
+    "#, fase4_nodes_prelude()));
+    assert!(
+        errors.iter().any(|e| e.message.contains("self-loop edge on 'Db'")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase4_topology_undefined_session_is_type_error() {
+    let errors = type_check(&format!(r#"{}
+        topology T {{
+            nodes: [Db, Api]
+            edges: [Api -> Db : Nonexistent]
+        }}
+    "#, fase4_nodes_prelude()));
+    assert!(
+        errors.iter().any(|e| e.message.contains("undefined session 'Nonexistent'")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase4_topology_edge_source_not_in_nodes_is_type_error() {
+    let errors = type_check(&format!(r#"{}
+        session S {{ a: [send M, end] b: [receive M, end] }}
+        topology T {{
+            nodes: [Db]
+            edges: [Api -> Db : S]
+        }}
+    "#, fase4_nodes_prelude()));
+    assert!(
+        errors.iter().any(|e| e.message.contains("edge source 'Api' is not in the nodes list")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase4_topology_liveness_deadlock_cycle_rejected() {
+    // Cycle A->B->A where EVERY edge is receive-first on the source side
+    // triggers Honda-liveness violation.
+    //
+    // For edge X->Y : Sess, source plays role[0] of Sess. If role[0].steps[0]
+    // is `receive`, the edge is receive-first. Both SAB and SBA have first
+    // role start with `receive`, so the whole cycle is blocked → deadlock.
+    let errors = type_check(r#"
+        resource Db { kind: postgres }
+        fabric Vpc { provider: aws }
+        session SAB {
+            a: [receive M, end]
+            b: [send M, end]
+        }
+        session SBA {
+            a: [receive M, end]
+            b: [send M, end]
+        }
+        shield Guard { scan: [prompt_injection] on_breach: halt severity: high }
+        topology T {
+            nodes: [Db, Vpc]
+            edges: [
+                Db -> Vpc : SAB,
+                Vpc -> Db : SBA
+            ]
+        }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("static deadlock")
+            && e.message.contains("Honda liveness violation")),
+        "expected Honda liveness deadlock, got {errors:?}"
+    );
+}
+
+#[test]
+fn fase4_topology_liveness_send_first_cycle_is_accepted() {
+    // Same cycle topology but the source side is `send` first → progress
+    // exists, no deadlock should be reported.
+    let errors = type_check(r#"
+        resource Db { kind: postgres }
+        fabric Vpc { provider: aws }
+        session SAB {
+            a: [send M, end]
+            b: [receive M, end]
+        }
+        session SBA {
+            a: [send M, end]
+            b: [receive M, end]
+        }
+        topology T {
+            nodes: [Db, Vpc]
+            edges: [
+                Db -> Vpc : SAB,
+                Vpc -> Db : SBA
+            ]
+        }
+    "#);
+    assert!(
+        !errors.iter().any(|e| e.message.contains("static deadlock")),
+        "send-first cycle must not be flagged as deadlock, got {errors:?}"
+    );
+}
+
+#[test]
+fn fase4_topology_with_full_fase1_infrastructure_compiles_clean() {
+    let ir = compile_ir(r#"
+        resource Db { kind: postgres lifetime: linear }
+        fabric Vpc { provider: aws region: "us-east-1" zones: 2 }
+        manifest Prod { resources: [Db] fabric: Vpc compliance: [SOC2] }
+        observe Health from Prod { sources: [prom] quorum: 1 }
+        session DbSess {
+            client: [send Query, receive Result, end]
+            server: [receive Query, send Result, end]
+        }
+        topology T {
+            nodes: [Db, Vpc, Prod, Health]
+            edges: [Health -> Db : DbSess]
+        }
+    "#);
+    assert_eq!(ir.sessions.len(), 1);
+    assert_eq!(ir.topologies.len(), 1);
+    assert_eq!(ir.topologies[0].edges.len(), 1);
+    assert_eq!(ir.topologies[0].edges[0].session_ref, "DbSess");
+}
+
+#[test]
+fn fase3_control_cognitivo_full_stack_compiles_clean() {
+    // Integration test: Fase 1 + Fase 3 primitives composed in one program.
+    let ir = compile_ir(r#"
+        resource Db { kind: postgres lifetime: linear }
+        fabric Vpc { provider: aws region: "us-east-1" zones: 3 }
+        manifest Prod { resources: [Db] fabric: Vpc compliance: [SOC2] }
+        observe Health from Prod { sources: [prom] quorum: 1 }
+        reconcile R { observe: Health threshold: 0.9 tolerance: 0.05 on_drift: refine max_retries: 5 }
+        lease DbWrite { resource: Db duration: 1h acquire: on_demand on_expire: release }
+    "#);
+    assert_eq!(ir.reconciles.len(), 1);
+    assert_eq!(ir.leases.len(), 1);
+    assert_eq!(ir.reconciles[0].threshold, Some(0.9));
+    assert_eq!(ir.leases[0].on_expire, "release");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §λ-L-E Fase 5 — Cognitive immune system (paper_immune_v2.md)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn fase5_immune_minimal_end_to_end() {
+    let ir = compile_json(r#"
+        resource Db { kind: postgres }
+        fabric Vpc { provider: aws }
+        manifest M { resources: [Db] fabric: Vpc }
+        observe Health from M { sources: [prom] quorum: 1 }
+        immune I {
+            watch: [Health]
+            scope: tenant
+        }
+    "#);
+    let im = &ir["immunes"][0];
+    assert_eq!(im["node_type"], "immune");
+    assert_eq!(im["name"], "I");
+    assert_eq!(im["watch"][0], "Health");
+    assert_eq!(im["scope"], "tenant");
+    assert_eq!(im["baseline"], "learned");     // default
+    assert_eq!(im["window"], 100);             // default
+    assert_eq!(im["decay"], "exponential");    // default
+}
+
+#[test]
+fn fase5_immune_full_fields() {
+    let ir = compile_json(r#"
+        resource Db { kind: postgres }
+        fabric Vpc { provider: aws }
+        manifest M { resources: [Db] fabric: Vpc }
+        observe Health from M { sources: [prom] quorum: 1 }
+        immune I {
+            watch: [Health]
+            sensitivity: 0.9
+            baseline: learned
+            window: 200
+            scope: global
+            tau: 300s
+            decay: linear
+        }
+    "#);
+    let im = &ir["immunes"][0];
+    assert_eq!(im["sensitivity"], 0.9);
+    assert_eq!(im["window"], 200);
+    assert_eq!(im["scope"], "global");
+    assert_eq!(im["tau"], "300s");
+    assert_eq!(im["decay"], "linear");
+}
+
+#[test]
+fn fase5_immune_missing_scope_is_type_error() {
+    // Paper §8.2: scope is MANDATORY — no implicit blast radius.
+    let errors = type_check(r#"
+        immune I {
+            watch: [x]
+        }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("requires an explicit 'scope'")
+            && e.message.contains("paper §8.2")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase5_immune_invalid_scope_rejected_by_parser() {
+    let tokens = lex("immune I { watch: [x] scope: planet }");
+    let mut parser = Parser::new(tokens);
+    assert!(parser.parse().is_err());
+}
+
+#[test]
+fn fase5_immune_empty_watch_is_type_error() {
+    let errors = type_check(r#"immune I { scope: tenant }"#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("non-empty 'watch'")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase5_immune_sensitivity_out_of_range_type_error() {
+    let errors = type_check(r#"
+        immune I {
+            watch: [x]
+            scope: tenant
+            sensitivity: 1.7
+        }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("sensitivity must be in [0.0, 1.0]")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase5_reflex_minimal_end_to_end() {
+    let ir = compile_json(r#"
+        immune Sensor { watch: [x] scope: tenant }
+        reflex R {
+            trigger: Sensor
+            action: drop
+            scope: tenant
+        }
+    "#);
+    let r = &ir["reflexes"][0];
+    assert_eq!(r["node_type"], "reflex");
+    assert_eq!(r["trigger"], "Sensor");
+    assert_eq!(r["action"], "drop");
+    assert_eq!(r["on_level"], "doubt"); // default
+    assert_eq!(r["scope"], "tenant");
+}
+
+#[test]
+fn fase5_reflex_trigger_must_be_immune_type_error() {
+    let errors = type_check(r#"
+        resource Db { kind: postgres }
+        reflex R {
+            trigger: Db
+            action: drop
+            scope: tenant
+        }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("is a resource, not an immune")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase5_reflex_undefined_trigger_is_type_error() {
+    let errors = type_check(r#"
+        reflex R {
+            trigger: Ghost
+            action: drop
+            scope: tenant
+        }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("undefined trigger 'Ghost'")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase5_reflex_invalid_action_rejected_by_parser() {
+    let tokens = lex(r#"
+        immune I { watch: [x] scope: tenant }
+        reflex R { trigger: I action: dance scope: tenant }
+    "#);
+    let mut parser = Parser::new(tokens);
+    assert!(parser.parse().is_err());
+}
+
+#[test]
+fn fase5_heal_defaults_to_human_in_loop() {
+    let ir = compile_json(r#"
+        immune Sensor { watch: [x] scope: tenant }
+        heal H {
+            source: Sensor
+            scope: tenant
+        }
+    "#);
+    let h = &ir["heals"][0];
+    assert_eq!(h["node_type"], "heal");
+    assert_eq!(h["source"], "Sensor");
+    assert_eq!(h["mode"], "human_in_loop"); // paper §7.2 compliance default
+    assert_eq!(h["on_level"], "doubt");     // default
+    assert_eq!(h["max_patches"], 3);        // default
+}
+
+#[test]
+fn fase5_heal_adversarial_requires_shield_per_paper_7_3() {
+    // Paper §7.3: adversarial mode needs an explicit shield gate.
+    let errors = type_check(r#"
+        immune Sensor { watch: [x] scope: tenant }
+        heal H {
+            source: Sensor
+            mode: adversarial
+            scope: tenant
+        }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("mode='adversarial' requires a 'shield' gate")
+            && e.message.contains("Paper §7.3")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase5_heal_adversarial_with_shield_compiles_clean() {
+    let ir = compile_ir(r#"
+        shield Guard {
+            scan: [prompt_injection]
+            on_breach: halt
+            severity: critical
+        }
+        immune Sensor { watch: [x] scope: tenant }
+        heal H {
+            source: Sensor
+            mode: adversarial
+            scope: tenant
+            shield: Guard
+        }
+    "#);
+    assert_eq!(ir.heals[0].mode, "adversarial");
+    assert_eq!(ir.heals[0].shield_ref, "Guard");
+}
+
+#[test]
+fn fase5_heal_source_must_be_immune() {
+    let errors = type_check(r#"
+        resource Db { kind: postgres }
+        heal H { source: Db scope: tenant }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("is a resource, not an immune")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase5_heal_max_patches_zero_is_type_error() {
+    let errors = type_check(r#"
+        immune Sensor { watch: [x] scope: tenant }
+        heal H {
+            source: Sensor
+            scope: tenant
+            max_patches: 0
+        }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("max_patches must be >= 1")),
+        "got {errors:?}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §ESK Fase 6.1 — Compile-time compliance annotations (κ on type/shield/
+// manifest/axonendpoint), per docs/paper_esk.md
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §Fase 8.2.h — Rust↔Python IR structural parity gate.
+//
+// Divergences that prevent byte-identical output are catalogued in
+// docs/fase8_parity_divergences.md (D1–D4). This test verifies everything
+// ELSE: same declaration counts, same named symbols, compliance arrays
+// match item-for-item. A regression here signals that the Rust IR drifted
+// away from the Python reference.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Writes the Rust IR JSON for the canonical fixture to a known path
+/// next to the Python golden so a byte-identical diff can be performed
+/// externally (CI, local `diff -u`). Produces `*.rust.ir.json`.
+#[test]
+fn parity_fase1_5_emit_rust_ir_for_diff() {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let base: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "parity"].iter().collect();
+    let source = fs::read_to_string(base.join("fase1_through_5_plus_compliance.axon"))
+        .expect("fixture missing");
+    let ir = compile_ir(&source);
+    // Match Python: indent=2, ensure_ascii=False, no sort_keys.
+    let rust_json = serde_json::to_string_pretty(&ir).expect("serialize rust ir");
+    let out = base.join("fase1_through_5_plus_compliance.rust.ir.json");
+    fs::write(&out, rust_json).expect("write rust ir");
+    println!("Rust IR emitted to {}", out.display());
+}
+
+#[test]
+fn parity_fase1_5_byte_identical_matches_python_golden() {
+    // §8.2.h final gate — Rust IR JSON must match Python's reference
+    // byte-for-byte (after line-ending normalisation, because Python's
+    // `Path.write_text` emits CRLF on Windows while Rust emits LF).
+    //
+    // Any drift in: (a) field ordering inside structs, (b) emitted values,
+    // (c) presence/absence of fields, or (d) array lengths blows this test.
+    // Known soft divergences have been fixed in §8.2.h.1–h.3; this gate
+    // is now the canonical signal that they stay fixed.
+    use std::fs;
+    use std::path::PathBuf;
+
+    let base: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "parity"].iter().collect();
+    let source = fs::read_to_string(base.join("fase1_through_5_plus_compliance.axon"))
+        .expect("fixture missing");
+    let golden_raw = fs::read_to_string(
+        base.join("fase1_through_5_plus_compliance.python.ir.json"),
+    )
+    .expect("python golden IR JSON missing — regenerate via \
+             `python -m axon.cli compile <fixture> -o <golden>`");
+
+    // The Python CLI appends a `_meta` CLI-annotation envelope that the
+    // core IRGenerator does not produce. Strip it before comparison; the
+    // envelope itself gets its own parity sub-phase (§8.2.h.4) once the
+    // Rust CLI ships.
+    let mut golden_value: serde_json::Value =
+        serde_json::from_str(&golden_raw).expect("golden JSON parses");
+    if let Some(obj) = golden_value.as_object_mut() {
+        obj.remove("_meta");
+    }
+
+    let rust_ir = compile_ir(&source);
+    let rust_value = serde_json::to_value(&rust_ir).expect("serialize rust ir");
+
+    // Re-serialise both via the same writer so whitespace / escaping match.
+    let py_canon = serde_json::to_string_pretty(&golden_value).expect("re-ser py");
+    let rust_canon = serde_json::to_string_pretty(&rust_value).expect("re-ser rust");
+
+    if py_canon != rust_canon {
+        // Produce a compact unified diff-style hint on mismatch.
+        let py_lines: Vec<&str> = py_canon.lines().collect();
+        let rust_lines: Vec<&str> = rust_canon.lines().collect();
+        for (i, (p, r)) in py_lines.iter().zip(rust_lines.iter()).enumerate() {
+            if p != r {
+                panic!(
+                    "byte-identical parity broke at line {i}:\n- python: {p}\n+ rust:   {r}\n\
+                     \n(full files under tests/parity/*.ir.json)"
+                );
+            }
+        }
+        panic!(
+            "length mismatch after zipped compare: python={} lines, rust={} lines",
+            py_lines.len(),
+            rust_lines.len()
+        );
+    }
+}
+
+#[test]
+fn parity_fase1_5_structural_matches_python_golden() {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let base: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "parity"].iter().collect();
+    let source = fs::read_to_string(base.join("fase1_through_5_plus_compliance.axon"))
+        .expect("fixture .axon file missing");
+    let golden_str = fs::read_to_string(
+        base.join("fase1_through_5_plus_compliance.python.ir.json"),
+    )
+    .expect("python golden IR JSON missing — regenerate with \
+             python -m axon.cli compile <fixture> -o <golden>");
+
+    let rust_ir = compile_json(&source);
+    let py: serde_json::Value = serde_json::from_str(&golden_str).expect("golden JSON parses");
+
+    // Program-level invariants.
+    assert_eq!(rust_ir["node_type"], py["node_type"]);
+
+    // Named declaration buckets whose parity is already complete.
+    for bucket in [
+        "types", "flows", "shields", "endpoints", "resources", "fabrics",
+        "manifests", "observations", "reconciles", "leases", "ensembles",
+        "sessions", "topologies", "immunes", "reflexes", "heals",
+    ] {
+        let py_arr = py[bucket].as_array().unwrap_or_else(|| panic!("python golden missing '{bucket}'"));
+        let rust_arr = rust_ir[bucket]
+            .as_array()
+            .unwrap_or_else(|| panic!("rust IR missing '{bucket}'"));
+        assert_eq!(
+            rust_arr.len(),
+            py_arr.len(),
+            "bucket '{bucket}' length differs (rust={}, python={})",
+            rust_arr.len(),
+            py_arr.len()
+        );
+        // Named-identifier symmetry.
+        let py_names: Vec<&str> = py_arr
+            .iter()
+            .filter_map(|v| v["name"].as_str())
+            .collect();
+        let rust_names: Vec<&str> = rust_arr
+            .iter()
+            .filter_map(|v| v["name"].as_str())
+            .collect();
+        assert_eq!(
+            rust_names, py_names,
+            "bucket '{bucket}' named-identifier order drifted"
+        );
+    }
+
+    // Compliance (κ) must round-trip on every carrier.
+    let carriers: &[(&str, &str)] = &[
+        ("types", "PatientRecord"),
+        ("types", "ClinicalTrial"),
+        ("shields", "PHIShield"),
+        ("manifests", "Prod"),
+        ("endpoints", "PatientAPI"),
+    ];
+    for (bucket, name) in carriers {
+        let py_entry = py[bucket]
+            .as_array().unwrap()
+            .iter()
+            .find(|v| v["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("python golden missing {bucket}[{name}]"));
+        let rust_entry = rust_ir[bucket]
+            .as_array().unwrap()
+            .iter()
+            .find(|v| v["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("rust IR missing {bucket}[{name}]"));
+        assert_eq!(
+            rust_entry["compliance"], py_entry["compliance"],
+            "{bucket}[{name}].compliance drifted — rust={:?}, python={:?}",
+            rust_entry["compliance"], py_entry["compliance"]
+        );
+    }
+
+    // node_type rename verified (divergence D4 resolved at lowering):
+    assert_eq!(rust_ir["endpoints"][0]["node_type"], "endpoint");
+    assert_eq!(py["endpoints"][0]["node_type"], "endpoint");
+
+    // Shield default strategy lowering:
+    assert_eq!(rust_ir["shields"][0]["strategy"], "pattern");
+    assert_eq!(py["shields"][0]["strategy"], "pattern");
+
+    // Session roles: both sides of the binary protocol present.
+    assert_eq!(rust_ir["sessions"][0]["roles"].as_array().unwrap().len(), 2);
+    assert_eq!(py["sessions"][0]["roles"].as_array().unwrap().len(), 2);
+
+    // Topology edges count matches.
+    assert_eq!(
+        rust_ir["topologies"][0]["edges"].as_array().unwrap().len(),
+        py["topologies"][0]["edges"].as_array().unwrap().len(),
+    );
+}
+
+#[test]
+fn fase6_1_type_carries_compliance_prefix_into_ir() {
+    let ir = compile_json(r#"
+        type PatientRecord compliance [HIPAA, GDPR] {
+            id:   String
+            ssn:  String
+        }
+    "#);
+    let t = &ir["types"][0];
+    assert_eq!(t["name"], "PatientRecord");
+    assert_eq!(t["compliance"][0], "HIPAA");
+    assert_eq!(t["compliance"][1], "GDPR");
+}
+
+#[test]
+fn fase6_1_type_without_compliance_has_empty_list() {
+    let ir = compile_json("type Plain { note: String }");
+    let t = &ir["types"][0];
+    assert_eq!(t["compliance"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn fase6_1_shield_carries_compliance_into_ir() {
+    let ir = compile_json(r#"
+        shield PHIShield {
+            scan: [prompt_injection, pii_leak]
+            on_breach: quarantine
+            severity: critical
+            compliance: [HIPAA, SOC2]
+        }
+    "#);
+    let s = &ir["shields"][0];
+    assert_eq!(s["compliance"][0], "HIPAA");
+    assert_eq!(s["compliance"][1], "SOC2");
+}
+
+#[test]
+fn fase6_1_manifest_compliance_already_supported() {
+    // Manifest got compliance in 8.2.c; this asserts it still works post-8.2.g.
+    let ir = compile_json(r#"
+        resource Db { kind: postgres }
+        fabric Vpc { provider: aws }
+        manifest M {
+            resources: [Db]
+            fabric: Vpc
+            compliance: [HIPAA, PCI_DSS, SOX]
+        }
+    "#);
+    let m = &ir["manifests"][0];
+    assert_eq!(m["compliance"].as_array().unwrap().len(), 3);
+    assert_eq!(m["compliance"][2], "SOX");
+}
+
+#[test]
+fn fase6_1_axonendpoint_carries_compliance_into_ir() {
+    let ir = compile_json(r#"
+        type Req { q: String }
+        type Rep { a: String }
+        flow Handle(r: Req) -> Rep {
+            step Reply {
+                ask: "reply"
+                output: Rep
+            }
+        }
+        axonendpoint Api {
+            method: POST
+            path: "/v1/chat"
+            body: Req
+            execute: Handle
+            output: Rep
+            compliance: [HIPAA, GDPR]
+        }
+    "#);
+    let e = &ir["endpoints"][0];
+    assert_eq!(e["compliance"][0], "HIPAA");
+    assert_eq!(e["compliance"][1], "GDPR");
+}
+
+#[test]
+fn fase6_1_compliance_preserves_field_order_in_ir() {
+    // The Python ESK treats compliance as an ordered tuple; byte-identical
+    // parity requires Rust to preserve the source order too.
+    let ir = compile_json(r#"
+        type T compliance [SOX, HIPAA, PCI_DSS, GDPR, FISMA] { x: String }
+    "#);
+    let cs = ir["types"][0]["compliance"].as_array().unwrap();
+    let values: Vec<&str> = cs.iter().map(|v| v.as_str().unwrap()).collect();
+    assert_eq!(values, vec!["SOX", "HIPAA", "PCI_DSS", "GDPR", "FISMA"]);
+}
+
+#[test]
+fn fase6_1_full_regulated_program_compiles_clean() {
+    // Integration: type + shield + manifest + axonendpoint all carrying
+    // overlapping κ — mirrors the healthcare_reference.axon shape.
+    let ir = compile_ir(r#"
+        type PatientRecord compliance [HIPAA, GDPR] {
+            id:   String
+            ssn:  String
+        }
+        flow Handle(r: PatientRecord) -> PatientRecord {
+            step Reply {
+                ask: "reply"
+                output: PatientRecord
+            }
+        }
+        shield PHI {
+            scan: [pii_leak]
+            on_breach: quarantine
+            severity: critical
+            compliance: [HIPAA, GDPR, SOC2]
+        }
+        resource Ehr { kind: postgres lifetime: linear }
+        fabric Vpc { provider: aws region: "us-east-1" zones: 2 }
+        manifest Prod {
+            resources: [Ehr]
+            fabric: Vpc
+            compliance: [HIPAA, GDPR, SOC2]
+        }
+        axonendpoint PatientAPI {
+            method: POST
+            path: "/patients"
+            body: PatientRecord
+            execute: Handle
+            output: PatientRecord
+            shield: PHI
+            compliance: [HIPAA, GDPR]
+        }
+    "#);
+    assert_eq!(ir.types[0].compliance, vec!["HIPAA", "GDPR"]);
+    assert_eq!(ir.shields[0].compliance, vec!["HIPAA", "GDPR", "SOC2"]);
+    assert_eq!(ir.manifests[0].compliance, vec!["HIPAA", "GDPR", "SOC2"]);
+    assert_eq!(ir.endpoints[0].compliance, vec!["HIPAA", "GDPR"]);
+}
+
+#[test]
+fn fase5_immune_reflex_heal_full_loop_compiles_clean() {
+    // Integration test: the full Fase 5 stack composed together.
+    let ir = compile_ir(r#"
+        resource Db { kind: postgres }
+        fabric Vpc { provider: aws }
+        manifest M { resources: [Db] fabric: Vpc }
+        observe Health from M { sources: [prom] quorum: 1 }
+        immune Vigil {
+            watch: [Health]
+            sensitivity: 0.85
+            scope: tenant
+            tau: 60s
+        }
+        reflex ThrottleRequest {
+            trigger: Vigil
+            on_level: believe
+            action: quarantine
+            scope: tenant
+            sla: 1ms
+        }
+        heal RollbackCache {
+            source: Vigil
+            on_level: speculate
+            mode: human_in_loop
+            scope: tenant
+            review_sla: 1h
+            max_patches: 5
+        }
+    "#);
+    assert_eq!(ir.immunes.len(), 1);
+    assert_eq!(ir.reflexes.len(), 1);
+    assert_eq!(ir.heals.len(), 1);
+    assert_eq!(ir.reflexes[0].action, "quarantine");
+    assert_eq!(ir.heals[0].max_patches, 5);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §λ-L-E Fase 9 — UI cognitiva declarativa (component / view)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn fase9_regulated_preamble() -> &'static str {
+    r#"
+        type PatientRecord compliance [HIPAA] { id: String }
+        flow SummarizeRecord(rec: PatientRecord) -> PatientRecord {
+            step Review { ask: "s" output: PatientRecord }
+        }
+        shield PHIShield {
+            scan: [pii_leak]
+            on_breach: halt
+            severity: critical
+            compliance: [HIPAA]
+        }
+    "#
+}
+
+#[test]
+fn fase9_component_minimal_parses_and_lowers() {
+    let ir = compile_ir(r#"
+        type T { f: String }
+        component C { renders: T render_hint: card }
+    "#);
+    assert_eq!(ir.components.len(), 1);
+    assert_eq!(ir.components[0].name, "C");
+    assert_eq!(ir.components[0].renders, "T");
+    assert_eq!(ir.components[0].render_hint, "card");
+}
+
+#[test]
+fn fase9_component_full_fields_round_trip() {
+    let src = format!(r#"{}
+        component PatientCard {{
+            renders: PatientRecord
+            via_shield: PHIShield
+            on_interact: SummarizeRecord
+            render_hint: card
+        }}
+    "#, fase9_regulated_preamble());
+    let ir = compile_ir(&src);
+    let c = &ir.components[0];
+    assert_eq!(c.renders, "PatientRecord");
+    assert_eq!(c.via_shield, "PHIShield");
+    assert_eq!(c.on_interact, "SummarizeRecord");
+    assert_eq!(c.render_hint, "card");
+}
+
+#[test]
+fn fase9_component_invalid_render_hint_rejected_by_parser() {
+    let tokens = lex("type T { f: String } component C { renders: T render_hint: sculpture }");
+    let mut parser = Parser::new(tokens);
+    assert!(parser.parse().is_err());
+}
+
+#[test]
+fn fase9_view_parses_and_lowers_with_route() {
+    let ir = compile_ir(r#"
+        type T { f: String }
+        component C { renders: T }
+        view Home {
+            title: "Home"
+            components: [C]
+            route: "/home"
+        }
+    "#);
+    assert_eq!(ir.views.len(), 1);
+    assert_eq!(ir.views[0].title, "Home");
+    assert_eq!(ir.views[0].components, vec!["C".to_string()]);
+    assert_eq!(ir.views[0].route, "/home");
+}
+
+#[test]
+fn fase9_view_composes_multiple_components() {
+    let ir = compile_ir(r#"
+        type T { f: String }
+        component A { renders: T }
+        component B { renders: T }
+        view V { components: [A, B] }
+    "#);
+    assert_eq!(ir.views[0].components, vec!["A".to_string(), "B".to_string()]);
+}
+
+#[test]
+fn fase9_component_missing_renders_is_type_error() {
+    let errors = type_check("component C { render_hint: card }");
+    assert!(
+        errors.iter().any(|e| e.message.contains("requires 'renders")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase9_component_undefined_render_type_is_error() {
+    let errors = type_check("component C { renders: Ghost }");
+    assert!(
+        errors.iter().any(|e| e.message.contains("undefined type 'Ghost'")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase9_component_wrong_render_kind_is_error() {
+    // Pointing `renders:` at a flow is a kind mismatch.
+    let errors = type_check(r#"
+        flow F() -> String { step S { ask: "x" output: String } }
+        component C { renders: F }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("is a flow, not a type")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase9_component_unknown_shield_is_error() {
+    let errors = type_check(r#"
+        type T { f: String }
+        component C { renders: T via_shield: Ghost }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("undefined shield 'Ghost'")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase9_component_on_interact_must_be_a_flow() {
+    let errors = type_check(r#"
+        type T { f: String }
+        component C { renders: T on_interact: T }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("is a type, not a flow")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase9_component_signature_mismatch_is_error() {
+    let errors = type_check(r#"
+        type T { f: String }
+        type U { f: String }
+        flow G(u: U) -> U { step S { ask: "x" output: U } }
+        component C { renders: T on_interact: G }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("Signatures must match")
+            || e.message.contains("expects first parameter of type 'U'")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase9_regulated_render_requires_via_shield() {
+    let errors = type_check(&format!(r#"{}
+        component BadCard {{ renders: PatientRecord }}
+    "#, fase9_regulated_preamble()));
+    assert!(
+        errors.iter().any(|e| e.message.contains("renders regulated type")
+            && e.message.contains("no 'via_shield'")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase9_shield_must_cover_full_kappa() {
+    let errors = type_check(r#"
+        type PatientRecord compliance [HIPAA, GDPR] { id: String }
+        shield PartialShield {
+            scan: [pii_leak]
+            on_breach: halt
+            severity: critical
+            compliance: [HIPAA]
+        }
+        component HalfCard { renders: PatientRecord via_shield: PartialShield }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("does not cover")
+            && e.message.contains("GDPR")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase9_shield_superset_kappa_accepted() {
+    let ir = compile_ir(r#"
+        type PatientRecord compliance [HIPAA] { id: String }
+        shield SuperShield {
+            scan: [pii_leak]
+            on_breach: halt
+            severity: critical
+            compliance: [HIPAA, GDPR, SOC2]
+        }
+        component PatientCard {
+            renders: PatientRecord
+            via_shield: SuperShield
+            render_hint: card
+        }
+    "#);
+    assert_eq!(ir.components.len(), 1);
+}
+
+#[test]
+fn fase9_unregulated_component_needs_no_shield() {
+    let ir = compile_ir(r#"
+        type Note { text: String }
+        component NoteCard { renders: Note render_hint: card }
+    "#);
+    assert_eq!(ir.components[0].via_shield, "");
+}
+
+#[test]
+fn fase9_view_empty_components_is_error() {
+    let errors = type_check(r#"
+        view V { title: "Empty" }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("empty components list")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase9_view_unknown_component_ref_is_error() {
+    let errors = type_check(r#"view V { components: [Ghost] }"#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("undefined component 'Ghost'")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase9_view_wrong_kind_component_ref_is_error() {
+    let errors = type_check(r#"
+        type T { f: String }
+        view V { components: [T] }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("is a type, not a component")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase9_view_duplicate_component_is_error() {
+    let errors = type_check(r#"
+        type T { f: String }
+        component A { renders: T }
+        view V { components: [A, A] }
+    "#);
+    assert!(
+        errors.iter().any(|e| e.message.contains("more than once")),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn fase9_healthcare_console_reference_compiles_clean() {
+    let source = std::fs::read_to_string("../examples/ui/healthcare_console.axon")
+        .expect("healthcare_console.axon fixture missing");
+    let ir = compile_ir(&source);
+    assert_eq!(ir.components.len(), 3);
+    assert_eq!(ir.views.len(), 2);
+    let by_name: std::collections::HashMap<_, _> =
+        ir.components.iter().map(|c| (c.name.as_str(), c)).collect();
+    assert_eq!(by_name["PatientCard"].via_shield, "PHIShield");
+    assert_eq!(by_name["TrialEntry"].via_shield, "TrialShield");
+    assert_eq!(by_name["DiagnosticPanel"].via_shield, "");
+    let view_names: std::collections::HashSet<&str> =
+        ir.views.iter().map(|v| v.name.as_str()).collect();
+    assert!(view_names.contains("ClinicianDashboard"));
+    assert!(view_names.contains("TrialOversight"));
+}
+
+#[test]
+fn fase1_io_cognitivo_full_stack_compiles_clean() {
+    // Integration test: the four Fase 1 primitives wired together.
+    let ir = compile_ir(r#"
+        resource Db { kind: postgres lifetime: linear }
+        resource Cache { kind: redis lifetime: affine }
+        fabric Vpc { provider: aws region: "us-east-1" zones: 3 ephemeral: false }
+        manifest Prod {
+            resources: [Db, Cache]
+            fabric: Vpc
+            region: "us-east-1"
+            zones: 3
+            compliance: [HIPAA, SOC2]
+        }
+        observe Health from Prod {
+            sources: [prometheus, cloudwatch, healthcheck]
+            quorum: 2
+            timeout: 5s
+            on_partition: fail
+            certainty_floor: 0.95
+        }
+    "#);
+    assert_eq!(ir.resources.len(), 2);
+    assert_eq!(ir.fabrics.len(), 1);
+    assert_eq!(ir.manifests.len(), 1);
+    assert_eq!(ir.observations.len(), 1);
+    assert_eq!(ir.manifests[0].compliance, vec!["HIPAA", "SOC2"]);
+    assert_eq!(ir.observations[0].target, "Prod");
 }

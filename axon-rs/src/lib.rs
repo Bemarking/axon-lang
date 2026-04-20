@@ -22,6 +22,15 @@ pub mod deployer;
 pub mod emcp;
 pub mod epistemic;
 pub mod event_bus;
+/// §λ-L-E Fase 2 — Handler layer (Free Monad + CPS). Port of `axon/runtime/handlers/`.
+pub mod handlers;
+/// §λ-L-E Fase 3 + 5 runtime primitives. Port of `axon/runtime/` (lease kernel,
+/// reconcile loop, ensemble aggregator, immune kernels).
+pub mod runtime;
+/// §ESK Fase 6 — Epistemic Security Kernel. Port of `axon/runtime/esk/`.
+pub mod esk;
+/// CLI handlers for the ESK audit commands (dossier, sbom, audit, evidence-package).
+pub mod audit_cli;
 pub mod flow_inspect;
 pub mod flow_version;
 pub mod exec_context;
