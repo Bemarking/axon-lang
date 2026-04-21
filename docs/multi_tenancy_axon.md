@@ -22,7 +22,7 @@
 | 10.d | SSO Real (OIDC + SAML con verificación de firma) | ✅ Completo |
 | 10.e | JWT Issuer + JWKS rotation (cierra el gap "no signature verification" de Rust) | ✅ Completo |
 | 10.f | Secrets Service (API per-tenant, escribe a AWS SM, audit integrado) | ✅ Completo |
-| 10.g | Audit Hash-Chain (append-only + stitch a ESK provenance_chain) | ⏳ Pendiente |
+| 10.g | Audit Hash-Chain (append-only + stitch a ESK provenance_chain) | ✅ Completo |
 | 10.h | Metering + Quota Enforcement (pricing plans, Stripe, rate limiting) | ⏳ Pendiente |
 | 10.i | Observability Wiring (Prometheus per-tenant, OTel con tenant baggage, structured logs) | ⏳ Pendiente |
 | 10.j | Admin API + CLI (tenant CRUD, user mgmt, key rotation, suspension) | ⏳ Pendiente |
@@ -692,7 +692,26 @@ CREATE TABLE tenant_secrets (
 
 ### 10.g — Audit Hash-Chain
 
-**Estado:** ⏳ Pendiente — **Depende de:** 10.a
+**Estado:** ✅ Completo (2026-04-21) — **Depende de:** 10.a
+
+**Shipped commits (axon-enterprise):**
+- `6855d2b` feat(fase-10.g): audit_events — hash-chained, append-only audit log
+- `216ee5d` test+docs(fase-10.g): audit suite + AUDIT.md operator guide
+
+**Archivos producidos:**
+- `axon_enterprise/audit/{__init__.py, errors.py, events.py, canonical.py, models.py, service.py, adapters.py}` — reemplazo completo del scaffolding v1.0.0
+- `axon_enterprise/audit/logger.py` **eliminado** (in-memory stub reemplazado por `AuditService`)
+- `alembic/versions/20260421_0600_007_audit_events.py` — tabla + trigger `audit_events_append_only` + triggers BEFORE UPDATE/DELETE/TRUNCATE + RLS
+- `tests/audit/{test_canonical, test_service_integration}.py` — 32 casos (19 unit + 13 integration)
+- `docs/AUDIT.md` rewrite completo
+
+**Decisiones cerradas (preguntas abiertas de la sesión anterior):**
+- **Canonical JSON shared con ESK** — mismo serializer (`sort_keys=True`, `separators=(",",":")`, `ensure_ascii=True`, UUID→str, datetime→ISO UTC, bytes→urlsafe-base64 no-pad). Byte-identical hash input Python↔Rust.
+- **Append-only via Postgres trigger** — `audit_events_append_only()` raises SQLSTATE 42501 en UPDATE/DELETE/TRUNCATE. Defensivo incluso contra rogue admins que editen via psql directo.
+- **Hash chain per-tenant** — cada tenant tiene su propia cadena independiente desde genesis `SHA-256(b"AXON_AUDIT_GENESIS:" || tenant_id)`. Verifier walks per tenant; cross-tenant links no aportan compliance value.
+- **ESK stitch per-event opcional** — `esk_stitch BYTEA NULL` column; services que ya emiten ESK provenance entries pasan el hash en la audit request. Full integration con ESK bridge queda para compliance phase (10.l).
+
+**Delta vs plan original:** + `AuditChainReport` dataclass (verify no raises — dashboard-friendly), + `sequence_number > 0` CHECK constraint (catches off-by-one bugs at DB level), + trigger en TRUNCATE además de UPDATE/DELETE (cierra el path `TRUNCATE axon_control.audit_events` que UPDATE/DELETE triggers no cubren), + `ip_address TEXT` en lugar de INET (Postgres canonicalisation rompería hash recomputation), + separator byte 0x1e (ASCII Record Separator) entre fields del hash (evita ambigüedad donde concat de dos campos podría matchear otra combinación legítima), + `pg_advisory_xact_lock(hashtext(tenant_id))` para serializar writers per-tenant (cross-tenant writers no contend), + `SecretsAuditAdapter` que reemplaza el emitter stub de 10.f sin code change en `SecretsService`, + adapters tipados para RBAC (`emit_role_created`, `emit_permission_granted`, `emit_permission_denied`) y SSO (`emit_config_changed`, `emit_login`, `emit_assertion_replay`), + enum `AuditEventType` cerrado con 41 valores (extension requires migration), + `canonical_bytes_for_hash` rejects types unknown con TypeError (nunca silencioso).
 
 **Objetivo:** audit log append-only con hash chain tamper-evident, stitched al `provenance_chain` que ya existe en ESK (axon-lang). Ningún evento puede ser modificado o borrado sin quebrar la cadena.
 
@@ -1018,6 +1037,12 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 | 2026-04-21 | 10.f: Settings validator refactored en helpers per-subsistema | Cognitive complexity del validator pasó 21 después de 10.e. Helper methods (_validate_db_production, _validate_envelope_production, ...) mantienen la lint under 15 y hacen los gates fácilmente testeables en unit. |
 | 2026-04-21 | 10.f: Reserved key prefixes (axon_, system_, internal_) | Evita colisión con futura metadata que podríamos almacenar en AWS SM bajo el mismo prefix pero como "system keys" invisibles al tenant. Conservative default — expand reserved list es trivial. |
 | 2026-04-21 | 10.f: `audit_on_read=true` obligatorio en production | SOC 2 CC.6.1 requiere audit trail para secret access. Lower tiers pueden desactivarlo (performance). Validator rejects env=production con audit_on_read=false, fail-fast en startup. |
+| 2026-04-21 | 10.g: BEFORE TRUNCATE trigger (además de UPDATE+DELETE) | `TRUNCATE` bypasses BEFORE UPDATE/DELETE triggers en Postgres — un admin con `TRUNCATE` privilege podría borrar el log sin dejar rastro. BEFORE TRUNCATE cierra ese vector específicamente; sin este trigger el append-only garantee es incompleto. |
+| 2026-04-21 | 10.g: `ip_address TEXT` (no INET) en audit_events | Postgres INET normaliza representación (`203.0.113.9/32` vs `203.0.113.9`, IPv6 compaction). Si el writer pasa X y Postgres stores Y, hash recomputation durante verify recibiría Y — mismatch. TEXT preserva bytes exactos. |
+| 2026-04-21 | 10.g: Separator `0x1e` entre fields del hash input | Sin separator, `tenant="ab" seq=123 type="x"` y `tenant="a" seq=123 type="bx"` producen concat idéntica. ASCII Record Separator no aparece en tenant/type strings legítimos → ambiguity impossible. Matches ESK's canonical_bytes pattern. |
+| 2026-04-21 | 10.g: `AuditChainReport` dataclass (no raise) + `require_chain_healthy` wrapper | Verify walks chain; dashboards necesitan output estructurado (sequence_number, reason), no stack trace. Wrapper lets scripts usar exception-flow cuando prefieran. Best of both. |
+| 2026-04-21 | 10.g: `pg_advisory_xact_lock(hashtext(tenant_id))` per-write | Sin lock, dos writers en mismo tenant pueden computar sequence_number=N concurrente; UNIQUE constraint rechaza uno pero lo convierte en error bandwidth. Advisory lock serializa dentro del tenant, cross-tenant writers no contend porque hashtext distinto. |
+| 2026-04-21 | 10.g: Enum AuditEventType cerrado (41 valores, extension via migration) | Permitir adopters definir event types dinámicamente rompería retention policies + SIEM integration (queries filtran por type string — catálogo open = queries becomes brittle). Migration gate forces doc + code review cuando alguien agrega un evento. |
 
 ---
 
@@ -1035,28 +1060,30 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 
 **Última actualización:** 2026-04-21
 
-**Próxima sesión — pickup point:** arrancar **10.g (Audit Hash-Chain)** en el repo `axon-enterprise`.
+**Próxima sesión — pickup point:** arrancar **10.h (Metering + Quota Enforcement)** en el repo `axon-enterprise`.
 
-**Decisiones cerradas en esta sesión (10.f):**
-- **Coarse `secret:read` permission** — granularidad per-key diferida; catalog existente cubre el 95% de casos.
-- **Retention AWS SM 30d default** (dentro del rango 7..30 hard limit de AWS).
-- **`audit_on_read=true` required en production** — SOC 2 CC.6.1 mandates audit trail for secret access.
-- **`SecretValue` bloquea f-string format specs** — más estricto que SecretStr de pydantic; `f"{s:>20}"` raises en lugar de leakear silencioso.
-- **Fingerprint SHA-256[:8]** en audit events — correlación sin plaintext (audit stream puede correlacionar que "key X cambió fingerprint entre t1 y t2" sin ver valor).
-- **Reserved key prefixes** (`axon_`, `system_`, `internal_`) — evita colisión con futura per-tenant metadata que podríamos almacenar en AWS SM.
-- **Path convention congelada**: `axon/tenants/<tid>/<key>` exactamente igual que axon-rs/src/tenant_secrets.rs — cambiar esto requiere migration + Rust side coordination.
+**Decisiones cerradas en esta sesión (10.g):**
+- Canonical JSON compartido con ESK — byte-identical hash input Python↔Rust.
+- Append-only via trigger Postgres con SQLSTATE 42501 — defensivo incluso contra rogue psql.
+- Hash chain **per-tenant** (genesis determinístico por tenant_id).
+- ESK stitch opcional por evento — services con acceso directo a ESK pasan el hash; full bridge deferido a 10.l.
+- Separator `0x1e` (Record Separator) en hash input — evita ambigüedad de concatenación.
+- `pg_advisory_xact_lock(hashtext(tenant_id))` serializa writers per-tenant; cross-tenant no contend.
+- Triggers cubren UPDATE + DELETE + **TRUNCATE** (el último vector que bypass UPDATE/DELETE triggers).
+- `ip_address TEXT` (no INET) — Postgres no debe canonicalizar o rompe hash recomputation.
+- Enum AuditEventType cerrado (41 valores) — extensión requires migration, nunca hot-fix.
 
-**Pre-requisitos para 10.g:**
-- [x] 10.a..10.f completados
-- [x] ESK `provenance_chain` en axon-lang ya existe (stitch objetivo)
-- [x] `AuditEmitter` Protocol ya usado por SecretsService (10.f) — swap implementation
-- [ ] Decidir formato de canonical_json para hash chain — ¿usar el mismo `canonical_bytes` de `axon.runtime.esk.provenance`? YES, mantiene stitching trivial.
-- [ ] Decidir si append-only se enforce via Postgres trigger (bloquea UPDATE/DELETE) vs solo convention. Propongo **trigger** — defensivo against buggy migrations/admins.
-- [ ] Decidir hash chain granularity: ¿una chain global, una per-tenant, o una per-`(tenant, event_category)`? Propongo **per-tenant** — cada tenant es independiente compliance-wise, cross-tenant chain no aporta valor.
-- [ ] Decidir stitch frequency con ESK: ¿cada audit event genera un ESK provenance entry, o batch por hora? Propongo **cada evento crítico** (secret/rbac/tenant mutations), batched para reads.
+**Pre-requisitos para 10.h:**
+- [x] 10.a..10.g completados
+- [x] AuditService disponible para emitir `metering:*` events y `tenant:plan_changed`
+- [x] RBAC con `metering:{read,export_invoice}` ya en catalog (10.c)
+- [ ] Decidir pricing model inicial — ¿flat-tier (starter/pro/enterprise) con limits fijos, o usage-based tiered con overage? Propongo **hybrid**: base plan con limits + overage billing, mapea bien a tablas AWS/Stripe.
+- [ ] Decidir backend de quota counters — Redis (fast, ephemeral) vs Postgres (durable). Para rate limits de corto plazo (req/min): Redis. Para quotas mensuales (tokens/month): Postgres counters + periodic reset.
+- [ ] Decidir sync model con Stripe: ¿webhook-driven (reactivo) o polling (preventivo)? Propongo **ambos**: webhook para pagos + polling diario como reconciliation.
+- [ ] Decidir gracia en `hard_cap`: cuando un tenant starter excede limit, ¿bloquear inmediate o 1h grace? Propongo **immediate** (hard cap significa hard cap) + clear error message pointing to upgrade.
 
 **Sesión abierta en:**
-- `axon-enterprise`: commits hasta `3948326` (Secrets Service + tests + docs)
+- `axon-enterprise`: commits hasta `216ee5d` (Audit hash-chain + tests + docs)
 - Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
 
 ---
