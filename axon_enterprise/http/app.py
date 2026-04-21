@@ -22,6 +22,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
+from axon_enterprise.compliance import DataResidencyMiddleware
 from axon_enterprise.config import get_settings
 from axon_enterprise.db.session import admin_session
 from axon_enterprise.http.admin import build_admin_router
@@ -110,10 +111,12 @@ def build_app() -> Starlette:
     # Middleware chain — outermost first. ``add_middleware`` in
     # Starlette prepends, so the LAST call wraps OUTSIDE the earlier
     # ones. We want:
-    #   ObservabilityMiddleware (outermost)
-    #     AuthMiddleware
-    #       Route handler
-    # Thus we add AuthMiddleware first, then Observability.
+    #   ObservabilityMiddleware    (outermost — always records)
+    #     AuthMiddleware           (verifies JWT, sets principal)
+    #       DataResidencyMiddleware (308-redirects mis-routed tenants)
+    #         Route handler
+    # Thus we add innermost first.
+    app.add_middleware(DataResidencyMiddleware)
     app.add_middleware(
         AuthMiddleware,
         public_paths=_PORTAL_PUBLIC_PATHS,
