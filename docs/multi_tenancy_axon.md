@@ -24,7 +24,7 @@
 | 10.f | Secrets Service (API per-tenant, escribe a AWS SM, audit integrado) | ✅ Completo |
 | 10.g | Audit Hash-Chain (append-only + stitch a ESK provenance_chain) | ✅ Completo |
 | 10.h | Metering + Quota Enforcement (pricing plans, Stripe, rate limiting) | ✅ Completo |
-| 10.i | Observability Wiring (Prometheus per-tenant, OTel con tenant baggage, structured logs) | ⏳ Pendiente |
+| 10.i | Observability Wiring (Prometheus per-tenant, OTel con tenant baggage, structured logs) | ✅ Completo |
 | 10.j | Admin API + CLI (tenant CRUD, user mgmt, key rotation, suspension) | ⏳ Pendiente |
 | 10.k | Tenant Self-Service Portal API (invitaciones, SSO config, API keys) | ⏳ Pendiente |
 | 10.l | Compliance Tooling (GDPR export JSONL, right-to-erasure, data residency) | ⏳ Pendiente |
@@ -865,7 +865,25 @@ CREATE TABLE invoices (
 
 ### 10.i — Observability Wiring
 
-**Estado:** ⏳ Pendiente — **Depende de:** 10.a
+**Estado:** ✅ Completo (2026-04-21) — **Depende de:** 10.a
+
+**Shipped commits (axon-enterprise):**
+- `0b8e2da` feat(fase-10.i): observability — metrics + tracing + structured logs
+- `808946d` test+docs(fase-10.i): observability suite + OBSERVABILITY.md
+
+**Archivos producidos:**
+- `axon_enterprise/observability/{__init__.py, metrics.py, logging.py, tracing.py, middleware.py, healthz.py, decorators.py}` — reemplazo del scaffolding v1.0.0
+- `axon_enterprise/config/settings.py` extendido con `ObservabilitySettings`
+- `tests/observability/{test_metrics_and_logging, test_middleware_and_healthz}.py` — 15 casos unit (sin Docker)
+- `docs/OBSERVABILITY.md` operator guide completo
+
+**Decisiones cerradas (preguntas abiertas de la sesión anterior):**
+- **OTel Collector sidecar** (no OTLP directo) — backend-agnostic, K8s idiomatic, swap Datadog↔Grafana Cloud sin code change.
+- **Metric namespace `axon_*`** — matches Rust runtime, single Prometheus rule file cubre ambos planes.
+- **Structured logs stdout JSON** — fluentd/vector K8s-native pickup; no direct SIEM SDK dep.
+- **High-cardinality**: `tenant_id` en counters (cheap), NUNCA en histograms (explosion). Per-tenant latency SLIs vienen de OTel exemplars + tail-sampling en el Collector, NO de labels.
+
+**Delta vs plan original:** + Pure ASGI middleware (not Starlette BaseHTTPMiddleware) — evita quirks con SSE/WebSockets que 10.k portal usará, + `set_log_context` con ContextVar Token-based cleanup (no cross-request leakage en workers reused), + `get_tracer` con `_NoopTracer` fallback cuando OTel SDK absent (app starts en minimal test envs), + middleware failures CATCHED + logged warn (observability nunca falla un request), + path label usa Starlette route template (`/tenants/{id}`) no raw URL (cardinality bounded), + `HealthStatus` dataclass con component breakdown (operators ven exactly what failed en 503), + `@instrument(span_name, counter, histogram)` decorator para service methods (consistent span+metric wrap), + Prometheus buckets span 5ms→10s (cubre el 99p de Enterprise workloads sin over-bucketing), + BUILD_INFO gauge carrying version/commit labels (scrape-once-discover-always pattern).
 
 **Objetivo:** cerrar los `# TODO: Send to metrics backend` de v1.0.0. Prometheus + OpenTelemetry + structured logs, todo con `tenant_id` como dimensión.
 
@@ -1087,9 +1105,38 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 
 **Última actualización:** 2026-04-21
 
-**Próxima sesión — pickup point:** arrancar **10.i (Observability Wiring)** en el repo `axon-enterprise`.
+**Próxima sesión — pickup point:** arrancar **10.j (Admin API + CLI)** en el repo `axon-enterprise`.
 
-**Decisiones cerradas en esta sesión (10.h):**
+**Decisiones cerradas en esta sesión (10.i):**
+- OTel Collector sidecar — backend-agnostic, K8s idiomatic.
+- Metric namespace `axon_*` — shared con Rust.
+- Logs stdout JSON → fluentd → SIEM; no direct SDK.
+- `tenant_id` label en counters only; histograms sin tenant (cardinality bounded).
+- Pure ASGI middleware (no BaseHTTPMiddleware) — evita quirks con streaming / SSE.
+- ContextVar-driven correlation + Token-based cleanup — no cross-request leakage.
+- Middleware failures catched (observability nunca falla request).
+- `_NoopTracer` fallback sin OTel SDK — test envs minimales arrancan.
+- Path label usa route template (`/tenants/{id}`) — cardinality bounded on 404 storms.
+
+**Pre-requisitos para 10.j:**
+- [x] 10.a..10.i completados
+- [x] Todos los services tienen API pública lista para wrap con HTTP handlers
+- [x] `@require_permission` decorator (10.c) listo para uso en handlers
+- [x] `ObservabilityMiddleware` listo para mount outermost
+- [ ] Decidir HTTP framework — Starlette puro vs FastAPI? Propongo **Starlette** — axon-lang ya lo usa, menos magic, mejor compatible con ASGI middleware ya construido.
+- [ ] Decidir auth separation — ¿dos servidores ASGI (admin API privado + tenant API público) o un solo server con routing prefix? Propongo **un solo server** con `/admin/*` protegido por IP allowlist + mTLS, `/api/v1/*` por JWT. Simplifica deploy.
+- [ ] Decidir CLI framework — Typer vs Click? Propongo **Typer** — types first-class + auto-generated --help; same ergonomic que axon-lang CLI.
+- [ ] Decidir pagination style — cursor-based vs offset? Propongo **cursor-based** (UUID monotonic) para tablas con alto volumen (usage_events, audit_events); offset OK para tablas pequeñas (users, roles).
+
+**Sesión abierta en:**
+- `axon-enterprise`: commits hasta `808946d` (Observability + tests + docs)
+- Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
+
+---
+
+### Decisiones archivadas (sesiones anteriores)
+
+**Decisiones cerradas en sesión 10.h:**
 - Hybrid pricing: flat-tier + overage en Pro/Enterprise, hard_cap en starter (free trial).
 - Redis Lua atómico para rate limits; Postgres aggregate para quotas mensuales.
 - Stripe webhook-driven + draft invoices cuando disabled. Signature verification obligatoria cuando enabled.
