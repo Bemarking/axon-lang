@@ -77,6 +77,7 @@ class AuthMiddleware:
         app: ASGIApp,
         *,
         public_paths: frozenset[str] | None = None,
+        public_prefixes: tuple[str, ...] = (),
     ) -> None:
         s = get_settings()
         metrics_path = s.observability.metrics_path
@@ -87,6 +88,7 @@ class AuthMiddleware:
         self.issuer: str = s.jwt.issuer
         self.audience: str = s.jwt.audience
         self.public_paths: frozenset[str] = frozenset(paths)
+        self.public_prefixes: tuple[str, ...] = tuple(public_prefixes)
         self.settings: JwtSettings = s.jwt
         self._jwks: _CachedJwks | None = None
 
@@ -100,7 +102,11 @@ class AuthMiddleware:
             return
 
         path = scope.get("path") or "/"
-        if path in self.public_paths or path.startswith("/.well-known/"):
+        if (
+            path in self.public_paths
+            or path.startswith("/.well-known/")
+            or any(path.startswith(p) for p in self.public_prefixes)
+        ):
             await self.app(scope, receive, send)
             return
 
