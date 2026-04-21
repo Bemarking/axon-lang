@@ -2,6 +2,9 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[project.scripts]
+axon-enterprise = "axon_enterprise.cli:entrypoint"
+
 # ──────────────────────────────────────────────────────────────────
 # Project metadata
 # ──────────────────────────────────────────────────────────────────
@@ -80,6 +83,9 @@ dependencies = [
     # Web framework (already in axon-lang)
     "starlette>=0.41",
     "uvicorn[standard]>=0.32",
+
+    # CLI
+    "typer>=0.12",
 
     # Utilities
     "pydantic>=2.7",
