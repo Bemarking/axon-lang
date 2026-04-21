@@ -17,7 +17,7 @@
 | Fase | Nombre | Estado |
 |------|--------|--------|
 | 10.a | Persistence Foundation (SQLAlchemy 2 async + Alembic + RLS hookup) | ✅ Completo |
-| 10.b | Identity Core (Users, Argon2id, TOTP, sessions, memberships) | ⏳ Pendiente |
+| 10.b | Identity Core (Users, Argon2id, TOTP, sessions, memberships) | ✅ Completo |
 | 10.c | RBAC Production-Grade (persisted, tenant-scoped, hierarchy, enforcement) | ⏳ Pendiente |
 | 10.d | SSO Real (OIDC + SAML con verificación de firma) | ⏳ Pendiente |
 | 10.e | JWT Issuer + JWKS rotation (cierra el gap "no signature verification" de Rust) | ⏳ Pendiente |
@@ -281,7 +281,30 @@ Fase 10 construye ese control plane de forma **production-grade desde el primer 
 
 ### 10.b — Identity Core
 
-**Estado:** ⏳ Pendiente — **Depende de:** 10.a
+**Estado:** ✅ Completo (2026-04-21) — **Depende de:** 10.a
+
+**Shipped commits (axon-enterprise):**
+- `68299b8` feat(fase-10.b): envelope crypto + settings extension
+- `e590155` feat(fase-10.b): identity core — users, memberships, sessions, auth
+- `e88e4cc` test(fase-10.b): unit + integration suite for crypto and identity
+- `9dc54b1` docs(fase-10.b): IDENTITY.md operator guide
+
+**Archivos producidos:**
+- `axon_enterprise/crypto/{__init__.py, envelope.py, local_envelope.py, kms_envelope.py}` — envelope encryption con interfaz + 2 backends (Fernet+HKDF local, AWS KMS GenerateDataKey prod)
+- `axon_enterprise/identity/{__init__.py, errors.py, password.py, password_policy.py, totp.py, lockout.py, sessions.py, auth.py, models.py}` — servicios completos
+- `axon_enterprise/config/settings.py` extendido: `EnvelopeSettings`, `IdentitySettings`, validator production-safety (rechaza envelope=local en prod)
+- `alembic/versions/20260421_0100_002_identity_core.py` — migration con citext + pgcrypto + 3 tablas + RLS
+- `tests/crypto/test_local_envelope.py` (10 casos)
+- `tests/identity/{test_password, test_password_policy, test_totp, test_lockout, test_sessions_unit}.py` (28 casos unit, no Docker)
+- `tests/identity/{test_auth_integration, test_rls_memberships}.py` (14 casos integration con testcontainers)
+- `tests/conftest.py` refactor: fixtures de Postgres compartidas entre db/identity/audit/metering futuros
+- `docs/IDENTITY.md` — operator guide
+
+**Decisiones cerradas (preguntas abiertas de la sesión anterior):**
+- Argon2id params: `t=3, m=64 MiB, p=4` como default (OWASP 2024 mid) — overrideable a 128 MiB vía env. Razón: balance entre starter-tier containers (1 GB RAM) y enterprise-tier. No usar 128 MiB por defecto degrada latencia de login en starters.
+- TOTP secrets se cifran con envelope desde 10.b (no diferido a 10.f). Backend dual: `local` para dev (Fernet+HKDF), `kms` para prod (GenerateDataKey con EncryptionContext=AAD). Production validator en Settings rechaza `backend=local` cuando `env=production`.
+
+**Delta vs plan original:** + `User.password_algo` column (track algo per-row para migrations entre hashing algos), + partial unique index en `invitation_token_hash` (solo no-NULL), + `Session.rotated_to_session_id` FK (chain-linking para forensics), + `Session.sequence` BigInt (replay detection), + `burn_equivalent_time()` para timing parity en login, + HIBP fails-open en network errors (no bloquea registros si upstream caído).
 
 **Objetivo:** entidad User de verdad, hashing moderno, 2FA, sessions, pertenencia tenant (un user puede estar en varios tenants con roles distintos).
 
@@ -882,6 +905,11 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 | 2026-04-21 | 10.a: NULL guard en la policy — `current_setting(..., true) IS NOT NULL` | Un query sin GUC set devuelve 0 filas en lugar de todas. El comportamiento default de `current_setting(.., true)` sin NULL check permitiría `WHERE tenant_id = NULL` que no matchea nada, pero dejar la policy con esa ambigüedad era innecesariamente frágil. |
 | 2026-04-21 | 10.a: Alembic usa `NullPool` durante migraciones | Un pool pool-recycle podría descartar la conexión mid-migration y perder `SET LOCAL`. |
 | 2026-04-21 | 10.a: `TenantScopedMixin.__tablename__` genera índice compuesto `(tenant_id, created_at)` por defecto | Shape de query más común; mejora perf sin requerir declaración manual en cada modelo. |
+| 2026-04-21 | 10.b: Envelope encryption con AAD serialised ordenado por clave | `{"a":"1","b":"2"}` produce byte-idéntico output regardless de dict insertion order — evita bugs si dict ordering cambia entre Python versions. |
+| 2026-04-21 | 10.b: `users` table con RLS `FORCE` + `admin_bypass` (sin tenant_isolation) | Tabla global: un user puede estar en N tenants. Service layer enforza "este user pertenece a mi tenant" via `tenant_memberships` bajo `tenant_session`, luego abre `admin_session` para leer el user. RLS sin bypass sería imposible (necesitamos poder leer cross-tenant en paths privilegiados). |
+| 2026-04-21 | 10.b: Refresh tokens 64 bytes random → SHA-256 hash persistido | Pérdida de BD no revela refresh tokens (attacker tendría hash sin preimage). SHA-256 (no HMAC) porque el hash no necesita secret-key property — el atacante con hash sigue sin poder forjar un token de 64 bytes. |
+| 2026-04-21 | 10.b: Replay detection revoca TODA la chain para `(user_id, tenant_id)` | Si alguien presenta un token ya-rotado, OR es un attacker OR es un cliente legítimo con bug. Revocar ambos (forzando re-login) es el camino seguro — no podemos distinguir who's who sin metadata adicional. |
+| 2026-04-21 | 10.b: HIBP k-anonymity con `Add-Padding: true` header + fails-open | Padding mitiga traffic analysis (response size revela hit/miss sin padding). Fails-open porque un outage de HIBP no debe bloquear registros legítimos — trade-off consciente en favor de availability sobre defense-in-depth absoluto. |
 
 ---
 
@@ -899,21 +927,24 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 
 **Última actualización:** 2026-04-21
 
-**Próxima sesión — pickup point:** arrancar **10.b (Identity Core)** en el repo `axon-enterprise`.
+**Próxima sesión — pickup point:** arrancar **10.c (RBAC Production-Grade)** en el repo `axon-enterprise`.
 
-**Decisiones cerradas en esta sesión:**
-- Schema dedicado `axon_control` (no `public`) — separation of concerns con Rust data plane
-- Alembic con `include_schemas=True` pero filtra `public.*` en `include_object` — evita que Python intente owner-shipear tablas del Rust
-- Migraciones corren directo en `master` (sin branch feature) — la tag `v1.1.0-alpha.1` será el primer corte publicable
+**Decisiones cerradas en esta sesión (10.b):**
+- Argon2id `t=3, m=64 MiB, p=4` como default; bump a 128 MiB vía env var solo en deployments con > 2 GB por contenedor
+- Envelope encryption desde 10.b (no diferido a 10.f). Dual backend: `local` (Fernet+HKDF) / `kms` (GenerateDataKey+EncryptionContext). Validator rechaza `local` en `env=production`
+- HIBP fails-open en network errors — política deliberada: prefiero registros exitosos a bloqueos por outage de API tercera
+- `users` table es global con RLS `admin_bypass` only (no tenant_isolation); acceso via two-step: query `tenant_memberships` bajo `tenant_session`, luego `admin_session` para leer users
+- TenantMembership NO usa `TenantScopedMixin` — tenant_id es parte de PK compuesto (mixin redeclara awkwardly en SQLAlchemy 2)
 
-**Pre-requisitos para 10.b:**
-- [x] 10.a completado, baseline migration en axon_control
-- [x] `axon_admin` role provisionable (baseline lo crea)
-- [ ] Decidir si las contraseñas de users se hashean con Argon2id `(t=3, m=64 MiB, p=4)` o se bumpea a `m=128 MiB` (OWASP 2024 upper-bound) — depende de perfil de CPU/RAM del runtime container
-- [ ] Decidir si TOTP secrets se cifran con KMS envelope (Fase 10.f dependency) o se difieren a plaintext hasta 10.f — propongo cifrar desde 10.b vía una KMS key provisional
+**Pre-requisitos para 10.c:**
+- [x] 10.a + 10.b completados
+- [x] Schema `axon_control` con tablas users, tenant_memberships, sessions
+- [ ] Decidir catálogo exacto de permissions del sistema (sugerido 8 resources × 2-5 actions = ~24 permissions seed) — listar antes de migration para evitar churn
+- [ ] Decidir cómo expresar "el owner del tenant siempre tiene todos los permisos" — ¿rol sintético `owner` o privilegio de escape en el checker? Propongo rol `owner` con todos los permissions seedeados en migration de cada tenant
+- [ ] Decidir granularidad de `flow:execute` — ¿por flow individual o por namespace? Afecta shape de role_permissions (scope_pattern column?)
 
 **Sesión abierta en:**
-- Commits mergeados a `origin/master` de `axon-enterprise` en `5c40c28`
+- Commits mergeados a `origin/master` de `axon-enterprise` en `9dc54b1`
 - Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
 
 ---
