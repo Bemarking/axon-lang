@@ -340,6 +340,42 @@ class SecretsSettings(BaseSettings):
     audit_on_read: bool = True
 
 
+MeteringRateLimitBackend = Literal["redis", "memory"]
+
+
+class MeteringSettings(BaseSettings):
+    """Metering + quota enforcement + Stripe invoicing configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="AXON_METERING_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Rate limiter — hot path, ephemeral (per-minute counters).
+    rate_limit_backend: MeteringRateLimitBackend = "redis"
+    rate_limit_redis_url: SecretStr | None = None
+
+    # Monthly quota counters live in Postgres (durable) — no separate
+    # backend knob; we want the authoritative source of truth to
+    # survive Redis outages.
+
+    # Stripe
+    stripe_enabled: bool = False
+    stripe_api_key: SecretStr | None = None
+    stripe_webhook_secret: SecretStr | None = None
+    stripe_api_version: str = "2024-12-18"
+
+    # Tax — simple flat rate until 10.l introduces per-region tax.
+    tax_rate_percent: float = Field(default=0.0, ge=0.0, le=50.0)
+    tax_label: str = "VAT"
+
+    # Invoicing
+    invoice_currency: str = Field(default="USD", pattern=r"^[A-Z]{3}$")
+    invoice_due_days: int = Field(default=15, ge=1, le=90)
+
+
 class SsoSettings(BaseSettings):
     """SSO / identity federation configuration."""
 
@@ -399,6 +435,7 @@ class Settings(BaseSettings):
     sso: SsoSettings = Field(default_factory=SsoSettings)  # type: ignore[arg-type]
     jwt: JwtSettings = Field(default_factory=JwtSettings)  # type: ignore[arg-type]
     secrets: SecretsSettings = Field(default_factory=SecretsSettings)  # type: ignore[arg-type]
+    metering: MeteringSettings = Field(default_factory=MeteringSettings)  # type: ignore[arg-type]
 
     # Tenant defaults — the GUC name must match axon-rs (M2 migration 005)
     default_tenant_id: str = "default"
@@ -477,6 +514,24 @@ class Settings(BaseSettings):
                 "jwt.redis_url required when revocation_backend='redis'"
             )
 
+    def _validate_metering_production(self) -> None:
+        if self.metering.rate_limit_backend == "redis" and (
+            self.metering.rate_limit_redis_url is None
+        ):
+            raise ValueError(
+                "metering.rate_limit_redis_url required when backend='redis'"
+            )
+        if self.metering.stripe_enabled:
+            if self.metering.stripe_api_key is None:
+                raise ValueError(
+                    "metering.stripe_api_key required when stripe_enabled=true"
+                )
+            if self.metering.stripe_webhook_secret is None:
+                raise ValueError(
+                    "metering.stripe_webhook_secret required when "
+                    "stripe_enabled=true (webhook signature verification)"
+                )
+
     def _validate_secrets_production(self) -> None:
         if self.secrets.backend == "memory":
             raise ValueError(
@@ -501,6 +556,7 @@ class Settings(BaseSettings):
             self._validate_envelope_production()
             self._validate_jwt_production()
             self._validate_secrets_production()
+            self._validate_metering_production()
         self._validate_envelope_any_env()
         self._validate_jwt_any_env()
         return self
