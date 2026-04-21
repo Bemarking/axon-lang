@@ -26,6 +26,13 @@ from axon_enterprise.identity.models import (
     UserStatus,
 )
 from axon_enterprise.identity.password import PasswordHasher
+from axon_enterprise.identity.principal import (
+    CURRENT_PRINCIPAL,
+    PrincipalContext,
+    current_principal_or_none,
+    require_principal,
+    set_current_principal,
+)
 from axon_enterprise.identity.password_policy import (
     PasswordPolicy,
     PasswordPolicyViolation as PolicyViolation,
@@ -37,6 +44,7 @@ __all__ = [
     "AccountLockedError",
     "AuthService",
     "AuthenticationError",
+    "CURRENT_PRINCIPAL",
     "EmailAlreadyRegistered",
     "InvalidCredentialsError",
     "LockoutDecision",
@@ -46,6 +54,7 @@ __all__ = [
     "PasswordPolicy",
     "PasswordPolicyViolation",
     "PolicyViolation",
+    "PrincipalContext",
     "Session",
     "SessionExpiredError",
     "SessionService",
@@ -56,5 +65,8 @@ __all__ = [
     "TotpVerificationError",
     "User",
     "UserStatus",
+    "current_principal_or_none",
     "issued_session_token",
+    "require_principal",
+    "set_current_principal",
 ]
