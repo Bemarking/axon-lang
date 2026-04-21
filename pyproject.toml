@@ -10,7 +10,7 @@ axon-enterprise = "axon_enterprise.cli:entrypoint"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-enterprise"
-version = "1.0.0"
+version = "1.1.0"
 description = "Axon Enterprise Edition — RBAC, SSO, Audit Logging, and Usage Metering"
 readme = "README.md"
 license = "LicenseRef-Proprietary"
