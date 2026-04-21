@@ -301,6 +301,45 @@ class JwtSettings(BaseSettings):
     jwks_cache_control_seconds: int = Field(default=600, ge=60)
 
 
+SecretsBackendKind = Literal["aws_sm", "memory"]
+
+
+class SecretsSettings(BaseSettings):
+    """Per-tenant secret storage configuration.
+
+    The backend selection is deployment-level (not per-tenant) — mixed
+    backends across tenants in the same process would complicate audit
+    and migration. Production uses ``aws_sm``.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="AXON_SECRETS_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    backend: SecretsBackendKind = "aws_sm"
+    aws_region: str | None = None
+    # Path prefix: final path = ``{path_prefix}/{tenant_id}/{key}``.
+    # Matches the convention in ``axon-rs/src/tenant_secrets.rs`` (M3).
+    path_prefix: str = "axon/tenants"
+
+    # Deletion recovery window (AWS SM minimum 7, maximum 30 days).
+    deletion_recovery_window_days: int = Field(default=30, ge=7, le=30)
+
+    # Key-name policy
+    key_min_length: int = Field(default=3, ge=1, le=256)
+    key_max_length: int = Field(default=128, ge=8, le=512)
+    # Keys that match this pattern are acceptable (alphanumeric, _, -).
+    key_pattern: str = r"^[a-z0-9][a-z0-9_-]*$"
+
+    # Audit on every read — required for SOC 2 CC.6.1. Operators can
+    # set false in lower-tier deployments but production validator
+    # keeps it on.
+    audit_on_read: bool = True
+
+
 class SsoSettings(BaseSettings):
     """SSO / identity federation configuration."""
 
@@ -359,6 +398,7 @@ class Settings(BaseSettings):
     identity: IdentitySettings = Field(default_factory=IdentitySettings)  # type: ignore[arg-type]
     sso: SsoSettings = Field(default_factory=SsoSettings)  # type: ignore[arg-type]
     jwt: JwtSettings = Field(default_factory=JwtSettings)  # type: ignore[arg-type]
+    secrets: SecretsSettings = Field(default_factory=SecretsSettings)  # type: ignore[arg-type]
 
     # Tenant defaults — the GUC name must match axon-rs (M2 migration 005)
     default_tenant_id: str = "default"
@@ -383,42 +423,51 @@ class Settings(BaseSettings):
             )
         return v
 
-    @model_validator(mode="after")
-    def _enforce_production_safety(self) -> Settings:
-        """Production-only safety gates."""
-        if self.env is Environment.PRODUCTION:
-            if self.db.ssl_mode in ("disable", "allow", "prefer"):
-                raise ValueError(
-                    "db.ssl_mode must be 'require' or stronger in production"
-                )
-            if self.db.echo_sql:
-                raise ValueError("db.echo_sql must be False in production")
-            if self.envelope.backend == "local":
-                raise ValueError(
-                    "envelope.backend='local' is not allowed in production; "
-                    "use 'kms' for compliant at-rest encryption of TOTP secrets "
-                    "and other sensitive fields."
-                )
-            if self.envelope.backend == "kms" and not self.envelope.kms_key_id:
-                raise ValueError("envelope.kms_key_id required when backend='kms'")
+    # ── Production safety validators ──────────────────────────────────
+    #
+    # Split by subsystem so the model_validator stays linear + readable.
+    # Each helper raises ValueError on violation; the top-level validator
+    # simply calls them in order.
+
+    def _validate_db_production(self) -> None:
+        if self.db.ssl_mode in ("disable", "allow", "prefer"):
+            raise ValueError(
+                "db.ssl_mode must be 'require' or stronger in production"
+            )
+        if self.db.echo_sql:
+            raise ValueError("db.echo_sql must be False in production")
+
+    def _validate_envelope_production(self) -> None:
+        if self.envelope.backend == "local":
+            raise ValueError(
+                "envelope.backend='local' is not allowed in production; "
+                "use 'kms' for compliant at-rest encryption of TOTP secrets "
+                "and other sensitive fields."
+            )
+        if self.envelope.backend == "kms" and not self.envelope.kms_key_id:
+            raise ValueError("envelope.kms_key_id required when backend='kms'")
+
+    def _validate_envelope_any_env(self) -> None:
         if self.envelope.backend == "local" and self.envelope.local_key is None:
             raise ValueError(
                 "envelope.local_key required when backend='local'; "
                 "generate one via `python -c 'from cryptography.fernet import Fernet; "
                 "print(Fernet.generate_key().decode())'`"
             )
-        # JWT signer validation
-        if self.env is Environment.PRODUCTION:
-            if self.jwt.signer_backend == "local":
-                raise ValueError(
-                    "jwt.signer_backend='local' is not allowed in production; "
-                    "use 'kms' so private keys never leave the HSM."
-                )
-            if self.jwt.revocation_backend == "memory":
-                raise ValueError(
-                    "jwt.revocation_backend='memory' is not durable and is "
-                    "rejected in production. Use 'postgres' or 'redis'."
-                )
+
+    def _validate_jwt_production(self) -> None:
+        if self.jwt.signer_backend == "local":
+            raise ValueError(
+                "jwt.signer_backend='local' is not allowed in production; "
+                "use 'kms' so private keys never leave the HSM."
+            )
+        if self.jwt.revocation_backend == "memory":
+            raise ValueError(
+                "jwt.revocation_backend='memory' is not durable and is "
+                "rejected in production. Use 'postgres' or 'redis'."
+            )
+
+    def _validate_jwt_any_env(self) -> None:
         if self.jwt.signer_backend == "local" and self.jwt.local_private_key_pem is None:
             raise ValueError(
                 "jwt.local_private_key_pem required when signer_backend='local'"
@@ -427,6 +476,33 @@ class Settings(BaseSettings):
             raise ValueError(
                 "jwt.redis_url required when revocation_backend='redis'"
             )
+
+    def _validate_secrets_production(self) -> None:
+        if self.secrets.backend == "memory":
+            raise ValueError(
+                "secrets.backend='memory' is not durable and is rejected in "
+                "production. Use 'aws_sm' so values live in an HSM-backed vault."
+            )
+        if self.secrets.backend == "aws_sm" and not self.secrets.aws_region:
+            raise ValueError(
+                "secrets.aws_region required when backend='aws_sm'"
+            )
+        if not self.secrets.audit_on_read:
+            raise ValueError(
+                "secrets.audit_on_read must be True in production "
+                "(SOC 2 CC.6.1 requires audit trail for secret access)"
+            )
+
+    @model_validator(mode="after")
+    def _enforce_production_safety(self) -> Settings:
+        """Run every production gate + the env-agnostic invariants."""
+        if self.env is Environment.PRODUCTION:
+            self._validate_db_production()
+            self._validate_envelope_production()
+            self._validate_jwt_production()
+            self._validate_secrets_production()
+        self._validate_envelope_any_env()
+        self._validate_jwt_any_env()
         return self
 
 
