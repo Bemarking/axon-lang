@@ -61,9 +61,13 @@ dependencies = [
     "python3-saml>=1.16.0",
     "authlib>=1.3.0",
 
-    # Cryptography
+    # Cryptography + auth
     "cryptography>=42.0.0",
     "PyJWT>=2.8.0",
+    "argon2-cffi>=23.1",          # Argon2id password hashing
+    "pyotp>=2.9",                  # RFC 6238 TOTP
+    "zxcvbn>=4.4",                 # password strength scoring
+    "httpx>=0.27",                 # HIBP k-anonymity lookups (async)
 
     # Observability
     "prometheus-client>=0.20.0",

@@ -7,14 +7,20 @@ surface in ``repr()`` or structured logs.
 
 from axon_enterprise.config.settings import (
     DatabaseSettings,
+    EnvelopeBackend,
+    EnvelopeSettings,
     Environment,
+    IdentitySettings,
     Settings,
     get_settings,
 )
 
 __all__ = [
     "DatabaseSettings",
+    "EnvelopeBackend",
+    "EnvelopeSettings",
     "Environment",
+    "IdentitySettings",
     "Settings",
     "get_settings",
 ]

@@ -131,6 +131,103 @@ class DatabaseSettings(BaseSettings):
     )
 
 
+EnvelopeBackend = Literal["local", "kms"]
+
+
+class EnvelopeSettings(BaseSettings):
+    """Application-level envelope encryption configuration.
+
+    Two backends are supported:
+
+    - ``local`` — Fernet-based, uses a 32-byte key loaded from
+      ``AXON_ENVELOPE__LOCAL_KEY`` (base64-urlsafe). Intended for
+      development, tests, and single-node deployments without KMS.
+
+    - ``kms`` — AWS KMS envelope encryption. Each record gets its own
+      DEK (data encryption key) generated and wrapped by KMS; the DEK
+      never leaves the HSM. AAD (encryption context) binds ciphertexts
+      to individual rows so they cannot be swapped across records.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="AXON_ENVELOPE_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    backend: EnvelopeBackend = "local"
+    # Local backend
+    local_key: SecretStr | None = Field(
+        default=None,
+        description="Base64-urlsafe-encoded 32-byte key. Required when backend='local'.",
+    )
+    # KMS backend
+    kms_key_id: str | None = Field(
+        default=None,
+        description="KMS key ARN or alias. Required when backend='kms'.",
+    )
+    kms_region: str | None = Field(
+        default=None,
+        description="AWS region for the KMS client.",
+    )
+
+
+class IdentitySettings(BaseSettings):
+    """Authentication and session policy."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="AXON_IDENTITY_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Argon2id parameters (OWASP 2024 recommendation)
+    argon2_time_cost: int = Field(default=3, ge=2, le=10)
+    argon2_memory_cost_kib: int = Field(
+        default=65_536,  # 64 MiB
+        ge=19_456,       # minimum OWASP recommends
+        description="Argon2 memory cost in KiB. 64 MiB default, bump to 128 MiB on beefy servers.",
+    )
+    argon2_parallelism: int = Field(default=4, ge=1, le=16)
+    argon2_hash_len: int = Field(default=32, ge=16, le=64)
+    argon2_salt_len: int = Field(default=16, ge=8, le=32)
+
+    # Password policy
+    password_min_length: int = Field(default=12, ge=8)
+    password_zxcvbn_min_score: int = Field(default=3, ge=0, le=4)
+    password_check_hibp: bool = Field(
+        default=True,
+        description="Consult HaveIBeenPwned k-anonymity API to reject leaked passwords.",
+    )
+    hibp_api_url: str = "https://api.pwnedpasswords.com/range"
+    hibp_timeout_seconds: float = Field(default=2.0, gt=0.0)
+
+    # Lockout ladder — progressive, matches the document
+    lockout_threshold_soft: int = Field(default=5, ge=1)
+    lockout_duration_soft_minutes: int = Field(default=15, ge=1)
+    lockout_threshold_hard: int = Field(default=10, ge=2)
+    lockout_duration_hard_minutes: int = Field(default=60, ge=1)
+    lockout_threshold_permanent: int = Field(default=20, ge=3)
+
+    # TOTP
+    totp_issuer: str = Field(default="Axon Enterprise")
+    totp_digits: int = Field(default=6, ge=6, le=8)
+    totp_interval_seconds: int = Field(default=30, ge=15)
+    totp_verification_window: int = Field(
+        default=1,
+        ge=0,
+        le=2,
+        description="Accept codes from N intervals before and after. 1 = ±30s tolerance.",
+    )
+
+    # Session policy
+    session_inactivity_ttl_hours: int = Field(default=24, ge=1)
+    session_absolute_ttl_days: int = Field(default=30, ge=1)
+    session_refresh_token_bytes: int = Field(default=64, ge=32)
+
+
 class Settings(BaseSettings):
     """Top-level application settings."""
 
@@ -146,6 +243,8 @@ class Settings(BaseSettings):
 
     # Nested
     db: DatabaseSettings
+    envelope: EnvelopeSettings = Field(default_factory=EnvelopeSettings)  # type: ignore[arg-type]
+    identity: IdentitySettings = Field(default_factory=IdentitySettings)  # type: ignore[arg-type]
 
     # Tenant defaults — the GUC name must match axon-rs (M2 migration 005)
     default_tenant_id: str = "default"
@@ -172,7 +271,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _enforce_production_safety(self) -> Settings:
-        """Production must use TLS and must not echo SQL."""
+        """Production-only safety gates."""
         if self.env is Environment.PRODUCTION:
             if self.db.ssl_mode in ("disable", "allow", "prefer"):
                 raise ValueError(
@@ -180,6 +279,20 @@ class Settings(BaseSettings):
                 )
             if self.db.echo_sql:
                 raise ValueError("db.echo_sql must be False in production")
+            if self.envelope.backend == "local":
+                raise ValueError(
+                    "envelope.backend='local' is not allowed in production; "
+                    "use 'kms' for compliant at-rest encryption of TOTP secrets "
+                    "and other sensitive fields."
+                )
+            if self.envelope.backend == "kms" and not self.envelope.kms_key_id:
+                raise ValueError("envelope.kms_key_id required when backend='kms'")
+        if self.envelope.backend == "local" and self.envelope.local_key is None:
+            raise ValueError(
+                "envelope.local_key required when backend='local'; "
+                "generate one via `python -c 'from cryptography.fernet import Fernet; "
+                "print(Fernet.generate_key().decode())'`"
+            )
         return self
 
 
