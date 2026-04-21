@@ -376,6 +376,54 @@ class MeteringSettings(BaseSettings):
     invoice_due_days: int = Field(default=15, ge=1, le=90)
 
 
+LogFormat = Literal["json", "console"]
+
+
+class ObservabilitySettings(BaseSettings):
+    """Metrics / tracing / logging configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="AXON_OBS_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    service_name: str = "axon-enterprise"
+    service_version: str = "1.1.0-dev"
+
+    # Structured logging
+    log_level: str = Field(
+        default="INFO", pattern=r"^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$"
+    )
+    log_format: LogFormat = "json"
+
+    # Metrics — prometheus_client
+    metrics_enabled: bool = True
+    metrics_path: str = "/metrics"
+    metrics_path_cardinality_limit: int = Field(default=200, ge=10)
+
+    # OpenTelemetry
+    tracing_enabled: bool = True
+    otlp_endpoint: str | None = Field(
+        default=None,
+        description=(
+            "OTLP gRPC endpoint (e.g. http://otel-collector:4317). "
+            "When unset, traces are generated but not exported — "
+            "useful for tests + local dev."
+        ),
+    )
+    trace_sampling_ratio: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=1.0,
+        description="Fraction of successful requests sampled. Errors always 100%.",
+    )
+
+    # Request correlation
+    request_id_header: str = "X-Request-ID"
+
+
 class SsoSettings(BaseSettings):
     """SSO / identity federation configuration."""
 
@@ -436,6 +484,7 @@ class Settings(BaseSettings):
     jwt: JwtSettings = Field(default_factory=JwtSettings)  # type: ignore[arg-type]
     secrets: SecretsSettings = Field(default_factory=SecretsSettings)  # type: ignore[arg-type]
     metering: MeteringSettings = Field(default_factory=MeteringSettings)  # type: ignore[arg-type]
+    observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)  # type: ignore[arg-type]
 
     # Tenant defaults — the GUC name must match axon-rs (M2 migration 005)
     default_tenant_id: str = "default"

@@ -1,103 +1,176 @@
-"""Metrics collection and aggregation for advanced observability."""
+"""Typed Prometheus metric registries.
 
-from dataclasses import dataclass, field
-from datetime import datetime
+Replaces the v1.0.0 ``MetricsCollector`` in-memory scaffolding
+with a real ``prometheus_client.CollectorRegistry``. Every metric
+is declared at module import time so the Prometheus dashboards that
+scrape us never see a "metric not yet registered" gap after boot.
+
+Naming convention
+-----------------
+``axon_*`` prefix shared with the Rust runtime (§axon-rs emits the
+same prefix) so one Prometheus rule file covers both planes.
+
+Label cardinality contract
+--------------------------
+- ``tenant_id`` label on **counters only**. Counters are sparse and
+  Prometheus handles per-label series cheaply.
+- ``tenant_id`` is NOT a label on histograms. A histogram of
+  ``request duration`` × ``tenant_id`` × ``10 buckets`` explodes
+  memory at ~1k tenants. Per-tenant latency comes from OTel
+  exemplars + trace sampling, not from label cardinality.
+- ``path`` on HTTP metrics is the route template (``/tenants/{id}``),
+  not the raw URL. The middleware guards against cardinality
+  explosion from unrouted 404s.
+
+Available registries
+--------------------
+All metrics live in a single ``default_registry`` so ``/metrics``
+serves the whole suite in one scrape. Subsystems may create private
+registries for test isolation via ``CollectorRegistry()``.
+"""
+
+from __future__ import annotations
+
 from typing import Any
 
+from prometheus_client import (
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    make_asgi_app,
+)
 
-@dataclass
-class Metric:
-    """A single metric measurement."""
+# ── Registry ──────────────────────────────────────────────────────────
 
-    name: str
-    value: float
-    timestamp: datetime = field(default_factory=datetime.utcnow)
-    tags: dict[str, str] = field(default_factory=dict)
-    labels: dict[str, Any] = field(default_factory=dict)
+default_registry: CollectorRegistry = CollectorRegistry(auto_describe=True)
 
 
-class MetricsCollector:
-    """Collects and aggregates metrics for observability."""
+# ── HTTP surface ─────────────────────────────────────────────────────
 
-    def __init__(self):
-        """Initialize metrics collector."""
-        self.metrics: list[Metric] = []
-        self.counters: dict[str, int] = {}
-        self.gauges: dict[str, float] = {}
-        self.histograms: dict[str, list[float]] = {}
+HTTP_REQUESTS_TOTAL: Counter = Counter(
+    "axon_http_requests_total",
+    "HTTP requests processed by the service.",
+    labelnames=("tenant_id", "method", "path", "status"),
+    registry=default_registry,
+)
 
-    def counter(self, name: str, value: int = 1, tags: dict[str, str] = None) -> None:
-        """Increment a counter metric."""
-        if tags is None:
-            tags = {}
+# No tenant_id label on the latency histogram — see docstring.
+HTTP_REQUEST_DURATION_SECONDS: Histogram = Histogram(
+    "axon_http_request_duration_seconds",
+    "HTTP request latency.",
+    labelnames=("method", "path"),
+    registry=default_registry,
+    buckets=(
+        0.005,
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1.0,
+        2.5,
+        5.0,
+        10.0,
+    ),
+)
 
-        if name not in self.counters:
-            self.counters[name] = 0
 
-        self.counters[name] += value
+# ── DB ───────────────────────────────────────────────────────────────
 
-        # TODO: Send to metrics backend (Prometheus, DataDog, etc.)
+DB_QUERIES_TOTAL: Counter = Counter(
+    "axon_db_queries_total",
+    "Database queries issued by the service.",
+    labelnames=("operation", "outcome"),  # tenant omitted — infra signal
+    registry=default_registry,
+)
 
-    def gauge(self, name: str, value: float, tags: dict[str, str] = None) -> None:
-        """Set a gauge metric."""
-        if tags is None:
-            tags = {}
+DB_QUERY_DURATION_SECONDS: Histogram = Histogram(
+    "axon_db_query_duration_seconds",
+    "Database query latency.",
+    labelnames=("operation",),
+    registry=default_registry,
+    buckets=(0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0),
+)
 
-        self.gauges[name] = value
 
-        # TODO: Send to metrics backend
+# ── Flows + LLM ──────────────────────────────────────────────────────
 
-    def histogram(self, name: str, value: float, tags: dict[str, str] = None) -> None:
-        """Record a histogram metric."""
-        if tags is None:
-            tags = {}
+FLOW_EXECUTIONS_TOTAL: Counter = Counter(
+    "axon_flow_executions_total",
+    "Flow executions broken down by outcome.",
+    labelnames=("tenant_id", "status"),
+    registry=default_registry,
+)
 
-        if name not in self.histograms:
-            self.histograms[name] = []
+LLM_TOKENS_TOTAL: Counter = Counter(
+    "axon_llm_tokens_total",
+    "LLM tokens consumed.",
+    labelnames=("tenant_id", "provider", "direction"),
+    registry=default_registry,
+)
 
-        self.histograms[name].append(value)
 
-        # TODO: Send to metrics backend
+# ── Quota + rate limits ─────────────────────────────────────────────
 
-    def record_metric(self, metric: Metric) -> None:
-        """Record a custom metric."""
-        self.metrics.append(metric)
+QUOTA_DENIALS_TOTAL: Counter = Counter(
+    "axon_quota_denials_total",
+    "Quota-enforcement denials (hard_cap plans hitting their ceiling).",
+    labelnames=("tenant_id", "metric", "reason"),
+    registry=default_registry,
+)
 
-        # TODO: Send to metrics backend
+RATE_LIMITS_TOTAL: Counter = Counter(
+    "axon_rate_limits_total",
+    "Per-minute rate limiter denials.",
+    labelnames=("tenant_id", "metric"),
+    registry=default_registry,
+)
 
-    def record_flow_latency(self, flow_name: str, latency_ms: float) -> None:
-        """Record flow execution latency."""
-        self.histogram(
-            "flow:latency_ms",
-            latency_ms,
-            tags={"flow": flow_name},
-        )
 
-    def record_llm_latency(self, provider: str, latency_ms: float) -> None:
-        """Record LLM API latency."""
-        self.histogram(
-            "llm:latency_ms",
-            latency_ms,
-            tags={"provider": provider},
-        )
+# ── Audit + SSO ──────────────────────────────────────────────────────
 
-    def record_error(self, error_type: str, tags: dict[str, str] = None) -> None:
-        """Record an error occurrence."""
-        if tags is None:
-            tags = {}
+AUDIT_EVENTS_TOTAL: Counter = Counter(
+    "axon_audit_events_total",
+    "Audit events written to the hash-chained log.",
+    labelnames=("tenant_id", "event_type", "status"),
+    registry=default_registry,
+)
 
-        tags["error_type"] = error_type
+SSO_LOGINS_TOTAL: Counter = Counter(
+    "axon_sso_logins_total",
+    "SSO logins grouped by provider + outcome.",
+    labelnames=("tenant_id", "provider", "outcome"),
+    registry=default_registry,
+)
 
-        self.counter("error:count", value=1, tags=tags)
 
-    def get_counter(self, name: str) -> int:
-        """Get counter value."""
-        return self.counters.get(name, 0)
+# ── Infra gauges ─────────────────────────────────────────────────────
 
-    def get_gauge(self, name: str) -> float:
-        """Get gauge value."""
-        return self.gauges.get(name, 0.0)
+DB_POOL_CHECKED_OUT: Gauge = Gauge(
+    "axon_db_pool_checked_out",
+    "Connections currently checked out from the DB pool.",
+    registry=default_registry,
+)
 
-    def get_histogram(self, name: str) -> list[float]:
-        """Get histogram values."""
-        return self.histograms.get(name, [])
+BUILD_INFO: Gauge = Gauge(
+    "axon_build_info",
+    "Static build metadata — always 1, carries version/commit labels.",
+    labelnames=("service", "version", "commit"),
+    registry=default_registry,
+)
+
+
+# ── ASGI exporter ────────────────────────────────────────────────────
+
+
+def build_metrics_asgi_app(registry: CollectorRegistry | None = None) -> Any:
+    """Return an ASGI app that serves the Prometheus text exposition.
+
+    Mount under the configured ``observability.metrics_path`` (default
+    ``/metrics``). Uses the prometheus_client sample-returning ASGI
+    wrapper which supports OpenMetrics negotiation via the
+    ``Accept`` header.
+    """
+    return make_asgi_app(registry=registry or default_registry)
