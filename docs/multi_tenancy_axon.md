@@ -25,7 +25,7 @@
 | 10.g | Audit Hash-Chain (append-only + stitch a ESK provenance_chain) | ✅ Completo |
 | 10.h | Metering + Quota Enforcement (pricing plans, Stripe, rate limiting) | ✅ Completo |
 | 10.i | Observability Wiring (Prometheus per-tenant, OTel con tenant baggage, structured logs) | ✅ Completo |
-| 10.j | Admin API + CLI (tenant CRUD, user mgmt, key rotation, suspension) | ⏳ Pendiente |
+| 10.j | Admin API + CLI (tenant CRUD, user mgmt, key rotation, suspension) | ✅ Completo |
 | 10.k | Tenant Self-Service Portal API (invitaciones, SSO config, API keys) | ⏳ Pendiente |
 | 10.l | Compliance Tooling (GDPR export JSONL, right-to-erasure, data residency) | ⏳ Pendiente |
 | 10.m | Testing + Security Audit (cross-tenant isolation, load, threat model) | ⏳ Pendiente |
@@ -908,7 +908,27 @@ CREATE TABLE invoices (
 
 ### 10.j — Admin API + CLI
 
-**Estado:** ⏳ Pendiente — **Depende de:** 10.b, 10.c, 10.f, 10.g
+**Estado:** ✅ Completo (2026-04-21) — **Depende de:** 10.a..10.i
+
+**Shipped commits (axon-enterprise):**
+- `007b0c2` feat(fase-10.j): Admin API + operator CLI
+- `3cc018c` test+docs(fase-10.j): Admin API tests + ADMIN_API_AND_CLI.md guide
+
+**Archivos producidos:**
+- `axon_enterprise/http/{__init__.py, app.py, auth_middleware.py, errors.py, pagination.py}`
+- `axon_enterprise/http/admin/{__init__.py, tenants.py, users.py, keys.py, audit.py}`
+- `axon_enterprise/cli/{__init__.py, app.py, tenant.py, user.py, keys.py, audit.py, migrate.py}`
+- `pyproject.toml` + `[project.scripts] axon-enterprise = ...` + typer dep
+- `tests/http/{test_errors_and_pagination, test_admin_integration}.py` — 27 casos (20 unit + 7 integration con httpx.ASGITransport)
+- `docs/ADMIN_API_AND_CLI.md` operator guide
+
+**Decisiones cerradas (preguntas abiertas de la sesión anterior):**
+- **Starlette puro** (no FastAPI) — menos magic, compatible con `ObservabilityMiddleware` ya construido, menor surface de deps.
+- **Un solo server** con routing prefix — `/admin/*` gateable at ingress (nginx/envoy IP allowlist + mTLS), `/api/v1/*` (diferido a 10.k) público con JWT. Simplifica deploy y comparten estado.
+- **Typer CLI** — types first-class, auto-help, mismo ergonomic que axon-lang CLI.
+- **Pagination hybrid**: offset-based para admin tables (tenants/users/roles — total count útil para UI), cursor-based helpers ya implementados para 10.k usage/audit tables.
+
+**Delta vs plan original:** + `AuthMiddleware` con JWKS fetch + 10min cache in-process (complementa el Rust verifier de 10.e — handler code Python también refuses unverified tokens, no solo el runtime Rust), + error mapping matrix explícita (28 typed errors → status codes estables) con **reveal_to_client=False collapses to generic family message** (previene enumeration via distinct error messages), + `RateLimited.Retry-After` header automatic, + `QuotaExceeded` body carries `metric` + `limit` (UI points-to-upgrade ready), + `AccountLockedError` reveals `until` timestamp safely (cliente sabe cuándo reintentar), + **Password-stdin guard** en `user create` — refuse argv para evitar leakage via `ps(1)` en shared hosts, + CLI commands async-wrapped con `asyncio.run` (single sync entry point para console_scripts), + `--exit-nonzero` toggle en `audit verify` para cron pipelines, + migrate CLI como thin Alembic wrapper con `AXON_DB_URL` resolution, + `Cursor.encode()` base64url para URL safety + `parse_cursor` raises en malformed (explicit failure mode), + tests usan httpx.ASGITransport + stub AuthMiddleware para test aislado del JWKS network hop.
 
 **Objetivo:** superficie administrativa para operators (internal) y tenant owners (external).
 
@@ -1105,9 +1125,37 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 
 **Última actualización:** 2026-04-21
 
-**Próxima sesión — pickup point:** arrancar **10.j (Admin API + CLI)** en el repo `axon-enterprise`.
+**Próxima sesión — pickup point:** arrancar **10.k (Tenant Self-Service Portal API)** en el repo `axon-enterprise`.
 
-**Decisiones cerradas en esta sesión (10.i):**
+**Decisiones cerradas en esta sesión (10.j):**
+- Starlette puro (no FastAPI) — menos magic, compatible con middleware existente.
+- Un solo server con routing prefix (`/admin/*` + `/api/v1/*`), ingress IP allowlist para admin.
+- Typer CLI — types first-class, auto-help.
+- Error mapping matrix con reveal_to_client collapse — previene enumeration via distinct error messages.
+- Password-from-stdin guard en CLI — argv es visible en `ps(1)`.
+- AuthMiddleware valida JWT también en Python handler side (complementa el Rust verifier de 10.e).
+- Pagination hybrid: offset para admin tables + cursor helpers para 10.k.
+
+**Pre-requisitos para 10.k:**
+- [x] 10.a..10.j completados
+- [x] `SsoService` + `SsoConfigurationService` listos para exponer configs en portal
+- [x] `AuthService` listo para exponer session refresh + login via portal
+- [x] `SecretsService` listo para portal CRUD
+- [x] `MeteringService` listo para exponer usage + invoice lookups
+- [ ] Decidir auth flow del portal: ¿password login directo o siempre via SSO? Propongo **ambos** según `tenant.sso.required` flag — algunos clientes requieren SSO-only (compliance), otros mezclan.
+- [ ] Decidir invitation flow — ¿magic link email o plain JSON endpoint? Propongo **magic link** (HMAC-signed JWT short-lived + Redis one-time use) → email delivery por 10.l.
+- [ ] Decidir API key shape para M2M integrations — ¿UUID opaque vs JWT? Propongo **UUID opaque con Argon2id hash en BD**, scoped per-tenant, prefix `axk_` para grep ergonomics.
+- [ ] Decidir Stripe webhook route — ¿`/webhooks/stripe` público con signature verification (10.h) o bajo `/admin/webhooks/stripe` con IP allowlist? Propongo **público** — Stripe IPs rotan, signature verification es el security boundary.
+
+**Sesión abierta en:**
+- `axon-enterprise`: commits hasta `3cc018c` (Admin API + CLI)
+- Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
+
+---
+
+### Decisiones archivadas (sesiones anteriores)
+
+**Decisiones cerradas en sesión 10.i:**
 - OTel Collector sidecar — backend-agnostic, K8s idiomatic.
 - Metric namespace `axon_*` — shared con Rust.
 - Logs stdout JSON → fluentd → SIEM; no direct SDK.
