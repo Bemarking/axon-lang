@@ -30,3 +30,7 @@ hmac = "0.12"
 rand = "0.9"
 # §ESK Fase 6.6 — deterministic ZIP bundle for the audit evidence packager.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# §Fase 10.e — JWT signature verification + JWKS client for the Rust
+# tenant extractor. Closes the pre-10.e gap where `tenant.rs` extracted
+# `tenant_id` from the JWT payload without checking the signature.
+jsonwebtoken = "9"
