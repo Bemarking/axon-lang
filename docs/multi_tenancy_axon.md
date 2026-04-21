@@ -28,7 +28,7 @@
 | 10.j | Admin API + CLI (tenant CRUD, user mgmt, key rotation, suspension) | ✅ Completo |
 | 10.k | Tenant Self-Service Portal API (invitaciones, SSO config, API keys) | ✅ Completo |
 | 10.l | Compliance Tooling (GDPR export JSONL, right-to-erasure, data residency) | ✅ Completo |
-| 10.m | Testing + Security Audit (cross-tenant isolation, load, threat model) | ⏳ Pendiente |
+| 10.m | Testing + Security Audit (cross-tenant isolation, load, threat model) | ✅ Completo |
 
 ---
 
@@ -1080,9 +1080,32 @@ Toda request enforza `tenant_id` del JWT (no se puede cross-tenant aunque se pon
 
 ### 10.m — Testing + Security Audit
 
-**Estado:** ⏳ Pendiente — **Depende de:** 10.a–10.l
+**Estado:** ✅ Completo — **Depende de:** 10.a–10.l
 
-**Objetivo:** validar formalmente el aislamiento y resistencia del control plane.
+**Commits (axon-enterprise):**
+- `49fa5b8` test(fase-10.m): security adversarial suite
+- `bd5df66` test(fase-10.m): k6 load test suite
+- `04b01b9` docs(fase-10.m): threat model + GA readiness checklist
+
+**Entregado:**
+- `tests/security/` — adversarial suite:
+  - `test_cross_tenant_isolation`: alpha cannot read/mutate beta's API keys, compliance tickets, memberships. Responde 404 (no 403) para no leakear existencia.
+  - `test_rls_bypass_attempts`: GUC flip mid-session sigue bloqueado por filtros explícitos; triggers `audit_events` bloquean UPDATE/DELETE/TRUNCATE con SQLSTATE 42501.
+  - `test_rbac_privilege_escalation`: viewer no puede `user:invite`; principal con `tenant_id` forjado es rechazado por RBAC resolviendo contra `(user_id, tenant_id)` real.
+  - `test_jwt_forgery_resistance`: missing bearer, `alg=none`, unknown `kid`, wrong `iss/aud`, expired → 401.
+  - `test_audit_chain_invariants`: hypothesis-driven — continuidad, determinismo, independencia cross-tenant, secuencia contigua.
+  - `test_argon2_timing_parity`: `burn_equivalent_time` dentro de 1.5× de `verify` (mitigación de user-enumeration por timing).
+- `tests/load/` — k6 scripts (portal API, admin API, audit storm 1000 tenants × 500 RPS). Thresholds actúan como CI gates.
+- `docs/THREAT_MODEL.md` — STRIDE completo con mitigación + archivo de test que la ejerce; lista explícita de "known residual risks (accepted)".
+- `docs/SECURITY_AUDIT.md` — GA-readiness checklist: gates automatizados, invariantes de código, controles operacionales, items no automatizables (rotation runbooks, pentest externo, legal review GDPR/CCPA, SOC 2 control mapping), SLO thresholds, comando de tag.
+
+**Decisiones cerradas:**
+- **Matriz cross-tenant = 404** — evita existence leakage; contrasta con 403 que confirmaría la existencia del recurso.
+- **Fuzzing layered**: `hypothesis` para invariantes de servicios (audit chain, quota); `schemathesis` recomendado en CI para OpenAPI surface.
+- **k6 sobre Locust** — JS scripts legibles + Grafana native + mejor p95/p99 reporting.
+- **SLO thresholds específicos por endpoint** (no un valor global): reads p99<500ms, mutates p99<1s, audit write p99<100ms, SAR export per-subject <60s.
+- **STRIDE completo, profundidad proporcional** — AuthN/AuthZ/Data flow deep; DoS ligero (cloud provider ya lo cubre en gran parte).
+- **Pentest externo diferido a v1.1.1** — acceptable tag GA v1.1.0 con audit interno + running checklist; external audit es requisito enterprise contract renewal.
 
 **Cross-tenant isolation tests:**
 - Matriz de endpoints × tenants: tenant A hace request a recurso de tenant B → debe devolver 404 (no 403, para evitar leakage de existencia)
@@ -1181,33 +1204,62 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 
 **Última actualización:** 2026-04-21
 
-**Próxima sesión — pickup point:** arrancar **10.m (Testing + Security Audit)** en el repo `axon-enterprise`.
+**Próxima sesión — pickup point:** **Fase 10 COMPLETA**. GA `v1.1.0` listo para tag — ejecutar checklist en `docs/SECURITY_AUDIT.md` y disparar `git tag -a v1.1.0`.
 
-**Decisiones cerradas en esta sesión (10.l):**
-- Bundle SAR = tar.gz con `manifest.json` (audit chain head + included/excluded tables) + JSONL per-table. Streamable + ingestible + auto-auditable.
-- Erasure two-stage: 7 días soft-delete (sessions + API keys revocados, membership `erased_pending`) + 30 días SLA para anonymize (GDPR Art. 12). `details.soft_deleted_at` discriminates las dos fases en el worker.
-- `audit_events` NUNCA se mutan — mantener el hash chain íntegro; la evidencia de erasure vive en `compliance:erasure_completed` + purge report con SHA-256 del subject original.
-- Worker dedicado: `FOR UPDATE SKIP LOCKED` + partial index `(status, scheduled_for)` WHERE status IN ('queued', 'awaiting_purge'). N replicas safe. `promote_due_purges` corre en tick paralelo.
-- Legal hold: partial unique index `(tenant_id, subject_email) WHERE released_at IS NULL` — at most one hold activo; check at file-time + anonymize-time.
-- Data residency v1: middleware en memoria (cache 60s) + columna `tenants.data_region`; multi-region deployment queda para 10.m si se decide escalar.
-- BlobStore: protocol con `LocalBlobStore` (dev/on-prem) + `S3BlobStore` (prod). `blob_backend=local` rechazado por el production validator.
-- Evidence bundle para SOC 2 reusa el `_build_tar_gz` helper del exporter + agrega `rbac_snapshot.json` + `sso_configurations.json`. Un audit event `compliance:evidence_bundle_generated` deja la propia generación del bundle auditada.
+**Decisiones cerradas en esta sesión (10.m):**
+- Cross-tenant isolation returns 404 (not 403) para evitar existence leakage — alpha probing por tickets de beta no aprende nada.
+- Adversarial tests cubren las 4 capas de defensa: JWT verification → RBAC → service filter → RLS. Cada capa tiene al menos un test donde las demás asumen fallaron.
+- Audit chain property tests con hypothesis (10 ejemplos por `@given`) son suficientes — invariantes determinísticos, no hay random state oculto que amplifique con más ejemplos.
+- Timing parity tolerance = 1.5× ratio entre `verify` y `burn_equivalent_time`. Wider que lo ideal (factor 2 sería peligroso) pero CI shared runners son noisy; verdadera protección es monitoring en prod.
+- k6 sobre Locust — thresholds built-in que actúan como CI gate; Grafana nativo.
+- SLO thresholds granulares por endpoint (no global) publicados en `SECURITY_AUDIT.md` y enforced en cada script k6.
+- Pentest externo diferido a `v1.1.1` — checklist interna + audit trail del chain es aceptable para tag GA inicial.
+- `SECURITY_AUDIT.md` es la fuente única de verdad para tag — gates automatizados + non-automatable items explícitos; no silent skips.
 
-**Pre-requisitos para 10.m:**
-- [x] 10.a..10.l completados
-- [x] Todos los sub-fases con tests + docs en `axon-enterprise:docs/`
-- [x] CLI operable para tenant/user/keys/audit/compliance/migrate
-- [x] Portal + Admin API + webhooks wired al mismo `build_app()`
-- [ ] Definir matriz cross-tenant isolation — endpoints × tenants × métodos → código esperado (404 vs 403; propongo **404** para no leakear existencia).
-- [ ] Decidir fuzzing framework — `hypothesis` vs `schemathesis`. Propongo **schemathesis** para API surface (lee el OpenAPI generado) + `hypothesis` para invariantes de servicios (audit chain, quota aggregation).
-- [ ] Decidir load testing tool — `locust` vs `k6`. Propongo **k6** — JS scripts legibles, Grafana-integrado, mejor percentile reporting para SLO compliance.
-- [ ] Decidir criterios de pass — p99 latency por endpoint, max error rate, max memory/CPU por pod, cross-tenant bleed = 0 (hard requirement). Propongo los thresholds específicos por endpoint en base al SLO enterprise: p99 < 500ms para reads, < 2s para exports, 0% cross-tenant.
-- [ ] Decidir threat model alcance — STRIDE completo vs focus en MFA bypass + RLS bypass + privilege escalation. Propongo **STRIDE completo** pero profundidad proporcional (AuthN/AuthZ/Data flow deep, Denial-of-Service ligero).
-- [ ] Decidir security audit externo — ¿auditor externo firma report o interno suficiente para GA? Propongo **interno para GA inicial + external audit en v1.1.1** — evita bloquear GA en scheduling de auditor.
+**Cierre del plan I/O Cognitivo — Fase 10 Enterprise Control Plane:**
+- [x] 10.a Persistence Foundation
+- [x] 10.b Identity Core
+- [x] 10.c RBAC Production-Grade
+- [x] 10.d SSO Real (OIDC + SAML)
+- [x] 10.e JWT Issuer + JWKS rotation
+- [x] 10.f Secrets Service
+- [x] 10.g Audit Hash-Chain
+- [x] 10.h Metering + Quota Enforcement
+- [x] 10.i Observability Wiring
+- [x] 10.j Admin API + CLI
+- [x] 10.k Tenant Self-Service Portal API
+- [x] 10.l Compliance Tooling
+- [x] 10.m Testing + Security Audit
 
 **Sesión abierta en:**
-- `axon-enterprise`: commits hasta `713a281` (Compliance tooling + tests + docs)
+- `axon-enterprise`: commits hasta `04b01b9` (Security audit + threat model + GA checklist)
+- Tag `v1.1.0` pendiente de sign-off por engineering lead según `docs/SECURITY_AUDIT.md`
 - Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
+
+---
+
+### Decisiones archivadas (sesiones anteriores)
+
+**Decisiones cerradas en sesión 10.l:**
+- Bundle SAR = tar.gz con `manifest.json` (audit chain head + included/excluded tables) + JSONL per-table.
+- Erasure two-stage: 7 días soft-delete + 30 días SLA para anonymize. `details.soft_deleted_at` discrimina las fases.
+- `audit_events` NUNCA se mutan — hash chain íntegro; evidencia de erasure vive en `compliance:erasure_completed` + purge report.
+- Worker dedicado: `FOR UPDATE SKIP LOCKED` + partial index `(status, scheduled_for)`. N replicas safe.
+- Legal hold: partial unique index WHERE `released_at IS NULL`; check at file-time + anonymize-time.
+- Data residency v1: middleware + columna `tenants.data_region`; multi-region Terraform diferido.
+- BlobStore: protocol con `LocalBlobStore` + `S3BlobStore`. `blob_backend=local` rechazado en producción.
+- Evidence bundle reusa `_build_tar_gz`; agrega `rbac_snapshot.json` + `sso_configurations.json` + emite `compliance:evidence_bundle_generated`.
+
+**Pre-requisitos para tag v1.1.0:** completar el checklist en `axon-enterprise:docs/SECURITY_AUDIT.md`:
+- [ ] Automated gates verdes en `master` (pytest, security/, hypothesis, lint, pip-audit, schemathesis, k6)
+- [ ] Secrets rotation runbook probado en staging (últimos 90 días)
+- [ ] Key rotation runbook para JWT signing key
+- [ ] Incident response runbook (credenciales comprometidas, RLS bypass, blob leak, chain divergence, legal hold outage)
+- [ ] Pentest externo agendado dentro de 180 días post-GA
+- [ ] Third-party dependency review — cada package con maintainer activo
+- [ ] Backup + restore test — PITR exercised en el trimestre
+- [ ] GDPR + CCPA legal sign-off sobre `SarExporter` + anonymization semantics
+- [ ] SOC 2 control mapping — cada control del Type II report mapeado a un audit event type
 
 ---
 
