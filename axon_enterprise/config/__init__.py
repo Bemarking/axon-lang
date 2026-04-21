@@ -12,6 +12,7 @@ from axon_enterprise.config.settings import (
     Environment,
     IdentitySettings,
     Settings,
+    SsoSettings,
     get_settings,
 )
 
@@ -22,5 +23,6 @@ __all__ = [
     "Environment",
     "IdentitySettings",
     "Settings",
+    "SsoSettings",
     "get_settings",
 ]

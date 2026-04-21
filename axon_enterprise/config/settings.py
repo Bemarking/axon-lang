@@ -228,6 +228,45 @@ class IdentitySettings(BaseSettings):
     session_refresh_token_bytes: int = Field(default=64, ge=32)
 
 
+class SsoSettings(BaseSettings):
+    """SSO / identity federation configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="AXON_SSO_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Discovery + JWKS caching
+    discovery_ttl_seconds: int = Field(default=3600, ge=60)
+    jwks_ttl_seconds: int = Field(default=600, ge=60)
+    jwks_force_refresh_on_kid_miss: bool = True
+
+    # Flow timeouts
+    state_ttl_seconds: int = Field(default=600, ge=30)
+    clock_skew_seconds: int = Field(default=60, ge=0, le=300)
+
+    # HTTP client
+    http_timeout_seconds: float = Field(default=10.0, gt=0.0)
+    http_retries: int = Field(default=2, ge=0, le=5)
+
+    # Auto-provisioning
+    auto_provision_default: bool = True
+    auto_provision_rate_limit_per_minute: int = Field(
+        default=30,
+        ge=1,
+        description="Max new-user provisions per minute per (tenant, provider).",
+    )
+
+    # Callback / redirect URI pattern used by metadata + AuthnRequest
+    base_url: str = Field(
+        default="https://auth.bemarking.com",
+        description="External URL of the auth service, used to build "
+        "redirect/ACS URIs. Must match what the IdP is configured with.",
+    )
+
+
 class Settings(BaseSettings):
     """Top-level application settings."""
 
@@ -245,6 +284,7 @@ class Settings(BaseSettings):
     db: DatabaseSettings
     envelope: EnvelopeSettings = Field(default_factory=EnvelopeSettings)  # type: ignore[arg-type]
     identity: IdentitySettings = Field(default_factory=IdentitySettings)  # type: ignore[arg-type]
+    sso: SsoSettings = Field(default_factory=SsoSettings)  # type: ignore[arg-type]
 
     # Tenant defaults — the GUC name must match axon-rs (M2 migration 005)
     default_tenant_id: str = "default"
