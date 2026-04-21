@@ -18,7 +18,7 @@
 |------|--------|--------|
 | 10.a | Persistence Foundation (SQLAlchemy 2 async + Alembic + RLS hookup) | ✅ Completo |
 | 10.b | Identity Core (Users, Argon2id, TOTP, sessions, memberships) | ✅ Completo |
-| 10.c | RBAC Production-Grade (persisted, tenant-scoped, hierarchy, enforcement) | ⏳ Pendiente |
+| 10.c | RBAC Production-Grade (persisted, tenant-scoped, hierarchy, enforcement) | ✅ Completo |
 | 10.d | SSO Real (OIDC + SAML con verificación de firma) | ⏳ Pendiente |
 | 10.e | JWT Issuer + JWKS rotation (cierra el gap "no signature verification" de Rust) | ⏳ Pendiente |
 | 10.f | Secrets Service (API per-tenant, escribe a AWS SM, audit integrado) | ⏳ Pendiente |
@@ -371,7 +371,27 @@ CREATE TABLE sessions (
 
 ### 10.c — RBAC Production-Grade
 
-**Estado:** ⏳ Pendiente — **Depende de:** 10.a, 10.b
+**Estado:** ✅ Completo (2026-04-21) — **Depende de:** 10.a, 10.b
+
+**Shipped commits (axon-enterprise):**
+- `c8b1010` feat(fase-10.c): PrincipalContext — authenticated actor propagation
+- `16c89c1` feat(fase-10.c): RBAC production-grade — persisted, hierarchical, tenant-scoped
+- `a1bc247` test(fase-10.c): unit + integration suite for RBAC production
+- `c8e21b2` docs(fase-10.c): rewrite RBAC.md for the production-grade subsystem
+
+**Archivos producidos:**
+- `axon_enterprise/identity/principal.py` — `PrincipalContext` + `CURRENT_PRINCIPAL` ContextVar
+- `axon_enterprise/rbac/{__init__.py, models.py, service.py, permissions.py, seed.py, enforce.py, errors.py}` — reemplazo completo del scaffolding v1.0.0
+- `alembic/versions/20260421_0200_003_rbac_production.py` — 4 tablas + seed del catalog + RLS completo
+- `tests/rbac/{test_permissions_catalog.py, test_service_integration.py, test_enforce.py}` — 29 casos (13 unit + 16 integration)
+- `docs/RBAC.md` — rewrite completo con diagrama + SQL del CTE + guard rails
+
+**Decisiones cerradas (preguntas abiertas de la sesión anterior):**
+- **Catálogo exacto**: 32 permissions en 8 resources (tenant/user/role/flow/secret/audit/metering/observability). Seeded por migration 003 con `INSERT ... ON CONFLICT DO NOTHING` — agregar permissions es una migration nueva.
+- **Rol owner**: creado per-tenant con TODOS los permissions (no un wildcard — enumerar explícitamente sobrevive additions al catálogo y hace auditorías determinísticas). Owner del tenant obtiene este rol en provisioning.
+- **Granularidad de `flow:execute`**: coarse (por resource, no por flow individual). Si un tenant necesita per-flow scoping, se agrega `scope_pattern` column en role_permissions en una sub-fase futura; por ahora la granularidad actual cubre el 95% de los casos enterprise sin over-engineering.
+
+**Delta vs plan original:** + `BuiltInRoleProtected` error type para prevenir delete de roles built-in, + `grant_permissions` bulk method con backfill (idempotent re-seed tras agregar permissions al catalog), + `require_permission` decorator parsea at decoration time (typos fallan at import, no at request), + `_assert_no_cycle` walk explícito además de la confianza en `UNION` del CTE (mejor error message y fail-fast en write path), + `parent_role_id` self-FK con `ON DELETE SET NULL` (borrar un parent no destruye los children).
 
 **Objetivo:** reemplazar el RBAC in-memory de v1.0.0 por uno persistente, tenant-scoped, con jerarquía recursiva real y middleware que enforza permisos.
 
@@ -910,6 +930,12 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 | 2026-04-21 | 10.b: Refresh tokens 64 bytes random → SHA-256 hash persistido | Pérdida de BD no revela refresh tokens (attacker tendría hash sin preimage). SHA-256 (no HMAC) porque el hash no necesita secret-key property — el atacante con hash sigue sin poder forjar un token de 64 bytes. |
 | 2026-04-21 | 10.b: Replay detection revoca TODA la chain para `(user_id, tenant_id)` | Si alguien presenta un token ya-rotado, OR es un attacker OR es un cliente legítimo con bug. Revocar ambos (forzando re-login) es el camino seguro — no podemos distinguir who's who sin metadata adicional. |
 | 2026-04-21 | 10.b: HIBP k-anonymity con `Add-Padding: true` header + fails-open | Padding mitiga traffic analysis (response size revela hit/miss sin padding). Fails-open porque un outage de HIBP no debe bloquear registros legítimos — trade-off consciente en favor de availability sobre defense-in-depth absoluto. |
+| 2026-04-21 | 10.c: `permissions` table es global sin RLS (read-only closed set) | Una tabla tenant-scoped significaría que cada tenant puede inventar permission strings que el código no enforza — security hole. Catalog cerrado ensure strings coinciden con `@require_permission` decorators. |
+| 2026-04-21 | 10.c: Denormalized tenant_id en role_permissions + user_roles | Policy RLS puede aplicar directamente sin JOIN. JOIN-en-policy puede causar recursive policy evaluation (policy consulta tabla que tiene su propia policy que consulta la primera) — evitado. |
+| 2026-04-21 | 10.c: Owner rol con TODOS los permissions enumerados (no wildcard) | Catalog growth → owner recibe los nuevos permissions automáticamente via re-run del seeder idempotent. Wildcard haría imposible auditar exactamente qué puede hacer owner en un point-in-time. |
+| 2026-04-21 | 10.c: `@require_permission("x:y")` parsea at decoration time | Typos fallan at import (handler no se carga) en lugar de at request (handler loads pero nunca matchea). Elimina una clase entera de bugs silenciosos. |
+| 2026-04-21 | 10.c: Cycle prevention doble — _assert_no_cycle + UNION en CTE | UNION dedupes cycles en read (queries terminan incluso con cycle smuggled). _assert_no_cycle at write-time da error message explícito ("would create cycle") — fail-fast > fail-silently. Defensa en profundidad. |
+| 2026-04-21 | 10.c: BuiltInRoleProtected impide delete/rename de built-in roles | owner/admin/developer/viewer son contratos entre el sistema y los handlers — un handler que dice `@require_permission("tenant:read")` asume que "admin" rol existe y lo tiene. Renombrar o borrar un built-in rompe el contrato. |
 
 ---
 
@@ -927,24 +953,25 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 
 **Última actualización:** 2026-04-21
 
-**Próxima sesión — pickup point:** arrancar **10.c (RBAC Production-Grade)** en el repo `axon-enterprise`.
+**Próxima sesión — pickup point:** arrancar **10.d (SSO Real — OIDC + SAML)** en el repo `axon-enterprise`.
 
-**Decisiones cerradas en esta sesión (10.b):**
-- Argon2id `t=3, m=64 MiB, p=4` como default; bump a 128 MiB vía env var solo en deployments con > 2 GB por contenedor
-- Envelope encryption desde 10.b (no diferido a 10.f). Dual backend: `local` (Fernet+HKDF) / `kms` (GenerateDataKey+EncryptionContext). Validator rechaza `local` en `env=production`
-- HIBP fails-open en network errors — política deliberada: prefiero registros exitosos a bloqueos por outage de API tercera
-- `users` table es global con RLS `admin_bypass` only (no tenant_isolation); acceso via two-step: query `tenant_memberships` bajo `tenant_session`, luego `admin_session` para leer users
-- TenantMembership NO usa `TenantScopedMixin` — tenant_id es parte de PK compuesto (mixin redeclara awkwardly en SQLAlchemy 2)
+**Decisiones cerradas en esta sesión (10.c):**
+- Catálogo de 32 permissions en 8 resources seedeado por migration 003 — `INSERT ... ON CONFLICT DO NOTHING` lo hace idempotent, agregar permissions es una migration nueva (no cambio de código)
+- Owner role creado per-tenant con TODOS los permissions enumerados (no wildcard) — sobrevive catalog growth y hace audits determinísticos
+- Granularidad coarse en flow:execute por ahora — `scope_pattern` diferido hasta que un cliente real lo requiera
+- `permissions` table es global sin RLS — es un closed set compartido, impedir que tenants inventen permission strings no-enforzables
+- `role_permissions` + `user_roles` carrying denormalized tenant_id → evita JOIN en policy RLS (que puede causar recursive policy evaluation)
+- Recursive CTE con `UNION` (no `UNION ALL`) — dedup termina smuggled cycles; _assert_no_cycle en write path da error messages claros
 
-**Pre-requisitos para 10.c:**
-- [x] 10.a + 10.b completados
-- [x] Schema `axon_control` con tablas users, tenant_memberships, sessions
-- [ ] Decidir catálogo exacto de permissions del sistema (sugerido 8 resources × 2-5 actions = ~24 permissions seed) — listar antes de migration para evitar churn
-- [ ] Decidir cómo expresar "el owner del tenant siempre tiene todos los permisos" — ¿rol sintético `owner` o privilegio de escape en el checker? Propongo rol `owner` con todos los permissions seedeados en migration de cada tenant
-- [ ] Decidir granularidad de `flow:execute` — ¿por flow individual o por namespace? Afecta shape de role_permissions (scope_pattern column?)
+**Pre-requisitos para 10.d:**
+- [x] 10.a + 10.b + 10.c completados
+- [x] PrincipalContext + CURRENT_PRINCIPAL ContextVar listos
+- [ ] Decidir si OIDC + SAML se shippean juntos o OIDC primero (SAML más complicado, requires XML signature verification) — propongo OIDC en una iteración, SAML en una iteración posterior dentro de la misma 10.d
+- [ ] Decidir cómo guardar `sso_configurations.config_encrypted` — ¿usar envelope (10.b crypto) con AAD `{tenant_id, purpose=sso_config}`? — YES, esto es lo cohesivo con el patrón existente
+- [ ] Decidir auto_provisioning default — ¿si `auto_provision=true` el primer login de un usuario nuevo crea User + TenantMembership automáticamente? propongo YES pero con rate limiting por IdP para prevent floods
 
 **Sesión abierta en:**
-- Commits mergeados a `origin/master` de `axon-enterprise` en `9dc54b1`
+- Commits mergeados a `origin/master` de `axon-enterprise` en `c8e21b2`
 - Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
 
 ---
