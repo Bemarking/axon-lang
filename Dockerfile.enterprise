@@ -18,7 +18,10 @@
 # ═══════════════════════════════════════════════════════════════════
 
 # ─── Stage 1: axon-lang Rust binary ──────────────────────────────────
-FROM debian:bookworm-slim AS axon-binary
+# Trixie is required: axon-lang's release binary is linked against
+# GLIBC 2.38/2.39 (the build runner's libc).  bookworm ships 2.36,
+# so the binary would refuse to start under bookworm-based images.
+FROM debian:trixie-slim AS axon-binary
 ARG AXON_VERSION=1.3.1
 ARG TARGETARCH
 
@@ -41,7 +44,7 @@ RUN set -eu; \
     /opt/axon/axon --version
 
 # ─── Stage 2: Python enterprise layer ────────────────────────────────
-FROM python:3.12-slim AS python-layer
+FROM python:3.12-slim-trixie AS python-layer
 WORKDIR /build
 
 COPY pyproject.toml README.md ./
@@ -53,7 +56,8 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir --prefix=/opt/enterprise .
 
 # ─── Stage 3: runtime ────────────────────────────────────────────────
-FROM python:3.12-slim
+# Trixie base matches stage 1 (glibc 2.39) so the axon binary runs.
+FROM python:3.12-slim-trixie
 
 # Non-root user for the service process.
 RUN groupadd --system axon \
