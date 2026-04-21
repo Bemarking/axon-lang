@@ -463,6 +463,66 @@ class SsoSettings(BaseSettings):
     )
 
 
+ComplianceBlobBackend = Literal["local", "s3"]
+
+
+class ComplianceSettings(BaseSettings):
+    """GDPR / CCPA / SOC 2 tooling configuration (Fase 10.l)."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="AXON_COMPLIANCE_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Where SAR export bundles + evidence bundles land.
+    blob_backend: ComplianceBlobBackend = "local"
+    blob_local_path: Path = Field(default=Path("/var/lib/axon/compliance"))
+    blob_s3_bucket: str | None = None
+    blob_s3_prefix: str = "compliance"
+    blob_signed_url_ttl_seconds: int = Field(default=3600, ge=60, le=86_400)
+
+    # Server region label — compared against tenant.data_region on
+    # each request by ``DataResidencyMiddleware``. MUST match the
+    # label operators ship via Terraform per region.
+    server_region: str = "us-east-1"
+    residency_redirect_base: str | None = Field(
+        default=None,
+        description=(
+            "URL template used to 308-redirect mis-routed tenants. "
+            "Supports the ``{region}`` placeholder, e.g. "
+            "``https://{region}.auth.bemarking.com``. When unset "
+            "the middleware rejects with 421 Misdirected Request."
+        ),
+    )
+
+    # Right to Erasure — two-stage execution with a reversion window.
+    erasure_soft_delete_days: int = Field(default=7, ge=0, le=30)
+    erasure_anonymize_sla_days: int = Field(
+        default=30,
+        ge=1,
+        le=90,
+        description="GDPR Art. 12 caps the SAR/erasure SLA at 30 days.",
+    )
+
+    # SAR export — rows per COPY batch before flushing the gzip
+    # buffer. Higher = fewer syscalls, lower = tighter memory ceiling.
+    export_batch_rows: int = Field(default=1_000, ge=100, le=100_000)
+
+    # Worker — SKIP LOCKED polling loop.
+    worker_poll_interval_seconds: float = Field(default=5.0, gt=0.5, le=60.0)
+    worker_max_concurrent_jobs: int = Field(default=1, ge=1, le=16)
+    worker_job_timeout_seconds: int = Field(default=3600, ge=60)
+
+    @field_validator("blob_local_path")
+    @classmethod
+    def _path_is_absolute(cls, v: Path) -> Path:
+        if not v.is_absolute():
+            raise ValueError("blob_local_path must be an absolute path")
+        return v
+
+
 class Settings(BaseSettings):
     """Top-level application settings."""
 
@@ -485,6 +545,7 @@ class Settings(BaseSettings):
     secrets: SecretsSettings = Field(default_factory=SecretsSettings)  # type: ignore[arg-type]
     metering: MeteringSettings = Field(default_factory=MeteringSettings)  # type: ignore[arg-type]
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)  # type: ignore[arg-type]
+    compliance: ComplianceSettings = Field(default_factory=ComplianceSettings)  # type: ignore[arg-type]
 
     # Tenant defaults — the GUC name must match axon-rs (M2 migration 005)
     default_tenant_id: str = "default"
@@ -597,6 +658,21 @@ class Settings(BaseSettings):
                 "(SOC 2 CC.6.1 requires audit trail for secret access)"
             )
 
+    def _validate_compliance_production(self) -> None:
+        if self.compliance.blob_backend == "local":
+            raise ValueError(
+                "compliance.blob_backend='local' is not allowed in "
+                "production; use 's3' so export bundles survive pod "
+                "restarts + carry managed retention."
+            )
+        if (
+            self.compliance.blob_backend == "s3"
+            and not self.compliance.blob_s3_bucket
+        ):
+            raise ValueError(
+                "compliance.blob_s3_bucket required when blob_backend='s3'"
+            )
+
     @model_validator(mode="after")
     def _enforce_production_safety(self) -> Settings:
         """Run every production gate + the env-agnostic invariants."""
@@ -606,6 +682,7 @@ class Settings(BaseSettings):
             self._validate_jwt_production()
             self._validate_secrets_production()
             self._validate_metering_production()
+            self._validate_compliance_production()
         self._validate_envelope_any_env()
         self._validate_jwt_any_env()
         return self

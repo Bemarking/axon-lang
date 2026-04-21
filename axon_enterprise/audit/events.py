@@ -101,8 +101,16 @@ class AuditEventType(StrEnum):
     # ── Config + compliance ──────────────────────────────────────────
     CONFIG_CHANGED = "config:changed"
     COMPLIANCE_EXPORT_REQUESTED = "compliance:export_requested"
+    COMPLIANCE_EXPORT_COMPLETED = "compliance:export_completed"
+    COMPLIANCE_EXPORT_FAILED = "compliance:export_failed"
     COMPLIANCE_ERASURE_REQUESTED = "compliance:erasure_requested"
+    COMPLIANCE_ERASURE_APPROVED = "compliance:erasure_approved"
     COMPLIANCE_ERASURE_COMPLETED = "compliance:erasure_completed"
+    COMPLIANCE_ERASURE_FAILED = "compliance:erasure_failed"
+    COMPLIANCE_LEGAL_HOLD_APPLIED = "compliance:legal_hold_applied"
+    COMPLIANCE_LEGAL_HOLD_RELEASED = "compliance:legal_hold_released"
+    COMPLIANCE_EVIDENCE_BUNDLE_GENERATED = "compliance:evidence_bundle_generated"
+    COMPLIANCE_RESIDENCY_VIOLATION = "compliance:residency_violation"
 
     def category(self) -> EventCategory:
         """Return the parent ``EventCategory`` of this event type."""

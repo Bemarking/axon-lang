@@ -6,6 +6,8 @@ surface in ``repr()`` or structured logs.
 """
 
 from axon_enterprise.config.settings import (
+    ComplianceBlobBackend,
+    ComplianceSettings,
     DatabaseSettings,
     EnvelopeBackend,
     EnvelopeSettings,
@@ -25,6 +27,8 @@ from axon_enterprise.config.settings import (
 )
 
 __all__ = [
+    "ComplianceBlobBackend",
+    "ComplianceSettings",
     "DatabaseSettings",
     "EnvelopeBackend",
     "EnvelopeSettings",

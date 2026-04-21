@@ -72,6 +72,8 @@ class MembershipStatus(StrEnum):
     INVITED = "invited"          # invite pending acceptance
     ACTIVE = "active"
     SUSPENDED = "suspended"
+    ERASED_PENDING = "erased_pending"  # soft-delete inside reversion window
+    ERASED = "erased"                  # anonymized — PII irrevocably scrubbed
 
 
 class SessionStatus(StrEnum):
