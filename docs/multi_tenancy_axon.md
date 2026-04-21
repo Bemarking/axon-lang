@@ -20,7 +20,7 @@
 | 10.b | Identity Core (Users, Argon2id, TOTP, sessions, memberships) | ✅ Completo |
 | 10.c | RBAC Production-Grade (persisted, tenant-scoped, hierarchy, enforcement) | ✅ Completo |
 | 10.d | SSO Real (OIDC + SAML con verificación de firma) | ✅ Completo |
-| 10.e | JWT Issuer + JWKS rotation (cierra el gap "no signature verification" de Rust) | ⏳ Pendiente |
+| 10.e | JWT Issuer + JWKS rotation (cierra el gap "no signature verification" de Rust) | ✅ Completo |
 | 10.f | Secrets Service (API per-tenant, escribe a AWS SM, audit integrado) | ⏳ Pendiente |
 | 10.g | Audit Hash-Chain (append-only + stitch a ESK provenance_chain) | ⏳ Pendiente |
 | 10.h | Metering + Quota Enforcement (pricing plans, Stripe, rate limiting) | ⏳ Pendiente |
@@ -547,7 +547,32 @@ CREATE TABLE sso_configurations (
 
 ### 10.e — JWT Issuer + JWKS rotation
 
-**Estado:** ⏳ Pendiente — **Depende de:** 10.b, 10.d
+**Estado:** ✅ Completo (2026-04-21) — **Depende de:** 10.b, 10.d
+
+**Shipped commits:**
+- `axon-enterprise` `2743633` feat(fase-10.e): JwtIssuer + JWKS rotation + revocation
+- `axon-enterprise` `514215b` test+docs(fase-10.e): unit + integration + JWT.md guide
+- `axon-lang`  `ae44d44` feat(runtime): JWT signature verification — closes §Fase 10.e gap
+
+**Archivos producidos (Python / axon-enterprise):**
+- `axon_enterprise/jwt_issuer/{__init__.py, errors.py, models.py, signer.py, local_signer.py, kms_signer.py, key_management.py, jwks.py, issuer.py, revocation.py}`
+- `axon_enterprise/config/settings.py` extendido con `JwtSettings` + production validator
+- `alembic/versions/20260421_0400_005_jwt_signing_keys.py` — tablas + partial unique index one-active
+- `tests/jwt_issuer/{test_local_signer, test_integration}.py` — 14 casos (7 unit + 7 integration)
+- `docs/JWT.md` — operator guide
+
+**Archivos producidos (Rust / axon-lang):**
+- `axon-rs/src/jwt_verifier.rs` — JwtVerifier + JwksClient con cache TTL + rotation-on-miss
+- `axon-rs/src/lib.rs` — módulo registrado
+- `axon-rs/src/tenant.rs` — middleware ahora prefiere verified-JWT sobre X-Tenant-ID cuando `AXON_JWT_JWKS_URL` está set
+- `axon-rs/Cargo.toml` + jsonwebtoken=9
+
+**Decisiones cerradas (preguntas abiertas de la sesión anterior):**
+- **Una sola llave KMS compartida entre tenants** — simplicidad operativa + clientes no necesitan pull-kid-por-tenant. Rotación c/90d mitiga el all-or-nothing revocation.
+- **`kid` = SHA-256(SPKI DER)[:16]** (UUID-like opaque, 16 hex chars) — no revela cadencia de rotación ni creation time.
+- **Redis para blacklist con Postgres fallback** — Redis para reads rápidos del verifier; Postgres siempre escribe (durabilidad). `is_revoked()` fail-closed: outage de Redis → fallthrough a Postgres, nunca silently permit.
+
+**Delta vs plan original:** + Partial unique index `uq_jwt_signing_keys_one_active` (invariante "one active key" enforced at DB level, no a nivel de aplicación), + reserved-claims overwrite en `JwtIssuer.mint` (callers no pueden silently impersonar tenants via `extra_claims`), + `enforce` flag en Rust verifier (deployments pre-10.e siguen funcionando con legacy path; enterprise flip a enforce=true vía env var), + local + KMS signer comparten mismo kid derivation (migrar entre backends no rota el kid), + `JwksClient` del Rust reutiliza el patrón de 10.d OIDC (TTL + force-refresh-on-miss).
 
 **Objetivo:** cierra el gap actual en `axon-rs/src/tenant.rs` donde el JWT se lee **sin verificar firma** (línea 100 de ese archivo: `Extracts tenant_id from a JWT payload without signature verification`). Emite JWTs firmados por Python, verificados por Rust contra JWKS público.
 
@@ -964,6 +989,11 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 | 2026-04-21 | 10.d: JWKS con force-refresh-on-kid-miss + Cache-Control: no-cache bypass | IdPs rotan llaves publicando la nueva kid minutos antes de usarla. Sin force-refresh, nuestro cache stale rechaza tokens legítimos firmados con kid nuevo. Bypass de Cache-Control es el segundo chance para CDN stale. |
 | 2026-04-21 | 10.d: `role_map` es additive-only (no revoca) en SSO login | Admins pueden grantear roles extra out-of-band (ej. promover un user temporalmente). Si SSO login los revocara por no estar en el IdP, eso pisa la decision manual del admin. Strict sync diferido hasta compliance explicita. |
 | 2026-04-21 | 10.d: Reveal-to-client matrix explícito en SsoError subclasses | Sin esto, HTTP middleware no sabe cuáles errors son safe to return vs cuáles deben collapsarse a 401 genérico. Leakear "nonce_mismatch" vs "state_invalid" permite a un attacker inferir qué parte del flow es el problema. |
+| 2026-04-21 | 10.e: Partial unique index `WHERE status='active'` en jwt_signing_keys | Enforces "one active key" invariant at the DB level. Sin esto, un bug en app code podría insertar dos rows active y el issuer elegiría una arbitrariamente. CHECK constraints no expresan "only one row" — partial unique lo hace. |
+| 2026-04-21 | 10.e: Reserved claims overwrite `extra_claims` en JwtIssuer.mint | Sin overwrite, un caller que pase `extra_claims={"tenant_id": "victim"}` silently impersonaría a otro tenant. Defensivo against programmer mistakes — callers pueden querer extend claims pero NUNCA sobrescribir iss/sub/aud/exp/iat/nbf/jti/tenant_id/roles. |
+| 2026-04-21 | 10.e: kid = SHA-256(SPKI DER)[:16] compartido entre Local + KMS signer | Migrar operator de local → KMS (o vice-versa) NO rota el kid mientras el public key del KMS sea el mismo. JWTs minted antes de la migration siguen verificando post-migration. Deterministic kid > random. |
+| 2026-04-21 | 10.e: Rust verifier con `enforce` flag + fallback legacy path | Pre-10.e deployments (incluyendo OSS/single-tenant) siguen funcionando sin `AXON_JWT_JWKS_URL` set — no breaking change. Enterprise deployments flip enforce=true via env, no code change. Gradual rollout vs hard cutover. |
+| 2026-04-21 | 10.e: Redis + Postgres para revocation (fail-closed en Redis down) | Redis solo sería insuficiente: ephemeral, datos perdidos en restart. Postgres solo: too slow en hot path. Ambos: Postgres es source of truth, Redis acelera. Critical: `is_revoked()` falla-closed (Redis down → checa Postgres) — nunca silently permite un token revocado. |
 
 ---
 
@@ -981,27 +1011,28 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 
 **Última actualización:** 2026-04-21
 
-**Próxima sesión — pickup point:** arrancar **10.e (JWT Issuer + JWKS rotation)** en el repo `axon-enterprise`.
+**Próxima sesión — pickup point:** arrancar **10.f (Secrets Service)** en el repo `axon-enterprise`.
 
-**Decisiones cerradas en esta sesión (10.d):**
-- OIDC + SAML juntos en 10.d (no iterativo). SAML delega a python3-saml con lazy import — dev puede correr el suite sin xmlsec.
-- `sso_configurations.config_encrypted` usa envelope del 10.b con AAD `{tenant_id, provider_type, purpose}` — reutiliza el patrón de TOTP secrets.
-- `auto_provision_default=true` + rate limit 30/min por `(tenant, provider)`. Interfaz sync para swap a Redis en 10.i.
-- SAML replay defence via UNIQUE constraint en `sso_assertion_seen` — no race window, lo que check-then-insert tendría.
-- OIDC discovery con stampede protection (asyncio.Lock + in-flight futures dedup) — N coroutines pidiendo la misma metadata disparan sólo 1 HTTP.
-- JWKS con force-refresh-on-kid-miss + opcional `Cache-Control: no-cache` bypass para IdP CDNs stale.
-- `role_map` additive-only: admin-granted roles sobreviven SSO login. `role_sync_mode=strict` diferido hasta que un cliente lo pida explicito.
+**Decisiones cerradas en esta sesión (10.e):**
+- Una sola llave KMS compartida entre tenants (no per-tenant) — simplicidad ops + rotación c/90d mitiga revocation al por mayor.
+- `kid = SHA-256(SPKI DER)[:16]` — opaque, no revela cadencia de rotación.
+- Partial unique index `uq_jwt_signing_keys_one_active` — invariante "one active" at DB level, no at app level.
+- Redis (fast) + Postgres (durable) para `jti` blacklist; fail-closed en Redis outage.
+- Rust verifier en mismo crate axon-rs — jsonwebtoken=9, hand-rolled error enum (no thiserror dep).
+- Middleware Rust con `enforce` flag — pre-10.e deployments siguen funcionando (legacy path), enterprise flip via env var.
 
-**Pre-requisitos para 10.e:**
-- [x] 10.a (persistence) + 10.b (identity) + 10.c (RBAC) + 10.d (SSO) completados
-- [x] PrincipalContext con role_names ya disponible para embedding en JWT claims
-- [x] Envelope encryption + KMS backend disponible desde 10.b
-- [ ] Decidir: una sola llave KMS compartida entre todos los tenants para firmar JWTs, vs una por tenant? Propongo **una compartida**: simplicidad operativa + clientes no necesitan pull kid-por-tenant; trade-off: revocación es all-or-nothing (pero rotación c/90d lo mitiga).
-- [ ] Decidir formato de `kid`: UUID aleatorio vs fecha-determinístico (`2026-04-21-primary`)? Propongo **UUID** — evita que observer del JWKS infiera política de rotación.
-- [ ] Decidir si la blacklist de `jti` vive en Redis (rápido, ephemeral) o Postgres (durable). Propongo **Redis** con fallback a Postgres solo si la revocación es permanente (deleted user, suspended tenant).
+**Pre-requisitos para 10.f:**
+- [x] 10.a + 10.b + 10.c + 10.d + 10.e completados
+- [x] Envelope encryption disponible desde 10.b
+- [x] M3 del plano Rust (AWS Secrets Manager per-tenant paths) ya implementado
+- [x] RBAC con permissions `secret:{list,read,write,delete,rotate}` ya en catalog (10.c)
+- [ ] Decidir scope de "secret read": ¿permission granular por secret key (`secret:read:openai_api_key`) o coarse (`secret:read`)? Propongo **coarse para 10.f, granular como feature opt-in**.
+- [ ] Decidir retention de versiones AWS SM: default 30d vs 90d. Propongo **90d** — matches compliance windows típicos.
+- [ ] Decidir audit event granularity — ¿emitir en CADA `secret:read` o solo en writes? Propongo **ambos** — reads enterprise deben ser auditados (SOC 2 CC.6.1 requires it).
 
 **Sesión abierta en:**
-- Commits mergeados a `origin/master` de `axon-enterprise` en `591a5a8`
+- `axon-enterprise`: commits hasta `514215b` (JWT issuer + tests + docs)
+- `axon-lang`:     commit `ae44d44` (Rust JWT verifier)
 - Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
 
 ---
