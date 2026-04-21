@@ -41,7 +41,12 @@ RUN set -eu; \
     mkdir -p /opt/axon; \
     tar -xzf /tmp/axon.tar.gz -C /opt/axon --strip-components=0; \
     chmod +x /opt/axon/axon; \
-    /opt/axon/axon --version
+    # Sanity check: the binary loads and prints *something*. `--help`
+    # is auto-added by clap and runs under the glibc of the base image,
+    # so a non-zero exit here would flag a broken binary or missing libc.
+    # Help text is redirected to /dev/null to keep build logs clean.
+    /opt/axon/axon --help >/dev/null 2>&1 \
+      || { echo "axon binary failed to run (exit $?)" >&2; exit 1; }
 
 # ─── Stage 2: Python enterprise layer ────────────────────────────────
 FROM python:3.12-slim-trixie AS python-layer
