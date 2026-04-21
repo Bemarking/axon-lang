@@ -19,7 +19,7 @@
 | 10.a | Persistence Foundation (SQLAlchemy 2 async + Alembic + RLS hookup) | ✅ Completo |
 | 10.b | Identity Core (Users, Argon2id, TOTP, sessions, memberships) | ✅ Completo |
 | 10.c | RBAC Production-Grade (persisted, tenant-scoped, hierarchy, enforcement) | ✅ Completo |
-| 10.d | SSO Real (OIDC + SAML con verificación de firma) | ⏳ Pendiente |
+| 10.d | SSO Real (OIDC + SAML con verificación de firma) | ✅ Completo |
 | 10.e | JWT Issuer + JWKS rotation (cierra el gap "no signature verification" de Rust) | ⏳ Pendiente |
 | 10.f | Secrets Service (API per-tenant, escribe a AWS SM, audit integrado) | ⏳ Pendiente |
 | 10.g | Audit Hash-Chain (append-only + stitch a ESK provenance_chain) | ⏳ Pendiente |
@@ -472,7 +472,30 @@ SELECT DISTINCT p.resource, p.action FROM role_tree rt
 
 ### 10.d — SSO Real (OIDC + SAML)
 
-**Estado:** ⏳ Pendiente — **Depende de:** 10.b
+**Estado:** ✅ Completo (2026-04-21) — **Depende de:** 10.b, 10.c
+
+**Shipped commits (axon-enterprise):**
+- `3a849f7` feat(fase-10.d): SSO foundation — settings, errors, models, config store
+- `ab2b1b2` feat(fase-10.d): OIDC + SAML providers + SsoService orchestrator
+- `89b5e77` test(fase-10.d): unit + integration suite for SSO
+- `591a5a8` docs(fase-10.d): rewrite SSO.md for the production-grade subsystem
+
+**Archivos producidos:**
+- `axon_enterprise/sso/{__init__.py, errors.py, models.py, configurations.py, state.py, rate_limit.py, mapper.py, service.py, saml_metadata.py}` — fundación + orquestador
+- `axon_enterprise/sso/oidc.py` (rewrite) + `oidc_pkce.py`, `oidc_discovery.py`, `oidc_jwks.py`, `oidc_id_token.py` — OIDC completo
+- `axon_enterprise/sso/saml.py` (rewrite) — python3-saml wrapper con replay defence
+- `axon_enterprise/sso/oauth.py` **eliminado** (out of scope)
+- `axon_enterprise/config/settings.py` extendido con `SsoSettings`
+- `alembic/versions/20260421_0300_004_sso_configurations.py` — 3 tablas con RLS
+- `tests/sso/{test_pkce, test_id_token, test_saml_metadata, test_rate_limit, test_config_integration}.py` — 34 casos (27 unit + 7 integration)
+- `docs/SSO.md` rewrite completo con reveal-to-client matrix
+
+**Decisiones cerradas (preguntas abiertas de la sesión anterior):**
+- OIDC + SAML shippeados **juntos** en 10.d (no iterativo). SAML delega a python3-saml con lazy import — xmlsec no requerido en dev.
+- `sso_configurations.config_encrypted` usa envelope del 10.b con AAD `{tenant_id, provider_type, purpose=sso_config}` — cohesivo con el patrón existente de TOTP secrets.
+- `auto_provision_default=true` + rate limit 30/min/`(tenant, provider)` via `InMemoryRateLimiter`. Swap a Redis en 10.i cuando multi-replica.
+
+**Delta vs plan original:** + `SsoAssertionSeen` tabla dedicada (UNIQUE constraint-based replay defence vs check-then-insert race), + `oidc_discovery` con stampede protection (asyncio.Lock + in-flight futures dedup), + `oidc_jwks` con force-refresh-on-kid-miss + `Cache-Control: no-cache` bypass, + `saml_metadata.py` pure-Python (no xmlsec en metadata time), + `role_map` additive-only (admin-granted roles sobreviven SSO login — strict mode diferido), + reveal-to-client matrix explícito en errors para que HTTP middleware no leakee info por timing/message distinction.
 
 **Objetivo:** reemplazar los `return None` de v1.0.0 con SSO federado real. Soporta OIDC (Google Workspace, Azure AD, Okta) y SAML 2.0 (enterprise IdPs).
 
@@ -936,6 +959,11 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 | 2026-04-21 | 10.c: `@require_permission("x:y")` parsea at decoration time | Typos fallan at import (handler no se carga) en lugar de at request (handler loads pero nunca matchea). Elimina una clase entera de bugs silenciosos. |
 | 2026-04-21 | 10.c: Cycle prevention doble — _assert_no_cycle + UNION en CTE | UNION dedupes cycles en read (queries terminan incluso con cycle smuggled). _assert_no_cycle at write-time da error message explícito ("would create cycle") — fail-fast > fail-silently. Defensa en profundidad. |
 | 2026-04-21 | 10.c: BuiltInRoleProtected impide delete/rename de built-in roles | owner/admin/developer/viewer son contratos entre el sistema y los handlers — un handler que dice `@require_permission("tenant:read")` asume que "admin" rol existe y lo tiene. Renombrar o borrar un built-in rompe el contrato. |
+| 2026-04-21 | 10.d: SAML replay defence via UNIQUE constraint en BD (no check-then-insert) | Check-then-insert tiene race window (dos requests simultáneos con mismo assertion_id pasan el check, luego uno falla el insert). UNIQUE constraint hace la concurrencia de Postgres hacer el trabajo — atomic by construction. |
+| 2026-04-21 | 10.d: OIDC discovery con asyncio.Lock + in-flight futures dedup | N requests al mismo issuer en paralelo disparaban N HTTP fetches sin dedup. Con dedup solo 1 fetch + N coroutines esperan el mismo future. Reduce latencia P99 y carga en el IdP. |
+| 2026-04-21 | 10.d: JWKS con force-refresh-on-kid-miss + Cache-Control: no-cache bypass | IdPs rotan llaves publicando la nueva kid minutos antes de usarla. Sin force-refresh, nuestro cache stale rechaza tokens legítimos firmados con kid nuevo. Bypass de Cache-Control es el segundo chance para CDN stale. |
+| 2026-04-21 | 10.d: `role_map` es additive-only (no revoca) en SSO login | Admins pueden grantear roles extra out-of-band (ej. promover un user temporalmente). Si SSO login los revocara por no estar en el IdP, eso pisa la decision manual del admin. Strict sync diferido hasta compliance explicita. |
+| 2026-04-21 | 10.d: Reveal-to-client matrix explícito en SsoError subclasses | Sin esto, HTTP middleware no sabe cuáles errors son safe to return vs cuáles deben collapsarse a 401 genérico. Leakear "nonce_mismatch" vs "state_invalid" permite a un attacker inferir qué parte del flow es el problema. |
 
 ---
 
@@ -953,25 +981,27 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 
 **Última actualización:** 2026-04-21
 
-**Próxima sesión — pickup point:** arrancar **10.d (SSO Real — OIDC + SAML)** en el repo `axon-enterprise`.
+**Próxima sesión — pickup point:** arrancar **10.e (JWT Issuer + JWKS rotation)** en el repo `axon-enterprise`.
 
-**Decisiones cerradas en esta sesión (10.c):**
-- Catálogo de 32 permissions en 8 resources seedeado por migration 003 — `INSERT ... ON CONFLICT DO NOTHING` lo hace idempotent, agregar permissions es una migration nueva (no cambio de código)
-- Owner role creado per-tenant con TODOS los permissions enumerados (no wildcard) — sobrevive catalog growth y hace audits determinísticos
-- Granularidad coarse en flow:execute por ahora — `scope_pattern` diferido hasta que un cliente real lo requiera
-- `permissions` table es global sin RLS — es un closed set compartido, impedir que tenants inventen permission strings no-enforzables
-- `role_permissions` + `user_roles` carrying denormalized tenant_id → evita JOIN en policy RLS (que puede causar recursive policy evaluation)
-- Recursive CTE con `UNION` (no `UNION ALL`) — dedup termina smuggled cycles; _assert_no_cycle en write path da error messages claros
+**Decisiones cerradas en esta sesión (10.d):**
+- OIDC + SAML juntos en 10.d (no iterativo). SAML delega a python3-saml con lazy import — dev puede correr el suite sin xmlsec.
+- `sso_configurations.config_encrypted` usa envelope del 10.b con AAD `{tenant_id, provider_type, purpose}` — reutiliza el patrón de TOTP secrets.
+- `auto_provision_default=true` + rate limit 30/min por `(tenant, provider)`. Interfaz sync para swap a Redis en 10.i.
+- SAML replay defence via UNIQUE constraint en `sso_assertion_seen` — no race window, lo que check-then-insert tendría.
+- OIDC discovery con stampede protection (asyncio.Lock + in-flight futures dedup) — N coroutines pidiendo la misma metadata disparan sólo 1 HTTP.
+- JWKS con force-refresh-on-kid-miss + opcional `Cache-Control: no-cache` bypass para IdP CDNs stale.
+- `role_map` additive-only: admin-granted roles sobreviven SSO login. `role_sync_mode=strict` diferido hasta que un cliente lo pida explicito.
 
-**Pre-requisitos para 10.d:**
-- [x] 10.a + 10.b + 10.c completados
-- [x] PrincipalContext + CURRENT_PRINCIPAL ContextVar listos
-- [ ] Decidir si OIDC + SAML se shippean juntos o OIDC primero (SAML más complicado, requires XML signature verification) — propongo OIDC en una iteración, SAML en una iteración posterior dentro de la misma 10.d
-- [ ] Decidir cómo guardar `sso_configurations.config_encrypted` — ¿usar envelope (10.b crypto) con AAD `{tenant_id, purpose=sso_config}`? — YES, esto es lo cohesivo con el patrón existente
-- [ ] Decidir auto_provisioning default — ¿si `auto_provision=true` el primer login de un usuario nuevo crea User + TenantMembership automáticamente? propongo YES pero con rate limiting por IdP para prevent floods
+**Pre-requisitos para 10.e:**
+- [x] 10.a (persistence) + 10.b (identity) + 10.c (RBAC) + 10.d (SSO) completados
+- [x] PrincipalContext con role_names ya disponible para embedding en JWT claims
+- [x] Envelope encryption + KMS backend disponible desde 10.b
+- [ ] Decidir: una sola llave KMS compartida entre todos los tenants para firmar JWTs, vs una por tenant? Propongo **una compartida**: simplicidad operativa + clientes no necesitan pull kid-por-tenant; trade-off: revocación es all-or-nothing (pero rotación c/90d lo mitiga).
+- [ ] Decidir formato de `kid`: UUID aleatorio vs fecha-determinístico (`2026-04-21-primary`)? Propongo **UUID** — evita que observer del JWKS infiera política de rotación.
+- [ ] Decidir si la blacklist de `jti` vive en Redis (rápido, ephemeral) o Postgres (durable). Propongo **Redis** con fallback a Postgres solo si la revocación es permanente (deleted user, suspended tenant).
 
 **Sesión abierta en:**
-- Commits mergeados a `origin/master` de `axon-enterprise` en `c8e21b2`
+- Commits mergeados a `origin/master` de `axon-enterprise` en `591a5a8`
 - Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
 
 ---
