@@ -23,7 +23,7 @@
 | 10.e | JWT Issuer + JWKS rotation (cierra el gap "no signature verification" de Rust) | ✅ Completo |
 | 10.f | Secrets Service (API per-tenant, escribe a AWS SM, audit integrado) | ✅ Completo |
 | 10.g | Audit Hash-Chain (append-only + stitch a ESK provenance_chain) | ✅ Completo |
-| 10.h | Metering + Quota Enforcement (pricing plans, Stripe, rate limiting) | ⏳ Pendiente |
+| 10.h | Metering + Quota Enforcement (pricing plans, Stripe, rate limiting) | ✅ Completo |
 | 10.i | Observability Wiring (Prometheus per-tenant, OTel con tenant baggage, structured logs) | ⏳ Pendiente |
 | 10.j | Admin API + CLI (tenant CRUD, user mgmt, key rotation, suspension) | ⏳ Pendiente |
 | 10.k | Tenant Self-Service Portal API (invitaciones, SSO config, API keys) | ⏳ Pendiente |
@@ -780,7 +780,27 @@ Cada servicio (TenantService, UserService, SecretsService, RBACService) toma un 
 
 ### 10.h — Metering + Quota Enforcement
 
-**Estado:** ⏳ Pendiente — **Depende de:** 10.a
+**Estado:** ✅ Completo (2026-04-21) — **Depende de:** 10.a, 10.c, 10.g
+
+**Shipped commits (axon-enterprise):**
+- `7113d2e` feat(fase-10.h): metering + quota enforcement + invoicing
+- `a7374b7` test+docs(fase-10.h): metering suite + METERING.md operator guide
+
+**Archivos producidos:**
+- `axon_enterprise/metering/{__init__.py, errors.py, events.py, pricing.py, models.py, limiter.py, quota.py, invoicing.py, stripe_client.py, service.py}`
+- `axon_enterprise/metering/collector.py` **eliminado** (v1.0.0 scaffolding con `organization_id`)
+- `axon_enterprise/config/settings.py` extendido con `MeteringSettings` + `_validate_metering_production`
+- `alembic/versions/20260421_0700_008_metering.py` — 4 tablas + seed de 3 planes
+- `tests/metering/{test_pricing_and_limiter, test_invoicing, test_service_integration}.py` — 31 casos (22 unit + 9 integration)
+- `docs/METERING.md` rewrite completo
+
+**Decisiones cerradas (preguntas abiertas de la sesión anterior):**
+- **Hybrid pricing model**: flat-tier con base + overage en Pro/Enterprise. Starter con hard_cap (free trial gate). Enterprise overage rates negociables (ejecuciones a 0c por default).
+- **Redis para rate limits + Postgres para quotas mensuales**. Redis usa Lua script atómico (ZADD+ZRANGEBYSCORE) en un solo round-trip; Postgres es source of truth authoritativo para billing.
+- **Stripe hybrid**: webhook-driven para payment events + draft-status invoices cuando Stripe disabled (operator review). Webhook signature verification via `stripe.Webhook.construct_event`.
+- **Hard-cap immediate enforcement**: starter tenants excediendo limit reciben `QuotaExceeded` (mapping a 402 Payment Required) sin grace period. Error carries `metric`, `quantity`, `limit` para UI points-to-upgrade.
+
+**Delta vs plan original:** + `MetricUnit` enum pareado con `MetricType` (aggregator suma within-unit only — previene mezclar tokens con GB), + `UsageSample` dataclass input (inmutable; callers nunca construyen `UsageEvent` ORM directamente), + **Rate limiter con quantity accumulation** (TPM counts tokens, no calls — RPM counts calls, aggregation correcta por dimension), + invoice **UNIQUE (tenant, period_start, period_end)** DB-enforced idempotency (batch jobs seguros), + `InvoiceGenerator` como pure function unit-testable sin DB, + overage math con `math.ceil` (nunca bill fractions of a cent), + millicents para compute time (track sub-cent provider costs accurate), + Stripe client con `enabled` property check (graceful degrade cuando not configured), + `MeteringAuditEmitter` Protocol (default no-op → audit adapter wired en 10.j), + `CHECK period_end > period_start` en invoices (DB-level sanity), + composite index `(tenant_id, metric_type, recorded_at)` en usage_events (aggregate queries O(log N)).
 
 **Objetivo:** metering real (con tenant_id, no organization_id), pricing plans, integración Stripe, y **enforcement** (rate limiting, not just tracking).
 
@@ -1043,6 +1063,13 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 | 2026-04-21 | 10.g: `AuditChainReport` dataclass (no raise) + `require_chain_healthy` wrapper | Verify walks chain; dashboards necesitan output estructurado (sequence_number, reason), no stack trace. Wrapper lets scripts usar exception-flow cuando prefieran. Best of both. |
 | 2026-04-21 | 10.g: `pg_advisory_xact_lock(hashtext(tenant_id))` per-write | Sin lock, dos writers en mismo tenant pueden computar sequence_number=N concurrente; UNIQUE constraint rechaza uno pero lo convierte en error bandwidth. Advisory lock serializa dentro del tenant, cross-tenant writers no contend porque hashtext distinto. |
 | 2026-04-21 | 10.g: Enum AuditEventType cerrado (41 valores, extension via migration) | Permitir adopters definir event types dinámicamente rompería retention policies + SIEM integration (queries filtran por type string — catálogo open = queries becomes brittle). Migration gate forces doc + code review cuando alguien agrega un evento. |
+| 2026-04-21 | 10.h: Hybrid pricing (flat-tier con overage) en lugar de puro usage-based | Flat-tier da predictabilidad a buyers (CFO-friendly); overage captures power-users sin requerir negociación custom. Stripe soporta ambos via InvoiceItem + Invoice separados. |
+| 2026-04-21 | 10.h: `math.ceil` en overage math (never fractions of a cent) | Billing accuracy. Floor puede dar al cliente gratis; round-half-up puede overcharge por 0.5c en boundary cases. Ceiling es conservative (siempre al favor del emisor) y el overcharge max es 1c — auditable, no payment dispute. |
+| 2026-04-21 | 10.h: Millicents (1/1000 USD) para compute time | LLM provider cost passthrough cuesta $0.00003 / 1M tokens — expresarlo en cents rounded sería 0. Millicents dan precisión 1000x sin cambiar storage to decimal. Convert to cents (ceil) at invoice boundary. |
+| 2026-04-21 | 10.h: Rate limiter con `quantity` accumulation (no solo count) | Sin quantity, TPM (tokens-per-minute) no se puede enforcer: un request con 10k tokens contaría igual que uno con 100. Quantity accum permite una sola abstracción para RPM + TPM + futuras dimensions (egress bytes, compute seconds). |
+| 2026-04-21 | 10.h: `UNIQUE (tenant, period_start, period_end)` en invoices | Batch jobs pueden re-correr por retry logic. Sin UNIQUE, un retry generaría un segundo invoice → double-billing. DB-level constraint converts retries en idempotent (`InvoiceAlreadyIssued` raise). |
+| 2026-04-21 | 10.h: MetricUnit pareado a MetricType — no mezclar units en aggregate | Aggregator que suma sin check de unit podría combinar tokens + bytes + seconds en un solo número. Pareando type → default unit, el aggregator rechaza mezclas en write time si el caller intenta override incorrectamente. |
+| 2026-04-21 | 10.h: Stripe integration opcional (draft status cuando disabled) | Operators pueden correr Axon sin Stripe (self-hosted enterprise con billing manual). Mantener stripe_enabled=false como default respeta el "OSS-friendly" y fail-fast cuando enterprise-tier olvida setearlo. |
 
 ---
 
@@ -1060,9 +1087,36 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 
 **Última actualización:** 2026-04-21
 
-**Próxima sesión — pickup point:** arrancar **10.h (Metering + Quota Enforcement)** en el repo `axon-enterprise`.
+**Próxima sesión — pickup point:** arrancar **10.i (Observability Wiring)** en el repo `axon-enterprise`.
 
-**Decisiones cerradas en esta sesión (10.g):**
+**Decisiones cerradas en esta sesión (10.h):**
+- Hybrid pricing: flat-tier + overage en Pro/Enterprise, hard_cap en starter (free trial).
+- Redis Lua atómico para rate limits; Postgres aggregate para quotas mensuales.
+- Stripe webhook-driven + draft invoices cuando disabled. Signature verification obligatoria cuando enabled.
+- `math.ceil` en overage calc — nunca fractions of a cent.
+- Millicents para compute time — track sub-cent provider costs.
+- `UNIQUE (tenant, period_start, period_end)` en invoices — DB-enforced idempotency.
+- Rate limiter con quantity accumulation — TPM counts tokens correctly, no just calls.
+- `MetricUnit` pareado a `MetricType` — aggregator suma within-unit only.
+
+**Pre-requisitos para 10.i:**
+- [x] 10.a..10.h completados
+- [x] MeteringService + AuditService emitiendo structured logs listos para metrics scrape
+- [x] Todos los services (identity/rbac/sso/secrets/metering) con `_logger = structlog.get_logger(...)` wired
+- [ ] Decidir backend OTel: ¿OTLP directo vs sidecar Collector? Propongo **sidecar Collector** — isolation del backend change, K8s idiomatic, easier to swap Datadog ↔ Grafana Cloud.
+- [ ] Decidir metric namespace: ¿`axon_enterprise_*` vs `axon_*`? Propongo **`axon_*`** — matches con lo que Rust emitirá, single grep surface.
+- [ ] Decidir structured log destination: stdout (K8s-style) vs direct SIEM (Datadog/Splunk)? Propongo **stdout + K8s fluentd → Datadog** — no direct SDK dep, easier to test, operator flexibility.
+- [ ] Decidir high-cardinality strategy: ¿tenant_id como label en cada metric (prometheus retention explosion) o aggregate via exemplars? Propongo **tenant_id en top-level buckets only** (requests / errors) + **no label** en performance metrics (latency, tokens) — trade-off deliberate.
+
+**Sesión abierta en:**
+- `axon-enterprise`: commits hasta `a7374b7` (Metering + tests + docs)
+- Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
+
+---
+
+### Decisiones previas (archived)
+
+**Decisiones cerradas en sesión 10.g:**
 - Canonical JSON compartido con ESK — byte-identical hash input Python↔Rust.
 - Append-only via trigger Postgres con SQLSTATE 42501 — defensivo incluso contra rogue psql.
 - Hash chain **per-tenant** (genesis determinístico por tenant_id).
@@ -1072,19 +1126,6 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 - Triggers cubren UPDATE + DELETE + **TRUNCATE** (el último vector que bypass UPDATE/DELETE triggers).
 - `ip_address TEXT` (no INET) — Postgres no debe canonicalizar o rompe hash recomputation.
 - Enum AuditEventType cerrado (41 valores) — extensión requires migration, nunca hot-fix.
-
-**Pre-requisitos para 10.h:**
-- [x] 10.a..10.g completados
-- [x] AuditService disponible para emitir `metering:*` events y `tenant:plan_changed`
-- [x] RBAC con `metering:{read,export_invoice}` ya en catalog (10.c)
-- [ ] Decidir pricing model inicial — ¿flat-tier (starter/pro/enterprise) con limits fijos, o usage-based tiered con overage? Propongo **hybrid**: base plan con limits + overage billing, mapea bien a tablas AWS/Stripe.
-- [ ] Decidir backend de quota counters — Redis (fast, ephemeral) vs Postgres (durable). Para rate limits de corto plazo (req/min): Redis. Para quotas mensuales (tokens/month): Postgres counters + periodic reset.
-- [ ] Decidir sync model con Stripe: ¿webhook-driven (reactivo) o polling (preventivo)? Propongo **ambos**: webhook para pagos + polling diario como reconciliation.
-- [ ] Decidir gracia en `hard_cap`: cuando un tenant starter excede limit, ¿bloquear inmediate o 1h grace? Propongo **immediate** (hard cap significa hard cap) + clear error message pointing to upgrade.
-
-**Sesión abierta en:**
-- `axon-enterprise`: commits hasta `216ee5d` (Audit hash-chain + tests + docs)
-- Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
 
 ---
 
