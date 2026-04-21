@@ -26,7 +26,7 @@
 | 10.h | Metering + Quota Enforcement (pricing plans, Stripe, rate limiting) | ✅ Completo |
 | 10.i | Observability Wiring (Prometheus per-tenant, OTel con tenant baggage, structured logs) | ✅ Completo |
 | 10.j | Admin API + CLI (tenant CRUD, user mgmt, key rotation, suspension) | ✅ Completo |
-| 10.k | Tenant Self-Service Portal API (invitaciones, SSO config, API keys) | ⏳ Pendiente |
+| 10.k | Tenant Self-Service Portal API (invitaciones, SSO config, API keys) | ✅ Completo |
 | 10.l | Compliance Tooling (GDPR export JSONL, right-to-erasure, data residency) | ⏳ Pendiente |
 | 10.m | Testing + Security Audit (cross-tenant isolation, load, threat model) | ⏳ Pendiente |
 
@@ -963,7 +963,36 @@ Ambos comparten la misma `AdminService`; el CLI es un wrapper Typer sobre HTTP a
 
 ### 10.k — Tenant Self-Service Portal API
 
-**Estado:** ⏳ Pendiente — **Depende de:** 10.c, 10.d, 10.f
+**Estado:** ✅ Completo — **Depende de:** 10.c, 10.d, 10.f, 10.h, 10.j
+
+**Commits (axon-enterprise):**
+- `dd1bfde` feat(fase-10.k): api-keys + invitations modules + migración 009
+- `5284da4` feat(fase-10.k): portal `/api/v1` router + Stripe webhook handler
+- `10af220` test+docs(fase-10.k): portal + webhook tests + `PORTAL_API.md`
+
+**Entregado:**
+- `axon_enterprise/api_keys/` — M2M keys `axk_<uuid>` con Argon2id en-reposo. Prefix 8-hex indexado para lookup O(1); raw key surface exactly once on create; migración `009_tenant_api_keys` con RLS + `UNIQUE (tenant_id, key_prefix)`.
+- `axon_enterprise/invitations/` — magic-link lifecycle on top de `tenant_memberships` (sin tabla nueva). SHA-256 token hash + 72h TTL + one-time consume on accept. Replay blocked by clearing `invitation_token_hash` en accept.
+- `axon_enterprise/http/api/` — router `/api/v1/*`:
+  - `auth/` login/refresh/logout/invite-accept
+  - `sso/` OIDC initiate+callback; SAML metadata+ACS (tenant_id como path param)
+  - `tenant/users` invite/list/deactivate/update-roles
+  - `tenant/api-keys` CRUD (raw key echoed one time)
+  - `tenant/usage` current-period totals + invoices list
+  - `tenant/compliance` GDPR export/erasure → 202 + ticket_id + audit event (execución completa diferida a 10.l)
+- `axon_enterprise/http/webhooks/` — `/webhooks/stripe` con verificación HMAC vía `StripeClient.verify_webhook`. Mapea `invoice.finalized/paid/payment_failed/voided` → transiciones de estado idempotentes. Eventos no reconocidos devuelven 204 para detener retries.
+- `app.py` monta los tres routers (`/admin`, `/api/v1`, `/webhooks`) en el mismo Starlette app. `AuthMiddleware` ganó `public_prefixes` para SAML (tenant_id en path) + webhooks (re-auth por firma).
+- `docs/PORTAL_API.md` — guía de operador: reglas de auth por prefijo, contrato por ruta, formato de error envelope.
+- `tests/api_keys/`, `tests/invitations/`, `tests/http/test_portal_integration.py`, `tests/http/webhooks/test_stripe_webhook_unit.py` — unit + integration coverage.
+
+**Decisiones cerradas:**
+- **Password login + SSO coexisten** — el portal no impone SSO-only; `tenant.sso.required` puede activarse por tenant (hook ya disponible vía `SsoConfigurationService`, consumo por UI pendiente).
+- **Magic link via DB-hashed one-time token** (no Redis) — SHA-256 hash + `invitation_expires_at` en `tenant_memberships`; zero nueva infra, replay-safe por construcción. Email delivery queda para 10.l (mailer service).
+- **API key shape: `axk_<UUID4 hex>` + Argon2id** — UUID opaque (no JWT, sin claims a mantener); prefix `axk_` greppable en logs; primeros 8 hex chars indexados para verify O(1).
+- **Stripe webhook público con signature verification** — Stripe IPs rotan constantemente; firma HMAC es el security boundary real. `AuthMiddleware` skip por prefix `/webhooks/`.
+- **No dedupe table en 10.k** — las transiciones de estado (`paid` → `paid`) son idempotentes; 10.l agrega `processed_webhooks` cuando lleguen handlers con side-effects destructivos (ej. tenant suspension por impago).
+- **Compliance endpoints aceptan + emiten audit event + devuelven ticket (202)** — la ejecución real (ZIP bundle, purga) aterriza en 10.l. Separar ingreso de ejecución permite test coverage temprano y mantiene el SLA visible al cliente.
+- **`AuthMiddleware.public_prefixes`** — agregado como segundo argumento; necesario para matchear rutas paramétricas (SAML `{tenant_id}`) y webhook subtrees sin listar cada path.
 
 **Objetivo:** endpoints para el owner de cada tenant — gestión sin intervención de soporte.
 
@@ -1125,35 +1154,45 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 
 **Última actualización:** 2026-04-21
 
-**Próxima sesión — pickup point:** arrancar **10.k (Tenant Self-Service Portal API)** en el repo `axon-enterprise`.
+**Próxima sesión — pickup point:** arrancar **10.l (Compliance Tooling)** en el repo `axon-enterprise`.
 
-**Decisiones cerradas en esta sesión (10.j):**
-- Starlette puro (no FastAPI) — menos magic, compatible con middleware existente.
-- Un solo server con routing prefix (`/admin/*` + `/api/v1/*`), ingress IP allowlist para admin.
-- Typer CLI — types first-class, auto-help.
-- Error mapping matrix con reveal_to_client collapse — previene enumeration via distinct error messages.
-- Password-from-stdin guard en CLI — argv es visible en `ps(1)`.
-- AuthMiddleware valida JWT también en Python handler side (complementa el Rust verifier de 10.e).
-- Pagination hybrid: offset para admin tables + cursor helpers para 10.k.
+**Decisiones cerradas en esta sesión (10.k):**
+- Password + SSO coexisten en el portal; `tenant.sso.required` como flag futuro no bloquea login hoy.
+- Magic-link via `invitation_token_hash` (SHA-256) + `invitation_expires_at` en `tenant_memberships` — zero infra nueva (sin Redis); TTL 72h.
+- API key shape `axk_<uuid4-hex>` + Argon2id at-rest; primeros 8 hex chars indexados para verify O(1); raw key echoed exactly once.
+- Webhooks públicos con signature verification (`/webhooks/stripe` usa la firma HMAC del SDK oficial como security boundary).
+- Eventos `invoice.*` manejados explícitamente; otros devuelven 204 para cerrar el retry loop de Stripe.
+- Compliance endpoints aceptan el request + emiten audit event + entregan ticket; ejecución real (ZIP, purga) queda para 10.l.
+- `AuthMiddleware` ganó `public_prefixes` para cubrir rutas paramétricas (SAML `{tenant_id}`) y webhooks sin enumerar paths.
 
-**Pre-requisitos para 10.k:**
-- [x] 10.a..10.j completados
-- [x] `SsoService` + `SsoConfigurationService` listos para exponer configs en portal
-- [x] `AuthService` listo para exponer session refresh + login via portal
-- [x] `SecretsService` listo para portal CRUD
-- [x] `MeteringService` listo para exponer usage + invoice lookups
-- [ ] Decidir auth flow del portal: ¿password login directo o siempre via SSO? Propongo **ambos** según `tenant.sso.required` flag — algunos clientes requieren SSO-only (compliance), otros mezclan.
-- [ ] Decidir invitation flow — ¿magic link email o plain JSON endpoint? Propongo **magic link** (HMAC-signed JWT short-lived + Redis one-time use) → email delivery por 10.l.
-- [ ] Decidir API key shape para M2M integrations — ¿UUID opaque vs JWT? Propongo **UUID opaque con Argon2id hash en BD**, scoped per-tenant, prefix `axk_` para grep ergonomics.
-- [ ] Decidir Stripe webhook route — ¿`/webhooks/stripe` público con signature verification (10.h) o bajo `/admin/webhooks/stripe` con IP allowlist? Propongo **público** — Stripe IPs rotan, signature verification es el security boundary.
+**Pre-requisitos para 10.l:**
+- [x] 10.a..10.k completados
+- [x] `AuditService` con hash chain per-tenant listo para exports forenses (verify + list_events)
+- [x] RLS + `admin_bypass` listos para cross-tenant compliance exports (operator con `axon_admin` role DB-level)
+- [x] Stubs `/api/v1/tenant/compliance/export` y `/erase` ya aceptan requests y emiten `compliance:*` audit events
+- [ ] Decidir formato de export bundle — ¿JSON-per-table ZIP vs JSONL stream vs Parquet? Propongo **JSONL stream** (gzip) — fácil de ingest en client tooling, evita cargar dataset completo en memoria, compatible con Postgres `COPY ... TO STDOUT`.
+- [ ] Decidir ventana de reversión para Right to Erasure — 7 días (propuesta original) vs 30 días (GDPR SLA). Propongo **7 días soft-delete + 30 días anonymize** — dos etapas distintas, el soft-delete da ventana legal, el anonymize garantiza el SLA.
+- [ ] Decidir dónde corre el ejecutor — ¿worker dedicado con cola Postgres (SKIP LOCKED) o handler inline con timeout largo? Propongo **worker dedicado** — el export de un tenant grande puede tardar minutos, no puede monopolizar un gunicorn worker.
+- [ ] Decidir legal-hold — ¿flag per-user que bloquea purge durante litigio? Propongo **sí, `users.legal_hold` + audit trail cuando se activa/desactiva** — requisito estándar de empresas enterprise.
+- [ ] Decidir alcance data-residency inicial — ¿solo validación de region label en tenant create + middleware redirect, o deployment multi-region con Terraform? Propongo **start con validación + middleware**, multi-region deployment en una fase posterior (no bloquea GA).
+- [ ] Decidir formato de evidence bundle SOC 2 — reusar `EvidencePackager` de ESK (`Paper_Runtime_Cognitivo_MEK.md`) o implementación dedicada. Propongo **reusar ESK** — ya valida dossier + SBOM + provenance, compliance team ya lo conoce.
 
 **Sesión abierta en:**
-- `axon-enterprise`: commits hasta `3cc018c` (Admin API + CLI)
+- `axon-enterprise`: commits hasta `10af220` (Portal API + Stripe webhook + tests + docs)
 - Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
 
 ---
 
 ### Decisiones archivadas (sesiones anteriores)
+
+**Decisiones cerradas en sesión 10.j:**
+- Starlette puro (no FastAPI) — menos magic, compatible con middleware existente.
+- Un solo server con routing prefix (`/admin/*` + `/api/v1/*`), ingress IP allowlist para admin.
+- Typer CLI — types first-class, auto-help.
+- Error mapping matrix con `reveal_to_client` collapse — previene enumeration via distinct error messages.
+- Password-from-stdin guard en CLI — argv es visible en `ps(1)`.
+- AuthMiddleware valida JWT también en Python handler side (complementa el Rust verifier de 10.e).
+- Pagination hybrid: offset para admin tables + cursor helpers para 10.k usage/audit tables.
 
 **Decisiones cerradas en sesión 10.i:**
 - OTel Collector sidecar — backend-agnostic, K8s idiomatic.
