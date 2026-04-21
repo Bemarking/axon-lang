@@ -228,6 +228,79 @@ class IdentitySettings(BaseSettings):
     session_refresh_token_bytes: int = Field(default=64, ge=32)
 
 
+JwtSignerBackend = Literal["local", "kms"]
+
+
+class JwtSettings(BaseSettings):
+    """JWT issuance + JWKS rotation configuration.
+
+    Two signing backends are supported:
+
+    - ``local`` — an RSA private key loaded from
+      ``AXON_JWT_LOCAL_PRIVATE_KEY_PEM``. Dev/test only.
+    - ``kms`` — ``kms:Sign`` calls against a KMS key. Private material
+      never leaves the HSM. Production.
+
+    The ``iss`` claim is ``AXON_JWT_ISSUER`` — must match what the
+    Rust runtime has configured in its JWT verifier.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="AXON_JWT_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # Signer
+    signer_backend: JwtSignerBackend = "kms"
+    # ``kms`` backend
+    kms_region: str | None = None
+    # ``local`` backend
+    local_private_key_pem: SecretStr | None = Field(
+        default=None,
+        description="PEM-encoded RSA private key. Required when signer_backend='local'.",
+    )
+
+    # Emission
+    issuer: str = Field(
+        default="https://auth.bemarking.com",
+        description="Value of the `iss` claim. Must match what Rust verifies.",
+    )
+    audience: str = Field(
+        default="axon-api",
+        description="Value of the `aud` claim.",
+    )
+    access_token_ttl_seconds: int = Field(default=3600, ge=60)  # 1 hour
+    algorithm: str = Field(
+        default="RS256",
+        pattern=r"^(RS256|RS384|RS512)$",
+        description="Signing algorithm. HS* and ES* intentionally disallowed here.",
+    )
+
+    # Rotation policy
+    rotation_grace_days: int = Field(
+        default=7,
+        ge=1,
+        description="Overlap window where the previous key is still valid for verification.",
+    )
+    rotation_active_max_days: int = Field(
+        default=90,
+        ge=7,
+        description="Maximum age of an active signing key before rotation is forced.",
+    )
+
+    # Revocation
+    revocation_backend: Literal["memory", "redis", "postgres"] = "postgres"
+    redis_url: SecretStr | None = Field(
+        default=None,
+        description="Required when revocation_backend='redis'.",
+    )
+
+    # JWKS endpoint behaviour
+    jwks_cache_control_seconds: int = Field(default=600, ge=60)
+
+
 class SsoSettings(BaseSettings):
     """SSO / identity federation configuration."""
 
@@ -285,6 +358,7 @@ class Settings(BaseSettings):
     envelope: EnvelopeSettings = Field(default_factory=EnvelopeSettings)  # type: ignore[arg-type]
     identity: IdentitySettings = Field(default_factory=IdentitySettings)  # type: ignore[arg-type]
     sso: SsoSettings = Field(default_factory=SsoSettings)  # type: ignore[arg-type]
+    jwt: JwtSettings = Field(default_factory=JwtSettings)  # type: ignore[arg-type]
 
     # Tenant defaults — the GUC name must match axon-rs (M2 migration 005)
     default_tenant_id: str = "default"
@@ -332,6 +406,26 @@ class Settings(BaseSettings):
                 "envelope.local_key required when backend='local'; "
                 "generate one via `python -c 'from cryptography.fernet import Fernet; "
                 "print(Fernet.generate_key().decode())'`"
+            )
+        # JWT signer validation
+        if self.env is Environment.PRODUCTION:
+            if self.jwt.signer_backend == "local":
+                raise ValueError(
+                    "jwt.signer_backend='local' is not allowed in production; "
+                    "use 'kms' so private keys never leave the HSM."
+                )
+            if self.jwt.revocation_backend == "memory":
+                raise ValueError(
+                    "jwt.revocation_backend='memory' is not durable and is "
+                    "rejected in production. Use 'postgres' or 'redis'."
+                )
+        if self.jwt.signer_backend == "local" and self.jwt.local_private_key_pem is None:
+            raise ValueError(
+                "jwt.local_private_key_pem required when signer_backend='local'"
+            )
+        if self.jwt.revocation_backend == "redis" and self.jwt.redis_url is None:
+            raise ValueError(
+                "jwt.redis_url required when revocation_backend='redis'"
             )
         return self
 
