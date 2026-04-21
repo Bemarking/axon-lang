@@ -70,6 +70,9 @@ pub mod storage_postgres;
 pub mod stdlib;
 pub mod tenant;
 pub mod tenant_secrets;
+// §Fase 10.e — JWT signature verification + JWKS client. Used by
+// tenant::tenant_extractor_middleware when AXON_JWT_JWKS_URL is set.
+pub mod jwt_verifier;
 pub mod tokens;
 pub mod tool_executor;
 pub mod tool_registry;
