@@ -27,7 +27,7 @@
 | 10.i | Observability Wiring (Prometheus per-tenant, OTel con tenant baggage, structured logs) | ✅ Completo |
 | 10.j | Admin API + CLI (tenant CRUD, user mgmt, key rotation, suspension) | ✅ Completo |
 | 10.k | Tenant Self-Service Portal API (invitaciones, SSO config, API keys) | ✅ Completo |
-| 10.l | Compliance Tooling (GDPR export JSONL, right-to-erasure, data residency) | ⏳ Pendiente |
+| 10.l | Compliance Tooling (GDPR export JSONL, right-to-erasure, data residency) | ✅ Completo |
 | 10.m | Testing + Security Audit (cross-tenant isolation, load, threat model) | ⏳ Pendiente |
 
 ---
@@ -1024,7 +1024,34 @@ Toda request enforza `tenant_id` del JWT (no se puede cross-tenant aunque se pon
 
 ### 10.l — Compliance Tooling
 
-**Estado:** ⏳ Pendiente — **Depende de:** 10.a, 10.g
+**Estado:** ✅ Completo — **Depende de:** 10.a, 10.g, 10.j, 10.k
+
+**Commits (axon-enterprise):**
+- `0fd3e2d` feat(fase-10.l): compliance module + migración 010
+- `8aae3d3` feat(fase-10.l): compliance HTTP + CLI + residency middleware
+- `713a281` test+docs(fase-10.l): compliance suite + `COMPLIANCE.md`
+
+**Entregado:**
+- `axon_enterprise/compliance/` — módulo completo: `TicketService` (queue con `FOR UPDATE SKIP LOCKED`), `SarExporter` (tar.gz con manifest + JSONL por tabla), `ErasureService` (dos etapas: soft-delete → anonymize), `LegalHoldService`, `EvidenceBundleService` (SOC 2 por-período), `DataResidencyMiddleware`, `ComplianceWorker` (loop + promote_due_purges), `BlobStore` protocol con `LocalBlobStore` + `S3BlobStore`.
+- `alembic/versions/010_compliance.py` — `compliance_requests` (con partial index `(status, scheduled_for) WHERE status IN ('queued', 'awaiting_purge')` para claim O(log N)), `legal_holds` (partial unique `(tenant_id, subject_email) WHERE released_at IS NULL`), `public.tenants.data_region` (default `us-east-1`).
+- `/api/v1/tenant/compliance/*` — export/erase/{ticket_id}/list con 409 `compliance.legal_hold_active` cuando aplica. Download URL presigned via `BlobStore.signed_url`.
+- `DataResidencyMiddleware` montado dentro de `AuthMiddleware` — 308 redirect cuando hay `residency_redirect_base`, 421 Misdirected Request cuando no. Cache 60s por tenant.
+- CLI `axon-enterprise compliance ...` — export, erase, status, list-tickets, legal-hold {apply,release}, evidence-bundle, run-worker. SIGINT/SIGTERM manejados para shutdown limpio del worker.
+- Audit events nuevos: `compliance:export_completed/failed`, `erasure_approved/completed/failed`, `legal_hold_applied/released`, `evidence_bundle_generated`, `residency_violation`.
+- `ComplianceSettings` — blob backend (local|s3), server_region, residency_redirect_base, soft_delete_days=7, anonymize_sla_days=30, worker knobs. Production validator rechaza `blob_backend=local`.
+- `MembershipStatus.ERASED_PENDING` + `ERASED` — estados del two-stage erasure.
+- Tests: unit (blob store local, residency middleware) + integration (tickets, exporter, erasure con legal hold, evidence bundle).
+- `docs/COMPLIANCE.md` — operator guide.
+
+**Decisiones cerradas:**
+- **Bundle format: tar.gz con manifest.json + JSONL-per-table** — JSONL stream es ingestible line-by-line, tar.gz agrega estructura y chain verification report (audit head + sequence + event_hash) en un solo artefacto descargable.
+- **Two-stage erasure: 7 días soft-delete + anonymize** — soft-delete revoca sessions/API keys y flipea membership al estado `erased_pending` (reversible); anonymize scrubs PII irreversiblemente + deja purge report en blob store. Mid-window legal hold corta el anonymize (re-check antes de mutate).
+- **Audit events NO se mutan** — mantener hash chain íntegro es el trade-off explícito; auditores ticknean "Art. 17 ejercido" via `compliance:erasure_completed` en el chain + purge report con SHA-256 del email original.
+- **Worker dedicado con SKIP LOCKED + partial index** — N replicas safe; partial index keeps claim query fast independientemente de rows históricos. `promote_due_purges` corre en tick paralelo al claim loop.
+- **Legal hold: partial unique index** — at most one ACTIVE hold per `(tenant_id, subject_email)`; hold histórico vive como row released. FTS audit trail lo documenta.
+- **Data residency: middleware + column** — v1 cubre enforcement; multi-region deployment Terraform queda para 10.m si se decide montar más regiones.
+- **BlobStore protocol + dos implementaciones** — dev usa `LocalBlobStore` (rechazado por validator en prod); prod usa S3 con presigned GETs. `build_blob_store()` factory inspecciona settings.
+- **Evidence bundle reusa SAR tar.gz builder** — `_build_tar_gz` helper exportado desde `exporter.py`; `evidence.py` lo extiende agregando `rbac_snapshot.json` + `sso_configurations.json` como miembros no-JSONL.
 
 **Objetivo:** cumplir GDPR / CCPA / SOC 2 sin ingeniería custom por cada request.
 
@@ -1154,36 +1181,45 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 
 **Última actualización:** 2026-04-21
 
-**Próxima sesión — pickup point:** arrancar **10.l (Compliance Tooling)** en el repo `axon-enterprise`.
+**Próxima sesión — pickup point:** arrancar **10.m (Testing + Security Audit)** en el repo `axon-enterprise`.
 
-**Decisiones cerradas en esta sesión (10.k):**
-- Password + SSO coexisten en el portal; `tenant.sso.required` como flag futuro no bloquea login hoy.
-- Magic-link via `invitation_token_hash` (SHA-256) + `invitation_expires_at` en `tenant_memberships` — zero infra nueva (sin Redis); TTL 72h.
-- API key shape `axk_<uuid4-hex>` + Argon2id at-rest; primeros 8 hex chars indexados para verify O(1); raw key echoed exactly once.
-- Webhooks públicos con signature verification (`/webhooks/stripe` usa la firma HMAC del SDK oficial como security boundary).
-- Eventos `invoice.*` manejados explícitamente; otros devuelven 204 para cerrar el retry loop de Stripe.
-- Compliance endpoints aceptan el request + emiten audit event + entregan ticket; ejecución real (ZIP, purga) queda para 10.l.
-- `AuthMiddleware` ganó `public_prefixes` para cubrir rutas paramétricas (SAML `{tenant_id}`) y webhooks sin enumerar paths.
+**Decisiones cerradas en esta sesión (10.l):**
+- Bundle SAR = tar.gz con `manifest.json` (audit chain head + included/excluded tables) + JSONL per-table. Streamable + ingestible + auto-auditable.
+- Erasure two-stage: 7 días soft-delete (sessions + API keys revocados, membership `erased_pending`) + 30 días SLA para anonymize (GDPR Art. 12). `details.soft_deleted_at` discriminates las dos fases en el worker.
+- `audit_events` NUNCA se mutan — mantener el hash chain íntegro; la evidencia de erasure vive en `compliance:erasure_completed` + purge report con SHA-256 del subject original.
+- Worker dedicado: `FOR UPDATE SKIP LOCKED` + partial index `(status, scheduled_for)` WHERE status IN ('queued', 'awaiting_purge'). N replicas safe. `promote_due_purges` corre en tick paralelo.
+- Legal hold: partial unique index `(tenant_id, subject_email) WHERE released_at IS NULL` — at most one hold activo; check at file-time + anonymize-time.
+- Data residency v1: middleware en memoria (cache 60s) + columna `tenants.data_region`; multi-region deployment queda para 10.m si se decide escalar.
+- BlobStore: protocol con `LocalBlobStore` (dev/on-prem) + `S3BlobStore` (prod). `blob_backend=local` rechazado por el production validator.
+- Evidence bundle para SOC 2 reusa el `_build_tar_gz` helper del exporter + agrega `rbac_snapshot.json` + `sso_configurations.json`. Un audit event `compliance:evidence_bundle_generated` deja la propia generación del bundle auditada.
 
-**Pre-requisitos para 10.l:**
-- [x] 10.a..10.k completados
-- [x] `AuditService` con hash chain per-tenant listo para exports forenses (verify + list_events)
-- [x] RLS + `admin_bypass` listos para cross-tenant compliance exports (operator con `axon_admin` role DB-level)
-- [x] Stubs `/api/v1/tenant/compliance/export` y `/erase` ya aceptan requests y emiten `compliance:*` audit events
-- [ ] Decidir formato de export bundle — ¿JSON-per-table ZIP vs JSONL stream vs Parquet? Propongo **JSONL stream** (gzip) — fácil de ingest en client tooling, evita cargar dataset completo en memoria, compatible con Postgres `COPY ... TO STDOUT`.
-- [ ] Decidir ventana de reversión para Right to Erasure — 7 días (propuesta original) vs 30 días (GDPR SLA). Propongo **7 días soft-delete + 30 días anonymize** — dos etapas distintas, el soft-delete da ventana legal, el anonymize garantiza el SLA.
-- [ ] Decidir dónde corre el ejecutor — ¿worker dedicado con cola Postgres (SKIP LOCKED) o handler inline con timeout largo? Propongo **worker dedicado** — el export de un tenant grande puede tardar minutos, no puede monopolizar un gunicorn worker.
-- [ ] Decidir legal-hold — ¿flag per-user que bloquea purge durante litigio? Propongo **sí, `users.legal_hold` + audit trail cuando se activa/desactiva** — requisito estándar de empresas enterprise.
-- [ ] Decidir alcance data-residency inicial — ¿solo validación de region label en tenant create + middleware redirect, o deployment multi-region con Terraform? Propongo **start con validación + middleware**, multi-region deployment en una fase posterior (no bloquea GA).
-- [ ] Decidir formato de evidence bundle SOC 2 — reusar `EvidencePackager` de ESK (`Paper_Runtime_Cognitivo_MEK.md`) o implementación dedicada. Propongo **reusar ESK** — ya valida dossier + SBOM + provenance, compliance team ya lo conoce.
+**Pre-requisitos para 10.m:**
+- [x] 10.a..10.l completados
+- [x] Todos los sub-fases con tests + docs en `axon-enterprise:docs/`
+- [x] CLI operable para tenant/user/keys/audit/compliance/migrate
+- [x] Portal + Admin API + webhooks wired al mismo `build_app()`
+- [ ] Definir matriz cross-tenant isolation — endpoints × tenants × métodos → código esperado (404 vs 403; propongo **404** para no leakear existencia).
+- [ ] Decidir fuzzing framework — `hypothesis` vs `schemathesis`. Propongo **schemathesis** para API surface (lee el OpenAPI generado) + `hypothesis` para invariantes de servicios (audit chain, quota aggregation).
+- [ ] Decidir load testing tool — `locust` vs `k6`. Propongo **k6** — JS scripts legibles, Grafana-integrado, mejor percentile reporting para SLO compliance.
+- [ ] Decidir criterios de pass — p99 latency por endpoint, max error rate, max memory/CPU por pod, cross-tenant bleed = 0 (hard requirement). Propongo los thresholds específicos por endpoint en base al SLO enterprise: p99 < 500ms para reads, < 2s para exports, 0% cross-tenant.
+- [ ] Decidir threat model alcance — STRIDE completo vs focus en MFA bypass + RLS bypass + privilege escalation. Propongo **STRIDE completo** pero profundidad proporcional (AuthN/AuthZ/Data flow deep, Denial-of-Service ligero).
+- [ ] Decidir security audit externo — ¿auditor externo firma report o interno suficiente para GA? Propongo **interno para GA inicial + external audit en v1.1.1** — evita bloquear GA en scheduling de auditor.
 
 **Sesión abierta en:**
-- `axon-enterprise`: commits hasta `10af220` (Portal API + Stripe webhook + tests + docs)
+- `axon-enterprise`: commits hasta `713a281` (Compliance tooling + tests + docs)
 - Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
 
 ---
 
 ### Decisiones archivadas (sesiones anteriores)
+
+**Decisiones cerradas en sesión 10.k:**
+- Password + SSO coexisten en el portal; `tenant.sso.required` como flag futuro no bloquea login hoy.
+- Magic-link via `invitation_token_hash` (SHA-256) + `invitation_expires_at` en `tenant_memberships` — zero infra nueva; TTL 72h.
+- API key shape `axk_<uuid4-hex>` + Argon2id at-rest; primeros 8 hex chars indexados para verify O(1); raw key echoed exactly once.
+- Webhooks públicos con signature verification (`/webhooks/stripe` usa HMAC del SDK oficial como security boundary).
+- Eventos `invoice.*` manejados explícitamente; otros devuelven 204 para cerrar el retry loop de Stripe.
+- `AuthMiddleware.public_prefixes` para rutas paramétricas (SAML `{tenant_id}`) y webhook subtrees sin enumerar paths.
 
 **Decisiones cerradas en sesión 10.j:**
 - Starlette puro (no FastAPI) — menos magic, compatible con middleware existente.
