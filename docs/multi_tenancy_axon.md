@@ -21,7 +21,7 @@
 | 10.c | RBAC Production-Grade (persisted, tenant-scoped, hierarchy, enforcement) | ✅ Completo |
 | 10.d | SSO Real (OIDC + SAML con verificación de firma) | ✅ Completo |
 | 10.e | JWT Issuer + JWKS rotation (cierra el gap "no signature verification" de Rust) | ✅ Completo |
-| 10.f | Secrets Service (API per-tenant, escribe a AWS SM, audit integrado) | ⏳ Pendiente |
+| 10.f | Secrets Service (API per-tenant, escribe a AWS SM, audit integrado) | ✅ Completo |
 | 10.g | Audit Hash-Chain (append-only + stitch a ESK provenance_chain) | ⏳ Pendiente |
 | 10.h | Metering + Quota Enforcement (pricing plans, Stripe, rate limiting) | ⏳ Pendiente |
 | 10.i | Observability Wiring (Prometheus per-tenant, OTel con tenant baggage, structured logs) | ⏳ Pendiente |
@@ -614,7 +614,25 @@ CREATE TABLE sso_configurations (
 
 ### 10.f — Secrets Service
 
-**Estado:** ⏳ Pendiente — **Depende de:** 10.c
+**Estado:** ✅ Completo (2026-04-21) — **Depende de:** 10.c
+
+**Shipped commits (axon-enterprise):**
+- `cf8c8e0` feat(fase-10.f): Secrets Service — per-tenant AWS SM + redacted values
+- `3948326` test+docs(fase-10.f): unit + integration suite + SECRETS.md operator guide
+
+**Archivos producidos:**
+- `axon_enterprise/secrets/{__init__.py, errors.py, value.py, policy.py, backend.py, in_memory_backend.py, aws_sm_backend.py, models.py, service.py}`
+- `axon_enterprise/config/settings.py` extendido con `SecretsSettings` + validator production-safety; helpers `_validate_*` refactored para cognitive complexity < 15
+- `alembic/versions/20260421_0500_006_tenant_secrets.py` — tabla `tenant_secrets` con RLS full
+- `tests/secrets/{test_value, test_policy_and_memory, test_service_integration}.py` — 40 casos (30 unit + 10 integration)
+- `docs/SECRETS.md` — operator guide
+
+**Decisiones cerradas (preguntas abiertas de la sesión anterior):**
+- **Coarse `secret:read` permission** — granularidad per-key diferida; catalog de 10.c tiene `secret:{list,read,write,delete,rotate}` y eso cubre el 95% de los casos enterprise.
+- **Retention de AWS SM: 30 días default** (rango 7..30 por AWS SM hard limit). Matches compliance windows típicos; operator puede ajustar con `deletion_recovery_window_days`.
+- **Audit en cada read Y write**: `audit_on_read=true` por default + production validator lo requiere (SOC 2 CC.6.1). Operators en lower tiers pueden desactivarlo.
+
+**Delta vs plan original:** + `SecretValue` opaque wrapper con redaction en repr/str/format/pickle/copy + constant-time equality (más estricto que SecretStr de pydantic — bloquea `f"{s:>20}"` con format spec), + fingerprint SHA-256[:8] en audit events (correlación cross-time sin plaintext), + `SecretsPolicy.validate_tenant_id` rechaza paths traversals antes de concatenar al backend path (defensa en profundidad), + in-memory backend enforça mismo ceiling 64 KiB que AWS SM (problemas surface in dev, no en prod), + `ResourceNotFound` normalización cross error-shapes (boto3 native + moto + stubs), + `_validate_*_production` helpers por subsistema (validator cognitive complexity < 15), + `SecretAlreadyScheduledForDeletion` error para mutations en rows pending-delete.
 
 **Objetivo:** API REST para que el owner de cada tenant gestione sus secretos (API keys, webhooks, etc.) con audit completo, sin que nunca toquen BD en plaintext.
 
@@ -994,6 +1012,12 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 | 2026-04-21 | 10.e: kid = SHA-256(SPKI DER)[:16] compartido entre Local + KMS signer | Migrar operator de local → KMS (o vice-versa) NO rota el kid mientras el public key del KMS sea el mismo. JWTs minted antes de la migration siguen verificando post-migration. Deterministic kid > random. |
 | 2026-04-21 | 10.e: Rust verifier con `enforce` flag + fallback legacy path | Pre-10.e deployments (incluyendo OSS/single-tenant) siguen funcionando sin `AXON_JWT_JWKS_URL` set — no breaking change. Enterprise deployments flip enforce=true via env, no code change. Gradual rollout vs hard cutover. |
 | 2026-04-21 | 10.e: Redis + Postgres para revocation (fail-closed en Redis down) | Redis solo sería insuficiente: ephemeral, datos perdidos en restart. Postgres solo: too slow en hot path. Ambos: Postgres es source of truth, Redis acelera. Critical: `is_revoked()` falla-closed (Redis down → checa Postgres) — nunca silently permite un token revocado. |
+| 2026-04-21 | 10.f: `SecretValue` bloquea `__format__` con spec non-vacío | `f"{secret:>20}"` es el vector más silencioso de leak — se compila, no raises, produce la string con el plaintext. Bloqueando format specs forzamos `f"{secret.reveal():>20}"` explicit, visible en code review. |
+| 2026-04-21 | 10.f: `__reduce__` de SecretValue retorna `[REDACTED]` | Pickle / deepcopy serializar el plaintext es un leak path común (debugging, caching, multiprocess). `__reduce__` intercepta todos esos paths de una vez — tests que copian fixtures no accidentally expose. |
+| 2026-04-21 | 10.f: Path prefix CONGELADO (`axon/tenants`) — no config en runtime | Cambiar path_prefix requiere migration coordinada Python + Rust (axon-rs TenantSecretsClient). Config existe en settings para dev flexibility pero changes en production rompen la compatibility con M3. Documentado explícitamente en SECRETS.md. |
+| 2026-04-21 | 10.f: Settings validator refactored en helpers per-subsistema | Cognitive complexity del validator pasó 21 después de 10.e. Helper methods (_validate_db_production, _validate_envelope_production, ...) mantienen la lint under 15 y hacen los gates fácilmente testeables en unit. |
+| 2026-04-21 | 10.f: Reserved key prefixes (axon_, system_, internal_) | Evita colisión con futura metadata que podríamos almacenar en AWS SM bajo el mismo prefix pero como "system keys" invisibles al tenant. Conservative default — expand reserved list es trivial. |
+| 2026-04-21 | 10.f: `audit_on_read=true` obligatorio en production | SOC 2 CC.6.1 requiere audit trail para secret access. Lower tiers pueden desactivarlo (performance). Validator rejects env=production con audit_on_read=false, fail-fast en startup. |
 
 ---
 
@@ -1011,28 +1035,28 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 
 **Última actualización:** 2026-04-21
 
-**Próxima sesión — pickup point:** arrancar **10.f (Secrets Service)** en el repo `axon-enterprise`.
+**Próxima sesión — pickup point:** arrancar **10.g (Audit Hash-Chain)** en el repo `axon-enterprise`.
 
-**Decisiones cerradas en esta sesión (10.e):**
-- Una sola llave KMS compartida entre tenants (no per-tenant) — simplicidad ops + rotación c/90d mitiga revocation al por mayor.
-- `kid = SHA-256(SPKI DER)[:16]` — opaque, no revela cadencia de rotación.
-- Partial unique index `uq_jwt_signing_keys_one_active` — invariante "one active" at DB level, no at app level.
-- Redis (fast) + Postgres (durable) para `jti` blacklist; fail-closed en Redis outage.
-- Rust verifier en mismo crate axon-rs — jsonwebtoken=9, hand-rolled error enum (no thiserror dep).
-- Middleware Rust con `enforce` flag — pre-10.e deployments siguen funcionando (legacy path), enterprise flip via env var.
+**Decisiones cerradas en esta sesión (10.f):**
+- **Coarse `secret:read` permission** — granularidad per-key diferida; catalog existente cubre el 95% de casos.
+- **Retention AWS SM 30d default** (dentro del rango 7..30 hard limit de AWS).
+- **`audit_on_read=true` required en production** — SOC 2 CC.6.1 mandates audit trail for secret access.
+- **`SecretValue` bloquea f-string format specs** — más estricto que SecretStr de pydantic; `f"{s:>20}"` raises en lugar de leakear silencioso.
+- **Fingerprint SHA-256[:8]** en audit events — correlación sin plaintext (audit stream puede correlacionar que "key X cambió fingerprint entre t1 y t2" sin ver valor).
+- **Reserved key prefixes** (`axon_`, `system_`, `internal_`) — evita colisión con futura per-tenant metadata que podríamos almacenar en AWS SM.
+- **Path convention congelada**: `axon/tenants/<tid>/<key>` exactamente igual que axon-rs/src/tenant_secrets.rs — cambiar esto requiere migration + Rust side coordination.
 
-**Pre-requisitos para 10.f:**
-- [x] 10.a + 10.b + 10.c + 10.d + 10.e completados
-- [x] Envelope encryption disponible desde 10.b
-- [x] M3 del plano Rust (AWS Secrets Manager per-tenant paths) ya implementado
-- [x] RBAC con permissions `secret:{list,read,write,delete,rotate}` ya en catalog (10.c)
-- [ ] Decidir scope de "secret read": ¿permission granular por secret key (`secret:read:openai_api_key`) o coarse (`secret:read`)? Propongo **coarse para 10.f, granular como feature opt-in**.
-- [ ] Decidir retention de versiones AWS SM: default 30d vs 90d. Propongo **90d** — matches compliance windows típicos.
-- [ ] Decidir audit event granularity — ¿emitir en CADA `secret:read` o solo en writes? Propongo **ambos** — reads enterprise deben ser auditados (SOC 2 CC.6.1 requires it).
+**Pre-requisitos para 10.g:**
+- [x] 10.a..10.f completados
+- [x] ESK `provenance_chain` en axon-lang ya existe (stitch objetivo)
+- [x] `AuditEmitter` Protocol ya usado por SecretsService (10.f) — swap implementation
+- [ ] Decidir formato de canonical_json para hash chain — ¿usar el mismo `canonical_bytes` de `axon.runtime.esk.provenance`? YES, mantiene stitching trivial.
+- [ ] Decidir si append-only se enforce via Postgres trigger (bloquea UPDATE/DELETE) vs solo convention. Propongo **trigger** — defensivo against buggy migrations/admins.
+- [ ] Decidir hash chain granularity: ¿una chain global, una per-tenant, o una per-`(tenant, event_category)`? Propongo **per-tenant** — cada tenant es independiente compliance-wise, cross-tenant chain no aporta valor.
+- [ ] Decidir stitch frequency con ESK: ¿cada audit event genera un ESK provenance entry, o batch por hora? Propongo **cada evento crítico** (secret/rbac/tenant mutations), batched para reads.
 
 **Sesión abierta en:**
-- `axon-enterprise`: commits hasta `514215b` (JWT issuer + tests + docs)
-- `axon-lang`:     commit `ae44d44` (Rust JWT verifier)
+- `axon-enterprise`: commits hasta `3948326` (Secrets Service + tests + docs)
 - Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
 
 ---
