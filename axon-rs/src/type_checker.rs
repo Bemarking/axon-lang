@@ -37,14 +37,15 @@ const VALID_VIOLATION_ACTIONS: &[&str] = &["escalate", "fallback", "log", "raise
 
 const VALID_RETRIEVAL_STRATEGIES: &[&str] = &["exact", "hybrid", "semantic"];
 
-// §λ-L-E Fase 11.a + 11.c — `stream` (mandatory backpressure),
-// `trust` (mandatory proof), `sensitive` (data-category
-// jurisdiction — open taxonomy), `legal` (mandatory legal basis
-// from the closed catalogue in `crate::legal_basis`) join the
-// catalogue. Qualifiers are validated separately below.
+// §λ-L-E Fase 11.a + 11.c + 11.e — `stream` (mandatory backpressure),
+// `trust` (mandatory proof), `sensitive` (data-category jurisdiction
+// — open taxonomy), `legal` (mandatory legal basis from the closed
+// catalogue in `crate::legal_basis`), `ots` (subkinds `transform:
+// <from>:<to>` + `backend:<native|ffmpeg>`) join the catalogue.
+// Qualifiers are validated separately below.
 const VALID_EFFECTS: &[&str] = &[
     "io", "network", "pure", "random", "storage", "stream", "trust",
-    "sensitive", "legal",
+    "sensitive", "legal", "ots",
 ];
 
 const VALID_EPISTEMIC_LEVELS: &[&str] = &["believe", "doubt", "know", "speculate"];
@@ -625,6 +626,71 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     },
+                    // §λ-L-E Fase 11.e — OTS subkinds:
+                    //   ots:transform:<from>:<to>  → kind-pair
+                    //   ots:backend:<native|ffmpeg> → closed backend catalogue
+                    "ots" => match qualifier {
+                        None => self.emit(
+                            format!(
+                                "Effect 'ots' in tool '{}' requires a \
+                                 subkind. Expected 'ots:transform:<from>:<to>' \
+                                 or 'ots:backend:<native|ffmpeg>'.",
+                                node.name
+                            ),
+                            &node.loc,
+                        ),
+                        Some(inner) => {
+                            let (subkind, rest) = match inner.split_once(':') {
+                                Some((a, b)) => (a, Some(b)),
+                                None => (inner, None),
+                            };
+                            match subkind {
+                                "transform" => {
+                                    let valid = rest
+                                        .and_then(|r| r.split_once(':'))
+                                        .map(|(f, t)| {
+                                            !f.is_empty() && !t.is_empty()
+                                        })
+                                        .unwrap_or(false);
+                                    if !valid {
+                                        self.emit(
+                                            format!(
+                                                "Effect 'ots:transform' in tool \
+                                                 '{}' requires '<from>:<to>' \
+                                                 qualifier (e.g. \
+                                                 'ots:transform:mulaw8:pcm16').",
+                                                node.name
+                                            ),
+                                            &node.loc,
+                                        );
+                                    }
+                                }
+                                "backend" => {
+                                    let qual = rest.unwrap_or("");
+                                    if !is_valid(qual, crate::ots::OTS_BACKEND_CATALOG) {
+                                        self.emit(
+                                            format!(
+                                                "Unknown OTS backend '{}' in tool '{}'. \
+                                                 Valid: {}",
+                                                qual,
+                                                node.name,
+                                                valid_list(crate::ots::OTS_BACKEND_CATALOG)
+                                            ),
+                                            &node.loc,
+                                        );
+                                    }
+                                }
+                                other => self.emit(
+                                    format!(
+                                        "Unknown 'ots' subkind '{}' in tool '{}'. \
+                                         Expected 'transform' or 'backend'.",
+                                        other, node.name
+                                    ),
+                                    &node.loc,
+                                ),
+                            }
+                        }
+                    },
                     _ => {}
                 }
             }
@@ -661,6 +727,8 @@ impl<'a> TypeChecker<'a> {
         if let Some(ref eff) = node.effects {
             let mut sensitive_categories: Vec<&str> = Vec::new();
             let mut has_legal_basis = false;
+            let mut legal_bases_hipaa: Vec<&str> = Vec::new();
+            let mut has_ffmpeg_backend = false;
             for e in &eff.effects {
                 let (base, qual) = match e.split_once(':') {
                     Some((b, q)) => (b, Some(q)),
@@ -678,6 +746,20 @@ impl<'a> TypeChecker<'a> {
                             crate::legal_basis::LEGAL_BASIS_CATALOG,
                         ) {
                             has_legal_basis = true;
+                            if q.starts_with("HIPAA.") {
+                                legal_bases_hipaa.push(q);
+                            }
+                        }
+                    }
+                }
+                if base == "ots" {
+                    if let Some(inner) = qual {
+                        if let Some(("backend", backend)) =
+                            inner.split_once(':')
+                        {
+                            if backend == "ffmpeg" {
+                                has_ffmpeg_backend = true;
+                            }
                         }
                     }
                 }
@@ -693,6 +775,27 @@ impl<'a> TypeChecker<'a> {
                         valid_list(
                             crate::legal_basis::LEGAL_BASIS_CATALOG
                         )
+                    ),
+                    &node.loc,
+                );
+            }
+
+            // §λ-L-E Fase 11.e — HIPAA processing MUST stay in-process.
+            // Spawning ffmpeg crosses a process boundary the auditor
+            // cannot observe; the ePHI disclosure the BAA doesn't
+            // cover. Rejected at compile time, per the same closed
+            // posture as 11.a trust proofs and 11.c legal bases.
+            if !legal_bases_hipaa.is_empty() && has_ffmpeg_backend {
+                self.emit(
+                    format!(
+                        "Tool '{}' combines HIPAA legal basis ({}) with \
+                         'ots:backend:ffmpeg'. ePHI MUST NOT cross the \
+                         process boundary to a subprocess outside the \
+                         auditable runtime. Use 'ots:backend:native' or \
+                         register a native transformer that covers the \
+                         required pipeline.",
+                        node.name,
+                        legal_bases_hipaa.join(", "),
                     ),
                     &node.loc,
                 );
