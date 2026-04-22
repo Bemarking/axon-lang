@@ -91,6 +91,15 @@ pub mod stream_runtime;
 // accumulator) that populate buffers without intermediate copies.
 pub mod buffer;
 pub mod ingest;
+// §λ-L-E Fase 11.c — Deterministic Replay + Legal-Basis Typed
+// Effects. `legal_basis` is the closed catalogue of regulatory
+// authorisations (GDPR/CCPA/SOX/HIPAA/GLBA/PCI-DSS). `replay_token`
+// hosts ReplayToken canonical hashing + pluggable ReplayLog +
+// ReplayExecutor for re-running from any token. Distinct from the
+// existing `replay` module, which reconstructs trace files for
+// debugging — `replay_token` is for regulatory-grade audit replay.
+pub mod legal_basis;
+pub mod replay_token;
 pub mod tokens;
 pub mod tool_executor;
 pub mod tool_registry;
