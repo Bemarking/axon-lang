@@ -30,7 +30,7 @@ específico. Las primitivas son genéricas (`Stream<Bytes>`, `LegalBasis`,
 | 11.b | Zero-Copy Multimodal Buffers (audio/video/file ingest sin cruzar FFI) | ✅ Completo |
 | 11.c | Deterministic Replay + Legal-Basis Typed Effects (`ReplayToken` + `LegalBasis<>`) | ✅ Completo |
 | 11.d | Stateful PEM sobre WebSocket (continuidad cognitiva cross-reconnect) | ✅ Completo |
-| 11.e | OTS Binary Pipeline Synthesis (auto-descubrir transcoders tipados) | ⏳ Pendiente |
+| 11.e | OTS Binary Pipeline Synthesis (auto-descubrir transcoders tipados) | ✅ Completo |
 | 11.f | Integration Testing + Security Audit (regresión cross-phase, threat model) | ⏳ Pendiente |
 
 Orden NO es arbitrario: 11.a habilita refinement types que 11.c y 11.d
@@ -567,8 +567,37 @@ del estado cognitivo de un agente.
 
 ## 11.e — OTS Binary Pipeline Synthesis
 
-**Estado:** ⏳ Pendiente — **Depende de:** 11.a (`Bytes[kind]`),
-11.b (zero-copy buffers).
+**Estado:** ✅ Completo — **Depende de:** 11.a (`Bytes[kind]`),
+11.b (zero-copy buffers), 11.c (LegalBasis para HIPAA+ffmpeg gate).
+
+**Commits (axon-lang):**
+- `e50ca4a` feat(runtime-11.e): OTS binary pipeline synthesis
+- `91fb237` feat+test+docs(fase-11.e): checker ots rules + HIPAA reject + suite + docs
+
+**Entregado:**
+
+- **Rust primitives (axon-rs/src/ots/):**
+  - `pipeline.rs` — `Transformer` trait (source_kind, sink_kind, backend, cost_hint, transform), `TransformerRegistry` con Dijkstra path search sobre el directed kind graph, `Pipeline` ejecutable con per-step kind invariant checks, `TransformerBackend {Native | Subprocess}`, `OtsError {NoPath, TransformFailed, KindMismatch}`.
+  - `native/mulaw.rs` — μ-law ↔ PCM16 per ITU-T G.711, pure arithmetic (stored-vs-logical byte convention documentada; stored 0x80 → +32124 es correcto).
+  - `native/resample.rs` — linear resampler para PCM16 con kind tags `pcm16_<rate>k`; ladder 8k↔16k↔48k seeded.
+  - `subprocess/ffmpeg.rs` — `is_ffmpeg_available()` probe one-time, `FfmpegPool` TTL-bounded warm cache (60s default), `FfmpegTransformer` genérico. Absence de ffmpeg non-fatal; flows que la necesitan fallan en pipeline synthesis con `NoPath`, no crashean.
+  - `mod.rs` — `global_registry()` seeded; `OTS_BACKEND_CATALOG = ["native", "ffmpeg"]` cerrado.
+- **Python mirror (axon/runtime/ots/):** misma Dijkstra registry + native mulaw + native resample + misma byte output en reference vectors (paridad garantizada).
+- **Compiler extension:**
+  - `ots:transform:<from>:<to>` qualifier — open taxonomy para kinds, validation de no-empty from + to.
+  - `ots:backend:<native|ffmpeg>` qualifier — closed catalogue.
+  - **HIPAA+ffmpeg rejection rule** — un tool con `legal:HIPAA.*` + `ots:backend:ffmpeg` falla compilación. Mismo posture cerrado que las reglas de 11.a/11.c. GDPR+ffmpeg explicitamente permitido (no infantilizar a adopters no-healthcare).
+- **Tests:** 11 Rust integration tests (incluye HIPAA-blocked + GDPR-ok + qualifier validation + end-to-end execute) + 20 Python unit tests (todos pasando; G.711 reference vectors alineados con stored-vs-logical byte convention).
+- **Docs:** `docs/OTS_BINARY_PIPELINES.md` con Transformer API, built-in table, kind-tag convention, ffmpeg wrapper usage, checker rules, composition con 11.a/11.b/11.c/11.d.
+
+**Decisiones cerradas:**
+
+- Registry **at startup only** (no hot-load) — un transformer apareciendo mid-flight rompe auditability.
+- ffmpeg absence **non-fatal** — falla en pipeline synthesis con `NoPath`, no en process startup. Adopters con paths nativos funcionan sin ffmpeg instalado.
+- Pool con TTL 60s — primer call paga el spawn, subsequent calls within TTL reusan. Spawn-per-call hoy; pipe-in worker es follow-up.
+- Kind convention `pcm16_<rate>k` encodes byte-layout + rate en un solo tag — permite componer transcode + resample como edges independientes del graph.
+- **HIPAA rule targeted, no blanket** — GDPR / CCPA / SOX / GLBA / PCI-DSS NO bloquean ffmpeg. Solo HIPAA dada su especificidad sobre el boundary entre BAA-covered y no-covered systems.
+- μ-law decoder sigue G.711 stored-vs-logical convention (stored byte es el logical byte con todos los bits invertidos). Reference vectors documentados inline en el test para prevenir regresiones por confusión.
 
 **Objetivo.** Ontological Tool Synthesis (OTS) extiende de descubrir
 APIs a descubrir transformaciones de streams binarios. Cuando un flow
@@ -733,32 +762,32 @@ cada cambio requiere entrada en este log con justificación.
 
 **Última actualización:** 2026-04-22
 
-**Próxima sesión — pickup point:** arrancar **11.e (OTS Binary Pipeline
-Synthesis)** — auto-descubrir transcoders tipados (`Bytes[pcm16] →
-Bytes[wav]`), native-first con ffmpeg fallback sandboxed, cacheados
-entre requests.
+**Próxima sesión — pickup point:** arrancar **11.f (Integration Testing
++ Security Audit)** — cross-phase regression tests, threat model
+actualizado con el nuevo attack surface de Fase 11 (FFI buffers,
+ffmpeg subprocess, WebSocket stateful), SLO gates en k6 para audio
+streaming, pentest externo PRE-GA para v1.2.0.
 
-**Decisiones cerradas en esta sesión (11.d):**
-- **Q32.32 fixed-point** para floats del density matrix — IEEE-754 serializado drift-ea tens of ulps across N reconnects; Q32.32 es bit-identical por construcción con precisión ≈ 2.3e-10 (debajo del noise floor de un belief state).
-- JSON canónico como wire format (no MessagePack). Mantiene consistencia con 10.g canonicaliser y 11.c replay tokens; MessagePack queda como optimización futura.
-- **ContinuityToken HMAC-signed binario** (no JWT) — short-lived, 3-campos, rotable independiente del signing key de 10.e, constant-time verify via `subtle::ConstantTimeEq`.
-- AAD de envelope bindea `(tenant_id, session_id, flow_id, subject_user_id)` — cross-row ciphertext swap falla AEAD tag antes de producir plaintext. Test `ciphertext_bound_to_row_aad` lo asegura.
-- Snapshots SON mutables (rewrite-in-place persist; DELETE on eviction) — no append-only trigger como audit/replay. El audit chain captura persist/restore/evict events así el lifecycle queda verifiable sin obligar a la tabla a serlo.
-- **Eviction worker dedicado** (no Postgres TTL silencioso) — queremos cada cryptoshred emitido como `pem:state_evicted` audit event.
-- SAR incluye metadata only, `state_ciphertext: "[redacted — encrypted at rest]"`. El SAR recipient no tiene la envelope key; entregar ciphertext sin camino de descifrado es distracción.
+**Decisiones cerradas en esta sesión (11.e):**
+- Registry **at startup only** (no hot-load runtime) — un transformer apareciendo mid-flight rompe auditability.
+- ffmpeg absence **non-fatal** — falla en pipeline synthesis con `NoPath`, no crash en process start. Adopters con paths nativos funcionan sin ffmpeg instalado.
+- Pool con TTL 60s (spawn-per-call hoy, pipe-in worker es follow-up) — primer call paga el spawn, reuse en TTL.
+- Kind convention **`pcm16_<rate>k`** encodes layout + rate en un solo tag — permite componer transcode + resample como edges independientes del graph.
+- **HIPAA + ffmpeg rechazado** en compile time. GDPR / CCPA / SOX / GLBA / PCI-DSS NO bloqueados — solo HIPAA por la especificidad del BAA boundary. No infantilizar adopters no-healthcare.
+- `ots:transform` es **open taxonomy** (mismos kinds que el BufferKind registry de 11.b); `ots:backend` es **closed catalogue** (native | ffmpeg). Nuevos backends requieren parche al compiler.
+- μ-law decoder sigue G.711 stored-vs-logical convention (stored byte = logical byte con bits invertidos). Reference vectors documentados inline para prevenir regresiones por confusión.
 
-**Pre-requisitos para 11.e:**
-- [x] 11.a `Stream<T>` + 11.b `ZeroCopyBuffer` + `BufferKind` — OTS necesita conocer source + sink kinds para inferir paths.
-- [x] 11.a effect system para tipar los pipelines sintéticos (un transcoder es un effect cualificado con input/output kinds).
-- [ ] Decidir registry de transformers: pure-Rust vs también Python hooks para adopters que necesitan algo no nativo. Propongo **Rust-only via trait** — custom transformers como crates separados, no scripts arbitrarios.
-- [ ] Decidir comportamiento cuando ffmpeg no está disponible: fallar fast vs emitir warning + continuar con transcoders nativos. Propongo **warning + continuar** si hay path nativo para el pipeline requerido; si no hay path + no hay ffmpeg, entonces error de compilación.
-- [ ] Decidir si custom transformers pueden registrarse a runtime o sólo at startup. Propongo **at startup only** — un transformer descubriéndose en mid-flight complica auditability.
-- [ ] Decidir semántica de cache: warm ffmpeg process pool vs stateless spawn-per-call. Propongo **pool con TTL** — primer call paga el spawn, calls subsiguientes al mismo pipeline reusan el proceso warm durante 60s; después del TTL se recicla.
-- [ ] Decidir compatibilidad con `LegalBasis<HIPAA>`: ffmpeg subprocess cruza process boundary con los datos del subject. Propongo **rechazar la combinación en el checker** hasta que el pipeline sea nativo end-to-end.
+**Pre-requisitos para 11.f:**
+- [x] 11.a–11.e completas con suites individuales pasando.
+- [x] Docs operator-guide per sub-fase (STREAM_EFFECTS, TRUST_TYPES, BUFFER_PROTOCOL, REPLAY_AND_LEGAL_BASIS, STATEFUL_PEM, OTS_BINARY_PIPELINES).
+- [ ] Decidir si el pentest externo es obligatorio PRE-GA v1.2.0 o pos-GA (Fase 10 lo difirió a v1.1.1). Propongo **pre-GA** — el attack surface nuevo (FFI + subprocess + WS stateful + cognitive state PII) justifica auditoría externa antes de marketing.
+- [ ] Decidir harness de cross-phase regression: invocation de `cargo test --all` + `pytest tests/` + ejecución manual de k6 scripts vs un runner dedicado. Propongo **runner dedicado** con Python que orquesta ambos; reusa la lógica del compliance evidence bundle de 10.l.
+- [ ] Decidir threat model update scope — STRIDE + AI/ML-specific threats (prompt injection mid-replay, model-swap replay, buffer exhaustion via SymbolicPtr refcount leak, continuity-token phishing). Propongo **STRIDE + estos 4 adicionales** + un fifth dedicated a HIPAA boundary enforcement.
+- [ ] Decidir SLO thresholds para audio streaming: propongo **WebSocket audio frame p99 < 500ms end-to-end**, **zero-copy buffer overhead < 1%**, **ReplayToken emission < 2ms**, **OTS pipeline synthesis < 10ms cold + < 0.1ms cached**, **CognitiveState snapshot+restore < 50ms para estados ≤ 64 KiB**.
 
 **Sesión abierta en:**
 - Plan vivo: `axxon-constructor:docs/fase_11_neuro_symbolic_axon.md`
-- Commits axon-lang pushed a `origin`: `363f845`, `aa6f7a2`, `495bc34` (11.a); `57844c9`, `c49bbee`, `95df120` (11.b); `2b933a1`, `b4e5bec`, `f6f6208`, `b9d1926` (11.c); `7e9e421`, `86d23e2` (11.d).
+- Commits axon-lang pushed a `origin`: `363f845`, `aa6f7a2`, `495bc34` (11.a); `57844c9`, `c49bbee`, `95df120` (11.b); `2b933a1`, `b4e5bec`, `f6f6208`, `b9d1926` (11.c); `7e9e421`, `86d23e2`, `afc2172` (11.d); `e50ca4a`, `91fb237` (11.e).
 - Commits axon-enterprise pushed a `origin`: `0db9b4f`, `903ad77` (11.c); `5033569`, `79607d2` (11.d).
 
 ---
