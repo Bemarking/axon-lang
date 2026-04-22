@@ -37,13 +37,14 @@ const VALID_VIOLATION_ACTIONS: &[&str] = &["escalate", "fallback", "log", "raise
 
 const VALID_RETRIEVAL_STRATEGIES: &[&str] = &["exact", "hybrid", "semantic"];
 
-// §λ-L-E Fase 11.a — `stream` (with mandatory backpressure qualifier)
-// and `trust` (with mandatory proof qualifier) join the catalogue.
-// The qualifiers themselves are validated separately below against
-// the closed catalogues in `crate::stream_effect` and
-// `crate::refinement`.
+// §λ-L-E Fase 11.a + 11.c — `stream` (mandatory backpressure),
+// `trust` (mandatory proof), `sensitive` (data-category
+// jurisdiction — open taxonomy), `legal` (mandatory legal basis
+// from the closed catalogue in `crate::legal_basis`) join the
+// catalogue. Qualifiers are validated separately below.
 const VALID_EFFECTS: &[&str] = &[
     "io", "network", "pure", "random", "storage", "stream", "trust",
+    "sensitive", "legal",
 ];
 
 const VALID_EPISTEMIC_LEVELS: &[&str] = &["believe", "doubt", "know", "speculate"];
@@ -564,6 +565,66 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     },
+                    // §λ-L-E Fase 11.c — `sensitive:<category>` tags
+                    // effects that touch regulated data. The category
+                    // is an open taxonomy (adopters write
+                    // `sensitive:health_data`, `sensitive:financial_txn`
+                    // etc). The qualifier presence is REQUIRED — a
+                    // bare `sensitive` is ambiguous and rejected.
+                    "sensitive" => {
+                        if qualifier.is_none() {
+                            self.emit(
+                                format!(
+                                    "Effect 'sensitive' in tool '{}' \
+                                     requires a jurisdiction qualifier \
+                                     'sensitive:<category>' (e.g. \
+                                     'sensitive:health_data'). The \
+                                     category is adopter-defined; the \
+                                     legal basis covering it must also \
+                                     be declared via 'legal:<basis>' on \
+                                     the same tool.",
+                                    node.name,
+                                ),
+                                &node.loc,
+                            );
+                        }
+                    }
+                    // §λ-L-E Fase 11.c — `legal:<basis>` declares the
+                    // legal basis authorising a sensitive effect. The
+                    // basis catalogue is CLOSED.
+                    "legal" => match qualifier {
+                        None => self.emit(
+                            format!(
+                                "Effect 'legal' in tool '{}' requires a \
+                                 basis qualifier 'legal:<basis>'. Valid \
+                                 bases: {}",
+                                node.name,
+                                valid_list(
+                                    crate::legal_basis::LEGAL_BASIS_CATALOG
+                                )
+                            ),
+                            &node.loc,
+                        ),
+                        Some(q) => {
+                            if !is_valid(
+                                q,
+                                crate::legal_basis::LEGAL_BASIS_CATALOG,
+                            ) {
+                                self.emit(
+                                    format!(
+                                        "Unknown legal basis '{}' in tool \
+                                         '{}'. Valid: {}",
+                                        q,
+                                        node.name,
+                                        valid_list(
+                                            crate::legal_basis::LEGAL_BASIS_CATALOG
+                                        )
+                                    ),
+                                    &node.loc,
+                                );
+                            }
+                        }
+                    },
                     _ => {}
                 }
             }
@@ -590,6 +651,53 @@ impl<'a> TypeChecker<'a> {
         // Mirror for stream: if a tool declares stream:<policy>, the
         // flows that use it inherit the obligation — enforced in
         // `check_flow`.
+
+        // §λ-L-E Fase 11.c — tool-level sensitive/legal coherence.
+        // A tool declaring `sensitive:<category>` MUST also declare
+        // at least one `legal:<basis>` from the closed catalogue.
+        // Declaring `legal:<basis>` without a `sensitive:<category>`
+        // is tolerated (some tools are authorised broadly without
+        // processing regulated data).
+        if let Some(ref eff) = node.effects {
+            let mut sensitive_categories: Vec<&str> = Vec::new();
+            let mut has_legal_basis = false;
+            for e in &eff.effects {
+                let (base, qual) = match e.split_once(':') {
+                    Some((b, q)) => (b, Some(q)),
+                    None => (e.as_str(), None),
+                };
+                if base == "sensitive" {
+                    if let Some(q) = qual {
+                        sensitive_categories.push(q);
+                    }
+                }
+                if base == "legal" {
+                    if let Some(q) = qual {
+                        if is_valid(
+                            q,
+                            crate::legal_basis::LEGAL_BASIS_CATALOG,
+                        ) {
+                            has_legal_basis = true;
+                        }
+                    }
+                }
+            }
+            if !sensitive_categories.is_empty() && !has_legal_basis {
+                self.emit(
+                    format!(
+                        "Tool '{}' declares sensitive effect(s) [{}] but \
+                         carries no 'legal:<basis>' effect. Regulated \
+                         processing requires an explicit legal basis: {}.",
+                        node.name,
+                        sensitive_categories.join(", "),
+                        valid_list(
+                            crate::legal_basis::LEGAL_BASIS_CATALOG
+                        )
+                    ),
+                    &node.loc,
+                );
+            }
+        }
     }
 
     fn check_flow(&mut self, node: &FlowDefinition) {
