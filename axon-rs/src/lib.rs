@@ -109,6 +109,12 @@ pub mod replay_token;
 // production uses axon_enterprise::cognitive_states (Postgres +
 // envelope encryption).
 pub mod pem;
+// §λ-L-E Fase 11.e — Ontological Tool Synthesis binary pipelines.
+// `ots::pipeline` hosts Transformer trait + TransformerRegistry +
+// Dijkstra-based path search. `ots::native` seeds μ-law ↔ PCM16
+// + resample (8k/16k/48k ladder). `ots::subprocess::ffmpeg` is
+// the subprocess fallback with warm-pool + availability detection.
+pub mod ots;
 pub mod tokens;
 pub mod tool_executor;
 pub mod tool_registry;
