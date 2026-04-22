@@ -73,6 +73,16 @@ pub mod tenant_secrets;
 // §Fase 10.e — JWT signature verification + JWKS client. Used by
 // tenant::tenant_extractor_middleware when AXON_JWT_JWKS_URL is set.
 pub mod jwt_verifier;
+// §λ-L-E Fase 11.a — Temporal Algebraic Effects + Trust Types.
+// `refinement` defines the closed Trust Catalog (Trusted<T> /
+// Untrusted<T>); `stream_effect` defines the closed backpressure
+// policy catalog (Stream<T>); `trust_verifiers` holds the runtime
+// implementations that the compiler recognises; `stream_runtime`
+// is the Stream<T> channel with policy dispatch.
+pub mod refinement;
+pub mod stream_effect;
+pub mod trust_verifiers;
+pub mod stream_runtime;
 pub mod tokens;
 pub mod tool_executor;
 pub mod tool_registry;

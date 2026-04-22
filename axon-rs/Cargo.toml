@@ -34,3 +34,11 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # tenant extractor. Closes the pre-10.e gap where `tenant.rs` extracted
 # `tenant_id` from the JWT payload without checking the signature.
 jsonwebtoken = "9"
+# §Fase 11.a — Temporal Algebraic Effects + Trust Types.
+# Ed25519 is the fourth member of the CLOSED trust catalog (alongside
+# HMAC-SHA256, JWT signature, OAuth2 PKCE S256 code exchange). Any
+# addition to the catalog requires a compiler PR + security review;
+# writing your own `verify_signature` is rejected at compile time.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+subtle = "2"
+urlencoding = "2"
