@@ -27,7 +27,7 @@ específico. Las primitivas son genéricas (`Stream<Bytes>`, `LegalBasis`,
 | Sub-fase | Scope | Estado |
 |---|---|---|
 | 11.a | Temporal Algebraic Effects + Trust Types (`Stream<T>`, `Trusted<T>`) | ✅ Completo |
-| 11.b | Zero-Copy Multimodal Buffers (audio/video/file ingest sin cruzar FFI) | ⏳ Pendiente |
+| 11.b | Zero-Copy Multimodal Buffers (audio/video/file ingest sin cruzar FFI) | ✅ Completo |
 | 11.c | Deterministic Replay + Legal-Basis Typed Effects (`ReplayToken` + `LegalBasis<>`) | ⏳ Pendiente |
 | 11.d | Stateful PEM sobre WebSocket (continuidad cognitiva cross-reconnect) | ⏳ Pendiente |
 | 11.e | OTS Binary Pipeline Synthesis (auto-descubrir transcoders tipados) | ⏳ Pendiente |
@@ -207,8 +207,43 @@ usan; 11.b es prerequisito para 11.e (OTS opera sobre buffers zero-copy);
 
 ## 11.b — Zero-Copy Multimodal Buffers
 
-**Estado:** ⏳ Pendiente — **Depende de:** 11.a (`Bytes[kind]` usa
-refinement types para tag-de-kind)
+**Estado:** ✅ Completo — **Depende de:** 11.a (composable con `Stream<T>` + `Trusted<T>`)
+
+**Commits:**
+- `57844c9` feat(runtime-11.b): zero-copy multimodal buffers + ingest paths
+- `c49bbee` test+docs(fase-11.b): buffers + ingest + `BUFFER_PROTOCOL.md`
+
+**Entregado:**
+
+- **Rust primitives (axon-rs):**
+  - `src/buffer/mod.rs` — `ZeroCopyBuffer` (Arc<[u8]> + range + kind + tenant tag), `BufferMut` in-flight builder con freeze al closing boundary.
+  - `src/buffer/kind.rs` — `BufferKind` registry INTERNO ABIERTO (no closed como 11.a); 14 seeded kinds (raw, pcm16, mulaw8, wav, mp3, opus, jpeg, png, webp, mp4, webm, pdf, json, csv); adopters registran domain-specific kinds at runtime.
+  - `src/buffer/pool.rs` — Slab allocator: 4 KiB / 64 KiB / 1 MiB / 10 MiB + oversize direct path. Per-tenant soft-limit accounting + `soft_limit_exceeded_total` counter. Free-list cap 64 slabs/class.
+  - `src/ingest/multipart.rs` — RFC 7578 subset streaming parser; feed(chunk) → Vec<MultipartEvent>. Content-Type → kind mapping; nested multipart rejected; configurable header/part size limits.
+  - `src/ingest/ws_binary.rs` — WebSocket fragment stitcher; opcode 0x2 + 0x0 + FIN; orphan continuation + message-too-large diagnostics.
+- **Python reference (axon/runtime/ffi/):**
+  - `buffer.py` — `ZeroCopyBuffer` con `bytes` carrier + memoryview views (read-only); PEP 3118 `__buffer__` expuesto para NumPy/PyTorch/Pillow zero-copy; `BufferMut`; `BufferPool` con misma taxonomía de size classes + per-tenant accounting.
+  - `symbolic_ptr.py` — `SymbolicPtr[T]` genérico; clone O(1); `weakref.finalize` decrementa refcount on drop. Fast-path para fan-out de consumers.
+- **Tests:**
+  - Rust integration: `axon-rs/tests/fase_11b_buffers_and_ingest.rs` — multipart E2E, WS fragmentation stitch, pool reuse bajo steady-state, oversize bypass, custom kinds, slice-of-slice, BufferMut.freeze con tenant.
+  - Python: `tests/test_fase_11b_buffer.py` + `test_fase_11b_symbolic_ptr.py` — 30 tests pasando (interning, slice semantics, readonly memoryview, PEP 3118 exposure, freeze-once, pool classes, tenant soft-limit, refcount + weakref drop).
+- **Docs:**
+  - `docs/BUFFER_PROTOCOL.md` — operator guide con composition example `Stream<Trusted<Bytes[pcm16]>>` combinando 11.a + 11.b.
+
+**Decisiones cerradas:**
+
+- **BufferKind es OPEN registry** (vs closed de 11.a trust + backpressure). Los kinds son metadata de contenido, no un security boundary — registrar custom kinds no requiere security review.
+- **Pool global-per-proceso con soft-limit per-tenant tracked**, no pool per-tenant. Una sola región de memoria; tenant accounting vive en metrics. Evita fragmentation por pool-per-tenant bajo adopters con 1000s de tenants.
+- **SymbolicPtr[T] copiable** (via clone()) para permitir fan-out; alternativa move-only prevenía cross-consumer sharing que es el caso load-bearing.
+- **memoryview readonly** enforced (PEP 3118 flag) — C extension que intenta mutar a través de la vista falla fast. Adopter que necesita mutar llama `as_bytes()` explícito para obtener copia owned.
+- **PyO3 binding físico diferido a 11.b.1.** Python side usa `bytes` carrier + memoryview hoy; semantics de zero-copy aplican via memoryview, pero Rust-allocated storage aún no cruza FFI. Interfaz no cambia cuando lande; carrier sí.
+- **Fase 11.b no define compile-time kind constraints** (`Bytes[pcm16] → Bytes[wav]`). El auto-wiring tipado va en 11.e (OTS Binary Pipeline Synthesis).
+
+**Open questions deferred:**
+
+- [ ] PyO3 wrapper around `axon::buffer::ZeroCopyBuffer` exposing Arc<[u8]> via Python buffer protocol — requiere maturin build en el release pipeline.
+- [ ] Lockfree free list para el pool (hoy usa Mutex / threading.RLock). Performance follow-up; correctness ya está en su sitio.
+- [ ] Buffer composition sin copy — concatenar two `ZeroCopyBuffer`s via reference en vez de memcpy. Útil pero out of scope para 11.b.
 
 **Objetivo.** Bytes que entran por red (HTTP multipart, WS binary,
 stdin file upload) aterrizan directamente en región de memoria Rust. La
@@ -633,28 +668,32 @@ cada cambio requiere entrada en este log con justificación.
 
 **Última actualización:** 2026-04-22
 
-**Próxima sesión — pickup point:** arrancar **11.b (Zero-Copy Multimodal
-Buffers)** — `ZeroCopyBuffer` en axon-rs + `SymbolicPtr<T>` en Python via
-PyO3 buffer protocol. Desbloquea ingest de audio/video sin copias FFI.
+**Próxima sesión — pickup point:** arrancar **11.c (Deterministic Replay
++ Legal-Basis Typed Effects)** — `ReplayToken` hash-encadenado al audit
+chain de 10.g; catálogo cerrado `LegalBasis<GDPR | CCPA | SOX | HIPAA |
+GLBA | PCI_DSS>`; efectos `@sensitive` requieren `LegalBasis<>` o no
+compilan.
 
-**Decisiones cerradas en esta sesión (11.a):**
-- Syntax via composite effect string (`stream:drop_oldest`, `trust:hmac`) en vez de atributos `@backpressure(...)` — aprovecha parser existente; semántica equivalente.
-- Conservative flow-level reachability check en vez de full taint-tracking dataflow — captura el caso load-bearing sin requerir pre-pass.
-- Catálogos cerrados idénticos Rust + Python; extensión = parche sincronizado + security review.
-- Trust y Stream son ortogonales; `Stream<Trusted<T>>` es válido y deseable.
-- Ed25519 usa `verify_strict` (no `verify()`); HMAC vía `hmac::Mac::verify_slice` para constant-time implícito.
+**Decisiones cerradas en esta sesión (11.b):**
+- `BufferKind` es registry ABIERTO (vs closed de 11.a) — los kinds son metadata de contenido, no security boundary; registrar custom kinds no requiere security review.
+- Pool global-per-proceso con soft-limit per-tenant tracked, NO pool per-tenant. Evita fragmentation en adopters con miles de tenants.
+- `SymbolicPtr[T]` es copiable (clone O(1)) — permite fan-out a múltiples consumers; move-only rompía el caso load-bearing.
+- memoryview readonly (PEP 3118 flag) — mutation via C extension falla fast; adopter que necesita mutar llama `as_bytes()` explícito para copia owned.
+- PyO3 binding físico diferido a 11.b.1 — Python usa `bytes` carrier + memoryview hoy; interfaz estable cuando lande el binding.
+- Compile-time kind constraints (`Bytes[pcm16] → Bytes[wav]`) viven en 11.e (OTS Binary Pipeline Synthesis), no en 11.b.
 
-**Pre-requisitos para 11.b:**
-- [x] 11.a completo (primitivas de efectos + refinement types).
-- [x] Runtime `Stream<T>` funcionando para orquestar los buffers.
-- [ ] Decidir: pool slab global-per-proceso vs per-tenant. Propongo **global con soft-limit per-tenant** tracked por métrica.
-- [ ] Decidir: `SymbolicPtr<T>` copiable (Arc clone cheap) vs move-only. Propongo **copiable** para fan-out a múltiples consumers.
-- [ ] Decidir: prohibir mutación de buffers compartidos → explicit copy o mutable slice. Propongo **readonly enforced via PEP 3118 flag**.
-- [ ] Identificar los kinds iniciales de `Bytes[kind]` — propongo `raw`, `pcm16`, `mulaw8`, `jpeg`, `png`, `mp3`, `opus`, `pdf`, `mp4` como conjunto inicial; extensión libre (no cerrado como los catálogos de 11.a).
+**Pre-requisitos para 11.c:**
+- [x] 11.a + 11.b completos.
+- [x] Audit hash chain de 10.g en `axon_enterprise` listo para append ReplayTokens.
+- [x] Canonical JSON helper compartido (en 10.g audit chain) — los ReplayTokens usan el mismo Record Separator `\x1e`.
+- [ ] Decidir formato del ReplayToken on-the-wire: JSON canónico vs MessagePack. Propongo **JSON canónico** por consistencia con 10.g; si el perf cost es significativo re-evaluar.
+- [ ] Decidir si el `model_version` es string libre o catálogo. Propongo **string libre** (pueden ser hashes de weights, versiones semver, OpenAI model IDs).
+- [ ] Decidir: cuando un efecto `@sensitive` es llamado sin `LegalBasis<>`, ¿emitir error o warning durante el transition period? Propongo **error directo** — 11.a estableció precedent con `Untrusted<T>` sin refinar.
+- [ ] Decidir catálogo inicial de `LegalBasis`: propongo `GDPR.Art6.{A,B,C,D,E,F}` + `GDPR.Art9.{A,B,C,D,E,F,G,H,I,J}` + `CCPA.§1798_100` + `SOX.§404` + `HIPAA.§164_502` + `GLBA.§501B` + `PCI_DSS.v4_3`.
 
 **Sesión abierta en:**
 - Plan vivo: `axxon-constructor:docs/fase_11_neuro_symbolic_axon.md`
-- Commits axon-lang (doble-pushed a `origin` + `enterprise`): `363f845`, `aa6f7a2`, `<docs>`.
+- Commits axon-lang pushed a `origin`: `363f845`, `aa6f7a2`, `495bc34` (11.a); `57844c9`, `c49bbee` (11.b).
 
 ---
 
