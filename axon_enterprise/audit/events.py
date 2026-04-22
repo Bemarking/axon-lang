@@ -112,6 +112,12 @@ class AuditEventType(StrEnum):
     COMPLIANCE_EVIDENCE_BUNDLE_GENERATED = "compliance:evidence_bundle_generated"
     COMPLIANCE_RESIDENCY_VIOLATION = "compliance:residency_violation"
 
+    # ── §Fase 11.c — Deterministic Replay ────────────────────────────
+    REPLAY_TOKEN_EMITTED = "replay:token_emitted"
+    REPLAY_REPLAYED = "replay:replayed"
+    REPLAY_DIVERGENCE_DETECTED = "replay:divergence_detected"
+    REPLAY_LEGAL_BASIS_MISSING = "replay:legal_basis_missing"
+
     def category(self) -> EventCategory:
         """Return the parent ``EventCategory`` of this event type."""
         prefix = self.value.split(":", 1)[0]
