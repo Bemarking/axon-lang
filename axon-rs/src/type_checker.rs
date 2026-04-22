@@ -37,7 +37,14 @@ const VALID_VIOLATION_ACTIONS: &[&str] = &["escalate", "fallback", "log", "raise
 
 const VALID_RETRIEVAL_STRATEGIES: &[&str] = &["exact", "hybrid", "semantic"];
 
-const VALID_EFFECTS: &[&str] = &["io", "network", "pure", "random", "storage"];
+// §λ-L-E Fase 11.a — `stream` (with mandatory backpressure qualifier)
+// and `trust` (with mandatory proof qualifier) join the catalogue.
+// The qualifiers themselves are validated separately below against
+// the closed catalogues in `crate::stream_effect` and
+// `crate::refinement`.
+const VALID_EFFECTS: &[&str] = &[
+    "io", "network", "pure", "random", "storage", "stream", "trust",
+];
 
 const VALID_EPISTEMIC_LEVELS: &[&str] = &["believe", "doubt", "know", "speculate"];
 
@@ -484,7 +491,10 @@ impl<'a> TypeChecker<'a> {
         if let Some(ref eff) = node.effects {
             for e in &eff.effects {
                 // Handle composite effects like "name:qualifier"
-                let base = e.split(':').next().unwrap_or(e);
+                let (base, qualifier) = match e.split_once(':') {
+                    Some((b, q)) => (b, Some(q)),
+                    None => (e.as_str(), None),
+                };
                 if !is_valid(base, VALID_EFFECTS) {
                     self.emit(
                         format!(
@@ -493,6 +503,68 @@ impl<'a> TypeChecker<'a> {
                         ),
                         &node.loc,
                     );
+                    continue;
+                }
+                // §λ-L-E Fase 11.a — qualifier enforcement for the
+                // stream + trust effects. Both REQUIRE a qualifier
+                // from their closed catalogue. Missing or unknown
+                // qualifiers are compile errors.
+                match base {
+                    "stream" => match qualifier {
+                        None => self.emit(
+                            format!(
+                                "Effect 'stream' in tool '{}' requires a \
+                                 backpressure policy qualifier \
+                                 'stream:<policy>'. Valid policies: {}",
+                                node.name,
+                                valid_list(crate::stream_effect::BACKPRESSURE_CATALOG)
+                            ),
+                            &node.loc,
+                        ),
+                        Some(q) => {
+                            if !is_valid(
+                                q,
+                                crate::stream_effect::BACKPRESSURE_CATALOG,
+                            ) {
+                                self.emit(
+                                    format!(
+                                        "Unknown backpressure policy '{}' in tool '{}'. \
+                                         Valid: {}",
+                                        q,
+                                        node.name,
+                                        valid_list(crate::stream_effect::BACKPRESSURE_CATALOG)
+                                    ),
+                                    &node.loc,
+                                );
+                            }
+                        }
+                    },
+                    "trust" => match qualifier {
+                        None => self.emit(
+                            format!(
+                                "Effect 'trust' in tool '{}' requires a proof \
+                                 qualifier 'trust:<proof>'. Valid proofs: {}",
+                                node.name,
+                                valid_list(crate::refinement::TRUST_CATALOG)
+                            ),
+                            &node.loc,
+                        ),
+                        Some(q) => {
+                            if !is_valid(q, crate::refinement::TRUST_CATALOG) {
+                                self.emit(
+                                    format!(
+                                        "Unknown trust proof '{}' in tool '{}'. \
+                                         Valid: {}",
+                                        q,
+                                        node.name,
+                                        valid_list(crate::refinement::TRUST_CATALOG)
+                                    ),
+                                    &node.loc,
+                                );
+                            }
+                        }
+                    },
+                    _ => {}
                 }
             }
             if !eff.epistemic_level.is_empty()
@@ -507,6 +579,17 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
+
+        // §λ-L-E Fase 11.a — tool output/input trust coherence.
+        // When a tool's declared effects announce a trust proof, we
+        // don't (yet) propagate it into the return-type refinement
+        // since tools don't carry explicit return TypeExprs in this
+        // AST tier. Tool-level trust claims are consumed by
+        // `check_flow`'s refinement pass below.
+
+        // Mirror for stream: if a tool declares stream:<policy>, the
+        // flows that use it inherit the obligation — enforced in
+        // `check_flow`.
     }
 
     fn check_flow(&mut self, node: &FlowDefinition) {
@@ -541,6 +624,202 @@ impl<'a> TypeChecker<'a> {
 
         // Tier 2 flow step reference checks
         self.check_flow_steps(&node.body, &node.name);
+
+        // §λ-L-E Fase 11.a — Temporal Algebraic Effects + Trust
+        // Types. Enforce two contracts at the flow level:
+        //
+        //   1. Stream<T> in parameter/return obliges the flow's body
+        //      to reach a tool that carries a `stream:<policy>` effect.
+        //      Without it, we cannot guarantee the stream has a
+        //      backpressure handler — compile error.
+        //
+        //   2. Untrusted<T> in parameter obliges the flow's body to
+        //      reach a tool that carries a `trust:<proof>` effect —
+        //      otherwise the untrusted payload is being consumed
+        //      without verification.
+        self.check_refinement_and_stream_contracts(node);
+    }
+
+    // ── §λ-L-E Fase 11.a — refinement + stream flow-level checks ─
+
+    fn check_refinement_and_stream_contracts(
+        &mut self,
+        flow: &FlowDefinition,
+    ) {
+        // Scan flow signature for the refinement / stream markers.
+        // `Trusted<T>` in a parameter imposes no new obligation on
+        // this flow (the upstream already proved trust). `Untrusted<T>`
+        // in a parameter obliges the flow body to refine it.
+        let mut uses_stream = false;
+        let mut uses_untrusted = false;
+
+        for param in &flow.parameters {
+            if crate::stream_effect::is_stream_type(&param.type_expr.name) {
+                uses_stream = true;
+            }
+            if crate::refinement::is_untrusted_type(&param.type_expr.name) {
+                uses_untrusted = true;
+            }
+        }
+        if let Some(ref rt) = flow.return_type {
+            if crate::stream_effect::is_stream_type(&rt.name) {
+                uses_stream = true;
+            }
+            // Returning `Untrusted<T>` is legal (the flow is a pure
+            // acceptor / pass-through) — the downstream consumer
+            // carries the refinement obligation.
+        }
+
+        if !uses_stream && !uses_untrusted {
+            return;
+        }
+
+        // Build {tool_name → Vec<effect_string>} by scanning the
+        // program's declarations. Owned strings sidestep lifetime
+        // gymnastics; the program-wide walk is O(N_tools) and the
+        // strings are short slugs, so the allocation cost is negligible
+        // for this checker pass.
+        let mut tool_effects: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        self.collect_tool_effects(
+            &self.program.declarations,
+            &mut tool_effects,
+        );
+
+        // Walk the flow body and see which tools each step reaches
+        // via `apply_ref` / `navigate_ref`. Record the effects we
+        // witness.
+        let mut observed_backpressure = false;
+        let mut observed_trust_proof = false;
+        self.walk_flow_steps_for_effects(
+            &flow.body,
+            &tool_effects,
+            &mut observed_backpressure,
+            &mut observed_trust_proof,
+        );
+
+        if uses_stream && !observed_backpressure {
+            self.emit(
+                format!(
+                    "Flow '{}' uses 'Stream<T>' in its signature but no \
+                     reachable tool declares a 'stream:<policy>' effect. \
+                     Every Stream<T> needs a backpressure policy: {}. \
+                     Declare the policy on the tool that produces or \
+                     consumes the stream (e.g. `effects: [stream:drop_oldest]`).",
+                    flow.name,
+                    valid_list(crate::stream_effect::BACKPRESSURE_CATALOG)
+                ),
+                &flow.loc,
+            );
+        }
+        if uses_untrusted && !observed_trust_proof {
+            self.emit(
+                format!(
+                    "Flow '{}' accepts 'Untrusted<T>' in its signature but \
+                     no reachable tool declares a 'trust:<proof>' effect. \
+                     Untrusted payloads MUST be refined via one of the \
+                     catalogue verifiers: {}. Add the appropriate effect \
+                     to the verifier tool (e.g. `effects: [trust:hmac]`).",
+                    flow.name,
+                    valid_list(crate::refinement::TRUST_CATALOG)
+                ),
+                &flow.loc,
+            );
+        }
+    }
+
+    fn collect_tool_effects(
+        &self,
+        decls: &[Declaration],
+        out: &mut std::collections::HashMap<String, Vec<String>>,
+    ) {
+        for d in decls {
+            match d {
+                Declaration::Tool(t) => {
+                    if let Some(ref eff) = t.effects {
+                        out.insert(
+                            t.name.clone(),
+                            eff.effects.clone(),
+                        );
+                    }
+                }
+                Declaration::Epistemic(eb) => {
+                    self.collect_tool_effects(&eb.body, out);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn walk_flow_steps_for_effects(
+        &self,
+        steps: &[FlowStep],
+        tool_effects: &std::collections::HashMap<String, Vec<String>>,
+        observed_backpressure: &mut bool,
+        observed_trust_proof: &mut bool,
+    ) {
+        for step in steps {
+            match step {
+                FlowStep::Step(s) => {
+                    for tool_ref in [&s.apply_ref, &s.navigate_ref] {
+                        if tool_ref.is_empty() {
+                            continue;
+                        }
+                        if let Some(effs) = tool_effects.get(tool_ref) {
+                            for e in effs {
+                                let (base, qual) = match e.split_once(':') {
+                                    Some((b, q)) => (b, Some(q)),
+                                    None => (e.as_str(), None),
+                                };
+                                if base == "stream" {
+                                    if let Some(q) = qual {
+                                        if is_valid(
+                                            q,
+                                            crate::stream_effect::BACKPRESSURE_CATALOG,
+                                        ) {
+                                            *observed_backpressure = true;
+                                        }
+                                    }
+                                }
+                                if base == "trust" {
+                                    if let Some(q) = qual {
+                                        if is_valid(
+                                            q,
+                                            crate::refinement::TRUST_CATALOG,
+                                        ) {
+                                            *observed_trust_proof = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                FlowStep::If(c) => {
+                    self.walk_flow_steps_for_effects(
+                        &c.then_body,
+                        tool_effects,
+                        observed_backpressure,
+                        observed_trust_proof,
+                    );
+                    self.walk_flow_steps_for_effects(
+                        &c.else_body,
+                        tool_effects,
+                        observed_backpressure,
+                        observed_trust_proof,
+                    );
+                }
+                FlowStep::ForIn(f) => {
+                    self.walk_flow_steps_for_effects(
+                        &f.body,
+                        tool_effects,
+                        observed_backpressure,
+                        observed_trust_proof,
+                    );
+                }
+                _ => {}
+            }
+        }
     }
 
     fn check_intent(&mut self, node: &IntentNode) {
