@@ -42,3 +42,6 @@ jsonwebtoken = "9"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 subtle = "2"
 urlencoding = "2"
+# §Fase 11.c — ReplayLog trait needs async for the enterprise-adapter
+# shape (Postgres writes) even though the in-memory impl is sync.
+async-trait = "0.1"
