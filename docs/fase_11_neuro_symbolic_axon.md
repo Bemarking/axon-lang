@@ -31,7 +31,7 @@ específico. Las primitivas son genéricas (`Stream<Bytes>`, `LegalBasis`,
 | 11.c | Deterministic Replay + Legal-Basis Typed Effects (`ReplayToken` + `LegalBasis<>`) | ✅ Completo |
 | 11.d | Stateful PEM sobre WebSocket (continuidad cognitiva cross-reconnect) | ✅ Completo |
 | 11.e | OTS Binary Pipeline Synthesis (auto-descubrir transcoders tipados) | ✅ Completo |
-| 11.f | Integration Testing + Security Audit (regresión cross-phase, threat model) | ⏳ Pendiente |
+| 11.f | Integration Testing + Security Audit (regresión cross-phase, threat model) | ✅ Completo |
 
 Orden NO es arbitrario: 11.a habilita refinement types que 11.c y 11.d
 usan; 11.b es prerequisito para 11.e (OTS opera sobre buffers zero-copy);
@@ -669,14 +669,35 @@ zero-copy donde sea posible, cacheado entre requests.
 
 ## 11.f — Integration Testing + Security Audit
 
-**Estado:** ⏳ Pendiente — **Depende de:** 11.a–11.e completos.
+**Estado:** ✅ Completo — **Depende de:** 11.a–11.e completos.
 
-**Objetivo.** Validar formalmente que las 5 sub-fases interoperan:
-`Stream<Trusted<AudioFrame>>` + zero-copy + replay + stateful PEM + OTS
-compuestos en un flow multi-efecto no se degradan. Threat model
-específico para los vectores introducidos: replay poisoning, legal
-basis bypass, buffer reuse cross-tenant, WebSocket hijack durante
-reconnect, ffmpeg subprocess escape.
+**Commits (axon-lang):**
+- `f370eeb` test(fase-11.f): cross-phase integration + adversarial security suite
+- `240a7e8` docs+load(fase-11.f): k6 SLO gates + threat model + GA audit
+
+**Entregado:**
+
+- **Cross-phase integration tests (Rust + Python)**:
+  - `axon-rs/tests/fase_11f_cross_phase_integration.rs` — end-to-end pipeline combinando HMAC verify (11.a) + ZeroCopyBuffer con tenant tag (11.b) + OTS mulaw8→pcm16 (11.e) + Stream con drop_oldest (11.a) + ReplayToken (11.c) + CognitiveState Q32.32 (11.d) + ContinuityToken reconnect (11.d). Compose is load-bearing.
+  - `tests/test_fase_11f_cross_phase.py` — 14 tests Python pasando; mismo composition surface.
+- **Adversarial security tests**:
+  - `axon-rs/tests/fase_11f_security_adversarial.rs` — 14 tests, uno por cada threat en el threat model (T-11-01 replay poisoning, T-11-02 legal-basis bypass, T-11-03 HIPAA boundary breach, T-11-04 continuity-token phishing, T-11-05 buffer isolation bleed, T-11-06 trust-catalogue drift, T-11-07 backpressure erasure).
+- **k6 load suites** (`tests/load_fase_11/`):
+  - `k6_ws_audio_stream.js` — WebSocket audio p95 < 300ms / p99 < 500ms RTT.
+  - `k6_replay_emission.js` — ReplayToken emission p99 < 2ms.
+  - `k6_ots_synthesis.js` — cold p99 < 10ms / cached p99 < 0.1ms.
+  - `k6_pem_snapshot.js` — persist + restore p99 < 50ms para estados ≤ 64 KiB.
+- **Docs nuevos**:
+  - `docs/THREAT_MODEL_FASE_11.md` — STRIDE completo (Spoofing / Tampering / Repudiation / Info Disclosure / DoS / EoP) + **5 AI/ML-specific threats**: T-ML-01 Model-swap replay, T-ML-02 Prompt injection mid-replay, T-ML-03 Buffer exhaustion via SymbolicPtr, T-ML-04 Continuity-token phishing, T-ML-05 HIPAA boundary breach. Cada threat con mitigation + residual risk + test que la defiende.
+  - `docs/SECURITY_AUDIT_v1_2_0.md` — GA sign-off gate: gates automatizados (cargo test, pytest, clippy, ruff, mypy, cargo audit, pip-audit, 4 k6 scripts), invariantes de código por sub-fase, controles operacionales, non-automatable review items, **external pentest PRE-GA obligatorio**, SLO thresholds enforced, known deviations, release command.
+
+**Decisiones cerradas:**
+
+- **Pentest externo PRE-GA para v1.2.0** (NO diferido como v1.1.0) — el attack surface nuevo (FFI buffers, ffmpeg subprocess, WebSocket stateful, LLM replay, LegalBasis typed effects) justifica auditoría externa antes del marketing.
+- **Cross-phase regression harness**: tests Rust + Python compuestos por sub-fase se ejecutan en el mismo `cargo test --all` + `pytest tests/` workflow. No runner dedicado — reusamos lo que ya hay.
+- **Threat model STRIDE + 5 AI/ML-specific** — cada uno con test específico. Model-swap replay resuelto via `model_version` en canonical hash; prompt injection resuelto via canonical-JSON end-to-end hash; buffer exhaustion via Arc refcount + pool free-list cap; continuity-token phishing via HMAC constant-time + TTL + key rotation; HIPAA boundary via compile-time rejection.
+- **SLO thresholds específicos** (en k6): WebSocket audio end-to-end p99 < 500ms; ReplayToken emission < 2ms; OTS synthesis cold < 10ms / cached < 0.1ms; PEM snapshot+restore < 50ms. Relaxación = breaking-change release note.
+- **Known deviations documentadas**: Q32.32 precisión ≈ 2.3e-10, Dijkstra cold path O(V log V), ffmpeg spawn-per-call sin pipe-in worker. Todas accepted con justificación.
 
 ### Archivos nuevos (axon-lang + axon-enterprise)
 
@@ -762,33 +783,31 @@ cada cambio requiere entrada en este log con justificación.
 
 **Última actualización:** 2026-04-22
 
-**Próxima sesión — pickup point:** arrancar **11.f (Integration Testing
-+ Security Audit)** — cross-phase regression tests, threat model
-actualizado con el nuevo attack surface de Fase 11 (FFI buffers,
-ffmpeg subprocess, WebSocket stateful), SLO gates en k6 para audio
-streaming, pentest externo PRE-GA para v1.2.0.
+**Próxima sesión — pickup point:** **Fase 11 COMPLETA.** GA `v1.2.0` en
+ambos repos (axon-lang + axon-enterprise) listo para tag una vez el
+checklist de `docs/SECURITY_AUDIT_v1_2_0.md` esté verde — incluye el
+pentest externo PRE-GA obligatorio.
 
-**Decisiones cerradas en esta sesión (11.e):**
-- Registry **at startup only** (no hot-load runtime) — un transformer apareciendo mid-flight rompe auditability.
-- ffmpeg absence **non-fatal** — falla en pipeline synthesis con `NoPath`, no crash en process start. Adopters con paths nativos funcionan sin ffmpeg instalado.
-- Pool con TTL 60s (spawn-per-call hoy, pipe-in worker es follow-up) — primer call paga el spawn, reuse en TTL.
-- Kind convention **`pcm16_<rate>k`** encodes layout + rate en un solo tag — permite componer transcode + resample como edges independientes del graph.
-- **HIPAA + ffmpeg rechazado** en compile time. GDPR / CCPA / SOX / GLBA / PCI-DSS NO bloqueados — solo HIPAA por la especificidad del BAA boundary. No infantilizar adopters no-healthcare.
-- `ots:transform` es **open taxonomy** (mismos kinds que el BufferKind registry de 11.b); `ots:backend` es **closed catalogue** (native | ffmpeg). Nuevos backends requieren parche al compiler.
-- μ-law decoder sigue G.711 stored-vs-logical convention (stored byte = logical byte con bits invertidos). Reference vectors documentados inline para prevenir regresiones por confusión.
+**Decisiones cerradas en esta sesión (11.f):**
+- **Pentest externo PRE-GA** para v1.2.0 (NO diferido como v1.1.0). El attack surface nuevo (FFI buffers, ffmpeg subprocess, WebSocket stateful, LLM replay, LegalBasis typed effects) justifica auditoría externa antes de marketing.
+- Cross-phase regression usa `cargo test --all` + `pytest tests/` existentes (no runner dedicado). Más commits, menos infra.
+- Threat model = STRIDE + **5 AI/ML-specific threats** (T-ML-01..T-ML-05). Cada uno con mitigation + residual risk + test que la defiende.
+- SLO thresholds in k6: WS audio p99 < 500ms, ReplayToken emission p99 < 2ms, OTS synth cold p99 < 10ms / cached < 0.1ms, PEM snapshot+restore p99 < 50ms. Relaxation requires breaking-change release note.
+- Known deviations aceptadas: Q32.32 precisión ≈ 2.3e-10, Dijkstra cold path O(V log V), ffmpeg spawn-per-call. Todas con justification documented.
 
-**Pre-requisitos para 11.f:**
-- [x] 11.a–11.e completas con suites individuales pasando.
-- [x] Docs operator-guide per sub-fase (STREAM_EFFECTS, TRUST_TYPES, BUFFER_PROTOCOL, REPLAY_AND_LEGAL_BASIS, STATEFUL_PEM, OTS_BINARY_PIPELINES).
-- [ ] Decidir si el pentest externo es obligatorio PRE-GA v1.2.0 o pos-GA (Fase 10 lo difirió a v1.1.1). Propongo **pre-GA** — el attack surface nuevo (FFI + subprocess + WS stateful + cognitive state PII) justifica auditoría externa antes de marketing.
-- [ ] Decidir harness de cross-phase regression: invocation de `cargo test --all` + `pytest tests/` + ejecución manual de k6 scripts vs un runner dedicado. Propongo **runner dedicado** con Python que orquesta ambos; reusa la lógica del compliance evidence bundle de 10.l.
-- [ ] Decidir threat model update scope — STRIDE + AI/ML-specific threats (prompt injection mid-replay, model-swap replay, buffer exhaustion via SymbolicPtr refcount leak, continuity-token phishing). Propongo **STRIDE + estos 4 adicionales** + un fifth dedicated a HIPAA boundary enforcement.
-- [ ] Decidir SLO thresholds para audio streaming: propongo **WebSocket audio frame p99 < 500ms end-to-end**, **zero-copy buffer overhead < 1%**, **ReplayToken emission < 2ms**, **OTS pipeline synthesis < 10ms cold + < 0.1ms cached**, **CognitiveState snapshot+restore < 50ms para estados ≤ 64 KiB**.
+**Cierre del plan Fase 11 — Neuro-Symbolic Micro-OS:**
+- [x] 11.a Temporal Algebraic Effects + Trust Types
+- [x] 11.b Zero-Copy Multimodal Buffers
+- [x] 11.c Deterministic Replay + Legal-Basis Typed Effects
+- [x] 11.d Stateful PEM over WebSocket
+- [x] 11.e OTS Binary Pipeline Synthesis
+- [x] 11.f Integration Testing + Security Audit
 
 **Sesión abierta en:**
 - Plan vivo: `axxon-constructor:docs/fase_11_neuro_symbolic_axon.md`
-- Commits axon-lang pushed a `origin`: `363f845`, `aa6f7a2`, `495bc34` (11.a); `57844c9`, `c49bbee`, `95df120` (11.b); `2b933a1`, `b4e5bec`, `f6f6208`, `b9d1926` (11.c); `7e9e421`, `86d23e2`, `afc2172` (11.d); `e50ca4a`, `91fb237` (11.e).
+- Commits axon-lang pushed a `origin`: `363f845`, `aa6f7a2`, `495bc34` (11.a); `57844c9`, `c49bbee`, `95df120` (11.b); `2b933a1`, `b4e5bec`, `f6f6208`, `b9d1926` (11.c); `7e9e421`, `86d23e2`, `afc2172` (11.d); `e50ca4a`, `91fb237`, `87cddeb` (11.e); `f370eeb`, `240a7e8` (11.f).
 - Commits axon-enterprise pushed a `origin`: `0db9b4f`, `903ad77` (11.c); `5033569`, `79607d2` (11.d).
+- Tag `v1.2.0` pendiente de sign-off por engineering lead + external pentest per `docs/SECURITY_AUDIT_v1_2_0.md`.
 
 ---
 
