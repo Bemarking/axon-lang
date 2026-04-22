@@ -118,6 +118,12 @@ class AuditEventType(StrEnum):
     REPLAY_DIVERGENCE_DETECTED = "replay:divergence_detected"
     REPLAY_LEGAL_BASIS_MISSING = "replay:legal_basis_missing"
 
+    # ── §Fase 11.d — Stateful PEM over WebSocket ────────────────────
+    PEM_STATE_PERSISTED = "pem:state_persisted"
+    PEM_STATE_RESTORED = "pem:state_restored"
+    PEM_STATE_EVICTED = "pem:state_evicted"
+    PEM_RECONNECT_DENIED = "pem:reconnect_denied"
+
     def category(self) -> EventCategory:
         """Return the parent ``EventCategory`` of this event type."""
         prefix = self.value.split(":", 1)[0]
