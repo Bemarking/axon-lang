@@ -390,7 +390,7 @@ class ObservabilitySettings(BaseSettings):
     )
 
     service_name: str = "axon-enterprise"
-    service_version: str = "1.1.0"
+    service_version: str = "1.2.0"
 
     # Structured logging
     log_level: str = Field(
@@ -559,7 +559,7 @@ class Settings(BaseSettings):
 
     # Retrieved from the runtime environment for structured logs / JWT `iss`
     service_name: str = "axon-enterprise"
-    service_version: str = "1.1.0"
+    service_version: str = "1.2.0"
 
     @field_validator("rls_guc_name")
     @classmethod

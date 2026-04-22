@@ -10,4 +10,4 @@ This package contains enterprise-only features:
 - Advanced observability
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
