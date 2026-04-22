@@ -29,7 +29,7 @@ específico. Las primitivas son genéricas (`Stream<Bytes>`, `LegalBasis`,
 | 11.a | Temporal Algebraic Effects + Trust Types (`Stream<T>`, `Trusted<T>`) | ✅ Completo |
 | 11.b | Zero-Copy Multimodal Buffers (audio/video/file ingest sin cruzar FFI) | ✅ Completo |
 | 11.c | Deterministic Replay + Legal-Basis Typed Effects (`ReplayToken` + `LegalBasis<>`) | ✅ Completo |
-| 11.d | Stateful PEM sobre WebSocket (continuidad cognitiva cross-reconnect) | ⏳ Pendiente |
+| 11.d | Stateful PEM sobre WebSocket (continuidad cognitiva cross-reconnect) | ✅ Completo |
 | 11.e | OTS Binary Pipeline Synthesis (auto-descubrir transcoders tipados) | ⏳ Pendiente |
 | 11.f | Integration Testing + Security Audit (regresión cross-phase, threat model) | ⏳ Pendiente |
 
@@ -449,9 +449,45 @@ garantiza que ningún efecto regulado se ejecutó sin base legal.
 
 ## 11.d — Stateful PEM sobre WebSocket
 
-**Estado:** ⏳ Pendiente — **Depende de:** 11.a (`Stream<T>` para
-framing), 11.c (ReplayToken — el estado cognitivo se snapshot-ea con
-un token de continuidad).
+**Estado:** ✅ Completo — **Depende de:** 11.a (`Stream<T>` framing),
+10.b (envelope encryption), 10.g (audit chain), 10.l (residency + SAR + erasure), 11.c (ReplayToken flow_id correlation).
+
+**Commits (axon-lang):**
+- `7e9e421` feat(lang-11.d): stateful PEM — CognitiveState + ContinuityToken + backend
+- `86d23e2` test+docs(fase-11.d): PEM suite + `STATEFUL_PEM.md`
+
+**Commits (axon-enterprise):**
+- `5033569` feat(fase-11.d): cognitive_states module + migración 012
+- `79607d2` feat(fase-11.d): integrate cognitive_states with 10.l SAR + erasure + tests
+
+**Entregado:**
+
+- **Rust primitives (axon-rs/src/pem/):**
+  - `state.rs` — `CognitiveState` + `FixedPoint` Q32.32 quantización (precisión ≈ 2.3e-10, error representable menor que rounding del propio float). Density matrix bit-identical across N reconnects — test `density_matrix_bit_identical_after_three_reconnects` lo verifica.
+  - `continuity_token.rs` — `ContinuityTokenSigner` con HMAC-SHA256 + `subtle::ConstantTimeEq`. Rechaza forged (wrong key), expired, tampered session_id. Base64url wire format.
+  - `backend.rs` — `PersistenceBackend` async trait + `InMemoryBackend` impl con `PersistenceError::{NotFound, Expired, Backend}`.
+- **Python mirror (axon/runtime/pem/):** byte-idéntico wire format + `hmac.compare_digest` constant-time; misma API Rust→Python para cross-language interop.
+- **axon-enterprise (`axon_enterprise/cognitive_states/`):**
+  - `models.py` — `CognitiveStateSnapshot` ORM tenant-scoped + RLS, `state_ciphertext` LargeBinary + metadata indexable sin descifrar.
+  - `service.py` — persist/restore/evict con envelope encryption (AAD bindings a `(tenant_id, session_id, flow_id, subject_user_id)`); cross-row ciphertext swap falla AEAD tag ANTES de producir plaintext. Todos los boundary crossings emiten audit events.
+  - `worker.py` — `CognitiveStateEvictionWorker` siguiendo el patrón del ComplianceWorker de 10.l.
+- **Alembic migration 012_cognitive_states.py** — tabla + 5 B-tree indexes + RLS policies. NO append-only trigger porque snapshots SON mutables (rewrite in-place en cada persist; DELETE en eviction).
+- **Integración con 10.l compliance:**
+  - `SarExporter._collect_tables` incluye `cognitive_states.jsonl` (metadata only; payload `[redacted]`).
+  - `ErasureService.anonymize` DELETE-a cada snapshot del subject (cryptoshred para KMS envelope; row-delete para local).
+- **Nuevos audit events**: `pem:state_persisted`, `pem:state_restored`, `pem:state_evicted`, `pem:reconnect_denied`.
+- **Tests**: 10 Rust integration + 21 Python unit (todos pasando) + 10 enterprise integration (incluye ciphertext_bound_to_row_aad que valida AEAD row-binding).
+- **Docs**: `docs/STATEFUL_PEM.md` con Q32.32 rationale, continuity token handshake, composition con 10.b/10.g/10.l + 11.a/11.b/11.c.
+
+**Decisiones cerradas:**
+
+- **Q32.32 fixed-point** para floats del density_matrix en vez de IEEE-754 serialización. Precisión ≈ 2.3e-10 es suficiente para belief states; la estabilidad bit-wise across reconnects es no negociable.
+- **JSON key-sorted canónico** como wire format (no MessagePack). Consistente con 10.g + 11.c canonicaliser. MessagePack queda como optimización futura si profiling justifica.
+- **AAD de envelope bindea `(tenant_id, session_id, flow_id, subject_user_id)`**. Cross-row ciphertext swap falla AEAD tag ANTES de producir plaintext — el test `ciphertext_bound_to_row_aad` lo asegura.
+- **Snapshots SON mutables** (no append-only como audit/replay). TTL requires DELETE; append-only trigger lo bloquearía. El audit chain captura persist/restore/evict events así el lifecycle queda en el chain sin que la tabla lo sea.
+- **ContinuityToken HMAC-signed** (no JWT). Matiz: necesitamos algo short-lived + no requiere parseo de claims — HMAC binario sobre 3 campos es más simple y rotable independiente del JWT signing key de 10.e.
+- **Eviction worker vs Postgres TTL** — worker dedicado porque queremos el cryptoshred operation visible en el audit chain (pem:state_evicted emitido por cada DELETE), no un background cleanup silencioso.
+- **SAR incluye metadata only**, no ciphertext. El recipiente del SAR no tiene la envelope key; entregar ciphertext sin camino de descifrado es distracción, no disclosure.
 
 **Objetivo.** El motor PEM (Psychological Epistemic Modeling) persiste
 su estado cognitivo (density matrix, belief state, short-term memory)
@@ -697,34 +733,33 @@ cada cambio requiere entrada en este log con justificación.
 
 **Última actualización:** 2026-04-22
 
-**Próxima sesión — pickup point:** arrancar **11.d (Stateful PEM sobre
-WebSocket)** — cognitive state snapshot/restore cross-reconnect + envelope-
-encrypted persistence (redis/postgres backends), integrado con 10.l residency
-y 10.l SAR.
+**Próxima sesión — pickup point:** arrancar **11.e (OTS Binary Pipeline
+Synthesis)** — auto-descubrir transcoders tipados (`Bytes[pcm16] →
+Bytes[wav]`), native-first con ffmpeg fallback sandboxed, cacheados
+entre requests.
 
-**Decisiones cerradas en esta sesión (11.c):**
-- Catálogo `LegalBasis` CERRADO con 21 variantes: GDPR Art 6 (6 lawful bases) + GDPR Art 9 (10 special-category derogations) + CCPA.1798_100 + SOX.404 + HIPAA.164_502 + GLBA.501b + PCI_DSS.v4_Req3. Extensión requiere parche al compilador + legal review.
-- Formato on-the-wire: JSON canónico (key-sorted, no whitespace, ASCII-safe) + separador Record Separator `\x1e` — byte-idéntico al canonicaliser de 10.g audit chain; los ReplayTokens se anclan al audit chain sin traducción.
-- `model_version` es string libre (no catálogo cerrado): hashes de weights, semver, provider model IDs — adopters registran lo que sirva para su provenance.
-- Efectos `@sensitive` sin `legal:<basis>` en el MISMO tool → error directo de compilación (sin warning / transition period). Precedente seteado por 11.a.
-- Sintaxis via composite effect strings `sensitive:<category>` + `legal:<basis>` — abierto en categorías (adopter-defined taxonomy), cerrado en bases (legal catalog). Aprovecha el parser existente como 11.a; no requiere extensión.
-- `legal:<basis>` sin `sensitive:<c>` TOLERADO — algunos tools portan autorizaciones amplias sin procesar datos regulados. El error solo se emite cuando sensitive está presente sin legal.
-- Migration 011 instala BEFORE UPDATE/DELETE/TRUNCATE triggers con SQLSTATE 42501 — mismo patrón append-only que audit_events. Tampering de un ReplayToken es imposible sin alarma chain-level.
+**Decisiones cerradas en esta sesión (11.d):**
+- **Q32.32 fixed-point** para floats del density matrix — IEEE-754 serializado drift-ea tens of ulps across N reconnects; Q32.32 es bit-identical por construcción con precisión ≈ 2.3e-10 (debajo del noise floor de un belief state).
+- JSON canónico como wire format (no MessagePack). Mantiene consistencia con 10.g canonicaliser y 11.c replay tokens; MessagePack queda como optimización futura.
+- **ContinuityToken HMAC-signed binario** (no JWT) — short-lived, 3-campos, rotable independiente del signing key de 10.e, constant-time verify via `subtle::ConstantTimeEq`.
+- AAD de envelope bindea `(tenant_id, session_id, flow_id, subject_user_id)` — cross-row ciphertext swap falla AEAD tag antes de producir plaintext. Test `ciphertext_bound_to_row_aad` lo asegura.
+- Snapshots SON mutables (rewrite-in-place persist; DELETE on eviction) — no append-only trigger como audit/replay. El audit chain captura persist/restore/evict events así el lifecycle queda verifiable sin obligar a la tabla a serlo.
+- **Eviction worker dedicado** (no Postgres TTL silencioso) — queremos cada cryptoshred emitido como `pem:state_evicted` audit event.
+- SAR incluye metadata only, `state_ciphertext: "[redacted — encrypted at rest]"`. El SAR recipient no tiene la envelope key; entregar ciphertext sin camino de descifrado es distracción.
 
-**Pre-requisitos para 11.d:**
-- [x] 11.a + 11.b + 11.c completos.
-- [x] Envelope encryption (10.b) disponible para encriptar CognitiveState (puede contener PII del usuario).
-- [x] `compliance/residency.py` de 10.l como referencia para multi-region cognitive-state checks.
-- [ ] Decidir backend persistence default: Redis vs Postgres. Propongo **Postgres** como default (ya usado por todo lo demás en enterprise; Redis opcional para adopters con hot-path cognitive-state needs).
-- [ ] Decidir reconnect window default. Propongo **15 minutos** en el runtime + anotación `@reconnect_window(minutes=N)` para override per-flow.
-- [ ] Decidir si el CognitiveState snapshot incluye raw user inputs (PII) vs solo el density matrix derivado. Propongo **incluye inputs** + la tabla entra al SarExporter de 10.l + al ErasureService.
-- [ ] Decidir serialización de floats: IEEE-754 serializado canónicamente (MessagePack float64) vs fixed-point Q32.32 para prevenir drift. Propongo **fixed-point Q32.32** — el costo de precisión es bajo para belief states, la estabilidad cross-reconnect es alta.
-- [ ] Decidir eviction de estados expirados: worker dedicado (patrón 10.l ComplianceWorker) vs TTL-driven en Postgres. Propongo **worker dedicado** — cryptoshred de la envelope key es la operación que queremos visible en el audit chain.
+**Pre-requisitos para 11.e:**
+- [x] 11.a `Stream<T>` + 11.b `ZeroCopyBuffer` + `BufferKind` — OTS necesita conocer source + sink kinds para inferir paths.
+- [x] 11.a effect system para tipar los pipelines sintéticos (un transcoder es un effect cualificado con input/output kinds).
+- [ ] Decidir registry de transformers: pure-Rust vs también Python hooks para adopters que necesitan algo no nativo. Propongo **Rust-only via trait** — custom transformers como crates separados, no scripts arbitrarios.
+- [ ] Decidir comportamiento cuando ffmpeg no está disponible: fallar fast vs emitir warning + continuar con transcoders nativos. Propongo **warning + continuar** si hay path nativo para el pipeline requerido; si no hay path + no hay ffmpeg, entonces error de compilación.
+- [ ] Decidir si custom transformers pueden registrarse a runtime o sólo at startup. Propongo **at startup only** — un transformer descubriéndose en mid-flight complica auditability.
+- [ ] Decidir semántica de cache: warm ffmpeg process pool vs stateless spawn-per-call. Propongo **pool con TTL** — primer call paga el spawn, calls subsiguientes al mismo pipeline reusan el proceso warm durante 60s; después del TTL se recicla.
+- [ ] Decidir compatibilidad con `LegalBasis<HIPAA>`: ffmpeg subprocess cruza process boundary con los datos del subject. Propongo **rechazar la combinación en el checker** hasta que el pipeline sea nativo end-to-end.
 
 **Sesión abierta en:**
 - Plan vivo: `axxon-constructor:docs/fase_11_neuro_symbolic_axon.md`
-- Commits axon-lang pushed a `origin`: `363f845`, `aa6f7a2`, `495bc34` (11.a); `57844c9`, `c49bbee`, `95df120` (11.b); `2b933a1`, `b4e5bec`, `f6f6208` (11.c).
-- Commits axon-enterprise pushed a `origin`: `0db9b4f`, `903ad77` (11.c).
+- Commits axon-lang pushed a `origin`: `363f845`, `aa6f7a2`, `495bc34` (11.a); `57844c9`, `c49bbee`, `95df120` (11.b); `2b933a1`, `b4e5bec`, `f6f6208`, `b9d1926` (11.c); `7e9e421`, `86d23e2` (11.d).
+- Commits axon-enterprise pushed a `origin`: `0db9b4f`, `903ad77` (11.c); `5033569`, `79607d2` (11.d).
 
 ---
 
