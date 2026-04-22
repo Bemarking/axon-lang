@@ -45,7 +45,7 @@ def _axon_version() -> str:
         from axon import __version__ as _v
         return _v
     except Exception:  # noqa: BLE001
-        return "1.3.1"
+        return "1.4.0"
 
 
 @dataclass(frozen=True)

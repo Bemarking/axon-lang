@@ -1,9 +1,9 @@
 [package]
 name = "axon"
-version = "1.3.1"
+version = "1.4.0"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
 edition = "2021"
-description = "AXON v1.3.1 — Native Rust runtime with byte-identical parity vs Python reference; Cognitive I/O (§λ-L-E Fases 1-9) including component/view UI primitives with compile-time compliance"
+description = "AXON v1.4.0 — Neuro-Symbolic Micro-OS. Native Rust runtime with byte-identical parity vs Python reference. Fase 11 ships Temporal Algebraic Effects + Trust Types, Zero-Copy Multimodal Buffers, Deterministic Replay + Legal-Basis Typed Effects, Stateful PEM over WebSocket, OTS Binary Pipeline Synthesis."
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

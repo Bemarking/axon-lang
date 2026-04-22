@@ -162,9 +162,10 @@ def test_compile_stdout_golden_contract() -> None:
     assert "/" in meta["source"]
     assert meta["backend"] == "anthropic"
     # Lives in lockstep with `axon.__version__` and `pyproject.toml`.
-    # Bumped to 1.3.1 alongside Fase 8 (Rust runtime + byte-identical
-    # parity) and Fase 9 (UI cognitiva — component/view primitives).
-    assert meta["axon_version"] == "1.3.1"
+    # Bumped to 1.4.0 alongside Fase 11 (Neuro-Symbolic Micro-OS:
+    # temporal effects, trust types, zero-copy buffers, replay + legal
+    # basis, stateful PEM, OTS binary pipelines).
+    assert meta["axon_version"] == "1.4.0"
 
     _assert_ir_node_shape(payload["personas"][0], "name")
     _assert_ir_node_shape(payload["contexts"][0], "name", "memory_scope", "language", "depth")
