@@ -22,7 +22,7 @@ use axon::tracer;
 use clap::{Parser, Subcommand};
 use std::process;
 
-const AXON_VERSION: &str = "1.3.1";
+const AXON_VERSION: &str = "1.4.0";
 
 // ── Estructura CLI (espejo del CLI Python) ────────────────────────────────────
 

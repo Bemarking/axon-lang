@@ -21,7 +21,7 @@ use crate::ir_nodes::IRProgram;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 
-const AXON_VERSION: &str = "1.3.1";
+const AXON_VERSION: &str = "1.4.0";
 
 /// Two-space-indented, key-sorted JSON emission matching Python's
 /// `json.dumps(..., indent=2, sort_keys=True)` with default `ensure_ascii=True`:
