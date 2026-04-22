@@ -28,7 +28,7 @@ específico. Las primitivas son genéricas (`Stream<Bytes>`, `LegalBasis`,
 |---|---|---|
 | 11.a | Temporal Algebraic Effects + Trust Types (`Stream<T>`, `Trusted<T>`) | ✅ Completo |
 | 11.b | Zero-Copy Multimodal Buffers (audio/video/file ingest sin cruzar FFI) | ✅ Completo |
-| 11.c | Deterministic Replay + Legal-Basis Typed Effects (`ReplayToken` + `LegalBasis<>`) | ⏳ Pendiente |
+| 11.c | Deterministic Replay + Legal-Basis Typed Effects (`ReplayToken` + `LegalBasis<>`) | ✅ Completo |
 | 11.d | Stateful PEM sobre WebSocket (continuidad cognitiva cross-reconnect) | ⏳ Pendiente |
 | 11.e | OTS Binary Pipeline Synthesis (auto-descubrir transcoders tipados) | ⏳ Pendiente |
 | 11.f | Integration Testing + Security Audit (regresión cross-phase, threat model) | ⏳ Pendiente |
@@ -311,17 +311,46 @@ el cuello de botella FFI en audio/video en tiempo real.
 
 ## 11.c — Deterministic Replay + Legal-Basis Typed Effects
 
-**Estado:** ⏳ Pendiente — **Depende de:** 11.a (refinement types),
+**Estado:** ✅ Completo — **Depende de:** 11.a (refinement types),
 10.g (audit hash chain), 10.l (compliance module).
 
-**Objetivo.** Cada efecto (`call_tool`, `llm_infer`, `db_read`,
-`http_post`, `ws_send`) emite un `ReplayToken<Effect, Inputs, Ts>`
-hash-encadenado al audit chain de Enterprise. Efectos marcados
-`@sensitive(jurisdiction=...)` requieren un parámetro compile-time
-`LegalBasis<>`; si falta, el programa **no compila**. Cualquier flow
-puede re-ejecutarse desde un ReplayToken y producir output bit-idéntico
-(modulo no-determinismo LLM, capturado en el token vía temperature +
-seed).
+**Commits (axon-lang):**
+- `2b933a1` feat(lang-11.c): legal-basis closed catalog + ReplayToken primitives
+- `b4e5bec` test+docs(fase-11.c): replay + legal-basis suite + `REPLAY_AND_LEGAL_BASIS.md`
+- `f6f6208` feat(compiler-11.c): extend type_checker with sensitive + legal enforcement
+
+**Commits (axon-enterprise):**
+- `0db9b4f` feat(fase-11.c): replay module + migración 011_replay_tokens
+- `903ad77` test(fase-11.c): ReplayService integration suite
+
+**Entregado:**
+
+- **Catálogo cerrado en Rust** (`axon-rs/src/legal_basis.rs`): 21 variantes — GDPR Art 6 (Consent, Contract, LegalObligation, VitalInterests, PublicTask, LegitimateInterests), GDPR Art 9 (ExplicitConsent, Employment, VitalInterests, NotForProfit, PublicData, LegalClaims, SubstantialPublicInterest, HealthcareProvision, PublicHealth, ArchivingResearch), CCPA.1798_100, SOX.404, HIPAA.164_502, GLBA.501b, PCI_DSS.v4_Req3. `LEGAL_BASIS_CATALOG` const slice paridad con `axon/compiler/legal_basis.py`.
+- **ReplayToken primitives** (`axon-rs/src/replay_token/`): `token.rs` (canonical struct + SHA-256 hash derivation con separador `\x1e` compartido con 10.g), `log.rs` (ReplayLog async trait + InMemoryReplayLog), `executor.rs` (ReplayExecutor + EffectInvoker trait + ReplayMatch/ReplayMismatch outcomes).
+- **Python mirror** (`axon/runtime/replay/`): byte-idéntica implementación de canonical hashing, ReplayTokenBuilder, InMemoryReplayLog, ReplayExecutor. Mismo wire format; tokens minted en cualquier lenguaje re-hashean igual.
+- **Compiler extension** (`axon-rs/src/type_checker.rs`): `VALID_EFFECTS` gana `sensitive` + `legal`. Tool-level enforcement: `sensitive` requiere qualifier de categoría (abierta); `legal` requiere qualifier del catálogo CERRADO; un tool con `sensitive:<c>` sin `legal:<basis>` en el MISMO tool → error. Catálogo completo listado en el mensaje de error.
+- **Enterprise persistence** (`axon_enterprise/replay/`): `ReplayTokenRecord` ORM (tenant-scoped + RLS + append-only triggers SQLSTATE 42501), `ReplayService` con `record()` que persiste + emite `replay:token_emitted` audit event en la misma transacción + verifica canonical hash integrity, `record_divergence`/`record_replay` para seguimiento forense. Alembic migration 011 crea tabla + cinco indexes + triggers + RLS policies.
+- **Audit events nuevos**: `replay:token_emitted`, `replay:replayed`, `replay:divergence_detected`, `replay:legal_basis_missing`.
+- **Tests**: 10 Rust integration tests + 33 Python unit tests (todos pasando) + 7 enterprise integration tests (cubren persistencia + audit anchoring + tamper detection + tenant scoping + ordenamiento cronológico + append-only trigger enforcement).
+- **Docs** (`docs/REPLAY_AND_LEGAL_BASIS.md`): operator guide con tabla completa del catálogo, contrato compile-time, protocolo de re-ejecución, sección "why this is the regulated-vertical unlock" con mapping concreto SOX/HIPAA/GDPR auditor-question → machine-checkable answer.
+
+**Decisiones cerradas:**
+
+- **Catálogo cerrado con security review**: agregar una base requiere parche al compilador + firma del legal team en el PR. Extension no es un hot-path para adopters; evita diluting del catálogo con interpretaciones creativas.
+- **Sintaxis via composite effect strings**: `sensitive:<category>, legal:<basis>` en vez de atributos dedicados — aprovecha el parser existente como 11.a. Open taxonomy para categorías (adopter-defined vertical domains), closed catalog para bases (regulatory boundary).
+- **Error directo de compilación**, sin warning/transition period: precedente seteado por 11.a con `Untrusted<T>` sin refinar. Warnings son shortcuts que la regla de zero-shortcuts del proyecto rechaza.
+- **Coherence enforcement at same-tool boundary**: un tool con `sensitive:<c>` MUST carry `legal:<b>` él mismo, no "en algún lugar del flow". Matches GDPR Art 6 "each processing activity has a lawful basis".
+- **Canonical-JSON + RS `\x1e` separator compartido con 10.g**: ReplayTokens se anclan al audit chain sin traducción; cualquier helper que el chain verifier use ya funciona para replay.
+- **Append-only trigger mirrors audit_events posture**: SQLSTATE 42501 en UPDATE/DELETE/TRUNCATE. Tampering de un replay token requiere subir a DBA-role + el chain verifier detecta divergencias a la siguiente verificación.
+
+**Objetivo original (para referencia).** Cada efecto (`call_tool`,
+`llm_infer`, `db_read`, `http_post`, `ws_send`) emite un `ReplayToken<
+Effect, Inputs, Ts>` hash-encadenado al audit chain de Enterprise.
+Efectos marcados `@sensitive(jurisdiction=...)` requieren un parámetro
+compile-time `LegalBasis<>`; si falta, el programa **no compila**.
+Cualquier flow puede re-ejecutarse desde un ReplayToken y producir
+output bit-idéntico (modulo no-determinismo LLM, capturado en el token
+vía temperature + seed).
 
 Este es el diferenciador para Banca Corporativa, Fintech, LegalTech y
 MedicalTech: el regulador reproduce cualquier decisión, y el compilador
@@ -668,32 +697,34 @@ cada cambio requiere entrada en este log con justificación.
 
 **Última actualización:** 2026-04-22
 
-**Próxima sesión — pickup point:** arrancar **11.c (Deterministic Replay
-+ Legal-Basis Typed Effects)** — `ReplayToken` hash-encadenado al audit
-chain de 10.g; catálogo cerrado `LegalBasis<GDPR | CCPA | SOX | HIPAA |
-GLBA | PCI_DSS>`; efectos `@sensitive` requieren `LegalBasis<>` o no
-compilan.
+**Próxima sesión — pickup point:** arrancar **11.d (Stateful PEM sobre
+WebSocket)** — cognitive state snapshot/restore cross-reconnect + envelope-
+encrypted persistence (redis/postgres backends), integrado con 10.l residency
+y 10.l SAR.
 
-**Decisiones cerradas en esta sesión (11.b):**
-- `BufferKind` es registry ABIERTO (vs closed de 11.a) — los kinds son metadata de contenido, no security boundary; registrar custom kinds no requiere security review.
-- Pool global-per-proceso con soft-limit per-tenant tracked, NO pool per-tenant. Evita fragmentation en adopters con miles de tenants.
-- `SymbolicPtr[T]` es copiable (clone O(1)) — permite fan-out a múltiples consumers; move-only rompía el caso load-bearing.
-- memoryview readonly (PEP 3118 flag) — mutation via C extension falla fast; adopter que necesita mutar llama `as_bytes()` explícito para copia owned.
-- PyO3 binding físico diferido a 11.b.1 — Python usa `bytes` carrier + memoryview hoy; interfaz estable cuando lande el binding.
-- Compile-time kind constraints (`Bytes[pcm16] → Bytes[wav]`) viven en 11.e (OTS Binary Pipeline Synthesis), no en 11.b.
+**Decisiones cerradas en esta sesión (11.c):**
+- Catálogo `LegalBasis` CERRADO con 21 variantes: GDPR Art 6 (6 lawful bases) + GDPR Art 9 (10 special-category derogations) + CCPA.1798_100 + SOX.404 + HIPAA.164_502 + GLBA.501b + PCI_DSS.v4_Req3. Extensión requiere parche al compilador + legal review.
+- Formato on-the-wire: JSON canónico (key-sorted, no whitespace, ASCII-safe) + separador Record Separator `\x1e` — byte-idéntico al canonicaliser de 10.g audit chain; los ReplayTokens se anclan al audit chain sin traducción.
+- `model_version` es string libre (no catálogo cerrado): hashes de weights, semver, provider model IDs — adopters registran lo que sirva para su provenance.
+- Efectos `@sensitive` sin `legal:<basis>` en el MISMO tool → error directo de compilación (sin warning / transition period). Precedente seteado por 11.a.
+- Sintaxis via composite effect strings `sensitive:<category>` + `legal:<basis>` — abierto en categorías (adopter-defined taxonomy), cerrado en bases (legal catalog). Aprovecha el parser existente como 11.a; no requiere extensión.
+- `legal:<basis>` sin `sensitive:<c>` TOLERADO — algunos tools portan autorizaciones amplias sin procesar datos regulados. El error solo se emite cuando sensitive está presente sin legal.
+- Migration 011 instala BEFORE UPDATE/DELETE/TRUNCATE triggers con SQLSTATE 42501 — mismo patrón append-only que audit_events. Tampering de un ReplayToken es imposible sin alarma chain-level.
 
-**Pre-requisitos para 11.c:**
-- [x] 11.a + 11.b completos.
-- [x] Audit hash chain de 10.g en `axon_enterprise` listo para append ReplayTokens.
-- [x] Canonical JSON helper compartido (en 10.g audit chain) — los ReplayTokens usan el mismo Record Separator `\x1e`.
-- [ ] Decidir formato del ReplayToken on-the-wire: JSON canónico vs MessagePack. Propongo **JSON canónico** por consistencia con 10.g; si el perf cost es significativo re-evaluar.
-- [ ] Decidir si el `model_version` es string libre o catálogo. Propongo **string libre** (pueden ser hashes de weights, versiones semver, OpenAI model IDs).
-- [ ] Decidir: cuando un efecto `@sensitive` es llamado sin `LegalBasis<>`, ¿emitir error o warning durante el transition period? Propongo **error directo** — 11.a estableció precedent con `Untrusted<T>` sin refinar.
-- [ ] Decidir catálogo inicial de `LegalBasis`: propongo `GDPR.Art6.{A,B,C,D,E,F}` + `GDPR.Art9.{A,B,C,D,E,F,G,H,I,J}` + `CCPA.§1798_100` + `SOX.§404` + `HIPAA.§164_502` + `GLBA.§501B` + `PCI_DSS.v4_3`.
+**Pre-requisitos para 11.d:**
+- [x] 11.a + 11.b + 11.c completos.
+- [x] Envelope encryption (10.b) disponible para encriptar CognitiveState (puede contener PII del usuario).
+- [x] `compliance/residency.py` de 10.l como referencia para multi-region cognitive-state checks.
+- [ ] Decidir backend persistence default: Redis vs Postgres. Propongo **Postgres** como default (ya usado por todo lo demás en enterprise; Redis opcional para adopters con hot-path cognitive-state needs).
+- [ ] Decidir reconnect window default. Propongo **15 minutos** en el runtime + anotación `@reconnect_window(minutes=N)` para override per-flow.
+- [ ] Decidir si el CognitiveState snapshot incluye raw user inputs (PII) vs solo el density matrix derivado. Propongo **incluye inputs** + la tabla entra al SarExporter de 10.l + al ErasureService.
+- [ ] Decidir serialización de floats: IEEE-754 serializado canónicamente (MessagePack float64) vs fixed-point Q32.32 para prevenir drift. Propongo **fixed-point Q32.32** — el costo de precisión es bajo para belief states, la estabilidad cross-reconnect es alta.
+- [ ] Decidir eviction de estados expirados: worker dedicado (patrón 10.l ComplianceWorker) vs TTL-driven en Postgres. Propongo **worker dedicado** — cryptoshred de la envelope key es la operación que queremos visible en el audit chain.
 
 **Sesión abierta en:**
 - Plan vivo: `axxon-constructor:docs/fase_11_neuro_symbolic_axon.md`
-- Commits axon-lang pushed a `origin`: `363f845`, `aa6f7a2`, `495bc34` (11.a); `57844c9`, `c49bbee` (11.b).
+- Commits axon-lang pushed a `origin`: `363f845`, `aa6f7a2`, `495bc34` (11.a); `57844c9`, `c49bbee`, `95df120` (11.b); `2b933a1`, `b4e5bec`, `f6f6208` (11.c).
+- Commits axon-enterprise pushed a `origin`: `0db9b4f`, `903ad77` (11.c).
 
 ---
 
