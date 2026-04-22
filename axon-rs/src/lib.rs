@@ -100,6 +100,15 @@ pub mod ingest;
 // debugging — `replay_token` is for regulatory-grade audit replay.
 pub mod legal_basis;
 pub mod replay_token;
+// §λ-L-E Fase 11.d — Stateful PEM over WebSocket. `pem::state`
+// defines CognitiveState with Q32.32 fixed-point float encoding
+// so density-matrix round-trips are bit-identical across reconnects.
+// `pem::continuity_token` is an HMAC-signed handshake that proves
+// a reconnecting client is the original party. `pem::backend`
+// exposes the PersistenceBackend async trait + in-memory impl;
+// production uses axon_enterprise::cognitive_states (Postgres +
+// envelope encryption).
+pub mod pem;
 pub mod tokens;
 pub mod tool_executor;
 pub mod tool_registry;
