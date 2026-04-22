@@ -242,6 +242,7 @@ class ErasureService:
             "api_keys_deleted": 0,
             "memberships_anonymized": 0,
             "audit_events_anonymized": 0,
+            "cognitive_states_deleted": 0,
         }
 
         if user_id is not None:
@@ -281,6 +282,24 @@ class ErasureService:
                 .values(status=MembershipStatus.ERASED.value)
             )
             counts["memberships_anonymized"] = res.rowcount or 0
+
+            # §Fase 11.d — cognitive_states snapshots carry user
+            # conversation history inside their envelope-encrypted
+            # payload. DELETE discards the ciphertext + (when the
+            # envelope backend is AWS KMS) the KMS DEK reference —
+            # true cryptoshred. Local envelope adopters rely on the
+            # row delete being sufficient for their threat model.
+            from axon_enterprise.cognitive_states.models import (
+                CognitiveStateSnapshot,
+            )
+
+            res = await db.execute(
+                delete(CognitiveStateSnapshot).where(
+                    CognitiveStateSnapshot.tenant_id == tenant_id,
+                    CognitiveStateSnapshot.subject_user_id == user_id,
+                )
+            )
+            counts["cognitive_states_deleted"] = res.rowcount or 0
 
         # audit_events is append-only at the DB level (BEFORE UPDATE
         # trigger blocks modifications). We anonymize by emitting a

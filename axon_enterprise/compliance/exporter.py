@@ -290,6 +290,35 @@ class SarExporter:
                 [_compliance_request_to_dict(c) for c in compliance_rows],
             )
         )
+
+        # §Fase 11.d — cognitive_states snapshots tied to this
+        # subject. We include the metadata + expires_at but NOT the
+        # encrypted payload; the SAR bundle is decryptable per
+        # GDPR Art 15 only when the subject still holds the session
+        # key, which they do not (the session terminated when the
+        # tenant admin filed the export). Surfacing the ciphertext
+        # without a key is worse than useless — it's a distraction.
+        from axon_enterprise.cognitive_states.models import (
+            CognitiveStateSnapshot,
+        )
+
+        cog_rows = list(
+            (
+                await db.execute(
+                    select(CognitiveStateSnapshot).where(
+                        CognitiveStateSnapshot.tenant_id == tenant_id,
+                        CognitiveStateSnapshot.subject_user_id
+                        == subject_user_id,
+                    )
+                )
+            ).scalars()
+        )
+        out.append(
+            (
+                "cognitive_states.jsonl",
+                [_cognitive_state_to_dict(c) for c in cog_rows],
+            )
+        )
         return out
 
     async def _build_manifest(
@@ -504,4 +533,25 @@ def _compliance_request_to_dict(c: ComplianceRequest) -> dict:
         "scheduled_for": c.scheduled_for,
         "completed_at": c.completed_at,
         "created_at": c.created_at,
+    }
+
+
+def _cognitive_state_to_dict(c) -> dict:
+    """Shape for the SAR bundle — metadata only, never the
+    encrypted payload. Rationale in `exporter._collect_tables`."""
+    return {
+        "state_id": c.state_id,
+        "tenant_id": c.tenant_id,
+        "session_id": c.session_id,
+        "flow_id": c.flow_id,
+        "subject_user_id": c.subject_user_id,
+        "state_format_version": c.state_format_version,
+        "state_size_bytes": c.state_size_bytes,
+        "expires_at": c.expires_at,
+        "last_restored_at": c.last_restored_at,
+        "restore_count": c.restore_count,
+        "metadata_json": c.metadata_json,
+        "state_ciphertext": "[redacted — encrypted at rest]",
+        "created_at": c.created_at,
+        "updated_at": c.updated_at,
     }
