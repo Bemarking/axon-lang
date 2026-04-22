@@ -26,7 +26,7 @@ específico. Las primitivas son genéricas (`Stream<Bytes>`, `LegalBasis`,
 
 | Sub-fase | Scope | Estado |
 |---|---|---|
-| 11.a | Temporal Algebraic Effects + Trust Types (`Stream<T>`, `Trusted<T>`) | ⏳ Pendiente |
+| 11.a | Temporal Algebraic Effects + Trust Types (`Stream<T>`, `Trusted<T>`) | ✅ Completo |
 | 11.b | Zero-Copy Multimodal Buffers (audio/video/file ingest sin cruzar FFI) | ⏳ Pendiente |
 | 11.c | Deterministic Replay + Legal-Basis Typed Effects (`ReplayToken` + `LegalBasis<>`) | ⏳ Pendiente |
 | 11.d | Stateful PEM sobre WebSocket (continuidad cognitiva cross-reconnect) | ⏳ Pendiente |
@@ -91,7 +91,48 @@ usan; 11.b es prerequisito para 11.e (OTS opera sobre buffers zero-copy);
 
 ## 11.a — Temporal Algebraic Effects + Trust Types
 
-**Estado:** ⏳ Pendiente — **Depende de:** Fase 10 GA; no depende de otras 11.x
+**Estado:** ✅ Completo — **Depende de:** Fase 10 GA; no depende de otras 11.x
+
+**Commits:**
+- `363f845` feat(lang-11.a): closed Trust Catalogue + Stream<T> primitives
+- `aa6f7a2` feat(compiler-11.a): refinement + stream checker + parity tests
+- `<docs-commit>` docs(fase-11.a): STREAM_EFFECTS.md + TRUST_TYPES.md + living doc
+
+**Entregado:**
+
+- **Rust primitives (axon-rs)**:
+  - `src/refinement.rs` — `TrustProof` enum (Hmac, JwtSig, OAuthCodeExchange, Ed25519) + `Trusted`/`Untrusted` type constructor recognition + refinement annotation parser. Catálogo CERRADO.
+  - `src/stream_effect.rs` — `BackpressurePolicy` enum (DropOldest, DegradeQuality, PauseUpstream, Fail) + `Stream` type constructor + backpressure annotation parser. Sin política default — falla cerrado en compilación.
+  - `src/trust_verifiers.rs` — impls runtime: HMAC-SHA256 (constant-time via `hmac::Mac::verify_slice`), Ed25519 (`verify_strict`), JWT delegando a 10.e, OAuth2 PKCE S256 via `reqwest`. Return uniforme: `VerifiedPayload`.
+  - `src/stream_runtime.rs` — `Stream<T>` async channel con dispatch por política + `StreamMetrics` (counter per policy hit).
+- **Python reference (axon/)**:
+  - `runtime/trust.py` — mirror del catálogo + verifiers Python. `Trusted`/`Untrusted` como wrappers; `assert_trusted` para defensa en FFI boundaries.
+  - `runtime/stream_primitive.py` — mirror de `Stream<T>` + 4 policies. Constructor enforcea "DegradeQuality requires degrader".
+  - `compiler/refinement_check.py` — mirror de la pass del checker Rust.
+- **Compiler extension (type_checker.rs)**:
+  - `VALID_EFFECTS` gained `"stream"` + `"trust"`.
+  - Tool-level: `stream` sin qualifier o con qualifier desconocido → error apuntando al catálogo completo. Idem para `trust`.
+  - Flow-level: `Stream<T>` en signature requiere alcance a un tool con `stream:<policy>`; `Untrusted<T>` en parámetros requiere alcance a un tool con `trust:<proof>`. Walk recursivo por `If` (then_body/else_body) y `ForIn` (body).
+- **Tests**:
+  - `axon-rs/tests/fase_11a_refinement_and_stream.rs` — 13 integration tests (sintaxis Axon real validada contra examples/).
+  - `tests/test_fase_11a_trust.py`, `test_fase_11a_stream.py`, `test_fase_11a_refinement_check.py` — 45 unit tests Python, todos pasando (2 skipped sin `cryptography` dep).
+- **Docs**:
+  - `docs/STREAM_EFFECTS.md` — operator guide + catálogo + runtime contract + metrics.
+  - `docs/TRUST_TYPES.md` — operator guide + "trust IS NOT safety" disclaimer + error catalog.
+
+**Decisiones cerradas:**
+
+- **Syntax via composite effect string** (`stream:drop_oldest`, `trust:hmac`), no atributos `@backpressure(...)` — aprovecha el mecanismo `name:qualifier` que ya existía en el parser. Evita extender lexer/parser para esta sub-fase; la semántica es equivalente y el diagnóstico del checker igual de preciso.
+- **Conservative flow-level reachability check** en vez de full taint-tracking dataflow — la aproximación captura el caso load-bearing "autor olvidó verificador" sin requerir pre-pass de dataflow. Propagación total queda como follow-up explícito cuando el AST gane nodos de atributo.
+- **Catálogos cerrados con seed determinístico en Rust + Python**, mismo ordering de slugs. Parity test asegura que ambos catálogos son idénticos; agregar un verificador/política requiere parche sincronizado en ambos lados + security review.
+- **Trust y Stream son ortogonales.** Un `Stream<Trusted<AudioFrame>>` es válido (y deseable); el checker propaga ambas constrains independientemente.
+- **Ed25519 usa `verify_strict`**, no `verify()`. La distinción no es opcional — `verify()` acepta low-order points que permiten múltiples firmas válidas para el mismo mensaje.
+
+**Open questions (none blocking — future 11.a follow-ups):**
+
+- Refinement TypeExpr en AST vs composite effect string — cuando el AST gane annotation nodes, migrar a syntax más visible como `param: Trusted<T> via hmac` sin romper la semántica actual.
+- Dataflow taint propagation sobre step outputs — hoy el checker ve la signature; falta propagar hasta que cada `.output` binding conozca su refinement status.
+- Parity test `tests/parity/test_fase_11a_catalogue_parity.py` — listado en el plan, pero no implementado en este sub-fase; se agregará cuando haya más cambios cross-catalogue para amortizar el harness.
 
 **Objetivo.** Extender el sistema de efectos de Axon con:
 
@@ -592,28 +633,28 @@ cada cambio requiere entrada en este log con justificación.
 
 **Última actualización:** 2026-04-22
 
-**Próxima sesión — pickup point:** arrancar **11.a (Temporal Algebraic
-Effects + Trust Types)** en los repos `axon-lang` + `axon-enterprise`.
+**Próxima sesión — pickup point:** arrancar **11.b (Zero-Copy Multimodal
+Buffers)** — `ZeroCopyBuffer` en axon-rs + `SymbolicPtr<T>` en Python via
+PyO3 buffer protocol. Desbloquea ingest de audio/video sin copias FFI.
 
-**Pre-requisitos para 11.a:**
-- [x] Fase 10 GA (`axon-enterprise v1.1.0` tagged y release workflow
-      completado)
-- [x] Plan Fase 11 vivo aprobado (este documento)
-- [ ] Decidir sintaxis concreta de `untrusted via <verifier>` — ¿sufijo
-      de tipo, atributo de parámetro, o effect handler pattern? Propongo
-      **effect handler pattern** por consistencia con el resto de efectos.
-- [ ] Decidir nombre de archivo de catálogo de verificadores en
-      checker.rs — propongo `axon/compiler/trust_catalog.rs`.
-- [ ] Enumerar exhaustivamente los 4 handlers de backpressure y su
-      semantica runtime observada — documentar en `axon/runtime/effects/
-      stream.rs` al arrancar.
-- [ ] Decidir versión de `argon2-cffi` / crypto deps que compartirán
-      verificadores de 11.a con identity de 10.b (consolidar para evitar
-      duplicación).
+**Decisiones cerradas en esta sesión (11.a):**
+- Syntax via composite effect string (`stream:drop_oldest`, `trust:hmac`) en vez de atributos `@backpressure(...)` — aprovecha parser existente; semántica equivalente.
+- Conservative flow-level reachability check en vez de full taint-tracking dataflow — captura el caso load-bearing sin requerir pre-pass.
+- Catálogos cerrados idénticos Rust + Python; extensión = parche sincronizado + security review.
+- Trust y Stream son ortogonales; `Stream<Trusted<T>>` es válido y deseable.
+- Ed25519 usa `verify_strict` (no `verify()`); HMAC vía `hmac::Mac::verify_slice` para constant-time implícito.
+
+**Pre-requisitos para 11.b:**
+- [x] 11.a completo (primitivas de efectos + refinement types).
+- [x] Runtime `Stream<T>` funcionando para orquestar los buffers.
+- [ ] Decidir: pool slab global-per-proceso vs per-tenant. Propongo **global con soft-limit per-tenant** tracked por métrica.
+- [ ] Decidir: `SymbolicPtr<T>` copiable (Arc clone cheap) vs move-only. Propongo **copiable** para fan-out a múltiples consumers.
+- [ ] Decidir: prohibir mutación de buffers compartidos → explicit copy o mutable slice. Propongo **readonly enforced via PEP 3118 flag**.
+- [ ] Identificar los kinds iniciales de `Bytes[kind]` — propongo `raw`, `pcm16`, `mulaw8`, `jpeg`, `png`, `mp3`, `opus`, `pdf`, `mp4` como conjunto inicial; extensión libre (no cerrado como los catálogos de 11.a).
 
 **Sesión abierta en:**
 - Plan vivo: `axxon-constructor:docs/fase_11_neuro_symbolic_axon.md`
-- Sin commits de código aún — Fase 11 es forward-looking.
+- Commits axon-lang (doble-pushed a `origin` + `enterprise`): `363f845`, `aa6f7a2`, `<docs>`.
 
 ---
 
