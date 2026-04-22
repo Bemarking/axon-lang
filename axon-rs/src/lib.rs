@@ -83,6 +83,14 @@ pub mod refinement;
 pub mod stream_effect;
 pub mod trust_verifiers;
 pub mod stream_runtime;
+// §λ-L-E Fase 11.b — Zero-Copy Multimodal Buffers.
+// `buffer` defines ZeroCopyBuffer (Arc<[u8]>-backed) + BufferKind
+// (open registry) + BufferPool (slab allocator with per-tenant
+// soft-limit accounting). `ingest` hosts the network deposit paths
+// (multipart/form-data streaming parser, WebSocket binary-frame
+// accumulator) that populate buffers without intermediate copies.
+pub mod buffer;
+pub mod ingest;
 pub mod tokens;
 pub mod tool_executor;
 pub mod tool_registry;
