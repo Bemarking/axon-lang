@@ -358,7 +358,7 @@ impl MultipartParser {
             }
             body.extend_from_slice(&self.buf[..take]);
             self.buf.drain(..take);
-            Ok(false)
+            return Ok(false);
         };
 
         // The body ends at `idx - 2` to trim the trailing `\r\n` that
