@@ -12,6 +12,7 @@ from axon_enterprise.http.api import (
     api_keys,
     auth,
     compliance,
+    primitives,
     sso_routes,
     tenant_users,
     usage,
@@ -27,6 +28,11 @@ def build_api_router() -> list[Route | Mount]:
         Mount("/tenant/api-keys", routes=api_keys.routes()),
         Mount("/tenant/usage", routes=usage.routes()),
         Mount("/tenant/compliance", routes=compliance.routes()),
+        # §v1.2.1 — public primitives discovery endpoint. Enumerates
+        # every closed catalogue (trust / backpressure / legal /
+        # OTS) + the seeded BufferKind registry so clients can
+        # discover the language surface programmatically.
+        Mount("/primitives", routes=primitives.routes()),
     ]
 
 

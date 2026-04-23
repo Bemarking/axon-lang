@@ -56,6 +56,11 @@ _PORTAL_PUBLIC_PATHS: frozenset[str] = frozenset(
         # user has a bearer.
         "/api/v1/sso/oidc/initiate",
         "/api/v1/sso/oidc/callback",
+        # §v1.2.1 — catalog discovery is public. The slugs are
+        # already in `docs/` and the axon-lang source; no secret
+        # to protect by gating.
+        "/api/v1/primitives",
+        "/api/v1/primitives/",
     }
 )
 
