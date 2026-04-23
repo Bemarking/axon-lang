@@ -162,19 +162,21 @@ jobs:
           find dist -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' \) -exec cp {} release-bundle/ \;
           ls -la release-bundle
 
-      - name: Create GitHub Release
+      - name: Resolve Python release tag
+        id: pyrel
+        run: |
+          set -euo pipefail
+          # rust-v1.4.0 → v1.4.0: the Rust binary attaches to the same
+          # GitHub Release as the Python package (one release per
+          # axon-lang version, consumed unchanged by Dockerfile.enterprise
+          # in axon-enterprise via the stable v${AXON_VERSION} URL).
+          REF="${GITHUB_REF#refs/tags/}"
+          VER="${REF#rust-v}"
+          echo "tag=v${VER}" >> "$GITHUB_OUTPUT"
+          echo "Attaching binaries to existing release v${VER}"
+
+      - name: Attach binaries to Python release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.pyrel.outputs.tag }}
           files: release-bundle/*
-          generate_release_notes: true
-          body: |
-            **Axon Rust native runtime** — ${{ github.ref_name }}.
-
-            Each archive contains a single statically-linked binary (`axon`
-            or `axon.exe`) that requires no Python interpreter. Verify with
-            `sha256sum -c <artefact>.sha256` before running.
-
-            Compatible with the Python reference implementation — the CLI
-            commands `check`, `compile`, `dossier`, `sbom`, `audit`, and
-            `evidence-package` produce byte-identical output for the
-            canonical fixture (see `.github/workflows/rust_parity.yml`).
