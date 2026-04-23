@@ -88,6 +88,10 @@ jobs:
       - name: Run unit tests on the host target
         if: '!matrix.cross'
         working-directory: axon-rs
+        # shell: bash because the `> /dev/null` redirect is a POSIX
+        # construct — on the Windows runner PowerShell interprets it
+        # as a literal path (D:\dev\null) and fails with OpenError.
+        shell: bash
         run: cargo test --release --bin axon -- --list > /dev/null
 
       - name: Package artefact + SHA-256
