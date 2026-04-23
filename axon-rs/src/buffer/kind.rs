@@ -114,6 +114,18 @@ impl PartialEq for BufferKind {
 
 impl Eq for BufferKind {}
 
+impl PartialOrd for BufferKind {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for BufferKind {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.slug.as_ref().cmp(other.slug.as_ref())
+    }
+}
+
 impl std::hash::Hash for BufferKind {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.slug.hash(state);
