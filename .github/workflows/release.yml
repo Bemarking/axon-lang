@@ -36,7 +36,10 @@ name: Enterprise Release
 #
 # Tagging strategy:
 #   - vX.Y.Z  (exact, immutable — the canonical production tag)
-#   - X.Y     (floats forward within a minor — operator convenience)
+#   - X.Y     NOT published: a mutable "minor float" is fundamentally
+#             incompatible with the repo's IMMUTABLE tag policy (the
+#             first minor release would succeed, every subsequent one
+#             would fail at push time). Operators pin to exact vX.Y.Z.
 #   - latest  intentionally NOT published: operators must pin.
 
 on:
@@ -80,11 +83,9 @@ jobs:
             exit 1
           fi
           VER="${TAG#v}"
-          MINOR="$(echo "$VER" | cut -d. -f1-2)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
-          echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
-          echo "Release: tag=$TAG version=$VER minor=$MINOR"
+          echo "Release: tag=$TAG version=$VER"
 
       - name: Resolve pinned axon-lang version from pyproject
         id: axon
@@ -157,7 +158,6 @@ jobs:
             BUILD_DATE=${{ steps.meta.outputs.build_date }}
           tags: |
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.ver.outputs.version }}
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.ver.outputs.minor }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |
@@ -170,14 +170,12 @@ jobs:
           REG="${{ steps.login-ecr.outputs.registry }}"
           REPO="${{ env.ECR_REPOSITORY }}"
           VER="${{ steps.ver.outputs.version }}"
-          MINOR="${{ steps.ver.outputs.minor }}"
           {
             echo "## Published image"
             echo ""
             echo "| Tag | Pull command |"
             echo "|---|---|"
             echo "| \`${VER}\` | \`docker pull ${REG}/${REPO}:${VER}\` |"
-            echo "| \`${MINOR}\` | \`docker pull ${REG}/${REPO}:${MINOR}\` |"
             echo ""
             echo "bundles \`axon-lang\` **${{ steps.axon.outputs.version }}** (Rust binary) + axon-enterprise **${VER}**"
           } >> "$GITHUB_STEP_SUMMARY"
