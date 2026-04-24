@@ -162,10 +162,11 @@ def test_compile_stdout_golden_contract() -> None:
     assert "/" in meta["source"]
     assert meta["backend"] == "anthropic"
     # Lives in lockstep with `axon.__version__` and `pyproject.toml`.
-    # Bumped to 1.4.0 alongside Fase 11 (Neuro-Symbolic Micro-OS:
-    # temporal effects, trust types, zero-copy buffers, replay + legal
-    # basis, stateful PEM, OTS binary pipelines).
-    assert meta["axon_version"] == "1.4.0"
+    # Bumped to 1.4.1 for Fase 12.a (compiler frontend extraction as
+    # `axon-frontend` crate); prior bump 1.4.0 shipped Fase 11
+    # (Neuro-Symbolic Micro-OS: temporal effects, trust types,
+    # zero-copy buffers, replay + legal basis, stateful PEM, OTS).
+    assert meta["axon_version"] == "1.4.1"
 
     _assert_ir_node_shape(payload["personas"][0], "name")
     _assert_ir_node_shape(payload["contexts"][0], "name", "memory_scope", "language", "depth")

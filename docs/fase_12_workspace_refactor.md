@@ -27,8 +27,8 @@ PR que toque `axon-enterprise/` en esta fase se rechaza.
 |---|---|---|
 | 12.a | Extraer `axon-frontend/` como crate standalone sin deps de runtime | ✅ Completo (2026-04-24) |
 | 12.b | `axon-rs` consume `axon-frontend` vía path dep; tests regresión | ✅ Completo (2026-04-24) |
-| 12.c.1 | Test suite repairs — 5 compile errors + 4 runtime bugs ocultos | 🟡 En curso |
-| 12.c.2 | CI — matrix build incluye `axon-frontend` solo, validando ausencia de runtime deps | ⬜ Pendiente |
+| 12.c.1 | Test suite repairs — 5 compile errors + 4 runtime bugs ocultos | ✅ Completo (2026-04-24) |
+| 12.c.2 | CI — matrix build incluye `axon-frontend` solo, validando ausencia de runtime deps | ✅ Completo (2026-04-24) |
 | 12.d | Release v1.4.1 — tag + GitHub Release + publicación opcional a crates.io | ⬜ Pendiente |
 | 12.e | (Futuro) `axon-backends/` — extracción análoga de los 7 LLM backends | ⬜ Backlog |
 
