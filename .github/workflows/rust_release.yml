@@ -187,7 +187,7 @@ jobs:
         id: pyrel
         run: |
           set -euo pipefail
-          # rust-v1.4.0 → v1.4.0: the Rust binary attaches to the same
+          # rust-vX.Y.Z → vX.Y.Z: the Rust binary attaches to the same
           # GitHub Release as the Python package (one release per
           # axon-lang version, consumed unchanged by Dockerfile.enterprise
           # in axon-enterprise via the stable v${AXON_VERSION} URL).

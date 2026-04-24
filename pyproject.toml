@@ -7,8 +7,8 @@ build-backend = "hatchling.build"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-lang"
-version = "1.4.0"
-description = "AXON v1.4.0 — Neuro-Symbolic Micro-OS. Formal cognitive language for AI with production-grade observability, resilience, persistence, and (Fase 11) temporal algebraic effects + trust types + zero-copy multimodal buffers + deterministic replay + legal-basis typed effects + stateful PEM over WebSocket + OTS binary pipeline synthesis."
+version = "1.4.1"
+description = "AXON v1.4.1 — Neuro-Symbolic Micro-OS. Formal cognitive language for AI with production-grade observability, resilience, persistence, and (Fase 11) temporal algebraic effects + trust types + zero-copy multimodal buffers + deterministic replay + legal-basis typed effects + stateful PEM over WebSocket + OTS binary pipeline synthesis. Fase 12.a extracts the compiler frontend as standalone `axon-frontend` crate consumable by external tooling without runtime deps."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
