@@ -259,6 +259,18 @@ impl MultipartParser {
             return Ok(false);
         };
 
+        // §Fase 12.c — also enforce `max_header_bytes` when the
+        // terminator arrives in the same feed as the (oversized)
+        // header. Without this, a caller that fills the buffer with
+        // one big call bypasses the limit because the "buffer larger
+        // than the cap" branch above only fires while the terminator
+        // is still missing.
+        if idx > self.limits.max_header_bytes {
+            return Err(MultipartError::HeaderTooLarge {
+                limit: self.limits.max_header_bytes,
+            });
+        }
+
         let header_block = self.buf.drain(..idx + terminator.len()).collect::<Vec<u8>>();
         // Drop the trailing blank-line terminator from the parse set.
         let header_text = &header_block[..header_block.len() - terminator.len()];
@@ -334,15 +346,23 @@ impl MultipartParser {
         };
 
         let Some(idx) = boundary_idx else {
-            // No boundary in buffer yet. Flush what we can — all
-            // bytes EXCEPT the trailing tail that could be the start
-            // of a boundary marker.
-            let marker = if self.buf.len() >= close_marker.len() {
-                close_marker.len()
-            } else {
-                open_marker.len()
-            };
-            let keep = marker;
+            // No boundary in buffer yet. Flush everything EXCEPT the
+            // trailing tail that might still become either:
+            //   · a boundary marker (up to `close_marker.len()` bytes), or
+            //   · the mandatory `\r\n` that RFC 7578 §4.1 requires
+            //     immediately before the boundary (body_end = idx - 2
+            //     trims those two bytes from the body, but only if
+            //     they are still in the buffer when the marker is
+            //     recognised).
+            //
+            // §Fase 12.c fix — the previous heuristic kept only
+            // `close_marker.len()` (or `open_marker.len()` when the
+            // buffer was smaller). In a byte-at-a-time feed that lost
+            // the `\r\n` preceding the boundary, emitting it as part
+            // of the body and leaving the boundary marker
+            // unrecognisable because the parser had already flushed
+            // the first one or two bytes of its prefix.
+            let keep = close_marker.len().max(open_marker.len()) + 2;
             if self.buf.len() <= keep {
                 return Ok(false);
             }

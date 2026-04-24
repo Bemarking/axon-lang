@@ -27,7 +27,8 @@ PR que toque `axon-enterprise/` en esta fase se rechaza.
 |---|---|---|
 | 12.a | Extraer `axon-frontend/` como crate standalone sin deps de runtime | ✅ Completo (2026-04-24) |
 | 12.b | `axon-rs` consume `axon-frontend` vía path dep; tests regresión | ✅ Completo (2026-04-24) |
-| 12.c | CI — matrix build incluye `axon-frontend` solo, validando ausencia de runtime deps | ⬜ Pendiente |
+| 12.c.1 | Test suite repairs — 5 compile errors + 4 runtime bugs ocultos | 🟡 En curso |
+| 12.c.2 | CI — matrix build incluye `axon-frontend` solo, validando ausencia de runtime deps | ⬜ Pendiente |
 | 12.d | Release v1.4.1 — tag + GitHub Release + publicación opcional a crates.io | ⬜ Pendiente |
 | 12.e | (Futuro) `axon-backends/` — extracción análoga de los 7 LLM backends | ⬜ Backlog |
 
@@ -272,7 +273,69 @@ HTTP routes, y outputs del checker.
 
 ---
 
-## Sub-fase 12.c — CI: matrix valida el contrato
+## Sub-fase 12.c.1 — Test suite repairs
+
+**Motivación:** la extracción del frontend no causó estos bugs, pero
+sí los expuso. `cargo test --lib` llevaba semanas sin compilar; los
+5 compile errors ocultaban 4 bugs runtime pre-existentes en módulos
+no relacionados con el compilador (PEM, multipart, stream runtime).
+Shippar 12.d con un CI `rust-native` rojo violaría "zero shortcuts".
+
+### Compile-error fixes (test harness unblock)
+
+1. **`trust_verifiers.rs:372, 392`** — `ed25519_roundtrip` +
+   `ed25519_rejects_tampered_payload`. `SigningKey::generate(&mut
+   csprng)` falla porque `rand 0.9` implementa `rand_core 0.9::CryptoRng`
+   para `OsRng` pero `ed25519-dalek 2` espera `rand_core 0.6::
+   CryptoRngCore`. Fix: seed desde `[u8; 32]` producido por
+   `rand::random()`, bypaseando la resolución de trait versions.
+
+2. **`ots/pipeline.rs:389`** — `no_path_returns_typed_error`. Llamar
+   `.unwrap_err()` sobre `Result<Vec<Arc<dyn Transformer>>, OtsError>`
+   requiere `Transformer: Debug`, que el trait no declara. Fix:
+   `.err().expect(...)` — consume el Ok antes de unwrap, sin bound.
+
+### Runtime logic fixes (4 tests ocultos)
+
+3. **`pem/state.rs`** — `persist_then_restore_roundtrip`. La
+   serialización JSON de `DateTime<Utc>` (default chrono) usa RFC
+   3339 con precisión milisegundo, descartando la fracción
+   nanosegundo de `Utc::now()`. Restore devuelve un state ≠ original.
+   Fix: truncar a ms al crear (`SubsecRound::trunc_subsecs(3)`) para
+   que la representación en memoria iguale el formato wire —
+   persist/restore vuelve identidad estricta, el mismo invariante
+   que Q32.32 da para los floats de la density matrix.
+
+4. **`ingest/multipart.rs`** — `header_too_large_errors`. El guard
+   `max_header_bytes` solo disparaba cuando el terminator `\r\n\r\n`
+   aún no había llegado. Un caller que manda todo el request en un
+   feed saltaba el cap. Fix: check post-terminator adicional para
+   aplicar el límite en ambos caminos.
+
+5. **`ingest/multipart.rs`** — `chunked_feed_works_across_boundary_splits`.
+   La heurística streaming `keep` retenía solo `close_marker.len()`
+   bytes al final del buffer. Bajo feed byte-a-byte, eso perdía el
+   `\r\n` que RFC 7578 §4.1 requiere inmediatamente antes del
+   boundary: `body_end = idx - 2` ya no podía trim-ear esos bytes
+   porque habían sido flushed al body. Fix: subir `keep` a
+   `max(open, close) + 2 = 9` para que el `\r\n` del trailing body
+   sobreviva hasta que el marker sea reconocido.
+
+6. **`stream_runtime.rs`** — `degrade_quality_without_degrader_errors`.
+   `push_degrade_quality` buscaba el degrader al entrar a la función,
+   fallando closed incluso cuando el buffer tenía espacio. Primer
+   push a un degrade-quality stream sin degrader registrado
+   explotaba. Fix: mover el lookup del degrader al branch de
+   overflow — la única situación donde la policy realmente necesita
+   degradar.
+
+**Verificación:** `cargo test --release --lib` → **974/974 green**
+post-fixes (era 0/974 por compile failures, luego 4/974 fallando
+una vez resueltos los compile errors).
+
+---
+
+## Sub-fase 12.c.2 — CI: matrix valida el contrato
 
 **Alcance cerrado:**
 
@@ -428,22 +491,16 @@ Contrato cumplido.
 | `axon.exe check examples/contract_analyzer.axon` | ✅ `168 tokens · 9 declarations · 0 errors` |
 | Parse errors con posición precisa (axpoint_status, axonendpoint_full) | ✅ `file:line:col` idéntico al comportamiento esperado |
 
-**Pre-existente, no bloquea 12.a/12.b:**
+**Ampliación de scope — test suite repairs (ver 12.c.1 abajo):**
 
-`cargo test --lib` falla en 5 errores en archivos **que no toqué**:
-- `trust_verifiers.rs:372, 392` (4 errores) — `OsRng: CryptoRngCore`
-  no satisfecho por version skew `rand 0.9` vs `ed25519-dalek 2`
-  (que usa `rand_core 0.6`). Tests `ed25519_roundtrip` y
-  `ed25519_rejects_tampered_payload`.
-- `ots/pipeline.rs:389` (1 error) — `dyn Transformer: Debug` faltante
-  en un `.unwrap_err()` de test.
-
-Ambos problemas existen en master pre-refactor (verificado vía git log
-— commits relevantes son `363f845 feat(lang-11.a)` y `e50ca4a
-feat(runtime-11.e)`; commit `a7f6445 fix(axon-rs): compile errors
-in OTS + multipart + refresh Cargo.lock` ya fue un intento previo
-de saneamiento en este área). Se documentan como item separado de
-12.c fixes (no parte de 12.a/12.b scope).
+La extracción del frontend expuso que `cargo test --lib` llevaba
+semanas sin correr por 5 compile errors en el test harness. Al
+arreglarlos, 4 bugs runtime latentes quedaron visibles. Ambos grupos
+se resuelven en este mismo feature branch porque la filosofía "zero
+shortcuts" exige que axon-lang v1.4.1 shippee con CI verde — no
+tiene sentido habilitar el guard de `axon-frontend` en 12.c si el
+job `rust-native` global sigue rojo por razones ortogonales. Detalle
+en §12.c.1.
 
 **Handoff a 12.c:** feature branch lista para merge a master una vez
 validada por review. 12.c debe resolver los 5 tests pre-existentes
