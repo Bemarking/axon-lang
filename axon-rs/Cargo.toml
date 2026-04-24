@@ -6,6 +6,11 @@ edition = "2021"
 description = "AXON v1.4.0 — Neuro-Symbolic Micro-OS. Native Rust runtime with byte-identical parity vs Python reference. Fase 11 ships Temporal Algebraic Effects + Trust Types, Zero-Copy Multimodal Buffers, Deterministic Replay + Legal-Basis Typed Effects, Stateful PEM over WebSocket, OTS Binary Pipeline Synthesis."
 
 [dependencies]
+# §Fase 12.a — compiler frontend (lexer/parser/AST/type_checker/IR/checker +
+# closed catalogs for Fase 11.a/11.c/11.e) lives in its own crate with
+# zero runtime deps so tooling (axon-lsp, analyzers) can consume it
+# without dragging tokio/axum/sqlx/aws.
+axon-frontend = { path = "../axon-frontend" }
 clap = { version = "4.5", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }

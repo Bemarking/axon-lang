@@ -43,17 +43,14 @@ pub use self::pipeline::{
 };
 
 // ── Slug catalogue consumed by the type checker ─────────────────────
+//
+// §Fase 12.a — the compile-time catalog lives in `axon-frontend` so
+// tooling can validate OTS effect slugs without linking the runtime.
+// Re-exported here for backward compatibility with existing callers.
 
-/// Effect slug `ots:transform:<from>:<to>` declares a tool as
-/// performing a kind conversion. The checker verifies a path exists.
-pub const OTS_TRANSFORM_EFFECT_SLUG: &str = "ots:transform";
-
-/// Effect slug `ots:backend:<kind>` declares HOW the conversion
-/// happens. Closed qualifier set — new backends require a patch.
-pub const OTS_BACKEND_EFFECT_SLUG: &str = "ots:backend";
-
-/// Catalogue of valid `ots:backend:<qualifier>` qualifiers.
-pub const OTS_BACKEND_CATALOG: &[&str] = &["native", "ffmpeg"];
+pub use axon_frontend::ots_catalog::{
+    OTS_BACKEND_CATALOG, OTS_BACKEND_EFFECT_SLUG, OTS_TRANSFORM_EFFECT_SLUG,
+};
 
 // ── Factory: startup-seeded global registry ─────────────────────────
 

@@ -667,14 +667,14 @@ impl<'a> TypeChecker<'a> {
                                 }
                                 "backend" => {
                                     let qual = rest.unwrap_or("");
-                                    if !is_valid(qual, crate::ots::OTS_BACKEND_CATALOG) {
+                                    if !is_valid(qual, crate::ots_catalog::OTS_BACKEND_CATALOG) {
                                         self.emit(
                                             format!(
                                                 "Unknown OTS backend '{}' in tool '{}'. \
                                                  Valid: {}",
                                                 qual,
                                                 node.name,
-                                                valid_list(crate::ots::OTS_BACKEND_CATALOG)
+                                                valid_list(crate::ots_catalog::OTS_BACKEND_CATALOG)
                                             ),
                                             &node.loc,
                                         );
