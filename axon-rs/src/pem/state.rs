@@ -21,7 +21,7 @@
 //! call by using [`MemoryEntry::metadata`] which carries arbitrary
 //! JSON.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SubsecRound, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -140,7 +140,15 @@ impl CognitiveState {
         tenant_id: impl Into<String>,
         flow_id: impl Into<String>,
     ) -> Self {
-        let now = Utc::now();
+        // §Fase 12.c — JSON serialisation of `DateTime<Utc>` via
+        // chrono's default Serialize impl produces RFC 3339 with
+        // millisecond precision, so any sub-millisecond fraction in
+        // `Utc::now()` is silently dropped on the way to disk and the
+        // restored state compares unequal to the in-memory original.
+        // Truncating to ms here aligns the in-memory representation
+        // with the on-wire format, making persist→restore a strict
+        // identity — the same invariant Q32.32 gives us for floats.
+        let now = Utc::now().trunc_subsecs(3);
         CognitiveState {
             session_id: session_id.into(),
             tenant_id: tenant_id.into(),

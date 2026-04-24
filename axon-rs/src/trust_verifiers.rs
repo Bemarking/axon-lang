@@ -368,8 +368,14 @@ mod tests {
     #[test]
     fn ed25519_roundtrip() {
         use ed25519_dalek::{Signer, SigningKey};
-        let mut csprng = rand::rngs::OsRng;
-        let sk = SigningKey::generate(&mut csprng);
+        // §Fase 12.c — `SigningKey::generate(&mut csprng)` failed to
+        // compile under `rand 0.9` because `rand::rngs::OsRng`
+        // implements `rand_core 0.9::CryptoRng`, but `ed25519-dalek 2`
+        // expects `rand_core 0.6::CryptoRngCore`. Seeding from raw
+        // bytes produced by `rand::random` bypasses the trait
+        // resolution and is semantically equivalent for a test key.
+        let seed: [u8; 32] = rand::random();
+        let sk = SigningKey::from_bytes(&seed);
         let pk = sk.verifying_key();
         let payload = b"sigstore-attestation";
         let sig = sk.sign(payload);
@@ -388,8 +394,10 @@ mod tests {
     #[test]
     fn ed25519_rejects_tampered_payload() {
         use ed25519_dalek::{Signer, SigningKey};
-        let mut csprng = rand::rngs::OsRng;
-        let sk = SigningKey::generate(&mut csprng);
+        // §Fase 12.c — same rand_core version skew fix as
+        // `ed25519_roundtrip` above.
+        let seed: [u8; 32] = rand::random();
+        let sk = SigningKey::from_bytes(&seed);
         let pk = sk.verifying_key();
         let sig = sk.sign(b"original");
 

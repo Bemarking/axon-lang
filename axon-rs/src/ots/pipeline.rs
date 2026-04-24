@@ -386,7 +386,14 @@ mod tests {
         reg.install(ident("a", "b", 1, TransformerBackend::Native));
         let from = BufferKind::new("a");
         let to = BufferKind::new("z");
-        let err = reg.shortest_path(&from, &to).unwrap_err();
+        // §Fase 12.c — `.unwrap_err()` requires the Ok variant to be
+        // `Debug`, but the Ok type here is `Vec<Arc<dyn Transformer>>`
+        // and `dyn Transformer` is not `Debug`. `.err().expect(...)`
+        // drops the Ok variant before unwrapping and needs no bound.
+        let err = reg
+            .shortest_path(&from, &to)
+            .err()
+            .expect("expected NoPath error");
         matches!(err, OtsError::NoPath { .. });
     }
 

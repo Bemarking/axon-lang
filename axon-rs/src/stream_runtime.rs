@@ -210,16 +210,23 @@ impl<T: Send + 'static> Stream<T> {
     }
 
     async fn push_degrade_quality(&self, item: T) -> Result<(), StreamError> {
-        let degrader = self
-            .degrader
-            .as_ref()
-            .ok_or(StreamError::MissingDegrader)?
-            .clone();
         let mut g = self.inner.lock().await;
         if g.closed {
             return Err(StreamError::Cancelled);
         }
         let value = if g.buffer.len() >= g.capacity {
+            // §Fase 12.c — the degrader lookup belongs in the overflow
+            // branch, not at function entry. A `Stream::new` built
+            // without `with_degrader` must still accept pushes while
+            // the buffer has room; only when we actually need to
+            // degrade an incoming item is the absence of a degrader
+            // a policy violation. Failing closed early prevented
+            // even the first push from succeeding.
+            let degrader = self
+                .degrader
+                .as_ref()
+                .ok_or(StreamError::MissingDegrader)?
+                .clone();
             self.metrics
                 .degrade_quality_hits
                 .fetch_add(1, Ordering::Relaxed);
