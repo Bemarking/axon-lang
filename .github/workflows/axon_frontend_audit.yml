@@ -1,0 +1,119 @@
+name: axon-frontend Dependency Audit
+
+# §Fase 12.c — invariant guard for the `axon-frontend` crate.
+#
+# The design contract is that `axon-frontend` must never gain a
+# runtime dependency (tokio, axum, sqlx, reqwest, aws-*, jsonwebtoken,
+# etc.). The only allowed externals are `serde` and `serde_json` (plus
+# their proc-macro derive chains). This lets downstream tooling like
+# `axon-lsp` link the compiler frontend without dragging a network +
+# database stack.
+#
+# This workflow runs `cargo tree -p axon-frontend` and fails the build
+# if anything outside the whitelist appears. Any PR that triggers a
+# failure here needs a design review — either the new dep belongs in
+# `axon-rs` (runtime), or the whitelist genuinely needs to expand.
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*", "rust-v*"]
+  pull_request:
+    branches: [master]
+    paths:
+      - "axon-frontend/**"
+      - "axon-rs/Cargo.toml"
+      - "axon-rs/Cargo.lock"
+      - ".github/workflows/axon_frontend_audit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  dep-audit:
+    name: axon-frontend has no runtime deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build axon-frontend in isolation
+        working-directory: axon-frontend
+        run: cargo build --release
+
+      - name: Audit dependency tree
+        working-directory: axon-frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Whitelist — every crate name that is acceptable in
+          # `cargo tree -p axon-frontend`. Keep this list minimal
+          # and alphabetically sorted. Adding a new entry is a
+          # design decision that needs a PR comment explaining why.
+          ALLOWED=$(cat <<'EOF'
+          axon-frontend
+          itoa
+          memchr
+          proc-macro2
+          quote
+          ryu
+          serde
+          serde_core
+          serde_derive
+          serde_json
+          syn
+          unicode-ident
+          zmij
+          EOF
+          )
+
+          echo "── dependency tree ────────────────────────────────"
+          cargo tree -p axon-frontend
+
+          echo ""
+          echo "── flattened unique crate names ───────────────────"
+          ACTUAL=$(cargo tree -p axon-frontend --prefix none --no-dedupe 2>/dev/null \
+              | awk '{print $1}' \
+              | sed 's/_v[0-9]*$//; s/(\*)//g' \
+              | grep -v '^$' \
+              | sort -u)
+          echo "$ACTUAL"
+
+          echo ""
+          echo "── disallowed crates (if any) ─────────────────────"
+          DISALLOWED=$(comm -23 \
+              <(echo "$ACTUAL") \
+              <(echo "$ALLOWED" | sort -u))
+
+          if [ -n "$DISALLOWED" ]; then
+              echo "❌ axon-frontend pulled in disallowed crates:"
+              echo "$DISALLOWED"
+              echo ""
+              echo "The 'zero runtime deps' contract is broken. Either:"
+              echo "  (a) move the code that needs this dep to axon-rs/, or"
+              echo "  (b) open a PR updating the whitelist in this workflow"
+              echo "      with a design justification."
+              exit 1
+          fi
+
+          echo "✅ axon-frontend contract upheld — no unexpected deps."
+
+      - name: Forbidden crate scan (belt + suspenders)
+        working-directory: axon-frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Explicit denylist of runtime-oriented crates that must
+          # never appear. The whitelist above already blocks them,
+          # but a direct scan gives clearer error messages.
+          FORBIDDEN="tokio axum sqlx reqwest aws-config aws-sdk-secretsmanager jsonwebtoken chrono hmac sha2 ed25519-dalek zip tower tower-http hyper rustls"
+          for crate in $FORBIDDEN; do
+              if cargo tree -p axon-frontend --prefix none 2>/dev/null | awk '{print $1}' | grep -qx "$crate"; then
+                  echo "❌ forbidden runtime crate '$crate' reached axon-frontend."
+                  exit 1
+              fi
+          done
+          echo "✅ no forbidden runtime crate present."
