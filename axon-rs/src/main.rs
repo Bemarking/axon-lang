@@ -45,6 +45,11 @@ enum Commands {
         file: String,
         #[arg(long)]
         no_color: bool,
+        /// §λ-L-E Fase 13 D4 — promote warnings to errors (CI gate).
+        /// Recommended for adopters preparing for v2.0 string-topic
+        /// removal (see docs/migration_fase_13.md).
+        #[arg(long)]
+        strict: bool,
     },
     /// Compile an .axon file to IR JSON.
     Compile {
@@ -225,7 +230,7 @@ fn main() {
             println!("axon-lang {AXON_VERSION}");
             0
         }
-        Commands::Check { file, no_color } => checker::run_check(&file, no_color),
+        Commands::Check { file, no_color, strict } => checker::run_check(&file, no_color, strict),
         Commands::Compile {
             file,
             backend,

@@ -924,9 +924,13 @@ class AgentDefinition(ASTNode):
 @dataclass
 class ListenBlock(ASTNode):
     """
-    listen "orders" as event {
-        step ProcessOrder { ... }
-    }
+    Dual-mode listener (Fase 13 D4):
+
+      # Canonical: typed channel reference (v1.5.0+)
+      listen OrdersCreated as order_event { ... }
+
+      # Legacy: string topic — emits deprecation warning (removed in v2.0)
+      listen "orders" as event { ... }
 
     A single reactive listener within a daemon. Binds an event
     channel to a local alias and executes the body on each event.
@@ -934,11 +938,20 @@ class ListenBlock(ASTNode):
     π-Calculus correspondence:
       listen "ch" as x { Q }  ≡  c(x).Q  (channel input prefix)
 
-    The channel_expr names the event channel (topic string),
-    event_alias is the local binding for the received event payload,
-    and body contains the steps to execute per event.
+    Fields:
+      channel_expr — for string-topic mode: the topic name as a Python
+                     str.  For channel-reference mode (Fase 13): the
+                     name of a declared ChannelDefinition.
+      channel_is_ref — True when the listener refers to a
+                     ChannelDefinition (typed); False when the listener
+                     uses a string topic (legacy, deprecated).  The
+                     type checker uses this flag to dispatch schema
+                     verification vs legacy string-topic handling.
+      event_alias  — local binding for the received event payload.
+      body         — flow steps executed per event.
     """
-    channel_expr: str = ""       # event channel / topic name
+    channel_expr: str = ""       # event channel name — topic string OR ChannelDefinition ref
+    channel_is_ref: bool = False # True: channel_expr is a declared channel name (Fase 13)
     event_alias: str = ""        # local binding for event payload
     body: list[ASTNode] = field(default_factory=list)
 
@@ -2411,3 +2424,110 @@ class ViewDefinition(ASTNode):
     title: str = ""
     components: list[str] = field(default_factory=list)
     route: str = ""
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  MOBILE TYPED CHANNELS — Fase 13 of the λ-L-E calculus
+#  (Formalization: docs/paper_mobile_channels.md)
+#
+#  Lifts Axon channels from runtime-routed strings (listen "topic")
+#  to first-class affine resources typed as Channel<τ, q, ℓ, π>.
+#  Handles are passable as values (π-calculus mobility, Milner 1991)
+#  and exposable via capability-gated publish/discover (ESK shield).
+#
+#  Compile-time guarantees (paper §3 + Theorem 6.1):
+#    1. Affinity   — no handle is duplicated; drop is permitted (D1).
+#    2. Mobility   — Channel<τ> is a first-class value; passing it
+#                    through another channel preserves affinity (D2).
+#    3. Schema     — emit/listen operations verify producer-consumer
+#                    type agreement at compile time (D3).
+#    4. Capability — publish requires a shield whose compliance
+#                    list ⊇ κ(τ); without shield, publish is a
+#                    compile error (D8).
+#    5. Second-order sessions — a session step over Channel<τ> is
+#                    dual iff its carried-type steps are dual (D6.d).
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class ChannelDefinition(ASTNode):
+    """
+    channel OrdersCreated {
+        message: Order                  # schema type (TypeDefinition name)
+        qos: at_least_once              # AMO | ALO | EO | broadcast | queue
+        lifetime: affine                # linear | affine | persistent
+        persistence: ephemeral          # ephemeral | persistent_axonstore
+        shield: PublicBroker            # optional: required for publish (D8)
+    }
+
+    A typed event channel as an affine resource.  Holders of a
+    `Channel<message_type>` handle may emit, receive, publish (gated),
+    or persist the handle; affinity prevents aliasing across concurrent
+    consumers without explicit duplication through a broadcast QoS.
+
+    The `message` field is the static type carried by the channel — a
+    reference to a TypeDefinition (existing `type` keyword) or a nested
+    `Channel<...>` for second-order mobility (paper §3.3).  Nested
+    channel types are stored in `message` as the verbatim source text
+    (e.g. "Channel<Order>") and resolved by the type checker in 13.b.
+    """
+    name: str = ""
+    message: str = ""                    # type name or "Channel<T>" (second-order)
+    qos: str = "at_least_once"           # at_most_once | at_least_once | exactly_once | broadcast | queue
+    lifetime: str = "affine"             # linear | affine | persistent (D1 default: affine)
+    persistence: str = "ephemeral"       # ephemeral | persistent_axonstore (D3 default)
+    shield_ref: str = ""                 # optional σ-shield for publish gating (D8)
+
+
+@dataclass
+class EmitStatement(ASTNode):
+    """
+    emit OrdersCreated(order_payload)
+    emit BrokerHandoff(OrdersCreated)         # (Chan-Mobility) — channel as value
+
+    Output prefix in the π-calculus sense: `c⟨v⟩.P`.  The channel
+    reference `c` is a declared ChannelDefinition name; the value
+    expression `v` is either a term of the channel's message type or
+    — under mobility — a Channel<τ> handle for which v's type must
+    match the outer channel's declared message.
+
+    Affinity is enforced by the type checker (13.b): after `emit c(v)`,
+    the handle `v` is consumed in the current scope if `v` itself is
+    a channel reference.
+    """
+    channel_ref: str = ""                # name of the ChannelDefinition receiving the value
+    value_ref: str = ""                  # identifier of the value (message or channel handle)
+
+
+@dataclass
+class PublishStatement(ASTNode):
+    """
+    publish OrdersCreated within PublicBroker
+
+    Capability extrusion (Milner–Parrow–Walker 1992, paper §4.3).
+    Exposes the handle to a dynamic discovery surface materialized
+    by the named shield.  Compile-time requirements (paper §3.4, D8):
+
+      • `PublicBroker` must be a ShieldDefinition in scope.
+      • Shield.compliance ⊇ κ(channel.message_type).
+      • The caller's certainty envelope is attenuated by δ_pub (default
+        0.05 per hop) — recorded by the runtime, not visible in AST.
+
+    Without `within <Shield>`, publish is a compile error.
+    """
+    channel_ref: str = ""                # name of the ChannelDefinition being published
+    shield_ref: str = ""                 # name of the σ-shield gating the extrusion
+
+
+@dataclass
+class DiscoverStatement(ASTNode):
+    """
+    discover OrdersCreated as orders_ch
+
+    Dual of `publish` — imports a handle previously extruded through
+    a shield.  The alias `orders_ch` binds the received handle in the
+    local scope with the schema of the originating ChannelDefinition.
+    Post-discover, the handle is affine: exactly one of `emit orders_ch(…)`
+    / further mobility / drop is permitted.
+    """
+    capability_ref: str = ""             # name of the published channel (ChannelDefinition)
+    alias: str = ""                      # local binding introduced

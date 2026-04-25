@@ -27,12 +27,15 @@ from .ast_nodes import (
     CorpusDocEntry,
     CorpusEdgeEntry,
     CorroborateNode,
+    ChannelDefinition,
     DaemonBudget,
     DaemonDefinition,
     DataSpaceDefinition,
     DeliberateBlock,
+    DiscoverStatement,
     DrillNode,
     EffectRowNode,
+    EmitStatement,
     EpistemicBlock,
     EnsembleDefinition,
     ExploreNode,
@@ -71,6 +74,7 @@ from .ast_nodes import (
     PixDefinition,
     ProbeDirective,
     ProgramNode,
+    PublishStatement,
     PsycheDefinition,
     PurgeNode,
     RangeConstraint,
@@ -216,6 +220,8 @@ class Parser:
                 return self._parse_component()
             case TokenType.VIEW:
                 return self._parse_view()
+            case TokenType.CHANNEL:
+                return self._parse_channel()
             case TokenType.PERSIST:
                 return self._parse_persist()
             case TokenType.RETRIEVE:
@@ -781,6 +787,12 @@ class Parser:
                 return self._parse_listen()
             case TokenType.DAEMON:
                 return self._parse_daemon()
+            case TokenType.EMIT:
+                return self._parse_emit()
+            case TokenType.PUBLISH:
+                return self._parse_publish()
+            case TokenType.DISCOVER:
+                return self._parse_discover()
             case TokenType.PERSIST:
                 return self._parse_persist()
             case TokenType.RETRIEVE:
@@ -2797,22 +2809,36 @@ class Parser:
 
     def _parse_listen(self) -> ListenBlock:
         """
-        Parse a listen block:
+        Parse a listen block (dual-mode per Fase 13 D4):
 
+          # Canonical (v1.5.0+) — typed channel reference
+          listen OrdersCreated as order_event {
+              step Validate { ... }
+          }
+
+          # Legacy — string topic, emits deprecation warning in type checker
           listen "orders" as order_event {
               step Validate { ... }
-              step Process { ... }
           }
 
         π-Calculus correspondence: c(x).Q
-          "orders" is the channel c, order_event is the binding x,
-          and the body is the continuation Q.
+          In canonical mode `c` resolves to a declared ChannelDefinition
+          (typed); in legacy mode `c` is a string topic resolved by the
+          runtime EventBus.  Either way, `order_event` binds x and the
+          body is the continuation Q.
         """
         tok = self._consume(TokenType.LISTEN)
         node = ListenBlock(line=tok.line, column=tok.column)
 
-        # channel expression (string literal — topic name)
-        node.channel_expr = self._consume(TokenType.STRING).value
+        # channel: STRING (legacy) or IDENTIFIER (canonical, Fase 13)
+        head = self._current()
+        if head.type == TokenType.STRING:
+            node.channel_expr = self._consume(TokenType.STRING).value
+            node.channel_is_ref = False
+        else:
+            ref = self._consume(TokenType.IDENTIFIER)
+            node.channel_expr = ref.value
+            node.channel_is_ref = True
 
         # optional: as <alias>
         if self._check(TokenType.AS):
@@ -4494,6 +4520,164 @@ class Parser:
         self._consume(TokenType.RBRACE)
 
         return node
+
+    # ──────────────────────────────────────────────────────────────
+    #  MOBILE TYPED CHANNELS — Fase 13 (paper_mobile_channels.md)
+    # ──────────────────────────────────────────────────────────────
+
+    _VALID_CHANNEL_QOS = frozenset({
+        "at_most_once", "at_least_once", "exactly_once", "broadcast", "queue",
+    })
+    _VALID_CHANNEL_PERSISTENCE = frozenset({
+        "ephemeral", "persistent_axonstore",
+    })
+
+    def _parse_channel(self) -> ChannelDefinition:
+        """
+        Parse: channel Name { message, qos, lifetime, persistence, shield }.
+
+        Example:
+
+          channel OrdersCreated {
+              message: Order
+              qos: at_least_once
+              lifetime: affine
+              persistence: ephemeral
+              shield: PublicBroker
+          }
+
+        The `message` field is either a type name (e.g. `Order`) or a
+        nested `Channel<T>` spelling (second-order sessions, paper §3.3).
+        The raw source text of the type expression is preserved verbatim
+        in node.message; the type checker (Fase 13.b) parses the spelling
+        and resolves it against TypeDefinition / ChannelDefinition scope.
+        """
+        tok = self._consume(TokenType.CHANNEL)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = ChannelDefinition(name=name.value, line=tok.line, column=tok.column)
+
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            field_tok = self._current()
+            field_name = field_tok.value
+            self._advance()
+            self._consume(TokenType.COLON)
+
+            match field_name:
+                case "message":
+                    node.message = self._parse_channel_message_type()
+                case "qos":
+                    q_tok = self._consume_any_identifier_or_keyword()
+                    if q_tok.value not in self._VALID_CHANNEL_QOS:
+                        raise AxonParseError(
+                            f"Invalid qos '{q_tok.value}' in channel '{name.value}'",
+                            line=q_tok.line, column=q_tok.column,
+                            expected="at_most_once | at_least_once | exactly_once | broadcast | queue",
+                            found=q_tok.value,
+                        )
+                    node.qos = q_tok.value
+                case "lifetime":
+                    lt_tok = self._consume_any_identifier_or_keyword()
+                    if lt_tok.value not in self._VALID_LIFETIMES:
+                        raise AxonParseError(
+                            f"Invalid lifetime '{lt_tok.value}' in channel '{name.value}'",
+                            line=lt_tok.line, column=lt_tok.column,
+                            expected="linear | affine | persistent",
+                            found=lt_tok.value,
+                        )
+                    node.lifetime = lt_tok.value
+                case "persistence":
+                    p_tok = self._consume_any_identifier_or_keyword()
+                    if p_tok.value not in self._VALID_CHANNEL_PERSISTENCE:
+                        raise AxonParseError(
+                            f"Invalid persistence '{p_tok.value}' in channel '{name.value}'",
+                            line=p_tok.line, column=p_tok.column,
+                            expected="ephemeral | persistent_axonstore",
+                            found=p_tok.value,
+                        )
+                    node.persistence = p_tok.value
+                case "shield":
+                    node.shield_ref = self._consume_any_identifier_or_keyword().value
+                case _:
+                    self._skip_value()
+
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_channel_message_type(self) -> str:
+        """
+        Parse the `message:` value of a channel declaration.
+
+        Accepts either a plain identifier (e.g. `Order`) or a nested
+        `Channel<T>` spelling that supports second-order mobility
+        (paper §3.3).  Returns the source text verbatim so the type
+        checker in Fase 13.b can resolve it against the symbol table.
+        """
+        head = self._consume(TokenType.IDENTIFIER)
+        spelling = head.value
+        if self._check(TokenType.LT):
+            self._advance()
+            inner = self._parse_channel_message_type()
+            self._consume(TokenType.GT)
+            spelling = f"{head.value}<{inner}>"
+        return spelling
+
+    def _parse_emit(self) -> EmitStatement:
+        """
+        Parse: emit ChannelName(value_ref).
+
+        Output prefix c⟨v⟩.P in π-calculus notation.  The value can
+        be either a payload identifier (of the channel's message type)
+        or — under mobility (D2) — another channel's name.  Both cases
+        produce the same AST shape; the type checker (13.b) dispatches
+        on whether `value_ref` resolves to a ChannelDefinition.
+        """
+        tok = self._consume(TokenType.EMIT)
+        channel = self._consume(TokenType.IDENTIFIER)
+        self._consume(TokenType.LPAREN)
+        value = self._consume(TokenType.IDENTIFIER)
+        self._consume(TokenType.RPAREN)
+        return EmitStatement(
+            channel_ref=channel.value,
+            value_ref=value.value,
+            line=tok.line, column=tok.column,
+        )
+
+    def _parse_publish(self) -> PublishStatement:
+        """
+        Parse: publish ChannelName within ShieldName.
+
+        Capability extrusion (paper §3.4, D8).  `within <Shield>` is
+        mandatory — a bare `publish ChannelName` is a compile error so
+        that capability escape is always mediated by ESK.
+        """
+        tok = self._consume(TokenType.PUBLISH)
+        channel = self._consume(TokenType.IDENTIFIER)
+        self._consume(TokenType.WITHIN)
+        shield = self._consume(TokenType.IDENTIFIER)
+        return PublishStatement(
+            channel_ref=channel.value,
+            shield_ref=shield.value,
+            line=tok.line, column=tok.column,
+        )
+
+    def _parse_discover(self) -> DiscoverStatement:
+        """
+        Parse: discover ChannelName as alias.
+
+        Dual of publish — the `as <alias>` binding is mandatory since
+        every discovered handle is affine and needs a name to be
+        consumed exactly once in the subsequent scope.
+        """
+        tok = self._consume(TokenType.DISCOVER)
+        capability = self._consume(TokenType.IDENTIFIER)
+        self._consume(TokenType.AS)
+        alias = self._consume(TokenType.IDENTIFIER)
+        return DiscoverStatement(
+            capability_ref=capability.value,
+            alias=alias.value,
+            line=tok.line, column=tok.column,
+        )
 
     def _parse_store_field_body(self) -> dict[str, str]:
         """Parse: { key: value, key: value, ... } → dict."""

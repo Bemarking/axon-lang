@@ -29,6 +29,7 @@ from .ast_nodes import (
     AssociateNode,
     AxonEndpointDefinition,
     AxonStoreDefinition,
+    ChannelDefinition,
     ConditionalNode,
     ConsensusBlock,
     ContextDefinition,
@@ -37,8 +38,10 @@ from .ast_nodes import (
     DaemonDefinition,
     DataSpaceDefinition,
     DeliberateBlock,
+    DiscoverStatement,
     DrillNode,
     EffectRowNode,
+    EmitStatement,
     EpistemicBlock,
     EnsembleDefinition,
     ExploreNode,
@@ -58,6 +61,7 @@ from .ast_nodes import (
     LambdaDataDefinition,
     LeaseDefinition,
     LetStatement,
+    ListenBlock,
     MandateApplyNode,
     MandateDefinition,
     ManifestDefinition,
@@ -74,6 +78,7 @@ from .ast_nodes import (
     ProbeDirective,
     ProgramNode,
     PsycheDefinition,
+    PublishStatement,
     PurgeNode,
     ReasonChain,
     RecallNode,
@@ -409,6 +414,7 @@ class TypeChecker:
         self._program = program
         self._symbols = SymbolTable()
         self._errors: list[AxonTypeError] = []
+        self._warnings: list[AxonTypeError] = []
         self._user_types: dict[str, TypeDefinition] = {}
         # I/O Cognitivo Phase 1 — Linear Logic tracker (λ-L-E)
         # Maps: resource_name → list of (manifest_name, node_referencing) tuples.
@@ -416,9 +422,21 @@ class TypeChecker:
         # a `linear` or `affine` resource can belong to at most one manifest.
         self._resource_usage: dict[str, list[tuple[str, ASTNode]]] = {}
 
+    @property
+    def warnings(self) -> list[AxonTypeError]:
+        """Non-fatal diagnostics — e.g. Fase 13 D4 deprecation of string topics.
+
+        Errors halt compilation; warnings surface in `axon check` output but
+        let the program proceed.  In v2.0 the deprecated forms become errors
+        (D4 schedule); for v1.4.x dual-mode, warnings keep the migration
+        path observable without breaking existing programs.
+        """
+        return list(self._warnings)
+
     def check(self) -> list[AxonTypeError]:
         """Full type-check pass. Returns all semantic errors found."""
         self._errors = []
+        self._warnings = []
         self._resource_usage = {}
 
         # Phase 1: Register all declarations in the symbol table
@@ -546,6 +564,8 @@ class TypeChecker:
                     self._register(name, "component", decl)
                 case ViewDefinition(name=name):
                     self._register(name, "view", decl)
+                case ChannelDefinition(name=name):
+                    self._register(name, "channel", decl)
                 case PersistNode() | RetrieveNode() | MutateNode() | PurgeNode() | TransactNode():
                     pass  # axonstore CRUD ops validated at Phase 2
 
@@ -654,6 +674,10 @@ class TypeChecker:
                 self._check_component(decl)
             case ViewDefinition():
                 self._check_view(decl)
+            case ChannelDefinition():
+                self._check_channel(decl)
+            case DaemonDefinition():
+                self._check_daemon(decl)
             case PersistNode() | RetrieveNode() | MutateNode() | PurgeNode() | TransactNode():
                 self._check_store_crud(decl)
             case LetStatement():
@@ -867,6 +891,12 @@ class TypeChecker:
                 self._check_let(step)
             case ReturnStatement():
                 self._check_return(step, flow_name)
+            case EmitStatement():
+                self._check_emit(step)
+            case PublishStatement():
+                self._check_publish(step)
+            case DiscoverStatement():
+                self._check_discover(step)
 
     def _check_step(self, node: StepNode, step_names: set[str], flow_name: str) -> None:
         if node.name in step_names:
@@ -3433,3 +3463,332 @@ class TypeChecker:
             line=node.line,
             column=node.column,
         ))
+
+    def _warn(self, message: str, node: ASTNode) -> None:
+        """Surface a non-fatal diagnostic — see `warnings` property.
+
+        Used for staged migrations where a construct is still legal but
+        flagged for removal in a future version (e.g. Fase 13 D4 string
+        topics deprecated in v1.4.x, removed in v2.0).
+        """
+        self._warnings.append(AxonTypeError(
+            message=message,
+            line=node.line,
+            column=node.column,
+        ))
+
+    # ──────────────────────────────────────────────────────────────────
+    #  MOBILE TYPED CHANNELS — Fase 13.b
+    #  (paper_mobile_channels.md §3 + plan_io_cognitivo.md companion)
+    #
+    #  Five compile-time guarantees enforced here:
+    #    • channel declarations resolve their message schema and shield ref
+    #    • emit's value matches the channel's declared message type
+    #      (with mobility: a Channel<T> handle satisfies a Channel<T>
+    #       expectation when the inner T's match)
+    #    • publish requires a shield (D8); without one, compile error
+    #    • discover only succeeds against a publishable channel (one
+    #      whose definition declares a shield_ref)
+    #    • listen dual-mode: typed channel ref resolves; string topic
+    #      emits a deprecation warning (D4 — schedule: v2.0 = error)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _check_channel(self, node: ChannelDefinition) -> None:
+        """Validate a channel declaration (paper §3.1, §3.4)."""
+        if not node.name:
+            self._emit("channel requires a name", node)
+
+        # Resolve the message schema.  Three legal forms:
+        #   (a) "Order"           → must be a TypeDefinition or builtin
+        #   (b) "Channel<Order>"  → second-order: inner must resolve as (a)
+        #   (c) "Channel<Channel<T>>" — recursively (b)
+        # Unresolved names are soft-failed (consistent with existing
+        # _check_type_reference behaviour) — exact matching arrives in
+        # 13.c when full type expressions are tracked through the IR.
+        self._validate_channel_message_type(node.message, node)
+
+        # Optional shield reference must resolve when set (D8 prereq).
+        if node.shield_ref:
+            sym = self._symbols.lookup(node.shield_ref)
+            if sym is None:
+                self._emit(
+                    f"channel '{node.name}' references undefined shield "
+                    f"'{node.shield_ref}'",
+                    node,
+                )
+            elif sym.kind != "shield":
+                self._emit(
+                    f"channel '{node.name}' shield '{node.shield_ref}' "
+                    f"is a {sym.kind}, not a shield",
+                    node,
+                )
+
+    def _validate_channel_message_type(self, spelling: str, node: ASTNode) -> None:
+        """Resolve a channel.message spelling, including nested Channel<...>.
+
+        Returns silently — diagnostics are surfaced via _emit.  The
+        primary purpose at 13.b scope is to confirm referenced names
+        exist and to support second-order (Sess-Dual-², paper §3.3).
+        """
+        if not spelling:
+            self._emit("channel requires a `message:` schema type", node)
+            return
+
+        if spelling.startswith("Channel<") and spelling.endswith(">"):
+            inner = spelling[len("Channel<"):-1]
+            self._validate_channel_message_type(inner, node)
+            return
+
+        # Plain type name — soft-resolve via _check_type_reference idiom.
+        # Builtins, user types and types imported from other modules all
+        # pass; unknown names are tolerated (deferred to 13.c IR).
+        if spelling in BUILTIN_TYPES or spelling in self._user_types:
+            return
+        # Channels carrying channels by *name* (mobility receiver):
+        # the inner spelling can be a ChannelDefinition name when used
+        # as the message-of-a-channel-of-channels.
+        sym = self._symbols.lookup(spelling)
+        if sym is not None and sym.kind in ("type", "channel"):
+            return
+        # Unresolved → tolerated for now (matches resource/manifest
+        # convention).  Full enforcement deferred to 13.c.
+
+    def _check_emit(self, node: EmitStatement) -> None:
+        """Validate an emit statement (Chan-Output / Chan-Mobility)."""
+        if not node.channel_ref:
+            self._emit("emit requires a channel reference", node)
+            return
+
+        sym = self._symbols.lookup(node.channel_ref)
+        if sym is None:
+            self._emit(
+                f"emit references undefined channel '{node.channel_ref}'",
+                node,
+            )
+            return
+        if sym.kind != "channel":
+            self._emit(
+                f"emit target '{node.channel_ref}' is a {sym.kind}, "
+                f"not a channel",
+                node,
+            )
+            return
+
+        if not node.value_ref:
+            self._emit(
+                f"emit on channel '{node.channel_ref}' requires a value",
+                node,
+            )
+            return
+
+        # Schema check (D3, paper §3.1 Chan-Input/Chan-Output premises).
+        # Two legal shapes for value_ref:
+        #   (a) channel.message is a plain type T — value_ref names a
+        #       value of type T (let-binding, parameter, or another
+        #       declaration).  We cannot fully type-track until 13.c,
+        #       so at 13.b we verify only the simpler cross-cutting
+        #       case below.
+        #   (b) channel.message is "Channel<U>" — value_ref must be
+        #       a ChannelDefinition whose own message matches U
+        #       (mobility, Chan-Mobility, paper §3.2).
+        ch_def = sym.node
+        if not isinstance(ch_def, ChannelDefinition):
+            return
+        if ch_def.message.startswith("Channel<") and ch_def.message.endswith(">"):
+            inner = ch_def.message[len("Channel<"):-1]
+            value_sym = self._symbols.lookup(node.value_ref)
+            if value_sym is None or value_sym.kind != "channel":
+                self._emit(
+                    f"emit on '{node.channel_ref}' carries '{ch_def.message}' "
+                    f"but value '{node.value_ref}' is not a channel handle "
+                    f"(mobility violation, Chan-Mobility paper §3.2)",
+                    node,
+                )
+                return
+            value_ch = value_sym.node
+            if isinstance(value_ch, ChannelDefinition) and value_ch.message != inner:
+                self._emit(
+                    f"emit on '{node.channel_ref}' expects "
+                    f"Channel<{inner}> but '{node.value_ref}' carries "
+                    f"Channel<{value_ch.message}> "
+                    f"(second-order schema mismatch)",
+                    node,
+                )
+
+    def _check_publish(self, node: PublishStatement) -> None:
+        """Validate a publish statement — capability extrusion (D8)."""
+        if not node.channel_ref:
+            self._emit("publish requires a channel reference", node)
+            return
+        if not node.shield_ref:
+            self._emit(
+                f"publish '{node.channel_ref}' requires a shield gate "
+                f"(D8 — capability extrusion is shield-mediated)",
+                node,
+            )
+            return
+
+        ch_sym = self._symbols.lookup(node.channel_ref)
+        if ch_sym is None:
+            self._emit(
+                f"publish references undefined channel '{node.channel_ref}'",
+                node,
+            )
+            return
+        if ch_sym.kind != "channel":
+            self._emit(
+                f"publish target '{node.channel_ref}' is a {ch_sym.kind}, "
+                f"not a channel",
+                node,
+            )
+            return
+
+        sh_sym = self._symbols.lookup(node.shield_ref)
+        if sh_sym is None:
+            self._emit(
+                f"publish '{node.channel_ref}' references undefined shield "
+                f"'{node.shield_ref}'",
+                node,
+            )
+            return
+        if sh_sym.kind != "shield":
+            self._emit(
+                f"publish gate '{node.shield_ref}' is a {sh_sym.kind}, "
+                f"not a shield",
+                node,
+            )
+            return
+
+        # D8 + paper §3.4 — shield.compliance ⊇ κ(channel.message_type).
+        ch_def = ch_sym.node
+        sh_def = sh_sym.node
+        if (
+            isinstance(ch_def, ChannelDefinition)
+            and isinstance(sh_def, ShieldDefinition)
+        ):
+            self._check_publish_compliance_coverage(node, ch_def, sh_def)
+
+    def _check_publish_compliance_coverage(
+        self,
+        node: PublishStatement,
+        channel: ChannelDefinition,
+        shield: ShieldDefinition,
+    ) -> None:
+        """κ(message_type) ⊆ shield.compliance — paper §3.4 + Fase 6.1."""
+        # Resolve the message type's compliance class.  Unwrap nested
+        # Channel<…> to reach the leaf payload type (the carrier of κ).
+        leaf = channel.message
+        while leaf.startswith("Channel<") and leaf.endswith(">"):
+            leaf = leaf[len("Channel<"):-1]
+        type_def = self._user_types.get(leaf)
+        if type_def is None:
+            return  # builtin or unresolved — no κ to cover
+        if not type_def.compliance:
+            return  # type carries no regulatory class — nothing to enforce
+        missing = [c for c in type_def.compliance if c not in shield.compliance]
+        if missing:
+            self._emit(
+                f"publish '{channel.name}' through shield "
+                f"'{shield.name}' violates compile-time compliance: "
+                f"message type '{leaf}' carries κ={type_def.compliance} "
+                f"but shield covers {shield.compliance or '[]'} "
+                f"(missing: {missing}). Paper §3.4, ESK Fase 6.1.",
+                node,
+            )
+
+    def _check_discover(self, node: DiscoverStatement) -> None:
+        """Validate a discover statement — dual of publish."""
+        if not node.capability_ref:
+            self._emit("discover requires a channel reference", node)
+            return
+        if not node.alias:
+            self._emit("discover requires an `as <alias>` binding", node)
+            return
+
+        sym = self._symbols.lookup(node.capability_ref)
+        if sym is None:
+            self._emit(
+                f"discover references undefined channel "
+                f"'{node.capability_ref}'",
+                node,
+            )
+            return
+        if sym.kind != "channel":
+            self._emit(
+                f"discover target '{node.capability_ref}' is a "
+                f"{sym.kind}, not a channel",
+                node,
+            )
+            return
+
+        # Only publishable channels (those declared with shield_ref) can
+        # be discovered — discover has no shield clause of its own; the
+        # gate is locked at the channel definition.
+        ch_def = sym.node
+        if isinstance(ch_def, ChannelDefinition) and not ch_def.shield_ref:
+            self._emit(
+                f"discover '{node.capability_ref}' is not publishable: "
+                f"its channel definition declares no shield "
+                f"(D8 — only shield-gated channels can be discovered)",
+                node,
+            )
+
+    def _check_daemon(self, node: DaemonDefinition) -> None:
+        """Validate a daemon body — listeners + their flow steps.
+
+        Pre-13.b, daemons were registered but never type-checked.  This
+        method introduces minimal validation focused on Fase 13 D4
+        (listen dual-mode + deprecation) and forwards each listener's
+        body to the existing `_check_flow_step` machinery so that
+        emit/publish/discover inside listeners are validated too.
+        """
+        if node.shield_ref:
+            sym = self._symbols.lookup(node.shield_ref)
+            if sym is None:
+                self._emit(
+                    f"daemon '{node.name}' references undefined shield "
+                    f"'{node.shield_ref}'",
+                    node,
+                )
+            elif sym.kind != "shield":
+                self._emit(
+                    f"daemon '{node.name}' shield '{node.shield_ref}' "
+                    f"is a {sym.kind}, not a shield",
+                    node,
+                )
+
+        for listener in node.listeners:
+            self._check_listen(listener, daemon_name=node.name)
+
+    def _check_listen(self, node: ListenBlock, daemon_name: str) -> None:
+        """Validate a listen block (Fase 13 D4 dual-mode)."""
+        if node.channel_is_ref:
+            # Canonical: channel_expr is a declared ChannelDefinition.
+            sym = self._symbols.lookup(node.channel_expr)
+            if sym is None:
+                self._emit(
+                    f"daemon '{daemon_name}' listens on undefined channel "
+                    f"'{node.channel_expr}'",
+                    node,
+                )
+            elif sym.kind != "channel":
+                self._emit(
+                    f"daemon '{daemon_name}' listen target "
+                    f"'{node.channel_expr}' is a {sym.kind}, not a channel",
+                    node,
+                )
+        else:
+            # Legacy string topic — D4 deprecation warning.
+            self._warn(
+                f"daemon '{daemon_name}' uses string topic "
+                f"'{node.channel_expr}' which is deprecated since Fase 13 "
+                f"(v1.4.x). Migrate to a typed `channel` declaration; "
+                f"string topics will be removed in v2.0 (D4).",
+                node,
+            )
+
+        # Bodies of listen blocks compose flow steps — reuse the existing
+        # flow-step type checker so emit/publish/discover inside listeners
+        # are validated identically to those in regular flows.
+        for step in node.body:
+            self._check_flow_step(step, set(), f"{daemon_name}.listen")

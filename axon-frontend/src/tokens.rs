@@ -63,6 +63,8 @@ pub enum TokenType {
     Immune, Reflex, Heal,
     // UI Cognitiva (§λ-L-E Fase 9 — 100% .axon apps)
     Component, View,
+    // Mobile Typed Channels (§λ-L-E Fase 13 — π-calc mobility)
+    Channel, Emit, Publish, Discover,
     // Modifiers
     As, Within, ConstrainedBy, OnFailure, OutputTo, Effort,
     // Contextual
@@ -212,6 +214,11 @@ pub fn keyword_type(word: &str) -> TokenType {
         // UI Cognitiva (§λ-L-E Fase 9)
         "component"        => TokenType::Component,
         "view"             => TokenType::View,
+        // Mobile Typed Channels (§λ-L-E Fase 13)
+        "channel"          => TokenType::Channel,
+        "emit"             => TokenType::Emit,
+        "publish"          => TokenType::Publish,
+        "discover"         => TokenType::Discover,
         "as"               => TokenType::As,
         "within"           => TokenType::Within,
         "constrained_by"   => TokenType::ConstrainedBy,
@@ -282,6 +289,8 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             // §λ-L-E Fase 9 — UI cognitiva
             | TokenType::Component
             | TokenType::View
+            // §λ-L-E Fase 13 — Mobile typed channels
+            | TokenType::Channel
     )
 }
 
@@ -352,5 +361,31 @@ mod tests_lang_extensions {
     fn unknown_words_fall_back_to_identifier() {
         assert_eq!(keyword_type("frobnicate"), TokenType::Identifier);
         assert_eq!(keyword_type("PatientRecord"), TokenType::Identifier);
+    }
+
+    // §λ-L-E Fase 13 — Mobile typed channels.
+
+    #[test]
+    fn fase13_channel_keywords() {
+        check("channel",  TokenType::Channel);
+        check("emit",     TokenType::Emit);
+        check("publish",  TokenType::Publish);
+        check("discover", TokenType::Discover);
+    }
+
+    #[test]
+    fn fase13_channel_is_top_level_decl() {
+        assert!(is_declaration_keyword(&TokenType::Channel),
+            "channel must be a top-level decl");
+    }
+
+    #[test]
+    fn fase13_emit_publish_discover_are_flow_steps_not_decls() {
+        for tt in [TokenType::Emit, TokenType::Publish, TokenType::Discover] {
+            assert!(
+                !is_declaration_keyword(&tt),
+                "{tt:?} is a flow-step reduction, not a top-level decl"
+            );
+        }
     }
 }

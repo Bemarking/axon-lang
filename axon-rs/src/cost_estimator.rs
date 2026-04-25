@@ -146,6 +146,9 @@ fn classify_node(node: &IRFlowNode) -> StepKind {
         IRFlowNode::ShieldApply(_) | IRFlowNode::OtsApply(_)
         | IRFlowNode::MandateApply(_) | IRFlowNode::ComputeApply(_)
         | IRFlowNode::LambdaDataApply(_) | IRFlowNode::Transact(_) => StepKind::Control,
+        // §λ-L-E Fase 13 — Mobile typed channel reductions are π-calc
+        // prefixes, classified as Cognitive alongside Listen/DaemonStep.
+        IRFlowNode::Emit(_) | IRFlowNode::Publish(_) | IRFlowNode::Discover(_) => StepKind::Cognitive,
     }
 }
 

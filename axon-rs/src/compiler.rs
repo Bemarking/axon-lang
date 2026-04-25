@@ -10,7 +10,7 @@ use crate::lexer::{Lexer, LexerError};
 use crate::parser::{ParseError, Parser};
 use crate::type_checker::TypeChecker;
 
-const AXON_VERSION: &str = "0.30.6";
+const AXON_VERSION: &str = "1.4.2";
 
 // ── ANSI helpers ─────────────────────────────────────────────────────────────
 

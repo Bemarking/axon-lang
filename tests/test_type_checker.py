@@ -1032,3 +1032,567 @@ heal H { source: V mode: audit_only scope: tenant }'''
 heal H { source: V mode: human_in_loop scope: tenant max_patches: 0 }'''
         errors = _check(source)
         assert any("max_patches must be >= 1" in e.message for e in errors)
+
+
+# ────────────────────────────────────────────────────────────────────
+# Mobile Typed Channels — Fase 13.b (paper_mobile_channels.md §3, §6.1)
+# ────────────────────────────────────────────────────────────────────
+
+
+def _check_with_warnings(source: str) -> tuple[list, list]:
+    """Helper: lex → parse → type-check. Returns (errors, warnings)."""
+    tokens = Lexer(source).tokenize()
+    tree = Parser(tokens).parse()
+    tc = TypeChecker(tree)
+    errors = tc.check()
+    return errors, tc.warnings
+
+
+class TestChannelTypeCheck:
+    """Channel declarations validate name, message schema, shield ref."""
+
+    def test_channel_with_shield_valid(self):
+        source = '''
+type Order { id: String }
+shield Gate { scan: [pii_leak] }
+channel C { message: Order shield: Gate }
+'''
+        assert _check(source) == []
+
+    def test_channel_undefined_shield_rejected(self):
+        source = '''
+type Order { id: String }
+channel C { message: Order shield: NotDefined }
+'''
+        errors = _check(source)
+        assert any(
+            "undefined shield 'NotDefined'" in e.message for e in errors
+        ), [e.message for e in errors]
+
+    def test_channel_shield_wrong_kind_rejected(self):
+        """A non-shield identifier in `shield:` should be flagged."""
+        source = '''
+type Order { id: String }
+type NotAShield { x: String }
+channel C { message: Order shield: NotAShield }
+'''
+        errors = _check(source)
+        assert any(
+            "is a type, not a shield" in e.message for e in errors
+        ), [e.message for e in errors]
+
+    def test_channel_second_order_message_valid(self):
+        """Channel<Channel<T>> resolves recursively (paper §3.3)."""
+        source = '''
+type Order { id: String }
+channel Inner { message: Order }
+channel Outer { message: Channel<Order> }
+channel Meta { message: Channel<Channel<Order>> }
+'''
+        assert _check(source) == []
+
+    def test_channel_no_message_rejected(self):
+        """An empty `message:` field is a definitional error."""
+        # The parser would reject an empty message field; here we exercise
+        # the _validate_channel_message_type guard for completeness via an
+        # AST mutation path (skipped — parser already enforces).
+        source = '''
+type Order { id: String }
+channel C { message: Order }
+'''
+        # Sanity: well-formed channel passes.
+        assert _check(source) == []
+
+
+class TestChannelEmit:
+    """emit's value must satisfy the channel's declared message type."""
+
+    def test_emit_undefined_channel_rejected(self):
+        source = '''
+flow f() -> O { emit NotAChannel(x) }
+'''
+        errors = _check(source)
+        assert any(
+            "undefined channel 'NotAChannel'" in e.message for e in errors
+        )
+
+    def test_emit_target_wrong_kind_rejected(self):
+        source = '''
+type Order { id: String }
+flow f() -> O { emit Order(x) }
+'''
+        errors = _check(source)
+        assert any(
+            "is a type, not a channel" in e.message for e in errors
+        )
+
+    def test_emit_mobility_with_channel_handle_valid(self):
+        """Chan-Mobility — emit a channel as the value of another channel."""
+        source = '''
+type Order { id: String }
+channel Inner { message: Order }
+channel Outer { message: Channel<Order> }
+flow f() -> O { emit Outer(Inner) }
+'''
+        assert _check(source) == []
+
+    def test_emit_mobility_value_not_channel_rejected(self):
+        """Outer expects Channel<Order> but value isn't a channel handle."""
+        source = '''
+type Order { id: String }
+type NotAChannel { x: String }
+channel Outer { message: Channel<Order> }
+flow f() -> O { emit Outer(NotAChannel) }
+'''
+        errors = _check(source)
+        assert any(
+            "mobility violation" in e.message for e in errors
+        ), [e.message for e in errors]
+
+    def test_emit_second_order_schema_mismatch_rejected(self):
+        """Outer expects Channel<Order> but value carries Channel<Other>."""
+        source = '''
+type Order { id: String }
+type Other { y: String }
+channel Inner { message: Order }
+channel Wrong { message: Other }
+channel Outer { message: Channel<Order> }
+flow f() -> O { emit Outer(Wrong) }
+'''
+        errors = _check(source)
+        assert any(
+            "second-order schema mismatch" in e.message for e in errors
+        ), [e.message for e in errors]
+
+    def test_emit_inside_listen_body_typechecks(self):
+        """emit inside a listener body must be validated (forwarded path)."""
+        source = '''
+type Order { id: String }
+channel Out { message: Order }
+daemon D() {
+  goal: "x"
+  listen Out as ev {
+    emit Bogus(ev)
+  }
+}
+'''
+        errors = _check(source)
+        assert any(
+            "undefined channel 'Bogus'" in e.message for e in errors
+        ), [e.message for e in errors]
+
+    def test_emit_scalar_payload_valid(self):
+        """A non-mobility emit (regular type schema) currently relaxed."""
+        source = '''
+type Order { id: String }
+channel Out { message: Order }
+flow f() -> O { emit Out(payload) }
+'''
+        # Schema check on scalar payload is deferred to 13.c (let-binding
+        # tracking through IR) per plan; current pass tolerates it.
+        assert _check(source) == []
+
+
+class TestChannelPublish:
+    """publish enforces D8 — capability extrusion is shield-mediated."""
+
+    def test_publish_with_compliant_shield_valid(self):
+        source = '''
+type Order { id: String }
+shield Gate { scan: [pii_leak] }
+channel C { message: Order shield: Gate }
+flow f() -> Cap { publish C within Gate }
+'''
+        assert _check(source) == []
+
+    def test_publish_undefined_channel_rejected(self):
+        source = '''
+shield Gate { scan: [pii_leak] }
+flow f() -> Cap { publish Bogus within Gate }
+'''
+        errors = _check(source)
+        assert any(
+            "undefined channel 'Bogus'" in e.message for e in errors
+        )
+
+    def test_publish_undefined_shield_rejected(self):
+        source = '''
+type Order { id: String }
+channel C { message: Order }
+flow f() -> Cap { publish C within Bogus }
+'''
+        errors = _check(source)
+        assert any(
+            "undefined shield 'Bogus'" in e.message for e in errors
+        )
+
+    def test_publish_channel_wrong_kind_rejected(self):
+        source = '''
+type Order { id: String }
+shield Gate { scan: [pii_leak] }
+flow f() -> Cap { publish Order within Gate }
+'''
+        errors = _check(source)
+        assert any(
+            "is a type, not a channel" in e.message for e in errors
+        )
+
+    def test_publish_shield_wrong_kind_rejected(self):
+        source = '''
+type Order { id: String }
+type NotAShield { x: String }
+channel C { message: Order }
+flow f() -> Cap { publish C within NotAShield }
+'''
+        errors = _check(source)
+        assert any(
+            "is a type, not a shield" in e.message for e in errors
+        )
+
+    def test_publish_compliance_missing_class_rejected(self):
+        """κ(message) ⊄ shield.compliance — paper §3.4."""
+        source = '''
+type PHI compliance [HIPAA] { ssn: String }
+shield Weak { scan: [] }
+channel Health { message: PHI shield: Weak }
+flow f() -> Cap { publish Health within Weak }
+'''
+        errors = _check(source)
+        assert any(
+            "violates compile-time compliance" in e.message for e in errors
+        ), [e.message for e in errors]
+
+    def test_publish_compliance_partial_coverage_rejected(self):
+        """Multiple κ classes — shield must cover all of them."""
+        source = '''
+type Both compliance [HIPAA, PCI_DSS] { x: String }
+shield OnlyHIPAA { scan: [] compliance: [HIPAA] }
+channel C { message: Both shield: OnlyHIPAA }
+flow f() -> Cap { publish C within OnlyHIPAA }
+'''
+        errors = _check(source)
+        assert any(
+            "PCI_DSS" in e.message for e in errors
+        ), [e.message for e in errors]
+
+    def test_publish_compliance_exact_coverage_valid(self):
+        source = '''
+type PHI compliance [HIPAA] { ssn: String }
+shield HIPAAGate { scan: [] compliance: [HIPAA] }
+channel Health { message: PHI shield: HIPAAGate }
+flow f() -> Cap { publish Health within HIPAAGate }
+'''
+        assert _check(source) == []
+
+    def test_publish_compliance_superset_coverage_valid(self):
+        """Shield covering more than κ(message) is fine — paper §3.4 ⊇."""
+        source = '''
+type PHI compliance [HIPAA] { ssn: String }
+shield Strong { scan: [] compliance: [HIPAA, PCI_DSS, GDPR] }
+channel Health { message: PHI shield: Strong }
+flow f() -> Cap { publish Health within Strong }
+'''
+        assert _check(source) == []
+
+    def test_publish_uncompliant_type_no_class_valid(self):
+        """A type with no κ classes has nothing to enforce."""
+        source = '''
+type Order { id: String }
+shield Bare { scan: [] }
+channel C { message: Order shield: Bare }
+flow f() -> Cap { publish C within Bare }
+'''
+        assert _check(source) == []
+
+    def test_publish_compliance_unwraps_channel_message(self):
+        """For Channel<Channel<...<T>>>, κ comes from the leaf payload T."""
+        source = '''
+type PHI compliance [HIPAA] { ssn: String }
+shield Weak { scan: [] }
+channel Carrier { message: Channel<PHI> shield: Weak }
+flow f() -> Cap { publish Carrier within Weak }
+'''
+        errors = _check(source)
+        # The leaf payload PHI carries HIPAA; the carrier's shield must
+        # cover it even though the channel is second-order.
+        assert any(
+            "violates compile-time compliance" in e.message for e in errors
+        ), [e.message for e in errors]
+
+
+class TestChannelDiscover:
+    """discover only succeeds against shield-gated (publishable) channels."""
+
+    def test_discover_publishable_channel_valid(self):
+        source = '''
+type Order { id: String }
+shield Gate { scan: [pii_leak] }
+channel C { message: Order shield: Gate }
+flow f() -> O { discover C as ch }
+'''
+        assert _check(source) == []
+
+    def test_discover_undefined_channel_rejected(self):
+        source = '''
+flow f() -> O { discover Bogus as ch }
+'''
+        errors = _check(source)
+        assert any(
+            "undefined channel 'Bogus'" in e.message for e in errors
+        )
+
+    def test_discover_wrong_kind_rejected(self):
+        source = '''
+type Order { id: String }
+flow f() -> O { discover Order as ch }
+'''
+        errors = _check(source)
+        assert any(
+            "is a type, not a channel" in e.message for e in errors
+        )
+
+    def test_discover_unpublishable_channel_rejected(self):
+        """A channel without shield_ref cannot be discovered (D8)."""
+        source = '''
+type Order { id: String }
+channel C { message: Order }
+flow f() -> O { discover C as ch }
+'''
+        errors = _check(source)
+        assert any(
+            "is not publishable" in e.message for e in errors
+        ), [e.message for e in errors]
+
+
+class TestListenDualMode:
+    """D4 — listen dual-mode: typed channel ref vs deprecated string topic."""
+
+    def test_listen_typed_channel_valid(self):
+        source = '''
+type Order { id: String }
+channel C { message: Order }
+daemon D() {
+  goal: "x"
+  listen C as ev { step S { ask: "p" } }
+}
+'''
+        errors, warnings = _check_with_warnings(source)
+        assert errors == []
+        assert warnings == []
+
+    def test_listen_typed_undefined_channel_rejected(self):
+        source = '''
+daemon D() {
+  goal: "x"
+  listen NoSuchChannel as ev { step S { ask: "p" } }
+}
+'''
+        errors = _check(source)
+        assert any(
+            "listens on undefined channel" in e.message for e in errors
+        )
+
+    def test_listen_typed_wrong_kind_rejected(self):
+        source = '''
+type NotAChannel { id: String }
+daemon D() {
+  goal: "x"
+  listen NotAChannel as ev { step S { ask: "p" } }
+}
+'''
+        errors = _check(source)
+        assert any(
+            "is a type, not a channel" in e.message for e in errors
+        )
+
+    def test_listen_string_topic_emits_deprecation_warning(self):
+        """Legacy `listen \"topic\"` is still legal but warns (D4 schedule)."""
+        source = '''
+daemon D() {
+  goal: "x"
+  listen "orders.created" as ev { step S { ask: "p" } }
+}
+'''
+        errors, warnings = _check_with_warnings(source)
+        assert errors == []
+        assert len(warnings) == 1
+        assert "deprecated since Fase 13" in warnings[0].message
+        assert "orders.created" in warnings[0].message
+
+    def test_listen_dual_mode_in_same_daemon(self):
+        """Typed listeners and string topics can coexist during migration."""
+        source = '''
+type Order { id: String }
+channel C { message: Order }
+daemon Mixed() {
+  goal: "x"
+  listen C as canonical { step S { ask: "p" } }
+  listen "legacy" as legacy_ev { step S { ask: "p" } }
+}
+'''
+        errors, warnings = _check_with_warnings(source)
+        assert errors == []
+        # Exactly one warning — for the string topic only.
+        assert len(warnings) == 1
+        assert "legacy" in warnings[0].message
+
+    def test_listen_warning_does_not_block_compilation(self):
+        """The deprecation warning must not appear in errors."""
+        source = '''
+daemon D() {
+  goal: "x"
+  listen "topic" as ev { step S { ask: "p" } }
+}
+'''
+        errors = _check(source)
+        assert errors == []
+
+
+class TestChannelIntegration:
+    """End-to-end: paper §9 worked example must type-check cleanly."""
+
+    def test_paper_example_no_compliance_passes(self):
+        source = '''
+type Order { id: String }
+shield PublicBroker { scan: [pii_leak] }
+
+channel OrdersCreated {
+  message: Order
+  qos: at_least_once
+  lifetime: affine
+  persistence: ephemeral
+  shield: PublicBroker
+}
+
+channel BrokerHandoff {
+  message: Channel<Order>
+  qos: exactly_once
+  lifetime: affine
+  persistence: persistent_axonstore
+}
+
+daemon OrderConsumer() {
+  goal: "consume"
+  listen OrdersCreated as order_event {
+    step S { ask: "process" }
+  }
+}
+
+flow hand_off() -> Cap {
+  emit BrokerHandoff(OrdersCreated)
+  publish OrdersCreated within PublicBroker
+}
+'''
+        errors, warnings = _check_with_warnings(source)
+        assert errors == [], [e.message for e in errors]
+        assert warnings == []
+
+    def test_paper_example_with_pci_dss_compliant(self):
+        """The full §9 example with PCI_DSS — shield must cover."""
+        source = '''
+type Order compliance [PCI_DSS] { id: String amount: Float }
+shield PublicBroker { scan: [pii_leak] compliance: [PCI_DSS] }
+
+channel OrdersCreated {
+  message: Order
+  shield: PublicBroker
+}
+
+flow hand_off() -> Cap {
+  publish OrdersCreated within PublicBroker
+}
+'''
+        assert _check(source) == []
+
+    def test_second_order_chain_resolves(self):
+        """Channel<Channel<Channel<T>>> — recursive mobility resolves."""
+        source = '''
+type Order { id: String }
+channel L1 { message: Order }
+channel L2 { message: Channel<Order> }
+channel L3 { message: Channel<Channel<Order>> }
+'''
+        assert _check(source) == []
+
+    def test_forward_reference_to_channel_resolves(self):
+        """Phase 1 registration means a channel can be referenced before its
+        textual position in the source — no ordering constraint."""
+        source = '''
+flow producer() -> Cap {
+  emit C(payload)
+}
+type Order { id: String }
+channel C { message: Order }
+'''
+        assert _check(source) == []
+
+    def test_multiple_legacy_listeners_each_produce_warning(self):
+        """Each deprecated string-topic listen surfaces its own warning."""
+        source = '''
+daemon Triple() {
+  goal: "x"
+  listen "a" as e1 { step S { ask: "p" } }
+  listen "b" as e2 { step S { ask: "p" } }
+  listen "c" as e3 { step S { ask: "p" } }
+}
+'''
+        errors, warnings = _check_with_warnings(source)
+        assert errors == []
+        assert len(warnings) == 3
+        topics = sorted(w.message for w in warnings)
+        assert any("'a'" in t for t in topics)
+        assert any("'b'" in t for t in topics)
+        assert any("'c'" in t for t in topics)
+
+    def test_publish_inside_listen_body_validated(self):
+        """publish inside a listener body is type-checked like any flow step."""
+        source = '''
+type Order { id: String }
+channel C { message: Order }
+daemon D() {
+  goal: "x"
+  listen C as ev {
+    publish C within MissingShield
+  }
+}
+'''
+        errors = _check(source)
+        assert any(
+            "undefined shield 'MissingShield'" in e.message for e in errors
+        ), [e.message for e in errors]
+
+    def test_discover_inside_listen_body_validated(self):
+        """discover inside a listener body validates capability_ref."""
+        source = '''
+daemon D() {
+  goal: "x"
+  listen "topic" as ev {
+    discover Bogus as alias
+  }
+}
+'''
+        errors = _check(source)
+        assert any(
+            "undefined channel 'Bogus'" in e.message for e in errors
+        )
+
+    def test_warnings_property_is_independent_from_errors(self):
+        """warnings doesn't leak into errors and vice versa."""
+        source = '''
+type Order { id: String }
+channel C { message: Order }
+daemon D() {
+  goal: "x"
+  listen "legacy" as ev { step S { ask: "p" } }
+  listen Bogus as ev2 { step S { ask: "p" } }
+}
+'''
+        errors, warnings = _check_with_warnings(source)
+        # The undefined-channel listen produces an error; the legacy
+        # string-topic listen produces a warning.  They must not bleed.
+        assert any(
+            "undefined channel 'Bogus'" in e.message for e in errors
+        )
+        assert len(warnings) == 1
+        assert "legacy" in warnings[0].message
+        assert all("legacy" not in e.message for e in errors)

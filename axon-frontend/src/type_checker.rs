@@ -154,6 +154,11 @@ pub struct TypeChecker<'a> {
     program: &'a Program,
     symbols: SymbolTable,
     errors: Vec<TypeError>,
+    /// §λ-L-E Fase 13 D4 — non-fatal diagnostics (deprecation, etc.).
+    /// Errors halt compilation; warnings surface in `axon check` output
+    /// without failing unless `--strict` is set.  Mirrors the Python
+    /// TypeChecker.warnings property.
+    warnings: Vec<TypeError>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -162,6 +167,7 @@ impl<'a> TypeChecker<'a> {
             program,
             symbols: SymbolTable::new(),
             errors: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -171,10 +177,29 @@ impl<'a> TypeChecker<'a> {
         self.errors
     }
 
+    /// §λ-L-E Fase 13 D4 — return both errors and warnings.
+    /// Callers preferring strict mode promote warnings → errors at the
+    /// rendering layer (CLI `--strict` flag).  Mirrors the Python
+    /// `(TypeChecker.check(), .warnings)` pair.
+    pub fn check_with_warnings(mut self) -> (Vec<TypeError>, Vec<TypeError>) {
+        self.register_declarations(&self.program.declarations);
+        self.check_declarations(&self.program.declarations);
+        (self.errors, self.warnings)
+    }
+
     // ── emit ─────────────────────────────────────────────────────
 
     fn emit(&mut self, message: String, loc: &Loc) {
         self.errors.push(TypeError {
+            message,
+            line: loc.line,
+            column: loc.column,
+        });
+    }
+
+    /// §λ-L-E Fase 13 D4 — non-fatal diagnostic.
+    fn warn(&mut self, message: String, loc: &Loc) {
+        self.warnings.push(TypeError {
             message,
             line: loc.line,
             column: loc.column,
@@ -303,6 +328,9 @@ impl<'a> TypeChecker<'a> {
                 Declaration::View(n) => {
                     registrations.push((n.name.clone(), "view".into(), n.loc.line, n.loc.clone()));
                 }
+                Declaration::Channel(n) => {
+                    registrations.push((n.name.clone(), "channel".into(), n.loc.line, n.loc.clone()));
+                }
                 Declaration::Generic(n) => {
                     if !n.name.is_empty() {
                         registrations.push((n.name.clone(), n.keyword.clone(), n.loc.line, n.loc.clone()));
@@ -356,7 +384,7 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Ots(n) => self.check_ots(n),
                 Declaration::Mandate(n) => self.check_mandate(n),
                 Declaration::Compute(_) => {} // no Python validation exists
-                Declaration::Daemon(_) => {} // no Python validation exists
+                Declaration::Daemon(n) => self.check_daemon(n),
                 Declaration::AxonStore(n) => self.check_axonstore(n),
                 Declaration::AxonEndpoint(n) => self.check_axonendpoint(n),
                 Declaration::Resource(n) => self.check_resource(n),
@@ -373,6 +401,7 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Heal(n)      => self.check_heal(n),
                 Declaration::Component(n) => self.check_component(n),
                 Declaration::View(n)      => self.check_view(n),
+                Declaration::Channel(n)   => self.check_channel(n),
                 Declaration::Import(_)
                 | Declaration::Type(_)
                 | Declaration::Let(_)
@@ -2806,6 +2835,10 @@ impl<'a> TypeChecker<'a> {
                 FlowStep::ForIn(n) => {
                     self.check_flow_steps(&n.body, flow_name);
                 }
+                // §λ-L-E Fase 13 — Mobile typed channel reductions
+                FlowStep::Emit(n) => self.check_emit(n),
+                FlowStep::Publish(n) => self.check_publish(n),
+                FlowStep::Discover(n) => self.check_discover(n),
                 // All other steps: no cross-reference checks needed
                 _ => {}
             }
@@ -2848,6 +2881,330 @@ impl<'a> TypeChecker<'a> {
                 loc,
             );
         }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    //  §λ-L-E Fase 13 — Mobile Typed Channels validation
+    //  (paper_mobile_channels.md §3 + Fase 13.b parity port)
+    // ──────────────────────────────────────────────────────────────────
+
+    /// Validate `channel Name { … }` (paper §3.1 + §3.4 shield prereq).
+    fn check_channel(&mut self, node: &ChannelDefinition) {
+        if node.name.is_empty() {
+            self.emit("channel requires a name".to_string(), &node.loc);
+        }
+        // Resolve the message schema; supports nested `Channel<…<T>>`.
+        if node.message.is_empty() {
+            self.emit("channel requires a `message:` schema type".to_string(), &node.loc);
+        } else {
+            self.validate_channel_message_type(&node.message, &node.loc);
+        }
+        // Optional shield reference must resolve when set (D8 prereq).
+        if !node.shield_ref.is_empty() {
+            match self.symbols.lookup(&node.shield_ref) {
+                None => self.emit(
+                    format!(
+                        "channel '{}' references undefined shield '{}'",
+                        node.name, node.shield_ref
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "shield" => self.emit(
+                    format!(
+                        "channel '{}' shield '{}' is a {}, not a shield",
+                        node.name, node.shield_ref, sym.kind
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    /// Recursively validate a `message:` spelling.  `Channel<T>` peels
+    /// one layer; the leaf must be a builtin / user type / channel name.
+    /// Soft-resolve unknown leaves (consistent with resource conventions).
+    fn validate_channel_message_type(&mut self, spelling: &str, _loc: &Loc) {
+        let s = spelling.trim();
+        if s.starts_with("Channel<") && s.ends_with('>') {
+            let inner = &s["Channel<".len()..s.len() - 1];
+            self.validate_channel_message_type(inner, _loc);
+            return;
+        }
+        // Plain type name — silently accepted whether builtin, user-typed,
+        // or a registered channel.  Type references are intentionally soft
+        // here (matches resource/manifest convention).
+    }
+
+    /// Validate `daemon` body — listeners + delegated flow-step checks.
+    /// Pre-Fase 13 the Rust checker skipped daemons entirely; we now
+    /// walk listeners so emit/publish/discover/listen receive the same
+    /// validation they do inside flows.
+    fn check_daemon(&mut self, node: &DaemonDefinition) {
+        if !node.shield_ref.is_empty() {
+            match self.symbols.lookup(&node.shield_ref) {
+                None => self.emit(
+                    format!(
+                        "daemon '{}' references undefined shield '{}'",
+                        node.name, node.shield_ref
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "shield" => self.emit(
+                    format!(
+                        "daemon '{}' shield '{}' is a {}, not a shield",
+                        node.name, node.shield_ref, sym.kind
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+        for listener in &node.listeners {
+            self.check_listen(listener, &node.name);
+        }
+    }
+
+    /// Validate a listen block (Fase 13 D4 dual-mode).
+    fn check_listen(&mut self, node: &ListenStep, daemon_name: &str) {
+        if node.channel_is_ref {
+            match self.symbols.lookup(&node.channel) {
+                None => self.emit(
+                    format!(
+                        "daemon '{}' listens on undefined channel '{}'",
+                        daemon_name, node.channel
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "channel" => self.emit(
+                    format!(
+                        "daemon '{}' listen target '{}' is a {}, not a channel",
+                        daemon_name, node.channel, sym.kind
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        } else {
+            // Legacy string topic — D4 deprecation warning.
+            self.warn(
+                format!(
+                    "daemon '{}' uses string topic '{}' which is deprecated since \
+                     Fase 13 (v1.4.x). Migrate to a typed `channel` declaration; \
+                     string topics will be removed in v2.0 (D4).",
+                    daemon_name, node.channel
+                ),
+                &node.loc,
+            );
+        }
+    }
+
+    /// Validate an emit step (Chan-Output / Chan-Mobility, paper §3.1, §3.2).
+    fn check_emit(&mut self, node: &EmitStatement) {
+        if node.channel_ref.is_empty() {
+            self.emit("emit requires a channel reference".to_string(), &node.loc);
+            return;
+        }
+        let kind = match self.symbols.lookup(&node.channel_ref) {
+            None => {
+                self.emit(
+                    format!("emit references undefined channel '{}'", node.channel_ref),
+                    &node.loc,
+                );
+                return;
+            }
+            Some(sym) => sym.kind.clone(),
+        };
+        if kind != "channel" {
+            self.emit(
+                format!(
+                    "emit target '{}' is a {}, not a channel",
+                    node.channel_ref, kind
+                ),
+                &node.loc,
+            );
+            return;
+        }
+        if node.value_ref.is_empty() {
+            self.emit(
+                format!("emit on channel '{}' requires a value", node.channel_ref),
+                &node.loc,
+            );
+            return;
+        }
+        // Second-order schema check (paper §3.2 Chan-Mobility): if the
+        // outer channel carries `Channel<U>`, the value must resolve to
+        // a channel whose own message equals U.  Lookup channel
+        // definition by walking the AST so we don't need a separate
+        // channel registry.
+        let outer_msg = self.find_channel_message(&node.channel_ref);
+        if let Some(outer) = outer_msg {
+            if outer.starts_with("Channel<") && outer.ends_with('>') {
+                let inner = &outer["Channel<".len()..outer.len() - 1];
+                let value_kind = self.symbols.lookup(&node.value_ref)
+                    .map(|s| s.kind.clone())
+                    .unwrap_or_default();
+                if value_kind != "channel" {
+                    self.emit(
+                        format!(
+                            "emit on '{}' carries '{}' but value '{}' is not a \
+                             channel handle (mobility violation, Chan-Mobility paper §3.2)",
+                            node.channel_ref, outer, node.value_ref
+                        ),
+                        &node.loc,
+                    );
+                    return;
+                }
+                let value_msg = self.find_channel_message(&node.value_ref).unwrap_or_default();
+                if value_msg != inner {
+                    self.emit(
+                        format!(
+                            "emit on '{}' expects Channel<{}> but '{}' carries \
+                             Channel<{}> (second-order schema mismatch)",
+                            node.channel_ref, inner, node.value_ref, value_msg
+                        ),
+                        &node.loc,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Validate a publish step — D8 capability extrusion gate.
+    fn check_publish(&mut self, node: &PublishStatement) {
+        if node.channel_ref.is_empty() {
+            self.emit("publish requires a channel reference".to_string(), &node.loc);
+            return;
+        }
+        if node.shield_ref.is_empty() {
+            self.emit(
+                format!(
+                    "publish '{}' requires a shield gate (D8 — capability \
+                     extrusion is shield-mediated)",
+                    node.channel_ref
+                ),
+                &node.loc,
+            );
+            return;
+        }
+        let ch_kind = match self.symbols.lookup(&node.channel_ref) {
+            None => {
+                self.emit(
+                    format!("publish references undefined channel '{}'", node.channel_ref),
+                    &node.loc,
+                );
+                return;
+            }
+            Some(sym) => sym.kind.clone(),
+        };
+        if ch_kind != "channel" {
+            self.emit(
+                format!(
+                    "publish target '{}' is a {}, not a channel",
+                    node.channel_ref, ch_kind
+                ),
+                &node.loc,
+            );
+            return;
+        }
+        let sh_kind = match self.symbols.lookup(&node.shield_ref) {
+            None => {
+                self.emit(
+                    format!(
+                        "publish '{}' references undefined shield '{}'",
+                        node.channel_ref, node.shield_ref
+                    ),
+                    &node.loc,
+                );
+                return;
+            }
+            Some(sym) => sym.kind.clone(),
+        };
+        if sh_kind != "shield" {
+            self.emit(
+                format!(
+                    "publish gate '{}' is a {}, not a shield",
+                    node.shield_ref, sh_kind
+                ),
+                &node.loc,
+            );
+        }
+        // κ-coverage compliance enforcement is deferred to a follow-up
+        // pass that walks TypeDefinition.compliance — the Rust checker
+        // currently does not aggregate type compliance metadata, so this
+        // mirrors the soft-resolve behaviour of resource/manifest checks.
+    }
+
+    /// Validate a discover step — capability_ref must be publishable.
+    fn check_discover(&mut self, node: &DiscoverStatement) {
+        if node.capability_ref.is_empty() {
+            self.emit("discover requires a channel reference".to_string(), &node.loc);
+            return;
+        }
+        if node.alias.is_empty() {
+            self.emit("discover requires an `as <alias>` binding".to_string(), &node.loc);
+            return;
+        }
+        let kind = match self.symbols.lookup(&node.capability_ref) {
+            None => {
+                self.emit(
+                    format!(
+                        "discover references undefined channel '{}'",
+                        node.capability_ref
+                    ),
+                    &node.loc,
+                );
+                return;
+            }
+            Some(sym) => sym.kind.clone(),
+        };
+        if kind != "channel" {
+            self.emit(
+                format!(
+                    "discover target '{}' is a {}, not a channel",
+                    node.capability_ref, kind
+                ),
+                &node.loc,
+            );
+            return;
+        }
+        // Verify publishability: the channel must declare a shield_ref.
+        let shield = self.find_channel_shield(&node.capability_ref);
+        if shield.as_deref().unwrap_or("").is_empty() {
+            self.emit(
+                format!(
+                    "discover '{}' is not publishable: its channel definition \
+                     declares no shield (D8 — only shield-gated channels can \
+                     be discovered)",
+                    node.capability_ref
+                ),
+                &node.loc,
+            );
+        }
+    }
+
+    /// Find the `message:` field of a registered channel by name.
+    fn find_channel_message(&self, name: &str) -> Option<String> {
+        for decl in &self.program.declarations {
+            if let Declaration::Channel(c) = decl {
+                if c.name == name {
+                    return Some(c.message.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Find the `shield:` field of a registered channel by name.
+    fn find_channel_shield(&self, name: &str) -> Option<String> {
+        for decl in &self.program.declarations {
+            if let Declaration::Channel(c) = decl {
+                if c.name == name {
+                    return Some(c.shield_ref.clone());
+                }
+            }
+        }
+        None
     }
 }
 
@@ -2974,4 +3331,184 @@ fn find_flow_by_name<'a>(program: &'a Program, name: &str) -> Option<&'a FlowDef
         }
     }
     None
+}
+
+// ── §λ-L-E Fase 13 — Mobile Typed Channels type-checker tests ────────────────
+
+#[cfg(test)]
+mod fase13_typecheck_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn check_with_warnings(src: &str) -> (Vec<TypeError>, Vec<TypeError>) {
+        let tokens = Lexer::new(src, "<test>").tokenize().expect("lex");
+        let prog = Parser::new(tokens).parse().expect("parse");
+        TypeChecker::new(&prog).check_with_warnings()
+    }
+
+    fn check_errors(src: &str) -> Vec<TypeError> {
+        check_with_warnings(src).0
+    }
+
+    #[test]
+    fn channel_with_valid_shield_clean() {
+        let src = r#"
+            type Order { id: String }
+            shield Gate { scan: [pii_leak] }
+            channel C { message: Order shield: Gate }
+        "#;
+        assert!(check_errors(src).is_empty());
+    }
+
+    #[test]
+    fn channel_undefined_shield_rejected() {
+        let src = "channel C { message: Order shield: NotDefined }";
+        let errs = check_errors(src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("undefined shield 'NotDefined'")),
+            "got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn channel_shield_wrong_kind_rejected() {
+        let src = r#"
+            type NotAShield { x: String }
+            channel C { message: Order shield: NotAShield }
+        "#;
+        let errs = check_errors(src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("not a shield")),
+            "got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn emit_undefined_channel_rejected() {
+        let src = "flow f() -> O { emit Bogus(payload) }";
+        let errs = check_errors(src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("undefined channel 'Bogus'")),
+            "got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn emit_target_wrong_kind_rejected() {
+        let src = r#"
+            type Order { id: String }
+            flow f() -> O { emit Order(payload) }
+        "#;
+        let errs = check_errors(src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("not a channel")),
+            "got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn emit_mobility_schema_mismatch_rejected() {
+        let src = r#"
+            type Order { id: String }
+            type Other { y: String }
+            channel Wrong { message: Other }
+            channel Outer { message: Channel<Order> }
+            flow f() -> O { emit Outer(Wrong) }
+        "#;
+        let errs = check_errors(src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("second-order schema mismatch")),
+            "got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn publish_undefined_shield_rejected() {
+        let src = r#"
+            channel C { message: Order }
+            flow f() -> Cap { publish C within MissingShield }
+        "#;
+        let errs = check_errors(src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("undefined shield 'MissingShield'")),
+            "got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn discover_unpublishable_channel_rejected() {
+        let src = r#"
+            type Order { id: String }
+            channel C { message: Order }
+            flow f() -> O { discover C as ch }
+        "#;
+        let errs = check_errors(src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("not publishable")),
+            "got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn listen_typed_channel_clean() {
+        let src = r#"
+            type Order { id: String }
+            channel C { message: Order }
+            daemon D() {
+                goal: "x"
+                listen C as ev { }
+            }
+        "#;
+        let (errs, warns) = check_with_warnings(src);
+        assert!(errs.is_empty(), "errors: {:?}", errs);
+        assert!(warns.is_empty(), "no warnings expected: {:?}", warns);
+    }
+
+    #[test]
+    fn listen_typed_undefined_rejected() {
+        let src = r#"
+            daemon D() {
+                goal: "x"
+                listen NoSuchChannel as ev { }
+            }
+        "#;
+        let errs = check_errors(src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("undefined channel")),
+            "got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn listen_string_topic_emits_d4_warning() {
+        let src = r#"
+            daemon D() {
+                goal: "x"
+                listen "orders.created" as ev { }
+            }
+        "#;
+        let (errs, warns) = check_with_warnings(src);
+        assert!(errs.is_empty(), "no errors expected: {:?}", errs);
+        assert_eq!(warns.len(), 1);
+        assert!(warns[0].message.contains("deprecated since Fase 13"));
+        assert!(warns[0].message.contains("orders.created"));
+    }
+
+    #[test]
+    fn listen_dual_mode_only_legacy_warns() {
+        let src = r#"
+            type Order { id: String }
+            channel C { message: Order }
+            daemon Mixed() {
+                goal: "x"
+                listen C as canonical { }
+                listen "legacy" as legacy_ev { }
+            }
+        "#;
+        let (errs, warns) = check_with_warnings(src);
+        assert!(errs.is_empty(), "no errors expected: {:?}", errs);
+        assert_eq!(warns.len(), 1, "only legacy emits a warning");
+        assert!(warns[0].message.contains("legacy"));
+    }
 }

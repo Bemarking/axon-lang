@@ -19,30 +19,33 @@ use crate::type_checker::TypeChecker;
 // ── ANSI color helpers ────────────────────────────────────────────────────────
 
 struct Colors {
-    green_bold: &'static str,
-    red_bold:   &'static str,
-    bold:       &'static str,
-    dim:        &'static str,
-    reset:      &'static str,
+    green_bold:  &'static str,
+    red_bold:    &'static str,
+    yellow_bold: &'static str,
+    bold:        &'static str,
+    dim:         &'static str,
+    reset:       &'static str,
 }
 
 impl Colors {
     fn new(enabled: bool) -> Self {
         if enabled {
             Colors {
-                green_bold: "\x1b[1;32m",
-                red_bold:   "\x1b[1;31m",
-                bold:       "\x1b[1m",
-                dim:        "\x1b[2m",
-                reset:      "\x1b[0m",
+                green_bold:  "\x1b[1;32m",
+                red_bold:    "\x1b[1;31m",
+                yellow_bold: "\x1b[1;33m",
+                bold:        "\x1b[1m",
+                dim:         "\x1b[2m",
+                reset:       "\x1b[0m",
             }
         } else {
             Colors {
-                green_bold: "",
-                red_bold:   "",
-                bold:       "",
-                dim:        "",
-                reset:      "",
+                green_bold:  "",
+                red_bold:    "",
+                yellow_bold: "",
+                bold:        "",
+                dim:         "",
+                reset:       "",
             }
         }
     }
@@ -64,7 +67,10 @@ fn count_declarations(decls: &[Declaration]) -> usize {
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Run `axon check` natively. Returns an exit code (0 / 1 / 2).
-pub fn run_check(file: &str, no_color: bool) -> i32 {
+///
+/// `strict = true` (Fase 13.e D4) promotes warnings (e.g. legacy
+/// string-topic listeners) to errors so the check exits non-zero.
+pub fn run_check(file: &str, no_color: bool, strict: bool) -> i32 {
     let use_color = !no_color && io::stdout().is_terminal();
     let c = Colors::new(use_color);
 
@@ -127,19 +133,55 @@ pub fn run_check(file: &str, no_color: bool) -> i32 {
     let declaration_count = count_declarations(&program.declarations);
 
     // ── 6. Type check ────────────────────────────────────────────
-    let type_errors = TypeChecker::new(&program).check();
+    let (type_errors, type_warnings) = TypeChecker::new(&program).check_with_warnings();
+
     if !type_errors.is_empty() {
         eprintln!(
-            "{}X {filename}{}  {} type error(s)",
-            c.red_bold, c.reset, type_errors.len()
+            "{}X {filename}{}  {} error(s){}",
+            c.red_bold, c.reset, type_errors.len(),
+            if type_warnings.is_empty() {
+                String::new()
+            } else {
+                format!(", {} warning(s)", type_warnings.len())
+            }
         );
         for te in &type_errors {
             eprintln!("  error [line {}]: {}", te.line, te.message);
         }
+        for tw in &type_warnings {
+            eprintln!("  warning [line {}]: {}", tw.line, tw.message);
+        }
         return 1;
     }
 
-    // ── 7. Report success ────────────────────────────────────────
+    // ── 6.b §Fase 13.e — strict mode promotes warnings to errors ─
+    if strict && !type_warnings.is_empty() {
+        eprintln!(
+            "{}X {filename}{}  0 errors, {} warning(s) {}(--strict){}",
+            c.red_bold, c.reset, type_warnings.len(),
+            c.red_bold, c.reset,
+        );
+        for tw in &type_warnings {
+            eprintln!("  error [line {}]: {}", tw.line, tw.message);
+        }
+        return 1;
+    }
+
+    // ── 7. Report (warnings present but non-strict — pass with hint) ─
+    if !type_warnings.is_empty() {
+        println!(
+            "{}\u{26A0}{} {}{filename}{}  {}{token_count} tokens \u{00B7} {declaration_count} declarations \u{00B7} 0 errors \u{00B7} {} warning(s){}",
+            c.yellow_bold, c.reset,
+            c.bold, c.reset,
+            c.dim, type_warnings.len(), c.reset,
+        );
+        for tw in &type_warnings {
+            println!("  warning [line {}]: {}", tw.line, tw.message);
+        }
+        return 0;
+    }
+
+    // ── 7.b. Fully clean ────────────────────────────────────────
     println!(
         "{}\u{2713}{} {}{filename}{}  {}{token_count} tokens \u{00B7} {declaration_count} declarations \u{00B7} 0 errors{}",
         c.green_bold, c.reset,

@@ -1,9 +1,9 @@
 [package]
 name = "axon"
-version = "1.4.1"
+version = "1.4.2"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
 edition = "2021"
-description = "AXON v1.4.1 — Neuro-Symbolic Micro-OS. Native Rust runtime with byte-identical parity vs Python reference. Fase 11 ships Temporal Algebraic Effects + Trust Types, Zero-Copy Multimodal Buffers, Deterministic Replay + Legal-Basis Typed Effects, Stateful PEM over WebSocket, OTS Binary Pipeline Synthesis. Fase 12.a extracts the compiler frontend as standalone `axon-frontend` crate consumable by external tooling (LSPs, analyzers) without runtime deps."
+description = "AXON v1.4.2 — Mobile Typed Channels. Adds first-class typed channels with π-calculus mobility (paper_mobile_channels.md): channel/emit/publish/discover surface + second-order session types + capability extrusion via shield-mediated publish (D8). Native Rust runtime with byte-identical parity vs Python reference. Builds on v1.4.1 axon-frontend extraction; Fase 12.c contract maintained (zero runtime deps in axon-frontend)."
 
 [dependencies]
 # §Fase 12.a — compiler frontend (lexer/parser/AST/type_checker/IR/checker +
