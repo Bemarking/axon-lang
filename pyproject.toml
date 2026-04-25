@@ -10,8 +10,8 @@ axon-enterprise = "axon_enterprise.cli:entrypoint"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-enterprise"
-version = "1.2.1"
-description = "Axon Enterprise Edition — RBAC, SSO, Audit Logging, Usage Metering, Compliance Tooling (Fase 10); Replay Tokens + Cognitive-State Persistence (Fase 11); Primitives discovery endpoint (v1.2.1)"
+version = "1.2.2"
+description = "Axon Enterprise Edition — RBAC, SSO, Audit Logging, Usage Metering, Compliance Tooling (Fase 10); Replay Tokens + Cognitive-State Persistence (Fase 11); Primitives discovery endpoint (v1.2.1); v1.2.2 aligns with axon-lang v1.4.2 Mobile Typed Channels — π-calc mobility, capability extrusion via shield (D8), second-order session types Honda-Yoshida."
 readme = "README.md"
 license = "LicenseRef-Proprietary"
 requires-python = ">=3.12"
@@ -45,11 +45,12 @@ classifiers = [
 # ──────────────────────────────────────────────────────────────────
 dependencies = [
     # Core (from axon-lang)
-    # v1.4.0 required for Fase 11 primitives (Trust catalogue +
-    # BackpressurePolicy + LegalBasis + OTS backends + seeded
-    # BufferKind registry) surfaced by the v1.2.1 /primitives
-    # endpoint. Earlier axon-lang releases lack those modules.
-    "axon-lang>=1.4.0",
+    # v1.4.2 required for Fase 13 Mobile Typed Channels (channel
+    # primitive, π-calc mobility, capability extrusion via shield —
+    # D8, second-order session types). Prior dep was >=1.4.0 (Fase 11
+    # Trust + BackpressurePolicy + LegalBasis + OTS backends).
+    # Earlier axon-lang releases lack the typed-channel surface.
+    "axon-lang>=1.4.2",
 
     # Database & ORM
     "sqlalchemy[asyncio]>=2.0.30",
