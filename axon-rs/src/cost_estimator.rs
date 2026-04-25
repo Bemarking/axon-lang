@@ -528,6 +528,7 @@ mod tests {
             heals: vec![],
             components: vec![],
             views: vec![],
+            channels: vec![],
         };
 
         let pricing = PricingModel::default_sonnet();
@@ -592,6 +593,7 @@ mod tests {
             heals: vec![],
             components: vec![],
             views: vec![],
+            channels: vec![],
         };
 
         let pricing = PricingModel::default_sonnet();
@@ -658,6 +660,7 @@ mod tests {
             heals: vec![],
             components: vec![],
             views: vec![],
+            channels: vec![],
         };
 
         let pricing = PricingModel::default_sonnet();
