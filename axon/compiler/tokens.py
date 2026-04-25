@@ -189,6 +189,12 @@ class TokenType(Enum):
     COMPONENT = auto()        # component Name { renders, via_shield, on_interact, render_hint }
     VIEW = auto()             # view Name { title, components: [...] }
 
+    # ── MOBILE TYPED CHANNELS (§λ-L-E Fase 13 — π-calc mobility, paper_mobile_channels.md) ──
+    CHANNEL = auto()          # channel Name { message: T, qos: X, lifetime: ℓ, persistence: π }
+    EMIT = auto()             # emit Name(value)  — (Chan-Output) / (Chan-Mobility)
+    PUBLISH = auto()          # publish Name within Shield  — (Publish-Ext) capability extrusion
+    DISCOVER = auto()         # discover Cap as alias  — dual of publish, dynamic import
+
     # ── MODIFIERS (run statement modifiers) ───────────────────────
     AS = auto()
     WITHIN = auto()
@@ -429,6 +435,11 @@ KEYWORDS: dict[str, TokenType] = {
     # UI Cognitiva (§λ-L-E Fase 9)
     "component": TokenType.COMPONENT,
     "view":      TokenType.VIEW,
+    # Mobile Typed Channels (§λ-L-E Fase 13)
+    "channel":  TokenType.CHANNEL,
+    "emit":     TokenType.EMIT,
+    "publish":  TokenType.PUBLISH,
+    "discover": TokenType.DISCOVER,
 }
 
 # Duration suffixes recognized by the lexer

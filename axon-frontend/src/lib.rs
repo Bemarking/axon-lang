@@ -52,3 +52,9 @@ pub mod legal_basis;
 // catalogs. Runtime pipeline execution lives in `axon::ots` and
 // re-exports these for backward compatibility.
 pub mod ots_catalog;
+
+// §Fase 13.g — LSP-facing analysis primitives for typed channels.
+// Pure AST helpers consumed by `axon-lsp` (sibling repo) to implement
+// hover, completion, go-to-definition and find-references. Zero
+// runtime deps — stays inside the Fase 12.c contract.
+pub mod channel_analysis;

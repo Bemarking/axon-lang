@@ -116,8 +116,15 @@ progress: "Fases 0\u20138 completas + Fase 9 core shipped (component/view + comp
 
 ---
 
-### FASE 4 — Topología y session types `[DONE]` ✓
+### FASE 4 — Topología y session types `[DONE]` ✓ — *extended by Fase 13 (typed channels + π-calc mobility)*
 > π-calculus binary sessions + Honda-Vasconcelos-Yoshida duality + compile-time deadlock detection.
+>
+> **Note (2026-04-24):** Fase 13 ([docs/fase_13_mobile_typed_channels.md](fase_13_mobile_typed_channels.md))
+> extends this fase with first-class typed channels (`channel Name { … }`),
+> π-calc mobility (`Channel<T>` as a first-class value), capability extrusion
+> (`publish` gated by shield), and second-order session types (Honda-Yoshida
+> 1999 §6).  Together, Fase 4 (static binary sessions) + Fase 13 (mobile
+> typed channels) cover the full π-calculus surface.  See `paper_mobile_channels.md`.
 
 - **4.1** `topology` como grafo dirigido tipado: tokens `TOPOLOGY` / `SESSION` / `SEND` / `RECEIVE` / `LOOP` / `END`. AST: `TopologyDefinition`, `TopologyEdge`, `SessionDefinition`, `SessionRole`, `SessionStep` en [ast_nodes.py](../axon/compiler/ast_nodes.py). Sintaxis: `topology Name { nodes: [A, B] edges: [A -> B : SessionName] }`. Parser en [parser.py](../axon/compiler/parser.py) con grammar de edges (`source -> target : session_ref`) y de steps (`send T` / `receive T` / `loop` / `end`). IR nodes `IRTopology` + `IRTopologyEdge` + `IRSession` + `IRSessionRole` + `IRSessionStep` en [ir_nodes.py](../axon/compiler/ir_nodes.py). `[DONE]`
 - **4.2** Session types con duality + liveness:

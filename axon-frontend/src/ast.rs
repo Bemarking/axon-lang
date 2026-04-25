@@ -71,6 +71,8 @@ pub enum Declaration {
     /// §λ-L-E Fase 9 — UI cognitiva declarativa.
     Component(ComponentDefinition),
     View(ViewDefinition),
+    /// §λ-L-E Fase 13 — Mobile typed channels (paper_mobile_channels.md).
+    Channel(ChannelDefinition),
     /// Tier 3+ declarations parsed structurally (balanced braces, no detailed AST).
     Generic(GenericDeclaration),
 }
@@ -485,6 +487,12 @@ pub struct DaemonDefinition {
     pub max_tokens: Option<i64>,
     pub max_time: String,
     pub max_cost: Option<f64>,
+    /// §λ-L-E Fase 13 D4 — listen blocks captured for type-checker
+    /// validation (typed-channel ref + dual-mode deprecation warning).
+    /// Pre-Fase 13 the parser discarded these structurally; we now
+    /// retain them so 13.b/13.f can validate emit/publish/discover
+    /// inside listener bodies and surface D4 string-topic warnings.
+    pub listeners: Vec<ListenStep>,
     pub loc: Loc,
 }
 
@@ -706,6 +714,12 @@ pub enum FlowStep {
     ComputeApply(ComputeApplyStep),
     Listen(ListenStep),
     DaemonStep(DaemonStepNode),
+    /// §λ-L-E Fase 13 — π-calculus output prefix `c⟨v⟩.P` (Chan-Output / Chan-Mobility).
+    Emit(EmitStatement),
+    /// §λ-L-E Fase 13 — capability extrusion (Publish-Ext, paper §4.3).
+    Publish(PublishStatement),
+    /// §λ-L-E Fase 13 — dual of publish (dynamic typed handle import).
+    Discover(DiscoverStatement),
     Persist(PersistStep),
     Retrieve(RetrieveStep),
     Mutate(MutateStep),
@@ -895,8 +909,18 @@ pub struct OtsApplyStep { pub ots_name: String, pub target: String, pub output_t
 pub struct MandateApplyStep { pub mandate_name: String, pub target: String, pub output_type: String, pub loc: Loc }
 #[derive(Debug)]
 pub struct ComputeApplyStep { pub compute_name: String, pub arguments: Vec<String>, pub output_name: String, pub loc: Loc }
+/// §λ-L-E Fase 13 D4 — dual-mode listen.
+///
+/// `channel_is_ref = true` ⇒ `channel` is the name of a declared
+/// `ChannelDefinition` (canonical Fase 13 form).  `false` ⇒ legacy
+/// string topic (deprecated; type checker emits a warning).
 #[derive(Debug)]
-pub struct ListenStep { pub channel: String, pub event_alias: String, pub loc: Loc }
+pub struct ListenStep {
+    pub channel: String,
+    pub channel_is_ref: bool,
+    pub event_alias: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
 pub struct DaemonStepNode { pub daemon_ref: String, pub loc: Loc }
 #[derive(Debug)]
@@ -909,3 +933,60 @@ pub struct MutateStep { pub store_name: String, pub where_expr: String, pub loc:
 pub struct PurgeStep { pub store_name: String, pub where_expr: String, pub loc: Loc }
 #[derive(Debug)]
 pub struct TransactBlock { pub loc: Loc }
+
+// ── §λ-L-E Fase 13 — Mobile Typed Channels ──────────────────────────────────
+
+/// `channel Name { message: T, qos: X, lifetime: ℓ, persistence: π, shield: σ }`.
+///
+/// First-class affine resource carrying a typed message.  Direct port
+/// of `axon.compiler.ast_nodes.ChannelDefinition`.  `message` retains
+/// the surface spelling (e.g. `"Order"` or `"Channel<Order>"`) so the
+/// type checker can resolve nested mobility (paper §3.3).
+#[derive(Debug)]
+pub struct ChannelDefinition {
+    pub name: String,
+    pub message: String,        // type name OR "Channel<T>" for second-order
+    pub qos: String,            // at_most_once | at_least_once | exactly_once | broadcast | queue
+    pub lifetime: String,       // linear | affine | persistent (D1 default: affine)
+    pub persistence: String,    // ephemeral | persistent_axonstore
+    pub shield_ref: String,     // optional σ-shield gate for publish (D8)
+    pub loc: Loc,
+}
+
+/// `emit ChannelName(value_ref)` — π-calculus output prefix `c⟨v⟩.P`.
+///
+/// Direct port of `axon.compiler.ast_nodes.EmitStatement`.  Handles
+/// both Chan-Output (scalar payload) and Chan-Mobility (channel-as-
+/// value); the type checker dispatches based on whether `value_ref`
+/// resolves to a `ChannelDefinition`.
+#[derive(Debug)]
+pub struct EmitStatement {
+    pub channel_ref: String,
+    pub value_ref: String,
+    pub loc: Loc,
+}
+
+/// `publish ChannelName within ShieldName` — capability extrusion.
+///
+/// Paper §4.3 (Publish-Ext) materialized as a flow step.  The `within
+/// <Shield>` clause is mandatory (D8) — the parser rejects bare
+/// `publish C`, the type checker rejects publishes whose shield does
+/// not cover κ(message_type) (Fase 6.1 + paper §3.4).
+#[derive(Debug)]
+pub struct PublishStatement {
+    pub channel_ref: String,
+    pub shield_ref: String,
+    pub loc: Loc,
+}
+
+/// `discover ChannelName as alias` — dual of publish.
+///
+/// Imports a previously-published handle into a fresh affine local
+/// binding.  The `as <alias>` is mandatory; the type checker rejects
+/// discovery of channels that were never declared with `shield_ref`.
+#[derive(Debug)]
+pub struct DiscoverStatement {
+    pub capability_ref: String,
+    pub alias: String,
+    pub loc: Loc,
+}

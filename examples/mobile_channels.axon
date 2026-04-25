@@ -1,0 +1,72 @@
+// ─────────────────────────────────────────────────────────────────────
+//  examples/mobile_channels.axon — Fase 13 worked example.
+//
+//  Producer/broker/consumer pipeline showcasing π-calculus mobility
+//  (paper_mobile_channels.md §3.2 Chan-Mobility).  An OrdersCreated
+//  handle is *passed as a value* through BrokerHandoff so consumers
+//  can dynamically discover the right channel for the right request.
+//
+//  Compile-time guarantees demonstrated:
+//    • Channel<Order>      — schema-checked emit/listen (D3, paper §3.1)
+//    • Channel<Channel<T>> — second-order session types (D6.d, paper §3.3)
+//    • shield gate         — D8 capability extrusion (paper §3.4)
+//    • discover            — typed dynamic import of a published handle
+//
+//  `axon check` clean (0 errors, 0 warnings under --strict).
+// ─────────────────────────────────────────────────────────────────────
+
+// Compliance class κ on the payload type (paper §3.4 + ESK Fase 6.1).
+type Order compliance [PCI_DSS] {
+    id:           String
+    amount:       Float
+    customer_ref: String
+}
+
+// The shield that gates extrusion of OrdersCreated.  Its compliance
+// list MUST cover Order.compliance — paper §3.4 / Fase 6.1.
+shield PublicBroker {
+    scan: [pii_leak, prompt_injection]
+    compliance: [PCI_DSS]
+}
+
+// First-order channel — carries Order payloads.
+channel OrdersCreated {
+    message:     Order
+    qos:         at_least_once
+    lifetime:    affine               // D1 default — drop OK, no aliasing
+    persistence: ephemeral
+    shield:      PublicBroker         // required for `publish` (D8)
+}
+
+// Second-order channel — carries OrdersCreated *handles* (mobility).
+channel BrokerHandoff {
+    message:     Channel<Order>
+    qos:         exactly_once
+    lifetime:    affine
+    persistence: persistent_axonstore  // handle survives reboots (§AS)
+}
+
+// Consumer — receives a channel via BrokerHandoff, then listens on it.
+daemon OrderConsumer() {
+    goal:    "consume orders dispatched through the broker"
+    shield:  PublicBroker
+
+    listen BrokerHandoff as ch {
+        // The body sees `ch: Channel<Order>` — the type checker
+        // resolved this through the second-order schema (paper §3.3).
+        listen OrdersCreated as order {
+            step Process {
+                given: order
+                ask:   "process the order"
+            }
+        }
+    }
+}
+
+// Producer — passes OrdersCreated by value via BrokerHandoff and
+// publishes the handle for downstream discovery.
+flow hand_off() -> OrdersCreated {
+    emit BrokerHandoff(OrdersCreated)               // (Chan-Mobility)
+    publish OrdersCreated within PublicBroker       // (Publish-Ext)
+    return OrdersCreated
+}

@@ -47,6 +47,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable colored output",
     )
+    check.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "Treat warnings as errors (exit 1 on any warning). "
+            "Recommended for CI in adopters preparing for v2.0 — "
+            "see docs/migration_fase_13.md."
+        ),
+    )
 
     # ── axon compile ──────────────────────────────────────────
     compile_cmd = sub.add_parser(

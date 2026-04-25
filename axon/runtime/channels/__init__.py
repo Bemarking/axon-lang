@@ -30,6 +30,17 @@ from __future__ import annotations
 from typing import Any
 
 from axon.runtime.event_bus import EventChannel, InMemoryChannel
+from axon.runtime.channels.typed import (
+    Capability,
+    CapabilityGateError,
+    ChannelNotFoundError,
+    LifetimeViolationError,
+    SchemaMismatchError,
+    TypedChannelError,
+    TypedChannelHandle,
+    TypedChannelRegistry,
+    TypedEventBus,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -117,4 +128,14 @@ __all__ = [
     "get_channel_class",
     "available_backends",
     "make_channel_factory",
+    # Mobile Typed Channels — Fase 13.d
+    "Capability",
+    "CapabilityGateError",
+    "ChannelNotFoundError",
+    "LifetimeViolationError",
+    "SchemaMismatchError",
+    "TypedChannelError",
+    "TypedChannelHandle",
+    "TypedChannelRegistry",
+    "TypedEventBus",
 ]

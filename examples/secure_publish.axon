@@ -1,0 +1,69 @@
+// ─────────────────────────────────────────────────────────────────────
+//  examples/secure_publish.axon — Fase 13 ESK enforcement showcase.
+//
+//  Demonstrates how `publish` is shield-mediated (D8, paper §3.4) and
+//  how `discover` mirrors that gate so a downstream consumer can only
+//  acquire a handle whose channel was published through a shield with
+//  matching compliance coverage.
+//
+//  Compile-time guarantees demonstrated:
+//    • κ(message) ⊆ shield.compliance  — Fase 6.1 RTT enforcement
+//    • publish requires a non-empty `within Shield`        (D8)
+//    • discover only resolves on channels that declare a shield
+//    • δ_pub envelope penalty (paper §3.4)                — runtime-side
+//
+//  `axon check` clean (0 errors, 0 warnings under --strict).
+// ─────────────────────────────────────────────────────────────────────
+
+// PHI is regulated; κ = {HIPAA}.
+type PatientReading compliance [HIPAA] {
+    patient_ref: String
+    reading:     Float
+    timestamp:   String
+}
+
+// The shield that mediates extrusion.  Its compliance list MUST be
+// a superset of κ(PatientReading) for the publish to type-check.
+shield ClinicalGate {
+    scan: [pii_leak, data_exfil]
+    compliance: [HIPAA]
+}
+
+// The publishable channel — handle is shield-gated by ClinicalGate.
+channel PatientStream {
+    message:     PatientReading
+    qos:         at_least_once
+    lifetime:    affine
+    persistence: persistent_axonstore
+    shield:      ClinicalGate
+}
+
+// Producer — extrudes the handle through ClinicalGate.  The runtime
+// stamps a δ_pub penalty on the issued capability so any downstream
+// holder's certainty envelope is strictly less than the producer's
+// (paper §6.2 — "no certainty laundering").
+flow expose_stream() -> PatientStream {
+    publish PatientStream within ClinicalGate
+    return PatientStream
+}
+
+// Consumer — discovers the handle and starts listening.  The discover
+// only resolves because PatientStream declared `shield: ClinicalGate`;
+// without that, `discover PatientStream as alias` would be a compile
+// error ("not publishable", D8).
+daemon ReadingsConsumer() {
+    goal:   "process patient readings as they arrive"
+    shield: ClinicalGate
+
+    listen PatientStream as reading {
+        step ValidateAndStore {
+            given: reading
+            ask:   "validate the reading is within physiological bounds, then persist it"
+        }
+    }
+}
+
+flow consume_published() -> PatientReading {
+    discover PatientStream as alias
+    return alias
+}

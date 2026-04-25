@@ -114,6 +114,7 @@ class IRProgram(IRNode):
     heals: tuple['IRHeal', ...] = ()
     components: tuple['IRComponent', ...] = ()
     views: tuple['IRView', ...] = ()
+    channels: tuple['IRChannel', ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -800,7 +801,8 @@ class IRListen(IRNode):
     """
     node_type: str = "listen"
     channel_type: str = "topic"                 # topic | queue | broadcast
-    channel_topic: str = ""                     # event channel name
+    channel_topic: str = ""                     # event channel name (string topic OR ChannelDefinition ref)
+    channel_is_ref: bool = False                # True: channel_topic is a typed ref (Fase 13 D4); False: legacy string
     event_alias: str = ""                       # local binding for event payload
     children: tuple[IRNode, ...] = ()           # compiled inner steps
 
@@ -1795,3 +1797,87 @@ class IRView(IRNode):
     title: str = ""
     components: tuple[str, ...] = ()
     route: str = ""
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  MOBILE TYPED CHANNELS — Fase 13 of the λ-L-E calculus
+#  (Formalization: docs/paper_mobile_channels.md)
+#
+#  Four IR shapes lower the typed-channel surface syntax:
+#
+#    IRChannel    — declarative: a typed event channel (paper §3.1)
+#    IREmit       — output prefix c⟨v⟩.P (Chan-Output / Chan-Mobility)
+#    IRPublish    — capability extrusion (Publish-Ext, paper §4.3)
+#    IRDiscover   — dual of publish — dynamic import of a published
+#                   handle into a typed local binding
+#
+#  IRChannel is purely declarative and lives in IRProgram.channels.
+#  IREmit / IRPublish / IRDiscover are step-level reductions and
+#  embed in their containing IRFlow.body or IRListen.children (the
+#  π-calculus prefix discipline `P ∥ Q` and `c⟨v⟩.P` is honored
+#  structurally, not by lifting these to top-level operations).
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class IRChannel(IRNode):
+    """Compiled channel declaration — first-class affine resource carrying τ.
+
+    Lowering of `ChannelDefinition`.  The `message` field preserves the
+    surface spelling (e.g. "Order" or "Channel<Order>") so that the
+    handler / runtime can resolve type schemas against the same string
+    table the type checker used.  QoS, lifetime and persistence drive
+    backend wiring in 13.d (typed EventBus); shield_ref gates publish
+    (paper §3.4).
+    """
+    node_type: str = "channel"
+    name: str = ""
+    message: str = ""                        # surface spelling — Order | Channel<Order> | …
+    qos: str = "at_least_once"               # AMO | ALO | EO | broadcast | queue
+    lifetime: str = "affine"                 # linear | affine | persistent
+    persistence: str = "ephemeral"           # ephemeral | persistent_axonstore
+    shield_ref: str = ""                     # σ-shield gate for publish (D8)
+
+
+@dataclass(frozen=True)
+class IREmit(IRNode):
+    """Compiled emit step — π-calculus output prefix `c⟨v⟩.P`.
+
+    `value_is_channel` is set when `value_ref` resolved (at type-check
+    time) to a ChannelDefinition — distinguishing scalar payload emits
+    from second-order Chan-Mobility (paper §3.2) so the handler can
+    dispatch to either a typed message queue or a handle-passing
+    transport without re-resolving symbols.
+    """
+    node_type: str = "emit"
+    channel_ref: str = ""                    # IRChannel name receiving the value
+    value_ref: str = ""                      # value identifier (payload OR handle)
+    value_is_channel: bool = False           # True ⇒ Chan-Mobility, False ⇒ Chan-Output
+
+
+@dataclass(frozen=True)
+class IRPublish(IRNode):
+    """Compiled publish step — Publish-Ext (paper §4.3) capability extrusion.
+
+    Materializes a `Capability<c>` cell mediated by the named shield.
+    The runtime applies a δ_pub envelope penalty per hop (paper §3.4 +
+    §6.1 corollary "no certainty laundering").  IR carries no penalty
+    value: the value is the shield's responsibility at runtime so a
+    misconfigured shield cannot quietly diverge from the static check.
+    """
+    node_type: str = "publish"
+    channel_ref: str = ""                    # IRChannel being published
+    shield_ref: str = ""                     # σ-shield gating the extrusion (D8)
+
+
+@dataclass(frozen=True)
+class IRDiscover(IRNode):
+    """Compiled discover step — dual of publish, imports a typed handle.
+
+    Bound `alias` is a fresh affine local; consumers of the alias must
+    use it exactly once (handle-binding affinity to be enforced fully
+    when the runtime in 13.d ties bindings to consumption sites).
+    """
+    node_type: str = "discover"
+    capability_ref: str = ""                 # IRChannel that was published
+    alias: str = ""                          # local binding introduced

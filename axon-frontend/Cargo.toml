@@ -1,10 +1,10 @@
 [package]
 name = "axon-frontend"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.95"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
-description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator, compile-time checker. Zero runtime dependencies (no tokio/axum/sqlx/reqwest); consumable by any tool that analyses AXON source without running it."
+description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator, compile-time checker. Zero runtime dependencies (no tokio/axum/sqlx/reqwest); consumable by any tool that analyses AXON source without running it. v0.2.0 adds Fase 13 typed channels (channel/emit/publish/discover) + `channel_analysis` module for LSP integration."
 license = "MIT"
 repository = "https://github.com/Bemarking/axon-lang"
 readme = "README.md"

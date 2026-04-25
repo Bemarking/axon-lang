@@ -882,6 +882,102 @@ class TestCheck:
 
 
 # ══════════════════════════════════════════════════════════════════
+#  axon check --strict (Fase 13.e D4 deprecation enforcement)
+# ══════════════════════════════════════════════════════════════════
+
+
+class TestCheckStrict:
+    """Fase 13.e — `--strict` promotes warnings to errors.
+
+    Without --strict, deprecation warnings (D4 string-topic listeners)
+    are surfaced but the check passes (exit 0).  With --strict the
+    same warnings cause exit 1, suitable for CI gating in adopters
+    preparing for v2.0.
+    """
+
+    _LEGACY_DAEMON = '''daemon D() {
+  goal: "x"
+  listen "orders.created" as ev { step S { ask: "p" } }
+}
+'''
+
+    _CANONICAL_DAEMON = '''type Order { id: String }
+channel OrdersCreated { message: Order }
+daemon D() {
+  goal: "x"
+  listen OrdersCreated as ev { step S { ask: "p" } }
+}
+'''
+
+    def test_legacy_listen_default_mode_passes_with_warning(self, tmp_path):
+        f = tmp_path / "legacy.axon"
+        f.write_text(self._LEGACY_DAEMON, encoding="utf-8")
+        r = _run("check", str(f), "--no-color")
+        assert r.returncode == 0
+        assert "warning" in r.stdout
+        assert "deprecated since Fase 13" in r.stdout
+
+    def test_legacy_listen_strict_mode_fails(self, tmp_path):
+        f = tmp_path / "legacy.axon"
+        f.write_text(self._LEGACY_DAEMON, encoding="utf-8")
+        r = _run("check", str(f), "--no-color", "--strict", check=False)
+        assert r.returncode == 1
+        assert "(--strict)" in r.stdout
+        assert "deprecated since Fase 13" in r.stdout
+
+    def test_strict_warning_count_in_summary(self, tmp_path):
+        """Multiple legacy listeners → multiple warnings → strict reports count."""
+        src = '''daemon D() {
+  goal: "x"
+  listen "a" as e1 { step S { ask: "p" } }
+  listen "b" as e2 { step S { ask: "p" } }
+  listen "c" as e3 { step S { ask: "p" } }
+}
+'''
+        f = tmp_path / "triple.axon"
+        f.write_text(src, encoding="utf-8")
+        r = _run("check", str(f), "--no-color", "--strict", check=False)
+        assert r.returncode == 1
+        assert "3 warning(s)" in r.stdout
+
+    def test_canonical_typed_listen_clean_in_strict_mode(self, tmp_path):
+        """A program using typed channel refs has 0 warnings — strict OK."""
+        f = tmp_path / "canonical.axon"
+        f.write_text(self._CANONICAL_DAEMON, encoding="utf-8")
+        r = _run("check", str(f), "--no-color", "--strict")
+        assert r.returncode == 0
+        assert "0 errors" in r.stdout
+        # No warning section at all on a clean canonical program.
+        assert "warning" not in r.stdout
+
+    def test_warnings_yellow_marker_default_mode(self, tmp_path):
+        """Default mode prefixes the file with a warning marker (⚠), not ✓."""
+        f = tmp_path / "legacy.axon"
+        f.write_text(self._LEGACY_DAEMON, encoding="utf-8")
+        r = _run("check", str(f))
+        assert r.returncode == 0
+        # The summary line uses ⚠ for warnings-only (vs ✓ for clean).
+        assert "⚠" in r.stdout or "warning" in r.stdout
+
+    def test_strict_does_not_promote_real_errors_count(self, tmp_path):
+        """If both errors and warnings exist, strict still reports them
+        as their natural severities (errors stay errors)."""
+        src = '''daemon D() {
+  goal: "x"
+  listen "deprecated" as ev { step S { ask: "p" } }
+  listen NoSuchChannel as ev2 { step S { ask: "p" } }
+}
+'''
+        f = tmp_path / "mixed.axon"
+        f.write_text(src, encoding="utf-8")
+        r = _run("check", str(f), "--no-color", "--strict", check=False)
+        assert r.returncode == 1
+        # Real error from undefined channel ref is reported as such.
+        assert "error" in r.stdout
+        assert "undefined channel" in r.stdout
+
+
+# ══════════════════════════════════════════════════════════════════
 #  axon compile
 # ══════════════════════════════════════════════════════════════════
 

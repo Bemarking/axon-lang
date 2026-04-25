@@ -23,6 +23,11 @@ pub struct IRGenerator {
     /// Anchor for the intention tree's own source position.
     program_line: u32,
     program_column: u32,
+    /// §λ-L-E Fase 13 — channel registry for mobility detection at lowering.
+    /// Names of declared channels are recorded as they're visited so
+    /// `visit_emit` can pre-resolve `value_is_channel` without re-scanning
+    /// the AST (parity with the Python `IREmit.value_is_channel` flag).
+    channel_names: std::collections::HashSet<String>,
 }
 
 impl IRGenerator {
@@ -36,6 +41,7 @@ impl IRGenerator {
             intention_ops: Vec::new(),
             program_line: 1,
             program_column: 1,
+            channel_names: std::collections::HashSet::new(),
         }
     }
 
@@ -152,6 +158,15 @@ impl IRGenerator {
             Declaration::Heal(n)      => ir.heals.push(self.visit_heal(n)),
             Declaration::Component(n) => ir.components.push(self.visit_component(n)),
             Declaration::View(n)      => ir.views.push(self.visit_view(n)),
+            // §λ-L-E Fase 13 — Mobile typed channels (paper §3, §4).
+            // Record the channel name BEFORE visiting subsequent flow
+            // bodies so `IREmit.value_is_channel` resolves correctly for
+            // mobility uses appearing after this declaration in source
+            // order (matches Python `_channels` dict semantics).
+            Declaration::Channel(n) => {
+                self.channel_names.insert(n.name.clone());
+                ir.channels.push(self.visit_channel(n));
+            }
             Declaration::Epistemic(eb) => {
                 for child in &eb.body {
                     self.visit_declaration(child, ir);
@@ -527,7 +542,26 @@ impl IRGenerator {
             }),
             FlowStep::Listen(s) => IRFlowNode::Listen(IRListenStep {
                 node_type: "listen", source_line: s.loc.line, source_column: s.loc.column,
-                channel: s.channel.clone(), event_alias: s.event_alias.clone(),
+                channel: s.channel.clone(),
+                channel_is_ref: s.channel_is_ref,
+                event_alias: s.event_alias.clone(),
+            }),
+            // §λ-L-E Fase 13 — Mobile typed channel reductions.
+            FlowStep::Emit(s) => IRFlowNode::Emit(IREmit {
+                node_type: "emit", source_line: s.loc.line, source_column: s.loc.column,
+                channel_ref: s.channel_ref.clone(),
+                value_ref: s.value_ref.clone(),
+                value_is_channel: self.channel_names.contains(&s.value_ref),
+            }),
+            FlowStep::Publish(s) => IRFlowNode::Publish(IRPublish {
+                node_type: "publish", source_line: s.loc.line, source_column: s.loc.column,
+                channel_ref: s.channel_ref.clone(),
+                shield_ref: s.shield_ref.clone(),
+            }),
+            FlowStep::Discover(s) => IRFlowNode::Discover(IRDiscover {
+                node_type: "discover", source_line: s.loc.line, source_column: s.loc.column,
+                capability_ref: s.capability_ref.clone(),
+                alias: s.alias.clone(),
             }),
             FlowStep::DaemonStep(s) => IRFlowNode::DaemonStep(IRDaemonStepNode {
                 node_type: "daemon", source_line: s.loc.line, source_column: s.loc.column,
@@ -1033,5 +1067,156 @@ impl IRGenerator {
             resolved_context: None,
             resolved_anchors: Vec::new(),
         }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    //  §λ-L-E Fase 13 — Mobile Typed Channels (paper_mobile_channels.md)
+    //  Declarative channels lower to IRChannel; emit/publish/discover
+    //  are step-level reductions handled in `visit_flow_step`.
+    // ──────────────────────────────────────────────────────────────────
+
+    fn visit_channel(&self, n: &ChannelDefinition) -> IRChannel {
+        IRChannel {
+            node_type: "channel",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            message: n.message.clone(),
+            qos: n.qos.clone(),
+            lifetime: n.lifetime.clone(),
+            persistence: n.persistence.clone(),
+            shield_ref: n.shield_ref.clone(),
+        }
+    }
+}
+
+// ── §λ-L-E Fase 13 — Mobile Typed Channels IR generator tests ───────────────
+
+#[cfg(test)]
+mod fase13_ir_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn compile(src: &str) -> IRProgram {
+        let tokens = Lexer::new(src, "<test>").tokenize().expect("lex");
+        let prog = Parser::new(tokens).parse().expect("parse");
+        IRGenerator::new().generate(&prog)
+    }
+
+    #[test]
+    fn channel_lowered_with_all_fields() {
+        let src = r#"
+            type Order { id: String }
+            shield Gate { scan: [pii_leak] }
+            channel C { message: Order qos: at_least_once lifetime: affine persistence: ephemeral shield: Gate }
+        "#;
+        let ir = compile(src);
+        assert_eq!(ir.channels.len(), 1);
+        let c = &ir.channels[0];
+        assert_eq!(c.name, "C");
+        assert_eq!(c.message, "Order");
+        assert_eq!(c.qos, "at_least_once");
+        assert_eq!(c.lifetime, "affine");
+        assert_eq!(c.persistence, "ephemeral");
+        assert_eq!(c.shield_ref, "Gate");
+    }
+
+    #[test]
+    fn channel_second_order_message_preserved() {
+        let ir = compile(r#"
+            type Order { id: String }
+            channel C1 { message: Order }
+            channel C2 { message: Channel<Order> }
+            channel C3 { message: Channel<Channel<Order>> }
+        "#);
+        let names_to_msgs: std::collections::HashMap<_, _> = ir.channels.iter()
+            .map(|c| (c.name.clone(), c.message.clone()))
+            .collect();
+        assert_eq!(names_to_msgs.get("C1"), Some(&"Order".to_string()));
+        assert_eq!(names_to_msgs.get("C2"), Some(&"Channel<Order>".to_string()));
+        assert_eq!(names_to_msgs.get("C3"), Some(&"Channel<Channel<Order>>".to_string()));
+    }
+
+    #[test]
+    fn emit_value_is_channel_resolves_at_lowering() {
+        let ir = compile(r#"
+            type Order { id: String }
+            channel Inner { message: Order }
+            channel Outer { message: Channel<Order> }
+            flow f() -> O { emit Outer(Inner) }
+        "#);
+        let flow = &ir.flows[0];
+        match &flow.steps[0] {
+            IRFlowNode::Emit(e) => {
+                assert_eq!(e.channel_ref, "Outer");
+                assert_eq!(e.value_ref, "Inner");
+                assert!(e.value_is_channel, "Inner is a registered channel");
+            }
+            other => panic!("expected Emit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn emit_scalar_payload_value_is_channel_false() {
+        let ir = compile(r#"
+            type Order { id: String }
+            channel Out { message: Order }
+            flow f() -> O { emit Out(payload) }
+        "#);
+        let flow = &ir.flows[0];
+        match &flow.steps[0] {
+            IRFlowNode::Emit(e) => {
+                assert!(!e.value_is_channel, "scalar payload");
+            }
+            other => panic!("expected Emit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn publish_lowered_with_shield_ref() {
+        let ir = compile(r#"
+            type Order { id: String }
+            shield Gate { scan: [pii_leak] }
+            channel C { message: Order shield: Gate }
+            flow f() -> Cap { publish C within Gate }
+        "#);
+        match &ir.flows[0].steps[0] {
+            IRFlowNode::Publish(p) => {
+                assert_eq!(p.channel_ref, "C");
+                assert_eq!(p.shield_ref, "Gate");
+            }
+            other => panic!("expected Publish, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn discover_lowered_with_alias() {
+        let ir = compile(r#"
+            type Order { id: String }
+            shield Gate { scan: [pii_leak] }
+            channel C { message: Order shield: Gate }
+            flow f() -> O { discover C as ch }
+        "#);
+        match &ir.flows[0].steps[0] {
+            IRFlowNode::Discover(d) => {
+                assert_eq!(d.capability_ref, "C");
+                assert_eq!(d.alias, "ch");
+            }
+            other => panic!("expected Discover, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn json_serialization_works() {
+        let ir = compile(r#"
+            type Order { id: String }
+            channel C { message: Order }
+            flow f() -> O { emit C(payload) }
+        "#);
+        let json = serde_json::to_string(&ir).expect("serialize");
+        assert!(json.contains(r#""node_type":"channel""#));
+        assert!(json.contains(r#""node_type":"emit""#));
+        assert!(json.contains(r#""value_is_channel":false"#));
     }
 }

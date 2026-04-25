@@ -417,6 +417,9 @@ impl Parser {
             TokenType::Component => self.parse_component().map(Declaration::Component),
             TokenType::View => self.parse_view().map(Declaration::View),
 
+            // ── §λ-L-E Fase 13 — Mobile typed channels ──────────
+            TokenType::Channel => self.parse_channel().map(Declaration::Channel),
+
             // ── Tier 3+ structural fallback ─────────────────────
             // Store operations: keyword target { ... } or keyword target ...
             TokenType::Ingest
@@ -970,6 +973,10 @@ impl Parser {
             TokenType::Compute => self.parse_apply_step("compute").map(|l| FlowStep::ComputeApply(ComputeApplyStep { compute_name: l.1, arguments: Vec::new(), output_name: l.3, loc: l.0 })),
             TokenType::Listen => self.parse_listen_step(),
             TokenType::Daemon => self.parse_flow_step_simple("daemon").map(|l| FlowStep::DaemonStep(DaemonStepNode { daemon_ref: l.1, loc: l.0 })),
+            // §λ-L-E Fase 13 — Mobile typed channels (paper §3.1, §3.2, §4.3)
+            TokenType::Emit => self.parse_emit_step(),
+            TokenType::Publish => self.parse_publish_step(),
+            TokenType::Discover => self.parse_discover_step(),
             TokenType::Persist => self.parse_flow_step_simple("persist").map(|l| FlowStep::Persist(PersistStep { store_name: l.1, loc: l.0 })),
             TokenType::Retrieve => self.parse_retrieve_step(),
             TokenType::Mutate => self.parse_flow_step_simple("mutate").map(|l| FlowStep::Mutate(MutateStep { store_name: l.1, where_expr: String::new(), loc: l.0 })),
@@ -1773,10 +1780,13 @@ impl Parser {
     fn parse_listen_step(&mut self) -> Result<FlowStep, ParseError> {
         let tok = self.current().clone();
         self.advance();
-        let channel = if self.check(TokenType::StringLit) {
-            self.consume(TokenType::StringLit)?.value.clone()
+        // §λ-L-E Fase 13 D4 — dual-mode listen:
+        //   • String topic (legacy, deprecated since Fase 13)
+        //   • Identifier (canonical: declared ChannelDefinition)
+        let (channel, channel_is_ref) = if self.check(TokenType::StringLit) {
+            (self.consume(TokenType::StringLit)?.value.clone(), false)
         } else {
-            self.consume_any_ident_or_kw()?.value.clone()
+            (self.consume_any_ident_or_kw()?.value.clone(), true)
         };
         let mut alias = String::new();
         if !self.at_declaration_start() && !self.check(TokenType::RBrace) && !self.check(TokenType::LBrace) {
@@ -1787,7 +1797,12 @@ impl Parser {
             }
         }
         if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
-        Ok(FlowStep::Listen(ListenStep { channel, event_alias: alias, loc: Loc { line: tok.line, column: tok.column } }))
+        Ok(FlowStep::Listen(ListenStep {
+            channel,
+            channel_is_ref,
+            event_alias: alias,
+            loc: Loc { line: tok.line, column: tok.column },
+        }))
     }
 
     fn parse_retrieve_step(&mut self) -> Result<FlowStep, ParseError> {
@@ -2115,6 +2130,7 @@ impl Parser {
             name, goal: String::new(), tools: Vec::new(), memory_ref: String::new(),
             strategy: String::new(), on_stuck: String::new(), shield_ref: String::new(),
             max_tokens: None, max_time: String::new(), max_cost: None,
+            listeners: Vec::new(),
             loc: Loc { line: tok.line, column: tok.column },
         };
         // Skip optional parameters/return type before brace
@@ -2141,10 +2157,37 @@ impl Parser {
                     _ => self.skip_value(),
                 }
             } else if field.ttype == TokenType::Listen {
-                // listen blocks — skip structurally for now
+                // §λ-L-E Fase 13 D4 — preserve listen blocks for type
+                // checking.  We backtracked past the `listen` keyword
+                // by `advance()` above, so reconstruct a synthetic
+                // listener using the same dual-mode dispatch the flow
+                // step parser uses (string topic OR typed channel ref).
+                let (channel, channel_is_ref) = if self.check(TokenType::StringLit) {
+                    (self.consume(TokenType::StringLit)?.value.clone(), false)
+                } else {
+                    (self.consume_any_ident_or_kw()?.value.clone(), true)
+                };
+                let mut alias = String::new();
+                if !self.at_declaration_start()
+                    && !self.check(TokenType::RBrace)
+                    && !self.check(TokenType::LBrace)
+                {
+                    let next = self.current().clone();
+                    if next.value == "as" || next.ttype == TokenType::As {
+                        self.advance();
+                        alias = self.consume_any_ident_or_kw()?.value.clone();
+                    }
+                }
+                let listen_loc = Loc { line: field.line, column: field.column };
                 if self.check(TokenType::LBrace) {
                     self.skip_braced_block()?;
                 }
+                node.listeners.push(ListenStep {
+                    channel,
+                    channel_is_ref,
+                    event_alias: alias,
+                    loc: listen_loc,
+                });
             } else if self.check(TokenType::LBrace) {
                 self.skip_braced_block()?;
             }
@@ -3344,4 +3387,310 @@ impl Parser {
         }))
     }
 
+    // ──────────────────────────────────────────────────────────────────
+    //  §λ-L-E Fase 13 — Mobile Typed Channels parsers
+    //  (paper_mobile_channels.md §3 + plan/fase_13)
+    //  Direct port of axon/compiler/parser.py:_parse_channel/emit/publish/discover.
+    // ──────────────────────────────────────────────────────────────────
+
+    /// Parse: `channel Name { message, qos, lifetime, persistence, shield }`.
+    fn parse_channel(&mut self) -> Result<ChannelDefinition, ParseError> {
+        let tok = self.consume(TokenType::Channel)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = ChannelDefinition {
+            name: name.clone(),
+            message: String::new(),
+            qos: "at_least_once".to_string(),
+            lifetime: "affine".to_string(),
+            persistence: "ephemeral".to_string(),
+            shield_ref: String::new(),
+            loc: Loc { line: tok.line, column: tok.column },
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_tok = self.current().clone();
+            let field_name = field_tok.value.clone();
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                if self.check(TokenType::LBrace) {
+                    self.skip_braced_block()?;
+                }
+                continue;
+            }
+            self.advance();
+            match field_name.as_str() {
+                "message" => node.message = self.parse_channel_message_type()?,
+                "qos" => {
+                    let q_tok = self.consume_any_ident_or_kw()?;
+                    if !matches!(
+                        q_tok.value.as_str(),
+                        "at_most_once" | "at_least_once" | "exactly_once"
+                            | "broadcast" | "queue"
+                    ) {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid qos '{}' in channel '{}' — \
+                                 expected at_most_once | at_least_once | \
+                                 exactly_once | broadcast | queue",
+                                q_tok.value, name
+                            ),
+                            line: q_tok.line,
+                            column: q_tok.column,
+                        });
+                    }
+                    node.qos = q_tok.value;
+                }
+                "lifetime" => {
+                    let lt_tok = self.consume_any_ident_or_kw()?;
+                    if !matches!(lt_tok.value.as_str(), "linear" | "affine" | "persistent") {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid lifetime '{}' in channel '{}' — \
+                                 expected linear | affine | persistent",
+                                lt_tok.value, name
+                            ),
+                            line: lt_tok.line,
+                            column: lt_tok.column,
+                        });
+                    }
+                    node.lifetime = lt_tok.value;
+                }
+                "persistence" => {
+                    let p_tok = self.consume_any_ident_or_kw()?;
+                    if !matches!(
+                        p_tok.value.as_str(),
+                        "ephemeral" | "persistent_axonstore"
+                    ) {
+                        return Err(ParseError {
+                            message: format!(
+                                "Invalid persistence '{}' in channel '{}' — \
+                                 expected ephemeral | persistent_axonstore",
+                                p_tok.value, name
+                            ),
+                            line: p_tok.line,
+                            column: p_tok.column,
+                        });
+                    }
+                    node.persistence = p_tok.value;
+                }
+                "shield" => node.shield_ref = self.consume_any_ident_or_kw()?.value,
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// Parse a `message:` value, supporting nested `Channel<…>`
+    /// (second-order session types — paper §3.3).
+    fn parse_channel_message_type(&mut self) -> Result<String, ParseError> {
+        let head = self.consume(TokenType::Identifier)?;
+        let mut spelling = head.value;
+        if self.check(TokenType::Lt) {
+            self.advance();
+            let inner = self.parse_channel_message_type()?;
+            self.consume(TokenType::Gt)?;
+            spelling = format!("{}<{}>", spelling, inner);
+        }
+        Ok(spelling)
+    }
+
+    /// Parse: `emit ChannelName(value_ref)` — Chan-Output / Chan-Mobility.
+    fn parse_emit_step(&mut self) -> Result<FlowStep, ParseError> {
+        let tok = self.consume(TokenType::Emit)?;
+        let channel = self.consume(TokenType::Identifier)?.value;
+        self.consume(TokenType::LParen)?;
+        let value = self.consume(TokenType::Identifier)?.value;
+        self.consume(TokenType::RParen)?;
+        Ok(FlowStep::Emit(EmitStatement {
+            channel_ref: channel,
+            value_ref: value,
+            loc: Loc { line: tok.line, column: tok.column },
+        }))
+    }
+
+    /// Parse: `publish ChannelName within ShieldName` — Publish-Ext (D8).
+    fn parse_publish_step(&mut self) -> Result<FlowStep, ParseError> {
+        let tok = self.consume(TokenType::Publish)?;
+        let channel = self.consume(TokenType::Identifier)?.value;
+        self.consume(TokenType::Within)?;
+        let shield = self.consume(TokenType::Identifier)?.value;
+        Ok(FlowStep::Publish(PublishStatement {
+            channel_ref: channel,
+            shield_ref: shield,
+            loc: Loc { line: tok.line, column: tok.column },
+        }))
+    }
+
+    /// Parse: `discover ChannelName as alias` — dual of publish.
+    fn parse_discover_step(&mut self) -> Result<FlowStep, ParseError> {
+        let tok = self.consume(TokenType::Discover)?;
+        let cap = self.consume(TokenType::Identifier)?.value;
+        self.consume(TokenType::As)?;
+        let alias = self.consume(TokenType::Identifier)?.value;
+        Ok(FlowStep::Discover(DiscoverStatement {
+            capability_ref: cap,
+            alias,
+            loc: Loc { line: tok.line, column: tok.column },
+        }))
+    }
+
+}
+
+// ── §λ-L-E Fase 13 — Mobile Typed Channels parser tests ─────────────────────
+
+#[cfg(test)]
+mod fase13_parser_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+
+    fn parse(src: &str) -> Result<Program, ParseError> {
+        let tokens = Lexer::new(src, "<test>").tokenize().expect("lex");
+        Parser::new(tokens).parse()
+    }
+
+    #[test]
+    fn channel_full_parses() {
+        let src = r#"channel C { message: Order qos: at_least_once lifetime: affine persistence: ephemeral shield: Gate }"#;
+        let prog = parse(src).expect("parse");
+        match &prog.declarations[0] {
+            Declaration::Channel(c) => {
+                assert_eq!(c.name, "C");
+                assert_eq!(c.message, "Order");
+                assert_eq!(c.qos, "at_least_once");
+                assert_eq!(c.lifetime, "affine");
+                assert_eq!(c.persistence, "ephemeral");
+                assert_eq!(c.shield_ref, "Gate");
+            }
+            _ => panic!("expected ChannelDefinition"),
+        }
+    }
+
+    #[test]
+    fn channel_defaults_match_paper_d1() {
+        let prog = parse("channel C { message: Order }").expect("parse");
+        if let Declaration::Channel(c) = &prog.declarations[0] {
+            assert_eq!(c.qos, "at_least_once");   // default
+            assert_eq!(c.lifetime, "affine");     // D1 default
+            assert_eq!(c.persistence, "ephemeral");
+            assert_eq!(c.shield_ref, "");
+        } else {
+            panic!("expected ChannelDefinition");
+        }
+    }
+
+    #[test]
+    fn channel_second_order_message_type_parses() {
+        let prog = parse("channel C { message: Channel<Order> }").expect("parse");
+        if let Declaration::Channel(c) = &prog.declarations[0] {
+            assert_eq!(c.message, "Channel<Order>");
+        } else {
+            panic!("expected ChannelDefinition");
+        }
+    }
+
+    #[test]
+    fn channel_nested_channel_message_type_parses() {
+        let prog = parse("channel C { message: Channel<Channel<Order>> }").expect("parse");
+        if let Declaration::Channel(c) = &prog.declarations[0] {
+            assert_eq!(c.message, "Channel<Channel<Order>>");
+        } else {
+            panic!("expected ChannelDefinition");
+        }
+    }
+
+    #[test]
+    fn channel_invalid_qos_rejected() {
+        let err = parse("channel C { message: T qos: bogus }").unwrap_err();
+        assert!(err.message.contains("Invalid qos"), "got {}", err.message);
+    }
+
+    #[test]
+    fn channel_invalid_lifetime_rejected() {
+        let err = parse("channel C { message: T lifetime: eternal }").unwrap_err();
+        assert!(err.message.contains("Invalid lifetime"), "got {}", err.message);
+    }
+
+    #[test]
+    fn channel_invalid_persistence_rejected() {
+        let err = parse("channel C { message: T persistence: forever }").unwrap_err();
+        assert!(err.message.contains("Invalid persistence"), "got {}", err.message);
+    }
+
+    #[test]
+    fn emit_value_parses() {
+        let src = "flow f() -> Out { emit C(payload) }";
+        let prog = parse(src).expect("parse");
+        if let Declaration::Flow(f) = &prog.declarations[0] {
+            match &f.body[0] {
+                FlowStep::Emit(e) => {
+                    assert_eq!(e.channel_ref, "C");
+                    assert_eq!(e.value_ref, "payload");
+                }
+                other => panic!("expected Emit, got {:?}", other),
+            }
+        } else {
+            panic!("expected Flow");
+        }
+    }
+
+    #[test]
+    fn publish_within_shield_parses() {
+        let src = "flow f() -> Cap { publish C within Gate }";
+        let prog = parse(src).expect("parse");
+        if let Declaration::Flow(f) = &prog.declarations[0] {
+            match &f.body[0] {
+                FlowStep::Publish(p) => {
+                    assert_eq!(p.channel_ref, "C");
+                    assert_eq!(p.shield_ref, "Gate");
+                }
+                other => panic!("expected Publish, got {:?}", other),
+            }
+        } else {
+            panic!("expected Flow");
+        }
+    }
+
+    #[test]
+    fn discover_with_alias_parses() {
+        let src = "flow f() -> Out { discover C as ch }";
+        let prog = parse(src).expect("parse");
+        if let Declaration::Flow(f) = &prog.declarations[0] {
+            match &f.body[0] {
+                FlowStep::Discover(d) => {
+                    assert_eq!(d.capability_ref, "C");
+                    assert_eq!(d.alias, "ch");
+                }
+                other => panic!("expected Discover, got {:?}", other),
+            }
+        } else {
+            panic!("expected Flow");
+        }
+    }
+
+    #[test]
+    fn listen_typed_ref_sets_flag_true() {
+        let src = "daemon D() { goal: \"x\" listen C as ev { } }";
+        let prog = parse(src).expect("parse");
+        if let Declaration::Daemon(d) = &prog.declarations[0] {
+            assert_eq!(d.listeners.len(), 1);
+            assert_eq!(d.listeners[0].channel, "C");
+            assert!(d.listeners[0].channel_is_ref, "typed ref ⇒ true");
+        } else {
+            panic!("expected Daemon");
+        }
+    }
+
+    #[test]
+    fn listen_string_topic_legacy_flag_false() {
+        let src = "daemon D() { goal: \"x\" listen \"orders\" as ev { } }";
+        let prog = parse(src).expect("parse");
+        if let Declaration::Daemon(d) = &prog.declarations[0] {
+            assert_eq!(d.listeners.len(), 1);
+            assert_eq!(d.listeners[0].channel, "orders");
+            assert!(!d.listeners[0].channel_is_ref, "string topic ⇒ false");
+        } else {
+            panic!("expected Daemon");
+        }
+    }
 }

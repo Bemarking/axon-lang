@@ -45,8 +45,12 @@ from axon.compiler.ir_nodes import (
     IRCorpusEdgeSpec,
     IRCorpusSpec,
     IRCorroborate,
+    IRChannel,
     IRDaemon,
     IRDataEdge,
+    IRDiscover,
+    IREmit,
+    IRPublish,
     IRDataSpace,
     IRDeliberate,
     IRDrill,
@@ -194,6 +198,8 @@ class IRGenerator:
         # UI Cognitiva (λ-L-E) — Fase 9
         self._components: dict[str, IRComponent] = {}
         self._views: dict[str, IRView] = {}
+        # Mobile Typed Channels (λ-L-E) — Fase 13
+        self._channels: dict[str, IRChannel] = {}
 
         # EMS: Module registry for cross-file symbol resolution
         self._registry = module_registry
@@ -269,6 +275,7 @@ class IRGenerator:
             heals=tuple(self._heals.values()),
             components=tuple(self._components.values()),
             views=tuple(self._views.values()),
+            channels=tuple(self._channels.values()),
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -371,6 +378,11 @@ class IRGenerator:
         ast.HealDefinition: "_visit_heal",
         ast.ComponentDefinition: "_visit_component",
         ast.ViewDefinition: "_visit_view",
+        # Mobile Typed Channels (λ-L-E) — Fase 13
+        ast.ChannelDefinition: "_visit_channel",
+        ast.EmitStatement: "_visit_emit",
+        ast.PublishStatement: "_visit_publish",
+        ast.DiscoverStatement: "_visit_discover",
     }
 
     def _visit(self, node: ast.ASTNode) -> IRNode:
@@ -1272,6 +1284,7 @@ class IRGenerator:
             source_line=node.line,
             source_column=node.column,
             channel_topic=node.channel_expr,
+            channel_is_ref=node.channel_is_ref,
             event_alias=node.event_alias,
             children=children,
         )
@@ -1571,6 +1584,7 @@ class IRGenerator:
         self._immunes.clear()
         self._reflexes.clear()
         self._heals.clear()
+        self._channels.clear()
 
     # ═════════════════════════════════════════════════════════════════
     #  PIX VISITORS — Structured Cognitive Retrieval
@@ -2323,3 +2337,66 @@ class IRGenerator:
         )
         self._views[node.name] = ir
         return ir
+
+    # ═══════════════════════════════════════════════════════════════
+    #  MOBILE TYPED CHANNELS VISITORS — Fase 13
+    #  (paper_mobile_channels.md §3, §4 — IRChannel / IREmit /
+    #   IRPublish / IRDiscover; π-calc structurally embedded in
+    #   the containing flow or listen body)
+    # ═══════════════════════════════════════════════════════════════
+
+    def _visit_channel(self, node: ast.ChannelDefinition) -> IRChannel:
+        """Lower ChannelDefinition → IRChannel (declarative — IRProgram.channels).
+
+        Channels are typed handles, not provisioning intentions, so they
+        do NOT enter the IRIntentionTree.  Handlers retrieve them by
+        name when interpreting the embedded IREmit / IRPublish /
+        IRDiscover steps that reduce inside flows or listeners.
+        """
+        ir = IRChannel(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            message=node.message,
+            qos=node.qos,
+            lifetime=node.lifetime,
+            persistence=node.persistence,
+            shield_ref=node.shield_ref,
+        )
+        self._channels[node.name] = ir
+        return ir
+
+    def _visit_emit(self, node: ast.EmitStatement) -> IREmit:
+        """Lower EmitStatement → IREmit (Chan-Output / Chan-Mobility).
+
+        `value_is_channel` is computed by checking whether `value_ref`
+        resolves to a previously-lowered IRChannel.  The flag lets the
+        runtime interpret the emit either as a typed message delivery
+        or — under second-order mobility (paper §3.2) — as a handle
+        passing operation, without re-resolving symbols.
+        """
+        return IREmit(
+            source_line=node.line,
+            source_column=node.column,
+            channel_ref=node.channel_ref,
+            value_ref=node.value_ref,
+            value_is_channel=node.value_ref in self._channels,
+        )
+
+    def _visit_publish(self, node: ast.PublishStatement) -> IRPublish:
+        """Lower PublishStatement → IRPublish (Publish-Ext, paper §4.3)."""
+        return IRPublish(
+            source_line=node.line,
+            source_column=node.column,
+            channel_ref=node.channel_ref,
+            shield_ref=node.shield_ref,
+        )
+
+    def _visit_discover(self, node: ast.DiscoverStatement) -> IRDiscover:
+        """Lower DiscoverStatement → IRDiscover (dual of publish)."""
+        return IRDiscover(
+            source_line=node.line,
+            source_column=node.column,
+            capability_ref=node.capability_ref,
+            alias=node.alias,
+        )

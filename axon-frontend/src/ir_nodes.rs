@@ -63,6 +63,8 @@ pub struct IRProgram {
     /// §λ-L-E Fase 9 — UI cognitiva declarativa (compiled).
     pub components: Vec<IRComponent>,
     pub views: Vec<IRView>,
+    /// §λ-L-E Fase 13 — Mobile typed channels (compiled).
+    pub channels: Vec<IRChannel>,
 }
 
 impl IRProgram {
@@ -108,6 +110,7 @@ impl IRProgram {
             heals: Vec::new(),
             components: Vec::new(),
             views: Vec::new(),
+            channels: Vec::new(),
         }
     }
 }
@@ -665,6 +668,12 @@ pub enum IRFlowNode {
     ComputeApply(IRComputeApplyStep),
     Listen(IRListenStep),
     DaemonStep(IRDaemonStepNode),
+    /// §λ-L-E Fase 13 — π-calc output prefix (Chan-Output / Chan-Mobility).
+    Emit(IREmit),
+    /// §λ-L-E Fase 13 — capability extrusion (Publish-Ext).
+    Publish(IRPublish),
+    /// §λ-L-E Fase 13 — dual of publish (typed handle import).
+    Discover(IRDiscover),
     Persist(IRPersistStep),
     Retrieve(IRRetrieveStep),
     Mutate(IRMutateStep),
@@ -963,6 +972,9 @@ pub struct IRListenStep {
     pub source_line: u32,
     pub source_column: u32,
     pub channel: String,
+    /// §λ-L-E Fase 13 D4 — true ⇒ `channel` is a declared
+    /// `IRChannel` ref; false ⇒ legacy string topic.
+    pub channel_is_ref: bool,
     pub event_alias: String,
 }
 
@@ -1193,4 +1205,60 @@ pub struct IRAxonEndpoint {
     pub timeout: String,
     /// §ESK Fase 6.1 — κ regulatory class on the boundary.
     pub compliance: Vec<String>,
+}
+
+// ── §λ-L-E Fase 13 — Mobile Typed Channels IR ───────────────────────────────
+
+/// Compiled `channel Name { … }` declaration.
+///
+/// Direct port of `axon.compiler.ir_nodes.IRChannel`.  Lives in
+/// `IRProgram.channels`; emit/publish/discover reductions embed in
+/// their containing flow/listener (paper §3 + §4 — π-calc prefix
+/// discipline preserved structurally, not lifted to top-level ops).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRChannel {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub message: String,        // surface spelling — Order | Channel<Order> | …
+    pub qos: String,
+    pub lifetime: String,
+    pub persistence: String,
+    pub shield_ref: String,
+}
+
+/// Compiled emit step — `c⟨v⟩.P` (Chan-Output / Chan-Mobility).
+///
+/// `value_is_channel = true` ⇒ resolved at lowering time as a channel
+/// handle (second-order mobility, paper §3.2); the runtime dispatches
+/// on this flag without re-resolving symbols.
+#[derive(Debug, Clone, Serialize)]
+pub struct IREmit {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub channel_ref: String,
+    pub value_ref: String,
+    pub value_is_channel: bool,
+}
+
+/// Compiled publish step — capability extrusion (Publish-Ext, paper §4.3).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRPublish {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub channel_ref: String,
+    pub shield_ref: String,
+}
+
+/// Compiled discover step — dual of publish.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRDiscover {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub capability_ref: String,
+    pub alias: String,
 }

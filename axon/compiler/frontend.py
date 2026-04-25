@@ -30,30 +30,56 @@ from .type_checker import (
 
 @dataclass(frozen=True)
 class FrontendDiagnostic:
-    """Structured diagnostic exposed by the frontend boundary."""
+    """Structured diagnostic exposed by the frontend boundary.
+
+    `severity` is `"error"` (default) or `"warning"`.  Errors fail the
+    check; warnings (Fase 13.e — D4 string-topic deprecation, future
+    soft diagnostics) surface in CLI output without failing unless the
+    caller requested strict mode.
+    """
 
     stage: str
     message: str
     line: int = 0
     column: int = 0
+    severity: str = "error"
 
 
 @dataclass(frozen=True)
 class FrontendCheckResult:
-    """Result of running the frontend through type checking."""
+    """Result of running the frontend through type checking.
+
+    `diagnostics` is the union of errors and warnings; consumers can
+    filter by `.severity`.  `ok` is True iff there are no errors —
+    warnings alone do not fail a check.  CLI strict-mode promotes
+    warnings to errors at the rendering layer.
+    """
 
     token_count: int
     declaration_count: int
     diagnostics: tuple[FrontendDiagnostic, ...] = ()
 
     @property
+    def errors(self) -> tuple[FrontendDiagnostic, ...]:
+        return tuple(d for d in self.diagnostics if d.severity == "error")
+
+    @property
+    def warnings(self) -> tuple[FrontendDiagnostic, ...]:
+        return tuple(d for d in self.diagnostics if d.severity == "warning")
+
+    @property
     def ok(self) -> bool:
-        return not self.diagnostics
+        return not self.errors
 
 
 @dataclass(frozen=True)
 class FrontendCompileResult:
-    """Result of compiling AXON source through IR generation."""
+    """Result of compiling AXON source through IR generation.
+
+    `diagnostics` is the union of errors and warnings.  Compilation
+    succeeds (ir_program populated) when there are no errors; warnings
+    accompany a successful compile and surface to the caller.
+    """
 
     token_count: int
     declaration_count: int
@@ -61,8 +87,16 @@ class FrontendCompileResult:
     ir_program: IRProgram | None = None
 
     @property
+    def errors(self) -> tuple[FrontendDiagnostic, ...]:
+        return tuple(d for d in self.diagnostics if d.severity == "error")
+
+    @property
+    def warnings(self) -> tuple[FrontendDiagnostic, ...]:
+        return tuple(d for d in self.diagnostics if d.severity == "warning")
+
+    @property
     def ok(self) -> bool:
-        return self.ir_program is not None and not self.diagnostics
+        return self.ir_program is not None and not self.errors
 
 
 @dataclass(frozen=True)
@@ -100,7 +134,8 @@ class PythonFrontendImplementation:
 
     def compile_source(self, source: str, filename: str) -> FrontendCompileResult:
         analysis = self._analyze_source(source, filename)
-        if analysis.diagnostics or analysis.ast is None:
+        has_errors = any(d.severity == "error" for d in analysis.diagnostics)
+        if has_errors or analysis.ast is None:
             return FrontendCompileResult(
                 token_count=analysis.token_count,
                 declaration_count=analysis.declaration_count,
@@ -126,7 +161,7 @@ class PythonFrontendImplementation:
         return FrontendCompileResult(
             token_count=analysis.token_count,
             declaration_count=analysis.declaration_count,
-            diagnostics=(),
+            diagnostics=analysis.diagnostics,
             ir_program=ir_program,
         )
 
@@ -152,28 +187,34 @@ class PythonFrontendImplementation:
             )
 
         declaration_count = len(ast.declarations) if hasattr(ast, "declarations") else 0
-        type_errors = TypeChecker(ast).check()
+        checker = TypeChecker(ast)
+        type_errors = checker.check()
+        type_warnings = checker.warnings
 
-        if type_errors:
-            return _AnalysisResult(
-                token_count=token_count,
-                declaration_count=declaration_count,
-                diagnostics=tuple(
-                    FrontendDiagnostic(
-                        stage="type_checker",
-                        message=error.message,
-                        line=error.line,
-                        column=error.column,
-                    )
-                    for error in type_errors
-                ),
-                ast=ast,
+        diagnostics = tuple(
+            FrontendDiagnostic(
+                stage="type_checker",
+                message=err.message,
+                line=err.line,
+                column=err.column,
+                severity="error",
             )
+            for err in type_errors
+        ) + tuple(
+            FrontendDiagnostic(
+                stage="type_checker",
+                message=warn.message,
+                line=warn.line,
+                column=warn.column,
+                severity="warning",
+            )
+            for warn in type_warnings
+        )
 
         return _AnalysisResult(
             token_count=token_count,
             declaration_count=declaration_count,
-            diagnostics=(),
+            diagnostics=diagnostics,
             ast=ast,
         )
 

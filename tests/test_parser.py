@@ -11,8 +11,12 @@ from axon.compiler.parser import Parser
 from axon.compiler.ast_nodes import (
     AxonEndpointDefinition,
     AnchorConstraint,
+    ChannelDefinition,
     ConditionalNode,
     ContextDefinition,
+    DaemonDefinition,
+    DiscoverStatement,
+    EmitStatement,
     EnsembleDefinition,
     FabricDefinition,
     FlowDefinition,
@@ -29,6 +33,7 @@ from axon.compiler.ast_nodes import (
     PersonaDefinition,
     ProbeDirective,
     ProgramNode,
+    PublishStatement,
     ReasonChain,
     RecallNode,
     ReconcileDefinition,
@@ -1418,3 +1423,267 @@ class TestHeal:
     def test_heal_invalid_mode_rejected(self):
         with pytest.raises(AxonParseError, match="Invalid mode"):
             _parse('heal H { source: V mode: reckless scope: tenant }')
+
+
+# ────────────────────────────────────────────────────────────────────
+# Mobile Typed Channels — Fase 13.a
+# (paper_mobile_channels.md §3, plan_io_cognitivo.md / fase_13)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestChannelDefinition:
+    """Parser handles channel declarations as affine first-class resources."""
+
+    def test_channel_full(self):
+        source = '''channel OrdersCreated {
+  message: Order
+  qos: at_least_once
+  lifetime: affine
+  persistence: ephemeral
+  shield: PublicBroker
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert isinstance(node, ChannelDefinition)
+        assert node.name == "OrdersCreated"
+        assert node.message == "Order"
+        assert node.qos == "at_least_once"
+        assert node.lifetime == "affine"
+        assert node.persistence == "ephemeral"
+        assert node.shield_ref == "PublicBroker"
+
+    def test_channel_defaults_per_paper(self):
+        tree = _parse('channel C { message: Order }')
+        node = tree.declarations[0]
+        assert isinstance(node, ChannelDefinition)
+        assert node.qos == "at_least_once"          # paper §3, D1 default
+        assert node.lifetime == "affine"            # D1 — affine handles
+        assert node.persistence == "ephemeral"      # D3 default
+
+    def test_channel_second_order_message_type(self):
+        """A channel can carry another channel handle (paper §3.3 mobility)."""
+        source = '''channel BrokerHandoff {
+  message: Channel<Order>
+  qos: exactly_once
+}'''
+        tree = _parse(source)
+        node = tree.declarations[0]
+        assert isinstance(node, ChannelDefinition)
+        assert node.message == "Channel<Order>"
+        assert node.qos == "exactly_once"
+
+    def test_channel_nested_channel_message_type(self):
+        """Mobility composes — Channel<Channel<T>> must parse."""
+        tree = _parse('channel Meta { message: Channel<Channel<Order>> }')
+        node = tree.declarations[0]
+        assert node.message == "Channel<Channel<Order>>"
+
+    def test_channel_invalid_qos_rejected(self):
+        source = '''channel C {
+  message: Order
+  qos: bestEffort
+}'''
+        with pytest.raises(AxonParseError, match="Invalid qos"):
+            _parse(source)
+
+    def test_channel_invalid_lifetime_rejected(self):
+        source = '''channel C {
+  message: Order
+  lifetime: eternal
+}'''
+        with pytest.raises(AxonParseError, match="Invalid lifetime"):
+            _parse(source)
+
+    def test_channel_invalid_persistence_rejected(self):
+        source = '''channel C {
+  message: Order
+  persistence: forever
+}'''
+        with pytest.raises(AxonParseError, match="Invalid persistence"):
+            _parse(source)
+
+    def test_channel_all_qos_values_accepted(self):
+        for qos in ("at_most_once", "at_least_once", "exactly_once",
+                    "broadcast", "queue"):
+            tree = _parse(f'channel C {{ message: T qos: {qos} }}')
+            assert tree.declarations[0].qos == qos
+
+    def test_channel_persistence_persistent_axonstore(self):
+        tree = _parse(
+            'channel C { message: Order persistence: persistent_axonstore }'
+        )
+        assert tree.declarations[0].persistence == "persistent_axonstore"
+
+    def test_channel_explicit_linear_lifetime(self):
+        """Affine is default but linear must be selectable for one-shot channels."""
+        tree = _parse('channel C { message: T lifetime: linear }')
+        assert tree.declarations[0].lifetime == "linear"
+
+    def test_channel_explicit_persistent_lifetime(self):
+        """Persistent (`!Channel<T>` in §2 — the bang exponential)."""
+        tree = _parse('channel C { message: T lifetime: persistent }')
+        assert tree.declarations[0].lifetime == "persistent"
+
+
+class TestEmitStatement:
+    """Output prefix `c⟨v⟩.P` (Chan-Output) and mobility (Chan-Mobility)."""
+
+    def test_emit_value(self):
+        source = '''flow f() -> Out {
+  emit OrdersCreated(payload)
+}'''
+        tree = _parse(source)
+        flow = tree.declarations[0]
+        assert isinstance(flow, FlowDefinition)
+        emit = flow.body[0]
+        assert isinstance(emit, EmitStatement)
+        assert emit.channel_ref == "OrdersCreated"
+        assert emit.value_ref == "payload"
+
+    def test_emit_channel_handle_for_mobility(self):
+        """Sending a channel handle as the value — second-order mobility."""
+        source = '''flow f() -> Out {
+  emit BrokerHandoff(OrdersCreated)
+}'''
+        tree = _parse(source)
+        emit = tree.declarations[0].body[0]
+        assert isinstance(emit, EmitStatement)
+        assert emit.channel_ref == "BrokerHandoff"
+        assert emit.value_ref == "OrdersCreated"
+
+
+class TestPublishStatement:
+    """Capability extrusion (Publish-Ext) — D8 mandates `within <Shield>`."""
+
+    def test_publish_within_shield(self):
+        source = '''flow f() -> Cap {
+  publish OrdersCreated within PublicBroker
+}'''
+        tree = _parse(source)
+        pub = tree.declarations[0].body[0]
+        assert isinstance(pub, PublishStatement)
+        assert pub.channel_ref == "OrdersCreated"
+        assert pub.shield_ref == "PublicBroker"
+
+    def test_publish_without_within_rejected(self):
+        """Bare `publish C` is a compile error — D8 requires shield gate."""
+        source = '''flow f() -> Cap {
+  publish OrdersCreated
+}'''
+        with pytest.raises(AxonParseError):
+            _parse(source)
+
+
+class TestDiscoverStatement:
+    """Discover (dual of publish) — `as <alias>` is mandatory for affinity."""
+
+    def test_discover_binds_alias(self):
+        source = '''flow f() -> Out {
+  discover OrdersCreated as orders_ch
+}'''
+        tree = _parse(source)
+        disc = tree.declarations[0].body[0]
+        assert isinstance(disc, DiscoverStatement)
+        assert disc.capability_ref == "OrdersCreated"
+        assert disc.alias == "orders_ch"
+
+    def test_discover_without_alias_rejected(self):
+        source = '''flow f() -> Out {
+  discover OrdersCreated
+}'''
+        with pytest.raises(AxonParseError):
+            _parse(source)
+
+
+class TestListenDualMode:
+    """D4 — dual-mode listen: typed channel ref OR legacy string topic."""
+
+    def test_listen_typed_channel_ref(self):
+        """Canonical Fase 13 form: `listen ChannelName as alias`."""
+        source = '''daemon D() {
+  listen OrdersCreated as ev {
+    step S { ask: "process" }
+  }
+}'''
+        tree = _parse(source)
+        daemon = tree.declarations[0]
+        assert isinstance(daemon, DaemonDefinition)
+        listener = daemon.listeners[0]
+        assert listener.channel_expr == "OrdersCreated"
+        assert listener.channel_is_ref is True       # typed ref, not string
+        assert listener.event_alias == "ev"
+
+    def test_listen_string_topic_legacy(self):
+        """Legacy form: `listen "topic"` — preserved (deprecated, removed in v2.0)."""
+        source = '''daemon D() {
+  listen "orders.created" as ev {
+    step S { ask: "process" }
+  }
+}'''
+        tree = _parse(source)
+        listener = tree.declarations[0].listeners[0]
+        assert listener.channel_expr == "orders.created"
+        assert listener.channel_is_ref is False      # string topic
+        assert listener.event_alias == "ev"
+
+    def test_listen_dual_mode_in_same_daemon(self):
+        """Both forms can coexist during the v1.4.x → v2.0 migration."""
+        source = '''daemon Mixed() {
+  listen OrdersCreated as canonical_ev {
+    step S { ask: "process" }
+  }
+  listen "legacy.topic" as legacy_ev {
+    step S { ask: "handle" }
+  }
+}'''
+        tree = _parse(source)
+        listeners = tree.declarations[0].listeners
+        assert len(listeners) == 2
+        assert listeners[0].channel_is_ref is True
+        assert listeners[0].channel_expr == "OrdersCreated"
+        assert listeners[1].channel_is_ref is False
+        assert listeners[1].channel_expr == "legacy.topic"
+
+
+class TestChannelIntegration:
+    """End-to-end Fase 13.a parse criterion — paper §9 worked example."""
+
+    def test_paper_example_parses(self):
+        """The paper §9 example `hand_off` flow + OrderConsumer daemon must parse."""
+        source = '''
+channel OrdersCreated {
+  message: Order
+  qos: at_least_once
+  lifetime: affine
+  persistence: ephemeral
+  shield: PublicBroker
+}
+
+channel BrokerHandoff {
+  message: Channel<Order>
+  qos: exactly_once
+  lifetime: affine
+  persistence: persistent_axonstore
+}
+
+daemon OrderConsumer() {
+  goal: "consume orders"
+  listen BrokerHandoff as ch {
+    step S { ask: "delegate" }
+  }
+}
+
+flow hand_off() -> Cap {
+  emit BrokerHandoff(OrdersCreated)
+  publish OrdersCreated within PublicBroker
+}
+'''
+        tree = _parse(source)
+        kinds = [type(d).__name__ for d in tree.declarations]
+        assert kinds == [
+            "ChannelDefinition", "ChannelDefinition",
+            "DaemonDefinition", "FlowDefinition",
+        ]
+        flow = tree.declarations[3]
+        body_kinds = [type(s).__name__ for s in flow.body]
+        assert body_kinds == ["EmitStatement", "PublishStatement"]

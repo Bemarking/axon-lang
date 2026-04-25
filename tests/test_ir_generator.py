@@ -1728,3 +1728,320 @@ heal Patch {
         assert d["immunes"][0]["node_type"] == "immune"
         assert d["reflexes"][0]["node_type"] == "reflex"
         assert d["heals"][0]["node_type"] == "heal"
+
+
+# ────────────────────────────────────────────────────────────────────
+# Mobile Typed Channels — Fase 13.c
+# (paper_mobile_channels.md §3 + §4 — IRChannel / IREmit / IRPublish /
+#  IRDiscover; π-calc structurally embedded in containing flow/listener)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestChannelIR:
+    """IR generator lowers Channel declarations to IRChannel nodes."""
+
+    def test_channel_lowered_with_all_fields(self):
+        from axon.compiler.ir_nodes import IRChannel
+        ir = _compile('''
+type Order { id: String }
+shield Gate { scan: [pii_leak] }
+channel C {
+  message: Order
+  qos: at_least_once
+  lifetime: affine
+  persistence: ephemeral
+  shield: Gate
+}
+''')
+        assert len(ir.channels) == 1
+        ch = ir.channels[0]
+        assert isinstance(ch, IRChannel)
+        assert ch.name == "C"
+        assert ch.message == "Order"
+        assert ch.qos == "at_least_once"
+        assert ch.lifetime == "affine"
+        assert ch.persistence == "ephemeral"
+        assert ch.shield_ref == "Gate"
+
+    def test_channel_defaults_match_paper_d1(self):
+        ir = _compile('''
+type Order { id: String }
+channel C { message: Order }
+''')
+        ch = ir.channels[0]
+        assert ch.qos == "at_least_once"
+        assert ch.lifetime == "affine"
+        assert ch.persistence == "ephemeral"
+        assert ch.shield_ref == ""
+
+    def test_channel_second_order_message_preserved(self):
+        """Channel<Order> is preserved verbatim in IR for runtime resolution."""
+        ir = _compile('''
+type Order { id: String }
+channel C1 { message: Order }
+channel C2 { message: Channel<Order> }
+channel C3 { message: Channel<Channel<Order>> }
+''')
+        names_to_msgs = {c.name: c.message for c in ir.channels}
+        assert names_to_msgs == {
+            "C1": "Order",
+            "C2": "Channel<Order>",
+            "C3": "Channel<Channel<Order>>",
+        }
+
+    def test_channel_persistent_axonstore_lowered(self):
+        ir = _compile('''
+type Order { id: String }
+channel C { message: Order persistence: persistent_axonstore }
+''')
+        assert ir.channels[0].persistence == "persistent_axonstore"
+
+    def test_channel_not_in_intention_tree(self):
+        """Channels are declarative; only manifest/observe enter the Free Monad tree."""
+        ir = _compile('''
+type Order { id: String }
+channel C { message: Order }
+''')
+        # No manifest/observe → tree stays None.
+        assert ir.intention_tree is None
+
+    def test_channel_serializes_to_dict(self):
+        ir = _compile('''
+type Order { id: String }
+shield Gate { scan: [pii_leak] }
+channel C { message: Order shield: Gate }
+''')
+        d = ir.to_dict()
+        assert len(d["channels"]) == 1
+        ch_d = d["channels"][0]
+        assert ch_d["node_type"] == "channel"
+        assert ch_d["name"] == "C"
+        assert ch_d["message"] == "Order"
+        assert ch_d["shield_ref"] == "Gate"
+
+
+class TestEmitIR:
+    """IR generator lowers EmitStatement → IREmit (Chan-Output / Chan-Mobility)."""
+
+    def test_emit_scalar_payload_value_is_channel_false(self):
+        from axon.compiler.ir_nodes import IREmit
+        ir = _compile('''
+type Order { id: String }
+channel Out { message: Order }
+flow f() -> O { emit Out(payload) }
+''')
+        emit = ir.flows[0].steps[0]
+        assert isinstance(emit, IREmit)
+        assert emit.channel_ref == "Out"
+        assert emit.value_ref == "payload"
+        assert emit.value_is_channel is False
+
+    def test_emit_mobility_value_is_channel_true(self):
+        """Emit a channel-as-value — value_is_channel resolves at lowering."""
+        from axon.compiler.ir_nodes import IREmit
+        ir = _compile('''
+type Order { id: String }
+channel Inner { message: Order }
+channel Outer { message: Channel<Order> }
+flow f() -> O { emit Outer(Inner) }
+''')
+        emit = ir.flows[0].steps[0]
+        assert isinstance(emit, IREmit)
+        assert emit.channel_ref == "Outer"
+        assert emit.value_ref == "Inner"
+        assert emit.value_is_channel is True
+
+    def test_emit_serializes_to_dict(self):
+        ir = _compile('''
+type Order { id: String }
+channel Out { message: Order }
+flow f() -> O { emit Out(payload) }
+''')
+        d = ir.to_dict()
+        emit_d = d["flows"][0]["steps"][0]
+        assert emit_d["node_type"] == "emit"
+        assert emit_d["channel_ref"] == "Out"
+        assert emit_d["value_ref"] == "payload"
+        assert emit_d["value_is_channel"] is False
+
+
+class TestPublishIR:
+    """IR generator lowers PublishStatement → IRPublish (Publish-Ext)."""
+
+    def test_publish_lowered(self):
+        from axon.compiler.ir_nodes import IRPublish
+        ir = _compile('''
+type Order { id: String }
+shield Gate { scan: [pii_leak] }
+channel C { message: Order shield: Gate }
+flow f() -> Cap { publish C within Gate }
+''')
+        pub = ir.flows[0].steps[0]
+        assert isinstance(pub, IRPublish)
+        assert pub.channel_ref == "C"
+        assert pub.shield_ref == "Gate"
+
+    def test_publish_serializes_to_dict(self):
+        ir = _compile('''
+type Order { id: String }
+shield Gate { scan: [] }
+channel C { message: Order shield: Gate }
+flow f() -> Cap { publish C within Gate }
+''')
+        d = ir.to_dict()
+        pub_d = d["flows"][0]["steps"][0]
+        assert pub_d["node_type"] == "publish"
+        assert pub_d["channel_ref"] == "C"
+        assert pub_d["shield_ref"] == "Gate"
+
+
+class TestDiscoverIR:
+    """IR generator lowers DiscoverStatement → IRDiscover (dual of publish)."""
+
+    def test_discover_lowered(self):
+        from axon.compiler.ir_nodes import IRDiscover
+        ir = _compile('''
+type Order { id: String }
+shield Gate { scan: [] }
+channel C { message: Order shield: Gate }
+flow f() -> O { discover C as ch }
+''')
+        disc = ir.flows[0].steps[0]
+        assert isinstance(disc, IRDiscover)
+        assert disc.capability_ref == "C"
+        assert disc.alias == "ch"
+
+    def test_discover_serializes_to_dict(self):
+        ir = _compile('''
+type Order { id: String }
+shield Gate { scan: [] }
+channel C { message: Order shield: Gate }
+flow f() -> O { discover C as ch }
+''')
+        d = ir.to_dict()
+        disc_d = d["flows"][0]["steps"][0]
+        assert disc_d["node_type"] == "discover"
+        assert disc_d["capability_ref"] == "C"
+        assert disc_d["alias"] == "ch"
+
+
+class TestListenIRDualMode:
+    """IRListen now carries channel_is_ref for dual-mode dispatch (D4)."""
+
+    def test_listen_typed_ref_carries_flag(self):
+        from axon.compiler.ir_nodes import IRListen
+        ir = _compile('''
+type Order { id: String }
+channel C { message: Order }
+daemon D() {
+  goal: "x"
+  listen C as ev { step S { ask: "p" } }
+}
+''')
+        lis = ir.daemons[0].listeners[0]
+        assert isinstance(lis, IRListen)
+        assert lis.channel_topic == "C"
+        assert lis.channel_is_ref is True
+
+    def test_listen_string_topic_legacy_flag_false(self):
+        from axon.compiler.ir_nodes import IRListen
+        ir = _compile('''
+daemon D() {
+  goal: "x"
+  listen "topic.x" as ev { step S { ask: "p" } }
+}
+''')
+        lis = ir.daemons[0].listeners[0]
+        assert isinstance(lis, IRListen)
+        assert lis.channel_topic == "topic.x"
+        assert lis.channel_is_ref is False
+
+
+class TestChannelIRIntegration:
+    """End-to-end paper §9 lowering — all four IR shapes coexist."""
+
+    def test_paper_example_lowers_completely(self):
+        ir = _compile('''
+type Order { id: String }
+shield PublicBroker { scan: [pii_leak] }
+
+channel OrdersCreated {
+  message: Order
+  qos: at_least_once
+  lifetime: affine
+  persistence: ephemeral
+  shield: PublicBroker
+}
+
+channel BrokerHandoff {
+  message: Channel<Order>
+  qos: exactly_once
+  lifetime: affine
+  persistence: persistent_axonstore
+}
+
+daemon OrderConsumer() {
+  goal: "consume"
+  listen OrdersCreated as order_event {
+    step S { ask: "process" }
+  }
+}
+
+flow hand_off() -> Cap {
+  emit BrokerHandoff(OrdersCreated)
+  publish OrdersCreated within PublicBroker
+}
+''')
+        # Channel declarations
+        names_to_msgs = {c.name: c.message for c in ir.channels}
+        assert names_to_msgs == {
+            "OrdersCreated": "Order",
+            "BrokerHandoff": "Channel<Order>",
+        }
+        # Daemon listener typed ref
+        listener = ir.daemons[0].listeners[0]
+        assert listener.channel_topic == "OrdersCreated"
+        assert listener.channel_is_ref is True
+        # Flow body — emit (mobility) + publish
+        flow_steps = [s.node_type for s in ir.flows[0].steps]
+        assert flow_steps == ["emit", "publish"]
+        emit, publish = ir.flows[0].steps
+        assert emit.value_is_channel is True   # OrdersCreated is a channel
+        assert emit.channel_ref == "BrokerHandoff"
+        assert publish.shield_ref == "PublicBroker"
+
+    def test_paper_example_serializes_completely(self):
+        ir = _compile('''
+type Order { id: String }
+shield Gate { scan: [] }
+channel C { message: Order shield: Gate }
+flow f() -> Cap {
+  emit C(payload)
+  publish C within Gate
+  discover C as alias
+}
+''')
+        d = ir.to_dict()
+        # All four IR shapes serialize with correct node_type
+        assert d["channels"][0]["node_type"] == "channel"
+        flow_steps_types = [s["node_type"] for s in d["flows"][0]["steps"]]
+        assert flow_steps_types == ["emit", "publish", "discover"]
+
+    def test_emit_inside_listen_lowered(self):
+        """Embedded reductions: emit/publish/discover inside a listener body."""
+        ir = _compile('''
+type Order { id: String }
+shield Gate { scan: [] }
+channel In { message: Order }
+channel Out { message: Order shield: Gate }
+daemon D() {
+  goal: "x"
+  listen In as ev {
+    emit Out(ev)
+    publish Out within Gate
+  }
+}
+''')
+        lis = ir.daemons[0].listeners[0]
+        child_types = [c.node_type for c in lis.children]
+        assert child_types == ["emit", "publish"]
