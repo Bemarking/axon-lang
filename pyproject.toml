@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 [project]
 name = "axon-lang"
 version = "1.4.2"
-description = "AXON v1.4.2 — Mobile Typed Channels. Adds first-class typed channels with π-calculus mobility (paper_mobile_channels.md): Channel<T> as affine resource, channel-as-value (Chan-Mobility, paper §3.2), capability extrusion via shield-mediated publish (D8, paper §3.4), discover for typed dynamic import. Includes second-order session types (Honda-Yoshida 1999), runtime TypedEventBus with QoS dispatch, and a migration path from legacy string topics (deprecated v1.4.x, removed v2.0). Builds on v1.4.1 axon-frontend extraction."
+description = "AXON v1.4.2 — Mobile Typed Channels. First-class typed channels with π-calculus mobility (Channel<T> as affine resource, channel-as-value, capability extrusion via shield-mediated publish, discover for typed dynamic import), second-order session types (Honda-Yoshida 1999), runtime TypedEventBus with QoS dispatch, migration path from legacy string topics (removed v2.0). See paper_mobile_channels.md. Builds on v1.4.1 axon-frontend extraction."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
