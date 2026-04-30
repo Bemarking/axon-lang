@@ -1,0 +1,224 @@
+name: Coordinated Cross-Stack Release
+
+# Single-button release for the AXON ecosystem.
+#
+# Bumps version atomically across:
+#   - pyproject.toml          (Python `axon-lang` package)
+#   - axon/__init__.py        (`axon.__version__`)
+#   - axon-rs/Cargo.toml      (Rust `axon-lang` crate)
+#   - tests/test_cli_mvp_smoke.py + tests/test_frontend_contract_golden.py
+#                             (golden-file version asserts)
+#
+# Source of truth for the bump rules: `[tool.bumpversion]` in pyproject.toml.
+# AXON_VERSION constant in Rust is resolved at compile time via
+# `env!("CARGO_PKG_VERSION")` — no string literal needs touching there.
+#
+# Triggers:
+#   - workflow_dispatch with `bump_type` (patch / minor / major) — most common
+#   - workflow_dispatch with explicit `version` (e.g. "2.0.0-rc1") — overrides bump_type
+#
+# Side effects on success:
+#   1. Commit pushed to the dispatching branch with message
+#      `release(vX.Y.Z): coordinated cross-stack bump`
+#   2. Annotated tag `vX.Y.Z` (Python release train)
+#   3. Annotated tag `rust-vX.Y.Z` (alias — triggers rust_release.yml binary build)
+#   4. Both tags pushed to origin (and to enterprise if AXON_PUSH_ENTERPRISE is true)
+#   5. Python suite + Rust suite verified green BEFORE the bump commit lands
+#
+# This workflow does NOT run `cargo publish` or `twine upload` — those remain
+# explicit follow-up steps once the release commit is on master, so a
+# bump-and-rollback is safe (no immutable registry side-effects).
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: "SemVer bump kind (patch / minor / major). Ignored if `version` is provided."
+        required: false
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: "Explicit target version (e.g. '2.0.0-rc1'). If set, overrides bump_type."
+        required: false
+        default: ""
+        type: string
+      push_enterprise:
+        description: "Also push tags to the `enterprise` remote (requires the remote to be configured)."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  # Only one coordinated release in flight per branch.
+  group: coordinated-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Bump + verify + commit + tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout (full history so tags are visible)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use a token that can push back to the branch.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "axon-release-bot"
+          git config user.email "release-bot@bemarking.com.co"
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            axon-rs/target
+            axon-frontend/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install Python dev deps (bump-my-version, build, twine, pytest)
+        run: |
+          python -m pip install --upgrade pip
+          # Editable install pulls in the [project.optional-dependencies].dev
+          # group declared in pyproject.toml — bump-my-version, pytest, etc.
+          pip install -e ".[dev]"
+
+      - name: Verify clean working tree
+        run: |
+          if ! git diff-index --quiet HEAD --; then
+            echo "::error::Working tree is dirty — bump-my-version refuses to run."
+            git status
+            exit 1
+          fi
+
+      - name: Compute target version
+        id: target
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            echo "mode=explicit" >> "$GITHUB_OUTPUT"
+            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=bump" >> "$GITHUB_OUTPUT"
+            echo "value=${{ inputs.bump_type }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pre-bump Python tests (lockstep guard)
+        run: |
+          # Run the version-pinning tests at the *current* version BEFORE
+          # the bump — they must be green so we know the bump's only delta
+          # is the version literal, not a regression sneaking in.
+          python -m pytest tests/test_cli_mvp_smoke.py tests/test_frontend_contract_golden.py -q
+
+      - name: Bump version atomically
+        id: bump
+        run: |
+          if [[ "${{ steps.target.outputs.mode }}" == "explicit" ]]; then
+            bump-my-version bump --new-version "${{ steps.target.outputs.value }}" patch
+          else
+            bump-my-version bump "${{ steps.target.outputs.value }}"
+          fi
+          # bump-my-version creates the commit itself (commit = true in
+          # pyproject.toml). Capture the new version for downstream steps.
+          NEW_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.+)"/\1/')
+          echo "new_version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Bumped to ${NEW_VERSION}"
+
+      - name: Regenerate Cargo.lock with new version
+        run: |
+          cd axon-rs
+          # Touch the lockfile entry for axon-lang (the renamed crate) so
+          # the bumped version propagates into Cargo.lock without a full
+          # network rebuild.
+          cargo update --workspace --offline --quiet || cargo update --quiet
+          if ! git diff --quiet axon-rs/Cargo.lock 2>/dev/null && [ -f Cargo.lock ]; then
+            cd ..
+            git add axon-rs/Cargo.lock
+            git commit --amend --no-edit
+          fi
+
+      - name: Post-bump Python tests
+        run: |
+          python -m pytest tests/test_cli_mvp_smoke.py tests/test_frontend_contract_golden.py -q
+
+      - name: Post-bump Rust tests
+        run: |
+          cd axon-rs
+          cargo test --lib --quiet
+
+      - name: Create dual annotated tags (vX.Y.Z + rust-vX.Y.Z)
+        run: |
+          NEW="${{ steps.bump.outputs.new_version }}"
+          MSG="v${NEW} — coordinated cross-stack release.
+
+          Python: axon-lang ${NEW} (PyPI)
+          Rust:   axon-lang ${NEW} (crates.io) — alias rust-v${NEW} triggers
+                  the binary release workflow (rust_release.yml) which builds
+                  static binaries for linux-musl, macos-universal, windows-msvc.
+
+          Bumped via .github/workflows/coordinated-release.yml + bump-my-version
+          ([tool.bumpversion] in pyproject.toml)."
+
+          git tag -a "v${NEW}" -m "${MSG}"
+          git tag -a "rust-v${NEW}" -m "${MSG}"
+
+      - name: Push commit + tags to origin
+        run: |
+          git push origin HEAD
+          git push origin "v${{ steps.bump.outputs.new_version }}"
+          git push origin "rust-v${{ steps.bump.outputs.new_version }}"
+
+      - name: Push tags to enterprise (opt-in)
+        if: ${{ inputs.push_enterprise }}
+        run: |
+          # Best-effort — silently skip if the enterprise remote is not
+          # configured on this runner. Local devs typically have both
+          # remotes; CI runners need the remote added explicitly.
+          if git remote get-url enterprise >/dev/null 2>&1; then
+            git push enterprise "v${{ steps.bump.outputs.new_version }}" || true
+            git push enterprise "rust-v${{ steps.bump.outputs.new_version }}" || true
+          else
+            echo "::warning::No `enterprise` remote configured — skipping enterprise push."
+          fi
+
+      - name: Summary
+        run: |
+          NEW="${{ steps.bump.outputs.new_version }}"
+          {
+            echo "## :rocket: Coordinated release v${NEW}"
+            echo ""
+            echo "| Stack | Status |"
+            echo "|---|---|"
+            echo "| Python \`axon-lang\` | bumped to ${NEW} (commit on \`${GITHUB_REF_NAME}\`) |"
+            echo "| Rust \`axon-lang\` | bumped to ${NEW} (commit on \`${GITHUB_REF_NAME}\`) |"
+            echo "| Tag \`v${NEW}\` | pushed to origin |"
+            echo "| Tag \`rust-v${NEW}\` | pushed to origin (triggers \`rust_release.yml\`) |"
+            echo ""
+            echo "## Follow-up (manual, irreversible — not done by this workflow)"
+            echo ""
+            echo "1. \`python -m build && python -m twine upload dist/axon_lang-${NEW}*\` — push to PyPI"
+            echo "2. \`cd axon-rs && cargo publish\` — push to crates.io"
+            echo "3. \`gh release create v${NEW} --notes-file …\` — GitHub Release with changelog"
+          } >> "$GITHUB_STEP_SUMMARY"
