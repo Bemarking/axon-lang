@@ -1,10 +1,10 @@
 ---
 title: "Plan vivo: Fase 13 — Mobile Typed Channels (π-calculus mobility + λ-L-E integration)"
-status: ACTIVE — D1–D9 fijadas 2026-04-24; 13.0 (paper) en curso
+status: SHIPPED — todas las sub-fases [DONE] (incluye 13.f.2 cierre cross-stack v1.5.0 el 2026-04-27)
 owner: AXON Language Team
 created: 2026-04-24
-updated: 2026-04-24 (D1–D9 fijadas)
-target: axon-lang v1.4.2 + axon-enterprise v1.2.2
+updated: 2026-04-27 (13.f.2 closed — Rust runtime parity, release v1.5.0)
+target: axon-lang v1.5.0 + axon-rs v1.5.0 (Fase 13 fully GA cross-stack)
 depends_on: Fase 4 (session types) DONE · Fase 12 (workspace refactor) DONE · Fase 8 (Rust runtime) WIP
 ---
 
@@ -261,8 +261,46 @@ daemon LegacyProcessor {
 
 **Criterio de cierre 13.f.1:** ✓ Suite Rust completa: **83 passed, 0 failures, 0 regresiones** (vs 49 baseline pre-13.f). Suite Python sigue **3745 passed, 0 failures**. CLI `axon check --strict` funcional en Rust. Paridad byte-identical Python ↔ Rust verificada manualmente sobre el ejemplo §9 del paper. Contrato Fase 12.c mantenido: `axon-frontend` sigue zero-runtime-deps (solo `serde`).
 
-### 13.f.2 — Rust runtime parity (TypedEventBus en axon-rs) `[DEFERRED]`
-> El runtime nativo (`axon-rs/src/runtime/channels/typed.rs` — port del módulo Python `axon/runtime/channels/typed.py` con `TypedChannelHandle`/`Capability`/`TypedChannelRegistry`/`TypedEventBus`) queda como sub-tarea diferida. La frontend parity desbloquea LSP, golden-IR contracts y compile-time verification — el runtime es un consumidor downstream del IR ya emitido. Programado para release subsiguiente o cuando un adopter Rust-side requiera typed EventBus end-to-end. Hasta entonces, el flujo `axon compile` Rust + interpretación Python coexisten sin pérdida de garantías estáticas.
+### 13.f.2 — Rust runtime parity (TypedEventBus en axon-rs) `[DONE]` ✓
+- **13.f.2.1** Nuevo árbol de módulos [axon-rs/src/runtime/channels/mod.rs](../axon-rs/src/runtime/channels/mod.rs) + [axon-rs/src/runtime/channels/typed.rs](../axon-rs/src/runtime/channels/typed.rs) — port directo de `axon/runtime/channels/typed.py`. Decisión arquitectónica: el typed bus Rust **no se monta sobre el `EventBus` broadcast existente** (que sirve lifecycle de daemons con semántica fan-out) sino que owns su propio transport con FIFO single-consumer per channel — eso preserva la semántica QoS Python 1:1. Ambos buses coexisten en el mismo proceso para concerns diferentes. Cableado en [axon-rs/src/runtime/mod.rs](../axon-rs/src/runtime/mod.rs) como `pub mod channels;`. `[DONE]`
+- **13.f.2.2** Tipos públicos paridad exacta:
+  - `TypedChannelHandle` con `is_publishable()`, `carries_channel()`, `inner_message_type()`, `from_ir(&IRChannel)`. Defaults D1 (qos=at_least_once, lifetime=affine, persistence=ephemeral, no shield).
+  - `Capability` (immutable struct) con `capability_id`/`channel_name`/`shield_ref`/`delta_pub` (default 0.05 — paper §3.4 lower bound)/`issued_at`.
+  - `TypedChannelRegistry` con `register`/`register_from_ir`/`get`/`has`/`names()` (sorted).
+  - `TypedEventBus` con `from_ir_program(&IRProgram)` factory que itera `ir.channels: Vec<IRChannel>`.
+  - `TypedPayload` enum (`Scalar(serde_json::Value)` | `Handle(TypedChannelHandle)`) — sustituye Python's `payload_is_handle: bool` keyword argument por sum type type-system-enforced.
+  - `ShieldComplianceFn = Arc<dyn Fn(&str, &TypedChannelHandle) -> bool + Send + Sync>` — permite hookear ESK-aware checker production-side. `[DONE]`
+- **13.f.2.3** Errores estructurados en `TypedChannelError` (Display + std::error::Error implementados):
+  - `ChannelNotFound { name, registered }` — name no en registry, lista los registrados como en Python
+  - `SchemaMismatch(String)` — runtime D3 enforcement (defense-in-depth)
+  - `CapabilityGate(String)` — D8 (publish sin shield, shield mismatch, capability revocada/forged/cross-bus)
+  - `LifetimeViolation { name, count }` — linear consumido > 1 vez
+  - `Transport(String)` — fallo de transport subyacente (mpsc closed/dropped) — variante Rust-específica; Python usa RuntimeError equivalente
+- **13.f.2.4** Schema enforcement runtime (paper §3.1, §3.2): `emit` rechaza scalar→second-order, handle→first-order, second-order schema mismatch, payload no-handle con flag mobility. Mirror exacto Chan-Output / Chan-Mobility. `[DONE]`
+- **13.f.2.5** QoS dispatch (paper §3 + Fase 13 D7) — cinco modos sobre `tokio::sync::mpsc` (single-consumer FIFO) + lista de senders broadcast:
+  - `at_most_once` — best-effort, drop silencioso si transport cerrado (test verifica ambos: delivery normal + cierre transport)
+  - `at_least_once` — default, FIFO transport
+  - `exactly_once` — dedup por `event_id` in-process via `HashMap<channel, HashSet<event_id>>`; cross-process diferido (parity con Python 13.d note)
+  - `broadcast` — fan-out a `subscribe_broadcast()` queues; `receive` directo rechazado
+  - `queue` — single-consumer FIFO
+- **13.f.2.6** Capability gate (D8 + paper §3.4): `publish` requiere shield no-vacío, valida `is_publishable`, exige equality `shield arg == handle.shield_ref`, invoca `compliance_check` predicate. `discover` consume capability one-shot; capabilities forjadas o de otra instancia bus rechazadas. `[DONE]`
+- **13.f.2.7** Lifetime accounting via `consumed_count` por handle dentro del registry; linear viola en consumición #2 (test); affine y persistent sin upper bound (test).  `[DONE]`
+- **13.f.2.8** Tests — **44 nuevos** en `runtime::channels::typed::tests` (mix `#[test]` sync + `#[tokio::test]` async), todos pasando:
+  - 5 Handle (defaults D1, is_publishable, carries_channel, inner_message_type unwrap, from_ir round-trip)
+  - 5 Registry (register/get, unknown raises con registered list, overwrite, sorted names, register_from_ir)
+  - 2 Bus bootstrap (from_ir_program, default compliance permisivo)
+  - 3 Emit base (scalar round-trip, unknown channel error, event_id+timestamp)
+  - 4 Emit mobility (handle through second-order, schema mismatch interno, scalar→second-order rechazado, handle→first-order rechazado)
+  - 8 Publish (capability returned, empty shield rejected, unpublishable rejected, wrong shield rejected, unknown channel, default delta_pub=0.05, compliance predicate veto, predicate handle inspection)
+  - 3 Discover (returns handle + consumes cap + double rejected, forged rejected, cross-bus capability rejected)
+  - 7 QoS (at_least_once default, at_most_once delivers + silent drop, exactly_once dedup, broadcast fan-out 2 subs, broadcast subscribe rejection, broadcast receive rejection, queue FIFO ordering)
+  - 3 Lifetime (affine multi-emit OK, linear second-emit raises, persistent unrestricted)
+  - 1 Paper §9 e2e (producer→emit→publish→discover→receive con Order payload)
+  - 1 Error display (ChannelNotFound + LifetimeViolation rendering)
+  - 2 Edge (capability_id único, close_all drains)
+- **13.f.2.9** **Coexistencia con `EventBus` daemon-supervisor**: el typed bus es un módulo independiente; el broadcast EventBus existente sigue intacto y sus 974 tests baseline pasan sin regresión. Suite axon-rs `--lib`: **1018 passed (974 + 44 nuevos), 0 failed**.
+
+**Criterio de cierre 13.f.2:** ✓ Suite axon-rs `--lib`: **1018 passed, 0 failures, 0 regresiones** (vs 974 baseline pre-13.f.2). Suite axon-frontend sigue 103 passed (sin tocar). Paridad estructural Python ↔ Rust completa: errores, handle, capability, registry, bus con QoS×5, lifetime, second-order mobility, paper §9 worked example. Adopters Rust-side ahora obtienen typed EventBus end-to-end — el flujo `axon compile` + runtime nativo Rust corre con las mismas garantías que `axon compile` + interpretación Python. Fase 13 cierra como **fully GA cross-stack**.
 
 ### 13.g — axon-lsp support `[DONE]` ✓
 - **Decisión de scope:** El repo hermano `axon-lsp` está en estado scaffold (solo `main.rs` placeholder). Construir una LSP completa quedaba fuera del scope razonable de un solo turn. El move de mayor valor: **exponer en `axon-frontend` los primitives de análisis** que el LSP necesitará para implementar hover/autocomplete/go-to-def/find-refs sobre canales — disponibles ya como API pública, byte-identical con lo que el type checker ve. Cuando axon-lsp v0.1.0 arranque, el wire-up de Fase 13 será trivial (path dep + llamadas directas). Decisión registrada en el plan doc de axon-lsp como prerequisito 0.b satisfecho. `[DONE]`
@@ -334,16 +372,19 @@ daemon LegacyProcessor {
 | 13.d | Runtime TypedEventBus (Python) | ✅ DONE | 52 |
 | 13.e | Migration path + `--strict` flag | ✅ DONE | 34 |
 | 13.f.1 | Rust frontend parity | ✅ DONE | 34 (Rust) |
-| 13.f.2 | Rust runtime port (TypedEventBus) | ⏸️ DEFERRED | — |
+| 13.f.2 | Rust runtime port (TypedEventBus) | ✅ DONE | 44 (Rust) |
 | 13.g | axon-lsp analysis primitives | ✅ DONE | 20 (Rust) |
 | 13.h | Integration + examples + release v1.4.2 | ✅ DONE | 10 |
+| 13.h.bis | Cierre cross-stack — release v1.5.0 (Fase 13.f.2) | ✅ DONE | — |
 
 **Totales:**
 - Tests Python nuevos en Fase 13: **176** (21 + 41 + 18 + 52 + 34 + 10)
-- Tests Rust nuevos en Fase 13: **54** (34 frontend parity + 20 channel_analysis)
+- Tests Rust nuevos en Fase 13: **98** (34 frontend parity + 20 channel_analysis + 44 runtime parity)
 - Suite Python total: **3755 passed, 0 failures**
-- Suite Rust total: **103 passed, 0 failures**
+- Suite Rust axon-frontend: **103 passed, 0 failures**
+- Suite Rust axon-rs: **1018 passed, 0 failures** (974 baseline + 44 typed channels)
 - Paridad Python↔Rust IR sobre paper §9: **byte-identical (0 líneas diff)**
+- Paridad Python↔Rust runtime: **estructural completa** (TypedChannelHandle/Capability/TypedChannelRegistry/TypedEventBus/QoS×5/lifetime/mobility/§9 e2e)
 
 ---
 
