@@ -46,11 +46,18 @@ on:
         required: false
         default: ""
         type: string
-      push_enterprise:
-        description: "Also push tags to the `enterprise` remote (requires the remote to be configured)."
-        required: false
-        default: false
-        type: boolean
+
+# Tags `vX.Y.Z` and `rust-vX.Y.Z` are AXON-LANG release identifiers and
+# only ever live on the `axon-lang` (origin) remote. The sibling
+# `axon-enterprise` repository tracks its own release train under tags
+# `enterprise/vX.Y.Z` (driven by its own workflow `Enterprise Release`)
+# and consumes axon-lang strictly through the published `axon-lang`
+# Python and Rust packages — NOT through cross-repo tag mirroring.
+# Push axon-lang tags to enterprise corrupts the enterprise repo: the
+# referenced commits are not ancestors of `enterprise/master`, so any
+# enterprise workflow that triggers on those tags fails to check the
+# SHA out (GitHub Actions returns "Repository not found" — security
+# obfuscation for "SHA exists but is not on a branch").
 
 permissions:
   contents: write
@@ -186,22 +193,14 @@ jobs:
 
       - name: Push commit + tags to origin
         run: |
+          # Tags vX.Y.Z and rust-vX.Y.Z are pushed ONLY to origin. See
+          # the block-level comment at the top of this workflow for why
+          # cross-repo tag mirroring to `enterprise` is intentionally
+          # absent. The enterprise repo runs its own release workflow
+          # against its own tag namespace `enterprise/vX.Y.Z`.
           git push origin HEAD
           git push origin "v${{ steps.bump.outputs.new_version }}"
           git push origin "rust-v${{ steps.bump.outputs.new_version }}"
-
-      - name: Push tags to enterprise (opt-in)
-        if: ${{ inputs.push_enterprise }}
-        run: |
-          # Best-effort — silently skip if the enterprise remote is not
-          # configured on this runner. Local devs typically have both
-          # remotes; CI runners need the remote added explicitly.
-          if git remote get-url enterprise >/dev/null 2>&1; then
-            git push enterprise "v${{ steps.bump.outputs.new_version }}" || true
-            git push enterprise "rust-v${{ steps.bump.outputs.new_version }}" || true
-          else
-            echo "::warning::No `enterprise` remote configured — skipping enterprise push."
-          fi
 
       - name: Summary
         run: |
