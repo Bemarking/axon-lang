@@ -1,9 +1,9 @@
 [package]
 name = "axon"
-version = "1.4.2"
+version = "1.5.0"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
 edition = "2021"
-description = "AXON v1.4.2 — Mobile Typed Channels. Adds first-class typed channels with π-calculus mobility (paper_mobile_channels.md): channel/emit/publish/discover surface + second-order session types + capability extrusion via shield-mediated publish (D8). Native Rust runtime with byte-identical parity vs Python reference. Builds on v1.4.1 axon-frontend extraction; Fase 12.c contract maintained (zero runtime deps in axon-frontend)."
+description = "AXON v1.5.0 — Fase 13 fully GA cross-stack. Closes 13.f.2: native Rust TypedEventBus runtime (axon::runtime::channels::typed) with full structural parity vs Python reference (axon/runtime/channels/typed.py): TypedChannelHandle/Capability/TypedChannelRegistry, QoS×5 dispatch (at_most_once/at_least_once/exactly_once/broadcast/queue), affine/linear/persistent lifetime tracking, π-calculus mobility (second-order channel-as-value), capability extrusion via shield-mediated publish (D8), one-shot discover. Per-channel transport on tokio::sync::mpsc (FIFO single-consumer) coexists with the broadcast-style daemon-supervisor EventBus. Adopters running on the Rust runtime now get end-to-end typed channels with the same guarantees as the Python interpreter."
 
 [dependencies]
 # §Fase 12.a — compiler frontend (lexer/parser/AST/type_checker/IR/checker +
