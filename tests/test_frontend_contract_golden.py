@@ -161,13 +161,13 @@ def test_compile_stdout_golden_contract() -> None:
     assert meta["source"].endswith("examples/contract_analyzer.axon")
     assert "/" in meta["source"]
     assert meta["backend"] == "anthropic"
-    # Lives in lockstep with `axon.__version__` and `pyproject.toml`.
-    # Bumped to 1.5.0 (2026-04-27) coordinating cross-stack closure of
-    # Fase 13.f.2 — axon-rs runtime got typed channels parity, so
-    # axon-lang and axon-rs sync at 1.5.0. Python package unchanged
-    # functionally from 1.4.2 (Mobile Typed Channels: π-calc mobility
-    # + capability extrusion + second-order session types).
-    assert meta["axon_version"] == "1.5.0"
+    # Lives in lockstep with `axon.__version__`, `pyproject.toml`, and
+    # `axon-rs/Cargo.toml`. Bumps coordinated via bump-my-version (see
+    # `[tool.bumpversion]` block in pyproject.toml + the
+    # `coordinated-release.yml` workflow). 1.5.1 (2026-04-27) inaugurates
+    # the lockstep cross-stack policy: every release ships axon-lang
+    # Python and axon-lang Rust at the same version.
+    assert meta["axon_version"] == "1.5.1"
 
     _assert_ir_node_shape(payload["personas"][0], "name")
     _assert_ir_node_shape(payload["contexts"][0], "name", "memory_scope", "language", "depth")

@@ -1,16 +1,32 @@
 [package]
-name = "axon"
-version = "1.5.0"
+name = "axon-lang"
+version = "1.5.1"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
 edition = "2021"
-description = "AXON v1.5.0 — Fase 13 fully GA cross-stack. Closes 13.f.2: native Rust TypedEventBus runtime (axon::runtime::channels::typed) with full structural parity vs Python reference (axon/runtime/channels/typed.py): TypedChannelHandle/Capability/TypedChannelRegistry, QoS×5 dispatch (at_most_once/at_least_once/exactly_once/broadcast/queue), affine/linear/persistent lifetime tracking, π-calculus mobility (second-order channel-as-value), capability extrusion via shield-mediated publish (D8), one-shot discover. Per-channel transport on tokio::sync::mpsc (FIFO single-consumer) coexists with the broadcast-style daemon-supervisor EventBus. Adopters running on the Rust runtime now get end-to-end typed channels with the same guarantees as the Python interpreter."
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/Bemarking/axon-lang"
+readme = "../README.md"
+keywords = ["axon", "compiler", "runtime", "ai", "language"]
+categories = ["compilers", "development-tools::ffi", "asynchronous"]
+description = "AXON v1.5.1 — first crates.io publication of the AXON language full-stack runtime. Lexer/parser/type-checker/IR generator (re-exported from axon-frontend) plus the native Rust runtime: typed channels (TypedEventBus with QoS×5, π-calculus mobility, capability extrusion via shield D8 — Fase 13.f.2), Free Monad CPS handlers (Fase 2), lease kernel + reconcile loop (Fase 3+5), Epistemic Security Kernel (ESK Fase 6), Trust Types + ReplayLog (Fase 11.a+11.c), Stateful PEM over WebSocket (Fase 11.d), Ontological Tool Synthesis (Fase 11.e), Mobile Typed Channels (Fase 13). Crate publishes as `axon-lang` to mirror the Python PyPI package; library import remains `use axon::*` so existing call sites keep working unchanged."
+
+[lib]
+name = "axon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "axon"
+path = "src/main.rs"
 
 [dependencies]
 # §Fase 12.a — compiler frontend (lexer/parser/AST/type_checker/IR/checker +
 # closed catalogs for Fase 11.a/11.c/11.e) lives in its own crate with
 # zero runtime deps so tooling (axon-lsp, analyzers) can consume it
-# without dragging tokio/axum/sqlx/aws.
-axon-frontend = { path = "../axon-frontend" }
+# without dragging tokio/axum/sqlx/aws. Path is used for in-tree builds;
+# `version` makes the dep cargo-publishable (crates.io requires non-path
+# deps to carry a version specifier).
+axon-frontend = { path = "../axon-frontend", version = "=0.2.0" }
 clap = { version = "4.5", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }

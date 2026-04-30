@@ -32,7 +32,13 @@ use crate::tool_registry::ToolRegistry;
 use crate::tool_validator::{self, EffectTracker};
 use crate::type_checker::TypeChecker;
 
-pub const AXON_VERSION: &str = "1.0.0";
+/// Single source of truth for the AXON version string.
+/// Resolved at compile time from `[package].version` in `Cargo.toml`,
+/// so a single bump there propagates to every caller. Eliminates the
+/// drift that previously had `AXON_VERSION` redeclared as a string
+/// literal in five files (audit_cli.rs, compiler.rs, main.rs, repl.rs,
+/// runner.rs) — each carrying a different stale value.
+pub const AXON_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ── ANSI helpers ─────────────────────────────────────────────────────────────
 

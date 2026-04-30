@@ -20,8 +20,7 @@ use crate::ir_generator::IRGenerator;
 use crate::ir_nodes::IRProgram;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
-
-const AXON_VERSION: &str = "1.4.0";
+use crate::runner::AXON_VERSION;
 
 /// Two-space-indented, key-sorted JSON emission matching Python's
 /// `json.dumps(..., indent=2, sort_keys=True)` with default `ensure_ascii=True`:

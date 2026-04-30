@@ -8,9 +8,8 @@ use std::path::Path;
 use crate::ir_generator::IRGenerator;
 use crate::lexer::{Lexer, LexerError};
 use crate::parser::{ParseError, Parser};
+use crate::runner::AXON_VERSION;
 use crate::type_checker::TypeChecker;
-
-const AXON_VERSION: &str = "1.5.0";
 
 // ── ANSI helpers ─────────────────────────────────────────────────────────────
 

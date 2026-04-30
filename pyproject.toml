@@ -7,8 +7,8 @@ build-backend = "hatchling.build"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-lang"
-version = "1.5.0"
-description = "AXON v1.5.0 — Fase 13 fully GA cross-stack. Coordinate sync with axon-rs v1.5.0 which closes 13.f.2 (native Rust TypedEventBus runtime parity). Python package itself unchanged from v1.4.2 — same first-class typed channels with π-calculus mobility, second-order session types, runtime TypedEventBus with QoS dispatch, migration path from legacy string topics (removed v2.0). See paper_mobile_channels.md."
+version = "1.5.1"
+description = "AXON v1.5.1 — Lockstep cross-stack release. Inaugurates the unified version policy: axon-lang Python + axon-lang Rust crate (renamed from axon-rs for crates.io publication) ship the same version every release, eliminating the compatibility-matrix question. Bumps coordinated via bump-my-version + GitHub Actions workflow. Functional surface unchanged from v1.5.0 — same first-class typed channels with π-calculus mobility, second-order session types, runtime TypedEventBus, migration path from legacy string topics. See paper_mobile_channels.md."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
@@ -174,6 +174,14 @@ dev = [
     "build>=1.2",
     "pyinstaller>=6.13",
     "twine>=6.0",
+    # Coordinated cross-stack version bumping. See [tool.bumpversion] block
+    # below + .github/workflows/coordinated-release.yml — invoked as
+    # `bump-my-version bump {patch|minor|major}` to atomically update
+    # pyproject.toml + axon/__init__.py + axon-rs/Cargo.toml + the test
+    # asserts that pin the version, then commit. Eliminates the drift that
+    # previously had the version literal scattered across five Rust files
+    # (now consolidated to a single env!("CARGO_PKG_VERSION") in runner.rs).
+    "bump-my-version>=0.28",
 ]
 
 # ──────────────────────────────────────────────────────────────────
@@ -252,3 +260,77 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["axon"]
+
+# ──────────────────────────────────────────────────────────────────
+# Coordinated cross-stack version bumping (bump-my-version).
+#
+# Single source of truth for "what version are we on" across the
+# AXON ecosystem: Python package, Rust crate, AXON_VERSION constant
+# (resolved via env!("CARGO_PKG_VERSION") in runner.rs), and the
+# golden-file test asserts. One command bumps them all atomically:
+#
+#   bump-my-version bump patch    # 1.5.1 → 1.5.2
+#   bump-my-version bump minor    # 1.5.1 → 1.6.0
+#   bump-my-version bump major    # 1.5.1 → 2.0.0
+#
+# The companion GitHub Actions workflow
+# .github/workflows/coordinated-release.yml wraps this with test
+# verification + tag creation + dual-remote push, so a release is one
+# `workflow_dispatch` invocation away.
+# ──────────────────────────────────────────────────────────────────
+[tool.bumpversion]
+current_version = "1.5.1"
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
+serialize = ["{major}.{minor}.{patch}"]
+search = "{current_version}"
+replace = "{new_version}"
+regex = false
+ignore_missing_version = false
+ignore_missing_files = false
+tag = false
+sign_tags = false
+allow_dirty = false
+commit = true
+message = "release(v{new_version}): coordinated cross-stack bump"
+moveable_tags = []
+commit_args = ""
+
+# Python package version (pyproject.toml [project].version).
+# Search/replace is targeted so the "v1.5.1" mentions inside the
+# description prose are NOT clobbered — only the canonical
+# `version = "X.Y.Z"` line.
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
+
+# Python __version__ exposed to users via `import axon; axon.__version__`.
+[[tool.bumpversion.files]]
+filename = "axon/__init__.py"
+search = '__version__ = "{current_version}"'
+replace = '__version__ = "{new_version}"'
+
+# Rust crate version (axon-rs/Cargo.toml [package].version). The dep
+# `axon-frontend = { path, version = "=0.2.0" }` deliberately uses a
+# different version literal so it will NOT match this pattern.
+[[tool.bumpversion.files]]
+filename = "axon-rs/Cargo.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
+
+# CLI smoke test that pins the printed version string.
+[[tool.bumpversion.files]]
+filename = "tests/test_cli_mvp_smoke.py"
+search = 'axon-lang {current_version}'
+replace = 'axon-lang {new_version}'
+
+[[tool.bumpversion.files]]
+filename = "tests/test_cli_mvp_smoke.py"
+search = '"axon_version"] == "{current_version}"'
+replace = '"axon_version"] == "{new_version}"'
+
+# Frontend contract golden — the IR JSON _meta.axon_version field.
+[[tool.bumpversion.files]]
+filename = "tests/test_frontend_contract_golden.py"
+search = 'meta["axon_version"] == "{current_version}"'
+replace = 'meta["axon_version"] == "{new_version}"'

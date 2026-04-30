@@ -17,9 +17,8 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use crate::ir_generator::IRGenerator;
 use crate::lexer::{Lexer, LexerError};
 use crate::parser::{ParseError, Parser};
+use crate::runner::AXON_VERSION;
 use crate::type_checker::TypeChecker;
-
-const AXON_VERSION: &str = "0.30.6";
 
 // ── ANSI colors ─────────────────────────────────────────────────────────────
 

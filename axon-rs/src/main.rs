@@ -16,13 +16,12 @@ use axon::plan_diff;
 use axon::repl;
 use axon::replay;
 use axon::runner;
+use axon::runner::AXON_VERSION;
 use axon::trace_stats;
 use axon::tracer;
 
 use clap::{Parser, Subcommand};
 use std::process;
-
-const AXON_VERSION: &str = "1.4.0";
 
 // ── Estructura CLI (espejo del CLI Python) ────────────────────────────────────
 
