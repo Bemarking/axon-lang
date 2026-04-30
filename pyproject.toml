@@ -10,8 +10,8 @@ axon-enterprise = "axon_enterprise.cli:entrypoint"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-enterprise"
-version = "1.2.1"
-description = "Axon Enterprise Edition — RBAC, SSO, Audit Logging, Usage Metering, Compliance Tooling (Fase 10); Replay Tokens + Cognitive-State Persistence (Fase 11); Primitives discovery endpoint (v1.2.1)"
+version = "1.3.0"
+description = "Axon Enterprise Edition — RBAC, SSO, Audit Logging, Usage Metering, Compliance Tooling (Fase 10); Replay Tokens + Cognitive-State Persistence (Fase 11); Primitives discovery endpoint (v1.2.1); v1.3.0 integrates axon-lang 1.5.1 with the native Rust TypedEventBus runtime (Fase 13.f.2) — π-calculus mobility, capability extrusion, QoS-typed channels — surfaced through the platform passthrough layer."
 readme = "README.md"
 license = "LicenseRef-Proprietary"
 requires-python = ">=3.12"
@@ -45,11 +45,15 @@ classifiers = [
 # ──────────────────────────────────────────────────────────────────
 dependencies = [
     # Core (from axon-lang)
-    # v1.4.0 required for Fase 11 primitives (Trust catalogue +
-    # BackpressurePolicy + LegalBasis + OTS backends + seeded
-    # BufferKind registry) surfaced by the v1.2.1 /primitives
-    # endpoint. Earlier axon-lang releases lack those modules.
-    "axon-lang>=1.4.0",
+    # v1.5.1 required for Fase 13.f.2 — the native Rust TypedEventBus
+    # runtime (axon::runtime::channels::typed) that powers typed
+    # channels, π-calculus mobility, and shield-mediated capability
+    # extrusion end-to-end on the Rust runtime. v1.5.1 also inaugurates
+    # the lockstep cross-stack policy: the same version on PyPI and
+    # crates.io every release. Earlier axon-lang releases lack the
+    # Rust runtime parity (frontend parsed but runtime did not execute
+    # the new surface).
+    "axon-lang>=1.5.1",
 
     # Database & ORM
     "sqlalchemy[asyncio]>=2.0.30",
