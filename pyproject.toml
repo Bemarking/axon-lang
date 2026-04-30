@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 [project]
 name = "axon-lang"
 version = "1.5.1"
-description = "AXON v1.5.1 — Lockstep cross-stack release. Inaugurates the unified version policy: axon-lang Python + axon-lang Rust crate (renamed from axon-rs for crates.io publication) ship the same version every release, eliminating the compatibility-matrix question. Bumps coordinated via bump-my-version + GitHub Actions workflow. Functional surface unchanged from v1.5.0 — same first-class typed channels with π-calculus mobility, second-order session types, runtime TypedEventBus, migration path from legacy string topics. See paper_mobile_channels.md."
+description = "AXON v1.5.1 — Lockstep cross-stack release. axon-lang Python + axon-lang Rust crate (renamed from axon-rs, now on crates.io) ship the same version every release, eliminating compatibility-matrix questions. Bumps coordinated via bump-my-version + a GitHub Actions workflow. Functional surface unchanged from v1.5.0: typed channels with pi-calculus mobility, second-order session types, runtime TypedEventBus, migration path from legacy string topics. See paper_mobile_channels.md."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
