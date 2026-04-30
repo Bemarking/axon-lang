@@ -51,6 +51,8 @@ The two products track **independent SemVer trains**. Cross-stack sync happens t
 - **`observability/`** — Prometheus metrics export, distributed tracing (OpenTelemetry), structured logging (`structlog`).
 - **`replay/`** — `ReplayLog` Postgres adapter implementing the `axon-lang` Fase 11.c trait. Lets the platform re-execute any flow from a canonical token.
 - **`cognitive_states/`** — Stateful PEM persistence over WebSocket reconnects (Q32.32 fixed-point density-matrix encoding for bit-identical round-trips). Implements the `axon-lang` Fase 11.d `PersistenceBackend` trait.
+- **`studio/`** — Visual debugger for Axon flows: breakpoints, step-into / step-over, execution snapshots, variable inspection.
+- **`tenant/`** — Request-scoped tenant propagation. Mirrors `axon-rs/src/tenant.rs` so the Python control plane and the Rust data plane share one mental model (`TenantContext` carried via `ContextVar` — Python analogue of `tokio::task_local!`).
 
 ### Platform infrastructure
 
@@ -78,6 +80,8 @@ axon-enterprise/
 │   ├── observability/              # Prometheus + OTel + structlog
 │   ├── replay/                     # ReplayLog Postgres adapter
 │   ├── cognitive_states/           # PEM state persistence (Fase 11.d)
+│   ├── studio/                     # Visual flow debugger
+│   ├── tenant/                     # Request-scoped tenant context
 │   ├── http/                       # API routers + middleware + webhooks
 │   ├── cli/                        # Operator CLI (Typer)
 │   ├── db/                         # SQLAlchemy async base
