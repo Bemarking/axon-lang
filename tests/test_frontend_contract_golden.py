@@ -162,10 +162,12 @@ def test_compile_stdout_golden_contract() -> None:
     assert "/" in meta["source"]
     assert meta["backend"] == "anthropic"
     # Lives in lockstep with `axon.__version__` and `pyproject.toml`.
-    # Bumped to 1.4.2 for Fase 13 (Mobile Typed Channels: π-calc
-    # mobility + capability extrusion + second-order session types);
-    # prior bump 1.4.1 shipped Fase 12.a (axon-frontend extraction).
-    assert meta["axon_version"] == "1.4.2"
+    # Bumped to 1.5.0 (2026-04-27) coordinating cross-stack closure of
+    # Fase 13.f.2 — axon-rs runtime got typed channels parity, so
+    # axon-lang and axon-rs sync at 1.5.0. Python package unchanged
+    # functionally from 1.4.2 (Mobile Typed Channels: π-calc mobility
+    # + capability extrusion + second-order session types).
+    assert meta["axon_version"] == "1.5.0"
 
     _assert_ir_node_shape(payload["personas"][0], "name")
     _assert_ir_node_shape(payload["contexts"][0], "name", "memory_scope", "language", "depth")
