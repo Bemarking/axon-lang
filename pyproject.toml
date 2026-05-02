@@ -10,8 +10,8 @@ axon-enterprise = "axon_enterprise.cli:entrypoint"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-enterprise"
-version = "1.3.0"
-description = "Axon Enterprise Edition — RBAC, SSO, Audit Logging, Usage Metering, Compliance Tooling (Fase 10); Replay Tokens + Cognitive-State Persistence (Fase 11); Primitives discovery endpoint (v1.2.1); v1.3.0 integrates axon-lang 1.5.1 with the native Rust TypedEventBus runtime (Fase 13.f.2) — π-calculus mobility, capability extrusion, QoS-typed channels — surfaced through the platform passthrough layer."
+version = "1.4.0"
+description = "Axon Enterprise — RBAC, SSO, Audit, Metering, Compliance (Fase 10); Replay Tokens + Cognitive State (Fase 11); Primitives endpoint (v1.2.1); v1.3.0 integrated axon-lang 1.5.1 + Rust TypedEventBus (Fase 13.f.2); v1.4.0 integrates axon-lang 1.7.0 closing 13.j (listen-in-flow), 13.k (cross-process exactly-once via ReplayLog), 13.l (Rust runtime executor primitives) — typed channels end-to-end on both stacks."
 readme = "README.md"
 license = "LicenseRef-Proprietary"
 requires-python = ">=3.12"
@@ -45,15 +45,22 @@ classifiers = [
 # ──────────────────────────────────────────────────────────────────
 dependencies = [
     # Core (from axon-lang)
-    # v1.5.1 required for Fase 13.f.2 — the native Rust TypedEventBus
-    # runtime (axon::runtime::channels::typed) that powers typed
-    # channels, π-calculus mobility, and shield-mediated capability
-    # extrusion end-to-end on the Rust runtime. v1.5.1 also inaugurates
-    # the lockstep cross-stack policy: the same version on PyPI and
-    # crates.io every release. Earlier axon-lang releases lack the
-    # Rust runtime parity (frontend parsed but runtime did not execute
-    # the new surface).
-    "axon-lang>=1.5.1",
+    # v1.7.0 required for Fase 13.j/k/l — the three follow-up gaps from
+    # the v1.6.0 cycle:
+    #   - 13.j Listen-in-flow: free-standing `listen` as flow body step
+    #     now dispatched through TypedEventBus (was falling into the
+    #     LLM catch-all branch pre-13.j).
+    #   - 13.k Cross-process exactly_once: TypedEventBus accepts a
+    #     ReplayLog (Fase 11.c); deterministic ReplayToken keyed on
+    #     (channel, event_id) gives cross-replica dedup out-of-the-box.
+    #   - 13.l Rust runtime executor: axon::runtime::channels::executor
+    #     ships a self-contained RunContext + four async dispatchers so
+    #     Rust adopters orchestrate IRPrograms without wiring bus,
+    #     value-ref resolution, and capability/alias scope by hand.
+    # All three are surface-additive — the platform's passthrough layer
+    # exposes them automatically; no migration required for existing
+    # tenants.
+    "axon-lang>=1.7.0",
 
     # Database & ORM
     "sqlalchemy[asyncio]>=2.0.30",
