@@ -336,6 +336,38 @@ daemon LegacyProcessor {
 
 **Criterio de cierre 13.g:** ✓ Suite Rust completa: **103 passed, 0 failures, 0 regresiones** (vs 83 baseline pre-13.g, +20 nuevos para channel_analysis). API pública estable y testeada para los 5 casos de uso LSP del spec original (autocomplete, go-to-def, find-refs, hover, diagnostics extras). Contrato Fase 12.c mantenido. axon-lsp queda con todo el material listo para wire-up cuando arranquen sus sub-fases 0.c-0.g.
 
+### 13.i — Executor integration (Python) + Rust frontend parity for dotted access `[DONE]` ✓
+> Closes the gap reported by adopters working on advanced typed-channel use cases: the channel surface (channel/emit/publish/discover) parsed and type-checked correctly since v1.4.2, and the standalone TypedEventBus existed in both Python (13.d) and Rust (13.f.2) — but **the flow executor had no branches that invoked the bus**. A program with `emit OrdersCreated(payload)` would compile but the executor would either route the step through the LLM client (producing nonsense) or skip it entirely. Sub-fase 13.i wires the four missing layers end-to-end.
+
+- **13.i.1** Parser dotted-access value_ref ([axon/compiler/parser.py](../axon/compiler/parser.py) + [axon-frontend/src/parser.rs](../axon-frontend/src/parser.rs)): new helper `_parse_emit_value_ref` / `parse_emit_value_ref` accepts `IDENTIFIER ('.' (IDENTIFIER | keyword))*`. Closes the exact reproducer adopters posted: `emit Hello(Build.output)` now parses to `value_ref="Build.output"`. Reserved-word segments (`output`, `result`, `message`, `state`, …) are accepted as field-access tail to avoid forcing adopters to fight the parser for common step-output names. The HEAD must still be a real identifier — keeps the rule that emit payloads are either named values or step-output addresses, never reserved-word noise. `[DONE]`
+- **13.i.2** Type checker tolerates dotted access ([axon/compiler/type_checker.py](../axon/compiler/type_checker.py) + [axon-frontend/src/type_checker.rs](../axon-frontend/src/type_checker.rs)): `_check_emit` skips the second-order mobility check when `value_ref` contains `.` — a step result is never itself a channel handle, so the check would always false-positive. Bare-identifier mobility checking is preserved unchanged so wrong handles are still rejected (regression-tested). `[DONE]`
+- **13.i.3** IR generator: no change required. `IREmit.value_is_channel` resolves to `False` automatically for dotted refs because `_channels` is keyed by bare channel names. `[DONE]`
+- **13.i.4** Backend `compile_program` ([axon/backends/base_backend.py](../axon/backends/base_backend.py)): three new isinstance branches (`_CHANNEL_OP_IR_TYPES = (IREmit, IRPublish, IRDiscover)`) routed to `_compile_channel_op_step` which produces metadata-only `CompiledStep` with `emit_apply` / `publish_apply` / `discover_apply` flags + structured payload (channel/value/shield/alias). `ir.channels` are serialised onto `CompiledExecutionUnit.metadata["channel_specs"]` so the executor can bootstrap a TypedEventBus per-unit without holding an IR reference. `[DONE]`
+- **13.i.5** ContextManager extension ([axon/runtime/context_mgr.py](../axon/runtime/context_mgr.py)): four new accessors keep the channel state per-unit:
+  - `set_typed_bus(bus)` / `typed_bus` — the per-unit TypedEventBus injected by the Executor
+  - `record_capability(name, cap)` / `take_capability(name)` — one-shot capability tracking; `take_capability` raises with deterministic message listing recorded channels for debuggability from the trace alone
+  - `bind_discovered_handle(alias, handle)` / `discovered_handles` — alias scope from `discover` steps
+  - `resolve_value_ref(value_ref)` — the runtime-side companion to the parser's dotted-access shape: walks the path against discovered-handles → variables → step-results, supporting both dict and attribute access on intermediate values. Lookup order is `discovered_handles ▶ variables ▶ step_results` — discovered handles win because the binding `discover X as alias` is the only construct that introduces them and shadowing a variable with a discovered handle is paper-§3.4 legal. `[DONE]`
+- **13.i.6** Executor branches + lifecycle ([axon/runtime/executor.py](../axon/runtime/executor.py)):
+  - Three new dispatch branches at the end of `_execute_step` keyed on `step.metadata["{emit,publish,discover}_apply"]`. `[DONE]`
+  - Three new handlers `_execute_emit_step` / `_execute_publish_step` / `_execute_discover_step`. Each validates `ctx.typed_bus` and surfaces a structured `AxonRuntimeError` (with `context.details = "channel_op:{op}"`) if the bus is missing — adopters get a deterministic failure rather than the prior silent mis-routing through the model client.
+  - `emit` resolves the payload via `ctx.resolve_value_ref(value_ref)` for scalars, or via `ctx.discovered_handles` then `bus.registry` for second-order mobility (`value_is_channel=True`). The bus is invoked with `payload_is_handle=True` for the latter. `[DONE]`
+  - `publish` records the returned `Capability` in `ctx.record_capability(channel_name, cap)` so a downstream `discover` consumes it.
+  - `discover` pops the capability with `ctx.take_capability(channel)`, calls `bus.discover(cap)`, binds the resulting handle under `alias` in the discovered-handles scope. Subsequent `emit` steps that reference the alias resolve to the live handle.
+  - **Lifecycle** in `_execute_unit`: bootstraps a `TypedEventBus(TypedChannelRegistry())` from `unit.metadata["channel_specs"]` if any are present, calls `ctx.set_typed_bus(bus)`, and ensures `bus.close_all()` runs in a `finally` so live capabilities, broadcast subscribers, and dedup id sets cannot leak across units even if a step raises mid-unit. `[DONE]`
+- **13.i.7** Tests Python — 24 nuevos en [tests/test_fase_13i_executor_integration.py](../tests/test_fase_13i_executor_integration.py), todos pasando:
+  - 4 `TestParserDottedAccess` (bare identifier baseline, two-segment, three-segment, trailing-dot rejected)
+  - 2 `TestTypeCheckerDottedAccess` (dotted access skips mobility check, bare-id mobility check still runs)
+  - 3 `TestBackendChannelOpsCompile` (emit metadata-only step, publish+discover branches, channel_specs serialised onto unit metadata)
+  - 7 `TestContextManagerResolveValueRef` (bare identifier step, variable wins over step, dotted dict walk, dotted attr walk, unknown head with candidates, intermediate miss, discovered handle shadows variable, take_capability one-shot)
+  - 5 `TestExecutorHandlers` (emit dispatches scalar via bus, emit raises when bus missing, publish records cap then discover consumes it, discover without prior publish raises, publish unpublishable channel surfaces structured error)
+  - 2 `TestEndToEndExecutor` (publish→discover pipeline runs to completion through real `Executor.execute()`, unit lifecycle closes bus even on error)
+- **13.i.8** Tests Rust — 6 nuevos en [axon-frontend/src/parser.rs](../axon-frontend/src/parser.rs) + [axon-frontend/src/type_checker.rs](../axon-frontend/src/type_checker.rs):
+  - 4 parser (bare identifier, two-segment dotted, three-segment dotted, trailing-dot rejected)
+  - 2 type checker (dotted access skips mobility, bare-id mobility still runs)
+
+**Criterio de cierre 13.i:** ✓ Suite Python: **4066 passed, 23 skipped, 0 failures, +24 vs pre-13.i baseline**. Suite axon-rs `--lib`: **1018 passed, 0 failures, 0 regresiones**. Suite axon-frontend `--lib`: **109 passed, 0 failures** (103 baseline + 6 nuevos). El criterion concreto que estaba ausente antes de 13.i: un `publish OrdersCreated within PublicBroker` seguido de `discover OrdersCreated as live` ahora **se ejecuta end-to-end en el `Executor`** — la imagen mental de "compila pero no corre" del paper §9 example queda eliminada. Las tres primitivas (emit / publish / discover) son ahora ciudadanos de primera clase en el dispatch del runtime, con las mismas garantías estructurales (capability tracking, alias scope, lifecycle de bus) que ya tenían los demás non-LLM steps (data_science, compute, axonstore, daemon).
+
 ### 13.h — Integration tests + examples + release `[DONE]` ✓
 - **13.h.1** [examples/mobile_channels.axon](../examples/mobile_channels.axon) — pipeline producer→broker→consumer con mobility (channel-over-channel) + PCI_DSS compliance gate. Documentado con comentarios que mapean a las decisiones D1/D3/D6/D8 + paper §3.1/§3.2/§3.3/§3.4. `axon check --strict` clean en Python y Rust (125 tokens, 6 declarations, 0 errors). `[DONE]`
 - **13.h.2** [examples/secure_publish.axon](../examples/secure_publish.axon) — publish + shield + discover end-to-end con HIPAA gate (`ClinicalGate`) sobre `PatientReading`. Demuestra producer/consumer separados y la regla "discover only on shield-gated channels". `axon check --strict` clean (109 tokens, 6 declarations, 0 errors). `[DONE]`
@@ -376,15 +408,17 @@ daemon LegacyProcessor {
 | 13.g | axon-lsp analysis primitives | ✅ DONE | 20 (Rust) |
 | 13.h | Integration + examples + release v1.4.2 | ✅ DONE | 10 |
 | 13.h.bis | Cierre cross-stack — release v1.5.0 (Fase 13.f.2) | ✅ DONE | — |
+| 13.i | Executor integration + dotted-access value_ref (release v1.6.0) | ✅ DONE | 24 Python + 6 Rust |
 
 **Totales:**
-- Tests Python nuevos en Fase 13: **176** (21 + 41 + 18 + 52 + 34 + 10)
-- Tests Rust nuevos en Fase 13: **98** (34 frontend parity + 20 channel_analysis + 44 runtime parity)
-- Suite Python total: **3755 passed, 0 failures**
-- Suite Rust axon-frontend: **103 passed, 0 failures**
-- Suite Rust axon-rs: **1018 passed, 0 failures** (974 baseline + 44 typed channels)
+- Tests Python nuevos en Fase 13: **200** (21 + 41 + 18 + 52 + 34 + 10 + 24)
+- Tests Rust nuevos en Fase 13: **104** (34 frontend parity + 20 channel_analysis + 44 runtime parity + 6 dotted-access)
+- Suite Python total: **4066 passed, 0 failures** (post-13.i)
+- Suite Rust axon-frontend: **109 passed, 0 failures**
+- Suite Rust axon-rs: **1018 passed, 0 failures**
 - Paridad Python↔Rust IR sobre paper §9: **byte-identical (0 líneas diff)**
 - Paridad Python↔Rust runtime: **estructural completa** (TypedChannelHandle/Capability/TypedChannelRegistry/TypedEventBus/QoS×5/lifetime/mobility/§9 e2e)
+- **Executor integration (Python)**: emit/publish/discover dispatched through `Executor._execute_step` con lifecycle de bus per-unit y capability tracking cross-step (Fase 13.i)
 
 ---
 

@@ -3582,7 +3582,7 @@ class TypeChecker:
             return
 
         # Schema check (D3, paper §3.1 Chan-Input/Chan-Output premises).
-        # Two legal shapes for value_ref:
+        # Three legal shapes for value_ref:
         #   (a) channel.message is a plain type T — value_ref names a
         #       value of type T (let-binding, parameter, or another
         #       declaration).  We cannot fully type-track until 13.c,
@@ -3591,6 +3591,14 @@ class TypeChecker:
         #   (b) channel.message is "Channel<U>" — value_ref must be
         #       a ChannelDefinition whose own message matches U
         #       (mobility, Chan-Mobility, paper §3.2).
+        #   (c) value_ref is a dotted-access path "Step.field..." that
+        #       references a prior step's result (Fase 13.i).  Step
+        #       results are never themselves channel handles, so the
+        #       mobility check below does not apply — we tolerate the
+        #       reference and let the runtime resolve it against
+        #       ctx.get_step_result(...) at emit time.
+        if "." in node.value_ref:
+            return  # case (c) — dotted-access path; runtime-resolved scalar
         ch_def = sym.node
         if not isinstance(ch_def, ChannelDefinition):
             return

@@ -4626,22 +4626,68 @@ class Parser:
         """
         Parse: emit ChannelName(value_ref).
 
-        Output prefix c⟨v⟩.P in π-calculus notation.  The value can
-        be either a payload identifier (of the channel's message type)
-        or — under mobility (D2) — another channel's name.  Both cases
-        produce the same AST shape; the type checker (13.b) dispatches
-        on whether `value_ref` resolves to a ChannelDefinition.
+        Output prefix c⟨v⟩.P in π-calculus notation.  The value can be:
+          - a bare identifier — payload variable or channel name (mobility D2)
+          - a dotted access path — references a prior step's result, e.g.
+            `emit Hello(Build.output)` reads `step_results["Build"]["output"]`
+            at runtime (Fase 13.i — closes the gap reported by adopters where
+            `emit X(Step.output)` failed at parser level).
+
+        Both shapes produce the same AST: `value_ref` is a string that may
+        contain dots. The type checker (13.b) dispatches on whether the
+        bare-identifier case resolves to a ChannelDefinition (mobility) or
+        a payload (scalar). The dotted-access case is always treated as
+        scalar — a step result is never itself a channel handle.
         """
         tok = self._consume(TokenType.EMIT)
         channel = self._consume(TokenType.IDENTIFIER)
         self._consume(TokenType.LPAREN)
-        value = self._consume(TokenType.IDENTIFIER)
+        value_ref = self._parse_emit_value_ref()
         self._consume(TokenType.RPAREN)
         return EmitStatement(
             channel_ref=channel.value,
-            value_ref=value.value,
+            value_ref=value_ref,
             line=tok.line, column=tok.column,
         )
+
+    def _parse_emit_value_ref(self) -> str:
+        """Parse: IDENTIFIER ('.' (IDENTIFIER | keyword))*  → dot-joined string.
+
+        Examples:
+          - `payload`                → "payload"
+          - `OrdersCreated`          → "OrdersCreated"      (mobility candidate)
+          - `Build.output`           → "Build.output"       (step result ref —
+                                       `output` is a reserved keyword in Axon
+                                       but is permitted as a field-access
+                                       segment because step results commonly
+                                       expose `output`, `result`, etc.)
+          - `Analyze.result.score`   → "Analyze.result.score" (nested field)
+
+        Single recursive descent, conservative scope: identifiers + dots only.
+        The HEAD must be a real ``IDENTIFIER`` (otherwise we would happily
+        accept reserved-word noise like `daemon.x` as an emit payload).
+        Subsequent segments after a `.` may be identifiers OR keywords —
+        ``output``, ``result``, ``message``, ``state``, etc. are common
+        field names on step outputs and we do not want adopters to fight
+        the parser for accessing them.
+
+        Function calls, indexing, arithmetic, etc. are intentionally out of
+        scope here — they belong to a generic expression-parser fase if/when
+        Axon needs them. Keeping `emit` value parsing minimal preserves the
+        invariant that emit payloads are either named values or step-output
+        addresses, never computed at emit-time.
+        """
+        head = self._consume(TokenType.IDENTIFIER)
+        parts = [head.value]
+        while self._check(TokenType.DOT):
+            self._advance()  # consume '.'
+            # Accept identifier or keyword for trailing segments. The
+            # `_consume_any_identifier_or_keyword` helper already handles
+            # this distinction in other parser paths (e.g. struct field
+            # access), so reuse it for symmetry.
+            part = self._consume_any_identifier_or_keyword()
+            parts.append(part.value)
+        return ".".join(parts)
 
     def _parse_publish(self) -> PublishStatement:
         """

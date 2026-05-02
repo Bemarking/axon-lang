@@ -107,6 +107,17 @@ class ContextManager:
         self._variables: dict[str, Any] = {}
         self._messages: list[dict[str, str]] = []
         self._current_step: str = ""
+        # ── Fase 13.i — typed-channel runtime integration ──
+        # The Executor injects a TypedEventBus per-unit so emit/publish/
+        # discover steps can dispatch through it. `_capabilities` indexes
+        # the capability tokens published during this unit, keyed by the
+        # channel name they expose so a downstream `discover ChannelName
+        # as alias` can find them. `_discovered_handles` records the
+        # alias bindings that resulted from `discover` so subsequent
+        # references to the alias resolve to the live handle.
+        self._typed_bus: Any = None  # TypedEventBus | None — Any to avoid import cycle
+        self._capabilities: dict[str, Any] = {}      # channel_name → Capability
+        self._discovered_handles: dict[str, Any] = {}  # alias → TypedChannelHandle
 
     # — System prompt —
 
@@ -169,6 +180,120 @@ class ContextManager:
     def completed_steps(self) -> list[str]:
         """Names of all steps that have recorded results, in insertion order."""
         return list(self._step_results.keys())
+
+    def resolve_value_ref(self, value_ref: str) -> Any:
+        """Resolve an `emit` value_ref against the live execution state
+        (Fase 13.i).
+
+        The parser's `_parse_emit_value_ref` accepts two shapes:
+          - bare identifier (e.g. ``payload``)            → variable / step / discovered handle
+          - dotted access  (e.g. ``Build.output.score``)  → step result + nested attribute walk
+
+        Resolution order for the head segment:
+          1. discovered channel handle (alias bound by ``discover X as alias``)
+          2. flow variable (``ctx.set_variable``)
+          3. step result (``ctx.set_step_result``)
+
+        For dotted paths, the head is resolved by the same lookup; subsequent
+        segments walk attribute / mapping access on the result. ``KeyError``
+        is raised on miss with a deterministic message that lists the
+        candidates the executor saw, so failures are debuggable from the
+        trace alone.
+        """
+        if not value_ref:
+            raise KeyError("resolve_value_ref called with empty value_ref")
+
+        parts = value_ref.split(".")
+        head = parts[0]
+
+        # 1) discovered handle wins — the binding `discover C as alias` is
+        # the only mechanism that introduces a TypedChannelHandle into the
+        # local scope, and shadowing a variable with a discovered handle is
+        # legal per paper §3.4.
+        if head in self._discovered_handles:
+            current: Any = self._discovered_handles[head]
+        elif head in self._variables:
+            current = self._variables[head]
+        elif head in self._step_results:
+            current = self._step_results[head]
+        else:
+            raise KeyError(
+                f"value_ref '{value_ref}' — head segment '{head}' is not a "
+                f"variable, step result, or discovered handle. "
+                f"Variables: {list(self._variables.keys())}; "
+                f"Step results: {list(self._step_results.keys())}; "
+                f"Discovered handles: {list(self._discovered_handles.keys())}"
+            )
+
+        # Walk the remaining segments. Each segment is tried first as a
+        # mapping key (most step results are dicts) then as an attribute
+        # (dataclass / object instances). This matches the dual nature of
+        # AXON step outputs: model responses are dicts, while computed /
+        # tool steps may return typed objects.
+        for segment in parts[1:]:
+            if isinstance(current, dict) and segment in current:
+                current = current[segment]
+            elif hasattr(current, segment):
+                current = getattr(current, segment)
+            else:
+                raise KeyError(
+                    f"value_ref '{value_ref}' — cannot resolve '{segment}' on "
+                    f"intermediate value of type {type(current).__name__}"
+                )
+        return current
+
+    # — Typed-channel runtime integration (Fase 13.i) —
+
+    @property
+    def typed_bus(self) -> Any:
+        """The TypedEventBus injected by the Executor for this unit.
+
+        ``None`` until the Executor calls :meth:`set_typed_bus`. Returning
+        ``Any`` keeps the import graph acyclic — ContextManager has no
+        runtime dependency on ``axon.runtime.channels.typed``.
+        """
+        return self._typed_bus
+
+    def set_typed_bus(self, bus: Any) -> None:
+        """Bind the per-unit TypedEventBus. Called once by ``Executor._execute_unit``."""
+        self._typed_bus = bus
+
+    def record_capability(self, channel_name: str, capability: Any) -> None:
+        """Stash a capability token returned by ``publish`` so a downstream
+        ``discover`` step in the same unit can consume it."""
+        self._capabilities[channel_name] = capability
+
+    def take_capability(self, channel_name: str) -> Any:
+        """Pop a previously-recorded capability for the given channel.
+
+        One-shot semantics — capabilities are consumed by the first
+        ``discover`` that asks for them, mirroring the bus-level
+        ``Capability`` lifecycle (issued once → discovered once).
+
+        Raises ``KeyError`` if no capability has been published for that
+        channel in the current unit.
+        """
+        if channel_name not in self._capabilities:
+            raise KeyError(
+                f"No capability recorded for channel '{channel_name}'. "
+                f"Did a `publish {channel_name} within Shield` step run "
+                f"earlier in this unit? Recorded: "
+                f"{list(self._capabilities.keys())}"
+            )
+        return self._capabilities.pop(channel_name)
+
+    def bind_discovered_handle(self, alias: str, handle: Any) -> None:
+        """Register a TypedChannelHandle under the alias produced by
+        ``discover ChannelName as alias`` so subsequent ``emit alias(...)``
+        or value_ref lookups resolve to the live handle."""
+        if not alias:
+            raise ValueError("alias must not be empty")
+        self._discovered_handles[alias] = handle
+
+    @property
+    def discovered_handles(self) -> dict[str, Any]:
+        """Snapshot of the alias → handle bindings (read-only view)."""
+        return dict(self._discovered_handles)
 
     # — Variable bindings (flow parameters & intermediate values) —
 

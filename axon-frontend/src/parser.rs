@@ -3496,17 +3496,62 @@ impl Parser {
     }
 
     /// Parse: `emit ChannelName(value_ref)` — Chan-Output / Chan-Mobility.
+    ///
+    /// `value_ref` accepts a bare identifier (variable / channel name for
+    /// mobility) or a dotted path (`Step.output.field`) referencing a prior
+    /// step result (Fase 13.i — runtime resolves via ContextManager).
     fn parse_emit_step(&mut self) -> Result<FlowStep, ParseError> {
         let tok = self.consume(TokenType::Emit)?;
         let channel = self.consume(TokenType::Identifier)?.value;
         self.consume(TokenType::LParen)?;
-        let value = self.consume(TokenType::Identifier)?.value;
+        let value = self.parse_emit_value_ref()?;
         self.consume(TokenType::RParen)?;
         Ok(FlowStep::Emit(EmitStatement {
             channel_ref: channel,
             value_ref: value,
             loc: Loc { line: tok.line, column: tok.column },
         }))
+    }
+
+    /// Parse: `IDENTIFIER ('.' (IDENTIFIER | keyword))*` → dot-joined string
+    /// (Fase 13.i).
+    ///
+    /// Mirrors the Python `_parse_emit_value_ref` helper exactly so the IR
+    /// JSON for `emit Hello(Build.output)` is byte-identical between the
+    /// two reference implementations.
+    ///
+    /// The HEAD must be a real ``Identifier``. Subsequent segments after a
+    /// `.` may be identifiers OR keywords — common field names like
+    /// ``output``, ``result``, ``message``, ``state``, etc. are reserved
+    /// words in Axon but adopters must be able to write them as
+    /// dotted-access segments. The accepting predicate:
+    ///   - the lexer carried a non-empty `value` (every Word-like token does)
+    ///   - the value's first byte is a letter or underscore (filters out
+    ///     punctuation tokens such as ',', '{', etc.)
+    fn parse_emit_value_ref(&mut self) -> Result<String, ParseError> {
+        let head = self.consume(TokenType::Identifier)?.value;
+        let mut parts = vec![head];
+        while self.check(TokenType::Dot) {
+            self.advance(); // consume '.'
+            let next_tok = self.current().clone();
+            let valid = !next_tok.value.is_empty()
+                && next_tok.value.as_bytes()[0].is_ascii_alphabetic()
+                || next_tok.value.starts_with('_');
+            if !valid {
+                return Err(ParseError {
+                    message: format!(
+                        "Expected identifier or keyword after '.' in dotted \
+                         access, found {:?}",
+                        next_tok.value
+                    ),
+                    line: next_tok.line,
+                    column: next_tok.column,
+                });
+            }
+            self.advance();
+            parts.push(next_tok.value);
+        }
+        Ok(parts.join("."))
     }
 
     /// Parse: `publish ChannelName within ShieldName` — Publish-Ext (D8).
@@ -3692,5 +3737,47 @@ mod fase13_parser_tests {
         } else {
             panic!("expected Daemon");
         }
+    }
+
+    // ── Fase 13.i — emit value_ref accepts dotted access ───────────
+
+    fn extract_first_emit(prog: &Program) -> &EmitStatement {
+        if let Declaration::Flow(f) = &prog.declarations[0] {
+            if let FlowStep::Emit(e) = &f.body[0] {
+                return e;
+            }
+        }
+        panic!("expected emit statement at flow body[0]");
+    }
+
+    #[test]
+    fn emit_accepts_bare_identifier_value_ref() {
+        // Pre-13.i baseline — must keep working.
+        let prog = parse("flow f() -> Out { emit Hello(payload) }").expect("parse");
+        let emit = extract_first_emit(&prog);
+        assert_eq!(emit.channel_ref, "Hello");
+        assert_eq!(emit.value_ref, "payload");
+    }
+
+    #[test]
+    fn emit_accepts_two_segment_dotted_value_ref() {
+        // The exact case adopters reported as broken before 13.i.
+        let prog = parse("flow f() -> Out { emit Hello(Build.output) }").expect("parse");
+        let emit = extract_first_emit(&prog);
+        assert_eq!(emit.value_ref, "Build.output");
+    }
+
+    #[test]
+    fn emit_accepts_three_segment_nested_dotted_value_ref() {
+        let prog = parse("flow f() -> Out { emit Score(Analyze.result.score) }").expect("parse");
+        let emit = extract_first_emit(&prog);
+        assert_eq!(emit.value_ref, "Analyze.result.score");
+    }
+
+    #[test]
+    fn emit_dotted_with_trailing_dot_fails() {
+        // Trailing `.` must still error — every '.' demands an identifier.
+        let result = parse("flow f() -> Out { emit Hello(Build.) }");
+        assert!(result.is_err(), "expected parse error for trailing dot");
     }
 }
