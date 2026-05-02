@@ -31,6 +31,7 @@ from axon.compiler.ir_nodes import (
     IRAggregate,
     IRAssociate,
     IRAxonStore,
+    IRChannel,
     IRComputeApply,
     IRConsensus,
     IRContext,
@@ -38,6 +39,8 @@ from axon.compiler.ir_nodes import (
     IRDaemon,
     IRDataSpace,
     IRDeliberate,
+    IRDiscover,
+    IREmit,
     IRExplore,
     IRFlow,
     IRFocus,
@@ -50,6 +53,7 @@ from axon.compiler.ir_nodes import (
     IRPersona,
     IRProgram,
     IRPsycheSpec,
+    IRPublish,
     IRPurge,
     IRRetrieve,
     IRRun,
@@ -87,6 +91,11 @@ _DAEMON_IR_TYPES = (IRDaemon,)
 
 # IR types that represent AxonStore operations (HoTT transactional persistence)
 _AXONSTORE_IR_TYPES = (IRAxonStore, IRPersist, IRRetrieve, IRMutate, IRPurge, IRTransact)
+
+# IR types that represent Typed Channel operations (Fase 13.i — π-calculus
+# mobility runtime integration). emit/publish/discover bypass the model and
+# route through the TypedEventBus held by the Executor at unit lifetime.
+_CHANNEL_OP_IR_TYPES = (IREmit, IRPublish, IRDiscover)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -314,6 +323,9 @@ class BaseBackend(ABC):
                 elif isinstance(step, _AXONSTORE_IR_TYPES):
                     store_step = self._compile_axonstore_step(step)
                     compiled_steps.append(store_step)
+                elif isinstance(step, _CHANNEL_OP_IR_TYPES):
+                    channel_step = self._compile_channel_op_step(step)
+                    compiled_steps.append(channel_step)
                 else:
                     compiled = self.compile_step(step, ctx)
                     compiled_steps.append(compiled)
@@ -326,6 +338,23 @@ class BaseBackend(ABC):
                 for anchor in run.resolved_anchors
             ]
 
+            # Serialise IRChannel declarations so the Executor can bootstrap
+            # a TypedEventBus per-unit without holding a reference to the IR
+            # itself. Same shape as TypedChannelHandle.from_ir(...) consumes.
+            # (Fase 13.i — closes the gap where channel surface compiled but
+            # the runtime had no way to materialise the bus from IR alone.)
+            channel_specs = [
+                {
+                    "name": ch.name,
+                    "message": ch.message,
+                    "qos": ch.qos,
+                    "lifetime": ch.lifetime,
+                    "persistence": ch.persistence,
+                    "shield_ref": ch.shield_ref,
+                }
+                for ch in ir.channels
+            ]
+
             unit = CompiledExecutionUnit(
                 flow_name=run.flow_name,
                 persona_name=run.persona_name,
@@ -336,12 +365,66 @@ class BaseBackend(ABC):
                 anchor_instructions=anchor_instructions,
                 active_anchors=active_anchors,
                 effort=run.effort,
+                metadata={"channel_specs": channel_specs} if channel_specs else {},
             )
             execution_units.append(unit)
 
         return CompiledProgram(
             backend_name=self.name,
             execution_units=execution_units,
+        )
+
+    @staticmethod
+    def _compile_channel_op_step(step: IRNode) -> CompiledStep:
+        """Compile a typed-channel operation (emit / publish / discover)
+        into a metadata-only step (Fase 13.i).
+
+        These steps bypass the model — the executor routes them through
+        the per-unit ``TypedEventBus`` (held in ``ctx.typed_bus``).
+        Naming convention for ``step_name`` mirrors the data_science /
+        axonstore convention so the executor can keep its dispatch flat.
+        """
+        if isinstance(step, IREmit):
+            return CompiledStep(
+                step_name=f"emit:{step.channel_ref}",
+                user_prompt="",
+                metadata={
+                    "emit_apply": {
+                        "channel_ref": step.channel_ref,
+                        "value_ref": step.value_ref,
+                        "value_is_channel": step.value_is_channel,
+                    },
+                },
+            )
+        if isinstance(step, IRPublish):
+            return CompiledStep(
+                step_name=f"publish:{step.channel_ref}",
+                user_prompt="",
+                metadata={
+                    "publish_apply": {
+                        "channel_ref": step.channel_ref,
+                        "shield_ref": step.shield_ref,
+                    },
+                },
+            )
+        if isinstance(step, IRDiscover):
+            return CompiledStep(
+                step_name=f"discover:{step.capability_ref}",
+                user_prompt="",
+                metadata={
+                    "discover_apply": {
+                        "capability_ref": step.capability_ref,
+                        "alias": step.alias,
+                    },
+                },
+            )
+        # Defensive fallback — _CHANNEL_OP_IR_TYPES is a closed tuple, so
+        # any miss here indicates a node added to the catalogue without a
+        # matching compile branch. Surface it loudly rather than silently
+        # producing a malformed step.
+        raise TypeError(
+            f"_compile_channel_op_step received unexpected IR node "
+            f"{type(step).__name__} (not in _CHANNEL_OP_IR_TYPES)"
         )
 
     @staticmethod

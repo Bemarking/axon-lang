@@ -3032,6 +3032,15 @@ impl<'a> TypeChecker<'a> {
             );
             return;
         }
+        // Fase 13.i — a dotted-access value_ref ("Step.output" or deeper)
+        // references a prior step's result and is always scalar at the
+        // type-check layer. The runtime resolves it via the executor's
+        // ContextManager. Mobility (paper §3.2) is by definition a
+        // bare-identifier case (a declared channel name), so the
+        // second-order check below intentionally skips dotted paths.
+        if node.value_ref.contains('.') {
+            return;
+        }
         // Second-order schema check (paper §3.2 Chan-Mobility): if the
         // outer channel carries `Channel<U>`, the value must resolve to
         // a channel whose own message equals U.  Lookup channel
@@ -3510,5 +3519,47 @@ mod fase13_typecheck_tests {
         assert!(errs.is_empty(), "no errors expected: {:?}", errs);
         assert_eq!(warns.len(), 1, "only legacy emits a warning");
         assert!(warns[0].message.contains("legacy"));
+    }
+
+    // ── Fase 13.i — type checker tolerates dotted-access value_ref ──
+
+    #[test]
+    fn emit_dotted_value_ref_does_not_trip_mobility_check() {
+        // Previously, a second-order channel with a dotted-access value
+        // would falsely error as "not a channel handle". With 13.i the
+        // mobility check must skip when value_ref contains '.'.
+        let src = r#"
+            channel Inner { message: Bytes qos: at_least_once }
+            channel Outer { message: Channel<Bytes> qos: at_least_once }
+            flow f() -> Out {
+                emit Outer(Build.handle)
+            }
+        "#;
+        let errs = check_errors(src);
+        let mobility = errs.iter().filter(|e|
+            e.message.contains("second-order schema mismatch")
+            || e.message.contains("not a channel handle")
+        ).count();
+        assert_eq!(mobility, 0,
+            "dotted access must not trip mobility check; got: {:?}", errs);
+    }
+
+    #[test]
+    fn emit_bare_identifier_mobility_check_still_runs() {
+        // Regression guard — non-dotted refs still get the second-order
+        // check applied, so a wrong handle is still rejected.
+        let src = r#"
+            channel Inner { message: Bytes qos: at_least_once }
+            channel Wrong { message: Integer qos: at_least_once }
+            channel Outer { message: Channel<Bytes> qos: at_least_once }
+            flow f() -> Out {
+                emit Outer(Wrong)
+            }
+        "#;
+        let errs = check_errors(src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("second-order schema mismatch")),
+            "expected mobility violation for bare-id ref, got: {:?}", errs
+        );
     }
 }

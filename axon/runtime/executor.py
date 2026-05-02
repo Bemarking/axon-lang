@@ -522,6 +522,35 @@ class Executor:
             tracer=tracer,
         )
 
+        # ── Fase 13.i — Bootstrap a per-unit TypedEventBus from the
+        # channel_specs that BaseBackend.compile_program serialised onto
+        # the unit metadata. The bus has unit lifetime: created here,
+        # closed in the `finally` block below so capabilities and
+        # broadcast subscriptions cannot leak across runs. If the unit
+        # has zero channel declarations the bus stays None — emit /
+        # publish / discover steps will then surface a structured
+        # AxonRuntimeError instead of silently routing through the model.
+        channel_specs = unit.metadata.get("channel_specs", []) if unit.metadata else []
+        typed_bus: Any = None
+        if channel_specs:
+            from axon.runtime.channels.typed import (
+                TypedChannelHandle,
+                TypedChannelRegistry,
+                TypedEventBus,
+            )
+            registry = TypedChannelRegistry()
+            for spec in channel_specs:
+                registry.register(TypedChannelHandle(
+                    name=spec["name"],
+                    message=spec["message"],
+                    qos=spec.get("qos", "at_least_once"),
+                    lifetime=spec.get("lifetime", "affine"),
+                    persistence=spec.get("persistence", "ephemeral"),
+                    shield_ref=spec.get("shield_ref", ""),
+                ))
+            typed_bus = TypedEventBus(registry)
+            ctx.set_typed_bus(typed_bus)
+
         # Set the memory backend's tracer for this unit
         if isinstance(self._memory, InMemoryBackend):
             self._memory._tracer = tracer
@@ -554,6 +583,12 @@ class Executor:
                 step_name=step.step_name if step_results else "",
                 data={"error": error_msg},
             )
+        finally:
+            # Tear down the bus regardless of success/failure so live
+            # capabilities, broadcast subscribers, and dedup id sets do
+            # not survive into the next unit.
+            if typed_bus is not None:
+                typed_bus.close_all()
 
         unit_duration = (time.perf_counter() - unit_start) * 1000
         tracer.end_span(metadata={"duration_ms": round(unit_duration, 2)})
@@ -707,6 +742,25 @@ class Executor:
         # _execute_store_step — HoTT transactional persistence.
         if step.metadata.get("axonstore"):
             return await self._execute_store_step(
+                step=step, ctx=ctx, tracer=tracer,
+            )
+
+        # ── Typed channel ops (Fase 13.i — emit / publish / discover) ──
+        # These bypass the model entirely and route through the per-unit
+        # TypedEventBus held in ctx.typed_bus. The compile branch in
+        # base_backend._compile_channel_op_step produces metadata flags
+        # `emit_apply` / `publish_apply` / `discover_apply` whose payload
+        # carries the resolved channel/shield/alias references.
+        if step.metadata.get("emit_apply"):
+            return await self._execute_emit_step(
+                step=step, ctx=ctx, tracer=tracer,
+            )
+        if step.metadata.get("publish_apply"):
+            return await self._execute_publish_step(
+                step=step, ctx=ctx, tracer=tracer,
+            )
+        if step.metadata.get("discover_apply"):
+            return await self._execute_discover_step(
                 step=step, ctx=ctx, tracer=tracer,
             )
 
@@ -1241,6 +1295,269 @@ class Executor:
             duration_ms=step_duration,
         )
 
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=step_duration,
+        )
+
+    # ── TYPED CHANNELS EXECUTION (Fase 13.i) ───────────────────────
+    #
+    # These three handlers are the runtime side of the channel surface
+    # introduced in Fase 13.a–13.d. They route emit / publish / discover
+    # steps through the per-unit TypedEventBus held in ``ctx.typed_bus``.
+    # The bus is bootstrapped once per execution unit from the
+    # ``channel_specs`` metadata that ``BaseBackend.compile_program``
+    # serialises onto the unit (see ``_execute_unit`` lifecycle).
+    #
+    # Failure mode design: a missing bus raises ``AxonRuntimeError``
+    # with ``error_type="emit"|"publish"|"discover"`` so the run aborts
+    # cleanly instead of silently producing a no-op step. This was the
+    # exact gap reported by adopters in 13.i — the prior catch-all in
+    # ``_execute_step`` would have routed channel ops through the model
+    # client, producing nonsense output.
+
+    async def _execute_emit_step(
+        self,
+        step: CompiledStep,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Dispatch ``emit ChannelName(value_ref)`` to the TypedEventBus.
+
+        Resolves ``value_ref`` against the live ctx state via
+        :meth:`ContextManager.resolve_value_ref` — supporting both bare
+        identifiers (mobility / variable / step result) and dotted
+        paths (``Step.output.field``).
+        """
+        import json
+
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["emit_apply"]
+        channel_ref: str = meta["channel_ref"]
+        value_ref: str = meta["value_ref"]
+        value_is_channel: bool = bool(meta.get("value_is_channel", False))
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={"emit_channel": channel_ref, "value_ref": value_ref},
+        )
+
+        bus = ctx.typed_bus
+        if bus is None:
+            raise AxonRuntimeError(
+                message=(
+                    f"emit step '{step_name}' requires a TypedEventBus on the "
+                    f"context. The Executor must bootstrap one in "
+                    f"_execute_unit from CompiledExecutionUnit.metadata."
+                ),
+                context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:emit"),
+            )
+
+        # Resolve the payload. For mobility (value_is_channel=True) the
+        # payload must be a TypedChannelHandle — we resolve via the
+        # discovered-handle scope first (alias from a prior `discover`),
+        # then fall back to the bus registry (canonical handle for a
+        # declared channel name).
+        if value_is_channel:
+            from axon.runtime.channels.typed import TypedChannelHandle
+            handle: TypedChannelHandle | None = ctx.discovered_handles.get(value_ref)
+            if handle is None:
+                handle = bus.registry.get(value_ref) if bus.registry.has(value_ref) else None
+            if handle is None:
+                raise AxonRuntimeError(
+                    message=(
+                        f"emit on '{channel_ref}' carries a Channel handle "
+                        f"but '{value_ref}' is not in scope (no discovered "
+                        f"alias, no declared channel)."
+                    ),
+                    context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:emit"),
+                )
+            await bus.emit(channel_ref, handle, payload_is_handle=True)
+            payload_repr: Any = {"handle": handle.name}
+        else:
+            try:
+                payload = ctx.resolve_value_ref(value_ref)
+            except KeyError as exc:
+                raise AxonRuntimeError(
+                    message=str(exc),
+                    context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:emit"),
+                ) from exc
+            await bus.emit(channel_ref, payload)
+            payload_repr = payload
+
+        response = ModelResponse(
+            content=json.dumps({"emitted": channel_ref, "value": str(value_ref)}),
+            structured={"emitted": channel_ref, "value_ref": value_ref},
+        )
+        ctx.set_step_result(step_name, payload_repr)
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={"success": True, "emit_channel": channel_ref},
+            duration_ms=step_duration,
+        )
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=step_duration,
+        )
+
+    async def _execute_publish_step(
+        self,
+        step: CompiledStep,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Dispatch ``publish ChannelName within ShieldName`` to the bus.
+
+        Records the returned ``Capability`` in the ctx keyed by channel
+        name so a downstream ``discover ChannelName as alias`` step in
+        the same unit can consume it.
+        """
+        import json
+
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["publish_apply"]
+        channel_ref: str = meta["channel_ref"]
+        shield_ref: str = meta["shield_ref"]
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={"publish_channel": channel_ref, "shield": shield_ref},
+        )
+
+        bus = ctx.typed_bus
+        if bus is None:
+            raise AxonRuntimeError(
+                message=(
+                    f"publish step '{step_name}' requires a TypedEventBus on "
+                    f"the context. The Executor must bootstrap one in "
+                    f"_execute_unit from CompiledExecutionUnit.metadata."
+                ),
+                context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:publish"),
+            )
+
+        try:
+            capability = await bus.publish(channel_ref, shield=shield_ref)
+        except Exception as exc:  # TypedChannelError or descendants
+            raise AxonRuntimeError(
+                message=f"publish '{channel_ref}' failed: {exc}",
+                context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:publish"),
+            ) from exc
+
+        ctx.record_capability(channel_ref, capability)
+
+        response = ModelResponse(
+            content=json.dumps({
+                "published": channel_ref,
+                "shield": shield_ref,
+                "capability_id": capability.capability_id,
+            }),
+            structured={
+                "published": channel_ref,
+                "shield": shield_ref,
+                "capability_id": capability.capability_id,
+            },
+        )
+        ctx.set_step_result(step_name, capability)
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={"success": True, "publish_channel": channel_ref},
+            duration_ms=step_duration,
+        )
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=step_duration,
+        )
+
+    async def _execute_discover_step(
+        self,
+        step: CompiledStep,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Dispatch ``discover ChannelName as alias`` to the bus.
+
+        Pops the capability that a prior ``publish`` recorded for the
+        same channel name, hands it to ``bus.discover(...)``, and binds
+        the resulting handle under ``alias`` in the ctx so subsequent
+        emits / value_ref lookups can reach it.
+        """
+        import json
+
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["discover_apply"]
+        capability_ref: str = meta["capability_ref"]
+        alias: str = meta["alias"]
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={"discover_channel": capability_ref, "alias": alias},
+        )
+
+        bus = ctx.typed_bus
+        if bus is None:
+            raise AxonRuntimeError(
+                message=(
+                    f"discover step '{step_name}' requires a TypedEventBus on "
+                    f"the context. The Executor must bootstrap one in "
+                    f"_execute_unit from CompiledExecutionUnit.metadata."
+                ),
+                context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:discover"),
+            )
+
+        try:
+            capability = ctx.take_capability(capability_ref)
+        except KeyError as exc:
+            raise AxonRuntimeError(
+                message=str(exc),
+                context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:discover"),
+            ) from exc
+
+        try:
+            handle = await bus.discover(capability)
+        except Exception as exc:
+            raise AxonRuntimeError(
+                message=f"discover '{capability_ref}' failed: {exc}",
+                context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:discover"),
+            ) from exc
+
+        ctx.bind_discovered_handle(alias, handle)
+
+        response = ModelResponse(
+            content=json.dumps({
+                "discovered": capability_ref,
+                "alias": alias,
+                "handle_name": handle.name,
+            }),
+            structured={
+                "discovered": capability_ref,
+                "alias": alias,
+                "handle_name": handle.name,
+            },
+        )
+        ctx.set_step_result(step_name, handle)
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={"success": True, "discover_alias": alias},
+            duration_ms=step_duration,
+        )
         return StepResult(
             step_name=step_name,
             response=response,
