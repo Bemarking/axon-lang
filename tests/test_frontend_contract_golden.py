@@ -167,7 +167,7 @@ def test_compile_stdout_golden_contract() -> None:
     # `coordinated-release.yml` workflow). 1.5.1 (2026-04-27) inaugurates
     # the lockstep cross-stack policy: every release ships axon-lang
     # Python and axon-lang Rust at the same version.
-    assert meta["axon_version"] == "1.6.0"
+    assert meta["axon_version"] == "1.7.0"
 
     _assert_ir_node_shape(payload["personas"][0], "name")
     _assert_ir_node_shape(payload["contexts"][0], "name", "memory_scope", "language", "depth")
