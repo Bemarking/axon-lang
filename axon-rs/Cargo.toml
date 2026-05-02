@@ -1,6 +1,6 @@
 [package]
 name = "axon-lang"
-version = "1.6.0"
+version = "1.7.0"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
 edition = "2021"
 rust-version = "1.95"
