@@ -83,6 +83,73 @@ pub enum TokenType {
 
     // ── Special ───────────────────────────────────────────────────
     Eof,
+
+    // ── Trivia (Fase 14.a — lossless lexing) ──────────────────────
+    // Comment tokens emitted by the lexer instead of being silently
+    // stripped. The parser collects them into a parallel `Trivia`
+    // array indexed by effective-token position and attaches them to
+    // AST nodes as `leading_trivia` / `trailing_trivia` (Roslyn
+    // convention). This is what enables LSP hover with docstrings,
+    // round-trip-preserving formatters, and rustdoc-style doc
+    // generators downstream.
+    //
+    // Doc-comment heuristic (mirrors the Python lexer):
+    //   //   regular line comment
+    //   ///  doc line comment  (outer doc — documents the next item)
+    //   /*   regular block comment
+    //   /**  doc block comment (outer doc — documents the next item)
+    // ////` (4+ slashes) and `/**/` (empty block) stay regular.
+    LineComment,        // //  regular line comment
+    BlockComment,       // /* */ regular block comment
+    DocLineComment,     // ///  doc line comment
+    DocBlockComment,    // /** */ doc block comment
+}
+
+/// Comment trivia attached to AST nodes (Fase 14.a).
+///
+/// Parallel of the Python `Trivia` dataclass in `axon/compiler/ast_nodes.py`.
+/// Each AST node carries a `leading_trivia` slice (comments preceding
+/// the node's first token) and a `trailing_trivia` slice (comments on
+/// the same line as the node's last token).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Trivia {
+    pub kind: TriviaKind,
+    pub text: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriviaKind {
+    Line,
+    Block,
+    DocLine,
+    DocBlock,
+}
+
+impl Trivia {
+    /// `true` iff this trivia documents the adjacent definition
+    /// (`///` or `/** */` styles).
+    pub fn is_doc(&self) -> bool {
+        matches!(self.kind, TriviaKind::DocLine | TriviaKind::DocBlock)
+    }
+
+    /// Body of the comment with marker prefixes/suffixes removed.
+    /// Useful for LSP hover rendering.
+    pub fn stripped_text(&self) -> &str {
+        match self.kind {
+            TriviaKind::DocLine => self.text.strip_prefix("///").unwrap_or(&self.text),
+            TriviaKind::Line => self.text.strip_prefix("//").unwrap_or(&self.text),
+            TriviaKind::DocBlock => {
+                let s = self.text.strip_prefix("/**").unwrap_or(&self.text);
+                s.strip_suffix("*/").unwrap_or(s)
+            }
+            TriviaKind::Block => {
+                let s = self.text.strip_prefix("/*").unwrap_or(&self.text);
+                s.strip_suffix("*/").unwrap_or(s)
+            }
+        }
+    }
 }
 
 pub fn keyword_type(word: &str) -> TokenType {

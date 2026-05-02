@@ -10,7 +10,32 @@
 //! `GenericDeclaration` / `GenericFlowStep`.
 
 use crate::ast::*;
-use crate::tokens::{is_declaration_keyword, Token, TokenType};
+use crate::tokens::{is_declaration_keyword, Token, TokenType, Trivia, TriviaKind};
+
+// Comment token kinds the lexer now emits (Fase 14.a). The parser
+// filters these out of its working stream — they are materialised into
+// a parallel `Trivia` array indexed by effective-token position, then
+// attached to `Program.declaration_trivia[i]` once each declaration's
+// span is known.
+const fn is_comment_token(tt: &TokenType) -> bool {
+    matches!(
+        tt,
+        TokenType::LineComment
+            | TokenType::BlockComment
+            | TokenType::DocLineComment
+            | TokenType::DocBlockComment
+    )
+}
+
+const fn token_to_trivia_kind(tt: &TokenType) -> Option<TriviaKind> {
+    match tt {
+        TokenType::LineComment => Some(TriviaKind::Line),
+        TokenType::BlockComment => Some(TriviaKind::Block),
+        TokenType::DocLineComment => Some(TriviaKind::DocLine),
+        TokenType::DocBlockComment => Some(TriviaKind::DocBlock),
+        _ => None,
+    }
+}
 
 // ── Public error type ────────────────────────────────────────────────────────
 
@@ -32,11 +57,63 @@ impl std::fmt::Display for ParseError {
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Fase 14.a — leading trivia parallel array, indexed by the
+    /// effective-token position. `leading_trivia[i]` is the comment
+    /// trivia that appeared between the previous effective token (or
+    /// file start) and `tokens[i]`.
+    leading_trivia: Vec<Vec<Trivia>>,
+    /// Fase 14.a — trailing trivia parallel array. `trailing_trivia[i]`
+    /// is the comment trivia on the same line as `tokens[i]`, before
+    /// the next effective token. Populated by the constructor.
+    trailing_trivia: Vec<Vec<Trivia>>,
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, pos: 0 }
+    pub fn new(raw_tokens: Vec<Token>) -> Self {
+        // ── Fase 14.a — split the raw token stream into:
+        //   - effective tokens the grammar consumes (cursor advances
+        //     over these as before),
+        //   - parallel `leading_trivia` / `trailing_trivia` arrays
+        //     indexed by effective-token position.
+        // Comments on a fresh line attach as leading trivia of the
+        // next effective token; comments on the same line as an
+        // effective token attach as trailing trivia of that token.
+        // Roslyn/Swift convention.
+        let mut effective: Vec<Token> = Vec::with_capacity(raw_tokens.len());
+        let mut leading: Vec<Vec<Trivia>> = Vec::with_capacity(raw_tokens.len());
+        let mut trailing: Vec<Vec<Trivia>> = Vec::with_capacity(raw_tokens.len());
+
+        let mut pending_leading: Vec<Trivia> = Vec::new();
+        let mut last_effective_line: i64 = -1;
+        for tok in raw_tokens {
+            if is_comment_token(&tok.ttype) {
+                let kind = token_to_trivia_kind(&tok.ttype)
+                    .expect("comment token must map to a trivia kind");
+                let triv = Trivia {
+                    kind,
+                    text: tok.value,
+                    line: tok.line,
+                    column: tok.column,
+                };
+                if !effective.is_empty() && (tok.line as i64) == last_effective_line {
+                    trailing.last_mut().unwrap().push(triv);
+                } else {
+                    pending_leading.push(triv);
+                }
+            } else {
+                last_effective_line = tok.line as i64;
+                effective.push(tok);
+                leading.push(std::mem::take(&mut pending_leading));
+                trailing.push(Vec::new());
+            }
+        }
+
+        Parser {
+            tokens: effective,
+            pos: 0,
+            leading_trivia: leading,
+            trailing_trivia: trailing,
+        }
     }
 
     // ── public API ───────────────────────────────────────────────
@@ -44,11 +121,22 @@ impl Parser {
     pub fn parse(&mut self) -> Result<Program, ParseError> {
         let mut program = Program {
             declarations: Vec::new(),
+            declaration_trivia: Vec::new(),
             loc: Loc { line: 1, column: 1 },
         };
         while !self.check(TokenType::Eof) {
+            // Capture trivia around the declaration. `start_pos` is
+            // the effective-token position of the declaration's first
+            // token; that position carries the leading trivia. After
+            // parsing, `pos - 1` is the last token consumed; that
+            // position carries the trailing trivia.
+            let start_pos = self.pos;
             let decl = self.parse_declaration()?;
+            let end_pos = self.pos.saturating_sub(1);
+            let leading = self.leading_trivia.get(start_pos).cloned().unwrap_or_default();
+            let trailing = self.trailing_trivia.get(end_pos).cloned().unwrap_or_default();
             program.declarations.push(decl);
+            program.declaration_trivia.push(DeclarationTrivia { leading, trailing });
         }
         Ok(program)
     }
@@ -3779,5 +3867,116 @@ mod fase13_parser_tests {
         // Trailing `.` must still error — every '.' demands an identifier.
         let result = parse("flow f() -> Out { emit Hello(Build.) }");
         assert!(result.is_err(), "expected parse error for trailing dot");
+    }
+}
+
+// ── §Fase 14.a — declaration_trivia parallel channel tests ──────────────────
+
+#[cfg(test)]
+mod fase14a_declaration_trivia_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::tokens::TriviaKind;
+
+    fn parse(src: &str) -> Program {
+        let toks = Lexer::new(src, "<test>").tokenize().expect("lex");
+        Parser::new(toks).parse().expect("parse")
+    }
+
+    #[test]
+    fn no_comments_means_empty_trivia_per_decl() {
+        let prog = parse("flow F() -> Out { }");
+        assert_eq!(prog.declarations.len(), 1);
+        assert_eq!(prog.declaration_trivia.len(), 1);
+        assert!(prog.declaration_trivia[0].leading.is_empty());
+        assert!(prog.declaration_trivia[0].trailing.is_empty());
+    }
+
+    #[test]
+    fn doc_line_comment_attaches_as_leading() {
+        let prog = parse("/// Documents F\nflow F() -> Out { }");
+        let triv = &prog.declaration_trivia[0];
+        assert_eq!(triv.leading.len(), 1);
+        assert_eq!(triv.leading[0].kind, TriviaKind::DocLine);
+        assert!(triv.leading[0].is_doc());
+        assert_eq!(triv.leading[0].text, "/// Documents F");
+    }
+
+    #[test]
+    fn regular_line_comment_attaches_as_leading() {
+        let prog = parse("// header\nflow F() -> Out { }");
+        let triv = &prog.declaration_trivia[0];
+        assert_eq!(triv.leading.len(), 1);
+        assert_eq!(triv.leading[0].kind, TriviaKind::Line);
+        assert!(!triv.leading[0].is_doc());
+    }
+
+    #[test]
+    fn block_doc_comment_attaches_as_leading() {
+        let prog = parse("/** Doc block */\nflow F() -> Out { }");
+        let triv = &prog.declaration_trivia[0];
+        assert_eq!(triv.leading[0].kind, TriviaKind::DocBlock);
+        assert!(triv.leading[0].is_doc());
+    }
+
+    #[test]
+    fn multiple_comments_collected_in_source_order() {
+        let src = "/// First\n/// Second\nflow F() -> Out { }";
+        let prog = parse(src);
+        let triv = &prog.declaration_trivia[0];
+        assert_eq!(triv.leading.len(), 2);
+        assert_eq!(triv.leading[0].text, "/// First");
+        assert_eq!(triv.leading[1].text, "/// Second");
+    }
+
+    #[test]
+    fn three_decls_each_get_own_leading() {
+        let src = "/// for A\nflow A() -> Out { }\n/// for B\nflow B() -> Out { }\n/// for C\nflow C() -> Out { }";
+        let prog = parse(src);
+        assert_eq!(prog.declarations.len(), 3);
+        assert_eq!(prog.declaration_trivia.len(), 3);
+        for (idx, name) in ["A", "B", "C"].iter().enumerate() {
+            let triv = &prog.declaration_trivia[idx];
+            assert_eq!(triv.leading.len(), 1);
+            assert_eq!(triv.leading[0].text, format!("/// for {name}"));
+        }
+    }
+
+    #[test]
+    fn trailing_comment_attaches_to_last_token_of_decl() {
+        // Comment on the same line as the decl's closing brace.
+        let prog = parse("flow F() -> Out { } // tail");
+        let triv = &prog.declaration_trivia[0];
+        assert_eq!(triv.trailing.len(), 1);
+        assert_eq!(triv.trailing[0].text, "// tail");
+    }
+
+    #[test]
+    fn mixed_doc_and_regular_preserve_order_between_decls() {
+        let src = "/// doc for A\nflow A() -> Out { }\n\n// header line\n/// doc for B\nflow B() -> Out { }";
+        let prog = parse(src);
+        assert_eq!(prog.declarations.len(), 2);
+        // A: just the doc comment.
+        assert_eq!(prog.declaration_trivia[0].leading.len(), 1);
+        // B: header + doc, in source order.
+        assert_eq!(prog.declaration_trivia[1].leading.len(), 2);
+        assert_eq!(prog.declaration_trivia[1].leading[0].text, "// header line");
+        assert_eq!(prog.declaration_trivia[1].leading[1].text, "/// doc for B");
+    }
+
+    #[test]
+    fn parser_unaffected_by_comments_in_grammar_path() {
+        // The parser must accept comments interleaved between every
+        // legal token without affecting the AST shape it produces.
+        // This is the regression guard for "lossless lexing must not
+        // change parsing semantics."
+        let src = "// before flow\nflow /* between flow and name */ F() -> Out {\n  // body comment\n}";
+        let prog = parse(src);
+        assert_eq!(prog.declarations.len(), 1);
+        if let Declaration::Flow(f) = &prog.declarations[0] {
+            assert_eq!(f.name, "F");
+        } else {
+            panic!("expected Flow declaration");
+        }
     }
 }

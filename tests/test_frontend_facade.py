@@ -35,7 +35,8 @@ def test_check_source_success_returns_counts() -> None:
     result = frontend.check_source(source, str(VALID_SOURCE))
 
     assert result.ok
-    assert result.token_count == 168
+    # Token count includes comment tokens since Fase 14.a (lossless lexing).
+    assert result.token_count == 170
     assert result.declaration_count == 9
     assert result.diagnostics == ()
 
@@ -213,7 +214,8 @@ def test_native_dev_implementation_preserves_frontend_contract() -> None:
     compile_result = implementation.compile_source(source, str(VALID_SOURCE))
 
     assert check_result.ok
-    assert check_result.token_count == 168
+    # Token count includes comment tokens since Fase 14.a (lossless lexing).
+    assert check_result.token_count == 170
     assert check_result.declaration_count == 9
 
     assert compile_result.ok
@@ -11552,7 +11554,8 @@ def test_bootstrap_frontend_selects_native_dev_by_name() -> None:
         assert current_frontend_selection() == "native-dev"
         result = frontend.check_source(VALID_SOURCE.read_text(encoding="utf-8"), str(VALID_SOURCE))
         assert result.ok
-        assert result.token_count == 168
+        # Token count includes comment tokens since Fase 14.a (lossless lexing).
+        assert result.token_count == 170
     finally:
         reset_frontend_implementation()
 

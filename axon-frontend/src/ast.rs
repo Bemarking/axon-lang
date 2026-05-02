@@ -5,6 +5,8 @@
 
 #![allow(dead_code)]
 
+use crate::tokens::Trivia;
+
 // ── Location helper ──────────────────────────────────────────────────────────
 
 /// Source location shared by all AST nodes.
@@ -14,11 +16,52 @@ pub struct Loc {
     pub column: u32,
 }
 
+// ── Trivia channel (Fase 14.a — Lossless lexing) ─────────────────────────────
+//
+// The Python AST attaches `leading_trivia` / `trailing_trivia` directly
+// to each ASTNode (97+ subclasses inherit empty defaults). The Rust
+// structs do not have inheritance, so adding two `Vec<Trivia>` fields
+// to every node would require touching each of the 97 structs and
+// every fixture test that constructs them — high mechanical churn for
+// a use case (LSP / formatter / doc gen) that can be served just as
+// well by indexing trivia by declaration position.
+//
+// `DeclarationTrivia` is a side-channel attached to `Program`. The
+// parser populates it in lockstep with `declarations` so consumer code
+// can do `program.declaration_trivia[i]` to get the leading/trailing
+// trivia of `program.declarations[i]`. This preserves the AST shape
+// (no breaking changes), keeps `IRProgram` JSON byte-identical with
+// the Python reference (trivia is never serialised), and ships the
+// adopter-reported feature end-to-end.
+//
+// If a future sub-phase wants per-node trivia inside the AST itself
+// (mirror of the Python ASTNode shape), this side-channel is the seed:
+// every `DeclarationTrivia` already carries the data; spreading it
+// into the structs is a mechanical refactor at that point.
+
+/// Comments attached to a single top-level declaration. Indexed
+/// in parallel with `Program.declarations`.
+#[derive(Debug, Clone, Default)]
+pub struct DeclarationTrivia {
+    /// Comment trivia that appeared before the declaration's first
+    /// token (since the previous declaration or file start).
+    pub leading: Vec<Trivia>,
+    /// Comment trivia on the same line as the declaration's last
+    /// effective token, before the next newline.
+    pub trailing: Vec<Trivia>,
+}
+
 // ── Top-level ────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub struct Program {
     pub declarations: Vec<Declaration>,
+    /// Fase 14.a — comment trivia attached per declaration (parallel
+    /// with `declarations`). Empty by default; populated by the parser
+    /// when source carries comments. Defaults preserve every existing
+    /// `Program { declarations, loc }` constructor — `..Default::default()`
+    /// on a `Program` literal fills in the new field.
+    pub declaration_trivia: Vec<DeclarationTrivia>,
     pub loc: Loc,
 }
 

@@ -261,7 +261,28 @@ class TokenType(Enum):
     # ── SPECIAL ──────────────────────────────────────────────────
     EOF = auto()
     NEWLINE = auto()
-    COMMENT = auto()
+    COMMENT = auto()  # legacy — kept for backward compat; new code uses
+                      # the four discriminated comment kinds below.
+
+    # ── TRIVIA (Fase 14.a — Lossless lexing) ─────────────────────
+    # Comment tokens emitted by the lexer instead of being silently
+    # stripped. The parser ignores these for AST shape but materialises
+    # them into ``Trivia`` objects attached to AST nodes (leading +
+    # trailing) per the Roslyn convention. This is what enables LSP
+    # hover with docstrings, ``axon fmt`` round-trip preservation,
+    # rustdoc-style doc generation, and `// SECURITY:`-style audit
+    # annotations to be reachable downstream.
+    #
+    # Doc-comment distinction (Rust convention):
+    #   //   regular line comment
+    #   ///  doc line comment  (outer doc — documents the next item)
+    #   /*   regular block comment
+    #   /**  doc block comment (outer doc — documents the next item)
+    # `////` (4+ slashes) and `/**/` (empty block) are regular, not doc.
+    LINE_COMMENT = auto()       # //  regular line comment
+    BLOCK_COMMENT = auto()      # /* */ regular block comment
+    DOC_LINE_COMMENT = auto()   # ///  doc line comment
+    DOC_BLOCK_COMMENT = auto()  # /** */ doc block comment
 
 
 # ── KEYWORD LOOKUP TABLE ──────────────────────────────────────────

@@ -21,14 +21,87 @@ from dataclasses import dataclass, field
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  TRIVIA — comment metadata (Fase 14.a — Lossless lexing)
+# ═══════════════════════════════════════════════════════════════════
+#
+# Trivia objects are the parser's materialisation of the comment tokens
+# the lexer now emits (``LINE_COMMENT`` / ``BLOCK_COMMENT`` /
+# ``DOC_LINE_COMMENT`` / ``DOC_BLOCK_COMMENT``). Each AST node carries
+# a ``leading_trivia`` tuple (comments preceding the node's first
+# token, up to the last newline-separator from the previous node) and
+# a ``trailing_trivia`` tuple (comments on the same line as the node's
+# last token, before the next newline). This is the Roslyn / Swift /
+# rust-analyzer convention — it lets a downstream consumer round-trip
+# parse → re-emit with comments preserved, and lets LSP hover surface
+# the doc comment that precedes a definition.
+#
+# ``kind`` is a plain string ("line"|"block"|"doc_line"|"doc_block")
+# rather than a TokenType reference so this module does not pull in
+# `tokens.py` (would create a cycle: parser imports ast → ast imports
+# tokens → tokens has no cycle but the directionality is cleaner kept
+# in ast → tokens, not the reverse).
+
+@dataclass(frozen=True, slots=True)
+class Trivia:
+    """A comment attached to an AST node (Fase 14.a)."""
+    kind: str          # "line" | "block" | "doc_line" | "doc_block"
+    text: str          # raw text including markers (//, ///, /* */, /** */)
+    line: int
+    column: int
+
+    @property
+    def is_doc(self) -> bool:
+        """True iff this trivia documents the adjacent definition."""
+        return self.kind in ("doc_line", "doc_block")
+
+    def stripped_text(self) -> str:
+        """The body of the comment with marker prefixes/suffixes removed.
+
+        Useful for LSP hover rendering and doc generators. For block
+        comments the leading ``/*`` (or ``/**``) and trailing ``*/`` are
+        removed. For line comments the leading ``//`` (or ``///``) is
+        removed. No further normalisation (no whitespace trim, no
+        de-indent of ``*``-prefixed lines) is performed — callers can
+        layer their own cosmetic pass on top.
+        """
+        if self.kind == "doc_line":
+            return self.text[3:] if self.text.startswith("///") else self.text
+        if self.kind == "line":
+            return self.text[2:] if self.text.startswith("//") else self.text
+        if self.kind == "doc_block":
+            body = self.text
+            if body.startswith("/**"):
+                body = body[3:]
+            if body.endswith("*/"):
+                body = body[:-2]
+            return body
+        if self.kind == "block":
+            body = self.text
+            if body.startswith("/*"):
+                body = body[2:]
+            if body.endswith("*/"):
+                body = body[:-2]
+            return body
+        return self.text
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  BASE NODE
 # ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class ASTNode:
-    """Base class for all AXON AST nodes."""
+    """Base class for all AXON AST nodes.
+
+    Every node carries source position (``line``, ``column``) plus two
+    trivia channels (``leading_trivia`` / ``trailing_trivia``, Fase
+    14.a). The trivia tuples default to empty so existing code that
+    constructs AST nodes without trivia continues to work unchanged.
+    """
     line: int = 0
     column: int = 0
+    leading_trivia: tuple[Trivia, ...] = field(default_factory=tuple)
+    trailing_trivia: tuple[Trivia, ...] = field(default_factory=tuple)
 
 
 # ═══════════════════════════════════════════════════════════════════

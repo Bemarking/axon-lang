@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from .ast_nodes import (
     ASTNode,
+    Trivia,
     AgentBudget,
     AgentDefinition,
     AggregateNode,
@@ -117,12 +118,130 @@ from .errors import AxonParseError
 from .tokens import Token, TokenType
 
 
+# Comment token kinds the lexer now emits (Fase 14.a). The parser
+# filters these out of its working stream — they are materialised into
+# `Trivia` objects on a parallel array indexed by effective-token
+# position, then attached to AST nodes as leading / trailing trivia.
+_COMMENT_TOKEN_KINDS = frozenset({
+    TokenType.LINE_COMMENT,
+    TokenType.BLOCK_COMMENT,
+    TokenType.DOC_LINE_COMMENT,
+    TokenType.DOC_BLOCK_COMMENT,
+})
+
+# TokenType → Trivia.kind string. Trivia uses string kinds so the
+# `ast_nodes` module does not depend on `tokens` (keeps the import
+# graph one-directional: parser depends on both).
+_TRIVIA_KIND_BY_TOKEN: dict[TokenType, str] = {
+    TokenType.LINE_COMMENT: "line",
+    TokenType.BLOCK_COMMENT: "block",
+    TokenType.DOC_LINE_COMMENT: "doc_line",
+    TokenType.DOC_BLOCK_COMMENT: "doc_block",
+}
+
+
 class Parser:
     """Recursive descent parser for the AXON language."""
 
     def __init__(self, tokens: list[Token]):
-        self._tokens = tokens
+        # ── Fase 14.a — Lossless lexing → trivia channel ──
+        # Split the raw token stream into:
+        #   - `self._tokens`: only the *effective* tokens the grammar
+        #     consumes (strips comment kinds). Cursor `_pos` advances
+        #     over this list as before, so the existing parser code
+        #     does not need to know about trivia.
+        #   - `self._leading_trivia`: parallel list — for each effective
+        #     token at index i, the comment trivia that appeared *before*
+        #     it (since the previous effective token, or since the start
+        #     of file).
+        #   - `self._trailing_trivia`: parallel list — comment trivia that
+        #     appeared *after* the effective token at index i, on the
+        #     same line, before the next effective token (Roslyn rule).
+        # Comments on a fresh line attach as leading trivia of the next
+        # effective token; comments on the same line as an effective
+        # token attach as trailing trivia of that token. This is the
+        # convention used by C# Roslyn, Swift, and rust-analyzer.
+        effective: list[Token] = []
+        leading: list[tuple[Trivia, ...]] = []
+        trailing: list[tuple[Trivia, ...]] = []
+
+        pending_leading: list[Trivia] = []
+        last_effective_line = -1
+        for tok in tokens:
+            if tok.type in _COMMENT_TOKEN_KINDS:
+                triv = Trivia(
+                    kind=_TRIVIA_KIND_BY_TOKEN[tok.type],
+                    text=tok.value,
+                    line=tok.line,
+                    column=tok.column,
+                )
+                # Trailing iff on the same line as the most recent
+                # effective token. Otherwise it's leading for the next.
+                if effective and tok.line == last_effective_line:
+                    trailing[-1] = trailing[-1] + (triv,)
+                else:
+                    pending_leading.append(triv)
+            else:
+                effective.append(tok)
+                leading.append(tuple(pending_leading))
+                trailing.append(())
+                pending_leading = []
+                last_effective_line = tok.line
+
+        # Stranded leading trivia at end-of-file (comments after the
+        # last effective token but separated by a newline) are exposed
+        # via `final_leading_trivia` so a top-level program node can
+        # collect them as program-level trailing trivia.
+        self._tokens = effective
+        self._leading_trivia = leading
+        self._trailing_trivia = trailing
+        self._final_leading_trivia: tuple[Trivia, ...] = tuple(pending_leading)
         self._pos = 0
+
+        # Auto-decorate every `_parse_*` method so AST nodes returned
+        # from any production rule get their leading/trailing trivia
+        # attached transparently — no per-method edits required across
+        # the ~50 grammar rules.
+        for name in dir(type(self)):
+            if name.startswith("_parse_"):
+                method = getattr(self, name)
+                if callable(method):
+                    setattr(self, name, self._with_trivia(method))
+
+    def _with_trivia(self, method):
+        """Decorator: capture start position, run the production, attach
+        leading + trailing trivia to any returned ``ASTNode``."""
+        def wrapper(*args, **kwargs):
+            start_pos = self._pos
+            result = method(*args, **kwargs)
+            if isinstance(result, ASTNode):
+                self._attach_trivia(result, start_pos)
+            return result
+        return wrapper
+
+    def _attach_trivia(self, node: ASTNode, start_pos: int) -> None:
+        """Attach leading + trailing trivia to ``node`` (Fase 14.a).
+
+        Leading trivia is the comments that appeared between the
+        previous effective token (or file start) and ``self._tokens[start_pos]``.
+        Trailing trivia is the comments on the same line as the last
+        effective token consumed by the production rule that returned
+        ``node`` (i.e., ``self._tokens[self._pos - 1]``).
+
+        The first writer wins so the *innermost* AST node along a
+        chain of nested productions keeps the trivia. Outer wrappers
+        (e.g., ``_parse_program`` wrapping ``_parse_persona_definition``)
+        see the slots already populated and do not duplicate the data.
+        """
+        if 0 <= start_pos < len(self._leading_trivia):
+            leading = self._leading_trivia[start_pos]
+            if leading and not node.leading_trivia:
+                object.__setattr__(node, "leading_trivia", leading)
+        end_pos = self._pos - 1
+        if 0 <= end_pos < len(self._trailing_trivia):
+            trailing = self._trailing_trivia[end_pos]
+            if trailing and not node.trailing_trivia:
+                object.__setattr__(node, "trailing_trivia", trailing)
 
     # ── public API ────────────────────────────────────────────────
 

@@ -170,10 +170,23 @@ class TestIdentifiers:
 
 
 class TestComments:
-    """Lexer strips comments."""
+    """Lexer emits comment tokens (Fase 14.a — was lossless-stripping pre-14.a).
+
+    The four discriminated kinds are LINE_COMMENT / BLOCK_COMMENT /
+    DOC_LINE_COMMENT / DOC_BLOCK_COMMENT. Callers that want the
+    pre-14.a behaviour use ``Lexer.tokenize(strip_comments=True)``.
+    """
 
     def test_single_line_comment(self):
+        # Default behaviour (Fase 14.a): the comment is emitted as
+        # LINE_COMMENT between PERSONA and IDENTIFIER.
         tokens = Lexer("persona // this is a comment\nLegalExpert").tokenize()
+        types = [t.type for t in tokens if t.type != TokenType.EOF]
+        assert types == [TokenType.PERSONA, TokenType.LINE_COMMENT, TokenType.IDENTIFIER]
+
+    def test_strip_comments_legacy_behaviour(self):
+        # Opt-in pre-14.a behaviour: comment tokens are not emitted.
+        tokens = Lexer("persona // dropped\nLegalExpert").tokenize(strip_comments=True)
         types = [t.type for t in tokens if t.type != TokenType.EOF]
         assert types == [TokenType.PERSONA, TokenType.IDENTIFIER]
 
