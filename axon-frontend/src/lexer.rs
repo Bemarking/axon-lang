@@ -7,7 +7,14 @@
 //!   - String literals with escape sequences
 //!   - Integer / Float / Duration literals
 //!   - Arrow (->), DotDot (..), comparison operators
-//!   - Line comments (//) and block comments (/* */)
+//!   - **Lossless comment lexing (Fase 14.a)** — comments are emitted
+//!     as discriminated `LineComment` / `BlockComment` /
+//!     `DocLineComment` / `DocBlockComment` tokens preserving full
+//!     text + position. The parser materialises them into `Trivia`
+//!     attached to AST nodes (leading + trailing). Pre-14.a behaviour
+//!     (silent stripping) is reachable via `Lexer::tokenize_with(strip_comments=true)`
+//!     so callers that want the legacy IR-equivalent token stream
+//!     still get it without filtering.
 //!   - Line/column tracking for error messages
 
 use crate::tokens::{keyword_type, Token, TokenType};
@@ -30,6 +37,10 @@ pub struct Lexer {
     line: u32,
     column: u32,
     tokens: Vec<Token>,
+    /// Fase 14.a — when `true`, comment tokens are not emitted (legacy
+    /// pre-14.a behaviour). Default `false` preserves comments as
+    /// discriminated tokens so the parser can build the trivia channel.
+    strip_comments: bool,
 }
 
 impl Lexer {
@@ -41,14 +52,26 @@ impl Lexer {
             line: 1,
             column: 1,
             tokens: Vec::new(),
+            strip_comments: false,
         }
     }
 
     // ── public API ────────────────────────────────────────────────
 
-    pub fn tokenize(mut self) -> Result<Vec<Token>, LexerError> {
+    pub fn tokenize(self) -> Result<Vec<Token>, LexerError> {
+        self.tokenize_with(false)
+    }
+
+    /// Tokenize with explicit control over comment emission.
+    ///
+    /// `strip_comments=true` reproduces the pre-14.a behaviour — useful
+    /// for downstream tooling that treats comments as pure whitespace
+    /// (cost estimators, IR golden-file generators that should not
+    /// pick up a token-count delta from the trivia rewrite).
+    pub fn tokenize_with(mut self, strip_comments: bool) -> Result<Vec<Token>, LexerError> {
+        self.strip_comments = strip_comments;
         while !self.at_end() {
-            self.skip_whitespace()?;
+            self.consume_trivia()?;
             if self.at_end() {
                 break;
             }
@@ -114,17 +137,24 @@ impl Lexer {
         });
     }
 
-    // ── whitespace & comments ─────────────────────────────────────
+    // ── whitespace & comments (Fase 14.a — lossless) ─────────────
 
-    fn skip_whitespace(&mut self) -> Result<(), LexerError> {
+    /// Consume whitespace + emit comment tokens until next non-trivia.
+    /// Pre-14.a this routine was named `skip_whitespace` and silently
+    /// discarded comments. It now advances past pure whitespace but
+    /// for comments delegates to `consume_*_comment` helpers that
+    /// emit discriminated tokens. `strip_comments=true` on
+    /// `tokenize_with` suppresses the emission while still advancing
+    /// the cursor.
+    fn consume_trivia(&mut self) -> Result<(), LexerError> {
         while !self.at_end() {
             let ch = self.peek();
             if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
                 self.advance();
             } else if ch == '/' && self.peek_next() == '/' {
-                self.skip_line_comment();
+                self.consume_line_comment();
             } else if ch == '/' && self.peek_next() == '*' {
-                self.skip_block_comment()?;
+                self.consume_block_comment()?;
             } else {
                 break;
             }
@@ -132,31 +162,75 @@ impl Lexer {
         Ok(())
     }
 
-    fn skip_line_comment(&mut self) {
+    /// Lex a `// …` or `/// …` line comment.
+    ///
+    /// Doc-comment heuristic: a line is a doc comment iff it starts
+    /// with EXACTLY three slashes (`///` followed by a non-`/`).
+    /// `////` (4+ slashes) is a regular line comment by Rust convention.
+    fn consume_line_comment(&mut self) {
+        let line = self.line;
+        let col = self.column;
         self.advance(); // /
         self.advance(); // /
+        let is_doc = self.peek() == '/' && self.peek_next() != '/';
+        if is_doc {
+            self.advance(); // third /
+        }
+
+        let body_start = self.pos;
         while !self.at_end() && self.peek() != '\n' {
             self.advance();
         }
+        let body: String = self.source[body_start..self.pos].iter().collect();
+
+        let (ttype, full_text) = if is_doc {
+            (TokenType::DocLineComment, format!("///{body}"))
+        } else {
+            (TokenType::LineComment, format!("//{body}"))
+        };
+
+        if !self.strip_comments {
+            self.emit(ttype, &full_text, line, col);
+        }
     }
 
-    fn skip_block_comment(&mut self) -> Result<(), LexerError> {
-        let start_line = self.line;
-        let start_col = self.column;
+    /// Lex a `/* … */` or `/** … */` block comment.
+    ///
+    /// Doc-comment heuristic: a block is a doc comment iff it starts
+    /// with exactly `/**` followed by a non-`/` character. `/**/`
+    /// (empty block) is a regular block, not a doc.
+    fn consume_block_comment(&mut self) -> Result<(), LexerError> {
+        let line = self.line;
+        let col = self.column;
         self.advance(); // /
         self.advance(); // *
+        let is_doc = self.peek() == '*' && self.peek_next() != '/';
+        if is_doc {
+            self.advance(); // second *
+        }
+
+        let body_start = self.pos;
         while !self.at_end() {
             if self.peek() == '*' && self.peek_next() == '/' {
+                let body: String = self.source[body_start..self.pos].iter().collect();
                 self.advance(); // *
                 self.advance(); // /
+                let (ttype, full_text) = if is_doc {
+                    (TokenType::DocBlockComment, format!("/**{body}*/"))
+                } else {
+                    (TokenType::BlockComment, format!("/*{body}*/"))
+                };
+                if !self.strip_comments {
+                    self.emit(ttype, &full_text, line, col);
+                }
                 return Ok(());
             }
             self.advance();
         }
         Err(LexerError {
             message: "Unterminated block comment".to_string(),
-            line: start_line,
-            column: start_col,
+            line,
+            column: col,
         })
     }
 
@@ -470,5 +544,118 @@ mod fase_1_to_5_end_to_end {
                 "near-match identifier wrongly classified as keyword: {tt:?}"
             );
         }
+    }
+}
+
+// ── §Fase 14.a — Lossless lexing tests ─────────────────────────────────────
+
+#[cfg(test)]
+mod fase14a_trivia_tests {
+    use super::*;
+
+    fn lex(src: &str) -> Vec<Token> {
+        Lexer::new(src, "<test>").tokenize().expect("lex")
+    }
+
+    fn lex_strip(src: &str) -> Vec<Token> {
+        Lexer::new(src, "<test>").tokenize_with(true).expect("lex")
+    }
+
+    fn non_eof(toks: &[Token]) -> Vec<&Token> {
+        toks.iter().filter(|t| t.ttype != TokenType::Eof).collect()
+    }
+
+    #[test]
+    fn regular_line_comment_emitted_as_line_comment() {
+        let toks = lex("// hi");
+        let body: Vec<_> = non_eof(&toks);
+        assert_eq!(body.len(), 1);
+        assert_eq!(body[0].ttype, TokenType::LineComment);
+        assert_eq!(body[0].value, "// hi");
+    }
+
+    #[test]
+    fn doc_line_comment_emitted_with_doc_kind() {
+        let toks = lex("/// docs");
+        let body: Vec<_> = non_eof(&toks);
+        assert_eq!(body[0].ttype, TokenType::DocLineComment);
+        assert_eq!(body[0].value, "/// docs");
+    }
+
+    #[test]
+    fn four_slash_banner_is_regular_not_doc() {
+        // Mirrors Python lexer behaviour and Rust convention.
+        let toks = lex("//// banner");
+        assert_eq!(non_eof(&toks)[0].ttype, TokenType::LineComment);
+    }
+
+    #[test]
+    fn regular_block_comment_emitted() {
+        let toks = lex("/* body */");
+        assert_eq!(non_eof(&toks)[0].ttype, TokenType::BlockComment);
+        assert_eq!(non_eof(&toks)[0].value, "/* body */");
+    }
+
+    #[test]
+    fn doc_block_comment_emitted() {
+        let toks = lex("/** docs */");
+        assert_eq!(non_eof(&toks)[0].ttype, TokenType::DocBlockComment);
+    }
+
+    #[test]
+    fn empty_block_is_regular_not_doc() {
+        // /**/ — empty regular block, not a doc comment.
+        let toks = lex("/**/");
+        assert_eq!(non_eof(&toks)[0].ttype, TokenType::BlockComment);
+    }
+
+    #[test]
+    fn strip_comments_opt_in_legacy() {
+        let src = "// dropped\nflow F() -> Out { }";
+        let toks = lex_strip(src);
+        for t in &toks {
+            assert!(
+                !matches!(
+                    t.ttype,
+                    TokenType::LineComment
+                        | TokenType::BlockComment
+                        | TokenType::DocLineComment
+                        | TokenType::DocBlockComment
+                ),
+                "strip_comments=true must not emit any comment kind, got {:?}",
+                t.ttype
+            );
+        }
+    }
+
+    #[test]
+    fn comment_loc_preserved_across_lines() {
+        let toks = lex("// a\n/// b\n/* c */");
+        let body: Vec<_> = non_eof(&toks);
+        assert_eq!(body[0].line, 1);
+        assert_eq!(body[1].line, 2);
+        assert_eq!(body[2].line, 3);
+    }
+
+    #[test]
+    fn unterminated_block_still_errors() {
+        let result = Lexer::new("/* never closes", "<test>").tokenize();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("Unterminated"));
+    }
+
+    #[test]
+    fn trivia_helpers_strip_markers() {
+        use crate::tokens::{Trivia, TriviaKind};
+        let t = Trivia { kind: TriviaKind::DocLine, text: "/// hi".into(), line: 1, column: 1 };
+        assert!(t.is_doc());
+        assert_eq!(t.stripped_text(), " hi");
+        let b = Trivia { kind: TriviaKind::DocBlock, text: "/** body */".into(), line: 1, column: 1 };
+        assert!(b.is_doc());
+        assert_eq!(b.stripped_text(), " body ");
+        let r = Trivia { kind: TriviaKind::Line, text: "// regular".into(), line: 1, column: 1 };
+        assert!(!r.is_doc());
+        assert_eq!(r.stripped_text(), " regular");
     }
 }

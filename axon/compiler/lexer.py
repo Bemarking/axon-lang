@@ -10,7 +10,14 @@ Features:
   - String literals with escape sequences
   - Integer / Float / Duration literals
   - Arrow (->) and range (..) as single tokens
-  - Comment stripping (// and /* */)
+  - Lossless comment lexing (Fase 14.a) — comments are emitted as
+    discriminated ``LINE_COMMENT`` / ``BLOCK_COMMENT`` /
+    ``DOC_LINE_COMMENT`` / ``DOC_BLOCK_COMMENT`` tokens preserving
+    full text + position. The parser materialises them into ``Trivia``
+    attached to AST nodes (leading + trailing). Pre-14.a behaviour
+    (comment stripping) is reachable via ``Lexer.tokenize(strip_comments=True)``
+    so callers that want the legacy IR-equivalent token stream still
+    get it without filtering.
   - Line/column tracking for error messages
 """
 
@@ -33,10 +40,21 @@ class Lexer:
 
     # ── public API ────────────────────────────────────────────────
 
-    def tokenize(self) -> list[Token]:
-        """Scan the entire source and return all tokens (excluding comments)."""
+    def tokenize(self, *, strip_comments: bool = False) -> list[Token]:
+        """Scan the entire source and return all tokens.
+
+        Args:
+            strip_comments: when ``True``, comment tokens are not
+                emitted (legacy pre-14.a behaviour). Default ``False``
+                preserves comments as discriminated tokens (Fase 14.a)
+                so the parser can materialise them into ``Trivia`` on
+                AST nodes. The parser itself always tolerates either
+                shape — ``strip_comments=True`` is for downstream
+                tooling that treats comments as pure whitespace.
+        """
+        self._strip_comments = strip_comments
         while not self._at_end():
-            self._skip_whitespace()
+            self._consume_trivia()
             if self._at_end():
                 break
             self._scan_token()
@@ -75,43 +93,101 @@ class Lexer:
         self._advance()
         return True
 
-    # ── whitespace & comments ─────────────────────────────────────
+    # ── whitespace & comments (Fase 14.a — lossless) ──────────────
 
-    def _skip_whitespace(self) -> None:
+    def _consume_trivia(self) -> None:
+        """Consume whitespace + emit comment tokens until next non-trivia.
+
+        Pre-14.a this routine was named ``_skip_whitespace`` and silently
+        discarded comments. Now it advances past pure whitespace but
+        for comments delegates to ``_consume_*_comment`` which emit
+        discriminated tokens. ``strip_comments=True`` on ``tokenize``
+        suppresses the emission while preserving the cursor advance.
+        """
         while not self._at_end():
             ch = self._peek()
             if ch in (" ", "\t", "\r", "\n"):
                 self._advance()
             elif ch == "/" and self._peek_next() == "/":
-                self._skip_line_comment()
+                self._consume_line_comment()
             elif ch == "/" and self._peek_next() == "*":
-                self._skip_block_comment()
+                self._consume_block_comment()
             else:
                 break
 
-    def _skip_line_comment(self) -> None:
+    def _consume_line_comment(self) -> None:
+        """Lex a ``// …`` or ``/// …`` line comment.
+
+        Doc-comment heuristic: a line is a doc comment iff it starts
+        with EXACTLY three slashes (``///`` followed by a non-``/``).
+        ``////`` (4+ slashes) is a regular line comment by Rust
+        convention — keeps the discriminator stable when the user
+        writes a banner like ``//// section ////``.
+        """
+        line = self._line
+        col = self._column
         # consume //
         self._advance()
         self._advance()
+        is_doc = self._peek() == "/" and self._peek_next() != "/"
+        if is_doc:
+            self._advance()  # consume the third /
+
+        body_start = self._pos
         while not self._at_end() and self._peek() != "\n":
             self._advance()
+        body = self._source[body_start:self._pos]
 
-    def _skip_block_comment(self) -> None:
-        start_line = self._line
-        start_col = self._column
+        if is_doc:
+            full_text = "///" + body
+            kind = TokenType.DOC_LINE_COMMENT
+        else:
+            full_text = "//" + body
+            kind = TokenType.LINE_COMMENT
+
+        if not getattr(self, "_strip_comments", False):
+            self._emit(kind, full_text, line, col)
+
+    def _consume_block_comment(self) -> None:
+        """Lex a ``/* … */`` or ``/** … */`` block comment.
+
+        Doc-comment heuristic: a block is a doc comment iff it starts
+        with exactly ``/**`` followed by a non-``/`` character. ``/**/``
+        (empty block) and ``/***`` (which would be ``/* ** /`` parsed as
+        a regular block whose body opens with two stars) are regular.
+        """
+        line = self._line
+        col = self._column
         # consume /*
         self._advance()
         self._advance()
+        is_doc = (
+            self._peek() == "*"
+            and self._peek_next() != "/"  # /**/ is empty regular, not doc
+        )
+        if is_doc:
+            self._advance()  # consume the second *
+
+        body_start = self._pos
         while not self._at_end():
             if self._peek() == "*" and self._peek_next() == "/":
+                body = self._source[body_start:self._pos]
                 self._advance()  # *
                 self._advance()  # /
+                if is_doc:
+                    full_text = "/**" + body + "*/"
+                    kind = TokenType.DOC_BLOCK_COMMENT
+                else:
+                    full_text = "/*" + body + "*/"
+                    kind = TokenType.BLOCK_COMMENT
+                if not getattr(self, "_strip_comments", False):
+                    self._emit(kind, full_text, line, col)
                 return
             self._advance()
         raise AxonLexerError(
             "Unterminated block comment",
-            line=start_line,
-            column=start_col,
+            line=line,
+            column=col,
         )
 
     # ── main scanner dispatch ─────────────────────────────────────

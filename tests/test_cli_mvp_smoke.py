@@ -52,7 +52,10 @@ def test_check_success_smoke() -> None:
     result = _run("check", str(VALID_SOURCE), "--no-color")
 
     assert result.returncode == 0
-    assert result.stdout.strip() == "✓ contract_analyzer.axon  168 tokens · 9 declarations · 0 errors"
+    # Token count includes comment tokens since Fase 14.a (lossless lexing).
+    # Comments are emitted as LINE/BLOCK/DOC_LINE/DOC_BLOCK comment tokens
+    # and counted in the tally; pre-14.a the lexer silently dropped them.
+    assert result.stdout.strip() == "✓ contract_analyzer.axon  170 tokens · 9 declarations · 0 errors"
     assert result.stderr == ""
 
 
