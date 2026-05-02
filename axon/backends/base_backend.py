@@ -46,6 +46,7 @@ from axon.compiler.ir_nodes import (
     IRFocus,
     IRForge,
     IRIngest,
+    IRListen,
     IRMutate,
     IRNavigate,
     IRNode,
@@ -96,6 +97,14 @@ _AXONSTORE_IR_TYPES = (IRAxonStore, IRPersist, IRRetrieve, IRMutate, IRPurge, IR
 # mobility runtime integration). emit/publish/discover bypass the model and
 # route through the TypedEventBus held by the Executor at unit lifetime.
 _CHANNEL_OP_IR_TYPES = (IREmit, IRPublish, IRDiscover)
+
+# IR types that represent free-standing listen blocks inside a flow body
+# (Fase 13.j — distinct from the daemon-internal listen which is part of
+# IRDaemon.listeners). A listen-in-flow is a single-event receive: it
+# subscribes to the named channel, awaits one event, binds it to the
+# alias, and executes the children once. Looped reception belongs to a
+# `daemon` declaration.
+_LISTEN_IR_TYPES = (IRListen,)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -326,6 +335,9 @@ class BaseBackend(ABC):
                 elif isinstance(step, _CHANNEL_OP_IR_TYPES):
                     channel_step = self._compile_channel_op_step(step)
                     compiled_steps.append(channel_step)
+                elif isinstance(step, _LISTEN_IR_TYPES):
+                    listen_step = self._compile_listen_step(step)
+                    compiled_steps.append(listen_step)
                 else:
                     compiled = self.compile_step(step, ctx)
                     compiled_steps.append(compiled)
@@ -425,6 +437,86 @@ class BaseBackend(ABC):
         raise TypeError(
             f"_compile_channel_op_step received unexpected IR node "
             f"{type(step).__name__} (not in _CHANNEL_OP_IR_TYPES)"
+        )
+
+    @staticmethod
+    def _compile_listen_step(step: IRNode) -> CompiledStep:
+        """Compile a free-standing ``listen ChannelName as alias { … }``
+        flow statement (Fase 13.j) into a metadata-only ``CompiledStep``.
+
+        Unlike a daemon-internal listener (which loops indefinitely
+        reacting to events under the supervision of the AxonServer
+        daemon supervisor), a listen-in-flow is a **single-event
+        receive**: it subscribes to the channel, awaits one event,
+        binds it to the alias, and runs the children exactly once
+        before yielding to the next flow step. Looped semantics live
+        in ``daemon`` declarations.
+
+        The metadata payload carries:
+          - ``channel`` and ``channel_is_ref`` (D4 dual-mode marker)
+          - ``alias`` (the local name bound to the received event)
+          - ``children`` (a tuple of pre-compiled inner CompiledStep
+            instances) so the executor can run the listener body
+            after the receive without recompiling.
+        """
+        if not isinstance(step, IRListen):
+            raise TypeError(
+                f"_compile_listen_step received unexpected IR node "
+                f"{type(step).__name__} (expected IRListen)"
+            )
+        # Pre-compile children so the executor can iterate them in
+        # sequence after the receive. Each child is itself an IR step
+        # (emit, axonstore, compute, …) that goes through the same
+        # isinstance dispatch.  We import inside the function to avoid
+        # widening the module-level import surface — the children list
+        # is small in practice and recompiling here keeps the listen
+        # step self-contained.
+        compiled_children: list[CompiledStep] = []
+        for child in step.children:
+            if isinstance(child, _CHANNEL_OP_IR_TYPES):
+                compiled_children.append(BaseBackend._compile_channel_op_step(child))
+            elif isinstance(child, _LISTEN_IR_TYPES):
+                compiled_children.append(BaseBackend._compile_listen_step(child))
+            elif isinstance(child, _AXONSTORE_IR_TYPES):
+                compiled_children.append(BaseBackend._compile_axonstore_step(child))
+            elif isinstance(child, _COMPUTE_IR_TYPES):
+                # Compute steps need the parent IR for catalog lookups but
+                # the listen body is constrained: nested compute inside a
+                # listener is unusual. We materialise a metadata-only
+                # placeholder; if real compute-in-listen surfaces, it gets
+                # its own follow-up sub-phase.
+                compiled_children.append(CompiledStep(
+                    step_name=f"compute:listen-child:{getattr(child, 'name', '_anon')}",
+                    user_prompt="",
+                    metadata={"compute": {"deferred": True}},
+                ))
+            else:
+                # Generic child — produce a stub that surfaces the IR
+                # node type so the executor can decide what to do (or
+                # raise if the type is not supported as a listener
+                # child). Adopters who hit this in production telemetry
+                # can request explicit support per child kind.
+                compiled_children.append(CompiledStep(
+                    step_name=f"listen-child:{type(child).__name__}",
+                    user_prompt="",
+                    metadata={"listen_child_unsupported": type(child).__name__},
+                ))
+
+        return CompiledStep(
+            step_name=f"listen:{step.channel_topic}",
+            user_prompt="",
+            metadata={
+                "listen_apply": {
+                    "channel": step.channel_topic,
+                    "channel_is_ref": step.channel_is_ref,
+                    "alias": step.event_alias,
+                    # Children carried as raw CompiledStep objects on the
+                    # metadata dict — the executor's listen handler
+                    # iterates them under the alias scope produced by
+                    # the receive.
+                    "children": compiled_children,
+                },
+            },
         )
 
     @staticmethod

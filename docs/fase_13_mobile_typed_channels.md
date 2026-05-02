@@ -368,6 +368,37 @@ daemon LegacyProcessor {
 
 **Criterio de cierre 13.i:** ✓ Suite Python: **4066 passed, 23 skipped, 0 failures, +24 vs pre-13.i baseline**. Suite axon-rs `--lib`: **1018 passed, 0 failures, 0 regresiones**. Suite axon-frontend `--lib`: **109 passed, 0 failures** (103 baseline + 6 nuevos). El criterion concreto que estaba ausente antes de 13.i: un `publish OrdersCreated within PublicBroker` seguido de `discover OrdersCreated as live` ahora **se ejecuta end-to-end en el `Executor`** — la imagen mental de "compila pero no corre" del paper §9 example queda eliminada. Las tres primitivas (emit / publish / discover) son ahora ciudadanos de primera clase en el dispatch del runtime, con las mismas garantías estructurales (capability tracking, alias scope, lifecycle de bus) que ya tenían los demás non-LLM steps (data_science, compute, axonstore, daemon).
 
+### 13.j — Listen-in-flow integration `[DONE]` ✓
+> Closes the case where ``listen ChannelName as ev { … }`` appeared as a free-standing flow body statement (not inside a daemon). Previously such listens fell into the catch-all `else` branch of `BaseBackend.compile_program` and were treated as LLM steps. 13.j routes them through a dedicated `_compile_listen_step` → `Executor._execute_listen_step` path.
+
+- **13.j.1** New `_LISTEN_IR_TYPES = (IRListen,)` tuple in [axon/backends/base_backend.py](../axon/backends/base_backend.py); new isinstance branch right after the channel-op branch in `compile_program`. The new helper `_compile_listen_step` produces a `CompiledStep` with `metadata.listen_apply` carrying `channel`, `channel_is_ref` (D4 dual-mode marker), `alias`, and a list of **pre-compiled** child `CompiledStep` instances (each child goes through the same isinstance dispatch). `[DONE]`
+- **13.j.2** New `_execute_listen_step` handler in [axon/runtime/executor.py](../axon/runtime/executor.py) — single-event receive: typed channels hit `bus.receive(channel)`; legacy string topics route through `bus.underlying` (the broadcast `EventBus`). Mobility receive (payload is `TypedChannelHandle`) binds the alias in `discovered_handles`; scalar receive binds in `variables`. Children execute sequentially under the alias scope. `[DONE]`
+- **13.j.3** Tests — 8 new in [tests/test_fase_13j_listen_in_flow.py](../tests/test_fase_13j_listen_in_flow.py): backend compile (3 — base, with emit-child pre-compiled, legacy string topic D4), executor handler (4 — typed receive + alias bind, child run with alias-resolved emit, missing bus structured error, mobility payload to discovered_handles), end-to-end through real Executor.
+
+**Criterio de cierre 13.j:** ✓ 8/8 verdes. Free-standing listen-in-flow programs ahora ejecutan end-to-end en el runtime Python.
+
+### 13.k — Cross-process exactly-once via ReplayLog `[DONE]` ✓
+> Closes the explicit deferral in [axon/runtime/channels/typed.py](../axon/runtime/channels/typed.py) (the `exactly_once` branch of `_dispatch` previously commented "Cross-process EO requires Fase 11.c replay-token integration — deferred"). 13.k wires it: `TypedEventBus` accepts an optional `replay_log: ReplayLog`; on `qos=exactly_once` the bus mints a deterministic `ReplayToken` keyed on `(channel, event_id)` (nonce derived from event_id, timestamp fixed at the Unix epoch). Two replicas observing the same event_id mint tokens with **identical** `token_hash_hex`, so the second replica's `log.get(hash)` resolves and the duplicate publish is skipped.
+
+- **13.k.1** `TypedEventBus.__init__` and `from_ir_program` accept `replay_log: Any = None` (typed as `Any` to keep the import graph acyclic — the bus has no hard dep on the replay package when no log is wired). `[DONE]`
+- **13.k.2** `_dispatch` rama `exactly_once`: when `replay_log is not None`, calls `_replay_log_already_delivered(channel, event)` first; on `True` skips silently. Otherwise calls `_replay_log_record(channel, event)` and proceeds with the publish. Falls back to the legacy in-process dedup set when no log is wired. `[DONE]`
+- **13.k.3** Two helpers `_replay_token_for(channel, event)` builds the deterministic ReplayToken (nonce = SHA-256 of `f"{channel}|{event_id}"` truncated to 16 bytes, fixed Unix-epoch timestamp). `_replay_log_already_delivered` and `_replay_log_record` translate token presence into the dedup decision. **Payload is intentionally excluded** from the inputs hash — exactly-once is a `(channel, event_id)` contract, not `(channel, event_id, payload)`, and excluding payload keeps the audit log free of payload leakage (ESK threat model). `[DONE]`
+- **13.k.4** Tests — 9 new in [tests/test_fase_13k_exactly_once_replay.py](../tests/test_fase_13k_exactly_once_replay.py): token determinism (4 — same channel+event_id ⇒ same hash, different event_ids ⇒ different hashes, different channels same event_id ⇒ different hashes, payload excluded from hash), single-process with log (2), cross-process via shared log (3 — replica B skips after replica A records, distinct event_ids both delivered, no log falls back to in-process dedup).
+
+**Criterio de cierre 13.k:** ✓ 9/9 verdes. Adopters wiring a Postgres-backed `ReplayLog` (Fase 11.c) get cross-process exactly-once dedup automatically — the in-memory log used in tests behaves like a single-process simulation of the same contract.
+
+### 13.l — Rust runtime executor integration `[DONE]` ✓
+> Closes the gap where a Rust adopter wanting to drive an `IRProgram` through the runtime had to wire bus + value-ref resolution + capability/alias scope by hand. 13.l ships a self-contained module `axon::runtime::channels::executor` with:
+> - `RunContext` — mirror of Python's `ContextManager` for the typed-channel concern. Holds the per-unit `TypedEventBus`, `discovered_handles`, `variables`, `step_results`, `capabilities`. Implements `resolve_value_ref` with the same lookup order (discovered handles ▶ variables ▶ step results) and dotted-access walk over both `serde_json::Value` and the canonical handle field set (`name`, `message`, `qos`, `lifetime`, `persistence`, `shield_ref`).
+> - Four async dispatchers `dispatch_emit` / `dispatch_publish` / `dispatch_discover` / `dispatch_listen` — same semantics as the Python `_execute_*` handlers, same one-shot capability tracking, same alias binding rules.
+> - `RunContext::from_ir_program(&IRProgram)` — bootstrap helper for Rust orchestrators.
+
+- **13.l.1** New module [axon-rs/src/runtime/channels/executor.rs](../axon-rs/src/runtime/channels/executor.rs) (~600 LoC) with `RunContext`, `RunValue` (`Json` | `Handle`), `DispatchError` enum (one variant per channel-op, mirrors the `channel_op:{op}` `details` tag the Python `AxonRuntimeError` carries), and the four dispatchers. Wired into [axon-rs/src/runtime/channels/mod.rs](../axon-rs/src/runtime/channels/mod.rs) as a public re-export. `[DONE]`
+- **13.l.2** Mutable state held behind `Mutex` so the dispatchers can be called from a multi-threaded executor; `Arc<TypedEventBus>` because the bus itself is already internally synchronised. `[DONE]`
+- **13.l.3** Tests — 13 inline in `executor::tests`: resolve_value_ref (5 — bare identifier step result, dotted walk JSON, handle field access, unknown head with candidates, discovered handle shadows variable), dispatch_emit (2 — scalar through bus, unknown value_ref dispatch error), publish + discover (3 — round-trip, discover without publish error, unpublishable channel error), listen (2 — typed receive binds variable, legacy string-topic rejected with clear message), bootstrap (1 — `from_ir_program` registers all channels). `[DONE]`
+
+**Criterio de cierre 13.l:** ✓ 13/13 verdes. Rust adopters now have a complete, self-contained primitives library for orchestrating an `IRProgram`'s typed-channel surface end-to-end. The future `axon run` Rust binary in `runner.rs::execute_real` can compose these primitives directly when its real-mode dispatcher matures; in the meantime adopters who manually drive an IR through the runtime can use them today.
+
 ### 13.h — Integration tests + examples + release `[DONE]` ✓
 - **13.h.1** [examples/mobile_channels.axon](../examples/mobile_channels.axon) — pipeline producer→broker→consumer con mobility (channel-over-channel) + PCI_DSS compliance gate. Documentado con comentarios que mapean a las decisiones D1/D3/D6/D8 + paper §3.1/§3.2/§3.3/§3.4. `axon check --strict` clean en Python y Rust (125 tokens, 6 declarations, 0 errors). `[DONE]`
 - **13.h.2** [examples/secure_publish.axon](../examples/secure_publish.axon) — publish + shield + discover end-to-end con HIPAA gate (`ClinicalGate`) sobre `PatientReading`. Demuestra producer/consumer separados y la regla "discover only on shield-gated channels". `axon check --strict` clean (109 tokens, 6 declarations, 0 errors). `[DONE]`
@@ -409,6 +440,9 @@ daemon LegacyProcessor {
 | 13.h | Integration + examples + release v1.4.2 | ✅ DONE | 10 |
 | 13.h.bis | Cierre cross-stack — release v1.5.0 (Fase 13.f.2) | ✅ DONE | — |
 | 13.i | Executor integration + dotted-access value_ref (release v1.6.0) | ✅ DONE | 24 Python + 6 Rust |
+| 13.j | Listen-in-flow integration (free-standing `listen` as flow step) | ✅ DONE | 8 Python |
+| 13.k | Cross-process exactly-once via ReplayLog integration | ✅ DONE | 9 Python |
+| 13.l | Rust runtime executor integration (`RunContext` + `dispatch_*`) | ✅ DONE | 13 Rust |
 
 **Totales:**
 - Tests Python nuevos en Fase 13: **200** (21 + 41 + 18 + 52 + 34 + 10 + 24)

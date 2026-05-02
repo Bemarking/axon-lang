@@ -66,6 +66,20 @@ from axon.runtime.tracer import ExecutionTrace, Tracer, TraceEventType
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  CHANNEL OP DETAIL TAGS (Fase 13.i / 13.j)
+# ═══════════════════════════════════════════════════════════════════
+# Single source of truth for the ``ErrorContext.details`` tag attached
+# to AxonRuntimeError raised from the four typed-channel handlers.
+# Surfaces the originating op kind in structured trace data without
+# scattering string literals across the dispatcher.
+
+_CHANNEL_OP_EMIT = "channel_op:emit"
+_CHANNEL_OP_PUBLISH = "channel_op:publish"
+_CHANNEL_OP_DISCOVER = "channel_op:discover"
+_CHANNEL_OP_LISTEN = "channel_op:listen"
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  MODEL CLIENT PROTOCOL
 # ═══════════════════════════════════════════════════════════════════
 
@@ -763,6 +777,10 @@ class Executor:
             return await self._execute_discover_step(
                 step=step, ctx=ctx, tracer=tracer,
             )
+        if step.metadata.get("listen_apply"):
+            return await self._execute_listen_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
 
         # Extract refine config from step metadata (if present)
         refine_config = self._extract_refine_config(step)
@@ -1353,7 +1371,7 @@ class Executor:
                     f"context. The Executor must bootstrap one in "
                     f"_execute_unit from CompiledExecutionUnit.metadata."
                 ),
-                context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:emit"),
+                context=ErrorContext(flow_name="", step_name=step_name, details=_CHANNEL_OP_EMIT),
             )
 
         # Resolve the payload. For mobility (value_is_channel=True) the
@@ -1373,7 +1391,7 @@ class Executor:
                         f"but '{value_ref}' is not in scope (no discovered "
                         f"alias, no declared channel)."
                     ),
-                    context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:emit"),
+                    context=ErrorContext(flow_name="", step_name=step_name, details=_CHANNEL_OP_EMIT),
                 )
             await bus.emit(channel_ref, handle, payload_is_handle=True)
             payload_repr: Any = {"handle": handle.name}
@@ -1383,7 +1401,7 @@ class Executor:
             except KeyError as exc:
                 raise AxonRuntimeError(
                     message=str(exc),
-                    context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:emit"),
+                    context=ErrorContext(flow_name="", step_name=step_name, details=_CHANNEL_OP_EMIT),
                 ) from exc
             await bus.emit(channel_ref, payload)
             payload_repr = payload
@@ -1441,7 +1459,7 @@ class Executor:
                     f"the context. The Executor must bootstrap one in "
                     f"_execute_unit from CompiledExecutionUnit.metadata."
                 ),
-                context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:publish"),
+                context=ErrorContext(flow_name="", step_name=step_name, details=_CHANNEL_OP_PUBLISH),
             )
 
         try:
@@ -1449,7 +1467,7 @@ class Executor:
         except Exception as exc:  # TypedChannelError or descendants
             raise AxonRuntimeError(
                 message=f"publish '{channel_ref}' failed: {exc}",
-                context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:publish"),
+                context=ErrorContext(flow_name="", step_name=step_name, details=_CHANNEL_OP_PUBLISH),
             ) from exc
 
         ctx.record_capability(channel_ref, capability)
@@ -1473,6 +1491,132 @@ class Executor:
             TraceEventType.STEP_END,
             step_name=step_name,
             data={"success": True, "publish_channel": channel_ref},
+            duration_ms=step_duration,
+        )
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=step_duration,
+        )
+
+    async def _execute_listen_step(
+        self,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Dispatch a free-standing ``listen ChannelName as alias { … }``
+        flow statement (Fase 13.j).
+
+        Single-event receive: subscribe / await one event from the bus,
+        bind it to the alias inside ``ctx``, then iterate the
+        pre-compiled children once. The legacy string-topic path
+        (``listen "orders" as ev``) routes through the underlying
+        ``EventBus`` (the broadcast string-topic substrate) for D4
+        dual-mode compatibility — typed channel refs go through
+        ``TypedEventBus.receive``.
+        """
+        import json
+
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["listen_apply"]
+        channel: str = meta["channel"]
+        channel_is_ref: bool = bool(meta.get("channel_is_ref", False))
+        alias: str = meta["alias"]
+        children: list[CompiledStep] = list(meta.get("children", ()))
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "listen_channel": channel,
+                "listen_typed_ref": channel_is_ref,
+                "listen_alias": alias,
+            },
+        )
+
+        # Resolve the source: typed channel → TypedEventBus.receive;
+        # legacy string topic → underlying EventBus (broadcast
+        # substrate). The dual-mode policy is paper §D4: both paths
+        # remain valid in v1.x with a deprecation warning issued at
+        # type-check time on the legacy form.
+        if channel_is_ref:
+            bus = ctx.typed_bus
+            if bus is None:
+                raise AxonRuntimeError(
+                    message=(
+                        f"listen step '{step_name}' references typed channel "
+                        f"'{channel}' but no TypedEventBus is bound on the "
+                        f"context. The Executor must bootstrap one in "
+                        f"_execute_unit from CompiledExecutionUnit.metadata."
+                    ),
+                    context=ErrorContext(flow_name="", step_name=step_name, details=_CHANNEL_OP_LISTEN),
+                )
+            event = await bus.receive(channel)
+            payload = event.payload
+        else:
+            # Legacy string-topic path. Use the typed bus's underlying
+            # EventBus when available so test fixtures that bootstrap a
+            # bus get a deterministic source; fall back to a fresh
+            # in-memory EventBus when the unit declared no channels.
+            from axon.runtime.event_bus import EventBus
+            underlying: EventBus
+            if ctx.typed_bus is not None and hasattr(ctx.typed_bus, "underlying"):
+                underlying = ctx.typed_bus.underlying
+            else:
+                underlying = EventBus()
+            backing = underlying.get_or_create(channel)
+            event = await backing.receive()
+            payload = event.payload
+
+        # Bind the alias so the children's emit/value_ref lookups can
+        # reach the received payload. We use the `discovered_handles`
+        # scope when payload is a TypedChannelHandle (mobility receive)
+        # and the variables scope otherwise (scalar payload).
+        from axon.runtime.channels.typed import TypedChannelHandle
+        if isinstance(payload, TypedChannelHandle):
+            ctx.bind_discovered_handle(alias, payload)
+        else:
+            ctx.set_variable(alias, payload)
+
+        # Run children sequentially under the alias scope. Each child
+        # is itself a CompiledStep that goes through the same
+        # _execute_step dispatch — keeps the recursion shallow and
+        # preserves the per-step trace events.
+        child_results: list[StepResult] = []
+        for child in children:
+            child_result = await self._execute_step(
+                step=child, unit=unit, ctx=ctx, tracer=tracer,
+            )
+            child_results.append(child_result)
+            if child.step_name and child_result.response:
+                output = (
+                    child_result.response.structured
+                    or child_result.response.content
+                )
+                ctx.set_step_result(child.step_name, output)
+
+        response = ModelResponse(
+            content=json.dumps({
+                "listened": channel,
+                "alias": alias,
+                "children_run": len(child_results),
+            }),
+            structured={
+                "listened": channel,
+                "alias": alias,
+                "children_run": len(child_results),
+            },
+        )
+        ctx.set_step_result(step_name, payload)
+
+        step_duration = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={"success": True, "listen_channel": channel, "children": len(child_results)},
             duration_ms=step_duration,
         )
         return StepResult(
@@ -1516,7 +1660,7 @@ class Executor:
                     f"the context. The Executor must bootstrap one in "
                     f"_execute_unit from CompiledExecutionUnit.metadata."
                 ),
-                context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:discover"),
+                context=ErrorContext(flow_name="", step_name=step_name, details=_CHANNEL_OP_DISCOVER),
             )
 
         try:
@@ -1524,7 +1668,7 @@ class Executor:
         except KeyError as exc:
             raise AxonRuntimeError(
                 message=str(exc),
-                context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:discover"),
+                context=ErrorContext(flow_name="", step_name=step_name, details=_CHANNEL_OP_DISCOVER),
             ) from exc
 
         try:
@@ -1532,7 +1676,7 @@ class Executor:
         except Exception as exc:
             raise AxonRuntimeError(
                 message=f"discover '{capability_ref}' failed: {exc}",
-                context=ErrorContext(flow_name="", step_name=step_name, details="channel_op:discover"),
+                context=ErrorContext(flow_name="", step_name=step_name, details=_CHANNEL_OP_DISCOVER),
             ) from exc
 
         ctx.bind_discovered_handle(alias, handle)
