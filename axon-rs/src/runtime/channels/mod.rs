@@ -10,8 +10,13 @@
 //! Surface re-exports: see `typed`.
 
 pub mod typed;
+pub mod executor;
 
 pub use typed::{
     Capability, ShieldComplianceFn, TypedChannelError, TypedChannelHandle,
     TypedChannelRegistry, TypedEvent, TypedEventBus, TypedPayload,
+};
+pub use executor::{
+    DispatchError, RunContext, RunValue,
+    dispatch_emit, dispatch_publish, dispatch_discover, dispatch_listen,
 };

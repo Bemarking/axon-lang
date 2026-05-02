@@ -243,10 +243,20 @@ class TypedEventBus:
         registry: TypedChannelRegistry,
         underlying: EventBus | None = None,
         compliance_check: ShieldComplianceFn = _default_compliance_check,
+        replay_log: Any = None,  # Optional[ReplayLog] — Any to avoid import cycle
     ) -> None:
         self._registry = registry
         self._bus = underlying or EventBus()
         self._compliance_check = compliance_check
+        # Fase 13.k — cross-process exactly_once dedup. When ``replay_log``
+        # is provided, qos=exactly_once persists a deterministic
+        # ``ReplayToken`` per (channel, event_id) pair to the log; before
+        # publishing it checks the log for an existing token with the
+        # same hash and silently skips duplicates. Adopters wire a
+        # Postgres-backed ``ReplayLog`` impl (Fase 11.c) to get
+        # cross-process dedup; the in-memory log is sufficient for
+        # single-process tests of the contract.
+        self._replay_log = replay_log
         # Issued capabilities — capability_id → channel_name
         self._capabilities: dict[str, Capability] = {}
         # Broadcast subscriber registry — channel_name → list[Queue]
@@ -260,12 +270,18 @@ class TypedEventBus:
         ir_program: Any,
         underlying: EventBus | None = None,
         compliance_check: ShieldComplianceFn = _default_compliance_check,
+        replay_log: Any = None,
     ) -> "TypedEventBus":
         """Bootstrap a bus from a fully-lowered IRProgram (post-13.c)."""
         registry = TypedChannelRegistry()
         for ch in ir_program.channels:
             registry.register_from_ir_channel(ch)
-        return cls(registry, underlying=underlying, compliance_check=compliance_check)
+        return cls(
+            registry,
+            underlying=underlying,
+            compliance_check=compliance_check,
+            replay_log=replay_log,
+        )
 
     # ── REGISTRY ACCESS ────────────────────────────────────────────
 
@@ -362,10 +378,23 @@ class TypedEventBus:
             return
 
         if handle.qos == "exactly_once":
-            # Dedup by event_id for the current process.  Cross-process EO
-            # requires Fase 11.c replay-token integration — surfaced as a
-            # NotImplementedError so callers cannot silently fall back to
-            # at-least-once when they asked for stronger semantics.
+            # Fase 13.k — when a ReplayLog (Fase 11.c) is wired into the
+            # bus, cross-process dedup is achieved by minting a
+            # deterministic ReplayToken keyed on (channel, event_id) and
+            # checking the log before publishing. The token uses fixed
+            # nonce + timestamp so its ``token_hash_hex`` is identical
+            # across processes that see the same (channel, event_id),
+            # which makes the existence check work whether the log is
+            # in-memory (single process) or Postgres-backed (production
+            # cross-process). Falls back to the in-process dedup set
+            # below when no log is wired.
+            if self._replay_log is not None:
+                if self._replay_log_already_delivered(handle.name, event):
+                    return
+                self._replay_log_record(handle.name, event)
+                await self._bus.publish(handle.name, event)
+                return
+            # In-process dedup by event_id (legacy single-process path).
             seen = self._delivered_ids.setdefault(handle.name, set())
             if event.event_id in seen:
                 return
@@ -488,6 +517,65 @@ class TypedEventBus:
             )
         backing = self._bus.get_or_create(channel_name)
         return await backing.receive()
+
+    # ── REPLAY-LOG DEDUP HELPERS (Fase 13.k) ───────────────────────
+    #
+    # The two helpers below convert a (channel, event) pair into a
+    # canonical ReplayToken whose ``token_hash_hex`` depends only on
+    # the channel name and event id (nonce derived from event_id,
+    # timestamp fixed at the Unix epoch). That gives cross-process
+    # determinism: two replicas that observe the same event_id mint
+    # tokens with identical hashes, so the second replica's
+    # ``replay_log.get(hash)`` succeeds and the publish is skipped.
+    #
+    # We deliberately do NOT include the payload in the inputs — payload
+    # equality across replicas is not part of exactly-once semantics
+    # (the upstream producer is responsible for the (channel, event_id)
+    # contract). Including the payload would also leak it into the
+    # audit log unnecessarily, which the ESK threat model rejects.
+
+    def _replay_token_for(self, channel_name: str, event: Event) -> Any:
+        """Build a deterministic ReplayToken for (channel, event_id)."""
+        # Lazy import to avoid a hard dep on the replay package when no
+        # ReplayLog is wired. Adopters who never use exactly_once never
+        # pay for the import.
+        import hashlib
+        from datetime import datetime, timezone
+        from axon.runtime.replay.token import ReplayTokenBuilder
+        nonce = hashlib.sha256(
+            f"{channel_name}|{event.event_id}".encode("utf-8")
+        ).digest()[:16]
+        return (
+            ReplayTokenBuilder()
+            .effect_name(f"emit:{channel_name}")
+            .inputs({"channel": channel_name, "event_id": event.event_id})
+            .outputs({"delivered": True})
+            .model_version("typed_event_bus")
+            .timestamp(datetime.fromtimestamp(0, tz=timezone.utc))
+            .nonce(nonce)
+            .mint()
+        )
+
+    def _replay_log_already_delivered(
+        self, channel_name: str, event: Event,
+    ) -> bool:
+        """Probe the log for a token matching (channel, event_id).
+
+        Catches the log's lookup error to translate "not found" into
+        ``False`` so the caller proceeds to publish + record.
+        """
+        from axon.runtime.replay.log import ReplayLogError
+        token = self._replay_token_for(channel_name, event)
+        try:
+            self._replay_log.get(token.token_hash_hex)
+            return True
+        except ReplayLogError:
+            return False
+
+    def _replay_log_record(self, channel_name: str, event: Event) -> None:
+        """Persist the deterministic token for (channel, event_id)."""
+        token = self._replay_token_for(channel_name, event)
+        self._replay_log.append(token)
 
     # ── INTROSPECTION ──────────────────────────────────────────────
 
