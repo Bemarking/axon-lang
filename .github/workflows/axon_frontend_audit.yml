@@ -29,6 +29,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Opt into Node.js 24 for every JavaScript action — GitHub deprecates
+  # Node 20 on 2026-09-16; default flips on 2026-06-02.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   dep-audit:
     name: axon-frontend has no runtime deps

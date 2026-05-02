@@ -24,6 +24,16 @@ on:
 permissions:
   contents: write
 
+env:
+  # Opt into Node.js 24 for every JavaScript action in this workflow.
+  # GitHub will force Node 24 by default starting 2026-06-02 and remove
+  # Node 20 from runners on 2026-09-16 (deprecation notice surfaced by
+  # the runner on every job pre-2026-06). Setting the flag now means
+  # the workflow keeps working through the transition without waiting
+  # for each individual action (actions/checkout, docker/build-push,
+  # softprops/action-gh-release, …) to ship a Node-24 major bump.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   # ────────────────────────────────────────────────────────────────
   # One matrix row per target platform. `musl` gives a fully static
@@ -121,26 +131,37 @@ jobs:
           retention-days: 90
 
   # ────────────────────────────────────────────────────────────────
-  # Optional WASM build — compiles the crate to wasm32-wasi so the
-  # Axon compiler can be embedded in browser-side tools.
+  # Optional WASM build — compiles the crate to wasm32-wasip1 (formerly
+  # wasm32-wasi; the target was renamed in Rust 1.84) so the Axon
+  # compiler can be embedded in browser-side tools.
+  #
+  # Job-level `continue-on-error: true` so a wasm failure does not
+  # propagate to the workflow's overall conclusion. Historically this
+  # job was failing on the toolchain-install step (target name had been
+  # changed upstream), which marked the entire `Rust Release Binaries`
+  # workflow as `failed` even though the five real platform binaries
+  # (linux x2 + macos x2 + windows) had been built and published. The
+  # downstream `Enterprise Release` workflow only depends on
+  # axon-linux-x86_64, so a wasm failure must not block enterprise
+  # ECR builds.
   # ────────────────────────────────────────────────────────────────
   wasm:
-    name: wasm32-wasi
+    name: wasm32-wasip1
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasi
-      - name: Cargo build (release, wasm32-wasi)
+          targets: wasm32-wasip1
+      - name: Cargo build (release, wasm32-wasip1)
         working-directory: axon-rs
-        run: cargo build --bin axon --release --target wasm32-wasi
-        continue-on-error: true   # wasm target is best-effort for now
+        run: cargo build --bin axon --release --target wasm32-wasip1
       - name: Upload wasm artefact
         uses: actions/upload-artifact@v4
         with:
-          name: axon-wasm32-wasi
-          path: axon-rs/target/wasm32-wasi/release/axon.wasm
+          name: axon-wasm32-wasip1
+          path: axon-rs/target/wasm32-wasip1/release/axon.wasm
           if-no-files-found: warn
           retention-days: 90
 

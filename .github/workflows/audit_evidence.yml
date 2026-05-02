@@ -35,6 +35,11 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.12"
+  # Opt into Node.js 24 for every JavaScript action — GitHub deprecates
+  # Node 20 on 2026-09-16; default flips on 2026-06-02. Setting the
+  # flag now keeps the workflow working through the transition without
+  # waiting for each action to ship a major bump.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   audit-evidence:
