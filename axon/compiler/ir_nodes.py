@@ -1427,9 +1427,15 @@ class IRLambdaDataApply(IRNode):
     """
     Compiled ΛD application point — epistemic binding insertion.
 
-    At runtime, the executor binds the referenced ΛD's epistemic
-    tensor to the target expression, propagating certainty through
-    the pipeline per Theorem 5.1 (Epistemic Degradation).
+    Status (v1.9.1): the front-end emits this node and the type checker
+    validates it, but no runtime executor (Python or Rust) dispatches it
+    yet — see docs/fase_15_lambda_apply_runtime.md for the wiring plan
+    targeting v1.10.0.
+
+    Planned semantics (Fase 15.b/15.c): at runtime the executor binds
+    the referenced ΛD's epistemic tensor to the target expression,
+    propagating certainty through the pipeline per Theorem 5.1
+    (Epistemic Degradation).
 
     The projection mode determines fidelity:
       - Full ΛD:  ψ = ⟨T, V, E⟩  (lossless)
