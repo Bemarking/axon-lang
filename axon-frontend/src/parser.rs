@@ -48,53 +48,172 @@ const fn token_to_trivia_kind(tt: &TokenType) -> Option<TriviaKind> {
 /// `_with_trivia` decorator on every `_parse_*` method. In Rust we
 /// do it once at the top of the parse loop so the spread to every
 /// variant is in a single place.
-fn attach_trivia_to_decl(
-    decl: &mut Declaration,
-    leading: Vec<Trivia>,
-    trailing: Vec<Trivia>,
-) {
+fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing: Vec<Trivia>) {
     match decl {
-        Declaration::Import(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Persona(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Context(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Anchor(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Memory(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Tool(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Type(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Flow(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Intent(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Run(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Epistemic(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Let(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::LambdaData(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Agent(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Shield(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Pix(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Psyche(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Corpus(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Dataspace(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Ots(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Mandate(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Compute(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Daemon(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::AxonStore(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::AxonEndpoint(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Resource(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Fabric(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Manifest(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Observe(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Reconcile(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Lease(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Ensemble(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Session(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Topology(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Immune(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Reflex(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Heal(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Component(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::View(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Channel(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
-        Declaration::Generic(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Import(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Persona(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Context(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Anchor(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Memory(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Tool(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Type(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Flow(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Intent(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Run(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Epistemic(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Let(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::LambdaData(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Agent(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Shield(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Pix(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Psyche(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Corpus(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Dataspace(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Ots(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Mandate(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Compute(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Daemon(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::AxonStore(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::AxonEndpoint(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Resource(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Fabric(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Manifest(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Observe(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Reconcile(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Lease(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Ensemble(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Session(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Topology(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Immune(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Reflex(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Heal(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Component(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::View(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Channel(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
+        Declaration::Generic(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
     }
 }
 
@@ -194,8 +313,16 @@ impl Parser {
             let start_pos = self.pos;
             let mut decl = self.parse_declaration()?;
             let end_pos = self.pos.saturating_sub(1);
-            let leading = self.leading_trivia.get(start_pos).cloned().unwrap_or_default();
-            let trailing = self.trailing_trivia.get(end_pos).cloned().unwrap_or_default();
+            let leading = self
+                .leading_trivia
+                .get(start_pos)
+                .cloned()
+                .unwrap_or_default();
+            let trailing = self
+                .trailing_trivia
+                .get(end_pos)
+                .cloned()
+                .unwrap_or_default();
             // Fase 14.b — also copy trivia into the per-struct fields on
             // the declaration so consumers can read `flow.leading_trivia`
             // directly without going through `program.declaration_trivia[i]`.
@@ -203,7 +330,9 @@ impl Parser {
             // 14.a callers and as a flat enumeration source.
             attach_trivia_to_decl(&mut decl, leading.clone(), trailing.clone());
             program.declarations.push(decl);
-            program.declaration_trivia.push(DeclarationTrivia { leading, trailing });
+            program
+                .declaration_trivia
+                .push(DeclarationTrivia { leading, trailing });
         }
         Ok(program)
     }
@@ -250,8 +379,11 @@ impl Parser {
     fn consume_any_ident_or_kw(&mut self) -> Result<Token, ParseError> {
         let tok = self.current().clone();
         match tok.ttype {
-            TokenType::Identifier | TokenType::Bool | TokenType::StringLit
-            | TokenType::Integer | TokenType::Float => {
+            TokenType::Identifier
+            | TokenType::Bool
+            | TokenType::StringLit
+            | TokenType::Integer
+            | TokenType::Float => {
                 self.pos += 1;
                 Ok(tok)
             }
@@ -311,8 +443,12 @@ impl Parser {
     fn check_comparison(&self) -> bool {
         matches!(
             self.current().ttype,
-            TokenType::Lt | TokenType::Gt | TokenType::Lte
-                | TokenType::Gte | TokenType::Eq | TokenType::Neq
+            TokenType::Lt
+                | TokenType::Gt
+                | TokenType::Lte
+                | TokenType::Gte
+                | TokenType::Eq
+                | TokenType::Neq
         )
     }
 
@@ -646,8 +782,8 @@ impl Parser {
             module_path: path_parts,
             names,
             loc,
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         })
     }
 
@@ -669,8 +805,8 @@ impl Parser {
             language: String::new(),
             description: String::new(),
             loc,
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
 
         while !self.check(TokenType::RBrace) {
@@ -681,9 +817,7 @@ impl Parser {
             match field_name.as_str() {
                 "domain" => node.domain = self.parse_string_list()?,
                 "tone" => node.tone = self.consume_any_ident_or_kw()?.value,
-                "confidence_threshold" => {
-                    node.confidence_threshold = Some(self.consume_number()?)
-                }
+                "confidence_threshold" => node.confidence_threshold = Some(self.consume_number()?),
                 "cite_sources" => node.cite_sources = Some(self.parse_bool()?),
                 "refuse_if" => node.refuse_if = self.parse_bracketed_identifiers()?,
                 "language" => node.language = self.consume(TokenType::StringLit)?.value,
@@ -712,8 +846,8 @@ impl Parser {
             temperature: None,
             cite_sources: None,
             loc,
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
 
         while !self.check(TokenType::RBrace) {
@@ -761,8 +895,8 @@ impl Parser {
             on_violation: String::new(),
             on_violation_target: String::new(),
             loc,
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
 
         while !self.check(TokenType::RBrace) {
@@ -809,8 +943,8 @@ impl Parser {
             retrieval: String::new(),
             decay: String::new(),
             loc,
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
 
         while !self.check(TokenType::RBrace) {
@@ -854,8 +988,8 @@ impl Parser {
             sandbox: None,
             effects: None,
             loc,
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
 
         while !self.check(TokenType::RBrace) {
@@ -993,10 +1127,7 @@ impl Parser {
         let mut next_col = first.column + first.value.chars().count() as u32;
         loop {
             let cur = self.current();
-            let is_segment_token = matches!(
-                cur.ttype,
-                TokenType::Identifier | TokenType::Integer,
-            );
+            let is_segment_token = matches!(cur.ttype, TokenType::Identifier | TokenType::Integer,);
             if !is_segment_token {
                 break;
             }
@@ -1025,8 +1156,8 @@ impl Parser {
             where_clause: None,
             compliance: Vec::new(),
             loc: loc.clone(),
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
 
         // Optional range: (0.0..1.0)
@@ -1146,8 +1277,8 @@ impl Parser {
             return_type,
             body,
             loc,
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         })
     }
 
@@ -1305,8 +1436,11 @@ impl Parser {
                     node.apply_ref = self.consume_any_ident_or_kw()?.value;
                 }
                 // Sub-constructs (use, probe, reason, weave, stream) → skip structurally
-                TokenType::Use | TokenType::Probe | TokenType::Reason
-                | TokenType::Weave | TokenType::Stream => {
+                TokenType::Use
+                | TokenType::Probe
+                | TokenType::Reason
+                | TokenType::Weave
+                | TokenType::Stream => {
                     self.skip_flow_step_structural()?;
                 }
                 _ => {
@@ -1331,19 +1465,28 @@ impl Parser {
         // Consume the keyword
         self.advance();
         // Consume tokens until we hit a { or a closing }, or a known flow step keyword
-        while !self.check(TokenType::LBrace) && !self.check(TokenType::RBrace)
+        while !self.check(TokenType::LBrace)
+            && !self.check(TokenType::RBrace)
             && !self.check(TokenType::Eof)
         {
             // Check if we hit a new step-level keyword (means this was a one-liner)
             let tt = &self.current().ttype;
             if matches!(
                 tt,
-                TokenType::Step | TokenType::Given | TokenType::Ask
-                    | TokenType::Output | TokenType::Navigate
-                    | TokenType::Use | TokenType::Probe
-                    | TokenType::Reason | TokenType::Weave
-                    | TokenType::Stream | TokenType::If
-                    | TokenType::For | TokenType::Let | TokenType::Return
+                TokenType::Step
+                    | TokenType::Given
+                    | TokenType::Ask
+                    | TokenType::Output
+                    | TokenType::Navigate
+                    | TokenType::Use
+                    | TokenType::Probe
+                    | TokenType::Reason
+                    | TokenType::Weave
+                    | TokenType::Stream
+                    | TokenType::If
+                    | TokenType::For
+                    | TokenType::Let
+                    | TokenType::Return
             ) {
                 return Ok(());
             }
@@ -1371,8 +1514,8 @@ impl Parser {
             output_type: None,
             confidence_floor: None,
             loc,
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
 
         while !self.check(TokenType::RBrace) {
@@ -1417,8 +1560,8 @@ impl Parser {
             output_to: String::new(),
             effort: String::new(),
             loc,
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
 
         while self.check_run_modifier() {
@@ -1499,8 +1642,8 @@ impl Parser {
             mode: mode.to_string(),
             body,
             loc,
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         })
     }
 
@@ -1639,8 +1782,8 @@ impl Parser {
             identifier: name,
             value_expr: value,
             loc,
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         })
     }
 
@@ -1737,7 +1880,10 @@ impl Parser {
     fn parse_flow_step_simple(&mut self, _kw: &str) -> Result<(Loc, String), ParseError> {
         let tok = self.current().clone();
         self.advance(); // consume keyword
-        let target = if self.at_declaration_start() || self.check(TokenType::RBrace) || self.check(TokenType::Eof) {
+        let target = if self.at_declaration_start()
+            || self.check(TokenType::RBrace)
+            || self.check(TokenType::Eof)
+        {
             String::new()
         } else {
             self.consume_any_ident_or_kw()?.value.clone()
@@ -1746,7 +1892,13 @@ impl Parser {
         if self.check(TokenType::LBrace) {
             self.skip_braced_block()?;
         }
-        Ok((Loc { line: tok.line, column: tok.column }, target))
+        Ok((
+            Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            target,
+        ))
     }
 
     /// Parse: keyword { ... } — block-level step, skip body structurally.
@@ -1754,14 +1906,20 @@ impl Parser {
         let tok = self.current().clone();
         self.advance();
         // Skip optional arguments before brace
-        while !self.check(TokenType::LBrace) && !self.check(TokenType::RBrace) && !self.check(TokenType::Eof)
-            && !self.at_declaration_start() {
+        while !self.check(TokenType::LBrace)
+            && !self.check(TokenType::RBrace)
+            && !self.check(TokenType::Eof)
+            && !self.at_declaration_start()
+        {
             self.advance();
         }
         if self.check(TokenType::LBrace) {
             self.skip_braced_block()?;
         }
-        Ok(Loc { line: tok.line, column: tok.column })
+        Ok(Loc {
+            line: tok.line,
+            column: tok.column,
+        })
     }
 
     /// Parse: keyword Name on target -> output_type (apply pattern).
@@ -1788,16 +1946,30 @@ impl Parser {
         if self.check(TokenType::LBrace) {
             self.skip_braced_block()?;
         }
-        Ok((Loc { line: tok.line, column: tok.column }, name, target, output_type))
+        Ok((
+            Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            name,
+            target,
+            output_type,
+        ))
     }
 
     fn parse_weave_step(&mut self) -> Result<FlowStep, ParseError> {
         let tok = self.current().clone();
         self.advance();
         let mut node = WeaveStep {
-            sources: Vec::new(), target: String::new(), format_type: String::new(),
-            priority: Vec::new(), style: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
+            sources: Vec::new(),
+            target: String::new(),
+            format_type: String::new(),
+            priority: Vec::new(),
+            style: String::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
         };
         if self.check(TokenType::LBrace) {
             self.advance();
@@ -1809,14 +1981,18 @@ impl Parser {
                     match f.as_str() {
                         "sources" => node.sources = self.parse_bracketed_identifiers()?,
                         "target" => node.target = self.consume_any_ident_or_kw()?.value.clone(),
-                        "format" => node.format_type = self.consume_any_ident_or_kw()?.value.clone(),
+                        "format" => {
+                            node.format_type = self.consume_any_ident_or_kw()?.value.clone()
+                        }
                         "priority" => node.priority = self.parse_bracketed_identifiers()?,
                         "style" => node.style = self.consume_any_ident_or_kw()?.value.clone(),
                         _ => self.skip_value(),
                     }
                 }
             }
-            if self.check(TokenType::RBrace) { self.advance(); }
+            if self.check(TokenType::RBrace) {
+                self.advance();
+            }
         }
         Ok(FlowStep::Weave(node))
     }
@@ -1834,8 +2010,17 @@ impl Parser {
                 argument = self.consume_any_ident_or_kw()?.value.clone();
             }
         }
-        if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
-        Ok(FlowStep::UseTool(UseToolStep { tool_name, argument, loc: Loc { line: tok.line, column: tok.column } }))
+        if self.check(TokenType::LBrace) {
+            self.skip_braced_block()?;
+        }
+        Ok(FlowStep::UseTool(UseToolStep {
+            tool_name,
+            argument,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
     }
 
     fn parse_remember_step(&mut self) -> Result<FlowStep, ParseError> {
@@ -1850,7 +2035,14 @@ impl Parser {
                 mem = self.consume_any_ident_or_kw()?.value.clone();
             }
         }
-        Ok(FlowStep::Remember(RememberStep { expression: expr, memory_target: mem, loc: Loc { line: tok.line, column: tok.column } }))
+        Ok(FlowStep::Remember(RememberStep {
+            expression: expr,
+            memory_target: mem,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
     }
 
     fn parse_recall_step(&mut self) -> Result<FlowStep, ParseError> {
@@ -1869,7 +2061,14 @@ impl Parser {
                 mem = self.consume_any_ident_or_kw()?.value.clone();
             }
         }
-        Ok(FlowStep::Recall(RecallStep { query, memory_source: mem, loc: Loc { line: tok.line, column: tok.column } }))
+        Ok(FlowStep::Recall(RecallStep {
+            query,
+            memory_source: mem,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
     }
 
     fn parse_hibernate_step(&mut self) -> Result<FlowStep, ParseError> {
@@ -1887,7 +2086,14 @@ impl Parser {
                 timeout = next.value.clone();
             }
         }
-        Ok(FlowStep::Hibernate(HibernateStep { event_name: event, timeout, loc: Loc { line: tok.line, column: tok.column } }))
+        Ok(FlowStep::Hibernate(HibernateStep {
+            event_name: event,
+            timeout,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
     }
 
     fn parse_associate_step(&mut self) -> Result<FlowStep, ParseError> {
@@ -1906,7 +2112,15 @@ impl Parser {
                 using = self.consume_any_ident_or_kw()?.value.clone();
             }
         }
-        Ok(FlowStep::Associate(AssociateStep { left, right, using_field: using, loc: Loc { line: tok.line, column: tok.column } }))
+        Ok(FlowStep::Associate(AssociateStep {
+            left,
+            right,
+            using_field: using,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
     }
 
     fn parse_aggregate_step(&mut self) -> Result<FlowStep, ParseError> {
@@ -1929,9 +2143,19 @@ impl Parser {
                     }
                 }
             }
-            if self.check(TokenType::RBrace) { self.advance(); }
+            if self.check(TokenType::RBrace) {
+                self.advance();
+            }
         }
-        Ok(FlowStep::Aggregate(AggregateStep { target, group_by, alias, loc: Loc { line: tok.line, column: tok.column } }))
+        Ok(FlowStep::Aggregate(AggregateStep {
+            target,
+            group_by,
+            alias,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
     }
 
     fn parse_explore_step(&mut self) -> Result<FlowStep, ParseError> {
@@ -1945,7 +2169,14 @@ impl Parser {
                 self.advance();
             }
         }
-        Ok(FlowStep::ExploreStep(ExploreStepNode { target, limit, loc: Loc { line: tok.line, column: tok.column } }))
+        Ok(FlowStep::ExploreStep(ExploreStepNode {
+            target,
+            limit,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
     }
 
     fn parse_ingest_step(&mut self) -> Result<FlowStep, ParseError> {
@@ -1960,8 +2191,17 @@ impl Parser {
                 target = self.consume_any_ident_or_kw()?.value.clone();
             }
         }
-        if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
-        Ok(FlowStep::Ingest(IngestStep { source, target, loc: Loc { line: tok.line, column: tok.column } }))
+        if self.check(TokenType::LBrace) {
+            self.skip_braced_block()?;
+        }
+        Ok(FlowStep::Ingest(IngestStep {
+            source,
+            target,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
     }
 
     fn parse_navigate_step(&mut self) -> Result<FlowStep, ParseError> {
@@ -1969,9 +2209,15 @@ impl Parser {
         self.advance();
         let pix_name = self.consume_any_ident_or_kw()?.value.clone();
         let mut node = NavigateStep {
-            pix_name, corpus_name: String::new(), query_expr: String::new(),
-            trail_enabled: false, output_name: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
+            pix_name,
+            corpus_name: String::new(),
+            query_expr: String::new(),
+            trail_enabled: false,
+            output_name: String::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
         };
         if self.check(TokenType::LBrace) {
             self.advance();
@@ -1981,15 +2227,25 @@ impl Parser {
                 if self.check(TokenType::Colon) {
                     self.advance();
                     match f.as_str() {
-                        "corpus" => node.corpus_name = self.consume_any_ident_or_kw()?.value.clone(),
-                        "query" => node.query_expr = self.consume(TokenType::StringLit)?.value.clone(),
-                        "trail" => node.trail_enabled = self.consume_any_ident_or_kw()?.value == "true",
-                        "output" | "as" => node.output_name = self.consume_any_ident_or_kw()?.value.clone(),
+                        "corpus" => {
+                            node.corpus_name = self.consume_any_ident_or_kw()?.value.clone()
+                        }
+                        "query" => {
+                            node.query_expr = self.consume(TokenType::StringLit)?.value.clone()
+                        }
+                        "trail" => {
+                            node.trail_enabled = self.consume_any_ident_or_kw()?.value == "true"
+                        }
+                        "output" | "as" => {
+                            node.output_name = self.consume_any_ident_or_kw()?.value.clone()
+                        }
                         _ => self.skip_value(),
                     }
                 }
             }
-            if self.check(TokenType::RBrace) { self.advance(); }
+            if self.check(TokenType::RBrace) {
+                self.advance();
+            }
         }
         Ok(FlowStep::Navigate(node))
     }
@@ -1999,8 +2255,14 @@ impl Parser {
         self.advance();
         let pix_name = self.consume_any_ident_or_kw()?.value.clone();
         let mut node = DrillStep {
-            pix_name, subtree_path: String::new(), query_expr: String::new(), output_name: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
+            pix_name,
+            subtree_path: String::new(),
+            query_expr: String::new(),
+            output_name: String::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
         };
         if self.check(TokenType::LBrace) {
             self.advance();
@@ -2010,14 +2272,22 @@ impl Parser {
                 if self.check(TokenType::Colon) {
                     self.advance();
                     match f.as_str() {
-                        "subtree" | "path" => node.subtree_path = self.consume(TokenType::StringLit)?.value.clone(),
-                        "query" => node.query_expr = self.consume(TokenType::StringLit)?.value.clone(),
-                        "output" | "as" => node.output_name = self.consume_any_ident_or_kw()?.value.clone(),
+                        "subtree" | "path" => {
+                            node.subtree_path = self.consume(TokenType::StringLit)?.value.clone()
+                        }
+                        "query" => {
+                            node.query_expr = self.consume(TokenType::StringLit)?.value.clone()
+                        }
+                        "output" | "as" => {
+                            node.output_name = self.consume_any_ident_or_kw()?.value.clone()
+                        }
                         _ => self.skip_value(),
                     }
                 }
             }
-            if self.check(TokenType::RBrace) { self.advance(); }
+            if self.check(TokenType::RBrace) {
+                self.advance();
+            }
         }
         Ok(FlowStep::Drill(node))
     }
@@ -2031,7 +2301,14 @@ impl Parser {
             self.advance();
             output = self.consume_any_ident_or_kw()?.value.clone();
         }
-        Ok(FlowStep::Corroborate(CorroborateStep { navigate_ref: nav_ref, output_name: output, loc: Loc { line: tok.line, column: tok.column } }))
+        Ok(FlowStep::Corroborate(CorroborateStep {
+            navigate_ref: nav_ref,
+            output_name: output,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
     }
 
     fn parse_listen_step(&mut self) -> Result<FlowStep, ParseError> {
@@ -2046,19 +2323,27 @@ impl Parser {
             (self.consume_any_ident_or_kw()?.value.clone(), true)
         };
         let mut alias = String::new();
-        if !self.at_declaration_start() && !self.check(TokenType::RBrace) && !self.check(TokenType::LBrace) {
+        if !self.at_declaration_start()
+            && !self.check(TokenType::RBrace)
+            && !self.check(TokenType::LBrace)
+        {
             let next = self.current().clone();
             if next.value == "as" || next.ttype == TokenType::As {
                 self.advance();
                 alias = self.consume_any_ident_or_kw()?.value.clone();
             }
         }
-        if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+        if self.check(TokenType::LBrace) {
+            self.skip_braced_block()?;
+        }
         Ok(FlowStep::Listen(ListenStep {
             channel,
             channel_is_ref,
             event_alias: alias,
-            loc: Loc { line: tok.line, column: tok.column },
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
         }))
     }
 
@@ -2082,9 +2367,19 @@ impl Parser {
                     }
                 }
             }
-            if self.check(TokenType::RBrace) { self.advance(); }
+            if self.check(TokenType::RBrace) {
+                self.advance();
+            }
         }
-        Ok(FlowStep::Retrieve(RetrieveStep { store_name: store, where_expr, alias, loc: Loc { line: tok.line, column: tok.column } }))
+        Ok(FlowStep::Retrieve(RetrieveStep {
+            store_name: store,
+            where_expr,
+            alias,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
     }
 
     // ── TIER 2 DECLARATIONS ────────────────────────────────────────
@@ -2093,12 +2388,23 @@ impl Parser {
         let tok = self.consume(TokenType::Agent)?;
         let name = self.consume(TokenType::Identifier)?.value;
         let mut node = AgentDefinition {
-            name, goal: String::new(), tools: Vec::new(), memory_ref: String::new(),
-            strategy: String::new(), on_stuck: String::new(), shield_ref: String::new(),
-            max_iterations: None, max_tokens: None, max_time: String::new(), max_cost: None,
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            name,
+            goal: String::new(),
+            tools: Vec::new(),
+            memory_ref: String::new(),
+            strategy: String::new(),
+            on_stuck: String::new(),
+            shield_ref: String::new(),
+            max_iterations: None,
+            max_tokens: None,
+            max_time: String::new(),
+            max_cost: None,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         // Skip optional parameters/return type before brace
         while !self.check(TokenType::LBrace) && !self.check(TokenType::Eof) {
@@ -2136,15 +2442,28 @@ impl Parser {
         let tok = self.consume(TokenType::Shield)?;
         let name = self.consume(TokenType::Identifier)?.value;
         let mut node = ShieldDefinition {
-            name, scan: Vec::new(), strategy: String::new(), on_breach: String::new(),
-            severity: String::new(), quarantine: String::new(), max_retries: None,
-            confidence_threshold: None, allow_tools: Vec::new(), deny_tools: Vec::new(),
-            sandbox: None, redact: Vec::new(), log: String::new(), deflect_message: String::new(),
+            name,
+            scan: Vec::new(),
+            strategy: String::new(),
+            on_breach: String::new(),
+            severity: String::new(),
+            quarantine: String::new(),
+            max_retries: None,
+            confidence_threshold: None,
+            allow_tools: Vec::new(),
+            deny_tools: Vec::new(),
+            sandbox: None,
+            redact: Vec::new(),
+            log: String::new(),
+            deflect_message: String::new(),
             taint: String::new(),
             compliance: Vec::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2157,15 +2476,23 @@ impl Parser {
                     "strategy" => node.strategy = self.consume_any_ident_or_kw()?.value.clone(),
                     "on_breach" => node.on_breach = self.consume_any_ident_or_kw()?.value.clone(),
                     "severity" => node.severity = self.consume_any_ident_or_kw()?.value.clone(),
-                    "quarantine" => node.quarantine = self.consume(TokenType::StringLit)?.value.clone(),
+                    "quarantine" => {
+                        node.quarantine = self.consume(TokenType::StringLit)?.value.clone()
+                    }
                     "max_retries" => node.max_retries = self.parse_optional_int(),
-                    "confidence_threshold" => node.confidence_threshold = self.parse_optional_float(),
+                    "confidence_threshold" => {
+                        node.confidence_threshold = self.parse_optional_float()
+                    }
                     "allow_tools" => node.allow_tools = self.parse_bracketed_identifiers()?,
                     "deny_tools" => node.deny_tools = self.parse_bracketed_identifiers()?,
-                    "sandbox" => node.sandbox = Some(self.consume_any_ident_or_kw()?.value == "true"),
+                    "sandbox" => {
+                        node.sandbox = Some(self.consume_any_ident_or_kw()?.value == "true")
+                    }
                     "redact" => node.redact = self.parse_bracketed_identifiers()?,
                     "log" => node.log = self.consume_any_ident_or_kw()?.value.clone(),
-                    "deflect_message" => node.deflect_message = self.consume(TokenType::StringLit)?.value.clone(),
+                    "deflect_message" => {
+                        node.deflect_message = self.consume(TokenType::StringLit)?.value.clone()
+                    }
                     "taint" => node.taint = self.consume_any_ident_or_kw()?.value.clone(),
                     // ESK Fase 6.1 — covered regulatory classes.
                     "compliance" => node.compliance = self.parse_bracketed_identifiers()?,
@@ -2183,11 +2510,17 @@ impl Parser {
         let tok = self.consume(TokenType::Pix)?;
         let name = self.consume(TokenType::Identifier)?.value;
         let mut node = PixDefinition {
-            name, source: String::new(), depth: None, branching: None,
+            name,
+            source: String::new(),
+            depth: None,
+            branching: None,
             model: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2214,11 +2547,19 @@ impl Parser {
         let tok = self.consume(TokenType::Psyche)?;
         let name = self.consume(TokenType::Identifier)?.value;
         let mut node = PsycheDefinition {
-            name, dimensions: Vec::new(), manifold_noise: None, manifold_momentum: None,
-            safety_constraints: Vec::new(), quantum_enabled: None, inference_mode: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            name,
+            dimensions: Vec::new(),
+            manifold_noise: None,
+            manifold_momentum: None,
+            safety_constraints: Vec::new(),
+            quantum_enabled: None,
+            inference_mode: String::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2230,9 +2571,15 @@ impl Parser {
                     "dimensions" => node.dimensions = self.parse_bracketed_identifiers()?,
                     "manifold_noise" => node.manifold_noise = self.parse_optional_float(),
                     "manifold_momentum" => node.manifold_momentum = self.parse_optional_float(),
-                    "safety_constraints" => node.safety_constraints = self.parse_bracketed_identifiers()?,
-                    "quantum_enabled" => node.quantum_enabled = Some(self.consume_any_ident_or_kw()?.value == "true"),
-                    "inference_mode" => node.inference_mode = self.consume_any_ident_or_kw()?.value.clone(),
+                    "safety_constraints" => {
+                        node.safety_constraints = self.parse_bracketed_identifiers()?
+                    }
+                    "quantum_enabled" => {
+                        node.quantum_enabled = Some(self.consume_any_ident_or_kw()?.value == "true")
+                    }
+                    "inference_mode" => {
+                        node.inference_mode = self.consume_any_ident_or_kw()?.value.clone()
+                    }
                     _ => self.skip_value(),
                 }
             } else if self.check(TokenType::LBrace) {
@@ -2247,10 +2594,16 @@ impl Parser {
         let tok = self.consume(TokenType::Corpus)?;
         let name = self.consume(TokenType::Identifier)?.value;
         let mut node = CorpusDefinition {
-            name, documents: Vec::new(), mcp_server: String::new(), mcp_resource_uri: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            name,
+            documents: Vec::new(),
+            mcp_server: String::new(),
+            mcp_resource_uri: String::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         // corpus Name from mcp("server", "uri") — short form
         if self.check(TokenType::From) {
@@ -2286,9 +2639,12 @@ impl Parser {
         let name = self.consume(TokenType::Identifier)?.value;
         let node = DataspaceDefinition {
             name,
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         if self.check(TokenType::LBrace) {
             self.skip_braced_block()?;
@@ -2300,18 +2656,25 @@ impl Parser {
         let tok = self.consume(TokenType::Ots)?;
         let name = self.consume(TokenType::Identifier)?.value;
         let mut node = OtsDefinition {
-            name, teleology: String::new(), homotopy_search: String::new(),
+            name,
+            teleology: String::new(),
+            homotopy_search: String::new(),
             loss_function: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         // Skip optional type params <In, Out>
         if self.check(TokenType::Lt) {
             while !self.check(TokenType::Gt) && !self.check(TokenType::Eof) {
                 self.advance();
             }
-            if self.check(TokenType::Gt) { self.advance(); }
+            if self.check(TokenType::Gt) {
+                self.advance();
+            }
         }
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2320,9 +2683,15 @@ impl Parser {
             if self.check(TokenType::Colon) {
                 self.advance();
                 match field_name.as_str() {
-                    "teleology" => node.teleology = self.consume(TokenType::StringLit)?.value.clone(),
-                    "homotopy_search" => node.homotopy_search = self.consume_any_ident_or_kw()?.value.clone(),
-                    "loss_function" => node.loss_function = self.consume(TokenType::StringLit)?.value.clone(),
+                    "teleology" => {
+                        node.teleology = self.consume(TokenType::StringLit)?.value.clone()
+                    }
+                    "homotopy_search" => {
+                        node.homotopy_search = self.consume_any_ident_or_kw()?.value.clone()
+                    }
+                    "loss_function" => {
+                        node.loss_function = self.consume(TokenType::StringLit)?.value.clone()
+                    }
                     _ => self.skip_value(),
                 }
             } else if self.check(TokenType::LBrace) {
@@ -2337,11 +2706,20 @@ impl Parser {
         let tok = self.consume(TokenType::Mandate)?;
         let name = self.consume(TokenType::Identifier)?.value;
         let mut node = MandateDefinition {
-            name, constraint: String::new(), kp: None, ki: None, kd: None,
-            tolerance: None, max_steps: None, on_violation: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            name,
+            constraint: String::new(),
+            kp: None,
+            ki: None,
+            kd: None,
+            tolerance: None,
+            max_steps: None,
+            on_violation: String::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2350,13 +2728,17 @@ impl Parser {
             if self.check(TokenType::Colon) {
                 self.advance();
                 match field_name.as_str() {
-                    "constraint" => node.constraint = self.consume(TokenType::StringLit)?.value.clone(),
+                    "constraint" => {
+                        node.constraint = self.consume(TokenType::StringLit)?.value.clone()
+                    }
                     "kp" | "Kp" => node.kp = self.parse_optional_float(),
                     "ki" | "Ki" => node.ki = self.parse_optional_float(),
                     "kd" | "Kd" => node.kd = self.parse_optional_float(),
                     "tolerance" => node.tolerance = self.parse_optional_float(),
                     "max_steps" => node.max_steps = self.parse_optional_int(),
-                    "on_violation" => node.on_violation = self.consume_any_ident_or_kw()?.value.clone(),
+                    "on_violation" => {
+                        node.on_violation = self.consume_any_ident_or_kw()?.value.clone()
+                    }
                     _ => self.skip_value(),
                 }
             } else if self.check(TokenType::LBrace) {
@@ -2371,10 +2753,14 @@ impl Parser {
         let tok = self.consume(TokenType::Compute)?;
         let name = self.consume(TokenType::Identifier)?.value;
         let mut node = ComputeDefinition {
-            name, shield_ref: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            name,
+            shield_ref: String::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         // Skip optional parameters/return type before brace
         while !self.check(TokenType::LBrace) && !self.check(TokenType::Eof) {
@@ -2402,13 +2788,23 @@ impl Parser {
         let tok = self.consume(TokenType::Daemon)?;
         let name = self.consume(TokenType::Identifier)?.value;
         let mut node = DaemonDefinition {
-            name, goal: String::new(), tools: Vec::new(), memory_ref: String::new(),
-            strategy: String::new(), on_stuck: String::new(), shield_ref: String::new(),
-            max_tokens: None, max_time: String::new(), max_cost: None,
+            name,
+            goal: String::new(),
+            tools: Vec::new(),
+            memory_ref: String::new(),
+            strategy: String::new(),
+            on_stuck: String::new(),
+            shield_ref: String::new(),
+            max_tokens: None,
+            max_time: String::new(),
+            max_cost: None,
             listeners: Vec::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         // Skip optional parameters/return type before brace
         while !self.check(TokenType::LBrace) && !self.check(TokenType::Eof) {
@@ -2455,7 +2851,10 @@ impl Parser {
                         alias = self.consume_any_ident_or_kw()?.value.clone();
                     }
                 }
-                let listen_loc = Loc { line: field.line, column: field.column };
+                let listen_loc = Loc {
+                    line: field.line,
+                    column: field.column,
+                };
                 if self.check(TokenType::LBrace) {
                     self.skip_braced_block()?;
                 }
@@ -2477,11 +2876,18 @@ impl Parser {
         let tok = self.consume(TokenType::AxonStore)?;
         let name = self.consume(TokenType::Identifier)?.value;
         let mut node = AxonStoreDefinition {
-            name, backend: String::new(), connection: String::new(),
-            confidence_floor: None, isolation: String::new(), on_breach: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            name,
+            backend: String::new(),
+            connection: String::new(),
+            confidence_floor: None,
+            isolation: String::new(),
+            on_breach: String::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2500,7 +2906,9 @@ impl Parser {
                 self.advance();
                 match field_name.as_str() {
                     "backend" => node.backend = self.consume_any_ident_or_kw()?.value.clone(),
-                    "connection" => node.connection = self.consume(TokenType::StringLit)?.value.clone(),
+                    "connection" => {
+                        node.connection = self.consume(TokenType::StringLit)?.value.clone()
+                    }
                     "confidence_floor" => node.confidence_floor = self.parse_optional_float(),
                     "isolation" => node.isolation = self.consume_any_ident_or_kw()?.value.clone(),
                     "on_breach" => node.on_breach = self.consume_any_ident_or_kw()?.value.clone(),
@@ -2531,9 +2939,12 @@ impl Parser {
             lifetime: "affine".to_string(),
             certainty_floor: None,
             shield_ref: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2592,28 +3003,33 @@ impl Parser {
             zones: None,
             ephemeral: None,
             shield_ref: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field_name = self.current().value.clone();
             self.advance();
             if !self.check(TokenType::Colon) {
-                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                if self.check(TokenType::LBrace) {
+                    self.skip_braced_block()?;
+                }
                 continue;
             }
             self.advance(); // past ':'
             match field_name.as_str() {
                 "provider" => node.provider = self.consume_any_ident_or_kw()?.value,
-                "region"   => node.region = self.consume(TokenType::StringLit)?.value,
-                "zones"    => node.zones = self.parse_optional_int(),
+                "region" => node.region = self.consume(TokenType::StringLit)?.value,
+                "zones" => node.zones = self.parse_optional_int(),
                 "ephemeral" => {
                     let b = self.parse_bool()?;
                     node.ephemeral = Some(b);
                 }
-                "shield"   => node.shield_ref = self.consume_any_ident_or_kw()?.value,
+                "shield" => node.shield_ref = self.consume_any_ident_or_kw()?.value,
                 _ => self.skip_value(),
             }
         }
@@ -2632,24 +3048,29 @@ impl Parser {
             region: String::new(),
             zones: None,
             compliance: Vec::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field_name = self.current().value.clone();
             self.advance();
             if !self.check(TokenType::Colon) {
-                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                if self.check(TokenType::LBrace) {
+                    self.skip_braced_block()?;
+                }
                 continue;
             }
             self.advance();
             match field_name.as_str() {
-                "resources"  => node.resources = self.parse_bracketed_identifiers()?,
-                "fabric"     => node.fabric_ref = self.consume_any_ident_or_kw()?.value,
-                "region"     => node.region = self.consume(TokenType::StringLit)?.value,
-                "zones"      => node.zones = self.parse_optional_int(),
+                "resources" => node.resources = self.parse_bracketed_identifiers()?,
+                "fabric" => node.fabric_ref = self.consume_any_ident_or_kw()?.value,
+                "region" => node.region = self.consume(TokenType::StringLit)?.value,
+                "zones" => node.zones = self.parse_optional_int(),
                 "compliance" => node.compliance = self.parse_bracketed_identifiers()?,
                 _ => self.skip_value(),
             }
@@ -2673,22 +3094,27 @@ impl Parser {
             timeout: String::new(),
             on_partition: "fail".to_string(),
             certainty_floor: None,
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field_name = self.current().value.clone();
             self.advance();
             if !self.check(TokenType::Colon) {
-                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                if self.check(TokenType::LBrace) {
+                    self.skip_braced_block()?;
+                }
                 continue;
             }
             self.advance();
             match field_name.as_str() {
                 "sources" => node.sources = self.parse_bracketed_identifiers()?,
-                "quorum"  => node.quorum = self.parse_optional_int(),
+                "quorum" => node.quorum = self.parse_optional_int(),
                 "timeout" => {
                     let t = self.current().clone();
                     match t.ttype {
@@ -2738,23 +3164,28 @@ impl Parser {
             shield_ref: String::new(),
             mandate_ref: String::new(),
             max_retries: 3,
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field_name = self.current().value.clone();
             self.advance();
             if !self.check(TokenType::Colon) {
-                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                if self.check(TokenType::LBrace) {
+                    self.skip_braced_block()?;
+                }
                 continue;
             }
             self.advance();
             match field_name.as_str() {
-                "observe"     => node.observe_ref = self.consume_any_ident_or_kw()?.value,
-                "threshold"   => node.threshold = self.parse_optional_float(),
-                "tolerance"   => node.tolerance = self.parse_optional_float(),
+                "observe" => node.observe_ref = self.consume_any_ident_or_kw()?.value,
+                "threshold" => node.threshold = self.parse_optional_float(),
+                "tolerance" => node.tolerance = self.parse_optional_float(),
                 "on_drift" => {
                     let d_tok = self.consume_any_ident_or_kw()?;
                     let d = d_tok.value;
@@ -2771,8 +3202,8 @@ impl Parser {
                     }
                     node.on_drift = d;
                 }
-                "shield"      => node.shield_ref = self.consume_any_ident_or_kw()?.value,
-                "mandate"     => node.mandate_ref = self.consume_any_ident_or_kw()?.value,
+                "shield" => node.shield_ref = self.consume_any_ident_or_kw()?.value,
+                "mandate" => node.mandate_ref = self.consume_any_ident_or_kw()?.value,
                 "max_retries" => {
                     if let Some(v) = self.parse_optional_int() {
                         node.max_retries = v;
@@ -2795,16 +3226,21 @@ impl Parser {
             duration: String::new(),
             acquire: "on_start".to_string(),
             on_expire: "anchor_breach".to_string(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field_name = self.current().value.clone();
             self.advance();
             if !self.check(TokenType::Colon) {
-                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                if self.check(TokenType::LBrace) {
+                    self.skip_braced_block()?;
+                }
                 continue;
             }
             self.advance();
@@ -2869,16 +3305,21 @@ impl Parser {
             quorum: None,
             aggregation: "majority".to_string(),
             certainty_mode: "min".to_string(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field_name = self.current().value.clone();
             self.advance();
             if !self.check(TokenType::Colon) {
-                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                if self.check(TokenType::LBrace) {
+                    self.skip_braced_block()?;
+                }
                 continue;
             }
             self.advance();
@@ -2937,9 +3378,12 @@ impl Parser {
         let mut node = SessionDefinition {
             name,
             roles: Vec::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2949,7 +3393,10 @@ impl Parser {
             node.roles.push(SessionRole {
                 name: role_tok.value,
                 steps,
-                loc: Loc { line: role_tok.line, column: role_tok.column },
+                loc: Loc {
+                    line: role_tok.line,
+                    column: role_tok.column,
+                },
             });
         }
         self.consume(TokenType::RBrace)?;
@@ -2979,7 +3426,10 @@ impl Parser {
                 Ok(SessionStep {
                     op: "send".to_string(),
                     message_type: msg.value,
-                    loc: Loc { line: tok.line, column: tok.column },
+                    loc: Loc {
+                        line: tok.line,
+                        column: tok.column,
+                    },
                 })
             }
             TokenType::Receive => {
@@ -2988,7 +3438,10 @@ impl Parser {
                 Ok(SessionStep {
                     op: "receive".to_string(),
                     message_type: msg.value,
-                    loc: Loc { line: tok.line, column: tok.column },
+                    loc: Loc {
+                        line: tok.line,
+                        column: tok.column,
+                    },
                 })
             }
             TokenType::Loop => {
@@ -2996,7 +3449,10 @@ impl Parser {
                 Ok(SessionStep {
                     op: "loop".to_string(),
                     message_type: String::new(),
-                    loc: Loc { line: tok.line, column: tok.column },
+                    loc: Loc {
+                        line: tok.line,
+                        column: tok.column,
+                    },
                 })
             }
             TokenType::End => {
@@ -3004,7 +3460,10 @@ impl Parser {
                 Ok(SessionStep {
                     op: "end".to_string(),
                     message_type: String::new(),
-                    loc: Loc { line: tok.line, column: tok.column },
+                    loc: Loc {
+                        line: tok.line,
+                        column: tok.column,
+                    },
                 })
             }
             _ => Err(ParseError {
@@ -3026,16 +3485,21 @@ impl Parser {
             name,
             nodes: Vec::new(),
             edges: Vec::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field_name = self.current().value.clone();
             self.advance();
             if !self.check(TokenType::Colon) {
-                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                if self.check(TokenType::LBrace) {
+                    self.skip_braced_block()?;
+                }
                 continue;
             }
             self.advance();
@@ -3072,7 +3536,10 @@ impl Parser {
             source: src_tok.value,
             target: tgt_tok.value,
             session_ref: sess_tok.value,
-            loc: Loc { line: src_tok.line, column: src_tok.column },
+            loc: Loc {
+                line: src_tok.line,
+                column: src_tok.column,
+            },
         })
     }
 
@@ -3091,16 +3558,21 @@ impl Parser {
             scope: String::new(),
             tau: String::new(),
             decay: "exponential".to_string(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field_name = self.current().value.clone();
             self.advance();
             if !self.check(TokenType::Colon) {
-                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                if self.check(TokenType::LBrace) {
+                    self.skip_braced_block()?;
+                }
                 continue;
             }
             self.advance();
@@ -3173,16 +3645,21 @@ impl Parser {
             action: String::new(),
             scope: String::new(),
             sla: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field_name = self.current().value.clone();
             self.advance();
             if !self.check(TokenType::Colon) {
-                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                if self.check(TokenType::LBrace) {
+                    self.skip_braced_block()?;
+                }
                 continue;
             }
             self.advance();
@@ -3209,8 +3686,13 @@ impl Parser {
                     let a = a_tok.value;
                     if !matches!(
                         a.as_str(),
-                        "drop" | "revoke" | "emit" | "redact"
-                        | "quarantine" | "terminate" | "alert"
+                        "drop"
+                            | "revoke"
+                            | "emit"
+                            | "redact"
+                            | "quarantine"
+                            | "terminate"
+                            | "alert"
                     ) {
                         return Err(ParseError {
                             message: format!(
@@ -3271,16 +3753,21 @@ impl Parser {
             review_sla: String::new(),
             shield_ref: String::new(),
             max_patches: 3,
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field_name = self.current().value.clone();
             self.advance();
             if !self.check(TokenType::Colon) {
-                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                if self.check(TokenType::LBrace) {
+                    self.skip_braced_block()?;
+                }
                 continue;
             }
             self.advance();
@@ -3369,22 +3856,27 @@ impl Parser {
             via_shield: String::new(),
             on_interact: String::new(),
             render_hint: "custom".to_string(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field_name = self.current().value.clone();
             self.advance();
             if !self.check(TokenType::Colon) {
-                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                if self.check(TokenType::LBrace) {
+                    self.skip_braced_block()?;
+                }
                 continue;
             }
             self.advance();
             match field_name.as_str() {
-                "renders"     => node.renders = self.consume_any_ident_or_kw()?.value,
-                "via_shield"  => node.via_shield = self.consume_any_ident_or_kw()?.value,
+                "renders" => node.renders = self.consume_any_ident_or_kw()?.value,
+                "via_shield" => node.via_shield = self.consume_any_ident_or_kw()?.value,
                 "on_interact" => node.on_interact = self.consume_any_ident_or_kw()?.value,
                 "render_hint" => {
                     let h_tok = self.consume_any_ident_or_kw()?;
@@ -3418,23 +3910,28 @@ impl Parser {
             title: String::new(),
             components: Vec::new(),
             route: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field_name = self.current().value.clone();
             self.advance();
             if !self.check(TokenType::Colon) {
-                if self.check(TokenType::LBrace) { self.skip_braced_block()?; }
+                if self.check(TokenType::LBrace) {
+                    self.skip_braced_block()?;
+                }
                 continue;
             }
             self.advance();
             match field_name.as_str() {
-                "title"      => node.title = self.consume(TokenType::StringLit)?.value,
+                "title" => node.title = self.consume(TokenType::StringLit)?.value,
                 "components" => node.components = self.parse_bracketed_identifiers()?,
-                "route"      => node.route = self.consume(TokenType::StringLit)?.value,
+                "route" => node.route = self.consume(TokenType::StringLit)?.value,
                 _ => self.skip_value(),
             }
         }
@@ -3446,13 +3943,22 @@ impl Parser {
         let tok = self.consume(TokenType::AxonEndpoint)?;
         let name = self.consume(TokenType::Identifier)?.value;
         let mut node = AxonEndpointDefinition {
-            name, method: String::new(), path: String::new(), body_type: String::new(),
-            execute_flow: String::new(), output_type: String::new(), shield_ref: String::new(),
-            retries: None, timeout: String::new(),
+            name,
+            method: String::new(),
+            path: String::new(),
+            body_type: String::new(),
+            execute_flow: String::new(),
+            output_type: String::new(),
+            shield_ref: String::new(),
+            retries: None,
+            timeout: String::new(),
             compliance: Vec::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -3532,9 +4038,12 @@ impl Parser {
             temporal_frame_end: String::new(),
             provenance: String::new(),
             derivation: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
 
         while !self.check(TokenType::RBrace) {
@@ -3560,7 +4069,10 @@ impl Parser {
                         }
                         _ => {
                             return Err(ParseError {
-                                message: format!("Expected number for certainty, got '{}'", val.value),
+                                message: format!(
+                                    "Expected number for certainty, got '{}'",
+                                    val.value
+                                ),
                                 line: val.line,
                                 column: val.column,
                             });
@@ -3634,7 +4146,10 @@ impl Parser {
             lambda_data_name: lambda_name.value.clone(),
             target: target.value.clone(),
             output_type,
-            loc: Loc { line: tok.line, column: tok.column },
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
         })
     }
 
@@ -3652,7 +4167,11 @@ impl Parser {
         } else if !self.check(TokenType::LBrace)
             && !self.check(TokenType::LParen)
             && !self.check(TokenType::Eof)
-            && self.current().value.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && self
+                .current()
+                .value
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_')
         {
             let n = self.current().value.clone();
             self.advance();
@@ -3695,8 +4214,8 @@ impl Parser {
                 line: kw_tok.line,
                 column: kw_tok.column,
             },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         }))
     }
 
@@ -3717,9 +4236,12 @@ impl Parser {
             lifetime: "affine".to_string(),
             persistence: "ephemeral".to_string(),
             shield_ref: String::new(),
-            loc: Loc { line: tok.line, column: tok.column },
-        leading_trivia: Vec::new(),
-        trailing_trivia: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -3739,8 +4261,7 @@ impl Parser {
                     let q_tok = self.consume_any_ident_or_kw()?;
                     if !matches!(
                         q_tok.value.as_str(),
-                        "at_most_once" | "at_least_once" | "exactly_once"
-                            | "broadcast" | "queue"
+                        "at_most_once" | "at_least_once" | "exactly_once" | "broadcast" | "queue"
                     ) {
                         return Err(ParseError {
                             message: format!(
@@ -3772,10 +4293,7 @@ impl Parser {
                 }
                 "persistence" => {
                     let p_tok = self.consume_any_ident_or_kw()?;
-                    if !matches!(
-                        p_tok.value.as_str(),
-                        "ephemeral" | "persistent_axonstore"
-                    ) {
+                    if !matches!(p_tok.value.as_str(), "ephemeral" | "persistent_axonstore") {
                         return Err(ParseError {
                             message: format!(
                                 "Invalid persistence '{}' in channel '{}' — \
@@ -3824,7 +4342,10 @@ impl Parser {
         Ok(FlowStep::Emit(EmitStatement {
             channel_ref: channel,
             value_ref: value,
-            loc: Loc { line: tok.line, column: tok.column },
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
         }))
     }
 
@@ -3878,7 +4399,10 @@ impl Parser {
         Ok(FlowStep::Publish(PublishStatement {
             channel_ref: channel,
             shield_ref: shield,
-            loc: Loc { line: tok.line, column: tok.column },
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
         }))
     }
 
@@ -3891,10 +4415,12 @@ impl Parser {
         Ok(FlowStep::Discover(DiscoverStatement {
             capability_ref: cap,
             alias,
-            loc: Loc { line: tok.line, column: tok.column },
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
         }))
     }
-
 }
 
 // ── §λ-L-E Fase 13 — Mobile Typed Channels parser tests ─────────────────────
@@ -3930,8 +4456,8 @@ mod fase13_parser_tests {
     fn channel_defaults_match_paper_d1() {
         let prog = parse("channel C { message: Order }").expect("parse");
         if let Declaration::Channel(c) = &prog.declarations[0] {
-            assert_eq!(c.qos, "at_least_once");   // default
-            assert_eq!(c.lifetime, "affine");     // D1 default
+            assert_eq!(c.qos, "at_least_once"); // default
+            assert_eq!(c.lifetime, "affine"); // D1 default
             assert_eq!(c.persistence, "ephemeral");
             assert_eq!(c.shield_ref, "");
         } else {
@@ -3968,13 +4494,21 @@ mod fase13_parser_tests {
     #[test]
     fn channel_invalid_lifetime_rejected() {
         let err = parse("channel C { message: T lifetime: eternal }").unwrap_err();
-        assert!(err.message.contains("Invalid lifetime"), "got {}", err.message);
+        assert!(
+            err.message.contains("Invalid lifetime"),
+            "got {}",
+            err.message
+        );
     }
 
     #[test]
     fn channel_invalid_persistence_rejected() {
         let err = parse("channel C { message: T persistence: forever }").unwrap_err();
-        assert!(err.message.contains("Invalid persistence"), "got {}", err.message);
+        assert!(
+            err.message.contains("Invalid persistence"),
+            "got {}",
+            err.message
+        );
     }
 
     #[test]
@@ -4197,7 +4731,8 @@ mod fase14a_declaration_trivia_tests {
         // legal token without affecting the AST shape it produces.
         // This is the regression guard for "lossless lexing must not
         // change parsing semantics."
-        let src = "// before flow\nflow /* between flow and name */ F() -> Out {\n  // body comment\n}";
+        let src =
+            "// before flow\nflow /* between flow and name */ F() -> Out {\n  // body comment\n}";
         let prog = parse(src);
         assert_eq!(prog.declarations.len(), 1);
         if let Declaration::Flow(f) = &prog.declarations[0] {

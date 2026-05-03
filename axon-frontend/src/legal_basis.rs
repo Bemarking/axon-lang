@@ -113,25 +113,17 @@ impl LegalBasis {
             LegalBasis::GdprArt6LegalObligation => "GDPR.Art6.LegalObligation",
             LegalBasis::GdprArt6VitalInterests => "GDPR.Art6.VitalInterests",
             LegalBasis::GdprArt6PublicTask => "GDPR.Art6.PublicTask",
-            LegalBasis::GdprArt6LegitimateInterests => {
-                "GDPR.Art6.LegitimateInterests"
-            }
+            LegalBasis::GdprArt6LegitimateInterests => "GDPR.Art6.LegitimateInterests",
             LegalBasis::GdprArt9ExplicitConsent => "GDPR.Art9.ExplicitConsent",
             LegalBasis::GdprArt9Employment => "GDPR.Art9.Employment",
             LegalBasis::GdprArt9VitalInterests => "GDPR.Art9.VitalInterests",
             LegalBasis::GdprArt9NotForProfit => "GDPR.Art9.NotForProfit",
             LegalBasis::GdprArt9PublicData => "GDPR.Art9.PublicData",
             LegalBasis::GdprArt9LegalClaims => "GDPR.Art9.LegalClaims",
-            LegalBasis::GdprArt9SubstantialPublicInterest => {
-                "GDPR.Art9.SubstantialPublicInterest"
-            }
-            LegalBasis::GdprArt9HealthcareProvision => {
-                "GDPR.Art9.HealthcareProvision"
-            }
+            LegalBasis::GdprArt9SubstantialPublicInterest => "GDPR.Art9.SubstantialPublicInterest",
+            LegalBasis::GdprArt9HealthcareProvision => "GDPR.Art9.HealthcareProvision",
             LegalBasis::GdprArt9PublicHealth => "GDPR.Art9.PublicHealth",
-            LegalBasis::GdprArt9ArchivingResearch => {
-                "GDPR.Art9.ArchivingResearch"
-            }
+            LegalBasis::GdprArt9ArchivingResearch => "GDPR.Art9.ArchivingResearch",
             LegalBasis::CcpaSec1798_100 => "CCPA.1798_100",
             LegalBasis::SoxSec404 => "SOX.404",
             LegalBasis::HipaaSec164_502 => "HIPAA.164_502",

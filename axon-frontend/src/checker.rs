@@ -19,33 +19,33 @@ use crate::type_checker::TypeChecker;
 // ── ANSI color helpers ────────────────────────────────────────────────────────
 
 struct Colors {
-    green_bold:  &'static str,
-    red_bold:    &'static str,
+    green_bold: &'static str,
+    red_bold: &'static str,
     yellow_bold: &'static str,
-    bold:        &'static str,
-    dim:         &'static str,
-    reset:       &'static str,
+    bold: &'static str,
+    dim: &'static str,
+    reset: &'static str,
 }
 
 impl Colors {
     fn new(enabled: bool) -> Self {
         if enabled {
             Colors {
-                green_bold:  "\x1b[1;32m",
-                red_bold:    "\x1b[1;31m",
+                green_bold: "\x1b[1;32m",
+                red_bold: "\x1b[1;31m",
                 yellow_bold: "\x1b[1;33m",
-                bold:        "\x1b[1m",
-                dim:         "\x1b[2m",
-                reset:       "\x1b[0m",
+                bold: "\x1b[1m",
+                dim: "\x1b[2m",
+                reset: "\x1b[0m",
             }
         } else {
             Colors {
-                green_bold:  "",
-                red_bold:    "",
+                green_bold: "",
+                red_bold: "",
                 yellow_bold: "",
-                bold:        "",
-                dim:         "",
-                reset:       "",
+                bold: "",
+                dim: "",
+                reset: "",
             }
         }
     }
@@ -75,7 +75,8 @@ pub fn run_check(file: &str, no_color: bool, strict: bool) -> i32 {
     let c = Colors::new(use_color);
 
     let path = Path::new(file);
-    let filename = path.file_name()
+    let filename = path
+        .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| file.to_string());
 
@@ -83,10 +84,7 @@ pub fn run_check(file: &str, no_color: bool, strict: bool) -> i32 {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(_) => {
-            eprintln!(
-                "{}X File not found: {}{}",
-                c.red_bold, file, c.reset
-            );
+            eprintln!("{}X File not found: {}{}", c.red_bold, file, c.reset);
             return 2;
         }
     };
@@ -94,16 +92,17 @@ pub fn run_check(file: &str, no_color: bool, strict: bool) -> i32 {
     // ── 2. Lex ───────────────────────────────────────────────────
     let tokens = match Lexer::new(&source, file).tokenize() {
         Ok(t) => t,
-        Err(LexerError { message, line, column }) => {
+        Err(LexerError {
+            message,
+            line,
+            column,
+        }) => {
             let loc = if column > 0 {
                 format!(":{line}:{column}")
             } else {
                 format!(":{line}")
             };
-            eprintln!(
-                "{}X {filename}{loc}{}  {message}",
-                c.red_bold, c.reset
-            );
+            eprintln!("{}X {filename}{loc}{}  {message}", c.red_bold, c.reset);
             return 1;
         }
     };
@@ -115,7 +114,11 @@ pub fn run_check(file: &str, no_color: bool, strict: bool) -> i32 {
     let mut parser = Parser::new(tokens);
     let program = match parser.parse() {
         Ok(p) => p,
-        Err(ParseError { message, line, column }) => {
+        Err(ParseError {
+            message,
+            line,
+            column,
+        }) => {
             let loc = if column > 0 {
                 format!(":{line}:{column}")
             } else {
@@ -138,7 +141,9 @@ pub fn run_check(file: &str, no_color: bool, strict: bool) -> i32 {
     if !type_errors.is_empty() {
         eprintln!(
             "{}X {filename}{}  {} error(s){}",
-            c.red_bold, c.reset, type_errors.len(),
+            c.red_bold,
+            c.reset,
+            type_errors.len(),
             if type_warnings.is_empty() {
                 String::new()
             } else {
@@ -158,8 +163,11 @@ pub fn run_check(file: &str, no_color: bool, strict: bool) -> i32 {
     if strict && !type_warnings.is_empty() {
         eprintln!(
             "{}X {filename}{}  0 errors, {} warning(s) {}(--strict){}",
-            c.red_bold, c.reset, type_warnings.len(),
-            c.red_bold, c.reset,
+            c.red_bold,
+            c.reset,
+            type_warnings.len(),
+            c.red_bold,
+            c.reset,
         );
         for tw in &type_warnings {
             eprintln!("  error [line {}]: {}", tw.line, tw.message);

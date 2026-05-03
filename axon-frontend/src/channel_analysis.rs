@@ -14,9 +14,9 @@
 //! types from `crate::ast` and `std`; no runtime deps, no I/O.
 
 use crate::ast::{
-    ChannelDefinition, ConditionalNode, Declaration, DiscoverStatement,
-    EmitStatement, EpistemicBlock, FlowDefinition, FlowStep, ForInStatement,
-    ListenStep, Loc, Program, PublishStatement,
+    ChannelDefinition, ConditionalNode, Declaration, DiscoverStatement, EmitStatement,
+    EpistemicBlock, FlowDefinition, FlowStep, ForInStatement, ListenStep, Loc, Program,
+    PublishStatement,
 };
 use crate::tokens::Trivia;
 
@@ -115,7 +115,10 @@ fn collect_channels_in<'a>(decls: &'a [Declaration], out: &mut Vec<&'a ChannelDe
 ///
 /// Returns the AST node so the LSP can pluck `loc` for the jump and
 /// any other field it wants to surface in the same hover.
-pub fn find_channel_definition<'a>(program: &'a Program, name: &str) -> Option<&'a ChannelDefinition> {
+pub fn find_channel_definition<'a>(
+    program: &'a Program,
+    name: &str,
+) -> Option<&'a ChannelDefinition> {
     list_channels(program).into_iter().find(|c| c.name == name)
 }
 
@@ -170,7 +173,11 @@ fn visit_flow_body(steps: &[FlowStep], target: &str, refs: &mut Vec<ChannelRefer
 
 fn visit_flow_step(step: &FlowStep, target: &str, refs: &mut Vec<ChannelReference>) {
     match step {
-        FlowStep::Emit(EmitStatement { channel_ref, value_ref, loc }) => {
+        FlowStep::Emit(EmitStatement {
+            channel_ref,
+            value_ref,
+            loc,
+        }) => {
             if channel_ref == target {
                 refs.push(ChannelReference {
                     channel_name: target.to_string(),
@@ -189,7 +196,9 @@ fn visit_flow_step(step: &FlowStep, target: &str, refs: &mut Vec<ChannelReferenc
                 });
             }
         }
-        FlowStep::Publish(PublishStatement { channel_ref, loc, .. }) => {
+        FlowStep::Publish(PublishStatement {
+            channel_ref, loc, ..
+        }) => {
             if channel_ref == target {
                 refs.push(ChannelReference {
                     channel_name: target.to_string(),
@@ -198,7 +207,11 @@ fn visit_flow_step(step: &FlowStep, target: &str, refs: &mut Vec<ChannelReferenc
                 });
             }
         }
-        FlowStep::Discover(DiscoverStatement { capability_ref, loc, .. }) => {
+        FlowStep::Discover(DiscoverStatement {
+            capability_ref,
+            loc,
+            ..
+        }) => {
             if capability_ref == target {
                 refs.push(ChannelReference {
                     channel_name: target.to_string(),
@@ -208,7 +221,11 @@ fn visit_flow_step(step: &FlowStep, target: &str, refs: &mut Vec<ChannelReferenc
             }
         }
         FlowStep::Listen(l) => visit_listen(l, target, refs),
-        FlowStep::If(ConditionalNode { then_body, else_body, .. }) => {
+        FlowStep::If(ConditionalNode {
+            then_body,
+            else_body,
+            ..
+        }) => {
             visit_flow_body(then_body, target, refs);
             visit_flow_body(else_body, target, refs);
         }
@@ -298,7 +315,10 @@ pub fn channel_hover_markdown(channel: &ChannelDefinition) -> String {
 /// types.  For `discover`, the LSP should additionally filter to
 /// publishable channels via `is_publishable_channel` below.
 pub fn channel_names_in_scope(program: &Program) -> Vec<String> {
-    let mut names: Vec<String> = list_channels(program).iter().map(|c| c.name.clone()).collect();
+    let mut names: Vec<String> = list_channels(program)
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
     names.sort();
     names
 }
@@ -419,21 +439,25 @@ mod tests {
 
     #[test]
     fn list_channels_returns_in_source_order() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
             channel Beta { message: T }
             channel Alpha { message: T }
             channel Gamma { message: T }
-        "#);
+        "#,
+        );
         let names: Vec<&str> = list_channels(&p).iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["Beta", "Alpha", "Gamma"]);
     }
 
     #[test]
     fn list_channels_descends_into_epistemic_blocks() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
             know { channel Inside { message: T } }
             channel Outside { message: T }
-        "#);
+        "#,
+        );
         let names: Vec<String> = list_channels(&p).iter().map(|c| c.name.clone()).collect();
         assert!(names.contains(&"Inside".to_string()));
         assert!(names.contains(&"Outside".to_string()));
@@ -459,7 +483,8 @@ mod tests {
 
     #[test]
     fn find_references_emit_publish_discover_listen() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
             channel C { message: Order }
             daemon D() {
               goal: "x"
@@ -470,7 +495,8 @@ mod tests {
               publish C within Gate
               discover C as ch
             }
-        "#);
+        "#,
+        );
         let refs = find_channel_references(&p, "C");
         let kinds: Vec<ChannelRefKind> = refs.iter().map(|r| r.kind).collect();
         assert!(kinds.contains(&ChannelRefKind::Listen));
@@ -481,11 +507,13 @@ mod tests {
 
     #[test]
     fn find_references_distinguishes_mobility_from_emit() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
             channel Inner { message: Order }
             channel Outer { message: Channel<Order> }
             flow f() -> O { emit Outer(Inner) }
-        "#);
+        "#,
+        );
         let refs_inner = find_channel_references(&p, "Inner");
         // Inner appears once as the value of an emit — that's mobility.
         assert_eq!(refs_inner.len(), 1);
@@ -497,23 +525,29 @@ mod tests {
 
     #[test]
     fn find_references_skips_legacy_string_topics() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
             channel C { message: Order }
             daemon D() {
               goal: "x"
               listen "C" as ev { }
             }
-        "#);
+        "#,
+        );
         // The string topic "C" shadows the channel name but is a
         // legacy literal, NOT a typed reference — should not appear.
         let refs = find_channel_references(&p, "C");
-        assert!(refs.is_empty(),
-            "string topics must not appear in channel references: {:?}", refs);
+        assert!(
+            refs.is_empty(),
+            "string topics must not appear in channel references: {:?}",
+            refs
+        );
     }
 
     #[test]
     fn find_references_descends_into_conditionals_and_for_loops() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
             channel C { message: T }
             flow f() -> O {
               if x == 1 {
@@ -525,7 +559,8 @@ mod tests {
                 discover C as ch
               }
             }
-        "#);
+        "#,
+        );
         let refs = find_channel_references(&p, "C");
         let kinds: Vec<ChannelRefKind> = refs.iter().map(|r| r.kind).collect();
         assert!(kinds.contains(&ChannelRefKind::Emit));
@@ -578,11 +613,13 @@ mod tests {
 
     #[test]
     fn channel_names_in_scope_are_sorted() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
             channel Zulu { message: T }
             channel Alpha { message: T }
             channel Mike { message: T }
-        "#);
+        "#,
+        );
         assert_eq!(
             channel_names_in_scope(&p),
             vec!["Alpha".to_string(), "Mike".to_string(), "Zulu".to_string()],
@@ -591,10 +628,12 @@ mod tests {
 
     #[test]
     fn publishable_filter_excludes_shieldless_channels() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
             channel Public { message: T shield: Gate }
             channel Private { message: T }
-        "#);
+        "#,
+        );
         assert_eq!(publishable_channel_names(&p), vec!["Public".to_string()]);
     }
 
@@ -620,10 +659,12 @@ mod tests {
 
     #[test]
     fn duplicate_channels_detected() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
             channel C { message: T }
             channel C { message: U }
-        "#);
+        "#,
+        );
         let dups = duplicate_channels(&p);
         assert_eq!(dups.len(), 1);
         assert_eq!(dups[0].0, "C");
@@ -634,7 +675,9 @@ mod tests {
 
     #[test]
     fn hover_prepends_outer_doc_line_comment() {
-        let p = parse("/// Inbound order events from the broker.\nchannel C { message: Order shield: Gate }");
+        let p = parse(
+            "/// Inbound order events from the broker.\nchannel C { message: Order shield: Gate }",
+        );
         let c = find_channel_definition(&p, "C").unwrap();
         let md = channel_hover_markdown(c);
         // Doc paragraph appears before the signature block.
@@ -703,10 +746,12 @@ mod tests {
 
     #[test]
     fn duplicate_channels_empty_when_unique() {
-        let p = parse(r#"
+        let p = parse(
+            r#"
             channel A { message: T }
             channel B { message: T }
-        "#);
+        "#,
+        );
         assert!(duplicate_channels(&p).is_empty());
     }
 

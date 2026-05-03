@@ -69,10 +69,7 @@ impl TrustProof {
     /// identifiers. The checker uses this to reject annotations that
     /// don't map to the closed catalogue.
     pub fn from_slug(slug: &str) -> Option<TrustProof> {
-        Self::ALL
-            .iter()
-            .copied()
-            .find(|p| p.slug() == slug)
+        Self::ALL.iter().copied().find(|p| p.slug() == slug)
     }
 }
 
@@ -87,12 +84,7 @@ impl fmt::Display for TrustProof {
 /// ```text
 /// error: unknown trust proof 'crc32'. Valid: hmac, jwt_sig, oauth_code_exchange, ed25519
 /// ```
-pub const TRUST_CATALOG: &[&str] = &[
-    "hmac",
-    "jwt_sig",
-    "oauth_code_exchange",
-    "ed25519",
-];
+pub const TRUST_CATALOG: &[&str] = &["hmac", "jwt_sig", "oauth_code_exchange", "ed25519"];
 
 // ── Refinement type names ────────────────────────────────────────────
 
@@ -194,9 +186,7 @@ mod tests {
 
     #[test]
     fn parse_annotation_with_options() {
-        let ann =
-            parse_refinement_annotation("hmac, key=env.HMAC_KEY, algorithm=SHA256")
-                .unwrap();
+        let ann = parse_refinement_annotation("hmac, key=env.HMAC_KEY, algorithm=SHA256").unwrap();
         assert_eq!(ann.proof, TrustProof::Hmac);
         assert_eq!(
             ann.options,

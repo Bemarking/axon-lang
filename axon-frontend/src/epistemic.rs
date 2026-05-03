@@ -13,29 +13,43 @@ use std::collections::{HashMap, HashSet};
 
 // ── Builtin type sets ───────────────────────────────────────────────────────
 
-pub const EPISTEMIC_TYPES: &[&str] = &[
-    "FactualClaim", "Opinion", "Speculation", "Uncertainty",
-];
+pub const EPISTEMIC_TYPES: &[&str] = &["FactualClaim", "Opinion", "Speculation", "Uncertainty"];
 
-pub const CONTENT_TYPES: &[&str] = &[
-    "Chunk", "Document", "EntityMap", "Summary", "Translation",
-];
+pub const CONTENT_TYPES: &[&str] = &["Chunk", "Document", "EntityMap", "Summary", "Translation"];
 
 pub const ANALYSIS_TYPES: &[&str] = &[
-    "ConfidenceScore", "Contradiction", "ReasoningChain", "RiskScore", "SentimentScore",
+    "ConfidenceScore",
+    "Contradiction",
+    "ReasoningChain",
+    "RiskScore",
+    "SentimentScore",
 ];
 
 pub const PRIMITIVE_TYPES: &[&str] = &[
-    "Boolean", "Duration", "Float", "Integer", "List", "String", "StructuredReport",
+    "Boolean",
+    "Duration",
+    "Float",
+    "Integer",
+    "List",
+    "String",
+    "StructuredReport",
 ];
 
 /// All builtin types recognized by the AXON type system.
 pub fn builtin_types() -> HashSet<&'static str> {
     let mut s = HashSet::new();
-    for t in EPISTEMIC_TYPES { s.insert(*t); }
-    for t in CONTENT_TYPES { s.insert(*t); }
-    for t in ANALYSIS_TYPES { s.insert(*t); }
-    for t in PRIMITIVE_TYPES { s.insert(*t); }
+    for t in EPISTEMIC_TYPES {
+        s.insert(*t);
+    }
+    for t in CONTENT_TYPES {
+        s.insert(*t);
+    }
+    for t in ANALYSIS_TYPES {
+        s.insert(*t);
+    }
+    for t in PRIMITIVE_TYPES {
+        s.insert(*t);
+    }
     // Lattice-internal types
     s.insert("Any");
     s.insert("Never");
@@ -97,21 +111,33 @@ fn ancestors(ty: &str) -> Vec<String> {
 ///   - RiskScore/ConfidenceScore/SentimentScore → Float coercion
 ///   - StructuredReport satisfies any output contract
 pub fn is_subtype(t1: &str, t2: &str) -> bool {
-    if t1 == t2 { return true; }
-    if t1 == "Never" { return true; }
-    if t2 == "Any" { return true; }
+    if t1 == t2 {
+        return true;
+    }
+    if t1 == "Never" {
+        return true;
+    }
+    if t2 == "Any" {
+        return true;
+    }
 
     // Strip generic params: "List<String>" → "List"
     let t1_base = t1.split('<').next().unwrap_or(t1);
     let t2_base = t2.split('<').next().unwrap_or(t2);
 
-    if t1_base == t2_base { return true; }
+    if t1_base == t2_base {
+        return true;
+    }
 
     // Uncertainty taints: can be passed anywhere
-    if t1_base == "Uncertainty" { return true; }
+    if t1_base == "Uncertainty" {
+        return true;
+    }
 
     // Nominal subtyping via lattice ancestry
-    if is_nominal_subtype(t1_base, t2_base) { return true; }
+    if is_nominal_subtype(t1_base, t2_base) {
+        return true;
+    }
 
     false
 }
@@ -144,10 +170,18 @@ fn is_nominal_subtype(t1: &str, t2: &str) -> bool {
 /// Implements "Degradación Epistémica": when combining types,
 /// the result is the most specific type that subsumes both.
 pub fn join(t1: &str, t2: &str) -> String {
-    if t1 == t2 { return t1.to_string(); }
-    if t1 == "Never" { return t2.to_string(); }
-    if t2 == "Never" { return t1.to_string(); }
-    if t1 == "Any" || t2 == "Any" { return "Any".to_string(); }
+    if t1 == t2 {
+        return t1.to_string();
+    }
+    if t1 == "Never" {
+        return t2.to_string();
+    }
+    if t2 == "Never" {
+        return t1.to_string();
+    }
+    if t1 == "Any" || t2 == "Any" {
+        return "Any".to_string();
+    }
 
     // Uncertainty taints
     if t1 == "Uncertainty" || t2 == "Uncertainty" {
@@ -169,16 +203,24 @@ pub fn join(t1: &str, t2: &str) -> String {
 
 /// Meet (infimum / ∧) — greatest lower bound of two types.
 pub fn meet(t1: &str, t2: &str) -> String {
-    if t1 == t2 { return t1.to_string(); }
-    if is_subtype(t1, t2) { return t1.to_string(); }
-    if is_subtype(t2, t1) { return t2.to_string(); }
+    if t1 == t2 {
+        return t1.to_string();
+    }
+    if is_subtype(t1, t2) {
+        return t1.to_string();
+    }
+    if is_subtype(t2, t1) {
+        return t2.to_string();
+    }
     "Never".to_string()
 }
 
 /// Propagate uncertainty across a collection of types.
 /// Returns the join (supremum) of all types — epistemic degradation.
 pub fn propagate_uncertainty(types: &[&str]) -> String {
-    if types.is_empty() { return "Any".to_string(); }
+    if types.is_empty() {
+        return "Any".to_string();
+    }
     let mut result = types[0].to_string();
     for &t in &types[1..] {
         result = join(&result, t);
@@ -273,8 +315,14 @@ mod tests {
 
     #[test]
     fn meet_subtype() {
-        assert_eq!(meet("HighConfidenceFact", "FactualClaim"), "HighConfidenceFact");
-        assert_eq!(meet("FactualClaim", "HighConfidenceFact"), "HighConfidenceFact");
+        assert_eq!(
+            meet("HighConfidenceFact", "FactualClaim"),
+            "HighConfidenceFact"
+        );
+        assert_eq!(
+            meet("FactualClaim", "HighConfidenceFact"),
+            "HighConfidenceFact"
+        );
     }
 
     #[test]
@@ -290,7 +338,10 @@ mod tests {
     #[test]
     fn propagation_degrades() {
         assert_eq!(propagate_uncertainty(&["CitedFact", "Opinion"]), "Any");
-        assert_eq!(propagate_uncertainty(&["HighConfidenceFact", "CitedFact"]), "CitedFact");
+        assert_eq!(
+            propagate_uncertainty(&["HighConfidenceFact", "CitedFact"]),
+            "CitedFact"
+        );
     }
 
     #[test]
