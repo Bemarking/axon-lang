@@ -27,7 +27,7 @@ use axon::replay_token::{
     InMemoryReplayLog, ReplayLog, ReplayTokenBuilder, SamplingParams,
 };
 use axon::stream_effect::{parse_backpressure_annotation, BackpressurePolicy};
-use axon::stream_runtime::{Stream as AxonStream, StreamMetrics};
+use axon::stream_runtime::Stream as AxonStream;
 use axon::trust_verifiers::{verify_hmac_sha256, VerifiedPayload};
 use chrono::{Duration, TimeZone, Utc};
 use hmac::{Hmac, Mac};
@@ -89,9 +89,12 @@ async fn full_audio_stack_composes_across_every_fase_11_primitive() {
     stream.push(pcm_buf.clone()).await.expect("push");
     let from_stream = stream.pop().await.expect("pop");
     assert_eq!(from_stream.kind(), pcm_buf.kind());
-    let metrics: StreamMetrics = std::sync::Arc::try_unwrap(stream.metrics.clone())
-        .unwrap_or_else(|arc| StreamMetrics::default().into_from(arc.as_ref()));
-    let snap = metrics.snapshot();
+    // Arc<StreamMetrics> derefs to StreamMetrics, so .snapshot() reads
+    // the live atomic counters directly. The previous try_unwrap dance
+    // always failed (clone bumped the count to 2) and fell back to a
+    // default-zeroed StreamMetrics, masking the actual increment with
+    // a snapshot of zeros — bug pre-existed since v1.8.0+.
+    let snap = stream.metrics.snapshot();
     assert_eq!(snap.items_pushed, 1);
     assert_eq!(snap.items_delivered, 1);
 
@@ -203,22 +206,7 @@ fn verified_sha256(buf: &ZeroCopyBuffer) -> [u8; 32] {
     buf.sha256()
 }
 
-// StreamMetrics helper: Arc<StreamMetrics> can't always be unwrapped,
-// so we expose a trait-like compat shim for the integration test.
-trait StreamMetricsCompat {
-    fn into_from(self, other: &axon::stream_runtime::StreamMetrics) -> Self;
-}
-
-impl StreamMetricsCompat for axon::stream_runtime::StreamMetrics {
-    fn into_from(
-        self,
-        _other: &axon::stream_runtime::StreamMetrics,
-    ) -> Self {
-        // The test above only reads the snapshot — we don't
-        // actually need to copy metric state, we just need SOMEthing
-        // to call .snapshot() on. Returning self is fine because
-        // the stream is already drained by the time we reach the
-        // snapshot assertion.
-        self
-    }
-}
+// (Removed `StreamMetricsCompat::into_from` no-op shim — it returned a
+// default-zeroed StreamMetrics, which silently masked the actual
+// items_pushed/items_delivered values. The test now snapshots the live
+// `Arc<StreamMetrics>` directly via auto-deref.)
