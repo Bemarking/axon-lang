@@ -1,6 +1,6 @@
 ---
 title: "Plan vivo: Fase 15 — Lambda Apply runtime wiring"
-status: PLANNED — sub-fases 15.a–15.f por shippear
+status: SHIPPED — sub-fases 15.a–15.f completadas 2026-05-03 (axon-lang v1.10.0)
 owner: AXON Language Team
 created: 2026-05-03
 updated: 2026-05-03
@@ -75,7 +75,7 @@ The runtime check **mirrors** the compile-time check rather than replacing it. T
 
 ## 4. Sub-phases
 
-### 15.a — Phase-2 lowering: IR → CompiledStep (Python + Rust) `[PLANNED]`
+### 15.a — Phase-2 lowering: IR → CompiledStep (Python + Rust) `[DONE]` ✓
 
 **Python — `axon/backends/base_backend.py`:**
 - Add `LambdaApplyPayload` dataclass with `lambda_data_name`, `target`, `output_type`, `spec_snapshot: IRLambdaData` (frozen copy, not a reference, so executor never re-traverses IR).
@@ -89,7 +89,7 @@ The runtime check **mirrors** the compile-time check rather than replacing it. T
 
 **Tests:** `tests/test_phase2_lambda_apply_lowering.py` — verify a 3-step flow `[Step, LambdaDataApply, Step]` produces 3 `CompiledStep`s (today it produces 2, silently dropping the apply).
 
-### 15.b — Python runtime dispatcher `[PLANNED]`
+### 15.b — Python runtime dispatcher `[DONE]` ✓
 
 **`axon/runtime/executor.py`:**
 - New `_execute_lambda_data_apply(self, step, unit_ctx) -> ExecutionResult`:
@@ -116,7 +116,7 @@ The runtime check **mirrors** the compile-time check rather than replacing it. T
 
 **Tests:** `tests/test_lambda_data_runtime.py` — full coverage matrix (see 15.e).
 
-### 15.c — Rust runtime dispatcher `[PLANNED]`
+### 15.c — Rust runtime dispatcher `[DONE]` ✓
 
 **`axon-rs/src/runner.rs::execute_stub`:**
 - The Rust runtime is currently a stub for **all** primitives (it prints traces but doesn't execute LLM calls — that's by design; real execution is in the Python runtime via the FFI bridge). For `lambda apply` specifically, the stub should still produce the correct semantic effect because the apply is a **pure** binding (no LLM, no I/O, just envelope construction).
@@ -125,7 +125,7 @@ The runtime check **mirrors** the compile-time check rather than replacing it. T
 
 **Cross-stack parity test:** new `axon-rs/tests/parity/fase15_lambda_apply.{python,rust}.json` golden — a 3-step program with one `lambda apply` produces identical bound-envelope traces on both runtimes.
 
-### 15.d — Type checker hardening (Python + Rust) `[PLANNED]`
+### 15.d — Type checker hardening (Python + Rust) `[DONE]` ✓
 
 The current `_check_lambda_data_apply` (Python `type_checker.py:3372`; Rust `type_checker.rs` analogous) only validates that `lambda_data_name` resolves to a `lambda_data` symbol kind. It does NOT check:
 
@@ -135,7 +135,7 @@ The current `_check_lambda_data_apply` (Python `type_checker.py:3372`; Rust `typ
 
 These three hardenings make the front-end errors arrive at the source location, not at the runtime call site.
 
-### 15.e — Runtime test matrix `[PLANNED]`
+### 15.e — Runtime test matrix `[DONE]` ✓
 
 **`tests/test_lambda_data_runtime.py`** (new) and **`axon-rs/tests/lambda_data_runtime.rs`** (new):
 
@@ -150,7 +150,7 @@ These three hardenings make the front-end errors arrive at the source location, 
 | 7 | Replay token round-trip — execute, snapshot, replay | Every applied envelope present in the replayed context with byte-identical payload |
 | 8 | Cross-stack parity — same `.axon` source executed by Python and Rust runtimes | Identical trace events; identical bound envelopes |
 
-### 15.f — Documentation honesty + cleanup `[PLANNED]`
+### 15.f — Documentation honesty + cleanup `[DONE]` ✓
 
 - **`axon/compiler/ir_nodes.py::IRLambdaDataApply`** docstring (lines 1428-1437): the current text *"At runtime, the executor binds the referenced ΛD's epistemic tensor to the target expression…"* describes Fase 15's target behaviour, not v1.9.1 reality. Replace with present-tense description matching what 15.b/c actually ship.
 - **`README.md`** Phase 20 row already qualified to *"Compiler complete; runtime apply pending Fase 15"* in the bring-up commit. After 15.b/c ship, restore to `✅ Done` (cross-stack).
