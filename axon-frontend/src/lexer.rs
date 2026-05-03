@@ -704,13 +704,28 @@ mod fase14a_trivia_tests {
     #[test]
     fn trivia_helpers_strip_markers() {
         use crate::tokens::{Trivia, TriviaKind};
-        let t = Trivia { kind: TriviaKind::DocLine, text: "/// hi".into(), line: 1, column: 1 };
+        let t = Trivia {
+            kind: TriviaKind::DocLine,
+            text: "/// hi".into(),
+            line: 1,
+            column: 1,
+        };
         assert!(t.is_doc());
         assert_eq!(t.stripped_text(), " hi");
-        let b = Trivia { kind: TriviaKind::DocBlock, text: "/** body */".into(), line: 1, column: 1 };
+        let b = Trivia {
+            kind: TriviaKind::DocBlock,
+            text: "/** body */".into(),
+            line: 1,
+            column: 1,
+        };
         assert!(b.is_doc());
         assert_eq!(b.stripped_text(), " body ");
-        let r = Trivia { kind: TriviaKind::Line, text: "// regular".into(), line: 1, column: 1 };
+        let r = Trivia {
+            kind: TriviaKind::Line,
+            text: "// regular".into(),
+            line: 1,
+            column: 1,
+        };
         assert!(!r.is_doc());
         assert_eq!(r.stripped_text(), " regular");
     }

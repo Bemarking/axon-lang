@@ -118,7 +118,8 @@ impl IRGenerator {
             Declaration::Run(n) => ir.runs.push(self.visit_run(n)),
             Declaration::LambdaData(n) => {
                 let node = self.visit_lambda_data(n);
-                self.lambda_data_specs.insert(node.name.clone(), node.clone());
+                self.lambda_data_specs
+                    .insert(node.name.clone(), node.clone());
                 ir.lambda_data_specs.push(node);
             }
             Declaration::Agent(n) => ir.agents.push(self.visit_agent(n)),
@@ -134,30 +135,32 @@ impl IRGenerator {
             Declaration::AxonStore(n) => ir.axonstore_specs.push(self.visit_axonstore(n)),
             Declaration::AxonEndpoint(n) => ir.endpoints.push(self.visit_axonendpoint(n)),
             Declaration::Resource(n) => ir.resources.push(self.visit_resource(n)),
-            Declaration::Fabric(n)   => ir.fabrics.push(self.visit_fabric(n)),
+            Declaration::Fabric(n) => ir.fabrics.push(self.visit_fabric(n)),
             Declaration::Manifest(n) => {
                 let m = self.visit_manifest(n);
                 // §λ-L-E Fase 1 — manifest is a provisioning intention
                 // (goes to the Free-Monad tree for the Handler layer).
-                self.intention_ops.push(IRIntentionOperation::Manifest(m.clone()));
+                self.intention_ops
+                    .push(IRIntentionOperation::Manifest(m.clone()));
                 ir.manifests.push(m);
             }
             Declaration::Observe(n) => {
                 let o = self.visit_observe(n);
                 // §λ-L-E Fase 1 — observations are intentions too.
-                self.intention_ops.push(IRIntentionOperation::Observe(o.clone()));
+                self.intention_ops
+                    .push(IRIntentionOperation::Observe(o.clone()));
                 ir.observations.push(o);
             }
             Declaration::Reconcile(n) => ir.reconciles.push(self.visit_reconcile(n)),
-            Declaration::Lease(n)     => ir.leases.push(self.visit_lease(n)),
-            Declaration::Ensemble(n)  => ir.ensembles.push(self.visit_ensemble(n)),
-            Declaration::Session(n)   => ir.sessions.push(self.visit_session(n)),
-            Declaration::Topology(n)  => ir.topologies.push(self.visit_topology(n)),
-            Declaration::Immune(n)    => ir.immunes.push(self.visit_immune(n)),
-            Declaration::Reflex(n)    => ir.reflexes.push(self.visit_reflex(n)),
-            Declaration::Heal(n)      => ir.heals.push(self.visit_heal(n)),
+            Declaration::Lease(n) => ir.leases.push(self.visit_lease(n)),
+            Declaration::Ensemble(n) => ir.ensembles.push(self.visit_ensemble(n)),
+            Declaration::Session(n) => ir.sessions.push(self.visit_session(n)),
+            Declaration::Topology(n) => ir.topologies.push(self.visit_topology(n)),
+            Declaration::Immune(n) => ir.immunes.push(self.visit_immune(n)),
+            Declaration::Reflex(n) => ir.reflexes.push(self.visit_reflex(n)),
+            Declaration::Heal(n) => ir.heals.push(self.visit_heal(n)),
             Declaration::Component(n) => ir.components.push(self.visit_component(n)),
-            Declaration::View(n)      => ir.views.push(self.visit_view(n)),
+            Declaration::View(n) => ir.views.push(self.visit_view(n)),
             // §λ-L-E Fase 13 — Mobile typed channels (paper §3, §4).
             // Record the channel name BEFORE visiting subsequent flow
             // bodies so `IREmit.value_is_channel` resolves correctly for
@@ -352,9 +355,16 @@ impl IRGenerator {
 
         // Compute data edges from Step nodes: if step B's given references "A.output", create edge A → B
         let mut edges: Vec<IRDataEdge> = Vec::new();
-        let step_names: Vec<String> = steps.iter().filter_map(|n| {
-            if let IRFlowNode::Step(s) = n { Some(s.name.clone()) } else { None }
-        }).collect();
+        let step_names: Vec<String> = steps
+            .iter()
+            .filter_map(|n| {
+                if let IRFlowNode::Step(s) = n {
+                    Some(s.name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
         for node in &steps {
             if let IRFlowNode::Step(step) = node {
                 if !step.given.is_empty() {
@@ -394,208 +404,350 @@ impl IRGenerator {
     fn visit_flow_step(&self, fs: &FlowStep) -> IRFlowNode {
         match fs {
             FlowStep::Step(s) => IRFlowNode::Step(IRStep {
-                node_type: "step", source_line: s.loc.line, source_column: s.loc.column,
-                name: s.name.clone(), persona_ref: s.persona_ref.clone(),
-                given: s.given.clone(), ask: s.ask.clone(),
-                use_tool: None, probe: None, reason: None, weave: None,
-                output_type: s.output_type.clone(), confidence_floor: s.confidence_floor,
-                navigate_ref: s.navigate_ref.clone(), apply_ref: s.apply_ref.clone(),
+                node_type: "step",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                name: s.name.clone(),
+                persona_ref: s.persona_ref.clone(),
+                given: s.given.clone(),
+                ask: s.ask.clone(),
+                use_tool: None,
+                probe: None,
+                reason: None,
+                weave: None,
+                output_type: s.output_type.clone(),
+                confidence_floor: s.confidence_floor,
+                navigate_ref: s.navigate_ref.clone(),
+                apply_ref: s.apply_ref.clone(),
                 body: Vec::new(),
             }),
             FlowStep::Probe(s) => IRFlowNode::Probe(IRProbe {
-                node_type: "probe", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "probe",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
                 target: s.target.clone(),
             }),
             FlowStep::Reason(s) => IRFlowNode::Reason(IRReasonStep {
-                node_type: "reason", source_line: s.loc.line, source_column: s.loc.column,
-                strategy: s.strategy.clone(), target: s.target.clone(),
+                node_type: "reason",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                strategy: s.strategy.clone(),
+                target: s.target.clone(),
             }),
             FlowStep::Validate(s) => IRFlowNode::Validate(IRValidateStep {
-                node_type: "validate", source_line: s.loc.line, source_column: s.loc.column,
-                target: s.target.clone(), rule: s.rule.clone(),
+                node_type: "validate",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                target: s.target.clone(),
+                rule: s.rule.clone(),
             }),
             FlowStep::Refine(s) => IRFlowNode::Refine(IRRefineStep {
-                node_type: "refine", source_line: s.loc.line, source_column: s.loc.column,
-                target: s.target.clone(), strategy: s.strategy.clone(),
+                node_type: "refine",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                target: s.target.clone(),
+                strategy: s.strategy.clone(),
             }),
             FlowStep::Weave(s) => IRFlowNode::Weave(IRWeaveStep {
-                node_type: "weave", source_line: s.loc.line, source_column: s.loc.column,
-                sources: s.sources.clone(), target: s.target.clone(),
-                format_type: s.format_type.clone(), priority: s.priority.clone(),
+                node_type: "weave",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                sources: s.sources.clone(),
+                target: s.target.clone(),
+                format_type: s.format_type.clone(),
+                priority: s.priority.clone(),
                 style: s.style.clone(),
             }),
             FlowStep::UseTool(s) => IRFlowNode::UseTool(IRUseToolStep {
-                node_type: "use_tool", source_line: s.loc.line, source_column: s.loc.column,
-                tool_name: s.tool_name.clone(), argument: s.argument.clone(),
+                node_type: "use_tool",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                tool_name: s.tool_name.clone(),
+                argument: s.argument.clone(),
             }),
             FlowStep::Remember(s) => IRFlowNode::Remember(IRRememberStep {
-                node_type: "remember", source_line: s.loc.line, source_column: s.loc.column,
-                expression: s.expression.clone(), memory_target: s.memory_target.clone(),
+                node_type: "remember",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                expression: s.expression.clone(),
+                memory_target: s.memory_target.clone(),
             }),
             FlowStep::Recall(s) => IRFlowNode::Recall(IRRecallStep {
-                node_type: "recall", source_line: s.loc.line, source_column: s.loc.column,
-                query: s.query.clone(), memory_source: s.memory_source.clone(),
+                node_type: "recall",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                query: s.query.clone(),
+                memory_source: s.memory_source.clone(),
             }),
             FlowStep::If(s) => IRFlowNode::Conditional(IRConditional {
-                node_type: "conditional", source_line: s.loc.line, source_column: s.loc.column,
-                condition: s.condition.clone(), comparison_op: s.comparison_op.clone(),
+                node_type: "conditional",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                condition: s.condition.clone(),
+                comparison_op: s.comparison_op.clone(),
                 comparison_value: s.comparison_value.clone(),
-                then_body: s.then_body.iter().map(|fs| self.visit_flow_step(fs)).collect(),
-                else_body: s.else_body.iter().map(|fs| self.visit_flow_step(fs)).collect(),
-                conditions: s.conditions.clone(), conjunctor: s.conjunctor.clone(),
+                then_body: s
+                    .then_body
+                    .iter()
+                    .map(|fs| self.visit_flow_step(fs))
+                    .collect(),
+                else_body: s
+                    .else_body
+                    .iter()
+                    .map(|fs| self.visit_flow_step(fs))
+                    .collect(),
+                conditions: s.conditions.clone(),
+                conjunctor: s.conjunctor.clone(),
             }),
             FlowStep::ForIn(s) => IRFlowNode::ForIn(IRForIn {
-                node_type: "for_in", source_line: s.loc.line, source_column: s.loc.column,
-                variable: s.variable.clone(), iterable: s.iterable.clone(),
+                node_type: "for_in",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                variable: s.variable.clone(),
+                iterable: s.iterable.clone(),
                 body: s.body.iter().map(|fs| self.visit_flow_step(fs)).collect(),
             }),
             FlowStep::Let(s) => IRFlowNode::Let(IRLetBinding {
-                node_type: "let_binding", source_line: s.loc.line, source_column: s.loc.column,
-                target: s.identifier.clone(), value: s.value_expr.clone(),
+                node_type: "let_binding",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                target: s.identifier.clone(),
+                value: s.value_expr.clone(),
             }),
             FlowStep::Return(s) => IRFlowNode::Return(IRReturnStep {
-                node_type: "return", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "return",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
                 value_expr: s.value_expr.clone(),
             }),
             FlowStep::LambdaDataApply(s) => IRFlowNode::LambdaDataApply(IRLambdaDataApply {
-                node_type: "lambda_data_apply", source_line: s.loc.line, source_column: s.loc.column,
-                lambda_data_name: s.lambda_data_name.clone(), target: s.target.clone(),
+                node_type: "lambda_data_apply",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                lambda_data_name: s.lambda_data_name.clone(),
+                target: s.target.clone(),
                 output_type: s.output_type.clone(),
             }),
             FlowStep::Par(s) => IRFlowNode::Par(IRParallelBlock {
-                node_type: "parallel_block", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "parallel_block",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
             }),
             FlowStep::Hibernate(s) => IRFlowNode::Hibernate(IRHibernateStep {
-                node_type: "hibernate", source_line: s.loc.line, source_column: s.loc.column,
-                event_name: s.event_name.clone(), timeout: s.timeout.clone(),
+                node_type: "hibernate",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                event_name: s.event_name.clone(),
+                timeout: s.timeout.clone(),
             }),
             FlowStep::Deliberate(s) => IRFlowNode::Deliberate(IRDeliberateBlock {
-                node_type: "deliberate", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "deliberate",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
             }),
             FlowStep::Consensus(s) => IRFlowNode::Consensus(IRConsensusBlock {
-                node_type: "consensus", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "consensus",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
             }),
             FlowStep::Forge(s) => IRFlowNode::Forge(IRForgeBlock {
-                node_type: "forge", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "forge",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
             }),
             FlowStep::Focus(s) => IRFlowNode::Focus(IRFocusStep {
-                node_type: "focus", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "focus",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
                 expression: s.expression.clone(),
             }),
             FlowStep::Associate(s) => IRFlowNode::Associate(IRAssociateStep {
-                node_type: "associate", source_line: s.loc.line, source_column: s.loc.column,
-                left: s.left.clone(), right: s.right.clone(), using_field: s.using_field.clone(),
+                node_type: "associate",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                left: s.left.clone(),
+                right: s.right.clone(),
+                using_field: s.using_field.clone(),
             }),
             FlowStep::Aggregate(s) => IRFlowNode::Aggregate(IRAggregateStep {
-                node_type: "aggregate", source_line: s.loc.line, source_column: s.loc.column,
-                target: s.target.clone(), group_by: s.group_by.clone(), alias: s.alias.clone(),
+                node_type: "aggregate",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                target: s.target.clone(),
+                group_by: s.group_by.clone(),
+                alias: s.alias.clone(),
             }),
             FlowStep::ExploreStep(s) => IRFlowNode::Explore(IRExploreStep {
-                node_type: "explore", source_line: s.loc.line, source_column: s.loc.column,
-                target: s.target.clone(), limit: s.limit,
+                node_type: "explore",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                target: s.target.clone(),
+                limit: s.limit,
             }),
             FlowStep::Ingest(s) => IRFlowNode::Ingest(IRIngestStep {
-                node_type: "ingest", source_line: s.loc.line, source_column: s.loc.column,
-                source: s.source.clone(), target: s.target.clone(),
+                node_type: "ingest",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                source: s.source.clone(),
+                target: s.target.clone(),
             }),
             FlowStep::ShieldApply(s) => IRFlowNode::ShieldApply(IRShieldApplyStep {
-                node_type: "shield_apply", source_line: s.loc.line, source_column: s.loc.column,
-                shield_name: s.shield_name.clone(), target: s.target.clone(),
+                node_type: "shield_apply",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                shield_name: s.shield_name.clone(),
+                target: s.target.clone(),
                 output_type: s.output_type.clone(),
             }),
             FlowStep::Stream(s) => IRFlowNode::Stream(IRStreamBlock {
-                node_type: "stream", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "stream",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
             }),
             FlowStep::Navigate(s) => IRFlowNode::Navigate(IRNavigateStep {
-                node_type: "navigate", source_line: s.loc.line, source_column: s.loc.column,
-                pix_ref: s.pix_name.clone(), corpus_ref: s.corpus_name.clone(),
-                query: s.query_expr.clone(), trail_enabled: s.trail_enabled,
+                node_type: "navigate",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                pix_ref: s.pix_name.clone(),
+                corpus_ref: s.corpus_name.clone(),
+                query: s.query_expr.clone(),
+                trail_enabled: s.trail_enabled,
                 output_name: s.output_name.clone(),
             }),
             FlowStep::Drill(s) => IRFlowNode::Drill(IRDrillStep {
-                node_type: "drill", source_line: s.loc.line, source_column: s.loc.column,
-                pix_ref: s.pix_name.clone(), subtree_path: s.subtree_path.clone(),
-                query: s.query_expr.clone(), output_name: s.output_name.clone(),
+                node_type: "drill",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                pix_ref: s.pix_name.clone(),
+                subtree_path: s.subtree_path.clone(),
+                query: s.query_expr.clone(),
+                output_name: s.output_name.clone(),
             }),
             FlowStep::Trail(s) => IRFlowNode::Trail(IRTrailStep {
-                node_type: "trail", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "trail",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
                 navigate_ref: s.navigate_ref.clone(),
             }),
             FlowStep::Corroborate(s) => IRFlowNode::Corroborate(IRCorroborateStep {
-                node_type: "corroborate", source_line: s.loc.line, source_column: s.loc.column,
-                navigate_ref: s.navigate_ref.clone(), output_name: s.output_name.clone(),
+                node_type: "corroborate",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                navigate_ref: s.navigate_ref.clone(),
+                output_name: s.output_name.clone(),
             }),
             FlowStep::OtsApply(s) => IRFlowNode::OtsApply(IROtsApplyStep {
-                node_type: "ots_apply", source_line: s.loc.line, source_column: s.loc.column,
-                ots_name: s.ots_name.clone(), target: s.target.clone(),
+                node_type: "ots_apply",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                ots_name: s.ots_name.clone(),
+                target: s.target.clone(),
                 output_type: s.output_type.clone(),
             }),
             FlowStep::MandateApply(s) => IRFlowNode::MandateApply(IRMandateApplyStep {
-                node_type: "mandate_apply", source_line: s.loc.line, source_column: s.loc.column,
-                mandate_name: s.mandate_name.clone(), target: s.target.clone(),
+                node_type: "mandate_apply",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                mandate_name: s.mandate_name.clone(),
+                target: s.target.clone(),
                 output_type: s.output_type.clone(),
             }),
             FlowStep::ComputeApply(s) => IRFlowNode::ComputeApply(IRComputeApplyStep {
-                node_type: "compute_apply", source_line: s.loc.line, source_column: s.loc.column,
-                compute_name: s.compute_name.clone(), arguments: s.arguments.clone(),
+                node_type: "compute_apply",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                compute_name: s.compute_name.clone(),
+                arguments: s.arguments.clone(),
                 output_name: s.output_name.clone(),
             }),
             FlowStep::Listen(s) => IRFlowNode::Listen(IRListenStep {
-                node_type: "listen", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "listen",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
                 channel: s.channel.clone(),
                 channel_is_ref: s.channel_is_ref,
                 event_alias: s.event_alias.clone(),
             }),
             // §λ-L-E Fase 13 — Mobile typed channel reductions.
             FlowStep::Emit(s) => IRFlowNode::Emit(IREmit {
-                node_type: "emit", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "emit",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
                 channel_ref: s.channel_ref.clone(),
                 value_ref: s.value_ref.clone(),
                 value_is_channel: self.channel_names.contains(&s.value_ref),
             }),
             FlowStep::Publish(s) => IRFlowNode::Publish(IRPublish {
-                node_type: "publish", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "publish",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
                 channel_ref: s.channel_ref.clone(),
                 shield_ref: s.shield_ref.clone(),
             }),
             FlowStep::Discover(s) => IRFlowNode::Discover(IRDiscover {
-                node_type: "discover", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "discover",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
                 capability_ref: s.capability_ref.clone(),
                 alias: s.alias.clone(),
             }),
             FlowStep::DaemonStep(s) => IRFlowNode::DaemonStep(IRDaemonStepNode {
-                node_type: "daemon", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "daemon",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
                 daemon_ref: s.daemon_ref.clone(),
             }),
             FlowStep::Persist(s) => IRFlowNode::Persist(IRPersistStep {
-                node_type: "persist", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "persist",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
                 store_name: s.store_name.clone(),
             }),
             FlowStep::Retrieve(s) => IRFlowNode::Retrieve(IRRetrieveStep {
-                node_type: "retrieve", source_line: s.loc.line, source_column: s.loc.column,
-                store_name: s.store_name.clone(), where_expr: s.where_expr.clone(),
+                node_type: "retrieve",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                store_name: s.store_name.clone(),
+                where_expr: s.where_expr.clone(),
                 alias: s.alias.clone(),
             }),
             FlowStep::Mutate(s) => IRFlowNode::Mutate(IRMutateStep {
-                node_type: "mutate", source_line: s.loc.line, source_column: s.loc.column,
-                store_name: s.store_name.clone(), where_expr: s.where_expr.clone(),
+                node_type: "mutate",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                store_name: s.store_name.clone(),
+                where_expr: s.where_expr.clone(),
             }),
             FlowStep::Purge(s) => IRFlowNode::Purge(IRPurgeStep {
-                node_type: "purge", source_line: s.loc.line, source_column: s.loc.column,
-                store_name: s.store_name.clone(), where_expr: s.where_expr.clone(),
+                node_type: "purge",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                store_name: s.store_name.clone(),
+                where_expr: s.where_expr.clone(),
             }),
             FlowStep::Transact(s) => IRFlowNode::Transact(IRTransactBlock {
-                node_type: "transact", source_line: s.loc.line, source_column: s.loc.column,
+                node_type: "transact",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
             }),
             FlowStep::GenericStep(_) => {
                 // Should not occur — all flow steps have dedicated handlers
                 IRFlowNode::Step(IRStep {
-                    node_type: "step", source_line: 0, source_column: 0,
-                    name: String::new(), persona_ref: String::new(),
-                    given: String::new(), ask: String::new(),
-                    use_tool: None, probe: None, reason: None, weave: None,
-                    output_type: String::new(), confidence_floor: None,
-                    navigate_ref: String::new(), apply_ref: String::new(),
+                    node_type: "step",
+                    source_line: 0,
+                    source_column: 0,
+                    name: String::new(),
+                    persona_ref: String::new(),
+                    given: String::new(),
+                    ask: String::new(),
+                    use_tool: None,
+                    probe: None,
+                    reason: None,
+                    weave: None,
+                    output_type: String::new(),
+                    confidence_floor: None,
+                    navigate_ref: String::new(),
+                    apply_ref: String::new(),
                     body: Vec::new(),
                 })
             }
@@ -608,9 +760,16 @@ impl IRGenerator {
         edges: &[IRDataEdge],
     ) -> Vec<Vec<String>> {
         // Extract Step-only names for DAG computation
-        let step_nodes: Vec<&IRStep> = steps.iter().filter_map(|n| {
-            if let IRFlowNode::Step(s) = n { Some(s) } else { None }
-        }).collect();
+        let step_nodes: Vec<&IRStep> = steps
+            .iter()
+            .filter_map(|n| {
+                if let IRFlowNode::Step(s) = n {
+                    Some(s)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         if step_nodes.is_empty() {
             return Vec::new();
@@ -655,22 +814,39 @@ impl IRGenerator {
 
     fn visit_agent(&self, n: &AgentDefinition) -> IRAgent {
         IRAgent {
-            node_type: "agent", source_line: n.loc.line, source_column: n.loc.column,
-            name: n.name.clone(), goal: n.goal.clone(), tools: n.tools.clone(),
-            memory_ref: n.memory_ref.clone(), strategy: n.strategy.clone(),
-            on_stuck: n.on_stuck.clone(), shield_ref: n.shield_ref.clone(),
-            max_iterations: n.max_iterations, max_tokens: n.max_tokens,
-            max_time: n.max_time.clone(), max_cost: n.max_cost,
+            node_type: "agent",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            goal: n.goal.clone(),
+            tools: n.tools.clone(),
+            memory_ref: n.memory_ref.clone(),
+            strategy: n.strategy.clone(),
+            on_stuck: n.on_stuck.clone(),
+            shield_ref: n.shield_ref.clone(),
+            max_iterations: n.max_iterations,
+            max_tokens: n.max_tokens,
+            max_time: n.max_time.clone(),
+            max_cost: n.max_cost,
         }
     }
 
     fn visit_shield(&self, n: &ShieldDefinition) -> IRShield {
         // §8.2.h — Python parity: strategy defaults "pattern"; Option<T> collapses to concrete zeros.
-        let strategy = if n.strategy.is_empty() { "pattern".to_string() } else { n.strategy.clone() };
+        let strategy = if n.strategy.is_empty() {
+            "pattern".to_string()
+        } else {
+            n.strategy.clone()
+        };
         IRShield {
-            node_type: "shield", source_line: n.loc.line, source_column: n.loc.column,
-            name: n.name.clone(), scan: n.scan.clone(), strategy,
-            on_breach: n.on_breach.clone(), severity: n.severity.clone(),
+            node_type: "shield",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            scan: n.scan.clone(),
+            strategy,
+            on_breach: n.on_breach.clone(),
+            severity: n.severity.clone(),
             quarantine: n.quarantine.clone(),
             max_retries: n.max_retries.unwrap_or(0),
             confidence_threshold: n.confidence_threshold.unwrap_or(0.0),
@@ -678,83 +854,128 @@ impl IRGenerator {
             deny_tools: n.deny_tools.clone(),
             sandbox: n.sandbox.unwrap_or(false),
             redact: n.redact.clone(),
-            log: n.log.clone(), deflect_message: n.deflect_message.clone(), taint: n.taint.clone(),
+            log: n.log.clone(),
+            deflect_message: n.deflect_message.clone(),
+            taint: n.taint.clone(),
             compliance: n.compliance.clone(),
         }
     }
 
     fn visit_pix(&self, n: &PixDefinition) -> IRPix {
         IRPix {
-            node_type: "pix", source_line: n.loc.line, source_column: n.loc.column,
-            name: n.name.clone(), source: n.source.clone(), depth: n.depth,
-            branching: n.branching, model: n.model.clone(),
+            node_type: "pix",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            source: n.source.clone(),
+            depth: n.depth,
+            branching: n.branching,
+            model: n.model.clone(),
         }
     }
 
     fn visit_psyche(&self, n: &PsycheDefinition) -> IRPsyche {
         IRPsyche {
-            node_type: "psyche", source_line: n.loc.line, source_column: n.loc.column,
-            name: n.name.clone(), dimensions: n.dimensions.clone(),
-            manifold_noise: n.manifold_noise, manifold_momentum: n.manifold_momentum,
-            safety_constraints: n.safety_constraints.clone(), quantum_enabled: n.quantum_enabled,
+            node_type: "psyche",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            dimensions: n.dimensions.clone(),
+            manifold_noise: n.manifold_noise,
+            manifold_momentum: n.manifold_momentum,
+            safety_constraints: n.safety_constraints.clone(),
+            quantum_enabled: n.quantum_enabled,
             inference_mode: n.inference_mode.clone(),
         }
     }
 
     fn visit_corpus(&self, n: &CorpusDefinition) -> IRCorpus {
         IRCorpus {
-            node_type: "corpus", source_line: n.loc.line, source_column: n.loc.column,
-            name: n.name.clone(), documents: n.documents.clone(),
-            mcp_server: n.mcp_server.clone(), mcp_resource_uri: n.mcp_resource_uri.clone(),
+            node_type: "corpus",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            documents: n.documents.clone(),
+            mcp_server: n.mcp_server.clone(),
+            mcp_resource_uri: n.mcp_resource_uri.clone(),
         }
     }
 
     fn visit_dataspace(&self, n: &DataspaceDefinition) -> IRDataspace {
         IRDataspace {
-            node_type: "dataspace", source_line: n.loc.line, source_column: n.loc.column,
+            node_type: "dataspace",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
             name: n.name.clone(),
         }
     }
 
     fn visit_ots(&self, n: &OtsDefinition) -> IROts {
         IROts {
-            node_type: "ots", source_line: n.loc.line, source_column: n.loc.column,
-            name: n.name.clone(), teleology: n.teleology.clone(),
-            homotopy_search: n.homotopy_search.clone(), loss_function: n.loss_function.clone(),
+            node_type: "ots",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            teleology: n.teleology.clone(),
+            homotopy_search: n.homotopy_search.clone(),
+            loss_function: n.loss_function.clone(),
         }
     }
 
     fn visit_mandate(&self, n: &MandateDefinition) -> IRMandate {
         IRMandate {
-            node_type: "mandate", source_line: n.loc.line, source_column: n.loc.column,
-            name: n.name.clone(), constraint: n.constraint.clone(), kp: n.kp, ki: n.ki,
-            kd: n.kd, tolerance: n.tolerance, max_steps: n.max_steps,
+            node_type: "mandate",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            constraint: n.constraint.clone(),
+            kp: n.kp,
+            ki: n.ki,
+            kd: n.kd,
+            tolerance: n.tolerance,
+            max_steps: n.max_steps,
             on_violation: n.on_violation.clone(),
         }
     }
 
     fn visit_compute(&self, n: &ComputeDefinition) -> IRCompute {
         IRCompute {
-            node_type: "compute", source_line: n.loc.line, source_column: n.loc.column,
-            name: n.name.clone(), shield_ref: n.shield_ref.clone(),
+            node_type: "compute",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            shield_ref: n.shield_ref.clone(),
         }
     }
 
     fn visit_daemon(&self, n: &DaemonDefinition) -> IRDaemon {
         IRDaemon {
-            node_type: "daemon", source_line: n.loc.line, source_column: n.loc.column,
-            name: n.name.clone(), goal: n.goal.clone(), tools: n.tools.clone(),
-            memory_ref: n.memory_ref.clone(), strategy: n.strategy.clone(),
-            on_stuck: n.on_stuck.clone(), shield_ref: n.shield_ref.clone(),
-            max_tokens: n.max_tokens, max_time: n.max_time.clone(), max_cost: n.max_cost,
+            node_type: "daemon",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            goal: n.goal.clone(),
+            tools: n.tools.clone(),
+            memory_ref: n.memory_ref.clone(),
+            strategy: n.strategy.clone(),
+            on_stuck: n.on_stuck.clone(),
+            shield_ref: n.shield_ref.clone(),
+            max_tokens: n.max_tokens,
+            max_time: n.max_time.clone(),
+            max_cost: n.max_cost,
         }
     }
 
     fn visit_axonstore(&self, n: &AxonStoreDefinition) -> IRAxonStore {
         IRAxonStore {
-            node_type: "axonstore", source_line: n.loc.line, source_column: n.loc.column,
-            name: n.name.clone(), backend: n.backend.clone(), connection: n.connection.clone(),
-            confidence_floor: n.confidence_floor, isolation: n.isolation.clone(),
+            node_type: "axonstore",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            backend: n.backend.clone(),
+            connection: n.connection.clone(),
+            confidence_floor: n.confidence_floor,
+            isolation: n.isolation.clone(),
             on_breach: n.on_breach.clone(),
         }
     }
@@ -762,11 +983,18 @@ impl IRGenerator {
     fn visit_axonendpoint(&self, n: &AxonEndpointDefinition) -> IRAxonEndpoint {
         // §8.2.h — Python emits `node_type: "endpoint"`; retries collapses Option<i64> → i64.
         IRAxonEndpoint {
-            node_type: "endpoint", source_line: n.loc.line, source_column: n.loc.column,
-            name: n.name.clone(), method: n.method.clone(), path: n.path.clone(),
-            body_type: n.body_type.clone(), execute_flow: n.execute_flow.clone(),
-            output_type: n.output_type.clone(), shield_ref: n.shield_ref.clone(),
-            retries: n.retries.unwrap_or(0), timeout: n.timeout.clone(),
+            node_type: "endpoint",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            method: n.method.clone(),
+            path: n.path.clone(),
+            body_type: n.body_type.clone(),
+            execute_flow: n.execute_flow.clone(),
+            output_type: n.output_type.clone(),
+            shield_ref: n.shield_ref.clone(),
+            retries: n.retries.unwrap_or(0),
+            timeout: n.timeout.clone(),
             compliance: n.compliance.clone(),
         }
     }
@@ -847,7 +1075,11 @@ impl IRGenerator {
             observe_ref: n.observe_ref.clone(),
             threshold: n.threshold,
             tolerance: n.tolerance,
-            on_drift: if n.on_drift.is_empty() { "provision".to_string() } else { n.on_drift.clone() },
+            on_drift: if n.on_drift.is_empty() {
+                "provision".to_string()
+            } else {
+                n.on_drift.clone()
+            },
             shield_ref: n.shield_ref.clone(),
             mandate_ref: n.mandate_ref.clone(),
             max_retries: n.max_retries,
@@ -863,7 +1095,11 @@ impl IRGenerator {
             name: n.name.clone(),
             resource_ref: n.resource_ref.clone(),
             duration: n.duration.clone(),
-            acquire: if n.acquire.is_empty() { "on_start".to_string() } else { n.acquire.clone() },
+            acquire: if n.acquire.is_empty() {
+                "on_start".to_string()
+            } else {
+                n.acquire.clone()
+            },
             on_expire: if n.on_expire.is_empty() {
                 "anchor_breach".to_string()
             } else {
@@ -881,11 +1117,19 @@ impl IRGenerator {
             name: n.name.clone(),
             watch: n.watch.clone(),
             sensitivity: n.sensitivity,
-            baseline: if n.baseline.is_empty() { "learned".to_string() } else { n.baseline.clone() },
+            baseline: if n.baseline.is_empty() {
+                "learned".to_string()
+            } else {
+                n.baseline.clone()
+            },
             window: n.window,
             scope: n.scope.clone(),
             tau: n.tau.clone(),
-            decay: if n.decay.is_empty() { "exponential".to_string() } else { n.decay.clone() },
+            decay: if n.decay.is_empty() {
+                "exponential".to_string()
+            } else {
+                n.decay.clone()
+            },
         }
     }
 
@@ -897,7 +1141,11 @@ impl IRGenerator {
             source_column: n.loc.column,
             name: n.name.clone(),
             trigger: n.trigger.clone(),
-            on_level: if n.on_level.is_empty() { "doubt".to_string() } else { n.on_level.clone() },
+            on_level: if n.on_level.is_empty() {
+                "doubt".to_string()
+            } else {
+                n.on_level.clone()
+            },
             action: n.action.clone(),
             scope: n.scope.clone(),
             sla: n.sla.clone(),
@@ -912,8 +1160,16 @@ impl IRGenerator {
             source_column: n.loc.column,
             name: n.name.clone(),
             source: n.source.clone(),
-            on_level: if n.on_level.is_empty() { "doubt".to_string() } else { n.on_level.clone() },
-            mode: if n.mode.is_empty() { "human_in_loop".to_string() } else { n.mode.clone() },
+            on_level: if n.on_level.is_empty() {
+                "doubt".to_string()
+            } else {
+                n.on_level.clone()
+            },
+            mode: if n.mode.is_empty() {
+                "human_in_loop".to_string()
+            } else {
+                n.mode.clone()
+            },
             scope: n.scope.clone(),
             review_sla: n.review_sla.clone(),
             shield_ref: n.shield_ref.clone(),
@@ -1124,28 +1380,37 @@ mod fase13_ir_tests {
 
     #[test]
     fn channel_second_order_message_preserved() {
-        let ir = compile(r#"
+        let ir = compile(
+            r#"
             type Order { id: String }
             channel C1 { message: Order }
             channel C2 { message: Channel<Order> }
             channel C3 { message: Channel<Channel<Order>> }
-        "#);
-        let names_to_msgs: std::collections::HashMap<_, _> = ir.channels.iter()
+        "#,
+        );
+        let names_to_msgs: std::collections::HashMap<_, _> = ir
+            .channels
+            .iter()
             .map(|c| (c.name.clone(), c.message.clone()))
             .collect();
         assert_eq!(names_to_msgs.get("C1"), Some(&"Order".to_string()));
         assert_eq!(names_to_msgs.get("C2"), Some(&"Channel<Order>".to_string()));
-        assert_eq!(names_to_msgs.get("C3"), Some(&"Channel<Channel<Order>>".to_string()));
+        assert_eq!(
+            names_to_msgs.get("C3"),
+            Some(&"Channel<Channel<Order>>".to_string())
+        );
     }
 
     #[test]
     fn emit_value_is_channel_resolves_at_lowering() {
-        let ir = compile(r#"
+        let ir = compile(
+            r#"
             type Order { id: String }
             channel Inner { message: Order }
             channel Outer { message: Channel<Order> }
             flow f() -> O { emit Outer(Inner) }
-        "#);
+        "#,
+        );
         let flow = &ir.flows[0];
         match &flow.steps[0] {
             IRFlowNode::Emit(e) => {
@@ -1159,11 +1424,13 @@ mod fase13_ir_tests {
 
     #[test]
     fn emit_scalar_payload_value_is_channel_false() {
-        let ir = compile(r#"
+        let ir = compile(
+            r#"
             type Order { id: String }
             channel Out { message: Order }
             flow f() -> O { emit Out(payload) }
-        "#);
+        "#,
+        );
         let flow = &ir.flows[0];
         match &flow.steps[0] {
             IRFlowNode::Emit(e) => {
@@ -1175,12 +1442,14 @@ mod fase13_ir_tests {
 
     #[test]
     fn publish_lowered_with_shield_ref() {
-        let ir = compile(r#"
+        let ir = compile(
+            r#"
             type Order { id: String }
             shield Gate { scan: [pii_leak] }
             channel C { message: Order shield: Gate }
             flow f() -> Cap { publish C within Gate }
-        "#);
+        "#,
+        );
         match &ir.flows[0].steps[0] {
             IRFlowNode::Publish(p) => {
                 assert_eq!(p.channel_ref, "C");
@@ -1192,12 +1461,14 @@ mod fase13_ir_tests {
 
     #[test]
     fn discover_lowered_with_alias() {
-        let ir = compile(r#"
+        let ir = compile(
+            r#"
             type Order { id: String }
             shield Gate { scan: [pii_leak] }
             channel C { message: Order shield: Gate }
             flow f() -> O { discover C as ch }
-        "#);
+        "#,
+        );
         match &ir.flows[0].steps[0] {
             IRFlowNode::Discover(d) => {
                 assert_eq!(d.capability_ref, "C");
@@ -1209,11 +1480,13 @@ mod fase13_ir_tests {
 
     #[test]
     fn json_serialization_works() {
-        let ir = compile(r#"
+        let ir = compile(
+            r#"
             type Order { id: String }
             channel C { message: Order }
             flow f() -> O { emit C(payload) }
-        "#);
+        "#,
+        );
         let json = serde_json::to_string(&ir).expect("serialize");
         assert!(json.contains(r#""node_type":"channel""#));
         assert!(json.contains(r#""node_type":"emit""#));

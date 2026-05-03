@@ -23,8 +23,14 @@ use crate::epistemic;
 // ── Valid value sets (mirrors Python frozensets) ─────────────────────────────
 
 const VALID_TONES: &[&str] = &[
-    "analytical", "assertive", "casual", "diplomatic",
-    "empathetic", "formal", "friendly", "precise",
+    "analytical",
+    "assertive",
+    "casual",
+    "diplomatic",
+    "empathetic",
+    "formal",
+    "friendly",
+    "precise",
 ];
 
 const VALID_MEMORY_SCOPES: &[&str] = &["ephemeral", "none", "persistent", "session"];
@@ -44,8 +50,16 @@ const VALID_RETRIEVAL_STRATEGIES: &[&str] = &["exact", "hybrid", "semantic"];
 // <from>:<to>` + `backend:<native|ffmpeg>`) join the catalogue.
 // Qualifiers are validated separately below.
 const VALID_EFFECTS: &[&str] = &[
-    "io", "network", "pure", "random", "storage", "stream", "trust",
-    "sensitive", "legal", "ots",
+    "io",
+    "network",
+    "pure",
+    "random",
+    "storage",
+    "stream",
+    "trust",
+    "sensitive",
+    "legal",
+    "ots",
 ];
 
 const VALID_EPISTEMIC_LEVELS: &[&str] = &["believe", "doubt", "know", "speculate"];
@@ -59,17 +73,34 @@ const VALID_AGENT_STRATEGIES: &[&str] = &["custom", "plan_and_execute", "react",
 const VALID_ON_STUCK_POLICIES: &[&str] = &["escalate", "forge", "hibernate", "retry"];
 
 const VALID_SCAN_CATEGORIES: &[&str] = &[
-    "bias", "code_injection", "data_exfil", "hallucination", "jailbreak",
-    "model_theft", "pii_leak", "prompt_injection", "social_engineering",
-    "toxicity", "training_poisoning",
+    "bias",
+    "code_injection",
+    "data_exfil",
+    "hallucination",
+    "jailbreak",
+    "model_theft",
+    "pii_leak",
+    "prompt_injection",
+    "social_engineering",
+    "toxicity",
+    "training_poisoning",
 ];
 
 const VALID_SHIELD_STRATEGIES: &[&str] = &[
-    "canary", "classifier", "dual_llm", "ensemble", "pattern", "perplexity",
+    "canary",
+    "classifier",
+    "dual_llm",
+    "ensemble",
+    "pattern",
+    "perplexity",
 ];
 
 const VALID_ON_BREACH_POLICIES: &[&str] = &[
-    "deflect", "escalate", "halt", "quarantine", "sanitize_and_retry",
+    "deflect",
+    "escalate",
+    "halt",
+    "quarantine",
+    "sanitize_and_retry",
 ];
 
 const VALID_SEVERITY_LEVELS: &[&str] = &["critical", "high", "low", "medium"];
@@ -224,16 +255,36 @@ impl<'a> TypeChecker<'a> {
         for decl in decls {
             match decl {
                 Declaration::Persona(n) => {
-                    registrations.push((n.name.clone(), "persona".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "persona".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Context(n) => {
-                    registrations.push((n.name.clone(), "context".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "context".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Anchor(n) => {
-                    registrations.push((n.name.clone(), "anchor".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "anchor".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Memory(n) => {
-                    registrations.push((n.name.clone(), "memory".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "memory".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Tool(n) => {
                     registrations.push((n.name.clone(), "tool".into(), n.loc.line, n.loc.clone()));
@@ -245,95 +296,215 @@ impl<'a> TypeChecker<'a> {
                     registrations.push((n.name.clone(), "flow".into(), n.loc.line, n.loc.clone()));
                 }
                 Declaration::Intent(n) => {
-                    registrations.push((n.name.clone(), "intent".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "intent".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::LambdaData(n) => {
-                    registrations.push((n.name.clone(), "lambda_data".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "lambda_data".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Agent(n) => {
                     registrations.push((n.name.clone(), "agent".into(), n.loc.line, n.loc.clone()));
                 }
                 Declaration::Shield(n) => {
-                    registrations.push((n.name.clone(), "shield".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "shield".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Pix(n) => {
                     registrations.push((n.name.clone(), "pix".into(), n.loc.line, n.loc.clone()));
                 }
                 Declaration::Psyche(n) => {
-                    registrations.push((n.name.clone(), "psyche".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "psyche".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Corpus(n) => {
-                    registrations.push((n.name.clone(), "corpus".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "corpus".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Dataspace(n) => {
-                    registrations.push((n.name.clone(), "dataspace".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "dataspace".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Ots(n) => {
                     registrations.push((n.name.clone(), "ots".into(), n.loc.line, n.loc.clone()));
                 }
                 Declaration::Mandate(n) => {
-                    registrations.push((n.name.clone(), "mandate".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "mandate".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Compute(n) => {
-                    registrations.push((n.name.clone(), "compute".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "compute".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Daemon(n) => {
-                    registrations.push((n.name.clone(), "daemon".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "daemon".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::AxonStore(n) => {
-                    registrations.push((n.name.clone(), "axonstore".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "axonstore".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::AxonEndpoint(n) => {
-                    registrations.push((n.name.clone(), "axonendpoint".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "axonendpoint".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Resource(n) => {
-                    registrations.push((n.name.clone(), "resource".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "resource".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Fabric(n) => {
-                    registrations.push((n.name.clone(), "fabric".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "fabric".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Manifest(n) => {
-                    registrations.push((n.name.clone(), "manifest".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "manifest".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Observe(n) => {
-                    registrations.push((n.name.clone(), "observe".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "observe".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Reconcile(n) => {
-                    registrations.push((n.name.clone(), "reconcile".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "reconcile".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Lease(n) => {
                     registrations.push((n.name.clone(), "lease".into(), n.loc.line, n.loc.clone()));
                 }
                 Declaration::Ensemble(n) => {
-                    registrations.push((n.name.clone(), "ensemble".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "ensemble".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Session(n) => {
-                    registrations.push((n.name.clone(), "session".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "session".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Topology(n) => {
-                    registrations.push((n.name.clone(), "topology".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "topology".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Immune(n) => {
-                    registrations.push((n.name.clone(), "immune".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "immune".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Reflex(n) => {
-                    registrations.push((n.name.clone(), "reflex".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "reflex".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Heal(n) => {
                     registrations.push((n.name.clone(), "heal".into(), n.loc.line, n.loc.clone()));
                 }
                 Declaration::Component(n) => {
-                    registrations.push((n.name.clone(), "component".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "component".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::View(n) => {
                     registrations.push((n.name.clone(), "view".into(), n.loc.line, n.loc.clone()));
                 }
                 Declaration::Channel(n) => {
-                    registrations.push((n.name.clone(), "channel".into(), n.loc.line, n.loc.clone()));
+                    registrations.push((
+                        n.name.clone(),
+                        "channel".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
                 }
                 Declaration::Generic(n) => {
                     if !n.name.is_empty() {
-                        registrations.push((n.name.clone(), n.keyword.clone(), n.loc.line, n.loc.clone()));
+                        registrations.push((
+                            n.name.clone(),
+                            n.keyword.clone(),
+                            n.loc.line,
+                            n.loc.clone(),
+                        ));
                     }
                 }
                 Declaration::Epistemic(_) => {
@@ -388,20 +559,20 @@ impl<'a> TypeChecker<'a> {
                 Declaration::AxonStore(n) => self.check_axonstore(n),
                 Declaration::AxonEndpoint(n) => self.check_axonendpoint(n),
                 Declaration::Resource(n) => self.check_resource(n),
-                Declaration::Fabric(n)   => self.check_fabric(n),
+                Declaration::Fabric(n) => self.check_fabric(n),
                 Declaration::Manifest(n) => self.check_manifest(n),
-                Declaration::Observe(n)  => self.check_observe(n),
+                Declaration::Observe(n) => self.check_observe(n),
                 Declaration::Reconcile(n) => self.check_reconcile(n),
-                Declaration::Lease(n)     => self.check_lease(n),
-                Declaration::Ensemble(n)  => self.check_ensemble(n),
-                Declaration::Session(n)   => self.check_session(n),
-                Declaration::Topology(n)  => self.check_topology(n),
-                Declaration::Immune(n)    => self.check_immune(n),
-                Declaration::Reflex(n)    => self.check_reflex(n),
-                Declaration::Heal(n)      => self.check_heal(n),
+                Declaration::Lease(n) => self.check_lease(n),
+                Declaration::Ensemble(n) => self.check_ensemble(n),
+                Declaration::Session(n) => self.check_session(n),
+                Declaration::Topology(n) => self.check_topology(n),
+                Declaration::Immune(n) => self.check_immune(n),
+                Declaration::Reflex(n) => self.check_reflex(n),
+                Declaration::Heal(n) => self.check_heal(n),
                 Declaration::Component(n) => self.check_component(n),
-                Declaration::View(n)      => self.check_view(n),
-                Declaration::Channel(n)   => self.check_channel(n),
+                Declaration::View(n) => self.check_view(n),
+                Declaration::Channel(n) => self.check_channel(n),
                 Declaration::Import(_)
                 | Declaration::Type(_)
                 | Declaration::Let(_)
@@ -417,7 +588,9 @@ impl<'a> TypeChecker<'a> {
             self.emit(
                 format!(
                     "Unknown tone '{}' for persona '{}'. Valid tones: {}",
-                    node.tone, node.name, valid_list(VALID_TONES)
+                    node.tone,
+                    node.name,
+                    valid_list(VALID_TONES)
                 ),
                 &node.loc,
             );
@@ -432,7 +605,9 @@ impl<'a> TypeChecker<'a> {
             self.emit(
                 format!(
                     "Unknown memory scope '{}' in context '{}'. Valid: {}",
-                    node.memory_scope, node.name, valid_list(VALID_MEMORY_SCOPES)
+                    node.memory_scope,
+                    node.name,
+                    valid_list(VALID_MEMORY_SCOPES)
                 ),
                 &node.loc,
             );
@@ -441,7 +616,9 @@ impl<'a> TypeChecker<'a> {
             self.emit(
                 format!(
                     "Unknown depth '{}' in context '{}'. Valid: {}",
-                    node.depth, node.name, valid_list(VALID_DEPTHS)
+                    node.depth,
+                    node.name,
+                    valid_list(VALID_DEPTHS)
                 ),
                 &node.loc,
             );
@@ -470,7 +647,9 @@ impl<'a> TypeChecker<'a> {
             self.emit(
                 format!(
                     "Unknown on_violation action '{}' in anchor '{}'. Valid: {}",
-                    node.on_violation, node.name, valid_list(VALID_VIOLATION_ACTIONS)
+                    node.on_violation,
+                    node.name,
+                    valid_list(VALID_VIOLATION_ACTIONS)
                 ),
                 &node.loc,
             );
@@ -491,7 +670,9 @@ impl<'a> TypeChecker<'a> {
             self.emit(
                 format!(
                     "Unknown store type '{}' in memory '{}'. Valid: {}",
-                    node.store, node.name, valid_list(VALID_MEMORY_SCOPES)
+                    node.store,
+                    node.name,
+                    valid_list(VALID_MEMORY_SCOPES)
                 ),
                 &node.loc,
             );
@@ -500,7 +681,9 @@ impl<'a> TypeChecker<'a> {
             self.emit(
                 format!(
                     "Unknown retrieval strategy '{}' in memory '{}'. Valid: {}",
-                    node.retrieval, node.name, valid_list(VALID_RETRIEVAL_STRATEGIES)
+                    node.retrieval,
+                    node.name,
+                    valid_list(VALID_RETRIEVAL_STRATEGIES)
                 ),
                 &node.loc,
             );
@@ -530,7 +713,9 @@ impl<'a> TypeChecker<'a> {
                     self.emit(
                         format!(
                             "Unknown effect '{}' in tool '{}'. Valid: {}",
-                            e, node.name, valid_list(VALID_EFFECTS)
+                            e,
+                            node.name,
+                            valid_list(VALID_EFFECTS)
                         ),
                         &node.loc,
                     );
@@ -553,10 +738,7 @@ impl<'a> TypeChecker<'a> {
                             &node.loc,
                         ),
                         Some(q) => {
-                            if !is_valid(
-                                q,
-                                crate::stream_effect::BACKPRESSURE_CATALOG,
-                            ) {
+                            if !is_valid(q, crate::stream_effect::BACKPRESSURE_CATALOG) {
                                 self.emit(
                                     format!(
                                         "Unknown backpressure policy '{}' in tool '{}'. \
@@ -629,26 +811,19 @@ impl<'a> TypeChecker<'a> {
                                  basis qualifier 'legal:<basis>'. Valid \
                                  bases: {}",
                                 node.name,
-                                valid_list(
-                                    crate::legal_basis::LEGAL_BASIS_CATALOG
-                                )
+                                valid_list(crate::legal_basis::LEGAL_BASIS_CATALOG)
                             ),
                             &node.loc,
                         ),
                         Some(q) => {
-                            if !is_valid(
-                                q,
-                                crate::legal_basis::LEGAL_BASIS_CATALOG,
-                            ) {
+                            if !is_valid(q, crate::legal_basis::LEGAL_BASIS_CATALOG) {
                                 self.emit(
                                     format!(
                                         "Unknown legal basis '{}' in tool \
                                          '{}'. Valid: {}",
                                         q,
                                         node.name,
-                                        valid_list(
-                                            crate::legal_basis::LEGAL_BASIS_CATALOG
-                                        )
+                                        valid_list(crate::legal_basis::LEGAL_BASIS_CATALOG)
                                     ),
                                     &node.loc,
                                 );
@@ -677,9 +852,7 @@ impl<'a> TypeChecker<'a> {
                                 "transform" => {
                                     let valid = rest
                                         .and_then(|r| r.split_once(':'))
-                                        .map(|(f, t)| {
-                                            !f.is_empty() && !t.is_empty()
-                                        })
+                                        .map(|(f, t)| !f.is_empty() && !t.is_empty())
                                         .unwrap_or(false);
                                     if !valid {
                                         self.emit(
@@ -729,7 +902,9 @@ impl<'a> TypeChecker<'a> {
                 self.emit(
                     format!(
                         "Unknown epistemic level '{}' in tool '{}'. Valid: {}",
-                        eff.epistemic_level, node.name, valid_list(VALID_EPISTEMIC_LEVELS)
+                        eff.epistemic_level,
+                        node.name,
+                        valid_list(VALID_EPISTEMIC_LEVELS)
                     ),
                     &node.loc,
                 );
@@ -770,10 +945,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 if base == "legal" {
                     if let Some(q) = qual {
-                        if is_valid(
-                            q,
-                            crate::legal_basis::LEGAL_BASIS_CATALOG,
-                        ) {
+                        if is_valid(q, crate::legal_basis::LEGAL_BASIS_CATALOG) {
                             has_legal_basis = true;
                             if q.starts_with("HIPAA.") {
                                 legal_bases_hipaa.push(q);
@@ -783,9 +955,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 if base == "ots" {
                     if let Some(inner) = qual {
-                        if let Some(("backend", backend)) =
-                            inner.split_once(':')
-                        {
+                        if let Some(("backend", backend)) = inner.split_once(':') {
                             if backend == "ffmpeg" {
                                 has_ffmpeg_backend = true;
                             }
@@ -801,9 +971,7 @@ impl<'a> TypeChecker<'a> {
                          processing requires an explicit legal basis: {}.",
                         node.name,
                         sensitive_categories.join(", "),
-                        valid_list(
-                            crate::legal_basis::LEGAL_BASIS_CATALOG
-                        )
+                        valid_list(crate::legal_basis::LEGAL_BASIS_CATALOG)
                     ),
                     &node.loc,
                 );
@@ -847,10 +1015,7 @@ impl<'a> TypeChecker<'a> {
             if let FlowStep::Step(s) = step {
                 if step_names.contains(&s.name) {
                     self.emit(
-                        format!(
-                            "Duplicate step name '{}' in flow '{}'",
-                            s.name, node.name
-                        ),
+                        format!("Duplicate step name '{}' in flow '{}'", s.name, node.name),
                         &s.loc,
                     );
                 } else {
@@ -882,10 +1047,7 @@ impl<'a> TypeChecker<'a> {
 
     // ── §λ-L-E Fase 11.a — refinement + stream flow-level checks ─
 
-    fn check_refinement_and_stream_contracts(
-        &mut self,
-        flow: &FlowDefinition,
-    ) {
+    fn check_refinement_and_stream_contracts(&mut self, flow: &FlowDefinition) {
         // Scan flow signature for the refinement / stream markers.
         // `Trusted<T>` in a parameter imposes no new obligation on
         // this flow (the upstream already proved trust). `Untrusted<T>`
@@ -921,10 +1083,7 @@ impl<'a> TypeChecker<'a> {
         // for this checker pass.
         let mut tool_effects: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
-        self.collect_tool_effects(
-            &self.program.declarations,
-            &mut tool_effects,
-        );
+        self.collect_tool_effects(&self.program.declarations, &mut tool_effects);
 
         // Walk the flow body and see which tools each step reaches
         // via `apply_ref` / `navigate_ref`. Record the effects we
@@ -977,10 +1136,7 @@ impl<'a> TypeChecker<'a> {
             match d {
                 Declaration::Tool(t) => {
                     if let Some(ref eff) = t.effects {
-                        out.insert(
-                            t.name.clone(),
-                            eff.effects.clone(),
-                        );
+                        out.insert(t.name.clone(), eff.effects.clone());
                     }
                 }
                 Declaration::Epistemic(eb) => {
@@ -1013,20 +1169,14 @@ impl<'a> TypeChecker<'a> {
                                 };
                                 if base == "stream" {
                                     if let Some(q) = qual {
-                                        if is_valid(
-                                            q,
-                                            crate::stream_effect::BACKPRESSURE_CATALOG,
-                                        ) {
+                                        if is_valid(q, crate::stream_effect::BACKPRESSURE_CATALOG) {
                                             *observed_backpressure = true;
                                         }
                                     }
                                 }
                                 if base == "trust" {
                                     if let Some(q) = qual {
-                                        if is_valid(
-                                            q,
-                                            crate::refinement::TRUST_CATALOG,
-                                        ) {
+                                        if is_valid(q, crate::refinement::TRUST_CATALOG) {
                                             *observed_trust_proof = true;
                                         }
                                     }
@@ -1099,10 +1249,7 @@ impl<'a> TypeChecker<'a> {
         // Persona must exist
         if !node.persona.is_empty() {
             match self.symbols.lookup(&node.persona) {
-                None => self.emit(
-                    format!("Undefined persona '{}'", node.persona),
-                    &node.loc,
-                ),
+                None => self.emit(format!("Undefined persona '{}'", node.persona), &node.loc),
                 Some(sym) if sym.kind != "persona" => self.emit(
                     format!("'{}' is a {}, not a persona", node.persona, sym.kind),
                     &node.loc,
@@ -1114,10 +1261,7 @@ impl<'a> TypeChecker<'a> {
         // Context must exist
         if !node.context.is_empty() {
             match self.symbols.lookup(&node.context) {
-                None => self.emit(
-                    format!("Undefined context '{}'", node.context),
-                    &node.loc,
-                ),
+                None => self.emit(format!("Undefined context '{}'", node.context), &node.loc),
                 Some(sym) if sym.kind != "context" => self.emit(
                     format!("'{}' is a {}, not a context", node.context, sym.kind),
                     &node.loc,
@@ -1129,10 +1273,7 @@ impl<'a> TypeChecker<'a> {
         // Anchors must exist
         for anchor_name in &node.anchors {
             match self.symbols.lookup(anchor_name) {
-                None => self.emit(
-                    format!("Undefined anchor '{}'", anchor_name),
-                    &node.loc,
-                ),
+                None => self.emit(format!("Undefined anchor '{}'", anchor_name), &node.loc),
                 Some(sym) if sym.kind != "anchor" => self.emit(
                     format!("'{}' is a {}, not an anchor", anchor_name, sym.kind),
                     &node.loc,
@@ -1146,7 +1287,8 @@ impl<'a> TypeChecker<'a> {
             self.emit(
                 format!(
                     "Unknown effort level '{}'. Valid: {}",
-                    node.effort, valid_list(VALID_EFFORT_LEVELS)
+                    node.effort,
+                    valid_list(VALID_EFFORT_LEVELS)
                 ),
                 &node.loc,
             );
@@ -1185,17 +1327,16 @@ impl<'a> TypeChecker<'a> {
             self.emit(
                 format!(
                     "Unknown derivation '{}' for lambda '{}'. Valid: {}",
-                    node.derivation, node.name, valid_list(VALID_DERIVATIONS)
+                    node.derivation,
+                    node.name,
+                    valid_list(VALID_DERIVATIONS)
                 ),
                 &node.loc,
             );
         }
 
         // Theorem 5.1 — Epistemic Degradation: only 'raw' may carry c = 1.0
-        if node.certainty == 1.0
-            && !node.derivation.is_empty()
-            && node.derivation != "raw"
-        {
+        if node.certainty == 1.0 && !node.derivation.is_empty() && node.derivation != "raw" {
             self.emit(
                 format!(
                     "Epistemic Degradation Theorem violation: lambda '{}' \
@@ -1224,9 +1365,17 @@ impl<'a> TypeChecker<'a> {
         // Tool references must exist
         for tool_name in &node.tools {
             match self.symbols.lookup(tool_name) {
-                None => self.emit(format!("Undefined tool '{}' in agent '{}'", tool_name, node.name), &node.loc),
+                None => self.emit(
+                    format!("Undefined tool '{}' in agent '{}'", tool_name, node.name),
+                    &node.loc,
+                ),
                 Some(sym) if sym.kind != "tool" => self.emit(
-                    format!("'{}' is a {}, not a tool (referenced in agent '{}')", tool_name, sym.kind, node.name), &node.loc),
+                    format!(
+                        "'{}' is a {}, not a tool (referenced in agent '{}')",
+                        tool_name, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
                 _ => {}
             }
         }
@@ -1234,7 +1383,12 @@ impl<'a> TypeChecker<'a> {
         // Strategy enum
         if !node.strategy.is_empty() && !is_valid(&node.strategy, VALID_AGENT_STRATEGIES) {
             self.emit(
-                format!("Unknown strategy '{}' in agent '{}'. Valid: {}", node.strategy, node.name, valid_list(VALID_AGENT_STRATEGIES)),
+                format!(
+                    "Unknown strategy '{}' in agent '{}'. Valid: {}",
+                    node.strategy,
+                    node.name,
+                    valid_list(VALID_AGENT_STRATEGIES)
+                ),
                 &node.loc,
             );
         }
@@ -1242,7 +1396,12 @@ impl<'a> TypeChecker<'a> {
         // on_stuck policy enum
         if !node.on_stuck.is_empty() && !is_valid(&node.on_stuck, VALID_ON_STUCK_POLICIES) {
             self.emit(
-                format!("Unknown on_stuck policy '{}' in agent '{}'. Valid: {}", node.on_stuck, node.name, valid_list(VALID_ON_STUCK_POLICIES)),
+                format!(
+                    "Unknown on_stuck policy '{}' in agent '{}'. Valid: {}",
+                    node.on_stuck,
+                    node.name,
+                    valid_list(VALID_ON_STUCK_POLICIES)
+                ),
                 &node.loc,
             );
         }
@@ -1250,9 +1409,20 @@ impl<'a> TypeChecker<'a> {
         // Memory reference
         if !node.memory_ref.is_empty() {
             match self.symbols.lookup(&node.memory_ref) {
-                None => self.emit(format!("Undefined memory '{}' in agent '{}'", node.memory_ref, node.name), &node.loc),
+                None => self.emit(
+                    format!(
+                        "Undefined memory '{}' in agent '{}'",
+                        node.memory_ref, node.name
+                    ),
+                    &node.loc,
+                ),
                 Some(sym) if sym.kind != "memory" => self.emit(
-                    format!("'{}' is a {}, not a memory (referenced in agent '{}')", node.memory_ref, sym.kind, node.name), &node.loc),
+                    format!(
+                        "'{}' is a {}, not a memory (referenced in agent '{}')",
+                        node.memory_ref, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
                 _ => {}
             }
         }
@@ -1260,22 +1430,54 @@ impl<'a> TypeChecker<'a> {
         // Shield reference
         if !node.shield_ref.is_empty() {
             match self.symbols.lookup(&node.shield_ref) {
-                None => self.emit(format!("Undefined shield '{}' in agent '{}'", node.shield_ref, node.name), &node.loc),
+                None => self.emit(
+                    format!(
+                        "Undefined shield '{}' in agent '{}'",
+                        node.shield_ref, node.name
+                    ),
+                    &node.loc,
+                ),
                 Some(sym) if sym.kind != "shield" => self.emit(
-                    format!("'{}' is a {}, not a shield (referenced in agent '{}')", node.shield_ref, sym.kind, node.name), &node.loc),
+                    format!(
+                        "'{}' is a {}, not a shield (referenced in agent '{}')",
+                        node.shield_ref, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
                 _ => {}
             }
         }
 
         // Budget constraints (linear logic: resources must be positive)
         if let Some(v) = node.max_iterations {
-            if v < 1 { self.emit(format!("max_iterations must be >= 1, got {} in agent '{}'", v, node.name), &node.loc); }
+            if v < 1 {
+                self.emit(
+                    format!(
+                        "max_iterations must be >= 1, got {} in agent '{}'",
+                        v, node.name
+                    ),
+                    &node.loc,
+                );
+            }
         }
         if let Some(v) = node.max_tokens {
-            if v < 0 { self.emit(format!("max_tokens must be >= 0, got {} in agent '{}'", v, node.name), &node.loc); }
+            if v < 0 {
+                self.emit(
+                    format!(
+                        "max_tokens must be >= 0, got {} in agent '{}'",
+                        v, node.name
+                    ),
+                    &node.loc,
+                );
+            }
         }
         if let Some(v) = node.max_cost {
-            if v < 0.0 { self.emit(format!("max_cost must be >= 0, got {} in agent '{}'", v, node.name), &node.loc); }
+            if v < 0.0 {
+                self.emit(
+                    format!("max_cost must be >= 0, got {} in agent '{}'", v, node.name),
+                    &node.loc,
+                );
+            }
         }
     }
 
@@ -1284,7 +1486,12 @@ impl<'a> TypeChecker<'a> {
         for cat in &node.scan {
             if !is_valid(cat, VALID_SCAN_CATEGORIES) {
                 self.emit(
-                    format!("Unknown scan category '{}' in shield '{}'. Valid: {}", cat, node.name, valid_list(VALID_SCAN_CATEGORIES)),
+                    format!(
+                        "Unknown scan category '{}' in shield '{}'. Valid: {}",
+                        cat,
+                        node.name,
+                        valid_list(VALID_SCAN_CATEGORIES)
+                    ),
                     &node.loc,
                 );
             }
@@ -1293,7 +1500,12 @@ impl<'a> TypeChecker<'a> {
         // Strategy enum
         if !node.strategy.is_empty() && !is_valid(&node.strategy, VALID_SHIELD_STRATEGIES) {
             self.emit(
-                format!("Unknown strategy '{}' in shield '{}'. Valid: {}", node.strategy, node.name, valid_list(VALID_SHIELD_STRATEGIES)),
+                format!(
+                    "Unknown strategy '{}' in shield '{}'. Valid: {}",
+                    node.strategy,
+                    node.name,
+                    valid_list(VALID_SHIELD_STRATEGIES)
+                ),
                 &node.loc,
             );
         }
@@ -1301,7 +1513,12 @@ impl<'a> TypeChecker<'a> {
         // on_breach policy
         if !node.on_breach.is_empty() && !is_valid(&node.on_breach, VALID_ON_BREACH_POLICIES) {
             self.emit(
-                format!("Unknown on_breach policy '{}' in shield '{}'. Valid: {}", node.on_breach, node.name, valid_list(VALID_ON_BREACH_POLICIES)),
+                format!(
+                    "Unknown on_breach policy '{}' in shield '{}'. Valid: {}",
+                    node.on_breach,
+                    node.name,
+                    valid_list(VALID_ON_BREACH_POLICIES)
+                ),
                 &node.loc,
             );
         }
@@ -1309,14 +1526,27 @@ impl<'a> TypeChecker<'a> {
         // Severity level
         if !node.severity.is_empty() && !is_valid(&node.severity, VALID_SEVERITY_LEVELS) {
             self.emit(
-                format!("Unknown severity '{}' in shield '{}'. Valid: {}", node.severity, node.name, valid_list(VALID_SEVERITY_LEVELS)),
+                format!(
+                    "Unknown severity '{}' in shield '{}'. Valid: {}",
+                    node.severity,
+                    node.name,
+                    valid_list(VALID_SEVERITY_LEVELS)
+                ),
                 &node.loc,
             );
         }
 
         // max_retries >= 0
         if let Some(v) = node.max_retries {
-            if v < 0 { self.emit(format!("max_retries must be >= 0, got {} in shield '{}'", v, node.name), &node.loc); }
+            if v < 0 {
+                self.emit(
+                    format!(
+                        "max_retries must be >= 0, got {} in shield '{}'",
+                        v, node.name
+                    ),
+                    &node.loc,
+                );
+            }
         }
 
         // confidence_threshold range
@@ -1328,7 +1558,10 @@ impl<'a> TypeChecker<'a> {
         for tool in &node.allow_tools {
             if node.deny_tools.contains(tool) {
                 self.emit(
-                    format!("Tool '{}' appears in both allow_tools and deny_tools in shield '{}'", tool, node.name),
+                    format!(
+                        "Tool '{}' appears in both allow_tools and deny_tools in shield '{}'",
+                        tool, node.name
+                    ),
                     &node.loc,
                 );
             }
@@ -1338,20 +1571,35 @@ impl<'a> TypeChecker<'a> {
     fn check_pix(&mut self, node: &PixDefinition) {
         // Source presence
         if node.source.is_empty() {
-            self.emit(format!("Pix '{}' requires a 'source' field", node.name), &node.loc);
+            self.emit(
+                format!("Pix '{}' requires a 'source' field", node.name),
+                &node.loc,
+            );
         }
 
         // Depth range 1..=8
         if let Some(v) = node.depth {
             if v < 1 || v > 8 {
-                self.emit(format!("depth must be between 1 and 8, got {} in pix '{}'", v, node.name), &node.loc);
+                self.emit(
+                    format!(
+                        "depth must be between 1 and 8, got {} in pix '{}'",
+                        v, node.name
+                    ),
+                    &node.loc,
+                );
             }
         }
 
         // Branching range 1..=10
         if let Some(v) = node.branching {
             if v < 1 || v > 10 {
-                self.emit(format!("branching must be between 1 and 10, got {} in pix '{}'", v, node.name), &node.loc);
+                self.emit(
+                    format!(
+                        "branching must be between 1 and 10, got {} in pix '{}'",
+                        v, node.name
+                    ),
+                    &node.loc,
+                );
             }
         }
     }
@@ -1360,7 +1608,10 @@ impl<'a> TypeChecker<'a> {
         // §1: ψ ∈ M requires dim(M) ≥ 1
         if node.dimensions.is_empty() {
             self.emit(
-                format!("Psyche '{}' requires at least one dimension (manifold dim ≥ 1)", node.name),
+                format!(
+                    "Psyche '{}' requires at least one dimension (manifold dim ≥ 1)",
+                    node.name
+                ),
                 &node.loc,
             );
         }
@@ -1369,7 +1620,10 @@ impl<'a> TypeChecker<'a> {
         let mut seen: Vec<String> = Vec::new();
         for dim in &node.dimensions {
             if seen.contains(dim) {
-                self.emit(format!("Duplicate dimension '{}' in psyche '{}'", dim, node.name), &node.loc);
+                self.emit(
+                    format!("Duplicate dimension '{}' in psyche '{}'", dim, node.name),
+                    &node.loc,
+                );
             } else {
                 seen.push(dim.clone());
             }
@@ -1379,7 +1633,10 @@ impl<'a> TypeChecker<'a> {
         if let Some(v) = node.manifold_noise {
             if v <= 0.0 || v > 1.0 {
                 self.emit(
-                    format!("manifold_noise must be in (0.0, 1.0], got {} in psyche '{}'", v, node.name),
+                    format!(
+                        "manifold_noise must be in (0.0, 1.0], got {} in psyche '{}'",
+                        v, node.name
+                    ),
                     &node.loc,
                 );
             }
@@ -1393,10 +1650,17 @@ impl<'a> TypeChecker<'a> {
         // Safety constraints non-empty
         if node.safety_constraints.is_empty() {
             self.emit(
-                format!("Psyche '{}' requires at least one safety_constraint", node.name),
+                format!(
+                    "Psyche '{}' requires at least one safety_constraint",
+                    node.name
+                ),
                 &node.loc,
             );
-        } else if !node.safety_constraints.iter().any(|c| c == "non_diagnostic") {
+        } else if !node
+            .safety_constraints
+            .iter()
+            .any(|c| c == "non_diagnostic")
+        {
             // §4: non_diagnostic is mandatory
             self.emit(
                 format!("Psyche '{}' must include 'non_diagnostic' in safety_constraints (dependent type safety §4)", node.name),
@@ -1405,9 +1669,15 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Inference mode enum
-        if !node.inference_mode.is_empty() && !is_valid(&node.inference_mode, VALID_INFERENCE_MODES) {
+        if !node.inference_mode.is_empty() && !is_valid(&node.inference_mode, VALID_INFERENCE_MODES)
+        {
             self.emit(
-                format!("Unknown inference_mode '{}' in psyche '{}'. Valid: {}", node.inference_mode, node.name, valid_list(VALID_INFERENCE_MODES)),
+                format!(
+                    "Unknown inference_mode '{}' in psyche '{}'. Valid: {}",
+                    node.inference_mode,
+                    node.name,
+                    valid_list(VALID_INFERENCE_MODES)
+                ),
                 &node.loc,
             );
         }
@@ -1417,7 +1687,10 @@ impl<'a> TypeChecker<'a> {
         // Invariant G1: D ≠ ∅ — at least one document
         if node.documents.is_empty() && node.mcp_server.is_empty() {
             self.emit(
-                format!("Corpus '{}' requires at least one document or an mcp_server (G1: D ≠ ∅)", node.name),
+                format!(
+                    "Corpus '{}' requires at least one document or an mcp_server (G1: D ≠ ∅)",
+                    node.name
+                ),
                 &node.loc,
             );
         }
@@ -1426,13 +1699,25 @@ impl<'a> TypeChecker<'a> {
     fn check_ots(&mut self, node: &OtsDefinition) {
         // Teleology presence (goal required)
         if node.teleology.is_empty() {
-            self.emit(format!("OTS '{}' requires a 'teleology' field (goal required)", node.name), &node.loc);
+            self.emit(
+                format!(
+                    "OTS '{}' requires a 'teleology' field (goal required)",
+                    node.name
+                ),
+                &node.loc,
+            );
         }
 
         // Homotopy search enum
-        if !node.homotopy_search.is_empty() && !is_valid(&node.homotopy_search, VALID_OTS_HOMOTOPY) {
+        if !node.homotopy_search.is_empty() && !is_valid(&node.homotopy_search, VALID_OTS_HOMOTOPY)
+        {
             self.emit(
-                format!("Unknown homotopy_search '{}' in OTS '{}'. Valid: {}", node.homotopy_search, node.name, valid_list(VALID_OTS_HOMOTOPY)),
+                format!(
+                    "Unknown homotopy_search '{}' in OTS '{}'. Valid: {}",
+                    node.homotopy_search,
+                    node.name,
+                    valid_list(VALID_OTS_HOMOTOPY)
+                ),
                 &node.loc,
             );
         }
@@ -1449,31 +1734,65 @@ impl<'a> TypeChecker<'a> {
 
         // PID gains
         if let Some(v) = node.kp {
-            if v <= 0.0 { self.emit(format!("kp must be > 0.0, got {} in mandate '{}'", v, node.name), &node.loc); }
+            if v <= 0.0 {
+                self.emit(
+                    format!("kp must be > 0.0, got {} in mandate '{}'", v, node.name),
+                    &node.loc,
+                );
+            }
         }
         if let Some(v) = node.ki {
-            if v < 0.0 { self.emit(format!("ki must be >= 0.0, got {} in mandate '{}'", v, node.name), &node.loc); }
+            if v < 0.0 {
+                self.emit(
+                    format!("ki must be >= 0.0, got {} in mandate '{}'", v, node.name),
+                    &node.loc,
+                );
+            }
         }
         if let Some(v) = node.kd {
-            if v < 0.0 { self.emit(format!("kd must be >= 0.0, got {} in mandate '{}'", v, node.name), &node.loc); }
+            if v < 0.0 {
+                self.emit(
+                    format!("kd must be >= 0.0, got {} in mandate '{}'", v, node.name),
+                    &node.loc,
+                );
+            }
         }
 
         // Tolerance ε ∈ (0, 1]
         if let Some(v) = node.tolerance {
             if v <= 0.0 || v > 1.0 {
-                self.emit(format!("tolerance must be in (0.0, 1.0], got {} in mandate '{}'", v, node.name), &node.loc);
+                self.emit(
+                    format!(
+                        "tolerance must be in (0.0, 1.0], got {} in mandate '{}'",
+                        v, node.name
+                    ),
+                    &node.loc,
+                );
             }
         }
 
         // max_steps >= 1
         if let Some(v) = node.max_steps {
-            if v < 1 { self.emit(format!("max_steps must be >= 1, got {} in mandate '{}'", v, node.name), &node.loc); }
+            if v < 1 {
+                self.emit(
+                    format!(
+                        "max_steps must be >= 1, got {} in mandate '{}'",
+                        v, node.name
+                    ),
+                    &node.loc,
+                );
+            }
         }
 
         // on_violation policy
         if !node.on_violation.is_empty() && !is_valid(&node.on_violation, VALID_MANDATE_POLICIES) {
             self.emit(
-                format!("Unknown on_violation '{}' in mandate '{}'. Valid: {}", node.on_violation, node.name, valid_list(VALID_MANDATE_POLICIES)),
+                format!(
+                    "Unknown on_violation '{}' in mandate '{}'. Valid: {}",
+                    node.on_violation,
+                    node.name,
+                    valid_list(VALID_MANDATE_POLICIES)
+                ),
                 &node.loc,
             );
         }
@@ -1483,7 +1802,12 @@ impl<'a> TypeChecker<'a> {
         // Backend enum
         if !node.backend.is_empty() && !is_valid(&node.backend, VALID_STORE_BACKENDS) {
             self.emit(
-                format!("Unknown backend '{}' in axonstore '{}'. Valid: {}", node.backend, node.name, valid_list(VALID_STORE_BACKENDS)),
+                format!(
+                    "Unknown backend '{}' in axonstore '{}'. Valid: {}",
+                    node.backend,
+                    node.name,
+                    valid_list(VALID_STORE_BACKENDS)
+                ),
                 &node.loc,
             );
         }
@@ -1491,7 +1815,12 @@ impl<'a> TypeChecker<'a> {
         // Isolation level enum
         if !node.isolation.is_empty() && !is_valid(&node.isolation, VALID_STORE_ISOLATION) {
             self.emit(
-                format!("Unknown isolation '{}' in axonstore '{}'. Valid: {}", node.isolation, node.name, valid_list(VALID_STORE_ISOLATION)),
+                format!(
+                    "Unknown isolation '{}' in axonstore '{}'. Valid: {}",
+                    node.isolation,
+                    node.name,
+                    valid_list(VALID_STORE_ISOLATION)
+                ),
                 &node.loc,
             );
         }
@@ -1499,7 +1828,12 @@ impl<'a> TypeChecker<'a> {
         // on_breach policy
         if !node.on_breach.is_empty() && !is_valid(&node.on_breach, VALID_STORE_ON_BREACH) {
             self.emit(
-                format!("Unknown on_breach '{}' in axonstore '{}'. Valid: {}", node.on_breach, node.name, valid_list(VALID_STORE_ON_BREACH)),
+                format!(
+                    "Unknown on_breach '{}' in axonstore '{}'. Valid: {}",
+                    node.on_breach,
+                    node.name,
+                    valid_list(VALID_STORE_ON_BREACH)
+                ),
                 &node.loc,
             );
         }
@@ -1677,7 +2011,10 @@ impl<'a> TypeChecker<'a> {
         // (a) target manifest
         if node.target.is_empty() {
             self.emit(
-                format!("Observe '{}' is missing 'from <Manifest>' target", node.name),
+                format!(
+                    "Observe '{}' is missing 'from <Manifest>' target",
+                    node.name
+                ),
                 &node.loc,
             );
         } else {
@@ -1901,7 +2238,8 @@ impl<'a> TypeChecker<'a> {
             self.emit(
                 format!(
                     "Ensemble '{}' has {} observation(s); Byzantine quorum requires >= 2",
-                    node.name, node.observations.len()
+                    node.name,
+                    node.observations.len()
                 ),
                 &node.loc,
             );
@@ -1949,7 +2287,8 @@ impl<'a> TypeChecker<'a> {
                 self.emit(
                     format!(
                         "Ensemble '{}' quorum {q} exceeds available observations ({})",
-                        node.name, node.observations.len()
+                        node.name,
+                        node.observations.len()
                     ),
                     &node.loc,
                 );
@@ -1969,7 +2308,8 @@ impl<'a> TypeChecker<'a> {
             self.emit(
                 format!(
                     "Session '{}' must declare exactly 2 roles (binary session); got {}",
-                    node.name, node.roles.len()
+                    node.name,
+                    node.roles.len()
                 ),
                 &node.loc,
             );
@@ -2023,7 +2363,11 @@ impl<'a> TypeChecker<'a> {
                 format!(
                     "Session '{}' duality violation: roles '{}' ({} steps) and \
                      '{}' ({} steps) have different lengths",
-                    node.name, r1.name, r1.steps.len(), r2.name, r2.steps.len()
+                    node.name,
+                    r1.name,
+                    r1.steps.len(),
+                    r2.name,
+                    r2.steps.len()
                 ),
                 &node.loc,
             );
@@ -2035,8 +2379,11 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "Session '{}' duality violation at step #{i}: '{}' has \
                          '{}' but '{}' has '{}' (expected the dual)",
-                        node.name, r1.name, format_step(s1),
-                        r2.name, format_step(s2)
+                        node.name,
+                        r1.name,
+                        format_step(s1),
+                        r2.name,
+                        format_step(s2)
                     ),
                     &node.loc,
                 );
@@ -2052,8 +2399,15 @@ impl<'a> TypeChecker<'a> {
     /// (e) Honda liveness — no cycle where every edge is receive-first.
     fn check_topology(&mut self, node: &TopologyDefinition) {
         const NODE_KINDS: &[&str] = &[
-            "resource", "fabric", "manifest", "observe", "axonendpoint",
-            "axonstore", "daemon", "agent", "shield",
+            "resource",
+            "fabric",
+            "manifest",
+            "observe",
+            "axonendpoint",
+            "axonstore",
+            "daemon",
+            "agent",
+            "shield",
         ];
         let mut seen_nodes: std::collections::HashSet<&String> = std::collections::HashSet::new();
         for n in &node.nodes {
@@ -2073,7 +2427,10 @@ impl<'a> TypeChecker<'a> {
                     format!(
                         "Topology '{}' node '{}' is a {} — not a valid topology entity. \
                          Valid kinds: {}",
-                        node.name, n, sym.kind, NODE_KINDS.join(", ")
+                        node.name,
+                        n,
+                        sym.kind,
+                        NODE_KINDS.join(", ")
                     ),
                     &node.loc,
                 ),
@@ -2316,7 +2673,10 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
         }
-        if !matches!(node.on_level.as_str(), "know" | "believe" | "speculate" | "doubt") {
+        if !matches!(
+            node.on_level.as_str(),
+            "know" | "believe" | "speculate" | "doubt"
+        ) {
             self.emit(
                 format!(
                     "reflex '{}' invalid on_level '{}'. Valid: know | believe | speculate | doubt",
@@ -2389,13 +2749,19 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
         }
-        if !matches!(node.on_level.as_str(), "know" | "believe" | "speculate" | "doubt") {
+        if !matches!(
+            node.on_level.as_str(),
+            "know" | "believe" | "speculate" | "doubt"
+        ) {
             self.emit(
                 format!("heal '{}' invalid on_level '{}'", node.name, node.on_level),
                 &node.loc,
             );
         }
-        if !matches!(node.mode.as_str(), "audit_only" | "human_in_loop" | "adversarial") {
+        if !matches!(
+            node.mode.as_str(),
+            "audit_only" | "human_in_loop" | "adversarial"
+        ) {
             self.emit(
                 format!(
                     "heal '{}' invalid mode '{}'. Valid: audit_only | human_in_loop | \
@@ -2464,10 +2830,7 @@ impl<'a> TypeChecker<'a> {
         // (1) renders must resolve to a type
         let rendered_type = if node.renders.is_empty() {
             self.emit(
-                format!(
-                    "component '{}' requires 'renders: <TypeName>'",
-                    node.name
-                ),
+                format!("component '{}' requires 'renders: <TypeName>'", node.name),
                 &node.loc,
             );
             None
@@ -2551,10 +2914,8 @@ impl<'a> TypeChecker<'a> {
                     Some(s) => {
                         let shield_kappa: std::collections::HashSet<&str> =
                             s.compliance.iter().map(|s| s.as_str()).collect();
-                        let mut missing: Vec<&str> = type_kappa
-                            .difference(&shield_kappa)
-                            .copied()
-                            .collect();
+                        let mut missing: Vec<&str> =
+                            type_kappa.difference(&shield_kappa).copied().collect();
                         missing.sort();
                         if !missing.is_empty() {
                             self.emit(
@@ -2605,10 +2966,7 @@ impl<'a> TypeChecker<'a> {
                                              expects first parameter of type '{}', \
                                              but component renders '{}'. Signatures \
                                              must match — Fase 9.2 rule 2.",
-                                            node.name,
-                                            node.on_interact,
-                                            pt,
-                                            node.renders
+                                            node.name, node.on_interact, pt, node.renders
                                         ),
                                         &node.loc,
                                     );
@@ -2671,7 +3029,12 @@ impl<'a> TypeChecker<'a> {
             let upper = node.method.to_uppercase();
             if !is_valid(&upper, VALID_ENDPOINT_METHODS) {
                 self.emit(
-                    format!("Unknown HTTP method '{}' in axonendpoint '{}'. Valid: {}", node.method, node.name, valid_list(VALID_ENDPOINT_METHODS)),
+                    format!(
+                        "Unknown HTTP method '{}' in axonendpoint '{}'. Valid: {}",
+                        node.method,
+                        node.name,
+                        valid_list(VALID_ENDPOINT_METHODS)
+                    ),
                     &node.loc,
                 );
             }
@@ -2680,7 +3043,10 @@ impl<'a> TypeChecker<'a> {
         // Path must start with /
         if !node.path.is_empty() && !node.path.starts_with('/') {
             self.emit(
-                format!("Path must start with '/' in axonendpoint '{}', got '{}'", node.name, node.path),
+                format!(
+                    "Path must start with '/' in axonendpoint '{}', got '{}'",
+                    node.name, node.path
+                ),
                 &node.loc,
             );
         }
@@ -2688,9 +3054,20 @@ impl<'a> TypeChecker<'a> {
         // execute_flow reference
         if !node.execute_flow.is_empty() {
             match self.symbols.lookup(&node.execute_flow) {
-                None => self.emit(format!("Undefined flow '{}' in axonendpoint '{}'", node.execute_flow, node.name), &node.loc),
+                None => self.emit(
+                    format!(
+                        "Undefined flow '{}' in axonendpoint '{}'",
+                        node.execute_flow, node.name
+                    ),
+                    &node.loc,
+                ),
                 Some(sym) if sym.kind != "flow" => self.emit(
-                    format!("'{}' is a {}, not a flow (referenced in axonendpoint '{}')", node.execute_flow, sym.kind, node.name), &node.loc),
+                    format!(
+                        "'{}' is a {}, not a flow (referenced in axonendpoint '{}')",
+                        node.execute_flow, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
                 _ => {}
             }
         }
@@ -2698,16 +3075,35 @@ impl<'a> TypeChecker<'a> {
         // Shield reference
         if !node.shield_ref.is_empty() {
             match self.symbols.lookup(&node.shield_ref) {
-                None => self.emit(format!("Undefined shield '{}' in axonendpoint '{}'", node.shield_ref, node.name), &node.loc),
+                None => self.emit(
+                    format!(
+                        "Undefined shield '{}' in axonendpoint '{}'",
+                        node.shield_ref, node.name
+                    ),
+                    &node.loc,
+                ),
                 Some(sym) if sym.kind != "shield" => self.emit(
-                    format!("'{}' is a {}, not a shield (referenced in axonendpoint '{}')", node.shield_ref, sym.kind, node.name), &node.loc),
+                    format!(
+                        "'{}' is a {}, not a shield (referenced in axonendpoint '{}')",
+                        node.shield_ref, sym.kind, node.name
+                    ),
+                    &node.loc,
+                ),
                 _ => {}
             }
         }
 
         // Retries >= 0
         if let Some(v) = node.retries {
-            if v < 0 { self.emit(format!("retries must be >= 0, got {} in axonendpoint '{}'", v, node.name), &node.loc); }
+            if v < 0 {
+                self.emit(
+                    format!(
+                        "retries must be >= 0, got {} in axonendpoint '{}'",
+                        v, node.name
+                    ),
+                    &node.loc,
+                );
+            }
         }
     }
 
@@ -2719,9 +3115,17 @@ impl<'a> TypeChecker<'a> {
                 FlowStep::ShieldApply(n) => {
                     if !n.shield_name.is_empty() {
                         match self.symbols.lookup(&n.shield_name) {
-                            None => self.emit(format!("Undefined shield '{}' in flow '{}'", n.shield_name, flow_name), &n.loc),
+                            None => self.emit(
+                                format!(
+                                    "Undefined shield '{}' in flow '{}'",
+                                    n.shield_name, flow_name
+                                ),
+                                &n.loc,
+                            ),
                             Some(sym) if sym.kind != "shield" => self.emit(
-                                format!("'{}' is a {}, not a shield", n.shield_name, sym.kind), &n.loc),
+                                format!("'{}' is a {}, not a shield", n.shield_name, sym.kind),
+                                &n.loc,
+                            ),
                             _ => {}
                         }
                     }
@@ -2729,9 +3133,14 @@ impl<'a> TypeChecker<'a> {
                 FlowStep::OtsApply(n) => {
                     if !n.ots_name.is_empty() {
                         match self.symbols.lookup(&n.ots_name) {
-                            None => self.emit(format!("Undefined OTS '{}' in flow '{}'", n.ots_name, flow_name), &n.loc),
+                            None => self.emit(
+                                format!("Undefined OTS '{}' in flow '{}'", n.ots_name, flow_name),
+                                &n.loc,
+                            ),
                             Some(sym) if sym.kind != "ots" => self.emit(
-                                format!("'{}' is a {}, not an OTS", n.ots_name, sym.kind), &n.loc),
+                                format!("'{}' is a {}, not an OTS", n.ots_name, sym.kind),
+                                &n.loc,
+                            ),
                             _ => {}
                         }
                     }
@@ -2739,9 +3148,17 @@ impl<'a> TypeChecker<'a> {
                 FlowStep::MandateApply(n) => {
                     if !n.mandate_name.is_empty() {
                         match self.symbols.lookup(&n.mandate_name) {
-                            None => self.emit(format!("Undefined mandate '{}' in flow '{}'", n.mandate_name, flow_name), &n.loc),
+                            None => self.emit(
+                                format!(
+                                    "Undefined mandate '{}' in flow '{}'",
+                                    n.mandate_name, flow_name
+                                ),
+                                &n.loc,
+                            ),
                             Some(sym) if sym.kind != "mandate" => self.emit(
-                                format!("'{}' is a {}, not a mandate", n.mandate_name, sym.kind), &n.loc),
+                                format!("'{}' is a {}, not a mandate", n.mandate_name, sym.kind),
+                                &n.loc,
+                            ),
                             _ => {}
                         }
                     }
@@ -2749,9 +3166,20 @@ impl<'a> TypeChecker<'a> {
                 FlowStep::LambdaDataApply(n) => {
                     if !n.lambda_data_name.is_empty() {
                         match self.symbols.lookup(&n.lambda_data_name) {
-                            None => self.emit(format!("Undefined lambda '{}' in flow '{}'", n.lambda_data_name, flow_name), &n.loc),
+                            None => self.emit(
+                                format!(
+                                    "Undefined lambda '{}' in flow '{}'",
+                                    n.lambda_data_name, flow_name
+                                ),
+                                &n.loc,
+                            ),
                             Some(sym) if sym.kind != "lambda_data" => self.emit(
-                                format!("'{}' is a {}, not a lambda_data", n.lambda_data_name, sym.kind), &n.loc),
+                                format!(
+                                    "'{}' is a {}, not a lambda_data",
+                                    n.lambda_data_name, sym.kind
+                                ),
+                                &n.loc,
+                            ),
                             _ => {}
                         }
                     }
@@ -2759,22 +3187,35 @@ impl<'a> TypeChecker<'a> {
                 FlowStep::Navigate(n) => {
                     if !n.pix_name.is_empty() {
                         match self.symbols.lookup(&n.pix_name) {
-                            None => self.emit(format!("Undefined pix '{}' in navigate step", n.pix_name), &n.loc),
+                            None => self.emit(
+                                format!("Undefined pix '{}' in navigate step", n.pix_name),
+                                &n.loc,
+                            ),
                             Some(sym) if sym.kind != "pix" => self.emit(
-                                format!("'{}' is a {}, not a pix", n.pix_name, sym.kind), &n.loc),
+                                format!("'{}' is a {}, not a pix", n.pix_name, sym.kind),
+                                &n.loc,
+                            ),
                             _ => {}
                         }
                     }
                     if n.query_expr.is_empty() {
-                        self.emit("Navigate step requires a query expression".to_string(), &n.loc);
+                        self.emit(
+                            "Navigate step requires a query expression".to_string(),
+                            &n.loc,
+                        );
                     }
                 }
                 FlowStep::Drill(n) => {
                     if !n.pix_name.is_empty() {
                         match self.symbols.lookup(&n.pix_name) {
-                            None => self.emit(format!("Undefined pix '{}' in drill step", n.pix_name), &n.loc),
+                            None => self.emit(
+                                format!("Undefined pix '{}' in drill step", n.pix_name),
+                                &n.loc,
+                            ),
                             Some(sym) if sym.kind != "pix" => self.emit(
-                                format!("'{}' is a {}, not a pix", n.pix_name, sym.kind), &n.loc),
+                                format!("'{}' is a {}, not a pix", n.pix_name, sym.kind),
+                                &n.loc,
+                            ),
                             _ => {}
                         }
                     }
@@ -2792,15 +3233,26 @@ impl<'a> TypeChecker<'a> {
                 }
                 FlowStep::Corroborate(n) => {
                     if n.navigate_ref.is_empty() {
-                        self.emit("Corroborate step requires a navigate_ref".to_string(), &n.loc);
+                        self.emit(
+                            "Corroborate step requires a navigate_ref".to_string(),
+                            &n.loc,
+                        );
                     }
                 }
                 FlowStep::DaemonStep(n) => {
                     if !n.daemon_ref.is_empty() {
                         match self.symbols.lookup(&n.daemon_ref) {
-                            None => self.emit(format!("Undefined daemon '{}' in flow '{}'", n.daemon_ref, flow_name), &n.loc),
+                            None => self.emit(
+                                format!(
+                                    "Undefined daemon '{}' in flow '{}'",
+                                    n.daemon_ref, flow_name
+                                ),
+                                &n.loc,
+                            ),
                             Some(sym) if sym.kind != "daemon" => self.emit(
-                                format!("'{}' is a {}, not a daemon", n.daemon_ref, sym.kind), &n.loc),
+                                format!("'{}' is a {}, not a daemon", n.daemon_ref, sym.kind),
+                                &n.loc,
+                            ),
                             _ => {}
                         }
                     }
@@ -2820,9 +3272,17 @@ impl<'a> TypeChecker<'a> {
                 FlowStep::ComputeApply(n) => {
                     if !n.compute_name.is_empty() {
                         match self.symbols.lookup(&n.compute_name) {
-                            None => self.emit(format!("Undefined compute '{}' in flow '{}'", n.compute_name, flow_name), &n.loc),
+                            None => self.emit(
+                                format!(
+                                    "Undefined compute '{}' in flow '{}'",
+                                    n.compute_name, flow_name
+                                ),
+                                &n.loc,
+                            ),
                             Some(sym) if sym.kind != "compute" => self.emit(
-                                format!("'{}' is a {}, not a compute", n.compute_name, sym.kind), &n.loc),
+                                format!("'{}' is a {}, not a compute", n.compute_name, sym.kind),
+                                &n.loc,
+                            ),
                             _ => {}
                         }
                     }
@@ -2848,9 +3308,17 @@ impl<'a> TypeChecker<'a> {
     fn check_store_ref(&mut self, store_name: &str, flow_name: &str, loc: &Loc) {
         if !store_name.is_empty() {
             match self.symbols.lookup(store_name) {
-                None => self.emit(format!("Undefined axonstore '{}' in flow '{}'", store_name, flow_name), loc),
+                None => self.emit(
+                    format!(
+                        "Undefined axonstore '{}' in flow '{}'",
+                        store_name, flow_name
+                    ),
+                    loc,
+                ),
                 Some(sym) if sym.kind != "axonstore" => self.emit(
-                    format!("'{}' is a {}, not an axonstore", store_name, sym.kind), loc),
+                    format!("'{}' is a {}, not an axonstore", store_name, sym.kind),
+                    loc,
+                ),
                 _ => {}
             }
         }
@@ -2861,10 +3329,18 @@ impl<'a> TypeChecker<'a> {
     /// Verify that a type name is either built-in or user-defined.
     /// Soft check: unknown types are silently accepted (may come from imports).
     fn check_type_reference(&self, type_name: &str, _loc: &Loc) -> bool {
-        if type_name.is_empty() { return true; }
+        if type_name.is_empty() {
+            return true;
+        }
         let builtin = epistemic::builtin_types();
-        if builtin.contains(type_name) { return true; }
-        if self.symbols.lookup(type_name).map_or(false, |s| s.kind == "type") {
+        if builtin.contains(type_name) {
+            return true;
+        }
+        if self
+            .symbols
+            .lookup(type_name)
+            .map_or(false, |s| s.kind == "type")
+        {
             return true;
         }
         // Soft: unknown types accepted silently (may be from imports)
@@ -2877,7 +3353,11 @@ impl<'a> TypeChecker<'a> {
         const VALID_EPISTEMIC_MODES: &[&str] = &["believe", "doubt", "know", "speculate"];
         if !mode.is_empty() && !is_valid(mode, VALID_EPISTEMIC_MODES) {
             self.emit(
-                format!("Unknown epistemic mode '{}'. Valid: {}", mode, valid_list(VALID_EPISTEMIC_MODES)),
+                format!(
+                    "Unknown epistemic mode '{}'. Valid: {}",
+                    mode,
+                    valid_list(VALID_EPISTEMIC_MODES)
+                ),
                 loc,
             );
         }
@@ -2895,7 +3375,10 @@ impl<'a> TypeChecker<'a> {
         }
         // Resolve the message schema; supports nested `Channel<…<T>>`.
         if node.message.is_empty() {
-            self.emit("channel requires a `message:` schema type".to_string(), &node.loc);
+            self.emit(
+                "channel requires a `message:` schema type".to_string(),
+                &node.loc,
+            );
         } else {
             self.validate_channel_message_type(&node.message, &node.loc);
         }
@@ -3050,7 +3533,9 @@ impl<'a> TypeChecker<'a> {
         if let Some(outer) = outer_msg {
             if outer.starts_with("Channel<") && outer.ends_with('>') {
                 let inner = &outer["Channel<".len()..outer.len() - 1];
-                let value_kind = self.symbols.lookup(&node.value_ref)
+                let value_kind = self
+                    .symbols
+                    .lookup(&node.value_ref)
                     .map(|s| s.kind.clone())
                     .unwrap_or_default();
                 if value_kind != "channel" {
@@ -3064,7 +3549,9 @@ impl<'a> TypeChecker<'a> {
                     );
                     return;
                 }
-                let value_msg = self.find_channel_message(&node.value_ref).unwrap_or_default();
+                let value_msg = self
+                    .find_channel_message(&node.value_ref)
+                    .unwrap_or_default();
                 if value_msg != inner {
                     self.emit(
                         format!(
@@ -3082,7 +3569,10 @@ impl<'a> TypeChecker<'a> {
     /// Validate a publish step — D8 capability extrusion gate.
     fn check_publish(&mut self, node: &PublishStatement) {
         if node.channel_ref.is_empty() {
-            self.emit("publish requires a channel reference".to_string(), &node.loc);
+            self.emit(
+                "publish requires a channel reference".to_string(),
+                &node.loc,
+            );
             return;
         }
         if node.shield_ref.is_empty() {
@@ -3099,7 +3589,10 @@ impl<'a> TypeChecker<'a> {
         let ch_kind = match self.symbols.lookup(&node.channel_ref) {
             None => {
                 self.emit(
-                    format!("publish references undefined channel '{}'", node.channel_ref),
+                    format!(
+                        "publish references undefined channel '{}'",
+                        node.channel_ref
+                    ),
                     &node.loc,
                 );
                 return;
@@ -3147,11 +3640,17 @@ impl<'a> TypeChecker<'a> {
     /// Validate a discover step — capability_ref must be publishable.
     fn check_discover(&mut self, node: &DiscoverStatement) {
         if node.capability_ref.is_empty() {
-            self.emit("discover requires a channel reference".to_string(), &node.loc);
+            self.emit(
+                "discover requires a channel reference".to_string(),
+                &node.loc,
+            );
             return;
         }
         if node.alias.is_empty() {
-            self.emit("discover requires an `as <alias>` binding".to_string(), &node.loc);
+            self.emit(
+                "discover requires an `as <alias>` binding".to_string(),
+                &node.loc,
+            );
             return;
         }
         let kind = match self.symbols.lookup(&node.capability_ref) {
@@ -3239,9 +3738,7 @@ fn format_step(s: &SessionStep) -> String {
 
 /// Directed-graph cycle detector (DFS with gray/black colouring). Returns
 /// one representative ordering per strongly-connected cycle found.
-fn find_cycles(
-    adjacency: &std::collections::HashMap<String, Vec<String>>,
-) -> Vec<Vec<String>> {
+fn find_cycles(adjacency: &std::collections::HashMap<String, Vec<String>>) -> Vec<Vec<String>> {
     let mut color: std::collections::HashMap<String, &'static str> =
         std::collections::HashMap::new();
     let mut stack: Vec<String> = Vec::new();
@@ -3281,10 +3778,7 @@ fn find_cycles(
     cycles
 }
 
-fn cycle_to_edges<'a>(
-    cycle: &[String],
-    edges: &'a [TopologyEdge],
-) -> Vec<&'a TopologyEdge> {
+fn cycle_to_edges<'a>(cycle: &[String], edges: &'a [TopologyEdge]) -> Vec<&'a TopologyEdge> {
     let n = cycle.len();
     let mut result = Vec::with_capacity(n);
     for i in 0..n {
@@ -3375,8 +3869,10 @@ mod fase13_typecheck_tests {
         let src = "channel C { message: Order shield: NotDefined }";
         let errs = check_errors(src);
         assert!(
-            errs.iter().any(|e| e.message.contains("undefined shield 'NotDefined'")),
-            "got: {:?}", errs
+            errs.iter()
+                .any(|e| e.message.contains("undefined shield 'NotDefined'")),
+            "got: {:?}",
+            errs
         );
     }
 
@@ -3389,7 +3885,8 @@ mod fase13_typecheck_tests {
         let errs = check_errors(src);
         assert!(
             errs.iter().any(|e| e.message.contains("not a shield")),
-            "got: {:?}", errs
+            "got: {:?}",
+            errs
         );
     }
 
@@ -3398,8 +3895,10 @@ mod fase13_typecheck_tests {
         let src = "flow f() -> O { emit Bogus(payload) }";
         let errs = check_errors(src);
         assert!(
-            errs.iter().any(|e| e.message.contains("undefined channel 'Bogus'")),
-            "got: {:?}", errs
+            errs.iter()
+                .any(|e| e.message.contains("undefined channel 'Bogus'")),
+            "got: {:?}",
+            errs
         );
     }
 
@@ -3412,7 +3911,8 @@ mod fase13_typecheck_tests {
         let errs = check_errors(src);
         assert!(
             errs.iter().any(|e| e.message.contains("not a channel")),
-            "got: {:?}", errs
+            "got: {:?}",
+            errs
         );
     }
 
@@ -3427,8 +3927,10 @@ mod fase13_typecheck_tests {
         "#;
         let errs = check_errors(src);
         assert!(
-            errs.iter().any(|e| e.message.contains("second-order schema mismatch")),
-            "got: {:?}", errs
+            errs.iter()
+                .any(|e| e.message.contains("second-order schema mismatch")),
+            "got: {:?}",
+            errs
         );
     }
 
@@ -3440,8 +3942,10 @@ mod fase13_typecheck_tests {
         "#;
         let errs = check_errors(src);
         assert!(
-            errs.iter().any(|e| e.message.contains("undefined shield 'MissingShield'")),
-            "got: {:?}", errs
+            errs.iter()
+                .any(|e| e.message.contains("undefined shield 'MissingShield'")),
+            "got: {:?}",
+            errs
         );
     }
 
@@ -3455,7 +3959,8 @@ mod fase13_typecheck_tests {
         let errs = check_errors(src);
         assert!(
             errs.iter().any(|e| e.message.contains("not publishable")),
-            "got: {:?}", errs
+            "got: {:?}",
+            errs
         );
     }
 
@@ -3485,7 +3990,8 @@ mod fase13_typecheck_tests {
         let errs = check_errors(src);
         assert!(
             errs.iter().any(|e| e.message.contains("undefined channel")),
-            "got: {:?}", errs
+            "got: {:?}",
+            errs
         );
     }
 
@@ -3536,12 +4042,18 @@ mod fase13_typecheck_tests {
             }
         "#;
         let errs = check_errors(src);
-        let mobility = errs.iter().filter(|e|
-            e.message.contains("second-order schema mismatch")
-            || e.message.contains("not a channel handle")
-        ).count();
-        assert_eq!(mobility, 0,
-            "dotted access must not trip mobility check; got: {:?}", errs);
+        let mobility = errs
+            .iter()
+            .filter(|e| {
+                e.message.contains("second-order schema mismatch")
+                    || e.message.contains("not a channel handle")
+            })
+            .count();
+        assert_eq!(
+            mobility, 0,
+            "dotted access must not trip mobility check; got: {:?}",
+            errs
+        );
     }
 
     #[test]
@@ -3558,8 +4070,10 @@ mod fase13_typecheck_tests {
         "#;
         let errs = check_errors(src);
         assert!(
-            errs.iter().any(|e| e.message.contains("second-order schema mismatch")),
-            "expected mobility violation for bare-id ref, got: {:?}", errs
+            errs.iter()
+                .any(|e| e.message.contains("second-order schema mismatch")),
+            "expected mobility violation for bare-id ref, got: {:?}",
+            errs
         );
     }
 }

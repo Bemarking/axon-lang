@@ -130,12 +130,12 @@ pub enum Declaration {
 #[derive(Debug, Default)]
 pub struct ResourceDefinition {
     pub name: String,
-    pub kind: String,                 // postgres | redis | s3 | vpc | gpu | compute | file | custom
-    pub endpoint: String,             // connection URI
-    pub capacity: Option<i64>,        // pool size / instance count hint
-    pub lifetime: String,             // linear | affine | persistent (default: affine)
+    pub kind: String, // postgres | redis | s3 | vpc | gpu | compute | file | custom
+    pub endpoint: String, // connection URI
+    pub capacity: Option<i64>, // pool size / instance count hint
+    pub lifetime: String, // linear | affine | persistent (default: affine)
     pub certainty_floor: Option<f64>, // epistemic gate c ∈ [0.0, 1.0]
-    pub shield_ref: String,           // optional shield reference
+    pub shield_ref: String, // optional shield reference
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -153,11 +153,11 @@ pub struct ResourceDefinition {
 #[derive(Debug, Default)]
 pub struct FabricDefinition {
     pub name: String,
-    pub provider: String,            // aws | gcp | azure | kubernetes | bare_metal | custom
-    pub region: String,              // provider-specific region id
-    pub zones: Option<i64>,          // number of availability zones
-    pub ephemeral: Option<bool>,     // true = destroy on program end
-    pub shield_ref: String,          // optional shield reference
+    pub provider: String, // aws | gcp | azure | kubernetes | bare_metal | custom
+    pub region: String,   // provider-specific region id
+    pub zones: Option<i64>, // number of availability zones
+    pub ephemeral: Option<bool>, // true = destroy on program end
+    pub shield_ref: String, // optional shield reference
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -176,11 +176,11 @@ pub struct FabricDefinition {
 #[derive(Debug, Default)]
 pub struct ManifestDefinition {
     pub name: String,
-    pub resources: Vec<String>,      // references to ResourceDefinition names
-    pub fabric_ref: String,          // reference to FabricDefinition name
+    pub resources: Vec<String>, // references to ResourceDefinition names
+    pub fabric_ref: String,     // reference to FabricDefinition name
     pub region: String,
     pub zones: Option<i64>,
-    pub compliance: Vec<String>,     // κ — regulatory class (Fase 6.1)
+    pub compliance: Vec<String>, // κ — regulatory class (Fase 6.1)
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -199,11 +199,11 @@ pub struct ManifestDefinition {
 #[derive(Debug, Default)]
 pub struct ObserveDefinition {
     pub name: String,
-    pub target: String,              // name of ManifestDefinition being observed
+    pub target: String, // name of ManifestDefinition being observed
     pub sources: Vec<String>,
-    pub quorum: Option<i64>,         // Byzantine quorum threshold
-    pub timeout: String,             // duration literal "5s", "100ms"
-    pub on_partition: String,        // fail (CT-3) | shield_quarantine
+    pub quorum: Option<i64>,  // Byzantine quorum threshold
+    pub timeout: String,      // duration literal "5s", "100ms"
+    pub on_partition: String, // fail (CT-3) | shield_quarantine
     pub certainty_floor: Option<f64>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
@@ -227,12 +227,12 @@ pub struct ObserveDefinition {
 pub struct ReconcileDefinition {
     pub name: String,
     pub observe_ref: String,
-    pub threshold: Option<f64>,       // epistemic gate c ∈ [0.0, 1.0]
-    pub tolerance: Option<f64>,       // drift tolerance [0.0, 1.0]
-    pub on_drift: String,             // provision | alert | refine (default: provision)
+    pub threshold: Option<f64>, // epistemic gate c ∈ [0.0, 1.0]
+    pub tolerance: Option<f64>, // drift tolerance [0.0, 1.0]
+    pub on_drift: String,       // provision | alert | refine (default: provision)
     pub shield_ref: String,
     pub mandate_ref: String,
-    pub max_retries: i64,             // default: 3
+    pub max_retries: i64, // default: 3
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -252,9 +252,9 @@ pub struct ReconcileDefinition {
 pub struct LeaseDefinition {
     pub name: String,
     pub resource_ref: String,
-    pub duration: String,             // "30s", "5m", "2h"
-    pub acquire: String,              // on_start | on_demand (default: on_start)
-    pub on_expire: String,            // anchor_breach | release | extend (default: anchor_breach)
+    pub duration: String,  // "30s", "5m", "2h"
+    pub acquire: String,   // on_start | on_demand (default: on_start)
+    pub on_expire: String, // anchor_breach | release | extend (default: anchor_breach)
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -275,8 +275,8 @@ pub struct EnsembleDefinition {
     pub name: String,
     pub observations: Vec<String>,
     pub quorum: Option<i64>,
-    pub aggregation: String,          // majority | weighted | byzantine (default: majority)
-    pub certainty_mode: String,       // min | weighted | harmonic (default: min)
+    pub aggregation: String, // majority | weighted | byzantine (default: majority)
+    pub certainty_mode: String, // min | weighted | harmonic (default: min)
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -292,8 +292,8 @@ pub struct EnsembleDefinition {
 /// One step in a session protocol: `send T` | `receive T` | `loop` | `end`.
 #[derive(Debug, Clone, Default)]
 pub struct SessionStep {
-    pub op: String,             // send | receive | loop | end
-    pub message_type: String,   // only meaningful for send / receive
+    pub op: String,           // send | receive | loop | end
+    pub message_type: String, // only meaningful for send / receive
     pub loc: Loc,
 }
 
@@ -369,13 +369,13 @@ pub struct TopologyDefinition {
 #[derive(Debug, Default)]
 pub struct ImmuneDefinition {
     pub name: String,
-    pub watch: Vec<String>,          // observe / ensemble / any declared ref
-    pub sensitivity: Option<f64>,    // [0.0, 1.0]
-    pub baseline: String,            // "learned" (default) or name of a prior
-    pub window: i64,                 // samples used to estimate baseline (default: 100)
-    pub scope: String,               // tenant | flow | global (MANDATORY, paper §8.2)
-    pub tau: String,                 // duration half-life
-    pub decay: String,               // exponential (default) | linear | none
+    pub watch: Vec<String>,       // observe / ensemble / any declared ref
+    pub sensitivity: Option<f64>, // [0.0, 1.0]
+    pub baseline: String,         // "learned" (default) or name of a prior
+    pub window: i64,              // samples used to estimate baseline (default: 100)
+    pub scope: String,            // tenant | flow | global (MANDATORY, paper §8.2)
+    pub tau: String,              // duration half-life
+    pub decay: String,            // exponential (default) | linear | none
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -394,11 +394,11 @@ pub struct ImmuneDefinition {
 #[derive(Debug, Default)]
 pub struct ReflexDefinition {
     pub name: String,
-    pub trigger: String,             // immune name (MANDATORY)
-    pub on_level: String,            // know | believe | speculate | doubt (default: doubt)
-    pub action: String,              // drop | revoke | emit | redact | quarantine | terminate | alert
-    pub scope: String,               // MANDATORY, paper §8.2
-    pub sla: String,                 // duration budget (e.g. "1ms")
+    pub trigger: String,  // immune name (MANDATORY)
+    pub on_level: String, // know | believe | speculate | doubt (default: doubt)
+    pub action: String,   // drop | revoke | emit | redact | quarantine | terminate | alert
+    pub scope: String,    // MANDATORY, paper §8.2
+    pub sla: String,      // duration budget (e.g. "1ms")
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -420,13 +420,13 @@ pub struct ReflexDefinition {
 #[derive(Debug, Default)]
 pub struct HealDefinition {
     pub name: String,
-    pub source: String,              // immune name (MANDATORY)
-    pub on_level: String,            // know | believe | speculate | doubt
-    pub mode: String,                // audit_only | human_in_loop | adversarial
-    pub scope: String,               // MANDATORY
-    pub review_sla: String,          // duration
-    pub shield_ref: String,          // optional shield gate (required for adversarial)
-    pub max_patches: i64,            // bounded heal attempts (default: 3)
+    pub source: String,     // immune name (MANDATORY)
+    pub on_level: String,   // know | believe | speculate | doubt
+    pub mode: String,       // audit_only | human_in_loop | adversarial
+    pub scope: String,      // MANDATORY
+    pub review_sla: String, // duration
+    pub shield_ref: String, // optional shield gate (required for adversarial)
+    pub max_patches: i64,   // bounded heal attempts (default: 3)
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -450,7 +450,7 @@ pub struct ComponentDefinition {
     pub renders: String,
     pub via_shield: String,
     pub on_interact: String,
-    pub render_hint: String,   // card | list | form | chart | custom
+    pub render_hint: String, // card | list | form | chart | custom
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -507,8 +507,8 @@ pub struct AgentDefinition {
     pub goal: String,
     pub tools: Vec<String>,
     pub memory_ref: String,
-    pub strategy: String,          // react | reflexion | plan_and_execute | custom
-    pub on_stuck: String,          // forge | hibernate | escalate | retry
+    pub strategy: String, // react | reflexion | plan_and_execute | custom
+    pub on_stuck: String, // forge | hibernate | escalate | retry
     pub shield_ref: String,
     pub max_iterations: Option<i64>,
     pub max_tokens: Option<i64>,
@@ -530,9 +530,9 @@ pub struct AgentDefinition {
 pub struct ShieldDefinition {
     pub name: String,
     pub scan: Vec<String>,
-    pub strategy: String,          // pattern | classifier | dual_llm | canary | perplexity | ensemble
-    pub on_breach: String,         // halt | sanitize_and_retry | escalate | quarantine | deflect
-    pub severity: String,          // low | medium | high | critical
+    pub strategy: String, // pattern | classifier | dual_llm | canary | perplexity | ensemble
+    pub on_breach: String, // halt | sanitize_and_retry | escalate | quarantine | deflect
+    pub severity: String, // low | medium | high | critical
     pub quarantine: String,
     pub max_retries: Option<i64>,
     pub confidence_threshold: Option<f64>,
@@ -584,7 +584,7 @@ pub struct PsycheDefinition {
     pub manifold_momentum: Option<f64>,
     pub safety_constraints: Vec<String>,
     pub quantum_enabled: Option<bool>,
-    pub inference_mode: String,    // active | passive
+    pub inference_mode: String, // active | passive
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -600,7 +600,7 @@ pub struct PsycheDefinition {
 #[derive(Debug)]
 pub struct CorpusDefinition {
     pub name: String,
-    pub documents: Vec<String>,    // simplified: list of pix refs
+    pub documents: Vec<String>, // simplified: list of pix refs
     pub mcp_server: String,
     pub mcp_resource_uri: String,
     pub loc: Loc,
@@ -634,7 +634,7 @@ pub struct DataspaceDefinition {
 pub struct OtsDefinition {
     pub name: String,
     pub teleology: String,
-    pub homotopy_search: String,   // shallow | deep | speculative
+    pub homotopy_search: String, // shallow | deep | speculative
     pub loss_function: String,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
@@ -657,7 +657,7 @@ pub struct MandateDefinition {
     pub kd: Option<f64>,
     pub tolerance: Option<f64>,
     pub max_steps: Option<i64>,
-    pub on_violation: String,      // coerce | halt | retry
+    pub on_violation: String, // coerce | halt | retry
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -692,8 +692,8 @@ pub struct DaemonDefinition {
     pub goal: String,
     pub tools: Vec<String>,
     pub memory_ref: String,
-    pub strategy: String,          // react | reflexion | plan_and_execute | custom
-    pub on_stuck: String,          // hibernate | escalate | retry | forge
+    pub strategy: String, // react | reflexion | plan_and_execute | custom
+    pub on_stuck: String, // hibernate | escalate | retry | forge
     pub shield_ref: String,
     pub max_tokens: Option<i64>,
     pub max_time: String,
@@ -719,11 +719,11 @@ pub struct DaemonDefinition {
 #[derive(Debug)]
 pub struct AxonStoreDefinition {
     pub name: String,
-    pub backend: String,           // sqlite | postgresql | mysql
+    pub backend: String, // sqlite | postgresql | mysql
     pub connection: String,
     pub confidence_floor: Option<f64>,
-    pub isolation: String,         // read_committed | repeatable_read | serializable
-    pub on_breach: String,         // rollback | raise | log
+    pub isolation: String, // read_committed | repeatable_read | serializable
+    pub on_breach: String, // rollback | raise | log
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -739,7 +739,7 @@ pub struct AxonStoreDefinition {
 #[derive(Debug)]
 pub struct AxonEndpointDefinition {
     pub name: String,
-    pub method: String,            // GET | POST | PUT | DELETE
+    pub method: String, // GET | POST | PUT | DELETE
     pub path: String,
     pub body_type: String,
     pub execute_flow: String,
@@ -1145,12 +1145,12 @@ pub struct ReturnStatement {
 #[derive(Debug)]
 pub struct LambdaDataDefinition {
     pub name: String,
-    pub ontology: String,                  // T ∈ O — ontological type
-    pub certainty: f64,                    // c ∈ [0,1] — epistemic certainty scalar
-    pub temporal_frame_start: String,      // τ_start
-    pub temporal_frame_end: String,        // τ_end
-    pub provenance: String,                // ρ ∈ EntityRef — causal origin
-    pub derivation: String,                // δ ∈ Δ — see derivation catalogue (raw, derived, inferred, aggregated, transformed)
+    pub ontology: String,             // T ∈ O — ontological type
+    pub certainty: f64,               // c ∈ [0,1] — epistemic certainty scalar
+    pub temporal_frame_start: String, // τ_start
+    pub temporal_frame_end: String,   // τ_end
+    pub provenance: String,           // ρ ∈ EntityRef — causal origin
+    pub derivation: String, // δ ∈ Δ — see derivation catalogue (raw, derived, inferred, aggregated, transformed)
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -1164,74 +1164,177 @@ pub struct LambdaDataDefinition {
 /// In-flow ΛD application: binds epistemic state vector to a data target.
 #[derive(Debug)]
 pub struct LambdaDataApplyNode {
-    pub lambda_data_name: String,          // reference to LambdaDataDefinition
-    pub target: String,                    // expression to bind
-    pub output_type: String,              // result type after epistemic binding
+    pub lambda_data_name: String, // reference to LambdaDataDefinition
+    pub target: String,           // expression to bind
+    pub output_type: String,      // result type after epistemic binding
     pub loc: Loc,
 }
 
 // ── Tier 2 flow step nodes ──────────────────────────────────────────────────
 
 #[derive(Debug)]
-pub struct ProbeStep { pub target: String, pub loc: Loc }
+pub struct ProbeStep {
+    pub target: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct ReasonStep { pub strategy: String, pub target: String, pub loc: Loc }
+pub struct ReasonStep {
+    pub strategy: String,
+    pub target: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct ValidateStep { pub target: String, pub rule: String, pub loc: Loc }
+pub struct ValidateStep {
+    pub target: String,
+    pub rule: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct RefineStep { pub target: String, pub strategy: String, pub loc: Loc }
+pub struct RefineStep {
+    pub target: String,
+    pub strategy: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
 pub struct WeaveStep {
-    pub sources: Vec<String>, pub target: String, pub format_type: String,
-    pub priority: Vec<String>, pub style: String, pub loc: Loc,
+    pub sources: Vec<String>,
+    pub target: String,
+    pub format_type: String,
+    pub priority: Vec<String>,
+    pub style: String,
+    pub loc: Loc,
 }
 #[derive(Debug)]
-pub struct UseToolStep { pub tool_name: String, pub argument: String, pub loc: Loc }
+pub struct UseToolStep {
+    pub tool_name: String,
+    pub argument: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct RememberStep { pub expression: String, pub memory_target: String, pub loc: Loc }
+pub struct RememberStep {
+    pub expression: String,
+    pub memory_target: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct RecallStep { pub query: String, pub memory_source: String, pub loc: Loc }
+pub struct RecallStep {
+    pub query: String,
+    pub memory_source: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct ParBlock { pub loc: Loc }
+pub struct ParBlock {
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct HibernateStep { pub event_name: String, pub timeout: String, pub loc: Loc }
+pub struct HibernateStep {
+    pub event_name: String,
+    pub timeout: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct DeliberateBlock { pub loc: Loc }
+pub struct DeliberateBlock {
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct ConsensusBlock { pub loc: Loc }
+pub struct ConsensusBlock {
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct ForgeBlock { pub loc: Loc }
+pub struct ForgeBlock {
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct FocusStep { pub expression: String, pub loc: Loc }
+pub struct FocusStep {
+    pub expression: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct AssociateStep { pub left: String, pub right: String, pub using_field: String, pub loc: Loc }
+pub struct AssociateStep {
+    pub left: String,
+    pub right: String,
+    pub using_field: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct AggregateStep { pub target: String, pub group_by: Vec<String>, pub alias: String, pub loc: Loc }
+pub struct AggregateStep {
+    pub target: String,
+    pub group_by: Vec<String>,
+    pub alias: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct ExploreStepNode { pub target: String, pub limit: Option<i64>, pub loc: Loc }
+pub struct ExploreStepNode {
+    pub target: String,
+    pub limit: Option<i64>,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct IngestStep { pub source: String, pub target: String, pub loc: Loc }
+pub struct IngestStep {
+    pub source: String,
+    pub target: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct ShieldApplyStep { pub shield_name: String, pub target: String, pub output_type: String, pub loc: Loc }
+pub struct ShieldApplyStep {
+    pub shield_name: String,
+    pub target: String,
+    pub output_type: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct StreamBlock { pub loc: Loc }
+pub struct StreamBlock {
+    pub loc: Loc,
+}
 #[derive(Debug)]
 pub struct NavigateStep {
-    pub pix_name: String, pub corpus_name: String, pub query_expr: String,
-    pub trail_enabled: bool, pub output_name: String, pub loc: Loc,
+    pub pix_name: String,
+    pub corpus_name: String,
+    pub query_expr: String,
+    pub trail_enabled: bool,
+    pub output_name: String,
+    pub loc: Loc,
 }
 #[derive(Debug)]
-pub struct DrillStep { pub pix_name: String, pub subtree_path: String, pub query_expr: String, pub output_name: String, pub loc: Loc }
+pub struct DrillStep {
+    pub pix_name: String,
+    pub subtree_path: String,
+    pub query_expr: String,
+    pub output_name: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct TrailStep { pub navigate_ref: String, pub loc: Loc }
+pub struct TrailStep {
+    pub navigate_ref: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct CorroborateStep { pub navigate_ref: String, pub output_name: String, pub loc: Loc }
+pub struct CorroborateStep {
+    pub navigate_ref: String,
+    pub output_name: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct OtsApplyStep { pub ots_name: String, pub target: String, pub output_type: String, pub loc: Loc }
+pub struct OtsApplyStep {
+    pub ots_name: String,
+    pub target: String,
+    pub output_type: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct MandateApplyStep { pub mandate_name: String, pub target: String, pub output_type: String, pub loc: Loc }
+pub struct MandateApplyStep {
+    pub mandate_name: String,
+    pub target: String,
+    pub output_type: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct ComputeApplyStep { pub compute_name: String, pub arguments: Vec<String>, pub output_name: String, pub loc: Loc }
+pub struct ComputeApplyStep {
+    pub compute_name: String,
+    pub arguments: Vec<String>,
+    pub output_name: String,
+    pub loc: Loc,
+}
 /// §λ-L-E Fase 13 D4 — dual-mode listen.
 ///
 /// `channel_is_ref = true` ⇒ `channel` is the name of a declared
@@ -1245,17 +1348,38 @@ pub struct ListenStep {
     pub loc: Loc,
 }
 #[derive(Debug)]
-pub struct DaemonStepNode { pub daemon_ref: String, pub loc: Loc }
+pub struct DaemonStepNode {
+    pub daemon_ref: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct PersistStep { pub store_name: String, pub loc: Loc }
+pub struct PersistStep {
+    pub store_name: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct RetrieveStep { pub store_name: String, pub where_expr: String, pub alias: String, pub loc: Loc }
+pub struct RetrieveStep {
+    pub store_name: String,
+    pub where_expr: String,
+    pub alias: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct MutateStep { pub store_name: String, pub where_expr: String, pub loc: Loc }
+pub struct MutateStep {
+    pub store_name: String,
+    pub where_expr: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct PurgeStep { pub store_name: String, pub where_expr: String, pub loc: Loc }
+pub struct PurgeStep {
+    pub store_name: String,
+    pub where_expr: String,
+    pub loc: Loc,
+}
 #[derive(Debug)]
-pub struct TransactBlock { pub loc: Loc }
+pub struct TransactBlock {
+    pub loc: Loc,
+}
 
 // ── §λ-L-E Fase 13 — Mobile Typed Channels ──────────────────────────────────
 
@@ -1268,11 +1392,11 @@ pub struct TransactBlock { pub loc: Loc }
 #[derive(Debug)]
 pub struct ChannelDefinition {
     pub name: String,
-    pub message: String,        // type name OR "Channel<T>" for second-order
-    pub qos: String,            // at_most_once | at_least_once | exactly_once | broadcast | queue
-    pub lifetime: String,       // linear | affine | persistent (D1 default: affine)
-    pub persistence: String,    // ephemeral | persistent_axonstore
-    pub shield_ref: String,     // optional σ-shield gate for publish (D8)
+    pub message: String,     // type name OR "Channel<T>" for second-order
+    pub qos: String,         // at_most_once | at_least_once | exactly_once | broadcast | queue
+    pub lifetime: String,    // linear | affine | persistent (D1 default: affine)
+    pub persistence: String, // ephemeral | persistent_axonstore
+    pub shield_ref: String,  // optional σ-shield gate for publish (D8)
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

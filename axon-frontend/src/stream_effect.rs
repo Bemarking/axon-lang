@@ -73,12 +73,8 @@ impl fmt::Display for BackpressurePolicy {
 }
 
 /// Catalogue lookup for checker diagnostics.
-pub const BACKPRESSURE_CATALOG: &[&str] = &[
-    "drop_oldest",
-    "degrade_quality",
-    "pause_upstream",
-    "fail",
-];
+pub const BACKPRESSURE_CATALOG: &[&str] =
+    &["drop_oldest", "degrade_quality", "pause_upstream", "fail"];
 
 // ── Stream type constructor ──────────────────────────────────────────
 
@@ -105,9 +101,7 @@ pub struct BackpressureAnnotation {
 
 /// Parse a backpressure annotation body. Returns `None` if the policy
 /// slug is unknown so the checker emits a targeted diagnostic.
-pub fn parse_backpressure_annotation(
-    body: &str,
-) -> Option<BackpressureAnnotation> {
+pub fn parse_backpressure_annotation(body: &str) -> Option<BackpressureAnnotation> {
     let mut parts = body.split(',').map(|p| p.trim());
     let policy_slug = parts.next()?.trim();
     let policy = BackpressurePolicy::from_slug(policy_slug)?;
@@ -142,10 +136,7 @@ mod tests {
             assert_eq!(Some(*policy), BackpressurePolicy::from_slug(slug));
             assert!(BACKPRESSURE_CATALOG.contains(&slug));
         }
-        assert_eq!(
-            BackpressurePolicy::ALL.len(),
-            BACKPRESSURE_CATALOG.len()
-        );
+        assert_eq!(BackpressurePolicy::ALL.len(), BACKPRESSURE_CATALOG.len());
     }
 
     #[test]
@@ -170,10 +161,8 @@ mod tests {
 
     #[test]
     fn parse_annotation_with_options() {
-        let ann = parse_backpressure_annotation(
-            "degrade_quality, resample_to=8000, codec=mulaw",
-        )
-        .unwrap();
+        let ann = parse_backpressure_annotation("degrade_quality, resample_to=8000, codec=mulaw")
+            .unwrap();
         assert_eq!(ann.policy, BackpressurePolicy::DegradeQuality);
         assert_eq!(
             ann.options,

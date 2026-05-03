@@ -24,15 +24,15 @@
 //! (`../axon/`) on the golden-file test corpus. Divergences are
 //! release blockers.
 
-pub mod tokens;
-pub mod lexer;
 pub mod ast;
-pub mod parser;
-pub mod epistemic;
-pub mod type_checker;
-pub mod ir_nodes;
-pub mod ir_generator;
 pub mod checker;
+pub mod epistemic;
+pub mod ir_generator;
+pub mod ir_nodes;
+pub mod lexer;
+pub mod parser;
+pub mod tokens;
+pub mod type_checker;
 
 // §Fase 11.a — compile-time catalogs used by the type checker.
 // `refinement` declares the closed Trust<T> catalog; `stream_effect`

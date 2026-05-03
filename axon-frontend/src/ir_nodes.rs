@@ -608,12 +608,12 @@ pub struct IRLambdaData {
     pub source_line: u32,
     pub source_column: u32,
     pub name: String,
-    pub ontology: String,                  // T — ontological type
-    pub certainty: f64,                    // c ∈ [0,1]
-    pub temporal_frame_start: String,      // τ_start
-    pub temporal_frame_end: String,        // τ_end
-    pub provenance: String,               // ρ — EntityRef origin
-    pub derivation: String,               // δ ∈ Δ
+    pub ontology: String,             // T — ontological type
+    pub certainty: f64,               // c ∈ [0,1]
+    pub temporal_frame_start: String, // τ_start
+    pub temporal_frame_end: String,   // τ_end
+    pub provenance: String,           // ρ — EntityRef origin
+    pub derivation: String,           // δ ∈ Δ
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -621,9 +621,9 @@ pub struct IRLambdaDataApply {
     pub node_type: &'static str,
     pub source_line: u32,
     pub source_column: u32,
-    pub lambda_data_name: String,          // reference to declared ΛD
-    pub target: String,                    // expression being bound
-    pub output_type: String,              // result type after binding
+    pub lambda_data_name: String, // reference to declared ΛD
+    pub target: String,           // expression being bound
+    pub output_type: String,      // result type after binding
 }
 
 // ── Flow step IR nodes ──────────────────────────────────────────────────────
@@ -1221,7 +1221,7 @@ pub struct IRChannel {
     pub source_line: u32,
     pub source_column: u32,
     pub name: String,
-    pub message: String,        // surface spelling — Order | Channel<Order> | …
+    pub message: String, // surface spelling — Order | Channel<Order> | …
     pub qos: String,
     pub lifetime: String,
     pub persistence: String,
