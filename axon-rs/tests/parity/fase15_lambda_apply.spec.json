@@ -1,0 +1,9 @@
+{
+  "name": "TempReading",
+  "ontology": "measurement.temperature.celsius",
+  "certainty": 0.87,
+  "temporal_frame_start": "2026-05-03T14:00:00Z",
+  "temporal_frame_end": "2026-05-03T15:00:00Z",
+  "provenance": "HVAC_Sensor_Unit_3",
+  "derivation": "aggregated"
+}
