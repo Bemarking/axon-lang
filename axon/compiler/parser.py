@@ -1271,29 +1271,41 @@ class Parser:
 
         Produces an EffectRowNode with a list of effect names and
         an optional epistemic level annotation.
+
+        Fase 11.c / 11.e — qualifiers may be compound slugs from a
+        closed catalogue. The parser supports:
+
+          * dot-separated  — ``legal:HIPAA.164_502``,
+                              ``legal:GDPR.Art6.Consent``,
+                              ``legal:PCI_DSS.v4_Req3``
+          * colon-separated — ``ots:transform:mulaw8:pcm16``,
+                              ``ots:backend:native``
+          * mixed           — supported by the same loop.
+
+        The lexer fragments dotted slugs across IDENT / INTEGER tokens
+        (e.g., ``164_502`` lexes as INTEGER ``164`` + IDENT ``_502``
+        because ``_`` starts a fresh identifier); we recombine here
+        using source-column adjacency so the type checker sees the
+        catalog string verbatim.
         """
         tok = self._consume(TokenType.LT)
         effects: list[str] = []
         epistemic_level: str = ""
 
         while not self._check(TokenType.GT):
-            # Each entry is either a plain identifier or epistemic:level
             name_tok = self._consume_any_identifier_or_keyword()
             name = name_tok.value
 
             if self._check(TokenType.COLON):
-                # epistemic:level syntax
                 self._advance()  # consume ':'
-                level_tok = self._consume_any_identifier_or_keyword()
+                level = self._parse_qualifier_value()
                 if name == "epistemic":
-                    epistemic_level = level_tok.value
+                    epistemic_level = level
                 else:
-                    # Treat as composite effect name: name:qualifier
-                    effects.append(f"{name}:{level_tok.value}")
+                    effects.append(f"{name}:{level}")
             else:
                 effects.append(name)
 
-            # Consume comma separator if present
             if self._check(TokenType.COMMA):
                 self._advance()
 
@@ -1305,6 +1317,57 @@ class Parser:
             line=tok.line,
             column=tok.column,
         )
+
+    def _parse_qualifier_value(self) -> str:
+        """Parse a compound qualifier following an effect's first colon.
+
+        Grammar: ``segment ((`.` | `:`) segment)*`` where a segment is a
+        contiguous run of IDENT / INTEGER tokens (see
+        :meth:`_consume_dotted_slug_segment`). Used by
+        :meth:`_parse_effect_row` to handle catalogue slugs whose form
+        the single-token consumer in earlier versions could not parse.
+        """
+        buf = self._consume_dotted_slug_segment()
+        while True:
+            if self._check(TokenType.DOT):
+                sep = "."
+            elif self._check(TokenType.COLON):
+                sep = ":"
+            else:
+                break
+            self._advance()
+            part = self._consume_dotted_slug_segment()
+            buf = f"{buf}{sep}{part}"
+        return buf
+
+    def _consume_dotted_slug_segment(self) -> str:
+        """Consume a contiguous run of IDENT / INTEGER tokens whose
+        source positions are adjacent (no whitespace between them),
+        concatenating their text into a single segment.
+
+        Needed for closed-catalogue qualifier slugs whose segment
+        mixes digits and identifier characters — e.g. ``HIPAA.164_502``
+        lexes as INTEGER ``164`` + IDENT ``_502`` because ``_`` starts
+        a fresh identifier; the catalog value is the concatenation
+        ``164_502``. Adjacency is determined by matching
+        ``(line, column + len)`` of the previous token against the
+        next token's start position.
+        """
+        first = self._consume_any_identifier_or_keyword()
+        buf = first.value
+        next_line = first.line
+        next_col = first.column + len(first.value)
+        while True:
+            cur = self._current()
+            if cur.type not in (TokenType.IDENTIFIER, TokenType.INTEGER):
+                break
+            if cur.line != next_line or cur.column != next_col:
+                break
+            buf += cur.value
+            next_col = cur.column + len(cur.value)
+            next_line = cur.line
+            self._advance()
+        return buf
 
     # ── STREAM DEFINITION (CT-1) ──────────────────────────────────
 

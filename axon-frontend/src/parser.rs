@@ -911,7 +911,23 @@ impl Parser {
             let name = self.consume_any_ident_or_kw()?.value;
             if self.check(TokenType::Colon) {
                 self.advance();
-                let level = self.consume_any_ident_or_kw()?.value;
+                // Fase 11.c / 11.e — qualifiers can be compound slugs
+                // from a closed catalogue:
+                //
+                //   * dot-separated  — `legal:HIPAA.164_502`,
+                //                       `legal:GDPR.Art6.Consent`,
+                //                       `legal:PCI_DSS.v4_Req3`
+                //   * colon-separated — `ots:transform:mulaw8:pcm16`,
+                //                       `ots:backend:native`
+                //   * mixed           — supported by the same loop.
+                //
+                // The lexer fragments dotted slugs across IDENT /
+                // INTEGER tokens (e.g., `164_502` lexes as INTEGER
+                // `164` + IDENT `_502` because `_` starts a fresh
+                // identifier); we recombine here using source-column
+                // adjacency so the type checker sees the catalog
+                // string verbatim.
+                let level = self.parse_qualifier_value()?;
                 if name == "epistemic" {
                     epistemic_level = level;
                 } else {
@@ -931,6 +947,68 @@ impl Parser {
             epistemic_level,
             loc,
         })
+    }
+
+    /// Parse a compound qualifier value following an effect's first
+    /// colon — supports both dot-separated (`HIPAA.164_502`) and
+    /// colon-separated (`transform:mulaw8:pcm16`) catalogue slugs, as
+    /// well as mixed forms.
+    ///
+    /// The grammar is: `segment ((`.` | `:`) segment)*` where a
+    /// segment is a contiguous run of IDENT / INTEGER tokens (see
+    /// [`Self::consume_dotted_slug_segment`]).
+    fn parse_qualifier_value(&mut self) -> Result<String, ParseError> {
+        let mut buf = self.consume_dotted_slug_segment()?;
+        loop {
+            let sep = if self.check(TokenType::Dot) {
+                '.'
+            } else if self.check(TokenType::Colon) {
+                ':'
+            } else {
+                break;
+            };
+            self.advance();
+            let part = self.consume_dotted_slug_segment()?;
+            buf.push(sep);
+            buf.push_str(&part);
+        }
+        Ok(buf)
+    }
+
+    /// Consume a contiguous run of IDENT / INTEGER / keyword-ident
+    /// tokens whose source positions are adjacent (no whitespace
+    /// between them), concatenating their text into a single segment.
+    ///
+    /// Needed for closed-catalogue qualifier slugs whose segment
+    /// mixes digits and identifier characters — e.g. `HIPAA.164_502`
+    /// lexes as INTEGER `164` + IDENT `_502` because `_` starts a
+    /// fresh identifier; the catalog value is the concatenation
+    /// `164_502`. Adjacency is determined by matching
+    /// `(line, column + len)` of the previous token against the next
+    /// token's start position.
+    fn consume_dotted_slug_segment(&mut self) -> Result<String, ParseError> {
+        let first = self.consume_any_ident_or_kw()?;
+        let mut buf = first.value.clone();
+        let mut next_line = first.line;
+        let mut next_col = first.column + first.value.chars().count() as u32;
+        loop {
+            let cur = self.current();
+            let is_segment_token = matches!(
+                cur.ttype,
+                TokenType::Identifier | TokenType::Integer,
+            );
+            if !is_segment_token {
+                break;
+            }
+            if cur.line != next_line || cur.column != next_col {
+                break;
+            }
+            buf.push_str(&cur.value);
+            next_col = cur.column + cur.value.chars().count() as u32;
+            next_line = cur.line;
+            self.pos += 1;
+        }
+        Ok(buf)
     }
 
     // ── TYPE ─────────────────────────────────────────────────────
