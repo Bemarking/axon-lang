@@ -4913,7 +4913,7 @@ honesty:
 | 17    | Memory-Augmented MDN (structural learning via μ)  | ✅ Done |
 | 18    | Ontological Tool Synthesis (`ots` primitive)      | ✅ Done |
 | 19    | Epistemic MCP (`mcp` + `taint` primitives)        | ✅ Done |
-| 20    | Lambda Data (`lambda` — ΛD epistemic state vectors)| ✅ Done |
+| 20    | Lambda Data (`lambda` — ΛD epistemic state vectors) — *runtime `lambda apply` dispatch deferred to Fase 15 ([docs/fase_15_lambda_apply_runtime.md](docs/fase_15_lambda_apply_runtime.md))* | ✅ Compiler |
 | 21    | Deterministic Muscle (`compute` + `logic`)        | ✅ Done |
 | 22    | Reactive Daemons (`daemon` + `listen` π-calculus) | ✅ Done |
 | 23    | AxonServer Process (HTTP/WS API + EventBus FFI)   | ✅ Done |
