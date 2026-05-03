@@ -661,3 +661,49 @@ flow Process() {
             or "undefined lambda data spec" in e.message
         ]
         assert relevant == [], [e.message for e in errors]
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  CROSS-STACK PARITY (Fase 15.e — both stacks vs the same golden)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestCrossStackParity:
+    """Both Python and Rust `build_psi` consume the same input fixture
+    and must produce the same ψ JSON. The Rust mirror lives in
+    `axon-rs/tests/fase15_lambda_apply_parity.rs` and reads the same
+    files — drift on either side breaks both gates.
+    """
+
+    _PARITY_DIR = "axon-rs/tests/parity"
+
+    def _read_json(self, filename: str):
+        from pathlib import Path
+        path = Path(self._PARITY_DIR) / filename
+        with path.open(encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_python_psi_matches_golden(self):
+        spec = self._read_json("fase15_lambda_apply.spec.json")
+        target = self._read_json("fase15_lambda_apply.target.json")
+        golden = self._read_json("fase15_lambda_apply.golden.json")
+
+        psi = build_psi(spec_snapshot=spec, target_value=target)
+        psi_dict = psi.to_dict()
+
+        # JSON normalisation — read+write through json so float reprs
+        # and key ordering are canonical on both sides.
+        psi_canon = json.loads(json.dumps(psi_dict))
+        assert psi_canon == golden, (
+            f"Fase 15 ψ parity broke (Python):\n"
+            f"--- expected (golden) ---\n{json.dumps(golden, indent=2)}\n"
+            f"--- actual (python) ---\n{json.dumps(psi_canon, indent=2)}"
+        )
+
+    def test_psi_json_keys_use_formal_vocab(self):
+        """Sanity check that the golden uses the formalism's keys
+        (T, V, E, spec_name) rather than the handler-internal vocab."""
+        golden = self._read_json("fase15_lambda_apply.golden.json")
+        assert set(golden.keys()) == {"T", "V", "E", "spec_name"}
+        assert set(golden["E"].keys()) == {"c", "tau_start", "tau_end", "rho", "delta"}
+

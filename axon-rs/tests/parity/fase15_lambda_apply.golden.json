@@ -1,0 +1,15 @@
+{
+  "T": "measurement.temperature.celsius",
+  "V": {
+    "reading_celsius": 23.5,
+    "sensor_id": "Alpha-7"
+  },
+  "E": {
+    "c": 0.87,
+    "tau_start": "2026-05-03T14:00:00Z",
+    "tau_end": "2026-05-03T15:00:00Z",
+    "rho": "HVAC_Sensor_Unit_3",
+    "delta": "aggregated"
+  },
+  "spec_name": "TempReading"
+}
