@@ -284,6 +284,18 @@ class TokenType(Enum):
     DOC_LINE_COMMENT = auto()   # ///  doc line comment
     DOC_BLOCK_COMMENT = auto()  # /** */ doc block comment
 
+    # ── INNER DOC COMMENTS (Fase 14.c — module/file-level docs) ──
+    # Following the Rust convention: inner doc comments document the
+    # *enclosing* item (parent module or file) rather than the next
+    # sibling. They typically appear at the top of a module/file or
+    # immediately after the opening `{` of a block.
+    #
+    # Heuristic (mirrors lexer):
+    #   //!  inner doc line comment   — exactly two slashes + bang
+    #   /*!  inner doc block comment  — slash-star-bang
+    INNER_DOC_LINE_COMMENT = auto()   # //!  inner doc line comment
+    INNER_DOC_BLOCK_COMMENT = auto()  # /*! */ inner doc block comment
+
 
 # ── KEYWORD LOOKUP TABLE ──────────────────────────────────────────
 # Maps raw text → TokenType for keyword discrimination

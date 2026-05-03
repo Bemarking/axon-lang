@@ -18,6 +18,39 @@ use crate::ast::{
     EmitStatement, EpistemicBlock, FlowDefinition, FlowStep, ForInStatement,
     ListenStep, Loc, Program, PublishStatement,
 };
+use crate::tokens::Trivia;
+
+/// Extract outer doc-comment lines (`///` and `/** */`) from a slice of
+/// leading trivia, returning each line of body text trimmed.
+///
+/// Inner doc comments (`//!`, `/*! */`) document the enclosing module
+/// rather than the declaration they precede, so they are intentionally
+/// excluded — see Fase 14.f hover contract on `channel_hover_markdown`.
+fn doc_comment_lines(trivia: &[Trivia]) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for t in trivia {
+        if !t.is_doc() || t.is_inner_doc() {
+            continue;
+        }
+        for raw in t.stripped_text().lines() {
+            // Strip the optional leading space conventionally written
+            // after `///` / `/**` (e.g. "/// Hello" yields " Hello").
+            let trimmed = raw.strip_prefix(' ').unwrap_or(raw);
+            // Drop block-style line-leading `*` decoration if present.
+            let trimmed = trimmed.strip_prefix("* ").unwrap_or(trimmed);
+            lines.push(trimmed.trim_end().to_string());
+        }
+    }
+    // Drop any leading/trailing blank lines so the rendered hover does
+    // not start or end with a blank paragraph.
+    while lines.first().is_some_and(|l| l.is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines
+}
 
 // ─────────────────────────────────────────────────────────────────────
 //  Reference kinds — what the LSP must distinguish for find-references.
@@ -193,12 +226,31 @@ fn visit_flow_step(step: &FlowStep, target: &str, refs: &mut Vec<ChannelReferenc
 /// Render a channel's metadata as Markdown, suitable as `MarkupContent`
 /// in an LSP `Hover` response.
 ///
-/// The output is intentionally compact (signature line + brief
-/// description) so editors with limited hover real-estate render it
-/// well.  Editors can extend with additional sections (references
-/// count, paper links) outside this function.
+/// Output sections, in order:
+///   1. **Doc comment** (Fase 14.f) — outer doc trivia (`///` /
+///      `/** */`) attached to the channel declaration is rendered as
+///      the leading paragraph. Inner doc comments (`//!` / `/*! */`)
+///      document the enclosing module rather than this declaration
+///      and are deliberately omitted from per-channel hover.
+///   2. **Signature block** — fenced `axon` code listing the channel's
+///      message type, QoS, lifetime, persistence, and shield.
+///   3. **Friendly notes** — second-order channel detection, shield
+///      gate explanation. Kept in one place so wording is consistent
+///      across IDEs.
+///
+/// The output is intentionally compact so editors with limited hover
+/// real-estate render it well. Editors can extend with additional
+/// sections (references count, paper links) outside this function.
 pub fn channel_hover_markdown(channel: &ChannelDefinition) -> String {
     let mut buf = String::new();
+
+    // ── §1 Doc comment paragraph (Fase 14.f) ──
+    let doc_lines = doc_comment_lines(&channel.leading_trivia);
+    if !doc_lines.is_empty() {
+        buf.push_str(&doc_lines.join("\n"));
+        buf.push_str("\n\n");
+    }
+
     buf.push_str("```axon\n");
     buf.push_str(&format!("channel {} {{\n", channel.name));
     buf.push_str(&format!("  message: {}\n", channel.message));
@@ -576,6 +628,77 @@ mod tests {
         assert_eq!(dups.len(), 1);
         assert_eq!(dups[0].0, "C");
         assert_eq!(dups[0].1.len(), 2);
+    }
+
+    // ── §Fase 14.f — hover enrichment with doc comments ─────────────
+
+    #[test]
+    fn hover_prepends_outer_doc_line_comment() {
+        let p = parse("/// Inbound order events from the broker.\nchannel C { message: Order shield: Gate }");
+        let c = find_channel_definition(&p, "C").unwrap();
+        let md = channel_hover_markdown(c);
+        // Doc paragraph appears before the signature block.
+        let doc_pos = md.find("Inbound order events").expect("doc text missing");
+        let sig_pos = md.find("```axon").expect("signature missing");
+        assert!(doc_pos < sig_pos, "doc must come before signature: {md}");
+    }
+
+    #[test]
+    fn hover_renders_multiple_outer_doc_lines_as_paragraph() {
+        let src = "/// Line one.\n/// Line two.\nchannel C { message: T shield: Gate }";
+        let p = parse(src);
+        let c = find_channel_definition(&p, "C").unwrap();
+        let md = channel_hover_markdown(c);
+        assert!(md.contains("Line one."));
+        assert!(md.contains("Line two."));
+    }
+
+    #[test]
+    fn hover_renders_outer_doc_block_comment() {
+        let src = "/** Block-form docs for C. */\nchannel C { message: T shield: Gate }";
+        let p = parse(src);
+        let c = find_channel_definition(&p, "C").unwrap();
+        let md = channel_hover_markdown(c);
+        assert!(md.contains("Block-form docs for C."));
+    }
+
+    #[test]
+    fn hover_omits_inner_doc_comment() {
+        // Inner doc comments document the enclosing module, not the
+        // declaration that follows. They must NOT appear in per-channel
+        // hover.
+        let src = "//! file-level docs that should not leak\nchannel C { message: T shield: Gate }";
+        let p = parse(src);
+        let c = find_channel_definition(&p, "C").unwrap();
+        let md = channel_hover_markdown(c);
+        assert!(
+            !md.contains("file-level docs that should not leak"),
+            "inner doc must not appear in channel hover: {md}",
+        );
+    }
+
+    #[test]
+    fn hover_omits_regular_line_comment() {
+        // Regular `//` comments are not documentation. They must not be
+        // surfaced as the channel's doc paragraph.
+        let src = "// internal note that should not surface\nchannel C { message: T shield: Gate }";
+        let p = parse(src);
+        let c = find_channel_definition(&p, "C").unwrap();
+        let md = channel_hover_markdown(c);
+        assert!(
+            !md.contains("internal note that should not surface"),
+            "regular comment leaked into hover: {md}",
+        );
+    }
+
+    #[test]
+    fn hover_with_no_doc_comment_unchanged() {
+        // Backward-compat: when no doc trivia is present the hover
+        // output starts with the signature block exactly like pre-14.f.
+        let p = parse("channel C { message: Order shield: Gate }");
+        let c = find_channel_definition(&p, "C").unwrap();
+        let md = channel_hover_markdown(c);
+        assert!(md.starts_with("```axon\n"));
     }
 
     #[test]

@@ -8,7 +8,7 @@ from axon.compiler import bootstrap_frontend
 
 
 FRONTEND_COMMANDS = frozenset(
-    {"check", "compile", "run", "dossier", "sbom", "audit", "evidence-package"}
+    {"check", "compile", "run", "fmt", "dossier", "sbom", "audit", "evidence-package"}
 )
 MVP_FRONTEND_COMMANDS = frozenset({"check", "compile"})
 

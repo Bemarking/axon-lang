@@ -20,6 +20,7 @@ from axon.cli.frontend_runtime import FRONTEND_COMMANDS, initialize_frontend_run
 
 _SOURCE_FILE_HELP = "Path to .axon source file"
 _BACKEND_HELP = "Target backend (default: anthropic)"
+_NO_COLOR_HELP = "Disable colored output"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -45,7 +46,7 @@ def _build_parser() -> argparse.ArgumentParser:
     check.add_argument(
         "--no-color",
         action="store_true",
-        help="Disable colored output",
+        help=_NO_COLOR_HELP,
     )
     check.add_argument(
         "--strict",
@@ -116,7 +117,32 @@ def _build_parser() -> argparse.ArgumentParser:
     trace.add_argument(
         "--no-color",
         action="store_true",
-        help="Disable colored output",
+        help=_NO_COLOR_HELP,
+    )
+
+    # ── axon fmt ──────────────────────────────────────────────
+    # Fase 14.d MVP — round-trip formatter built on the trivia
+    # channel. Default writes to stdout; --check is the CI gate;
+    # --write rewrites the file in place.
+    fmt = sub.add_parser(
+        "fmt",
+        help="Format an .axon file (round-trip preserving comments).",
+    )
+    fmt.add_argument("file", help=_SOURCE_FILE_HELP)
+    fmt.add_argument(
+        "--check",
+        action="store_true",
+        help="Exit non-zero if the file is not already formatted (CI gate).",
+    )
+    fmt.add_argument(
+        "--write",
+        action="store_true",
+        help="Write the formatted output back to the file in place.",
+    )
+    fmt.add_argument(
+        "--no-color",
+        action="store_true",
+        help=_NO_COLOR_HELP,
     )
 
     # ── axon version ──────────────────────────────────────────
@@ -273,6 +299,35 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Lazy-import dispatch table: each entry is the dotted path
+# (`module:function`) of the handler. Lazy imports keep CLI startup fast.
+_DISPATCH: dict[str, str] = {
+    "check": "axon.cli.check_cmd:cmd_check",
+    "compile": "axon.cli.compile_cmd:cmd_compile",
+    "run": "axon.cli.run_cmd:cmd_run",
+    "trace": "axon.cli.trace_cmd:cmd_trace",
+    "fmt": "axon.cli.fmt_cmd:cmd_fmt",
+    "version": "axon.cli.version_cmd:cmd_version",
+    "repl": "axon.cli.repl_cmd:cmd_repl",
+    "inspect": "axon.cli.inspect_cmd:cmd_inspect",
+    "serve": "axon.cli.serve_cmd:cmd_serve",
+    "deploy": "axon.cli.deploy_cmd:cmd_deploy",
+    "dossier": "axon.cli.dossier_cmd:cmd_dossier",
+    "sbom": "axon.cli.sbom_cmd:cmd_sbom",
+    "audit": "axon.cli.audit_cmd:cmd_audit",
+    "evidence-package": "axon.cli.evidence_package_cmd:cmd_evidence_package",
+}
+
+
+def _resolve_handler(target: str):
+    """Lazy-import ``module:function`` and return the callable."""
+    import importlib
+
+    module_name, func_name = target.split(":", 1)
+    module = importlib.import_module(module_name)
+    return getattr(module, func_name)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``axon`` CLI."""
     parser = _build_parser()
@@ -286,74 +341,10 @@ def main(argv: list[str] | None = None) -> int:
     if init_exit is not None:
         return init_exit
 
-    # Dispatch to subcommand handlers.
-    # Lazy imports keep startup fast.
-    if args.command == "check":
-        from axon.cli.check_cmd import cmd_check
-
-        return cmd_check(args)
-
-    if args.command == "compile":
-        from axon.cli.compile_cmd import cmd_compile
-
-        return cmd_compile(args)
-
-    if args.command == "run":
-        from axon.cli.run_cmd import cmd_run
-
-        return cmd_run(args)
-
-    if args.command == "trace":
-        from axon.cli.trace_cmd import cmd_trace
-
-        return cmd_trace(args)
-
-    if args.command == "version":
-        from axon.cli.version_cmd import cmd_version
-
-        return cmd_version(args)
-
-    if args.command == "repl":
-        from axon.cli.repl_cmd import cmd_repl
-
-        return cmd_repl(args)
-
-    if args.command == "inspect":
-        from axon.cli.inspect_cmd import cmd_inspect
-
-        return cmd_inspect(args)
-
-    if args.command == "serve":
-        from axon.cli.serve_cmd import cmd_serve
-
-        return cmd_serve(args)
-
-    if args.command == "deploy":
-        from axon.cli.deploy_cmd import cmd_deploy
-
-        return cmd_deploy(args)
-
-    if args.command == "dossier":
-        from axon.cli.dossier_cmd import cmd_dossier
-
-        return cmd_dossier(args)
-
-    if args.command == "sbom":
-        from axon.cli.sbom_cmd import cmd_sbom
-
-        return cmd_sbom(args)
-
-    if args.command == "audit":
-        from axon.cli.audit_cmd import cmd_audit
-
-        return cmd_audit(args)
-
-    if args.command == "evidence-package":
-        from axon.cli.evidence_package_cmd import cmd_evidence_package
-
-        return cmd_evidence_package(args)
-
-    parser.print_help()
-    return 1
+    target = _DISPATCH.get(args.command)
+    if target is None:
+        parser.print_help()
+        return 1
+    return _resolve_handler(target)(args)
 if __name__ == "__main__":
     sys.exit(main())

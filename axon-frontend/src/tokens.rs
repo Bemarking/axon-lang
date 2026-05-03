@@ -95,14 +95,18 @@ pub enum TokenType {
     //
     // Doc-comment heuristic (mirrors the Python lexer):
     //   //   regular line comment
-    //   ///  doc line comment  (outer doc — documents the next item)
+    //   ///  outer doc line comment   (documents the next item)
+    //   //!  inner doc line comment   (documents the enclosing item — Fase 14.c)
     //   /*   regular block comment
-    //   /**  doc block comment (outer doc — documents the next item)
+    //   /**  outer doc block comment  (documents the next item)
+    //   /*!  inner doc block comment  (documents the enclosing item — Fase 14.c)
     // ////` (4+ slashes) and `/**/` (empty block) stay regular.
-    LineComment,        // //  regular line comment
-    BlockComment,       // /* */ regular block comment
-    DocLineComment,     // ///  doc line comment
-    DocBlockComment,    // /** */ doc block comment
+    LineComment,            // //  regular line comment
+    BlockComment,           // /* */ regular block comment
+    DocLineComment,         // ///  outer doc line comment
+    DocBlockComment,        // /** */ outer doc block comment
+    InnerDocLineComment,    // //!  inner doc line comment (Fase 14.c)
+    InnerDocBlockComment,   // /*! */ inner doc block comment (Fase 14.c)
 }
 
 /// Comment trivia attached to AST nodes (Fase 14.a).
@@ -125,13 +129,34 @@ pub enum TriviaKind {
     Block,
     DocLine,
     DocBlock,
+    /// Inner doc line comment `//!` — documents the *enclosing* module
+    /// or file rather than the next sibling. Fase 14.c.
+    InnerDocLine,
+    /// Inner doc block comment `/*! … */` — same convention as
+    /// `InnerDocLine`. Fase 14.c.
+    InnerDocBlock,
 }
 
 impl Trivia {
-    /// `true` iff this trivia documents the adjacent definition
-    /// (`///` or `/** */` styles).
+    /// `true` iff this trivia is any kind of doc comment — outer
+    /// (`///`, `/** */`) or inner (`//!`, `/*! */`).
     pub fn is_doc(&self) -> bool {
-        matches!(self.kind, TriviaKind::DocLine | TriviaKind::DocBlock)
+        matches!(
+            self.kind,
+            TriviaKind::DocLine
+                | TriviaKind::DocBlock
+                | TriviaKind::InnerDocLine
+                | TriviaKind::InnerDocBlock,
+        )
+    }
+
+    /// `true` iff this trivia is an *inner* doc comment (`//!` or
+    /// `/*! … */`). Inner doc comments document the enclosing item.
+    pub fn is_inner_doc(&self) -> bool {
+        matches!(
+            self.kind,
+            TriviaKind::InnerDocLine | TriviaKind::InnerDocBlock,
+        )
     }
 
     /// Body of the comment with marker prefixes/suffixes removed.
@@ -139,9 +164,14 @@ impl Trivia {
     pub fn stripped_text(&self) -> &str {
         match self.kind {
             TriviaKind::DocLine => self.text.strip_prefix("///").unwrap_or(&self.text),
+            TriviaKind::InnerDocLine => self.text.strip_prefix("//!").unwrap_or(&self.text),
             TriviaKind::Line => self.text.strip_prefix("//").unwrap_or(&self.text),
             TriviaKind::DocBlock => {
                 let s = self.text.strip_prefix("/**").unwrap_or(&self.text);
+                s.strip_suffix("*/").unwrap_or(s)
+            }
+            TriviaKind::InnerDocBlock => {
+                let s = self.text.strip_prefix("/*!").unwrap_or(&self.text);
                 s.strip_suffix("*/").unwrap_or(s)
             }
             TriviaKind::Block => {

@@ -1,10 +1,10 @@
 ---
 title: "Plan vivo: Fase 14 — Lossless lexing + trivia channel"
-status: SHIPPED — sub-fase 14.a completada 2026-05-02 (release v1.8.0)
+status: SHIPPED — sub-fases 14.a (v1.8.0) + 14.b/14.c/14.d/14.f (v1.9.0) completadas 2026-04-27
 owner: AXON Language Team
 created: 2026-05-02
-updated: 2026-05-02
-target: axon-lang v1.8.0 (PyPI + crates.io)
+updated: 2026-04-27
+target: axon-lang v1.9.0 (PyPI + crates.io)
 depends_on: Fase 13 (typed channels) DONE
 ---
 
@@ -112,15 +112,76 @@ Doc-comment heuristic (identical Python ↔ Rust): a `//` line is doc iff it sta
 
 ---
 
-## 5. Possible future sub-phases (not in 14.a)
+### 14.b — Spread trivia into Rust AST structs `[DONE]` ✓
+
+Shipped as part of `axon-lang v1.9.0` on 2026-04-27.
+
+In 14.a the Rust side carried trivia as a parallel `Program.declaration_trivia` array — a side-channel that kept the existing 41 Declaration variant structs untouched. 14.b pours that data into the structs themselves:
+
+- **`axon-frontend/src/ast.rs`**: every Declaration variant struct (`FlowDefinition`, `ChannelDefinition`, `PersonaDefinition`, `DaemonDefinition`, … 41 in total) gains `pub leading_trivia: Vec<Trivia>` and `pub trailing_trivia: Vec<Trivia>` fields with empty defaults.
+- **`axon-frontend/src/parser.rs`**: a new `attach_trivia_to_decl(&mut decl, leading, trailing)` helper writes the trivia into the per-struct fields in lockstep with `Program.declaration_trivia`. Both the side-channel and the per-struct fields hold identical data so callers can use whichever access path they prefer.
+- **Tests**: 5 new in `parser::fase14b_per_struct_trivia_tests` covering doc-line on flows, trailing comments on flows, doc-line on channels, side-channel ↔ per-struct equivalence, and the comment-free baseline.
+
+This is the Rust mirror of Python's 14.a shape (where every `ASTNode` already carried `leading_trivia` / `trailing_trivia`), so adopters consuming the AST in either language now see the same surface.
+
+### 14.c — Inner doc comments (`//!`, `/*!`) `[DONE]` ✓
+
+Shipped as part of `axon-lang v1.9.0` on 2026-04-27.
+
+Adds the Rust-style inner-doc convention to the lossless lexing channel:
+
+| Marker | Kind | Documents | Token (Python / Rust) |
+|---|---|---|---|
+| `//` | regular line | nothing | `LINE_COMMENT` / `LineComment` |
+| `///` | outer doc line (14.a) | next item | `DOC_LINE_COMMENT` / `DocLineComment` |
+| `//!` | inner doc line (**14.c**) | enclosing module/file | `INNER_DOC_LINE_COMMENT` / `InnerDocLineComment` |
+| `/* */` | regular block | nothing | `BLOCK_COMMENT` / `BlockComment` |
+| `/** */` | outer doc block (14.a) | next item | `DOC_BLOCK_COMMENT` / `DocBlockComment` |
+| `/*! */` | inner doc block (**14.c**) | enclosing module/file | `INNER_DOC_BLOCK_COMMENT` / `InnerDocBlockComment` |
+
+- **Python `tokens.py` + `lexer.py`**: two new `TokenType` variants and the `_consume_line_comment` / `_consume_block_comment` heuristic extended to recognise `!` after `//` and `/*` respectively. The parser's `_COMMENT_TOKEN_KINDS` set and `_TRIVIA_KIND_BY_TOKEN` map gain the two new entries so trivia flows through unchanged.
+- **Python `ast_nodes.py`**: `Trivia.is_inner_doc` property + `is_doc` property extended to include inner kinds. `stripped_text()` strips `//!` / `/*! … */` markers like the outer counterparts.
+- **Rust `tokens.rs`**: two new `TokenType` variants + two new `TriviaKind` enum variants + `Trivia::is_inner_doc()` method. Same heuristic, identical to Python.
+- **Tests**: 15 Python in `tests/test_fase_14c_inner_doc_comments.py` (lexer, helpers, parser end-to-end); 8 Rust (4 lexer, 4 parser).
+
+Inner doc comments ride through the same `leading_trivia` / `trailing_trivia` arrays as outer doc comments — downstream consumers (axon doc, LSP) decide how to interpret `is_inner_doc()`. 14.f below is the first such consumer.
+
+### 14.d — `axon fmt` MVP `[DONE]` ✓
+
+Shipped as part of `axon-lang v1.9.0` on 2026-04-27.
+
+A token-level formatter that consumes the lossless lexing channel to round-trip AXON source byte-identically (modulo two cosmetic normalisations) and a CLI subcommand wired to drive it:
+
+- **`axon/compiler/formatter.py`**: `format_source(src: str) -> str` walks every token in source order (effective + comment), re-emitting each at its original `(line, column)` position. The output is canonicalised so each line has no trailing whitespace and the file ends with exactly one `\n`. Idempotent — `format_source(format_source(x)) == format_source(x)` for every input.
+- **`axon/cli/fmt_cmd.py`**: `axon fmt <file>` writes formatted output to stdout; `--check` exits 1 if the file would be reformatted (CI gate, source untouched); `--write` rewrites in place.
+- **`axon/cli/__init__.py`**: subcommand wired into the dispatcher; the dispatcher itself was refactored from a 14-branch if-chain into a `_DISPATCH` table for clarity.
+- **`axon/cli/frontend_runtime.py`**: `fmt` added to `FRONTEND_COMMANDS` so the bootstrap pulls in the lexer/parser at command launch.
+- **Tests**: 22 in `tests/test_fase_14d_formatter.py` covering all six comment kinds, cosmetic normalisations, idempotence (parametrised), and four CLI smoke tests (stdout, --check pass/fail, --write, missing file).
+
+Layout canonicalisation (consistent indent width, brace style) is intentionally out of scope for the MVP — the formatter preserves the author's existing layout. A future phase can layer canonical reformatting on top of the same trivia channel without re-architecting.
+
+### 14.f — LSP hover enrichment `[DONE]` ✓
+
+Shipped as part of `axon-lang v1.9.0` on 2026-04-27.
+
+`channel_hover_markdown` (the LSP `textDocument/hover` content for a `ChannelDefinition`) now reads `channel.leading_trivia` and prepends a Markdown paragraph built from any **outer** doc comments (`///`, `/** */`) attached to the declaration:
+
+- **`axon-frontend/src/channel_analysis.rs`**: new `doc_comment_lines(&[Trivia]) -> Vec<String>` helper extracts outer doc bodies, strips conventional prefixes (`///` leading space, `* ` block-style decoration), and returns Markdown-ready lines. `channel_hover_markdown` calls it before the existing signature block.
+- **Inner doc comments (`//!` / `/*! */`) are intentionally excluded** from per-channel hover. They document the enclosing module, not the declaration, so surfacing them on a single channel would mislead. They remain available to other consumers via `Trivia::is_inner_doc()`.
+- **Regular comments (`//` / `/* */`) are excluded too** — they are not documentation. Only outer doc trivia reaches the hover paragraph.
+- **Tests**: 6 new in `channel_analysis::tests` covering line and block doc rendering, multi-line doc paragraphs, inner-doc exclusion, regular-comment exclusion, and backward-compat for declarations without doc comments.
+
+This delivers the first concrete adopter use case from §3 of this document. Other LSP hovers (flow, persona, daemon, …) can follow the same pattern; the helper is generic and reusable.
+
+---
+
+## 5. Possible future sub-phases
 
 | Sub-phase | Goal | Trigger |
 |---|---|---|
-| 14.b | Spread trivia into individual Rust AST structs (full mirror of Python's shape) | An adopter requests per-node trivia inside the AST instead of the side-channel |
-| 14.c | Inner doc comments (`//!`, `/*!`) à la Rust | Module-level documentation requirements |
-| 14.d | `axon fmt` formatter that consumes the trivia channel | When a stable formatter is on the roadmap |
 | 14.e | `axon doc` doc generator (rustdoc-style) | When public docs derived from `///` blocks become required |
-| 14.f | LSP hover enrichment in `channel_analysis::channel_hover_markdown` | When the LSP integration starts shipping rich hovers |
+| 14.g | Layout canonicalisation in `axon fmt` (consistent indent, brace style) | When a strict-format CI gate is on the roadmap |
+| 14.h | LSP hover enrichment for flow/persona/daemon (mirror of 14.f) | When non-channel hovers need doc paragraphs |
 
 ---
 
@@ -132,3 +193,12 @@ Doc-comment heuristic (identical Python ↔ Rust): a `//` line is doc iff it sta
 ✓ IR golden parity preserved (trivia never serialised).
 ✓ `Lexer.tokenize(strip_comments=True)` / `Lexer::tokenize_with(true)` opt-in for callers that want the legacy stream.
 ✓ Plan vivo (this document) + commit + tag + GitHub Release shipped.
+
+## 7. Closure criterion (14.b / 14.c / 14.d / 14.f — v1.9.0)
+
+✓ 14.b — 41 Declaration variant structs in Rust carry per-struct trivia fields; side-channel preserved for backward compat; 5 new Rust tests.
+✓ 14.c — `//!` and `/*! */` recognised by both lexers; `Trivia.is_inner_doc` discriminator; 23 new tests (15 Python + 8 Rust).
+✓ 14.d — `axon fmt` MVP with `--check` / `--write`; round-trip preservation, idempotence, and CLI integration; 22 new Python tests.
+✓ 14.f — Outer doc comments rendered as Markdown paragraph in channel hover; inner doc and regular comments deliberately excluded; 6 new Rust tests.
+✓ Combined: 4183 Python tests pass (+22 net vs v1.8.0), 147 axon-frontend tests pass (+19 net), 1031 axon-rs tests pass (no regression).
+✓ IR golden parity preserved across all four sub-phases (trivia never serialised, formatter never touches IR).
