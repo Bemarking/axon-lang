@@ -743,6 +743,16 @@ class Executor:
                 step=step, ctx=ctx, tracer=tracer,
             )
 
+        # ── ΛD Apply step shortcut (Fase 15.b) ─────────────────────────
+        # If the step carries a lambda_data_apply config, route through
+        # _execute_lambda_data_apply_step — pure epistemic binding,
+        # no LLM, no I/O. Resolves target → V, builds ψ = ⟨T, V, E⟩,
+        # enforces Theorem 5.1 at runtime, binds ψ to output_type.
+        if step.metadata.get("lambda_data_apply"):
+            return await self._execute_lambda_data_apply_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
         # ── Daemon step shortcut ───────────────────────────────────────
         # If the step carries a daemon config, route through
         # _execute_daemon_step — co-inductive reactive event loop.
@@ -3640,6 +3650,120 @@ class Executor:
             step_name=step_name,
             response=response,
             duration_ms=step_duration,
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  ΛD APPLY EXECUTION — pure epistemic binding (Fase 15.b)
+    # ═══════════════════════════════════════════════════════════════
+
+    async def _execute_lambda_data_apply_step(
+        self,
+        *,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a `lambda apply X to Y` step.
+
+        Pure binding — no model call, no I/O. Steps:
+          1. Resolve `target` against the unit context via
+             ``ctx.resolve_value_ref`` (handles bare ident, dotted
+             access, step results, variables, discovered handles).
+          2. Construct ψ = ⟨T, V, E⟩ via ``build_psi``, which enforces
+             Theorem 5.1 at runtime (mirror of compile-time guard;
+             defense against IR-JSON tampering).
+          3. Bind ψ to ``ctx[output_type]`` so downstream steps can
+             reference the bound envelope by name.
+          4. Emit STEP_END trace with spec_name, target, certainty,
+             derivation for observability.
+
+        The returned ``StepResult`` carries a ``ModelResponse`` shaped
+        like the compute step's — content is the JSON-serialised ψ so
+        downstream validation / refine logic can introspect it.
+        """
+        from axon.runtime.lambda_runtime import build_psi
+        import json as _json
+
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["lambda_data_apply"]
+        spec_snapshot = meta.get("spec_snapshot", {})
+        target_ref = meta.get("target", "")
+        output_type = meta.get("output_type", "")
+        spec_name = spec_snapshot.get("name", meta.get("lambda_data_name", ""))
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "type": "lambda_data_apply",
+                "spec_name": spec_name,
+                "target": target_ref,
+                "output_type": output_type,
+            },
+        )
+
+        # 1. Resolve target — propagate KeyError as a runtime error with
+        # context so the trace pinpoints the missing symbol.
+        try:
+            target_value = ctx.resolve_value_ref(target_ref) if target_ref else None
+        except KeyError as exc:
+            duration_ms = (time.perf_counter() - step_start) * 1000
+            tracer.emit(
+                TraceEventType.STEP_END,
+                step_name=step_name,
+                data={"success": False, "error": str(exc), "stage": "target_resolve"},
+                duration_ms=duration_ms,
+            )
+            raise AxonRuntimeError(
+                f"lambda apply '{spec_name}': target '{target_ref}' not found "
+                f"in unit context — {exc}"
+            ) from exc
+
+        # 2. Construct ψ — build_psi raises EpistemicDegradationError if
+        # the spec snapshot violates Theorem 5.1 (IR tampering defense).
+        psi = build_psi(
+            spec_snapshot=spec_snapshot,
+            target_value=target_value,
+            step_name=step_name,
+            flow_name=unit.flow_name,
+        )
+
+        # 3. Bind ψ to the output_type symbol. Empty output_type is
+        # legal (anonymous apply for trace-only side effect) and
+        # produces no binding — the trace event still fires.
+        if output_type:
+            ctx.set_variable(output_type, psi)
+
+        duration_ms = (time.perf_counter() - step_start) * 1000
+
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "spec_name": spec_name,
+                "target": target_ref,
+                "output_type": output_type,
+                "certainty": psi.E.c,
+                "derivation": psi.E.delta,
+                "ontology": psi.T,
+            },
+            duration_ms=duration_ms,
+        )
+
+        # Return a ModelResponse-shaped result so downstream validation /
+        # refine logic can introspect — content is JSON-serialised ψ.
+        response = ModelResponse(
+            content=_json.dumps(psi.to_dict(), default=str),
+            usage={"input_tokens": 0, "output_tokens": 0},
+        )
+
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=duration_ms,
         )
 
     # ═══════════════════════════════════════════════════════════════

@@ -3369,17 +3369,56 @@ class TypeChecker:
                 node,
             )
 
+    # Reserved primitive / built-in type names that an `output_type`
+    # MUST NOT shadow (Fase 15.d hardening). Shadowing these would
+    # mask the literal type name in downstream type-checks.
+    _RESERVED_OUTPUT_TYPE_NAMES = frozenset({
+        "int", "integer", "float", "number", "bool", "boolean",
+        "string", "str", "bytes", "list", "tuple", "set", "dict",
+        "map", "any", "void", "null", "none", "true", "false",
+    })
+
     def _check_lambda_data_apply(self, node: LambdaDataApplyNode) -> None:
         """
         Validate Lambda Data application in a flow step.
 
-        Ensures the referenced lambda data specification is declared.
+        Fase 15.d hardening — three checks, all surface at compile time
+        so adopters get errors at the source location instead of at
+        runtime:
+
+          1. ``lambda_data_name`` must resolve to a declared `lambda`
+             spec (was previously: silent pass for undefined names —
+             the runtime would have produced an empty spec snapshot
+             and EpistemicDegradationError on the bounds check).
+          2. ``lambda_data_name`` must be the right kind (preserved).
+          3. ``output_type`` must not shadow a primitive type name —
+             `lambda S on x -> int` is rejected.
         """
         sym = self._symbols.lookup(node.lambda_data_name)
-        if sym is not None and sym.kind != "lambda_data":
+        if sym is None:
+            self._emit(
+                f"lambda apply references undefined lambda data spec "
+                f"'{node.lambda_data_name}' (no `lambda {node.lambda_data_name} "
+                f"{{ ... }}` declaration found)",
+                node,
+            )
+        elif sym.kind != "lambda_data":
             self._emit(
                 f"'{node.lambda_data_name}' in lambda apply is a {sym.kind}, "
                 "not a lambda data specification",
+                node,
+            )
+
+        if (
+            node.output_type
+            and node.output_type.lower() in self._RESERVED_OUTPUT_TYPE_NAMES
+        ):
+            self._emit(
+                f"lambda apply output_type '{node.output_type}' shadows a "
+                f"reserved primitive / built-in type name — choose a "
+                f"distinct name for the bound envelope (e.g., "
+                f"'{node.output_type.title()}Envelope' or a domain-specific "
+                f"identifier)",
                 node,
             )
 

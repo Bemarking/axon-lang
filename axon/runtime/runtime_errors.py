@@ -171,6 +171,25 @@ class AnchorBreachError(AxonRuntimeError):
     level: int = 3
 
 
+class EpistemicDegradationError(AxonRuntimeError):
+    """Theorem 5.1 (Epistemic Degradation) was violated at runtime.
+
+    Raised by ``axon.runtime.lambda_runtime.enforce_theorem_5_1`` when
+    a ``lambda apply`` reaches the dispatcher with a spec snapshot
+    that breaks the formalism: certainty out of [0, 1], unknown
+    derivation, or c=1.0 with a non-raw derivation.
+
+    The compile-time guard in ``axon.compiler.type_checker._check_lambda_data``
+    catches these for honest programs. Reaching the runtime guard
+    means the IR was tampered with between compile and execute (the
+    IR is the trust boundary in multi-tenant deployments). Severity
+    matches AnchorBreachError because both are structural-invariant
+    violations rather than measurement failures.
+    """
+
+    level: int = 3
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  LEVEL 4 — REFINE EXHAUSTED ERROR
 # ═══════════════════════════════════════════════════════════════════
