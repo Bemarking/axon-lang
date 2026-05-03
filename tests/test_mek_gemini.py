@@ -5,6 +5,7 @@ import urllib.request
 import urllib.error
 import pytest  # noqa: F401 — guard for CI
 
+pytest.importorskip("torch", reason="torch not installed (integration test)")
 pytest.importorskip("dotenv", reason="python-dotenv not installed (integration test)")
 from dotenv import load_dotenv
 
