@@ -137,6 +137,13 @@ pub struct ResourceDefinition {
     pub certainty_floor: Option<f64>, // epistemic gate c ∈ [0.0, 1.0]
     pub shield_ref: String,           // optional shield reference
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 /// `fabric Name { provider, region, zones, ephemeral, shield }`
@@ -152,6 +159,13 @@ pub struct FabricDefinition {
     pub ephemeral: Option<bool>,     // true = destroy on program end
     pub shield_ref: String,          // optional shield reference
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 /// `manifest Name { resources, fabric, region, zones, compliance }`
@@ -168,6 +182,13 @@ pub struct ManifestDefinition {
     pub zones: Option<i64>,
     pub compliance: Vec<String>,     // κ — regulatory class (Fase 6.1)
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 /// `observe Name from Manifest { sources, quorum, timeout, on_partition, certainty_floor }`
@@ -185,6 +206,13 @@ pub struct ObserveDefinition {
     pub on_partition: String,        // fail (CT-3) | shield_quarantine
     pub certainty_floor: Option<f64>,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── §λ-L-E Fase 3 — Control cognitivo primitives ─────────────────────────────
@@ -206,6 +234,13 @@ pub struct ReconcileDefinition {
     pub mandate_ref: String,
     pub max_retries: i64,             // default: 3
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 /// `lease Name { resource, duration, acquire, on_expire }`
@@ -221,6 +256,13 @@ pub struct LeaseDefinition {
     pub acquire: String,              // on_start | on_demand (default: on_start)
     pub on_expire: String,            // anchor_breach | release | extend (default: anchor_breach)
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 /// `ensemble Name { observations, quorum, aggregation, certainty_mode }`
@@ -236,6 +278,13 @@ pub struct EnsembleDefinition {
     pub aggregation: String,          // majority | weighted | byzantine (default: majority)
     pub certainty_mode: String,       // min | weighted | harmonic (default: min)
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── §λ-L-E Fase 4 — Topology + π-calculus binary sessions ──────────────────
@@ -266,6 +315,13 @@ pub struct SessionDefinition {
     pub name: String,
     pub roles: Vec<SessionRole>,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 /// `source -> target : Session` — one directed edge of a topology.
@@ -291,6 +347,13 @@ pub struct TopologyDefinition {
     pub nodes: Vec<String>,
     pub edges: Vec<TopologyEdge>,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── §λ-L-E Fase 5 — Cognitive immune system (per paper_immune_v2.md) ────────
@@ -314,6 +377,13 @@ pub struct ImmuneDefinition {
     pub tau: String,                 // duration half-life
     pub decay: String,               // exponential (default) | linear | none
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 /// `reflex Name { trigger, on_level, action, scope, sla }`
@@ -330,6 +400,13 @@ pub struct ReflexDefinition {
     pub scope: String,               // MANDATORY, paper §8.2
     pub sla: String,                 // duration budget (e.g. "1ms")
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 /// `heal Name { source, on_level, mode, scope, review_sla, shield, max_patches }`
@@ -351,6 +428,13 @@ pub struct HealDefinition {
     pub shield_ref: String,          // optional shield gate (required for adversarial)
     pub max_patches: i64,            // bounded heal attempts (default: 3)
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── §λ-L-E Fase 9 — UI cognitiva (component / view) ─────────────────────────
@@ -368,6 +452,13 @@ pub struct ComponentDefinition {
     pub on_interact: String,
     pub render_hint: String,   // card | list | form | chart | custom
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 /// `view Name { title, components: [...], route }`.
@@ -381,6 +472,13 @@ pub struct ViewDefinition {
     pub components: Vec<String>,
     pub route: String,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Tier 2+ structural fallback ──────────────────────────────────────────────
@@ -392,6 +490,13 @@ pub struct GenericDeclaration {
     pub keyword: String,
     pub name: String,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Agent ────────────────────────────────────────────────────────────────────
@@ -410,6 +515,13 @@ pub struct AgentDefinition {
     pub max_time: String,
     pub max_cost: Option<f64>,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Shield ───────────────────────────────────────────────────────────────────
@@ -434,6 +546,13 @@ pub struct ShieldDefinition {
     /// §ESK Fase 6.1 — regulatory coverage (HIPAA, PCI_DSS, GDPR, …).
     pub compliance: Vec<String>,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Pix ──────────────────────────────────────────────────────────────────────
@@ -446,6 +565,13 @@ pub struct PixDefinition {
     pub branching: Option<i64>,
     pub model: String,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Psyche ───────────────────────────────────────────────────────────────────
@@ -460,6 +586,13 @@ pub struct PsycheDefinition {
     pub quantum_enabled: Option<bool>,
     pub inference_mode: String,    // active | passive
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Corpus ───────────────────────────────────────────────────────────────────
@@ -471,6 +604,13 @@ pub struct CorpusDefinition {
     pub mcp_server: String,
     pub mcp_resource_uri: String,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Dataspace ────────────────────────────────────────────────────────────────
@@ -479,6 +619,13 @@ pub struct CorpusDefinition {
 pub struct DataspaceDefinition {
     pub name: String,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── OTS ──────────────────────────────────────────────────────────────────────
@@ -490,6 +637,13 @@ pub struct OtsDefinition {
     pub homotopy_search: String,   // shallow | deep | speculative
     pub loss_function: String,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Mandate ──────────────────────────────────────────────────────────────────
@@ -505,6 +659,13 @@ pub struct MandateDefinition {
     pub max_steps: Option<i64>,
     pub on_violation: String,      // coerce | halt | retry
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Compute ──────────────────────────────────────────────────────────────────
@@ -514,6 +675,13 @@ pub struct ComputeDefinition {
     pub name: String,
     pub shield_ref: String,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Daemon ───────────────────────────────────────────────────────────────────
@@ -537,6 +705,13 @@ pub struct DaemonDefinition {
     /// inside listener bodies and surface D4 string-topic warnings.
     pub listeners: Vec<ListenStep>,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── AxonStore ────────────────────────────────────────────────────────────────
@@ -550,6 +725,13 @@ pub struct AxonStoreDefinition {
     pub isolation: String,         // read_committed | repeatable_read | serializable
     pub on_breach: String,         // rollback | raise | log
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── AxonEndpoint ─────────────────────────────────────────────────────────────
@@ -568,6 +750,13 @@ pub struct AxonEndpointDefinition {
     /// §ESK Fase 6.1 — regulatory coverage on the boundary.
     pub compliance: Vec<String>,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Import ───────────────────────────────────────────────────────────────────
@@ -577,6 +766,13 @@ pub struct ImportNode {
     pub module_path: Vec<String>,
     pub names: Vec<String>,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Persona ──────────────────────────────────────────────────────────────────
@@ -592,6 +788,13 @@ pub struct PersonaDefinition {
     pub language: String,
     pub description: String,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Context ──────────────────────────────────────────────────────────────────
@@ -606,6 +809,13 @@ pub struct ContextDefinition {
     pub temperature: Option<f64>,
     pub cite_sources: Option<bool>,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Anchor ───────────────────────────────────────────────────────────────────
@@ -622,6 +832,13 @@ pub struct AnchorConstraint {
     pub on_violation: String,
     pub on_violation_target: String,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Memory ───────────────────────────────────────────────────────────────────
@@ -634,6 +851,13 @@ pub struct MemoryDefinition {
     pub retrieval: String,
     pub decay: String,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Tool ─────────────────────────────────────────────────────────────────────
@@ -649,6 +873,13 @@ pub struct ToolDefinition {
     pub sandbox: Option<bool>,
     pub effects: Option<EffectRow>,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 #[derive(Debug)]
@@ -669,6 +900,13 @@ pub struct TypeDefinition {
     /// §ESK Fase 6.1 — κ regulatory class attached to a type.
     pub compliance: Vec<String>,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 #[derive(Debug, Clone)]
@@ -708,6 +946,13 @@ pub struct FlowDefinition {
     pub return_type: Option<TypeExpr>,
     pub body: Vec<FlowStep>,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 #[derive(Debug)]
@@ -804,6 +1049,13 @@ pub struct IntentNode {
     pub output_type: Option<TypeExpr>,
     pub confidence_floor: Option<f64>,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Run ──────────────────────────────────────────────────────────────────────
@@ -820,6 +1072,13 @@ pub struct RunStatement {
     pub output_to: String,
     pub effort: String,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Epistemic ────────────────────────────────────────────────────────────────
@@ -829,6 +1088,13 @@ pub struct EpistemicBlock {
     pub mode: String,
     pub body: Vec<Declaration>,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── Control flow ─────────────────────────────────────────────────────────────
@@ -858,6 +1124,13 @@ pub struct LetStatement {
     pub identifier: String,
     pub value_expr: String,
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 #[derive(Debug)]
@@ -876,9 +1149,16 @@ pub struct LambdaDataDefinition {
     pub certainty: f64,                    // c ∈ [0,1] — epistemic certainty scalar
     pub temporal_frame_start: String,      // τ_start
     pub temporal_frame_end: String,        // τ_end
-    pub provenance: String,               // ρ ∈ EntityRef — causal origin
-    pub derivation: String,               // δ ∈ Δ = {raw, derived, inferred, aggregated, transformed}
+    pub provenance: String,                // ρ ∈ EntityRef — causal origin
+    pub derivation: String,                // δ ∈ Δ — see derivation catalogue (raw, derived, inferred, aggregated, transformed)
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 /// In-flow ΛD application: binds epistemic state vector to a data target.
@@ -994,6 +1274,13 @@ pub struct ChannelDefinition {
     pub persistence: String,    // ephemeral | persistent_axonstore
     pub shield_ref: String,     // optional σ-shield gate for publish (D8)
     pub loc: Loc,
+    /// Fase 14.b — leading comment trivia attached to this declaration
+    /// (comments preceding the declaration's first token, since the
+    /// previous declaration or file start). Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia (same line as the
+    /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 /// `emit ChannelName(value_ref)` — π-calculus output prefix `c⟨v⟩.P`.

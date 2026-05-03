@@ -162,19 +162,25 @@ impl Lexer {
         Ok(())
     }
 
-    /// Lex a `// …` or `/// …` line comment.
+    /// Lex a `// …`, `/// …` or `//! …` line comment.
     ///
-    /// Doc-comment heuristic: a line is a doc comment iff it starts
-    /// with EXACTLY three slashes (`///` followed by a non-`/`).
-    /// `////` (4+ slashes) is a regular line comment by Rust convention.
+    /// Outer-doc heuristic (Fase 14.a): a line is an outer doc comment
+    /// iff it starts with EXACTLY three slashes (`///` followed by a
+    /// non-`/`). `////` (4+ slashes) is a regular line comment.
+    ///
+    /// Inner-doc heuristic (Fase 14.c): a line is an inner doc comment
+    /// iff it starts with `//!` (two slashes + bang). Inner doc
+    /// comments document the *enclosing* module/file rather than the
+    /// next sibling — same convention as Rust.
     fn consume_line_comment(&mut self) {
         let line = self.line;
         let col = self.column;
         self.advance(); // /
         self.advance(); // /
-        let is_doc = self.peek() == '/' && self.peek_next() != '/';
-        if is_doc {
-            self.advance(); // third /
+        let is_outer_doc = self.peek() == '/' && self.peek_next() != '/';
+        let is_inner_doc = !is_outer_doc && self.peek() == '!';
+        if is_outer_doc || is_inner_doc {
+            self.advance(); // third / (outer) or ! (inner)
         }
 
         let body_start = self.pos;
@@ -183,8 +189,10 @@ impl Lexer {
         }
         let body: String = self.source[body_start..self.pos].iter().collect();
 
-        let (ttype, full_text) = if is_doc {
+        let (ttype, full_text) = if is_outer_doc {
             (TokenType::DocLineComment, format!("///{body}"))
+        } else if is_inner_doc {
+            (TokenType::InnerDocLineComment, format!("//!{body}"))
         } else {
             (TokenType::LineComment, format!("//{body}"))
         };
@@ -194,19 +202,23 @@ impl Lexer {
         }
     }
 
-    /// Lex a `/* … */` or `/** … */` block comment.
+    /// Lex a `/* … */`, `/** … */` or `/*! … */` block comment.
     ///
-    /// Doc-comment heuristic: a block is a doc comment iff it starts
-    /// with exactly `/**` followed by a non-`/` character. `/**/`
-    /// (empty block) is a regular block, not a doc.
+    /// Outer-doc heuristic (Fase 14.a): a block is an outer doc comment
+    /// iff it starts with exactly `/**` followed by a non-`/` character.
+    /// `/**/` (empty block) is a regular block, not a doc.
+    ///
+    /// Inner-doc heuristic (Fase 14.c): a block is an inner doc comment
+    /// iff it starts with `/*!` — same Rust convention as `//!`.
     fn consume_block_comment(&mut self) -> Result<(), LexerError> {
         let line = self.line;
         let col = self.column;
         self.advance(); // /
         self.advance(); // *
-        let is_doc = self.peek() == '*' && self.peek_next() != '/';
-        if is_doc {
-            self.advance(); // second *
+        let is_outer_doc = self.peek() == '*' && self.peek_next() != '/';
+        let is_inner_doc = !is_outer_doc && self.peek() == '!';
+        if is_outer_doc || is_inner_doc {
+            self.advance(); // second * (outer) or ! (inner)
         }
 
         let body_start = self.pos;
@@ -215,8 +227,10 @@ impl Lexer {
                 let body: String = self.source[body_start..self.pos].iter().collect();
                 self.advance(); // *
                 self.advance(); // /
-                let (ttype, full_text) = if is_doc {
+                let (ttype, full_text) = if is_outer_doc {
                     (TokenType::DocBlockComment, format!("/**{body}*/"))
+                } else if is_inner_doc {
+                    (TokenType::InnerDocBlockComment, format!("/*!{body}*/"))
                 } else {
                     (TokenType::BlockComment, format!("/*{body}*/"))
                 };
@@ -621,11 +635,53 @@ mod fase14a_trivia_tests {
                         | TokenType::BlockComment
                         | TokenType::DocLineComment
                         | TokenType::DocBlockComment
+                        | TokenType::InnerDocLineComment
+                        | TokenType::InnerDocBlockComment
                 ),
                 "strip_comments=true must not emit any comment kind, got {:?}",
                 t.ttype
             );
         }
+    }
+
+    // ── Fase 14.c — inner doc comments (`//!`, `/*!`) ──
+
+    #[test]
+    fn inner_doc_line_comment_emitted_with_inner_doc_kind() {
+        let toks = lex("//! module docs");
+        let body: Vec<_> = non_eof(&toks);
+        assert_eq!(body[0].ttype, TokenType::InnerDocLineComment);
+        assert_eq!(body[0].value, "//! module docs");
+    }
+
+    #[test]
+    fn inner_doc_block_comment_emitted_with_inner_doc_kind() {
+        let toks = lex("/*! module docs */");
+        let body: Vec<_> = non_eof(&toks);
+        assert_eq!(body[0].ttype, TokenType::InnerDocBlockComment);
+        assert_eq!(body[0].value, "/*! module docs */");
+    }
+
+    #[test]
+    fn outer_and_inner_doc_distinguished() {
+        // `///` → outer; `//!` → inner; `//` → regular. All three must
+        // be discriminated correctly when colocated.
+        let toks = lex("/// outer\n//! inner\n// plain");
+        let body: Vec<_> = non_eof(&toks);
+        assert_eq!(body.len(), 3);
+        assert_eq!(body[0].ttype, TokenType::DocLineComment);
+        assert_eq!(body[1].ttype, TokenType::InnerDocLineComment);
+        assert_eq!(body[2].ttype, TokenType::LineComment);
+    }
+
+    #[test]
+    fn block_outer_and_inner_doc_distinguished() {
+        let toks = lex("/** outer */\n/*! inner */\n/* plain */");
+        let body: Vec<_> = non_eof(&toks);
+        assert_eq!(body.len(), 3);
+        assert_eq!(body[0].ttype, TokenType::DocBlockComment);
+        assert_eq!(body[1].ttype, TokenType::InnerDocBlockComment);
+        assert_eq!(body[2].ttype, TokenType::BlockComment);
     }
 
     #[test]

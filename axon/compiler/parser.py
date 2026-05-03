@@ -127,6 +127,9 @@ _COMMENT_TOKEN_KINDS = frozenset({
     TokenType.BLOCK_COMMENT,
     TokenType.DOC_LINE_COMMENT,
     TokenType.DOC_BLOCK_COMMENT,
+    # Fase 14.c — inner doc comments (//! and /*!)
+    TokenType.INNER_DOC_LINE_COMMENT,
+    TokenType.INNER_DOC_BLOCK_COMMENT,
 })
 
 # TokenType → Trivia.kind string. Trivia uses string kinds so the
@@ -137,6 +140,8 @@ _TRIVIA_KIND_BY_TOKEN: dict[TokenType, str] = {
     TokenType.BLOCK_COMMENT: "block",
     TokenType.DOC_LINE_COMMENT: "doc_line",
     TokenType.DOC_BLOCK_COMMENT: "doc_block",
+    TokenType.INNER_DOC_LINE_COMMENT: "inner_doc_line",
+    TokenType.INNER_DOC_BLOCK_COMMENT: "inner_doc_block",
 }
 
 

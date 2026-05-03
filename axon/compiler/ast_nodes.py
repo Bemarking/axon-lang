@@ -43,34 +43,66 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True, slots=True)
 class Trivia:
-    """A comment attached to an AST node (Fase 14.a)."""
-    kind: str          # "line" | "block" | "doc_line" | "doc_block"
-    text: str          # raw text including markers (//, ///, /* */, /** */)
+    """A comment attached to an AST node (Fase 14.a / 14.c).
+
+    The ``kind`` discriminator covers six varieties:
+      - ``"line"``           — regular ``//``
+      - ``"block"``          — regular ``/* */``
+      - ``"doc_line"``       — outer doc ``///`` (documents the next item)
+      - ``"doc_block"``      — outer doc ``/** */`` (documents the next item)
+      - ``"inner_doc_line"`` — inner doc ``//!`` (documents enclosing module/file)
+      - ``"inner_doc_block"``— inner doc ``/*! */`` (documents enclosing module/file)
+
+    Inner doc comments (Fase 14.c) follow the Rust convention: they are
+    intended to document the *enclosing* item (module / file), not the
+    next sibling. They typically appear at the top of a file or just
+    inside the opening brace of a block. ``axon doc`` consumers use the
+    inner/outer distinction to decide whether the documentation applies
+    to the parent or the next-following item.
+    """
+    kind: str          # "line"|"block"|"doc_line"|"doc_block"|"inner_doc_line"|"inner_doc_block"
+    text: str          # raw text including markers (//, ///, /* */, /** */, //!, /*! */)
     line: int
     column: int
 
     @property
     def is_doc(self) -> bool:
-        """True iff this trivia documents the adjacent definition."""
-        return self.kind in ("doc_line", "doc_block")
+        """True iff this trivia is any kind of doc comment (outer or inner)."""
+        return self.kind in (
+            "doc_line", "doc_block", "inner_doc_line", "inner_doc_block",
+        )
+
+    @property
+    def is_inner_doc(self) -> bool:
+        """True iff this trivia is an inner doc comment (//! or /*!)."""
+        return self.kind in ("inner_doc_line", "inner_doc_block")
 
     def stripped_text(self) -> str:
         """The body of the comment with marker prefixes/suffixes removed.
 
         Useful for LSP hover rendering and doc generators. For block
-        comments the leading ``/*`` (or ``/**``) and trailing ``*/`` are
-        removed. For line comments the leading ``//`` (or ``///``) is
-        removed. No further normalisation (no whitespace trim, no
-        de-indent of ``*``-prefixed lines) is performed — callers can
-        layer their own cosmetic pass on top.
+        comments the leading ``/*`` (or ``/**`` / ``/*!``) and trailing
+        ``*/`` are removed. For line comments the leading ``//`` (or
+        ``///`` / ``//!``) is removed. No further normalisation (no
+        whitespace trim, no de-indent of ``*``-prefixed lines) is
+        performed — callers can layer their own cosmetic pass on top.
         """
         if self.kind == "doc_line":
             return self.text[3:] if self.text.startswith("///") else self.text
+        if self.kind == "inner_doc_line":
+            return self.text[3:] if self.text.startswith("//!") else self.text
         if self.kind == "line":
             return self.text[2:] if self.text.startswith("//") else self.text
         if self.kind == "doc_block":
             body = self.text
             if body.startswith("/**"):
+                body = body[3:]
+            if body.endswith("*/"):
+                body = body[:-2]
+            return body
+        if self.kind == "inner_doc_block":
+            body = self.text
+            if body.startswith("/*!"):
                 body = body[3:]
             if body.endswith("*/"):
                 body = body[:-2]

@@ -116,31 +116,40 @@ class Lexer:
                 break
 
     def _consume_line_comment(self) -> None:
-        """Lex a ``// …`` or ``/// …`` line comment.
+        """Lex a ``// …``, ``/// …`` or ``//! …`` line comment.
 
-        Doc-comment heuristic: a line is a doc comment iff it starts
-        with EXACTLY three slashes (``///`` followed by a non-``/``).
-        ``////`` (4+ slashes) is a regular line comment by Rust
-        convention — keeps the discriminator stable when the user
+        Outer-doc heuristic (Fase 14.a): a line is an outer doc comment
+        iff it starts with EXACTLY three slashes (``///`` followed by a
+        non-``/``). ``////`` (4+ slashes) is a regular line comment by
+        Rust convention — keeps the discriminator stable when the user
         writes a banner like ``//// section ////``.
+
+        Inner-doc heuristic (Fase 14.c): a line is an inner doc comment
+        iff it starts with ``//!`` (two slashes + bang). Inner doc
+        comments document the *enclosing* module/file rather than the
+        next sibling — same convention as Rust.
         """
         line = self._line
         col = self._column
         # consume //
         self._advance()
         self._advance()
-        is_doc = self._peek() == "/" and self._peek_next() != "/"
-        if is_doc:
-            self._advance()  # consume the third /
+        is_outer_doc = self._peek() == "/" and self._peek_next() != "/"
+        is_inner_doc = (not is_outer_doc) and self._peek() == "!"
+        if is_outer_doc or is_inner_doc:
+            self._advance()  # consume the third / (outer) or the ! (inner)
 
         body_start = self._pos
         while not self._at_end() and self._peek() != "\n":
             self._advance()
         body = self._source[body_start:self._pos]
 
-        if is_doc:
+        if is_outer_doc:
             full_text = "///" + body
             kind = TokenType.DOC_LINE_COMMENT
+        elif is_inner_doc:
+            full_text = "//!" + body
+            kind = TokenType.INNER_DOC_LINE_COMMENT
         else:
             full_text = "//" + body
             kind = TokenType.LINE_COMMENT
@@ -148,41 +157,62 @@ class Lexer:
         if not getattr(self, "_strip_comments", False):
             self._emit(kind, full_text, line, col)
 
-    def _consume_block_comment(self) -> None:
-        """Lex a ``/* … */`` or ``/** … */`` block comment.
+    _BLOCK_COMMENT_KINDS = {
+        "outer": (TokenType.DOC_BLOCK_COMMENT, "/**"),
+        "inner": (TokenType.INNER_DOC_BLOCK_COMMENT, "/*!"),
+        "regular": (TokenType.BLOCK_COMMENT, "/*"),
+    }
 
-        Doc-comment heuristic: a block is a doc comment iff it starts
-        with exactly ``/**`` followed by a non-``/`` character. ``/**/``
-        (empty block) and ``/***`` (which would be ``/* ** /`` parsed as
-        a regular block whose body opens with two stars) are regular.
+    def _consume_block_comment(self) -> None:
+        """Lex a ``/* … */``, ``/** … */`` or ``/*! … */`` block comment.
+
+        Outer-doc heuristic (Fase 14.a): a block is an outer doc comment
+        iff it starts with exactly ``/**`` followed by a non-``/``
+        character. ``/**/`` (empty block) is a regular block.
+
+        Inner-doc heuristic (Fase 14.c): a block is an inner doc comment
+        iff it starts with ``/*!``. Inner doc comments document the
+        *enclosing* module/file — same Rust convention as ``//!``.
         """
         line = self._line
         col = self._column
-        # consume /*
-        self._advance()
-        self._advance()
-        is_doc = (
-            self._peek() == "*"
-            and self._peek_next() != "/"  # /**/ is empty regular, not doc
-        )
-        if is_doc:
-            self._advance()  # consume the second *
-
+        self._advance()  # /
+        self._advance()  # *
+        flavour = self._classify_block_comment_flavour()
         body_start = self._pos
+        body = self._scan_block_comment_body(line, col)
+        kind, prefix = self._BLOCK_COMMENT_KINDS[flavour]
+        full_text = prefix + self._source[body_start:body] + "*/"
+        if not getattr(self, "_strip_comments", False):
+            self._emit(kind, full_text, line, col)
+
+    def _classify_block_comment_flavour(self) -> str:
+        """Return ``"outer"``, ``"inner"``, or ``"regular"``.
+
+        Cursor must already be positioned just after the opening ``/*``.
+        Consumes the discriminator char (``*`` or ``!``) when one is
+        present.
+        """
+        if self._peek() == "*" and self._peek_next() != "/":
+            self._advance()
+            return "outer"
+        if self._peek() == "!":
+            self._advance()
+            return "inner"
+        return "regular"
+
+    def _scan_block_comment_body(self, line: int, col: int) -> int:
+        """Advance past the body up to ``*/`` (consumes the closer).
+
+        Returns the source index just before ``*/`` so callers can slice
+        out the raw body text. Raises on unterminated blocks.
+        """
         while not self._at_end():
             if self._peek() == "*" and self._peek_next() == "/":
-                body = self._source[body_start:self._pos]
+                end = self._pos
                 self._advance()  # *
                 self._advance()  # /
-                if is_doc:
-                    full_text = "/**" + body + "*/"
-                    kind = TokenType.DOC_BLOCK_COMMENT
-                else:
-                    full_text = "/*" + body + "*/"
-                    kind = TokenType.BLOCK_COMMENT
-                if not getattr(self, "_strip_comments", False):
-                    self._emit(kind, full_text, line, col)
-                return
+                return end
             self._advance()
         raise AxonLexerError(
             "Unterminated block comment",

@@ -24,6 +24,8 @@ const fn is_comment_token(tt: &TokenType) -> bool {
             | TokenType::BlockComment
             | TokenType::DocLineComment
             | TokenType::DocBlockComment
+            | TokenType::InnerDocLineComment
+            | TokenType::InnerDocBlockComment
     )
 }
 
@@ -33,7 +35,66 @@ const fn token_to_trivia_kind(tt: &TokenType) -> Option<TriviaKind> {
         TokenType::BlockComment => Some(TriviaKind::Block),
         TokenType::DocLineComment => Some(TriviaKind::DocLine),
         TokenType::DocBlockComment => Some(TriviaKind::DocBlock),
+        TokenType::InnerDocLineComment => Some(TriviaKind::InnerDocLine),
+        TokenType::InnerDocBlockComment => Some(TriviaKind::InnerDocBlock),
         _ => None,
+    }
+}
+
+/// Fase 14.b — write `leading_trivia` and `trailing_trivia` into the
+/// per-struct fields of a `Declaration` variant.
+///
+/// Mirrors what the Python parser does automatically via its
+/// `_with_trivia` decorator on every `_parse_*` method. In Rust we
+/// do it once at the top of the parse loop so the spread to every
+/// variant is in a single place.
+fn attach_trivia_to_decl(
+    decl: &mut Declaration,
+    leading: Vec<Trivia>,
+    trailing: Vec<Trivia>,
+) {
+    match decl {
+        Declaration::Import(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Persona(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Context(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Anchor(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Memory(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Tool(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Type(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Flow(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Intent(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Run(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Epistemic(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Let(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::LambdaData(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Agent(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Shield(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Pix(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Psyche(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Corpus(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Dataspace(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Ots(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Mandate(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Compute(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Daemon(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::AxonStore(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::AxonEndpoint(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Resource(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Fabric(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Manifest(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Observe(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Reconcile(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Lease(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Ensemble(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Session(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Topology(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Immune(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Reflex(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Heal(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Component(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::View(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Channel(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
+        Declaration::Generic(n) => { n.leading_trivia = leading; n.trailing_trivia = trailing; }
     }
 }
 
@@ -131,10 +192,16 @@ impl Parser {
             // parsing, `pos - 1` is the last token consumed; that
             // position carries the trailing trivia.
             let start_pos = self.pos;
-            let decl = self.parse_declaration()?;
+            let mut decl = self.parse_declaration()?;
             let end_pos = self.pos.saturating_sub(1);
             let leading = self.leading_trivia.get(start_pos).cloned().unwrap_or_default();
             let trailing = self.trailing_trivia.get(end_pos).cloned().unwrap_or_default();
+            // Fase 14.b — also copy trivia into the per-struct fields on
+            // the declaration so consumers can read `flow.leading_trivia`
+            // directly without going through `program.declaration_trivia[i]`.
+            // The side-channel is preserved for backward compat with
+            // 14.a callers and as a flat enumeration source.
+            attach_trivia_to_decl(&mut decl, leading.clone(), trailing.clone());
             program.declarations.push(decl);
             program.declaration_trivia.push(DeclarationTrivia { leading, trailing });
         }
@@ -579,6 +646,8 @@ impl Parser {
             module_path: path_parts,
             names,
             loc,
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         })
     }
 
@@ -600,6 +669,8 @@ impl Parser {
             language: String::new(),
             description: String::new(),
             loc,
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
 
         while !self.check(TokenType::RBrace) {
@@ -641,6 +712,8 @@ impl Parser {
             temperature: None,
             cite_sources: None,
             loc,
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
 
         while !self.check(TokenType::RBrace) {
@@ -688,6 +761,8 @@ impl Parser {
             on_violation: String::new(),
             on_violation_target: String::new(),
             loc,
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
 
         while !self.check(TokenType::RBrace) {
@@ -734,6 +809,8 @@ impl Parser {
             retrieval: String::new(),
             decay: String::new(),
             loc,
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
 
         while !self.check(TokenType::RBrace) {
@@ -777,6 +854,8 @@ impl Parser {
             sandbox: None,
             effects: None,
             loc,
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
 
         while !self.check(TokenType::RBrace) {
@@ -868,6 +947,8 @@ impl Parser {
             where_clause: None,
             compliance: Vec::new(),
             loc: loc.clone(),
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
 
         // Optional range: (0.0..1.0)
@@ -987,6 +1068,8 @@ impl Parser {
             return_type,
             body,
             loc,
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         })
     }
 
@@ -1210,6 +1293,8 @@ impl Parser {
             output_type: None,
             confidence_floor: None,
             loc,
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
 
         while !self.check(TokenType::RBrace) {
@@ -1254,6 +1339,8 @@ impl Parser {
             output_to: String::new(),
             effort: String::new(),
             loc,
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
 
         while self.check_run_modifier() {
@@ -1334,6 +1421,8 @@ impl Parser {
             mode: mode.to_string(),
             body,
             loc,
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         })
     }
 
@@ -1472,6 +1561,8 @@ impl Parser {
             identifier: name,
             value_expr: value,
             loc,
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         })
     }
 
@@ -1928,6 +2019,8 @@ impl Parser {
             strategy: String::new(), on_stuck: String::new(), shield_ref: String::new(),
             max_iterations: None, max_tokens: None, max_time: String::new(), max_cost: None,
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         // Skip optional parameters/return type before brace
         while !self.check(TokenType::LBrace) && !self.check(TokenType::Eof) {
@@ -1972,6 +2065,8 @@ impl Parser {
             taint: String::new(),
             compliance: Vec::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2013,6 +2108,8 @@ impl Parser {
             name, source: String::new(), depth: None, branching: None,
             model: String::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2042,6 +2139,8 @@ impl Parser {
             name, dimensions: Vec::new(), manifold_noise: None, manifold_momentum: None,
             safety_constraints: Vec::new(), quantum_enabled: None, inference_mode: String::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2072,6 +2171,8 @@ impl Parser {
         let mut node = CorpusDefinition {
             name, documents: Vec::new(), mcp_server: String::new(), mcp_resource_uri: String::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         // corpus Name from mcp("server", "uri") — short form
         if self.check(TokenType::From) {
@@ -2108,6 +2209,8 @@ impl Parser {
         let node = DataspaceDefinition {
             name,
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         if self.check(TokenType::LBrace) {
             self.skip_braced_block()?;
@@ -2122,6 +2225,8 @@ impl Parser {
             name, teleology: String::new(), homotopy_search: String::new(),
             loss_function: String::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         // Skip optional type params <In, Out>
         if self.check(TokenType::Lt) {
@@ -2157,6 +2262,8 @@ impl Parser {
             name, constraint: String::new(), kp: None, ki: None, kd: None,
             tolerance: None, max_steps: None, on_violation: String::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2188,6 +2295,8 @@ impl Parser {
         let mut node = ComputeDefinition {
             name, shield_ref: String::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         // Skip optional parameters/return type before brace
         while !self.check(TokenType::LBrace) && !self.check(TokenType::Eof) {
@@ -2220,6 +2329,8 @@ impl Parser {
             max_tokens: None, max_time: String::new(), max_cost: None,
             listeners: Vec::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         // Skip optional parameters/return type before brace
         while !self.check(TokenType::LBrace) && !self.check(TokenType::Eof) {
@@ -2291,6 +2402,8 @@ impl Parser {
             name, backend: String::new(), connection: String::new(),
             confidence_floor: None, isolation: String::new(), on_breach: String::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2341,6 +2454,8 @@ impl Parser {
             certainty_floor: None,
             shield_ref: String::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2400,6 +2515,8 @@ impl Parser {
             ephemeral: None,
             shield_ref: String::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2438,6 +2555,8 @@ impl Parser {
             zones: None,
             compliance: Vec::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2477,6 +2596,8 @@ impl Parser {
             on_partition: "fail".to_string(),
             certainty_floor: None,
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2540,6 +2661,8 @@ impl Parser {
             mandate_ref: String::new(),
             max_retries: 3,
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2595,6 +2718,8 @@ impl Parser {
             acquire: "on_start".to_string(),
             on_expire: "anchor_breach".to_string(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2667,6 +2792,8 @@ impl Parser {
             aggregation: "majority".to_string(),
             certainty_mode: "min".to_string(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2733,6 +2860,8 @@ impl Parser {
             name,
             roles: Vec::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2820,6 +2949,8 @@ impl Parser {
             nodes: Vec::new(),
             edges: Vec::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2883,6 +3014,8 @@ impl Parser {
             tau: String::new(),
             decay: "exponential".to_string(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -2963,6 +3096,8 @@ impl Parser {
             scope: String::new(),
             sla: String::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -3059,6 +3194,8 @@ impl Parser {
             shield_ref: String::new(),
             max_patches: 3,
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -3155,6 +3292,8 @@ impl Parser {
             on_interact: String::new(),
             render_hint: "custom".to_string(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -3202,6 +3341,8 @@ impl Parser {
             components: Vec::new(),
             route: String::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -3232,6 +3373,8 @@ impl Parser {
             retries: None, timeout: String::new(),
             compliance: Vec::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -3312,6 +3455,8 @@ impl Parser {
             provenance: String::new(),
             derivation: String::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
 
         while !self.check(TokenType::RBrace) {
@@ -3472,6 +3617,8 @@ impl Parser {
                 line: kw_tok.line,
                 column: kw_tok.column,
             },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         }))
     }
 
@@ -3493,6 +3640,8 @@ impl Parser {
             persistence: "ephemeral".to_string(),
             shield_ref: String::new(),
             loc: Loc { line: tok.line, column: tok.column },
+        leading_trivia: Vec::new(),
+        trailing_trivia: Vec::new(),
         };
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -3975,6 +4124,177 @@ mod fase14a_declaration_trivia_tests {
         assert_eq!(prog.declarations.len(), 1);
         if let Declaration::Flow(f) = &prog.declarations[0] {
             assert_eq!(f.name, "F");
+        } else {
+            panic!("expected Flow declaration");
+        }
+    }
+}
+
+// ── §Fase 14.b — per-struct trivia fields tests ─────────────────────────────
+//
+// 14.b spreads `leading_trivia` / `trailing_trivia` into every Declaration
+// variant struct (FlowDefinition, ChannelDefinition, PersonaDefinition, …).
+// The Python AST already had this shape since 14.a; 14.b achieves Rust
+// parity. The side-channel `Program.declaration_trivia` is preserved for
+// backward compat — these tests verify the new direct access path.
+
+#[cfg(test)]
+mod fase14b_per_struct_trivia_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::tokens::TriviaKind;
+
+    fn parse(src: &str) -> Program {
+        let toks = Lexer::new(src, "<test>").tokenize().expect("lex");
+        Parser::new(toks).parse().expect("parse")
+    }
+
+    #[test]
+    fn flow_definition_carries_leading_trivia_directly() {
+        let prog = parse("/// documents F\nflow F() -> Out { }");
+        if let Declaration::Flow(f) = &prog.declarations[0] {
+            assert_eq!(f.leading_trivia.len(), 1);
+            assert_eq!(f.leading_trivia[0].kind, TriviaKind::DocLine);
+            assert_eq!(f.leading_trivia[0].text, "/// documents F");
+            assert!(f.trailing_trivia.is_empty());
+        } else {
+            panic!("expected Flow declaration");
+        }
+    }
+
+    #[test]
+    fn flow_definition_carries_trailing_trivia_directly() {
+        let prog = parse("flow F() -> Out { } // tail comment");
+        if let Declaration::Flow(f) = &prog.declarations[0] {
+            assert_eq!(f.trailing_trivia.len(), 1);
+            assert_eq!(f.trailing_trivia[0].text, "// tail comment");
+        } else {
+            panic!("expected Flow declaration");
+        }
+    }
+
+    #[test]
+    fn channel_definition_carries_trivia_directly() {
+        // ChannelDefinition is a Tier-1 declaration; verify per-struct fields
+        // populate just like FlowDefinition.
+        let src = concat!(
+            "/// inbound order events\n",
+            "channel Orders {\n",
+            "    message:     Order\n",
+            "    qos:         at_least_once\n",
+            "    lifetime:    affine\n",
+            "    persistence: ephemeral\n",
+            "    shield:      Broker\n",
+            "}",
+        );
+        let prog = parse(src);
+        if let Declaration::Channel(ch) = &prog.declarations[0] {
+            assert_eq!(ch.leading_trivia.len(), 1);
+            assert!(ch.leading_trivia[0].is_doc());
+            assert_eq!(ch.leading_trivia[0].text, "/// inbound order events");
+        } else {
+            panic!("expected Channel declaration");
+        }
+    }
+
+    #[test]
+    fn per_struct_fields_match_side_channel() {
+        // 14.a side-channel and 14.b per-struct fields must hold identical
+        // data — they are populated by the same parser pass.
+        let src = "/// for A\n// header for B\nflow A() -> Out { }\n/// for B\nflow B() -> Out { }";
+        let prog = parse(src);
+        for (idx, decl) in prog.declarations.iter().enumerate() {
+            let side = &prog.declaration_trivia[idx];
+            let (per_lead, per_trail) = match decl {
+                Declaration::Flow(f) => (&f.leading_trivia, &f.trailing_trivia),
+                _ => panic!("unexpected variant"),
+            };
+            assert_eq!(per_lead.len(), side.leading.len());
+            assert_eq!(per_trail.len(), side.trailing.len());
+            for (a, b) in per_lead.iter().zip(side.leading.iter()) {
+                assert_eq!(a.text, b.text);
+                assert_eq!(a.kind, b.kind);
+            }
+        }
+    }
+
+    #[test]
+    fn comment_free_program_yields_empty_per_struct_fields() {
+        let prog = parse("flow F() -> Out { }");
+        if let Declaration::Flow(f) = &prog.declarations[0] {
+            assert!(f.leading_trivia.is_empty());
+            assert!(f.trailing_trivia.is_empty());
+        } else {
+            panic!("expected Flow declaration");
+        }
+    }
+}
+
+// ── §Fase 14.c — inner doc comments (//!, /*!) ──────────────────────────────
+//
+// Inner doc comments document the *enclosing* item rather than the next
+// sibling. Today they flow through the trivia channel like any other
+// comment; downstream consumers (axon doc, LSP) decide how to interpret
+// `is_inner_doc()`. These tests verify the lexer→parser pipeline preserves
+// the inner-doc discriminator end-to-end.
+
+#[cfg(test)]
+mod fase14c_inner_doc_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::tokens::TriviaKind;
+
+    fn parse(src: &str) -> Program {
+        let toks = Lexer::new(src, "<test>").tokenize().expect("lex");
+        Parser::new(toks).parse().expect("parse")
+    }
+
+    #[test]
+    fn inner_doc_line_reaches_leading_trivia() {
+        let src = "//! file-level docs\nflow F() -> Out { }";
+        let prog = parse(src);
+        let triv = &prog.declaration_trivia[0];
+        assert_eq!(triv.leading.len(), 1);
+        assert_eq!(triv.leading[0].kind, TriviaKind::InnerDocLine);
+        assert!(triv.leading[0].is_doc());
+        assert!(triv.leading[0].is_inner_doc());
+        assert_eq!(triv.leading[0].text, "//! file-level docs");
+        assert_eq!(triv.leading[0].stripped_text(), " file-level docs");
+    }
+
+    #[test]
+    fn inner_doc_block_reaches_leading_trivia() {
+        let src = "/*! module-level docs */\nflow F() -> Out { }";
+        let prog = parse(src);
+        let triv = &prog.declaration_trivia[0];
+        assert_eq!(triv.leading.len(), 1);
+        assert_eq!(triv.leading[0].kind, TriviaKind::InnerDocBlock);
+        assert!(triv.leading[0].is_inner_doc());
+        assert_eq!(triv.leading[0].stripped_text(), " module-level docs ");
+    }
+
+    #[test]
+    fn outer_and_inner_doc_can_coexist() {
+        // File-level inner doc on top, then an outer doc for the
+        // declaration. Both reach the trivia channel and remain
+        // distinguishable via `is_inner_doc()`.
+        let src = "//! file docs\n/// docs F\nflow F() -> Out { }";
+        let prog = parse(src);
+        let triv = &prog.declaration_trivia[0];
+        assert_eq!(triv.leading.len(), 2);
+        assert!(triv.leading[0].is_inner_doc());
+        assert!(triv.leading[1].is_doc());
+        assert!(!triv.leading[1].is_inner_doc());
+    }
+
+    #[test]
+    fn inner_doc_reaches_per_struct_fields() {
+        // Same data must be visible via the per-struct fields (Fase 14.b).
+        let src = "//! intro\nflow F() -> Out { }";
+        let prog = parse(src);
+        if let Declaration::Flow(f) = &prog.declarations[0] {
+            assert_eq!(f.leading_trivia.len(), 1);
+            assert!(f.leading_trivia[0].is_inner_doc());
         } else {
             panic!("expected Flow declaration");
         }
