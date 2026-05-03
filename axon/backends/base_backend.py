@@ -46,6 +46,7 @@ from axon.compiler.ir_nodes import (
     IRFocus,
     IRForge,
     IRIngest,
+    IRLambdaDataApply,
     IRListen,
     IRMutate,
     IRNavigate,
@@ -86,6 +87,12 @@ _OTS_IR_TYPES = (IROtsApply,)
 
 # IR types that represent Compute operations (deterministic muscle)
 _COMPUTE_IR_TYPES = (IRComputeApply,)
+
+# IR types that represent ΛD apply operations (Fase 15 — epistemic
+# binding of a declared `lambda` spec to a step output / let-bound var).
+# Pure binding: no LLM, no I/O, just envelope construction with the
+# Theorem 5.1 runtime guard mirroring the compile-time check.
+_LAMBDA_APPLY_IR_TYPES = (IRLambdaDataApply,)
 
 # IR types that represent Daemon operations (AxonServer π-calculus)
 _DAEMON_IR_TYPES = (IRDaemon,)
@@ -326,6 +333,9 @@ class BaseBackend(ABC):
                 elif isinstance(step, _COMPUTE_IR_TYPES):
                     compute_step = self._compile_compute_step(step, ir)
                     compiled_steps.append(compute_step)
+                elif isinstance(step, _LAMBDA_APPLY_IR_TYPES):
+                    lambda_apply_step = self._compile_lambda_apply_step(step, ir)
+                    compiled_steps.append(lambda_apply_step)
                 elif isinstance(step, _DAEMON_IR_TYPES):
                     daemon_step = self._compile_daemon_step(step, ctx)
                     compiled_steps.append(daemon_step)
@@ -1076,6 +1086,55 @@ class BaseBackend(ABC):
                     "arguments": list(step.arguments),
                     "output_name": step.output_name,
                     "compute_definition": compute_def,
+                },
+            },
+        )
+
+    @staticmethod
+    def _compile_lambda_apply_step(
+        step: IRLambdaDataApply, ir: IRProgram,
+    ) -> CompiledStep:
+        """Compile a ΛD apply (`lambda apply X to Y`) into a metadata-only
+        step (Fase 15.a).
+
+        The runtime executor's `_execute_lambda_data_apply_step` consumes
+        the `lambda_data_apply` metadata payload to:
+          1. resolve `target` against the unit context (variable / step
+             result / dotted access);
+          2. construct ψ = ⟨T, V, E⟩ from the spec snapshot;
+          3. enforce Theorem 5.1 at runtime (mirror of the compile-time
+             guard, defensive against IR-JSON tampering between compile
+             and execute);
+          4. bind the resulting ψ to the `output_type` symbol so
+             downstream steps can reference it.
+
+        The spec snapshot is materialised inline (not a reference) so the
+        runtime never needs to hold the IR — same isolation pattern as
+        `_compile_compute_step`.
+        """
+        spec_snapshot: dict[str, Any] = {}
+        for spec in ir.lambda_data_specs:
+            if spec.name == step.lambda_data_name:
+                spec_snapshot = {
+                    "name": spec.name,
+                    "ontology": spec.ontology,
+                    "certainty": spec.certainty,
+                    "temporal_frame_start": spec.temporal_frame_start,
+                    "temporal_frame_end": spec.temporal_frame_end,
+                    "provenance": spec.provenance,
+                    "derivation": spec.derivation,
+                }
+                break
+
+        return CompiledStep(
+            step_name=f"lambda_apply:{step.lambda_data_name}",
+            user_prompt="",
+            metadata={
+                "lambda_data_apply": {
+                    "lambda_data_name": step.lambda_data_name,
+                    "target": step.target,
+                    "output_type": step.output_type,
+                    "spec_snapshot": spec_snapshot,
                 },
             },
         )

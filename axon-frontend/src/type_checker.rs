@@ -43,6 +43,15 @@ const VALID_VIOLATION_ACTIONS: &[&str] = &["escalate", "fallback", "log", "raise
 
 const VALID_RETRIEVAL_STRATEGIES: &[&str] = &["exact", "hybrid", "semantic"];
 
+// Fase 15.d — reserved primitive / built-in type names that a
+// `lambda apply ... -> OutputType` MUST NOT shadow. Mirror of
+// axon.compiler.type_checker._RESERVED_OUTPUT_TYPE_NAMES.
+const RESERVED_OUTPUT_TYPE_NAMES: &[&str] = &[
+    "any", "bool", "boolean", "bytes", "dict", "false", "float",
+    "int", "integer", "list", "map", "none", "null", "number",
+    "set", "str", "string", "true", "tuple", "void",
+];
+
 // §λ-L-E Fase 11.a + 11.c + 11.e — `stream` (mandatory backpressure),
 // `trust` (mandatory proof), `sensitive` (data-category jurisdiction
 // — open taxonomy), `legal` (mandatory legal basis from the closed
@@ -3182,6 +3191,24 @@ impl<'a> TypeChecker<'a> {
                             ),
                             _ => {}
                         }
+                    }
+                    // Fase 15.d — output_type must not shadow primitive type names.
+                    // Mirror of axon.compiler.type_checker._RESERVED_OUTPUT_TYPE_NAMES;
+                    // drift is detected by tests/test_lambda_data_runtime.py::
+                    // test_derivation_vocab_parity_with_compiler (sibling concept).
+                    if !n.output_type.is_empty()
+                        && RESERVED_OUTPUT_TYPE_NAMES
+                            .contains(&n.output_type.to_ascii_lowercase().as_str())
+                    {
+                        self.emit(
+                            format!(
+                                "lambda apply output_type '{}' shadows a reserved \
+                                 primitive / built-in type name — choose a distinct \
+                                 name for the bound envelope",
+                                n.output_type
+                            ),
+                            &n.loc,
+                        );
                     }
                 }
                 FlowStep::Navigate(n) => {

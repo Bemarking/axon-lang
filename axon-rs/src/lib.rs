@@ -71,6 +71,7 @@ pub mod hooks;
 pub mod http_tool;
 pub mod inspect;
 pub mod lambda_data;
+pub mod lambda_runtime;
 pub mod logging;
 pub mod migrations;
 pub mod output;

@@ -91,6 +91,11 @@ struct CompiledStep {
     /// For memory steps: the expression/query/target.
     #[serde(skip_serializing_if = "Option::is_none")]
     memory_expression: Option<String>,
+    /// Fase 15.c — for `lambda_data_apply` steps: the full payload
+    /// (spec snapshot + target + output_type) so the runner can build
+    /// ψ = ⟨T, V, E⟩ without reaching back into the IR.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lambda_apply_payload: Option<crate::lambda_runtime::LambdaApplyPayload>,
 }
 
 /// Trace event for execution recording.
@@ -110,7 +115,7 @@ fn build_execution_plan(ir: &IRProgram, backend: &str) -> Vec<ExecutionUnit> {
     for run in &ir.runs {
         let system_prompt = build_system_prompt(run, backend);
         let anchor_instructions = build_anchor_instructions(run);
-        let steps = build_compiled_steps(run);
+        let steps = build_compiled_steps(run, ir);
 
         units.push(ExecutionUnit {
             flow_name: run.flow_name.clone(),
@@ -204,7 +209,7 @@ fn build_anchor_instructions(run: &IRRun) -> Vec<String> {
         .collect()
 }
 
-fn build_compiled_steps(run: &IRRun) -> Vec<CompiledStep> {
+fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
     let flow = match &run.resolved_flow {
         Some(f) => f,
         None => return Vec::new(),
@@ -240,6 +245,37 @@ fn build_compiled_steps(run: &IRRun) -> Vec<CompiledStep> {
             _ => None,
         };
 
+        // Fase 15.c — materialise the lambda apply payload by looking
+        // up the spec snapshot from ir.lambda_data_specs. The runner
+        // needs the full snapshot at execute-time to construct ψ;
+        // carrying it in the CompiledStep keeps the executor free of
+        // IR back-references (mirrors Python's BaseBackend pattern).
+        let lambda_apply_payload = match node {
+            IRFlowNode::LambdaDataApply(s) => {
+                let snap = ir
+                    .lambda_data_specs
+                    .iter()
+                    .find(|spec| spec.name == s.lambda_data_name)
+                    .map(|spec| crate::lambda_runtime::SpecSnapshot {
+                        name: spec.name.clone(),
+                        ontology: spec.ontology.clone(),
+                        certainty: spec.certainty,
+                        temporal_frame_start: spec.temporal_frame_start.clone(),
+                        temporal_frame_end: spec.temporal_frame_end.clone(),
+                        provenance: spec.provenance.clone(),
+                        derivation: spec.derivation.clone(),
+                    })
+                    .unwrap_or_default();
+                Some(crate::lambda_runtime::LambdaApplyPayload {
+                    lambda_data_name: s.lambda_data_name.clone(),
+                    target: s.target.clone(),
+                    output_type: s.output_type.clone(),
+                    spec_snapshot: snap,
+                })
+            }
+            _ => None,
+        };
+
         steps.push(CompiledStep {
             step_name,
             step_type,
@@ -247,6 +283,7 @@ fn build_compiled_steps(run: &IRRun) -> Vec<CompiledStep> {
             user_prompt,
             tool_argument,
             memory_expression,
+            lambda_apply_payload,
         });
     }
 
@@ -354,7 +391,13 @@ fn execute_stub(
         }
 
         // Execute each step (stub)
+        let mut stub_ctx = crate::exec_context::ExecContext::new(
+            &unit.flow_name,
+            &unit.persona_name,
+            i,
+        );
         for (j, step) in unit.steps.iter().enumerate() {
+            stub_ctx.set_step(&step.step_name, &step.step_type, j);
             println!(
                 "  {} {}.{} [{}] {}",
                 c("→", "\x1b[32m", use_color),
@@ -363,6 +406,67 @@ fn execute_stub(
                 step.step_type,
                 &step.user_prompt
             );
+
+            // Fase 15.c — `lambda_data_apply` is the only primitive the
+            // stub executor implements semantically: it's a pure binding
+            // (no LLM, no I/O), so the stub can produce a correct ψ
+            // without diverging from the real executor. Adopters running
+            // `axon run --stub` get observable bindings for downstream
+            // ${OutputType} interpolation.
+            if step.step_type == "lambda_data_apply" {
+                if let Some(payload) = &step.lambda_apply_payload {
+                    let target_value = if payload.target.is_empty() {
+                        serde_json::Value::Null
+                    } else {
+                        // Interpolate target via stub_ctx — supports
+                        // ${StepName} / $var. Falls back to a string
+                        // literal of the target ref so the trace stays
+                        // observable even when the var is unresolved.
+                        let raw = stub_ctx
+                            .get(&payload.target)
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| payload.target.clone());
+                        serde_json::Value::String(raw)
+                    };
+                    match crate::lambda_runtime::build_psi(
+                        &payload.spec_snapshot,
+                        target_value,
+                    ) {
+                        Ok(psi) => {
+                            let psi_json = serde_json::to_string(&psi).unwrap_or_default();
+                            if !payload.output_type.is_empty() {
+                                stub_ctx.set(&payload.output_type, &psi_json);
+                            }
+                            stub_ctx.set_result(&step.step_name, &psi_json);
+                            if trace {
+                                events.push(TraceEvent {
+                                    event: "lambda_data_apply".to_string(),
+                                    unit: unit.flow_name.clone(),
+                                    step: step.step_name.clone(),
+                                    detail: psi_json,
+                                });
+                            }
+                            continue;
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "  {} lambda apply error: {}",
+                                c("✗", "\x1b[31m", use_color),
+                                err
+                            );
+                            if trace {
+                                events.push(TraceEvent {
+                                    event: "lambda_data_apply_error".to_string(),
+                                    unit: unit.flow_name.clone(),
+                                    step: step.step_name.clone(),
+                                    detail: err.to_string(),
+                                });
+                            }
+                            return (false, events);
+                        }
+                    }
+                }
+            }
 
             if trace {
                 events.push(TraceEvent {
@@ -1581,7 +1685,7 @@ pub fn execute_server_flow(
             persona_name: run.persona_name.clone(),
             context_name: run.context_name.clone(),
             system_prompt: build_system_prompt(run, backend),
-            steps: build_compiled_steps(run),
+            steps: build_compiled_steps(run, ir),
             anchor_instructions: build_anchor_instructions(run),
             effort: run.effort.clone(),
             resolved_anchors: run.resolved_anchors.clone(),
@@ -1643,7 +1747,7 @@ pub fn execute_server_flow(
             persona_name: run.persona_name.clone(),
             context_name: run.context_name.clone(),
             system_prompt: build_system_prompt(&run, backend),
-            steps: build_compiled_steps(&run),
+            steps: build_compiled_steps(&run, ir),
             anchor_instructions: build_anchor_instructions(&run),
             effort: run.effort.clone(),
             resolved_anchors: run.resolved_anchors.clone(),
