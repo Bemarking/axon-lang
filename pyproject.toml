@@ -10,8 +10,8 @@ axon-enterprise = "axon_enterprise.cli:entrypoint"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-enterprise"
-version = "1.5.1"
-description = "Axon Enterprise — RBAC, SSO, Audit, Metering, Compliance (Fase 10); Replay Tokens + Cognitive State (Fase 11); Primitives endpoint (v1.2.1); v1.3.0 integrated axon-lang 1.5.1 + Rust TypedEventBus (Fase 13.f.2); v1.4.0 integrated axon-lang 1.7.0 closing 13.j/k/l (typed channels end-to-end); v1.5.0 integrates axon-lang 1.9.0 — Fase 14 lossless lexing complete: per-struct trivia in Rust AST (14.b), inner doc comments //! /*! (14.c), axon fmt MVP round-trip formatter (14.d), LSP channel hover enriched with doc paragraphs (14.f); v1.5.1 picks up axon-lang 1.9.1 parser fix for compound qualifier slugs in effect rows — `legal:HIPAA.164_502` (Fase 11.c) and `ots:transform:mulaw8:pcm16` (Fase 11.e) now parse on both Python and Rust frontends, unblocking the type checker's existing LEGAL_BASIS_CATALOG / TRANSFORM_KIND_PAIRS lookups."
+version = "1.5.2"
+description = "Axon Enterprise — RBAC, SSO, Audit, Metering, Compliance (Fase 10); Replay Tokens + Cognitive State (Fase 11); Primitives endpoint (v1.2.1); v1.3.0 integrated axon-lang 1.5.1 + Rust TypedEventBus (Fase 13.f.2); v1.4.0 integrated axon-lang 1.7.0 closing 13.j/k/l (typed channels end-to-end); v1.5.0 integrates axon-lang 1.9.0 — Fase 14 lossless lexing complete: per-struct trivia in Rust AST (14.b), inner doc comments //! /*! (14.c), axon fmt MVP round-trip formatter (14.d), LSP channel hover enriched with doc paragraphs (14.f); v1.5.1 picks up axon-lang 1.9.1 parser fix for compound qualifier slugs in effect rows — `legal:HIPAA.164_502` (Fase 11.c) and `ots:transform:mulaw8:pcm16` (Fase 11.e); v1.5.2 integrates axon-lang 1.10.0 — Fase 15 lambda apply runtime wiring: Phase-2 lowering + Python and Rust dispatchers + Theorem 5.1 runtime guard + type-checker hardening, closing the v1.9.1 gap where `lambda apply X to Y` compiled green but silently no-op'd at execution. Tenants get end-to-end ψ = ⟨T, V, E⟩ binding for shield gating, persist, replay token snapshots, and provenance chains."
 readme = "README.md"
 license = "LicenseRef-Proprietary"
 requires-python = ">=3.12"
@@ -83,7 +83,33 @@ dependencies = [
     # Bug fix only — no surface change, no IR-shape change, container
     # image still pins exactly the lower bound (the workflow parses
     # the `>=` operand as the AXON_VERSION baked into the image).
-    "axon-lang>=1.9.1",
+    # v1.10.0 (2026-05-03) — Fase 15 lambda apply runtime wiring on
+    # both stacks. Pre-1.10.0 `lambda apply X to Y` was fully wired
+    # through the front-end (lexer → parser → type-checker → IR
+    # `IRLambdaDataApply`) but no runtime executor dispatched it:
+    # Phase-2 backend compilation dropped the node, the Python
+    # `Executor` had no handler, the Rust `runner.rs` only emitted a
+    # trace string in `execute_stub`. Programs that bound ΛD specs
+    # to step outputs compiled green and produced green IR JSON, then
+    # silently no-op'd at execution. v1.10.0 closes that on both
+    # stacks: Phase-2 lowering produces a `lambda_data_apply`
+    # CompiledStep with the spec snapshot inline; the Python
+    # `_execute_lambda_data_apply_step` resolves target via
+    # `ctx.resolve_value_ref`, builds ψ via `build_psi`, enforces
+    # Theorem 5.1 at runtime (mirror of compile-time guard, defends
+    # against IR tampering), binds ψ to `ctx[output_type]`, emits
+    # STEP_END trace; the Rust `runner.rs::execute_stub` mirrors with
+    # serde_json-shaped ψ written to `ExecContext` under
+    # `output_type`. Type-checker hardening (15.d) added: undefined
+    # `lambda_data_name` is now a compile error (was silent on
+    # Python; Rust already strict — vocab parity restored), and
+    # `output_type` shadowing primitive type names ({int, string,
+    # bool, ...}) is rejected. Cross-stack vocab parity asserted by
+    # tests. No platform code changes here — the fix surfaces through
+    # the existing axon-lang passthrough; tenants binding ΛD
+    # envelopes finally see the bound ψ flow downstream into shield
+    # gating, persist, replay token snapshots, and provenance chains.
+    "axon-lang>=1.10.0",
 
     # Database & ORM
     "sqlalchemy[asyncio]>=2.0.30",
