@@ -10,8 +10,8 @@ axon-enterprise = "axon_enterprise.cli:entrypoint"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-enterprise"
-version = "1.5.0"
-description = "Axon Enterprise — RBAC, SSO, Audit, Metering, Compliance (Fase 10); Replay Tokens + Cognitive State (Fase 11); Primitives endpoint (v1.2.1); v1.3.0 integrated axon-lang 1.5.1 + Rust TypedEventBus (Fase 13.f.2); v1.4.0 integrated axon-lang 1.7.0 closing 13.j/k/l (typed channels end-to-end); v1.5.0 integrates axon-lang 1.9.0 — Fase 14 lossless lexing complete: per-struct trivia in Rust AST (14.b), inner doc comments //! /*! (14.c), axon fmt MVP round-trip formatter (14.d), LSP channel hover enriched with doc paragraphs (14.f)."
+version = "1.5.1"
+description = "Axon Enterprise — RBAC, SSO, Audit, Metering, Compliance (Fase 10); Replay Tokens + Cognitive State (Fase 11); Primitives endpoint (v1.2.1); v1.3.0 integrated axon-lang 1.5.1 + Rust TypedEventBus (Fase 13.f.2); v1.4.0 integrated axon-lang 1.7.0 closing 13.j/k/l (typed channels end-to-end); v1.5.0 integrates axon-lang 1.9.0 — Fase 14 lossless lexing complete: per-struct trivia in Rust AST (14.b), inner doc comments //! /*! (14.c), axon fmt MVP round-trip formatter (14.d), LSP channel hover enriched with doc paragraphs (14.f); v1.5.1 picks up axon-lang 1.9.1 parser fix for compound qualifier slugs in effect rows — `legal:HIPAA.164_502` (Fase 11.c) and `ots:transform:mulaw8:pcm16` (Fase 11.e) now parse on both Python and Rust frontends, unblocking the type checker's existing LEGAL_BASIS_CATALOG / TRANSFORM_KIND_PAIRS lookups."
 readme = "README.md"
 license = "LicenseRef-Proprietary"
 requires-python = ">=3.12"
@@ -69,7 +69,21 @@ dependencies = [
     # IR JSON byte-identical vs v1.4.0 — trivia is an AST-only concern
     # and never serialised, so no migration is required for existing
     # tenants and the runtime contract stays intact.
-    "axon-lang>=1.9.0",
+    # v1.9.1 (2026-05-03) bumps the floor to pick up the parser fix for
+    # compound qualifier slugs in effect rows (Fase 11.c / 11.e):
+    # `legal:HIPAA.164_502`, `legal:GDPR.Art6.Consent` (dot-separated)
+    # and `ots:transform:mulaw8:pcm16`, `ots:backend:native`
+    # (colon-separated) now parse correctly on both Python
+    # (`axon.compiler.parser`) and Rust (`axon-frontend::parser`)
+    # frontends. Pre-1.9.1 the parser consumed exactly one identifier
+    # after the qualifier colon, so adopters declaring these compound
+    # qualifiers got `Expected identifier or keyword value, found
+    # Dot('.')` / `found Colon(':')` at parse time even though the
+    # type checker's downstream `split_once(':')` was already correct.
+    # Bug fix only — no surface change, no IR-shape change, container
+    # image still pins exactly the lower bound (the workflow parses
+    # the `>=` operand as the AXON_VERSION baked into the image).
+    "axon-lang>=1.9.1",
 
     # Database & ORM
     "sqlalchemy[asyncio]>=2.0.30",
