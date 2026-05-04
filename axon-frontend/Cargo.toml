@@ -1,10 +1,10 @@
 [package]
 name = "axon-frontend"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.95"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
-description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator, compile-time checker. Zero runtime dependencies. v0.4.0 closes Fase 17.a/17.d (let runtime wiring): LetStatement.value_kind + IRLetBinding.value_kind preserve parser tokenization intent so the runtime dispatcher can distinguish a quoted literal from a dotted-identifier reference; type_checker adds reserved-primitive-name shadowing + self-reference rejection for let bindings (Rust mirror of Python). v0.3.0 closed Fase 14 (lossless lexing). v0.2.0 added Fase 13 typed channels."
+description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator, compile-time checker. Zero runtime dependencies. v0.5.0 ships IRReturn.value_kind for Fase 18.d return runtime wiring (parser preserves literal-vs-reference intent for return values, mirror of let). v0.4.0 closed Fase 17 (let runtime). v0.3.0 closed Fase 14 (lossless lexing). v0.2.0 added Fase 13 typed channels."
 license = "MIT"
 repository = "https://github.com/Bemarking/axon-lang"
 readme = "README.md"
