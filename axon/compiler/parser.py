@@ -202,6 +202,10 @@ class Parser:
         self._trailing_trivia = trailing
         self._final_leading_trivia: tuple[Trivia, ...] = tuple(pending_leading)
         self._pos = 0
+        # Fase 17.a — side-channel for let-value-kind tagging. Reset
+        # at the start of each `_parse_let` and read at the end.
+        # Default "literal" so any spurious access before reset is safe.
+        self._last_let_value_kind: str = "literal"
 
         # Auto-decorate every `_parse_*` method so AST nodes returned
         # from any production rule get their leading/trailing trivia
@@ -2159,11 +2163,15 @@ class Parser:
                 found=name_tok.value,
             )
         self._consume(TokenType.ASSIGN)
+        # Reset side-channel before parsing the value; _parse_let_atom
+        # / _parse_let_value_expr write the kind hint as they descend.
+        self._last_let_value_kind = "literal"
         value = self._parse_let_value_expr()
 
         return LetStatement(
             identifier=name,
             value_expr=value,
+            value_kind=self._last_let_value_kind,
             line=tok.line,
             column=tok.column,
         )
@@ -2180,7 +2188,8 @@ class Parser:
 
         When the expression contains arithmetic operators (+, -, *, /),
         the entire expression is returned as a string so that the
-        NativeComputeDispatcher can evaluate it at runtime.
+        NativeComputeDispatcher can evaluate it at runtime — kind
+        promoted to "expression" via the side-channel.
         """
         atom = self._parse_let_atom()
 
@@ -2193,40 +2202,57 @@ class Parser:
                 self._advance()
                 parts.append(op_tok.value)
                 parts.append(str(self._parse_let_atom()))
+            self._last_let_value_kind = "expression"
             return " ".join(parts)
 
         return atom
 
     def _parse_let_atom(self) -> str | int | float | bool | list:
-        """Parse a single atomic value in a let expression."""
+        """Parse a single atomic value in a let expression.
+
+        Side-channel: `self._last_let_value_kind` is set to one of
+        "literal" / "reference" so the calling LetStatement / IR node
+        can distinguish a quoted string `"step_a"` (literal) from an
+        identifier reference `step_a` (resolved at runtime). See
+        Fase 17.a for the design rationale — without this hint, the
+        runtime dispatcher cannot decide whether to bind verbatim or
+        resolve via `ctx.resolve_value_ref`.
+        """
         tok = self._current()
 
         if tok.type == TokenType.STRING:
+            self._last_let_value_kind = "literal"
             self._advance()
             return tok.value
 
         if tok.type == TokenType.INTEGER:
+            self._last_let_value_kind = "literal"
             self._advance()
             return int(tok.value)
 
         if tok.type == TokenType.FLOAT:
+            self._last_let_value_kind = "literal"
             self._advance()
             return float(tok.value)
 
         if tok.type == TokenType.BOOL:
+            self._last_let_value_kind = "literal"
             self._advance()
             return tok.value.lower() == "true"
 
         if tok.type == TokenType.IDENTIFIER:
+            self._last_let_value_kind = "reference"
             return self._parse_dotted_identifier()
 
         # Keywords (pix, for, etc.) can start dotted-path values:
         #   let strategy = pix.document_tree
         if (self._pos + 1 < len(self._tokens)
                 and self._tokens[self._pos + 1].type == TokenType.DOT):
+            self._last_let_value_kind = "reference"
             return self._parse_dotted_identifier()
 
         if tok.type == TokenType.LBRACKET:
+            self._last_let_value_kind = "literal"
             return self._parse_let_list_literal()
 
         raise AxonParseError(

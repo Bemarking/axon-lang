@@ -96,6 +96,22 @@ struct CompiledStep {
     /// ψ = ⟨T, V, E⟩ without reaching back into the IR.
     #[serde(skip_serializing_if = "Option::is_none")]
     lambda_apply_payload: Option<crate::lambda_runtime::LambdaApplyPayload>,
+    /// Fase 17.c — for `let_binding` steps: the payload (target,
+    /// value, value_kind) so the stub executor can perform the
+    /// SSA binding without re-traversing the IR.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    let_payload: Option<LetPayload>,
+}
+
+/// Fase 17.c — payload carried inside a CompiledStep for `let X = value`
+/// SSA bindings. `value_kind` ∈ {"literal", "reference", "expression"}
+/// disambiguates a quoted literal from a dotted-identifier reference
+/// resolved at runtime.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LetPayload {
+    pub target: String,
+    pub value: String,
+    pub value_kind: String,
 }
 
 /// Trace event for execution recording.
@@ -276,6 +292,18 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             _ => None,
         };
 
+        // Fase 17.c — materialise the let payload from the IR Let
+        // node so the stub executor can bind without re-traversing
+        // the IR. Same pattern as the lambda apply payload above.
+        let let_payload = match node {
+            IRFlowNode::Let(s) => Some(LetPayload {
+                target: s.target.clone(),
+                value: s.value.clone(),
+                value_kind: s.value_kind.clone(),
+            }),
+            _ => None,
+        };
+
         steps.push(CompiledStep {
             step_name,
             step_type,
@@ -284,6 +312,7 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             tool_argument,
             memory_expression,
             lambda_apply_payload,
+            let_payload,
         });
     }
 
@@ -465,6 +494,48 @@ fn execute_stub(
                             return (false, events);
                         }
                     }
+                }
+            }
+
+            // Fase 17.c — `let_binding` is also a pure SSA binding
+            // (no LLM, no I/O). The stub binds the resolved value
+            // into ExecContext under `target` so downstream ${X} /
+            // $X interpolation finds it. Resolution rule:
+            //   * literal — bind verbatim
+            //   * reference — look up in stub_ctx; fall back to the
+            //     literal value string if absent (preserves observable
+            //     trace even when the var is unresolved at stub time)
+            //   * expression — bind the joined string; runtime
+            //     evaluation via NativeComputeDispatcher is a future
+            //     sub-phase
+            if step.step_type == "let_binding" {
+                if let Some(payload) = &step.let_payload {
+                    let resolved = if payload.value_kind == "reference"
+                        && !payload.value.is_empty()
+                    {
+                        stub_ctx
+                            .get(&payload.value)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| payload.value.clone())
+                    } else {
+                        payload.value.clone()
+                    };
+                    if !payload.target.is_empty() {
+                        stub_ctx.set(&payload.target, &resolved);
+                    }
+                    stub_ctx.set_result(&step.step_name, &resolved);
+                    if trace {
+                        events.push(TraceEvent {
+                            event: "let_binding".to_string(),
+                            unit: unit.flow_name.clone(),
+                            step: step.step_name.clone(),
+                            detail: format!(
+                                "{}={} (kind={})",
+                                payload.target, resolved, payload.value_kind,
+                            ),
+                        });
+                    }
+                    continue;
                 }
             }
 

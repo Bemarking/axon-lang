@@ -1123,6 +1123,12 @@ pub struct ForInStatement {
 pub struct LetStatement {
     pub identifier: String,
     pub value_expr: String,
+    /// Fase 17.a — preserves the parser's tokenization intent so the
+    /// runtime dispatcher can distinguish a quoted literal from a
+    /// dotted-identifier reference. One of "literal", "reference",
+    /// "expression". Defaults to "literal" so any pre-Fase-17 caller
+    /// that constructs a LetStatement directly behaves as a literal.
+    pub value_kind: String,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

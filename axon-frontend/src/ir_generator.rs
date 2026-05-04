@@ -513,6 +513,11 @@ impl IRGenerator {
                 source_column: s.loc.column,
                 target: s.identifier.clone(),
                 value: s.value_expr.clone(),
+                value_kind: if s.value_kind.is_empty() {
+                    "literal".to_string()
+                } else {
+                    s.value_kind.clone()
+                },
             }),
             FlowStep::Return(s) => IRFlowNode::Return(IRReturnStep {
                 node_type: "return",
