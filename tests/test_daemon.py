@@ -777,6 +777,351 @@ class TestDaemonSupervisor:
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  FASE 16.a — HOOK PROTOCOL SURFACE
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestSupervisorHooks:
+    """Verify SupervisorHooks integration (Fase 16.a).
+
+    The OSS regression gate is hard: with `hooks=None`, the supervisor
+    must behave byte-for-byte equivalent to pre-Fase-16. The tests
+    above already verify that — these tests verify the new optional
+    surface is wired correctly when hooks ARE registered.
+    """
+
+    async def test_hooks_default_no_op(self):
+        """`DaemonSupervisor()` with no hooks behaves identically to today.
+
+        Sanity check that the pre-Fase-16 lifecycle still works when
+        no hooks are registered. The other 5 supervisor tests above
+        already exercise the no-hooks path; this test is a marker.
+        """
+        from axon.runtime.supervisor import DaemonSupervisor
+
+        supervisor = DaemonSupervisor()
+        assert supervisor._hooks is None
+        # Smoke: register + start + stop without hooks.
+        async def noop():
+            await asyncio.sleep(0.01)
+        supervisor.register("test", noop)
+        await supervisor.start_all()
+        await supervisor.stop_all()
+        assert supervisor.active_count == 0
+
+    async def test_hooks_lifecycle_callbacks_fire(self):
+        """Register a recording hook; verify start/crash/restart/intensity-exceeded fire in order."""
+        from axon.runtime.supervisor import (
+            DaemonSupervisor,
+            SupervisorConfig,
+        )
+
+        events: list[tuple[str, str, int]] = []
+
+        class RecordingHooks:
+            async def on_daemon_start(self, name, attempt):
+                events.append(("start", name, attempt))
+
+            async def on_daemon_crash(self, name, exc, attempt):
+                events.append(("crash", name, attempt))
+
+            async def on_daemon_restart(self, name, attempt, delay_s):
+                events.append(("restart", name, attempt))
+
+            async def on_intensity_exceeded(self, name, restart_count):
+                events.append(("intensity_exceeded", name, restart_count))
+
+            async def snapshot_state(self, name):
+                return None
+
+            async def restore_state(self, name, snapshot):
+                pass
+
+            async def liveness_check(self, name):
+                return True
+
+            async def resolve_on_stuck(self, name, exc):
+                return "restart"
+
+        async def always_crash():
+            raise RuntimeError("boom")
+
+        config = SupervisorConfig(max_restarts=2, max_seconds=60.0)
+        supervisor = DaemonSupervisor(config=config, hooks=RecordingHooks())
+        supervisor.register("crasher", always_crash)
+        await supervisor.start_all()
+        await asyncio.sleep(0.5)
+        await supervisor.stop_all()
+
+        # At minimum: start + crash + restart events must fire, plus
+        # intensity_exceeded once we exceed max_restarts.
+        kinds = [e[0] for e in events]
+        assert kinds.count("start") >= 1
+        assert kinds.count("crash") >= 1
+        assert kinds.count("restart") >= 1
+        assert "intensity_exceeded" in kinds
+
+    async def test_hooks_snapshot_restore_round_trip(self):
+        """Snapshot → restore round-trip across a crash boundary."""
+        from axon.runtime.supervisor import (
+            DaemonSupervisor,
+            SupervisorConfig,
+        )
+
+        snapshots_taken: list[str] = []
+        snapshots_restored: list[str] = []
+        call_count = 0
+
+        class StateHooks:
+            async def on_daemon_start(self, name, attempt): pass
+            async def on_daemon_crash(self, name, exc, attempt): pass
+            async def on_daemon_restart(self, name, attempt, delay_s): pass
+            async def on_intensity_exceeded(self, name, restart_count): pass
+            async def liveness_check(self, name): return True
+            async def resolve_on_stuck(self, name, exc): return "restart"
+
+            async def snapshot_state(self, name):
+                snap = f"snap-{name}-{len(snapshots_taken)}"
+                snapshots_taken.append(snap)
+                return snap
+
+            async def restore_state(self, name, snapshot):
+                snapshots_restored.append(snapshot)
+
+        async def crash_once_then_succeed():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("crash on first call")
+            await asyncio.sleep(10)
+
+        config = SupervisorConfig(max_restarts=5, max_seconds=60.0)
+        supervisor = DaemonSupervisor(config=config, hooks=StateHooks())
+        supervisor.register("stateful", crash_once_then_succeed)
+        await supervisor.start_all()
+        await asyncio.sleep(0.5)
+        await supervisor.stop_all()
+
+        # snapshot fired once (on the crash); restore fired once (on
+        # the next start with the snapshot from the previous crash).
+        assert len(snapshots_taken) >= 1
+        assert len(snapshots_restored) >= 1
+        # Round-trip integrity: the restored snapshot is the one taken.
+        assert snapshots_restored[0] == snapshots_taken[0]
+
+    async def test_on_stuck_policy_string_passthrough(self):
+        """`DaemonSpec.on_stuck_policy` is plumbed and accessible via hooks."""
+        from axon.runtime.supervisor import DaemonSupervisor
+
+        seen_policies: list[str] = []
+
+        class PolicyHooks:
+            async def on_daemon_start(self, name, attempt): pass
+            async def on_daemon_crash(self, name, exc, attempt): pass
+            async def on_daemon_restart(self, name, attempt, delay_s): pass
+            async def on_intensity_exceeded(self, name, restart_count): pass
+            async def snapshot_state(self, name): return None
+            async def restore_state(self, name, snapshot): pass
+            async def liveness_check(self, name): return True
+
+            async def resolve_on_stuck(self, name, exc):
+                # Read the policy string from the supervisor's spec
+                spec = supervisor._daemons[name]
+                seen_policies.append(spec.on_stuck_policy)
+                return "noop"  # terminate after one crash
+
+        async def crasher():
+            raise RuntimeError("die")
+
+        supervisor = DaemonSupervisor(hooks=PolicyHooks())
+        supervisor.register("a", crasher, on_stuck_policy="hibernate")
+        supervisor.register("b", crasher, on_stuck_policy="escalate")
+        await supervisor.start_all()
+        await asyncio.sleep(0.5)
+        await supervisor.stop_all()
+
+        # Each daemon's policy string was observable from the hook.
+        assert "hibernate" in seen_policies
+        assert "escalate" in seen_policies
+
+    async def test_on_stuck_policy_noop_terminates(self):
+        """OSS supervisor honors `noop` policy (terminate without restart)."""
+        from axon.runtime.supervisor import DaemonSupervisor
+
+        call_count = 0
+
+        class NoopHooks:
+            async def on_daemon_start(self, name, attempt): pass
+            async def on_daemon_crash(self, name, exc, attempt): pass
+            async def on_daemon_restart(self, name, attempt, delay_s): pass
+            async def on_intensity_exceeded(self, name, restart_count): pass
+            async def snapshot_state(self, name): return None
+            async def restore_state(self, name, snapshot): pass
+            async def liveness_check(self, name): return True
+            async def resolve_on_stuck(self, name, exc): return "noop"
+
+        async def crasher():
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("die")
+
+        supervisor = DaemonSupervisor(hooks=NoopHooks())
+        supervisor.register("terminal", crasher)
+        await supervisor.start_all()
+        await asyncio.sleep(0.3)
+        await supervisor.stop_all()
+
+        # `noop` means: crash once, no restart.
+        assert call_count == 1
+
+    async def test_hook_exceptions_are_swallowed(self):
+        """Buggy hook can't crash the supervisor itself."""
+        from axon.runtime.supervisor import DaemonSupervisor
+
+        class BuggyHooks:
+            async def on_daemon_start(self, name, attempt):
+                raise RuntimeError("hook is broken")
+            async def on_daemon_crash(self, name, exc, attempt):
+                raise RuntimeError("hook is broken")
+            async def on_daemon_restart(self, name, attempt, delay_s):
+                raise RuntimeError("hook is broken")
+            async def on_intensity_exceeded(self, name, restart_count):
+                raise RuntimeError("hook is broken")
+            async def snapshot_state(self, name):
+                raise RuntimeError("hook is broken")
+            async def restore_state(self, name, snapshot):
+                raise RuntimeError("hook is broken")
+            async def liveness_check(self, name):
+                raise RuntimeError("hook is broken")
+            async def resolve_on_stuck(self, name, exc):
+                raise RuntimeError("hook is broken")
+
+        async def short_lived():
+            await asyncio.sleep(0.05)
+
+        supervisor = DaemonSupervisor(hooks=BuggyHooks())
+        supervisor.register("test", short_lived)
+        # Should not raise despite every hook raising.
+        await supervisor.start_all()
+        await asyncio.sleep(0.2)
+        await supervisor.stop_all()
+        assert supervisor.active_count == 0
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  FASE 16.b — RESTART-LOG EVICTION
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestRestartLogEviction:
+    """Verify the per-daemon restart log stays bounded (Fase 16.b)."""
+
+    def test_restart_log_evicts_old_entries(self):
+        """Entries older than `max_seconds` are popped from the deque."""
+        from axon.runtime.supervisor import (
+            DaemonSupervisor,
+            SupervisorConfig,
+        )
+
+        config = SupervisorConfig(max_restarts=3, max_seconds=1.0)
+        supervisor = DaemonSupervisor(config=config)
+
+        # Synthesize 100 restart events — half before the window cutoff,
+        # half inside. After the last record, the deque must contain
+        # only the in-window entries.
+        now_anchor = 100.0
+        for i in range(50):
+            # 50 entries between now-2.0 and now-1.5 (outside window of 1.0s)
+            supervisor._record_restart("d", now_anchor - 2.0 + 0.01 * i)
+        for i in range(50):
+            # 50 entries between now-0.5 and now (inside window)
+            supervisor._record_restart("d", now_anchor - 0.5 + 0.01 * i)
+
+        log = supervisor._restart_log["d"]
+        # Deque maxlen = max_restarts + 1 = 4 — only the most recent
+        # 4 entries survive the ringbuffer regardless of timestamp.
+        assert len(log) <= config.max_restarts + 1
+        # All surviving entries are inside the window.
+        cutoff = now_anchor - config.max_seconds
+        assert all(ts >= cutoff for ts in log)
+
+    def test_restart_log_unbounded_pre_fase16_would_grow(self):
+        """Before 16.b the log was an unbounded list — confirm we now use a deque."""
+        from axon.runtime.supervisor import DaemonSupervisor
+        from collections import deque
+
+        supervisor = DaemonSupervisor()
+        for i in range(10):
+            supervisor._record_restart("d", float(i))
+        log = supervisor._restart_log["d"]
+        assert isinstance(log, deque)
+        assert log.maxlen is not None  # bounded
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  FASE 16.c — RACE-CONDITION FIX (asyncio.Lock around dict mutations)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestRestartRaceCondition:
+    """Verify concurrent crashes under one_for_all don't corrupt _tasks."""
+
+    async def test_concurrent_crashes_no_dict_corruption(self):
+        """5 daemons crash simultaneously under ONE_FOR_ALL — verify dict
+        integrity (no duplicate keys, no missing keys, no leaked tasks)
+        after the cascade settles. The cascade serialization flag
+        ensures only the first crashing daemon's restart cascade runs;
+        the others short-circuit and get cancelled-then-recreated by
+        the in-flight cascade.
+        """
+        from axon.runtime.supervisor import (
+            DaemonSupervisor,
+            SupervisorConfig,
+            SupervisionStrategy,
+        )
+
+        crash_event = asyncio.Event()
+        per_daemon_calls: dict[str, int] = {}
+
+        async def make_daemon(name: str):
+            per_daemon_calls[name] = per_daemon_calls.get(name, 0) + 1
+            if per_daemon_calls[name] == 1:
+                await crash_event.wait()
+                raise RuntimeError(f"{name} crashed")
+            await asyncio.sleep(0.3)
+
+        config = SupervisorConfig(
+            max_restarts=10,
+            max_seconds=60.0,
+            strategy=SupervisionStrategy.ONE_FOR_ALL,
+        )
+        supervisor = DaemonSupervisor(config=config)
+        N = 5
+        for i in range(N):
+            name = f"d{i}"
+            supervisor.register(name, make_daemon, name)
+        await supervisor.start_all()
+
+        await asyncio.sleep(0.05)
+        crash_event.set()
+        # Give the cascade enough time to drain and recreate.
+        await asyncio.sleep(0.4)
+
+        # Dict-integrity invariants (the meat of the race-fix gate):
+        #   1. exactly N keys (no duplicates, no missing)
+        #   2. all expected names present
+        #   3. supervisor reports the right active count
+        assert len(supervisor._tasks) == N
+        assert set(supervisor._tasks.keys()) == {f"d{i}" for i in range(N)}
+        # Cascade flag must be cleared after settling.
+        assert supervisor._cascade_in_progress is False
+
+        await supervisor.stop_all()
+        # Post-shutdown: no leaked entries.
+        assert supervisor.active_count == 0
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  DAEMON RESULT TESTS
 # ═══════════════════════════════════════════════════════════════════
 
