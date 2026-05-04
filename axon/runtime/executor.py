@@ -753,6 +753,16 @@ class Executor:
                 step=step, unit=unit, ctx=ctx, tracer=tracer,
             )
 
+        # ── let binding step shortcut (Fase 17.b) ──────────────────────
+        # If the step carries a let_binding config, route through
+        # _execute_let_step — pure SSA binding, no LLM, no I/O.
+        # Resolves value via ctx.resolve_value_ref when value_kind ==
+        # "reference"; binds verbatim for "literal"; emits trace event.
+        if step.metadata.get("let_binding"):
+            return await self._execute_let_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
         # ── Daemon step shortcut ───────────────────────────────────────
         # If the step carries a daemon config, route through
         # _execute_daemon_step — co-inductive reactive event loop.
@@ -3650,6 +3660,116 @@ class Executor:
             step_name=step_name,
             response=response,
             duration_ms=step_duration,
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  let BINDING EXECUTION — pure SSA binding (Fase 17.b)
+    # ═══════════════════════════════════════════════════════════════
+
+    async def _execute_let_step(
+        self,
+        *,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a `let X = value` SSA binding.
+
+        Pure binding — no model call, no I/O. Steps:
+          1. Read the metadata payload (target, value, value_kind).
+          2. If value_kind == "reference": resolve `value` against the
+             unit context via ``ctx.resolve_value_ref`` (handles bare
+             ident, dotted access, step results, variables, discovered
+             handles). Falls through to AxonRuntimeError with a
+             pinpoint message if the reference is unresolvable.
+          3. If value_kind == "literal" (or "expression" until the
+             NativeComputeDispatcher integration ships): bind verbatim.
+          4. Bind the resulting value to ``ctx.set_variable(target, ...)``.
+          5. Emit STEP_END trace with target, value_kind, value_repr.
+
+        The returned StepResult carries a ModelResponse-shaped result
+        so downstream validation / refine logic doesn't special-case
+        let steps; content is the JSON-serialized resolved value.
+        """
+        from json import dumps as _json_dumps
+
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["let_binding"]
+        target = meta.get("target", "")
+        value = meta.get("value", "")
+        value_kind = meta.get("value_kind", "literal")
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "type": "let_binding",
+                "target": target,
+                "value_kind": value_kind,
+            },
+        )
+
+        # 1. Resolve value (or pass through for literals).
+        if value_kind == "reference" and isinstance(value, str) and value:
+            try:
+                resolved = ctx.resolve_value_ref(value)
+            except KeyError as exc:
+                duration_ms = (time.perf_counter() - step_start) * 1000
+                tracer.emit(
+                    TraceEventType.STEP_END,
+                    step_name=step_name,
+                    data={
+                        "success": False,
+                        "stage": "value_resolve",
+                        "error": str(exc),
+                    },
+                    duration_ms=duration_ms,
+                )
+                raise AxonRuntimeError(
+                    f"let '{target}': reference '{value}' not found in unit "
+                    f"context — {exc}"
+                ) from exc
+        else:
+            # Literal (str/int/float/bool/list) or expression string.
+            resolved = value
+
+        # 2. Bind to the unit context. SSA enforcement is at compile
+        # time (TypeChecker._check_let), so any rebinding here is
+        # legitimate (e.g., a fresh start_all after stop_all).
+        if target:
+            ctx.set_variable(target, resolved)
+
+        duration_ms = (time.perf_counter() - step_start) * 1000
+
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "type": "let_binding",
+                "target": target,
+                "value_kind": value_kind,
+                "value_repr": repr(resolved)[:120],
+            },
+            duration_ms=duration_ms,
+        )
+
+        try:
+            content = _json_dumps(resolved, default=str)
+        except (TypeError, ValueError):
+            content = str(resolved)
+
+        response = ModelResponse(
+            content=content,
+            usage={"input_tokens": 0, "output_tokens": 0},
+        )
+
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=duration_ms,
         )
 
     # ═══════════════════════════════════════════════════════════════

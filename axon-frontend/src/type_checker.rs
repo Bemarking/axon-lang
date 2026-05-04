@@ -3211,6 +3211,45 @@ impl<'a> TypeChecker<'a> {
                         );
                     }
                 }
+                FlowStep::Let(n) => {
+                    // Fase 17.d — type-checker hardening for `let` bindings.
+                    // Mirror of axon/compiler/type_checker.py::_check_let.
+                    if n.identifier.is_empty() {
+                        self.emit(
+                            "let binding requires an identifier".to_string(),
+                            &n.loc,
+                        );
+                    } else {
+                        // Reserved primitive type name shadowing.
+                        if RESERVED_OUTPUT_TYPE_NAMES
+                            .contains(&n.identifier.to_ascii_lowercase().as_str())
+                        {
+                            self.emit(
+                                format!(
+                                    "let binding '{}' shadows a reserved primitive / \
+                                     built-in type name — choose a distinct identifier",
+                                    n.identifier
+                                ),
+                                &n.loc,
+                            );
+                        }
+                        // Self-reference: `let X = X` or `let X = X.something`.
+                        if n.value_kind == "reference" && !n.value_expr.is_empty() {
+                            let head = n.value_expr.split('.').next().unwrap_or("");
+                            if head == n.identifier {
+                                self.emit(
+                                    format!(
+                                        "let binding '{}' is self-referential \
+                                         (value '{}' starts with the binding name itself) — \
+                                         cannot resolve at runtime",
+                                        n.identifier, n.value_expr
+                                    ),
+                                    &n.loc,
+                                );
+                            }
+                        }
+                    }
+                }
                 FlowStep::Navigate(n) => {
                     if !n.pix_name.is_empty() {
                         match self.symbols.lookup(&n.pix_name) {

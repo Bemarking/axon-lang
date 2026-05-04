@@ -707,9 +707,25 @@ class LetStatement(ASTNode):
     The value_expr is a compile-time constant: a string literal,
     numeric literal, boolean, dotted identifier path, or a list
     literal of such values.
+
+    `value_kind` (Fase 17.a) preserves the parser's tokenization
+    intent so the runtime dispatcher can distinguish literal strings
+    from dotted-identifier references — without it, `let X = "step_a"`
+    and `let X = step_a` collapse into the same IR shape and the
+    runtime cannot decide whether to bind verbatim or resolve via the
+    context. Values:
+
+      "literal"     — bound verbatim (str/int/float/bool/list)
+      "reference"   — dotted identifier resolved at runtime via
+                      `ctx.resolve_value_ref` (e.g., `step_a.output`)
+      "expression"  — arithmetic expression for runtime evaluation
+                      (e.g., `2 + 3` joined by parser into "2 + 3";
+                      currently bound as a string until the
+                      NativeComputeDispatcher integration ships)
     """
     identifier: str = ""                            # binding name
     value_expr: str | int | float | bool | list = field(default_factory=str)
+    value_kind: str = "literal"                     # Fase 17.a — see docstring
 
 
 @dataclass

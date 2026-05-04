@@ -47,6 +47,7 @@ from axon.compiler.ir_nodes import (
     IRForge,
     IRIngest,
     IRLambdaDataApply,
+    IRLetBinding,
     IRListen,
     IRMutate,
     IRNavigate,
@@ -93,6 +94,14 @@ _COMPUTE_IR_TYPES = (IRComputeApply,)
 # Pure binding: no LLM, no I/O, just envelope construction with the
 # Theorem 5.1 runtime guard mirroring the compile-time check.
 _LAMBDA_APPLY_IR_TYPES = (IRLambdaDataApply,)
+
+# IR types for `let X = value` SSA bindings (Fase 17 — runtime macro
+# substitution). Pure binding: no LLM, no I/O. The dispatcher reads
+# `value_kind` to decide whether to bind verbatim ("literal") or
+# resolve via `ctx.resolve_value_ref` ("reference"). Without a
+# dedicated arm here, IRLetBinding falls through to `compile_step`
+# which produces an LLM-bound prompt — the bug Fase 17 closes.
+_LET_IR_TYPES = (IRLetBinding,)
 
 # IR types that represent Daemon operations (AxonServer π-calculus)
 _DAEMON_IR_TYPES = (IRDaemon,)
@@ -336,6 +345,9 @@ class BaseBackend(ABC):
                 elif isinstance(step, _LAMBDA_APPLY_IR_TYPES):
                     lambda_apply_step = self._compile_lambda_apply_step(step, ir)
                     compiled_steps.append(lambda_apply_step)
+                elif isinstance(step, _LET_IR_TYPES):
+                    let_step = self._compile_let_step(step)
+                    compiled_steps.append(let_step)
                 elif isinstance(step, _DAEMON_IR_TYPES):
                     daemon_step = self._compile_daemon_step(step, ctx)
                     compiled_steps.append(daemon_step)
@@ -1086,6 +1098,34 @@ class BaseBackend(ABC):
                     "arguments": list(step.arguments),
                     "output_name": step.output_name,
                     "compute_definition": compute_def,
+                },
+            },
+        )
+
+    @staticmethod
+    def _compile_let_step(step: IRLetBinding) -> CompiledStep:
+        """Compile a ``let X = value`` SSA binding into a metadata-only
+        step (Fase 17.a).
+
+        The runtime executor's ``_execute_let_step`` consumes the
+        ``let_binding`` metadata payload to:
+          1. resolve ``value`` against the unit context if
+             ``value_kind == 'reference'`` (handles bare ident, dotted
+             access, step results, variables, discovered handles);
+          2. bind the resulting value to ``ctx[target]`` so subsequent
+             steps and ``${target}`` interpolation see it.
+
+        Pure binding: no LLM, no I/O. Mirrors the OTS / compute /
+        lambda_apply pattern — same dispatcher shape as Fase 15.b.
+        """
+        return CompiledStep(
+            step_name=f"let:{step.target}",
+            user_prompt="",
+            metadata={
+                "let_binding": {
+                    "target": step.target,
+                    "value": step.value,
+                    "value_kind": step.value_kind,
                 },
             },
         )

@@ -995,15 +995,20 @@ class IRGenerator:
     def _visit_let(self, node: ast.LetStatement) -> IRLetBinding:
         """Compile LetStatement → IRLetBinding.
 
-        The value expression is a compile-time constant that passes
-        through directly to the IR as a deterministic, serializable
-        value for runtime macro substitution.
+        The value expression is a compile-time constant (literal or
+        dotted-identifier reference). The `value_kind` carried over
+        from the parser's tokenization preserves the literal-vs-
+        reference distinction so the runtime dispatcher (Fase 17.b/c)
+        can decide whether to bind verbatim or resolve via
+        `ctx.resolve_value_ref`. Without this hint, `let X = "step_a"`
+        and `let X = step_a` collapse into the same IR shape.
         """
         return IRLetBinding(
             source_line=node.line,
             source_column=node.column,
             target=node.identifier,
             value=node.value_expr,
+            value_kind=getattr(node, "value_kind", "literal") or "literal",
         )
 
     def _visit_return(self, node: ast.ReturnStatement) -> IRReturn:

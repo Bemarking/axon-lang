@@ -528,19 +528,43 @@ class IRForIn(IRNode):
 @dataclass(frozen=True)
 class IRLetBinding(IRNode):
     """
-    Compiled SSA immutable binding — a lexical axiom injected into
-    the cognitive state for static substitution at runtime.
+    Compiled SSA immutable binding (Fase 17 — runtime-wired).
 
-    Maps from AST LetStatement.  The target identifier is bound
-    once and cannot be rebound (Single Static Assignment).
+    Phase-2 backend lowering (Fase 17.a) materialises this node into
+    a CompiledStep with a `let_binding` metadata payload. The Python
+    executor's `_execute_let_step` (Fase 17.b) and the Rust runner's
+    stub-correct let path (Fase 17.c) read the payload, optionally
+    resolve `value` against the unit context (when `value_kind ==
+    "reference"`), and bind the resulting value to `target` via
+    `ctx.set_variable`. Pure binding: no LLM, no I/O.
+
+    Maps from AST LetStatement.  The target identifier is bound once
+    and cannot be rebound (Single Static Assignment, enforced at
+    compile time by `_check_let` via SymbolTable.declare).
+
+    `value_kind` (Fase 17.a) preserves the parser's tokenization
+    intent so the runtime can distinguish a quoted string `"step_a"`
+    (literal) from a dotted-identifier reference `step_a` resolved at
+    runtime. Three values:
+
+      "literal"     — bound verbatim
+      "reference"   — resolved via `ctx.resolve_value_ref` at apply time
+      "expression"  — arithmetic expression (joined as a string by
+                      the parser; runtime evaluation TBD)
 
     Example:
       let draft_path = "workspace/drafts/tesis.md"
-      → target="draft_path", value="workspace/drafts/tesis.md"
+      → target="draft_path", value="workspace/drafts/tesis.md",
+        value_kind="literal"
+
+      let derived = step_a.output.summary
+      → target="derived", value="step_a.output.summary",
+        value_kind="reference"
     """
     node_type: str = "let_binding"
     target: str = ""                                 # binding identifier
-    value: str | int | float | bool | list = ""      # resolved constant
+    value: str | int | float | bool | list = ""      # resolved constant or ref path
+    value_kind: str = "literal"                      # "literal" | "reference" | "expression"
 
 
 @dataclass(frozen=True)

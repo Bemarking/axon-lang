@@ -786,6 +786,9 @@ pub struct IRLetBinding {
     pub source_column: u32,
     pub target: String,
     pub value: String,
+    /// Fase 17.a — preserves parser tokenization intent.
+    /// One of "literal" | "reference" | "expression".
+    pub value_kind: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

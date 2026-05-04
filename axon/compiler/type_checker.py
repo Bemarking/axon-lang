@@ -1074,18 +1074,54 @@ class TypeChecker:
             self._check_flow_step(step, step_names, flow_name)
 
     def _check_let(self, node: LetStatement) -> None:
-        """Validate let binding — SSA immutability enforced via SymbolTable.
+        """Validate let binding — SSA immutability enforced via SymbolTable
+        plus Fase 17.d hardening (reserved-name shadowing + self-reference
+        rejection).
 
-        The SymbolTable.declare() method rejects duplicate names, which
-        provides compile-time Single Static Assignment enforcement:
-        any attempt to rebind an existing name produces a fatal
-        AxonTypeError ("ImmutableBindingError").
+        Five compile-time checks:
+          1. Identifier is non-empty.
+          2. SSA enforcement: SymbolTable.declare() rejects duplicate
+             names (any rebind produces ImmutableBindingError).
+          3. Reserved primitive type names (int, string, bool, ...)
+             cannot be shadowed — same set as lambda apply's
+             output_type guard from Fase 15.d.
+          4. Self-reference detected: `let X = X` would resolve to
+             undefined at runtime; rejected at compile time.
+          5. Value expression is not None.
         """
         if not node.identifier:
             self._emit("let binding requires an identifier", node)
             return
 
-        # SSA enforcement: SymbolTable.declare() returns error if name exists
+        # 3. Reserved primitive type names (Fase 17.d).
+        if node.identifier.lower() in self._RESERVED_OUTPUT_TYPE_NAMES:
+            self._emit(
+                f"let binding '{node.identifier}' shadows a reserved "
+                f"primitive / built-in type name — choose a distinct "
+                f"identifier (e.g., '{node.identifier.title()}Value' or a "
+                f"domain-specific name)",
+                node,
+            )
+
+        # 4. Self-reference (Fase 17.d).
+        # Only when the value is a reference (dotted-identifier path)
+        # whose head segment matches the binding name.
+        kind = getattr(node, "value_kind", "literal")
+        if (
+            kind == "reference"
+            and isinstance(node.value_expr, str)
+            and node.value_expr
+        ):
+            head = node.value_expr.split(".", 1)[0]
+            if head == node.identifier:
+                self._emit(
+                    f"let binding '{node.identifier}' is self-referential "
+                    f"(value '{node.value_expr}' starts with the binding "
+                    f"name itself) — cannot resolve at runtime",
+                    node,
+                )
+
+        # 2. SSA enforcement: SymbolTable.declare() returns error if name exists.
         err = self._symbols.declare(node.identifier, "let", node)
         if err:
             self._emit(
@@ -1094,6 +1130,7 @@ class TypeChecker:
                 node,
             )
 
+        # 5. Value must be present.
         if node.value_expr is None:
             self._emit(
                 f"let binding '{node.identifier}' requires a value expression",

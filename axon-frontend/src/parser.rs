@@ -246,6 +246,10 @@ pub struct Parser {
     /// is the comment trivia on the same line as `tokens[i]`, before
     /// the next effective token. Populated by the constructor.
     trailing_trivia: Vec<Vec<Trivia>>,
+    /// Fase 17.a — side-channel for tagging let value_kind. Set by
+    /// `parse_let_atom` / `parse_let_value_expr` as they descend; read
+    /// at the end of `parse_let` and stored on the LetStatement.
+    last_let_value_kind: String,
 }
 
 impl Parser {
@@ -293,6 +297,7 @@ impl Parser {
             pos: 0,
             leading_trivia: leading,
             trailing_trivia: trailing,
+            last_let_value_kind: "literal".to_string(),
         }
     }
 
@@ -1776,11 +1781,15 @@ impl Parser {
         // Name can be an identifier or a keyword used as binding name
         let name = self.consume_any_ident_or_kw()?.value;
         self.consume(TokenType::Assign)?;
+        // Fase 17.a — reset side-channel before parsing value; the
+        // atom / expr helpers tag the kind as they descend.
+        self.last_let_value_kind = "literal".to_string();
         let value = self.parse_let_value_expr()?;
 
         Ok(LetStatement {
             identifier: name,
             value_expr: value,
+            value_kind: self.last_let_value_kind.clone(),
             loc,
             leading_trivia: Vec::new(),
             trailing_trivia: Vec::new(),
@@ -1803,6 +1812,7 @@ impl Parser {
                 parts.push(self.advance().value.clone());
                 parts.push(self.parse_let_atom()?);
             }
+            self.last_let_value_kind = "expression".to_string();
             return Ok(parts.join(" "));
         }
         Ok(atom)
@@ -1813,24 +1823,34 @@ impl Parser {
 
         match tok.ttype {
             TokenType::StringLit => {
+                self.last_let_value_kind = "literal".to_string();
                 self.advance();
                 Ok(tok.value)
             }
             TokenType::Integer | TokenType::Float => {
+                self.last_let_value_kind = "literal".to_string();
                 self.advance();
                 Ok(tok.value)
             }
             TokenType::Bool => {
+                self.last_let_value_kind = "literal".to_string();
                 self.advance();
                 Ok(tok.value)
             }
-            TokenType::Identifier => self.parse_dotted_identifier(),
-            TokenType::LBracket => self.parse_let_list_literal(),
+            TokenType::Identifier => {
+                self.last_let_value_kind = "reference".to_string();
+                self.parse_dotted_identifier()
+            }
+            TokenType::LBracket => {
+                self.last_let_value_kind = "literal".to_string();
+                self.parse_let_list_literal()
+            }
             _ => {
                 // Keywords starting a dotted path (pix.document_tree)
                 if self.pos + 1 < self.tokens.len()
                     && self.tokens[self.pos + 1].ttype == TokenType::Dot
                 {
+                    self.last_let_value_kind = "reference".to_string();
                     return self.parse_dotted_identifier();
                 }
                 Err(ParseError {
