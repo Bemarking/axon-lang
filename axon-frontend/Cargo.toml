@@ -1,10 +1,10 @@
 [package]
 name = "axon-frontend"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.95"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
-description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator, compile-time checker. Zero runtime dependencies (no tokio/axum/sqlx/reqwest); consumable by any tool that analyses AXON source without running it. v0.3.0 closes Fase 14 (lossless lexing): the lexer emits comment tokens (`LineComment`, `BlockComment`, `DocLineComment`, `DocBlockComment`, `InnerDocLineComment`, `InnerDocBlockComment`) and the parser materialises them as `Trivia` attached to every Declaration variant via `leading_trivia` / `trailing_trivia` fields — the API surface that powers `axon fmt`, axon-lsp's formatter and hover docstring rendering, and any rustdoc-style documentation generator. Back-compatible: existing callers see empty trivia tuples until they opt in. v0.2.0 added Fase 13 typed channels (channel/emit/publish/discover) + `channel_analysis` module for LSP integration."
+description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator, compile-time checker. Zero runtime dependencies. v0.4.0 closes Fase 17.a/17.d (let runtime wiring): LetStatement.value_kind + IRLetBinding.value_kind preserve parser tokenization intent so the runtime dispatcher can distinguish a quoted literal from a dotted-identifier reference; type_checker adds reserved-primitive-name shadowing + self-reference rejection for let bindings (Rust mirror of Python). v0.3.0 closed Fase 14 (lossless lexing). v0.2.0 added Fase 13 typed channels."
 license = "MIT"
 repository = "https://github.com/Bemarking/axon-lang"
 readme = "README.md"
