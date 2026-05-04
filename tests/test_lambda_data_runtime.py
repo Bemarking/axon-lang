@@ -229,13 +229,18 @@ class TestPhase2Lowering:
         assert snapshot == {}
 
     def test_lowering_dispatch_arm_present_in_compile_program(self):
-        """Structural check — compile_program's dispatch chain
-        explicitly handles _LAMBDA_APPLY_IR_TYPES (Fase 15.a)."""
+        """Structural check — the dispatch chain (Fase 18.a refactored
+        it from inline in compile_program to a dedicated
+        `_compile_one_step` helper for control-flow recursion) handles
+        _LAMBDA_APPLY_IR_TYPES (Fase 15.a)."""
         from axon.backends.base_backend import (
             _LAMBDA_APPLY_IR_TYPES,
         )
         import inspect
-        src = inspect.getsource(BaseBackend.compile_program)
+        src = (
+            inspect.getsource(BaseBackend.compile_program)
+            + inspect.getsource(BaseBackend._compile_one_step)
+        )
         assert "_LAMBDA_APPLY_IR_TYPES" in src
         assert "_compile_lambda_apply_step" in src
         # The constant itself must include IRLambdaDataApply.

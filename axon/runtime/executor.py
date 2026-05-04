@@ -30,6 +30,7 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
@@ -77,6 +78,29 @@ _CHANNEL_OP_EMIT = "channel_op:emit"
 _CHANNEL_OP_PUBLISH = "channel_op:publish"
 _CHANNEL_OP_DISCOVER = "channel_op:discover"
 _CHANNEL_OP_LISTEN = "channel_op:listen"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  FLOW CONTROL SIGNALS (Fase 18.d — early-exit / control flow)
+# ═══════════════════════════════════════════════════════════════════
+# Internal sentinel exceptions for flow-level control transfer. These
+# are NEVER surfaced to adopter code: the executor's unit-level loop
+# catches them and translates them into the unit's normal exit path.
+
+
+class _FlowReturnSignal(Exception):
+    """Raised by `_execute_return_step` to short-circuit the unit's
+    step loop. The caught value is recorded as the unit's return
+    value; subsequent steps are NOT executed.
+
+    This is internal; adopters declaring `return value` in their
+    .axon source see normal flow semantics — early exit with the
+    value projected as the unit's result.
+    """
+
+    def __init__(self, value):
+        self.value = value
+        super().__init__(f"flow return: {value!r}")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -590,6 +614,18 @@ class Executor:
                     )
                     ctx.set_step_result(step.step_name, output)
 
+        except _FlowReturnSignal as ret:
+            # Fase 18.d — early exit. The `__return_value__` was
+            # already stashed on `ctx` by `_execute_return_step`;
+            # subsequent steps in the unit are NOT executed.
+            tracer.emit(
+                TraceEventType.STEP_END,
+                step_name="return",
+                data={
+                    "early_exit": True,
+                    "return_value_repr": repr(ret.value)[:120],
+                },
+            )
         except AxonRuntimeError as exc:
             error_msg = str(exc)
             tracer.emit(
@@ -760,6 +796,65 @@ class Executor:
         # "reference"; binds verbatim for "literal"; emits trace event.
         if step.metadata.get("let_binding"):
             return await self._execute_let_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
+        # ── remember / recall step shortcuts (Fase 18.f / 18.g) ────────
+        # Pre-Fase-18 these silently routed to the LLM. Now they touch
+        # the unit's MemoryBackend directly — pure persistence, no model.
+        if step.metadata.get("remember"):
+            return await self._execute_remember_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+        if step.metadata.get("recall"):
+            return await self._execute_recall_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
+        # ── return step shortcut (Fase 18.d) ───────────────────────────
+        # Resolves value and raises _FlowReturnSignal which the unit-
+        # level loop catches to short-circuit subsequent steps. Pre-
+        # Fase-18 `return` fell through to LLM and the flow continued.
+        if step.metadata.get("return"):
+            return await self._execute_return_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
+        # ── Control flow shortcuts (Fase 18.b/c/e) ─────────────────────
+        # Pre-Fase-18 `if/for/par` silently routed to the LLM:
+        #   `if x { a } else { b }` — neither branch ran
+        #   `for x in xs { body }` — body ran zero times
+        #   `par { a; b }` — ran sequentially through the model
+        # The dispatchers walk pre-compiled child steps via the main
+        # `_execute_step` so any inner step type works.
+        if step.metadata.get("conditional"):
+            return await self._execute_conditional_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+        if step.metadata.get("for_in"):
+            return await self._execute_for_in_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+        if step.metadata.get("par"):
+            return await self._execute_par_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
+        # ── Domain primitives (Fase 18.h/j/k) ─────────────────────────
+        # Stub-correct dispatch: pre-Fase-18 these silently routed
+        # to the LLM. Now they emit trace + bind semantic placeholder
+        # without invoking the model. Full subsystem integration
+        # (CPS continuity_token / PIX engine) is a follow-up.
+        if step.metadata.get("hibernate"):
+            return await self._execute_hibernate_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+        if step.metadata.get("drill"):
+            return await self._execute_drill_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+        if step.metadata.get("trail"):
+            return await self._execute_trail_step(
                 step=step, unit=unit, ctx=ctx, tracer=tracer,
             )
 
@@ -3771,6 +3866,833 @@ class Executor:
             response=response,
             duration_ms=duration_ms,
         )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  DOMAIN PRIMITIVES — Hibernate / Drill / Trail (Fase 18.h/j/k)
+    # ═══════════════════════════════════════════════════════════════
+    #
+    # Stub-correct dispatch: pre-Fase-18 silently routed to the LLM.
+    # MVP closes the LLM-fall-through gap; full subsystem integration
+    # (CPS continuity_token serialization / PIX engine queries) is a
+    # follow-up sub-phase. The semantic action recorded here is enough
+    # for adopters to verify their flow's structure executes — and for
+    # subsequent integration work to swap the placeholder with the
+    # full implementation without changing the dispatcher contract.
+
+    async def _execute_hibernate_step(
+        self,
+        *,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a `hibernate` step — CPS serialization checkpoint.
+
+        Pre-Fase-18 silently fell through to LLM. Fase 18.h binds a
+        `__hibernation_token__` carrying the (event_name, timeout,
+        continuation_id) tuple so the wakeup path can resume from
+        this point. Full state serialization via
+        `axon/runtime/pem/continuity_token.py` is a follow-up.
+        """
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["hibernate"]
+        event_name = meta.get("event_name", "")
+        timeout = meta.get("timeout", "")
+        continuation_id = meta.get("continuation_id", "")
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "type": "hibernate",
+                "event_name": event_name,
+                "timeout": timeout,
+                "continuation_id": continuation_id,
+            },
+        )
+
+        token = {
+            "event_name": event_name,
+            "timeout": timeout,
+            "continuation_id": continuation_id,
+            "flow_name": unit.flow_name,
+            "checkpoint_at": time.time(),
+        }
+        ctx.set_variable("__hibernation_token__", token)
+
+        duration_ms = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "type": "hibernate",
+                "continuation_id": continuation_id,
+                "checkpoint_recorded": True,
+            },
+            duration_ms=duration_ms,
+        )
+
+        response = ModelResponse(
+            content=f"hibernate:{continuation_id or event_name or 'unspecified'}",
+            usage={"input_tokens": 0, "output_tokens": 0},
+        )
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=duration_ms,
+        )
+
+    async def _execute_drill_step(
+        self,
+        *,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a `drill pix_ref into subtree_path with query` step.
+
+        Pre-Fase-18 fell through to LLM. Fase 18.j binds a
+        placeholder DrillResult dict to the output_name (or
+        `drill:<pix_ref>` if anonymous). Full PIX-engine integration
+        is a follow-up.
+        """
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["drill"]
+        pix_ref = meta.get("pix_ref", "")
+        subtree_path = meta.get("subtree_path", "")
+        query = meta.get("query", "")
+        output_name = meta.get("output_name", "") or f"drill:{pix_ref}"
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "type": "drill",
+                "pix_ref": pix_ref,
+                "subtree_path": subtree_path,
+                "query": query,
+            },
+        )
+
+        result_payload = {
+            "pix_ref": pix_ref,
+            "subtree_path": subtree_path,
+            "query": query,
+            "matches": [],  # placeholder: real engine populates this
+            "score": 0.0,
+            "_stub": True,  # marker for adopter clarity
+        }
+        if output_name:
+            ctx.set_variable(output_name, result_payload)
+
+        duration_ms = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "type": "drill",
+                "output_name": output_name,
+                "stub": True,
+            },
+            duration_ms=duration_ms,
+        )
+
+        import json as _json
+        response = ModelResponse(
+            content=_json.dumps(result_payload, default=str),
+            usage={"input_tokens": 0, "output_tokens": 0},
+        )
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=duration_ms,
+        )
+
+    async def _execute_trail_step(
+        self,
+        *,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a `trail navigate_ref` step — corroborated-path walker.
+
+        Pre-Fase-18 fell through to LLM. Fase 18.k looks up the
+        prior navigate / drill result by ref and binds a placeholder
+        TrailResult dict. Full reasoning-path reconstruction is a
+        follow-up.
+        """
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["trail"]
+        navigate_ref = meta.get("navigate_ref", "")
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "type": "trail",
+                "navigate_ref": navigate_ref,
+            },
+        )
+
+        # Best-effort lookup of the referenced navigate/drill result.
+        try:
+            referenced = ctx.resolve_value_ref(navigate_ref) if navigate_ref else None
+        except KeyError:
+            referenced = None
+
+        result_payload = {
+            "navigate_ref": navigate_ref,
+            "found": referenced is not None,
+            "path": [],  # placeholder: real walker populates this
+            "_stub": True,
+        }
+        # Bind under both `trail:<ref>` and the bare ref name so
+        # adopter code that interpolates either finds it.
+        ctx.set_variable(f"trail:{navigate_ref}", result_payload)
+
+        duration_ms = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "type": "trail",
+                "navigate_ref": navigate_ref,
+                "referenced_found": referenced is not None,
+                "stub": True,
+            },
+            duration_ms=duration_ms,
+        )
+
+        import json as _json
+        response = ModelResponse(
+            content=_json.dumps(result_payload, default=str),
+            usage={"input_tokens": 0, "output_tokens": 0},
+        )
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=duration_ms,
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  CONTROL FLOW — Conditional / ForIn / Par (Fase 18.b/c/e)
+    # ═══════════════════════════════════════════════════════════════
+
+    async def _execute_conditional_step(
+        self,
+        *,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute an `if condition { then_body } else { else_body }`.
+
+        Pre-Fase-18 silently routed to LLM and neither branch ran.
+        Fase 18.b evaluates the condition and walks the matching body
+        via the main `_execute_step` dispatcher (so any inner step
+        type works — let, remember, lambda apply, even nested if/for).
+        """
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["conditional"]
+
+        single_clause = meta.get("condition", "")
+        comparison_op = meta.get("comparison_op", "")
+        comparison_value = meta.get("comparison_value", "")
+        clauses = meta.get("conditions", []) or []
+        conjunctor = meta.get("conjunctor", "and").lower() or "and"
+
+        # Build the list of (lhs, op, rhs) clauses to evaluate. The IR
+        # supports either single-clause (condition + comparison_op +
+        # comparison_value) or multi-clause via `conditions`.
+        if clauses:
+            triples = list(clauses)
+        elif single_clause:
+            triples = [(single_clause, comparison_op, comparison_value)]
+        else:
+            triples = []
+
+        verdict = self._evaluate_conditional(triples, conjunctor, ctx)
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "type": "conditional",
+                "verdict": verdict,
+                "clause_count": len(triples),
+            },
+        )
+
+        body_key = "then_body" if verdict else "else_body"
+        body = meta.get(body_key) or []
+        last_result: StepResult | None = None
+        for inner in body:
+            last_result = await self._execute_step(
+                step=inner, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
+        duration_ms = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "type": "conditional",
+                "verdict": verdict,
+                "branch": body_key,
+                "inner_step_count": len(body),
+            },
+            duration_ms=duration_ms,
+        )
+
+        if last_result is not None:
+            return last_result
+
+        # Empty body — return a neutral StepResult so the unit loop
+        # has something to record.
+        return StepResult(
+            step_name=step_name,
+            response=ModelResponse(
+                content="",
+                usage={"input_tokens": 0, "output_tokens": 0},
+            ),
+            duration_ms=duration_ms,
+        )
+
+    def _evaluate_conditional(
+        self,
+        triples: list,
+        conjunctor: str,
+        ctx: ContextManager,
+    ) -> bool:
+        """Evaluate a list of (lhs, op, rhs) comparison clauses joined
+        by `and` / `or`. Each lhs is resolved against the unit context;
+        rhs is treated as literal unless it matches a dotted-identifier
+        pattern AND resolves cleanly.
+
+        Supported ops: ==, !=, >, <, >=, <=, in, contains.
+        Empty triples → True (vacuous condition).
+        """
+        if not triples:
+            return True
+
+        results: list[bool] = []
+        for lhs_raw, op, rhs_raw in triples:
+            try:
+                lhs_val = ctx.resolve_value_ref(lhs_raw) if lhs_raw else None
+            except KeyError:
+                lhs_val = lhs_raw
+            try:
+                rhs_val = ctx.resolve_value_ref(rhs_raw) if rhs_raw else None
+            except KeyError:
+                rhs_val = rhs_raw
+            results.append(self._compare(lhs_val, op, rhs_val))
+
+        if conjunctor == "or":
+            return any(results)
+        return all(results)
+
+    @staticmethod
+    def _compare(lhs, op: str, rhs) -> bool:
+        """Pure comparison helper used by Conditional + ForIn loop
+        guards. Type coercion: strings that look like numbers are
+        compared numerically; otherwise fall back to string compare.
+        """
+        if op in ("", "is_truthy", "truthy"):
+            return bool(lhs)
+
+        # Coerce numeric-looking strings.
+        def _coerce(v):
+            if isinstance(v, str):
+                try:
+                    if "." in v:
+                        return float(v)
+                    return int(v)
+                except ValueError:
+                    return v
+            return v
+
+        a, b = _coerce(lhs), _coerce(rhs)
+        try:
+            if op == "==":
+                return a == b
+            if op == "!=":
+                return a != b
+            if op == ">":
+                return a > b
+            if op == "<":
+                return a < b
+            if op == ">=":
+                return a >= b
+            if op == "<=":
+                return a <= b
+            if op == "in":
+                return a in b
+            if op == "contains":
+                return b in a
+        except TypeError:
+            return False
+        return False
+
+    async def _execute_for_in_step(
+        self,
+        *,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a `for variable in iterable { body }` step.
+
+        Pre-Fase-18 the body ran ZERO times (silent fall-through to
+        LLM). Fase 18.c resolves the iterable, binds the loop variable
+        to each element, and walks the body via `_execute_step`.
+
+        After the loop, the loop variable persists with its last
+        value (matches Python semantics; documented behavior).
+        """
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["for_in"]
+        variable = meta.get("variable", "")
+        iterable_ref = meta.get("iterable", "")
+        body = meta.get("body") or []
+
+        try:
+            iterable = ctx.resolve_value_ref(iterable_ref) if iterable_ref else []
+        except KeyError as exc:
+            duration_ms = (time.perf_counter() - step_start) * 1000
+            tracer.emit(
+                TraceEventType.STEP_END,
+                step_name=step_name,
+                data={"success": False, "stage": "iterable_resolve", "error": str(exc)},
+                duration_ms=duration_ms,
+            )
+            raise AxonRuntimeError(
+                f"for_in '{variable}': iterable '{iterable_ref}' not found "
+                f"in unit context — {exc}"
+            ) from exc
+
+        # Coerce non-iterables to a single-element list so adopters
+        # who write `for x in singleton_var { ... }` see a sensible
+        # one-iteration behavior.
+        if not hasattr(iterable, "__iter__") or isinstance(iterable, (str, bytes)):
+            iterable = [iterable]
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "type": "for_in",
+                "variable": variable,
+                "iterable_ref": iterable_ref,
+                "iteration_count": len(list(iterable)) if hasattr(iterable, "__len__") else None,
+            },
+        )
+
+        last_result: StepResult | None = None
+        iterations_run = 0
+        for element in iterable:
+            if variable:
+                ctx.set_variable(variable, element)
+            for inner in body:
+                last_result = await self._execute_step(
+                    step=inner, unit=unit, ctx=ctx, tracer=tracer,
+                )
+            iterations_run += 1
+
+        duration_ms = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "type": "for_in",
+                "variable": variable,
+                "iterations_run": iterations_run,
+            },
+            duration_ms=duration_ms,
+        )
+
+        if last_result is not None:
+            return last_result
+        return StepResult(
+            step_name=step_name,
+            response=ModelResponse(
+                content="",
+                usage={"input_tokens": 0, "output_tokens": 0},
+            ),
+            duration_ms=duration_ms,
+        )
+
+    async def _execute_par_step(
+        self,
+        *,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a `par { branchA; branchB; branchC }` step.
+
+        Pre-Fase-18 ran sequentially through the LLM (3× wall-clock).
+        Fase 18.e launches branches via `asyncio.gather` so they run
+        concurrently from the event-loop's perspective. Each branch
+        gets its own task wrapping `_execute_step`.
+
+        Concurrency contract (MVP): all branches share `ctx`. Writes
+        to the same variable name resolve to last-writer-wins per
+        the asyncio loop's interleaving. A future sub-phase may add
+        per-branch context views with explicit merge — for now,
+        adopters declaring conflicting writes get warned at compile
+        time (TBD) and well-defined undefined behavior at runtime.
+        """
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["par"]
+        branches = meta.get("branches") or []
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={"type": "par", "branch_count": len(branches)},
+        )
+
+        async def _run_branch(branch_step: CompiledStep) -> StepResult:
+            return await self._execute_step(
+                step=branch_step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
+        results = await asyncio.gather(
+            *(_run_branch(b) for b in branches),
+            return_exceptions=True,
+        )
+
+        # Aggregate: any non-exception is a successful branch; collect
+        # the first exception (if any) and re-raise so unit error
+        # handling preserves blame attribution. Configurable via the
+        # consolidation field (future sub-phase).
+        first_exc = next(
+            (r for r in results if isinstance(r, BaseException)),
+            None,
+        )
+        if first_exc is not None:
+            duration_ms = (time.perf_counter() - step_start) * 1000
+            tracer.emit(
+                TraceEventType.STEP_END,
+                step_name=step_name,
+                data={
+                    "success": False,
+                    "type": "par",
+                    "error": str(first_exc),
+                    "exc_type": type(first_exc).__name__,
+                },
+                duration_ms=duration_ms,
+            )
+            raise first_exc
+
+        duration_ms = (time.perf_counter() - step_start) * 1000
+        successful_results = [r for r in results if isinstance(r, StepResult)]
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "type": "par",
+                "branch_count": len(branches),
+                "completed_count": len(successful_results),
+            },
+            duration_ms=duration_ms,
+        )
+
+        # Project the last branch's result as the par's outcome
+        # (consolidation strategies TBD in a follow-up).
+        if successful_results:
+            return successful_results[-1]
+        return StepResult(
+            step_name=step_name,
+            response=ModelResponse(
+                content="",
+                usage={"input_tokens": 0, "output_tokens": 0},
+            ),
+            duration_ms=duration_ms,
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    #  REMEMBER / RECALL / RETURN — memory + flow control (Fase 18.d/f/g)
+    # ═══════════════════════════════════════════════════════════════
+
+    async def _execute_remember_step(
+        self,
+        *,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a `remember expression as memory_target` step.
+
+        Pre-Fase-18 this fell through to compile_step → LLM (silent
+        gap). Fase 18.f wires it directly to the MemoryBackend:
+          1. Resolve `expression` against the unit context (literal
+             verbatim or dotted-identifier reference).
+          2. Persist via `self._memory.store(memory_target, value)`.
+          3. Emit STEP_END trace + return ModelResponse-shaped result.
+
+        Pure write — no model call.
+        """
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["remember"]
+        expression = meta.get("expression", "")
+        memory_target = meta.get("memory_target", "")
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "type": "remember",
+                "memory_target": memory_target,
+                "expression": expression,
+            },
+        )
+
+        # Resolve the expression. The IR doesn't currently tag a
+        # value_kind for remember (unlike let), so we use a heuristic:
+        # try to resolve as a reference first; fall back to literal
+        # string if resolution fails. Adopters who write
+        # `remember "literal" as key` get the literal; adopters who
+        # write `remember step_a.output as key` get the resolved value.
+        try:
+            value = ctx.resolve_value_ref(expression) if expression else None
+        except KeyError:
+            value = expression
+
+        try:
+            entry = await self._memory.store(memory_target, value)
+        except Exception as exc:
+            duration_ms = (time.perf_counter() - step_start) * 1000
+            tracer.emit(
+                TraceEventType.STEP_END,
+                step_name=step_name,
+                data={"success": False, "stage": "memory_store", "error": str(exc)},
+                duration_ms=duration_ms,
+            )
+            raise AxonRuntimeError(
+                f"remember '{memory_target}': MemoryBackend.store raised — {exc}"
+            ) from exc
+
+        duration_ms = (time.perf_counter() - step_start) * 1000
+
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "type": "remember",
+                "memory_target": memory_target,
+                "value_repr": repr(value)[:120],
+                "timestamp": entry.timestamp,
+            },
+            duration_ms=duration_ms,
+        )
+
+        response = ModelResponse(
+            content=str(value)[:1024],
+            usage={"input_tokens": 0, "output_tokens": 0},
+        )
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=duration_ms,
+        )
+
+    async def _execute_recall_step(
+        self,
+        *,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a `recall query from memory_source` step.
+
+        Pre-Fase-18 silently routed to LLM. Fase 18.g queries the
+        MemoryBackend (semantic search in vector backends, substring
+        match in InMemoryBackend) and binds the top-match into the
+        unit context under the source name.
+
+        Pure read — no model call.
+        """
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["recall"]
+        query = meta.get("query", "")
+        memory_source = meta.get("memory_source", "")
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "type": "recall",
+                "memory_source": memory_source,
+                "query": query,
+            },
+        )
+
+        # Effective query: if `query` is empty, fall back to the
+        # memory_source as the lookup key (allows `recall ledger from
+        # memory` shorthand to lookup by source name).
+        effective_query = query or memory_source
+        try:
+            results = await self._memory.retrieve(effective_query, top_k=1)
+        except Exception as exc:
+            duration_ms = (time.perf_counter() - step_start) * 1000
+            tracer.emit(
+                TraceEventType.STEP_END,
+                step_name=step_name,
+                data={"success": False, "stage": "memory_retrieve", "error": str(exc)},
+                duration_ms=duration_ms,
+            )
+            raise AxonRuntimeError(
+                f"recall '{memory_source}': MemoryBackend.retrieve raised — {exc}"
+            ) from exc
+
+        if results:
+            top = results[0]
+            value = top.value
+        else:
+            value = None
+
+        # Bind the recalled value into the unit context under the
+        # memory_source name so subsequent steps can interpolate it.
+        if memory_source and value is not None:
+            ctx.set_variable(memory_source, value)
+
+        duration_ms = (time.perf_counter() - step_start) * 1000
+
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "type": "recall",
+                "memory_source": memory_source,
+                "found": value is not None,
+                "value_repr": repr(value)[:120] if value is not None else None,
+                "result_count": len(results),
+            },
+            duration_ms=duration_ms,
+        )
+
+        response = ModelResponse(
+            content=str(value)[:1024] if value is not None else "",
+            usage={"input_tokens": 0, "output_tokens": 0},
+        )
+        return StepResult(
+            step_name=step_name,
+            response=response,
+            duration_ms=duration_ms,
+        )
+
+    async def _execute_return_step(
+        self,
+        *,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a `return value` early-exit step.
+
+        Pre-Fase-18 this fell through to compile_step → LLM and the
+        flow did NOT terminate — subsequent steps continued executing.
+        Fase 18.d makes return actually terminate the unit:
+          1. Resolve value (literal verbatim / dotted-identifier
+             reference) using the same value_kind discriminator as
+             `let` (Fase 17.a).
+          2. Bind value to the unit's `__return_value__` slot for the
+             unit-level loop to project as the unit's result.
+          3. Raise `_FlowReturnSignal(value)` — caught by
+             `_execute_unit` to short-circuit subsequent steps.
+
+        Adopters never see _FlowReturnSignal — it's an internal
+        sentinel for control transfer.
+        """
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        meta = step.metadata["return"]
+        raw_value = meta.get("value", "")
+        value_kind = meta.get("value_kind", "literal")
+
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={
+                "type": "return",
+                "value_kind": value_kind,
+            },
+        )
+
+        if (
+            value_kind == "reference"
+            and isinstance(raw_value, str)
+            and raw_value
+        ):
+            try:
+                value = ctx.resolve_value_ref(raw_value)
+            except KeyError as exc:
+                duration_ms = (time.perf_counter() - step_start) * 1000
+                tracer.emit(
+                    TraceEventType.STEP_END,
+                    step_name=step_name,
+                    data={"success": False, "stage": "value_resolve", "error": str(exc)},
+                    duration_ms=duration_ms,
+                )
+                raise AxonRuntimeError(
+                    f"return: reference '{raw_value}' not found in unit "
+                    f"context — {exc}"
+                ) from exc
+        else:
+            value = raw_value
+
+        # Stash the return value on the ctx so the unit-level loop
+        # can recover it after catching the sentinel.
+        ctx.set_variable("__return_value__", value)
+
+        duration_ms = (time.perf_counter() - step_start) * 1000
+
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={
+                "success": True,
+                "type": "return",
+                "value_kind": value_kind,
+                "value_repr": repr(value)[:120],
+                "early_exit": True,
+            },
+            duration_ms=duration_ms,
+        )
+
+        # Raise the sentinel — `_execute_unit` catches it and
+        # short-circuits the step loop. The StepResult below is
+        # technically never returned (the raise unwinds before),
+        # but we construct it so the type checker and any caller
+        # that catches at a different level sees a clean object.
+        raise _FlowReturnSignal(value)
 
     # ═══════════════════════════════════════════════════════════════
     #  ΛD APPLY EXECUTION — pure epistemic binding (Fase 15.b)
