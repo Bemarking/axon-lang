@@ -45,11 +45,20 @@ from axon.compiler.ir_nodes import (
     IRFlow,
     IRFocus,
     IRForge,
+    IRConditional,
+    IRDrill,
+    IRForIn,
+    IRHibernate,
     IRIngest,
     IRLambdaDataApply,
     IRLetBinding,
     IRListen,
     IRMutate,
+    IRParallelBlock,
+    IRRecall,
+    IRRemember,
+    IRReturn,
+    IRTrail,
     IRNavigate,
     IRNode,
     IRPersist,
@@ -102,6 +111,42 @@ _LAMBDA_APPLY_IR_TYPES = (IRLambdaDataApply,)
 # dedicated arm here, IRLetBinding falls through to `compile_step`
 # which produces an LLM-bound prompt — the bug Fase 17 closes.
 _LET_IR_TYPES = (IRLetBinding,)
+
+# IR types for the AXON memory primitives (Fase 18.f / 18.g).
+# `remember expression as memory_target` writes to MemoryBackend;
+# `recall query from memory_source` reads from MemoryBackend (semantic
+# search in vector backends, substring lookup in InMemoryBackend).
+# Pre-Fase-18 these fell through to compile_step → LLM (silent gap).
+_REMEMBER_IR_TYPES = (IRRemember,)
+_RECALL_IR_TYPES = (IRRecall,)
+
+# IR types for `return value` early-exit (Fase 18.d). The dispatcher
+# resolves the value (literal verbatim / reference via
+# ctx.resolve_value_ref) and raises a `_FlowReturnSignal` sentinel
+# that the unit-level loop catches to short-circuit subsequent steps.
+# Pre-Fase-18 `return` fell through to compile_step → LLM, which meant
+# the flow did NOT terminate (subsequent steps continued executing).
+_RETURN_IR_TYPES = (IRReturn,)
+
+# IR types for control-flow primitives (Fase 18.b/c/e). These have
+# nested step bodies that must be recursively compiled; the dispatcher
+# walks the children via the executor's main `_execute_step` so any
+# step type (including LLM calls) works inside `if` / `for` / `par`.
+# Pre-Fase-18 these silently routed to the LLM — `if` did not branch,
+# `for` did not iterate, `par` ran sequentially.
+_CONDITIONAL_IR_TYPES = (IRConditional,)
+_FOR_IN_IR_TYPES = (IRForIn,)
+_PAR_IR_TYPES = (IRParallelBlock,)
+
+# IR types for domain primitives (Fase 18.h/j/k). Each was silently
+# routed to the LLM pre-Fase-18; now stub-correct dispatchers bind
+# semantic placeholders + emit trace events. Full subsystem
+# integration (CPS continuity_token for Hibernate, PIX engine for
+# Drill / Trail) is a follow-up sub-phase — but the LLM-fall-through
+# bug is closed.
+_HIBERNATE_IR_TYPES = (IRHibernate,)
+_DRILL_IR_TYPES = (IRDrill,)
+_TRAIL_IR_TYPES = (IRTrail,)
 
 # IR types that represent Daemon operations (AxonServer π-calculus)
 _DAEMON_IR_TYPES = (IRDaemon,)
@@ -318,51 +363,7 @@ class BaseBackend(ABC):
                 compiled_steps.append(store_init)
 
             for step in run.resolved_flow.steps:
-                # Data Science IR nodes bypass the model — compile as
-                # metadata-only steps that the executor routes to the
-                # DataScienceDispatcher.
-                if isinstance(step, _DATA_SCIENCE_IR_TYPES):
-                    ds_step = self._compile_data_science_step(step)
-                    compiled_steps.append(ds_step)
-                elif isinstance(step, _BUDGET_IR_TYPES):
-                    budget_step = self._compile_budget_step(step, ctx)
-                    compiled_steps.append(budget_step)
-                elif isinstance(step, _SHIELD_IR_TYPES):
-                    shield_step = self._compile_shield_step(step, ir)
-                    compiled_steps.append(shield_step)
-                elif isinstance(step, _MDN_IR_TYPES):
-                    mdn_step = self._compile_mdn_step(step, ir)
-                    compiled_steps.append(mdn_step)
-                elif isinstance(step, _PSYCHE_IR_TYPES):
-                    psyche_step = self._compile_psyche_step(step, ir)
-                    compiled_steps.append(psyche_step)
-                elif isinstance(step, _OTS_IR_TYPES):
-                    ots_step = self._compile_ots_step(step, ir)
-                    compiled_steps.append(ots_step)
-                elif isinstance(step, _COMPUTE_IR_TYPES):
-                    compute_step = self._compile_compute_step(step, ir)
-                    compiled_steps.append(compute_step)
-                elif isinstance(step, _LAMBDA_APPLY_IR_TYPES):
-                    lambda_apply_step = self._compile_lambda_apply_step(step, ir)
-                    compiled_steps.append(lambda_apply_step)
-                elif isinstance(step, _LET_IR_TYPES):
-                    let_step = self._compile_let_step(step)
-                    compiled_steps.append(let_step)
-                elif isinstance(step, _DAEMON_IR_TYPES):
-                    daemon_step = self._compile_daemon_step(step, ctx)
-                    compiled_steps.append(daemon_step)
-                elif isinstance(step, _AXONSTORE_IR_TYPES):
-                    store_step = self._compile_axonstore_step(step)
-                    compiled_steps.append(store_step)
-                elif isinstance(step, _CHANNEL_OP_IR_TYPES):
-                    channel_step = self._compile_channel_op_step(step)
-                    compiled_steps.append(channel_step)
-                elif isinstance(step, _LISTEN_IR_TYPES):
-                    listen_step = self._compile_listen_step(step)
-                    compiled_steps.append(listen_step)
-                else:
-                    compiled = self.compile_step(step, ctx)
-                    compiled_steps.append(compiled)
+                compiled_steps.append(self._compile_one_step(step, ir, ctx))
                 ctx.prior_step_names.append(
                     step.name if isinstance(step, IRStep) else ""
                 )
@@ -406,6 +407,227 @@ class BaseBackend(ABC):
         return CompiledProgram(
             backend_name=self.name,
             execution_units=execution_units,
+        )
+
+    def _compile_one_step(
+        self,
+        step: IRNode,
+        ir: IRProgram,
+        ctx: CompilationContext,
+    ) -> CompiledStep:
+        """Compile a single IR step. Used by `compile_program` for the
+        top-level walk and recursively by control-flow primitives
+        (Conditional / ForIn / Par — Fase 18.b/c/e) for nested bodies.
+
+        The dispatch chain matches the closed catalogue of IR types
+        with a dedicated lowering method; unknown types fall through
+        to the abstract `compile_step` (LLM-bound, per-backend).
+        """
+        # Pure / structural primitives — metadata-only, no model.
+        if isinstance(step, _DATA_SCIENCE_IR_TYPES):
+            return self._compile_data_science_step(step)
+        if isinstance(step, _BUDGET_IR_TYPES):
+            return self._compile_budget_step(step, ctx)
+        if isinstance(step, _SHIELD_IR_TYPES):
+            return self._compile_shield_step(step, ir)
+        if isinstance(step, _MDN_IR_TYPES):
+            return self._compile_mdn_step(step, ir)
+        if isinstance(step, _PSYCHE_IR_TYPES):
+            return self._compile_psyche_step(step, ir)
+        if isinstance(step, _OTS_IR_TYPES):
+            return self._compile_ots_step(step, ir)
+        if isinstance(step, _COMPUTE_IR_TYPES):
+            return self._compile_compute_step(step, ir)
+        if isinstance(step, _LAMBDA_APPLY_IR_TYPES):
+            return self._compile_lambda_apply_step(step, ir)
+        if isinstance(step, _LET_IR_TYPES):
+            return self._compile_let_step(step)
+        if isinstance(step, _REMEMBER_IR_TYPES):
+            return self._compile_remember_step(step)
+        if isinstance(step, _RECALL_IR_TYPES):
+            return self._compile_recall_step(step)
+        if isinstance(step, _RETURN_IR_TYPES):
+            return self._compile_return_step(step)
+        # Control-flow primitives (Fase 18.b/c/e) — recursive bodies.
+        if isinstance(step, _CONDITIONAL_IR_TYPES):
+            return self._compile_conditional_step(step, ir, ctx)
+        if isinstance(step, _FOR_IN_IR_TYPES):
+            return self._compile_for_in_step(step, ir, ctx)
+        if isinstance(step, _PAR_IR_TYPES):
+            return self._compile_par_step(step, ir, ctx)
+        # Domain primitives (Fase 18.h/j/k) — stub-correct dispatch.
+        if isinstance(step, _HIBERNATE_IR_TYPES):
+            return self._compile_hibernate_step(step)
+        if isinstance(step, _DRILL_IR_TYPES):
+            return self._compile_drill_step(step)
+        if isinstance(step, _TRAIL_IR_TYPES):
+            return self._compile_trail_step(step)
+        if isinstance(step, _DAEMON_IR_TYPES):
+            return self._compile_daemon_step(step, ctx)
+        if isinstance(step, _AXONSTORE_IR_TYPES):
+            return self._compile_axonstore_step(step)
+        if isinstance(step, _CHANNEL_OP_IR_TYPES):
+            return self._compile_channel_op_step(step)
+        if isinstance(step, _LISTEN_IR_TYPES):
+            return self._compile_listen_step(step)
+        # Fall-through: LLM-bound primitives (Step / Probe / Reason /
+        # Validate / Refine / Weave) compile to a per-backend prompt.
+        return self.compile_step(step, ctx)
+
+    def _compile_conditional_step(
+        self,
+        step: IRConditional,
+        ir: IRProgram,
+        ctx: CompilationContext,
+    ) -> CompiledStep:
+        """Compile an `if condition { then_body } else { else_body }`
+        into a metadata-only step (Fase 18.b).
+
+        Both bodies are recursively compiled via `_compile_one_step`
+        so any inner step type works (including LLM steps). The
+        executor's `_execute_conditional_step` evaluates the condition
+        against the unit context and walks the matching body via the
+        main `_execute_step` dispatcher.
+        """
+        then_compiled = [self._compile_one_step(s, ir, ctx) for s in step.then_body]
+        else_compiled = [self._compile_one_step(s, ir, ctx) for s in step.else_body]
+        return CompiledStep(
+            step_name="conditional",
+            user_prompt="",
+            metadata={
+                "conditional": {
+                    "condition": step.condition,
+                    "comparison_op": step.comparison_op,
+                    "comparison_value": step.comparison_value,
+                    "conditions": list(step.conditions),
+                    "conjunctor": step.conjunctor,
+                    "then_body": then_compiled,
+                    "else_body": else_compiled,
+                },
+            },
+        )
+
+    def _compile_for_in_step(
+        self,
+        step: IRForIn,
+        ir: IRProgram,
+        ctx: CompilationContext,
+    ) -> CompiledStep:
+        """Compile a `for variable in iterable { body }` into a
+        metadata-only step (Fase 18.c).
+
+        The body is recursively compiled. The executor's
+        `_execute_for_in_step` resolves the iterable, binds the loop
+        variable to each element, and walks the body via the main
+        `_execute_step` dispatcher per iteration.
+        """
+        body_compiled = [self._compile_one_step(s, ir, ctx) for s in step.body]
+        return CompiledStep(
+            step_name=f"for_in:{step.variable}",
+            user_prompt="",
+            metadata={
+                "for_in": {
+                    "variable": step.variable,
+                    "iterable": step.iterable,
+                    "body": body_compiled,
+                },
+            },
+        )
+
+    def _compile_par_step(
+        self,
+        step: IRParallelBlock,
+        ir: IRProgram,
+        ctx: CompilationContext,
+    ) -> CompiledStep:
+        """Compile a `par { branchA; branchB; ... }` into a
+        metadata-only step (Fase 18.e).
+
+        Each branch is recursively compiled. The executor's
+        `_execute_par_step` launches them concurrently via
+        `asyncio.gather`. Pre-Fase-18 this fell through to LLM and
+        ran sequentially.
+        """
+        branches_compiled = [
+            self._compile_one_step(s, ir, ctx) for s in step.branches
+        ]
+        return CompiledStep(
+            step_name="par",
+            user_prompt="",
+            metadata={
+                "par": {
+                    "branches": branches_compiled,
+                    "consolidation": step.consolidation,
+                },
+            },
+        )
+
+    @staticmethod
+    def _compile_hibernate_step(step: IRHibernate) -> CompiledStep:
+        """Compile a `hibernate` step into a metadata-only step
+        (Fase 18.h).
+
+        The runtime executor's ``_execute_hibernate_step`` records
+        the continuation marker (event_name + timeout +
+        continuation_id) and binds a `__hibernation_token__` variable
+        for downstream consumption. Full CPS state serialization via
+        ``axon/runtime/pem/continuity_token.py`` is a follow-up sub-
+        phase; this MVP closes the LLM-fall-through gap.
+        """
+        return CompiledStep(
+            step_name="hibernate",
+            user_prompt="",
+            metadata={
+                "hibernate": {
+                    "event_name": step.event_name,
+                    "timeout": step.timeout,
+                    "continuation_id": step.continuation_id,
+                },
+            },
+        )
+
+    @staticmethod
+    def _compile_drill_step(step: IRDrill) -> CompiledStep:
+        """Compile a ``drill pix_ref into subtree_path with query``
+        step into a metadata-only step (Fase 18.j).
+
+        The runtime executor's ``_execute_drill_step`` performs a
+        stub-correct binding: emits trace, binds a placeholder
+        ``DrillResult`` dict to the output_name (or `drill:<pix_ref>`
+        if no alias). Full PIX-engine integration is a follow-up
+        sub-phase; this MVP closes the LLM-fall-through gap.
+        """
+        return CompiledStep(
+            step_name=f"drill:{step.pix_ref}",
+            user_prompt="",
+            metadata={
+                "drill": {
+                    "pix_ref": step.pix_ref,
+                    "subtree_path": step.subtree_path,
+                    "query": step.query,
+                    "output_name": step.output_name,
+                },
+            },
+        )
+
+    @staticmethod
+    def _compile_trail_step(step: IRTrail) -> CompiledStep:
+        """Compile a ``trail navigate_ref`` step into a metadata-only
+        step (Fase 18.k).
+
+        The runtime executor's ``_execute_trail_step`` looks up the
+        prior navigate / drill result by ``navigate_ref`` and binds
+        a placeholder ``TrailResult`` dict. Full corroborated-path
+        walker is a follow-up sub-phase.
+        """
+        return CompiledStep(
+            step_name=f"trail:{step.navigate_ref}",
+            user_prompt="",
+            metadata={
+                "trail": {
+                    "navigate_ref": step.navigate_ref,
+                },
+            },
         )
 
     @staticmethod
@@ -1098,6 +1320,77 @@ class BaseBackend(ABC):
                     "arguments": list(step.arguments),
                     "output_name": step.output_name,
                     "compute_definition": compute_def,
+                },
+            },
+        )
+
+    @staticmethod
+    def _compile_remember_step(step: IRRemember) -> CompiledStep:
+        """Compile a ``remember expression as memory_target`` step into
+        a metadata-only step (Fase 18.f).
+
+        The runtime executor's ``_execute_remember_step`` resolves
+        ``expression`` against the unit context (literal verbatim or
+        dotted-identifier reference via ``ctx.resolve_value_ref``) and
+        writes the resolved value to the unit's MemoryBackend under
+        ``memory_target``. Pure write — no LLM, no model call.
+        """
+        return CompiledStep(
+            step_name=f"remember:{step.memory_target}",
+            user_prompt="",
+            metadata={
+                "remember": {
+                    "expression": step.expression,
+                    "memory_target": step.memory_target,
+                },
+            },
+        )
+
+    @staticmethod
+    def _compile_recall_step(step: IRRecall) -> CompiledStep:
+        """Compile a ``recall query from memory_source`` step into a
+        metadata-only step (Fase 18.g).
+
+        The runtime executor's ``_execute_recall_step`` queries the
+        unit's MemoryBackend (semantic search in vector backends,
+        substring lookup in InMemoryBackend) and binds the top-match
+        value into the context under the source name (or under the
+        ``recall:<source>`` step name if no alias is declared). Pure
+        read — no LLM, no model call.
+        """
+        return CompiledStep(
+            step_name=f"recall:{step.memory_source}",
+            user_prompt="",
+            metadata={
+                "recall": {
+                    "query": step.query,
+                    "memory_source": step.memory_source,
+                },
+            },
+        )
+
+    @staticmethod
+    def _compile_return_step(step: IRReturn) -> CompiledStep:
+        """Compile a ``return value`` early-exit into a metadata-only
+        step (Fase 18.d).
+
+        The runtime executor's ``_execute_return_step`` resolves the
+        value (literal verbatim or dotted-identifier reference) and
+        raises a ``_FlowReturnSignal`` sentinel that the unit-level
+        loop catches to short-circuit subsequent steps. The flow
+        terminates with the resolved value as the unit's return value.
+
+        Pre-Fase-18 ``return`` fell through to compile_step → LLM,
+        meaning the flow did NOT terminate — subsequent steps kept
+        executing. This is the bug 18.d closes.
+        """
+        return CompiledStep(
+            step_name="return",
+            user_prompt="",
+            metadata={
+                "return": {
+                    "value": step.value_expr,
+                    "value_kind": getattr(step, "value_kind", "literal") or "literal",
                 },
             },
         )

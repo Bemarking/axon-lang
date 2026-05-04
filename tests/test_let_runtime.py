@@ -116,9 +116,14 @@ class TestPhase2Lowering:
         assert step.system_prompt == ""
 
     def test_dispatch_arm_present_in_compile_program(self):
-        """Structural check — compile_program references _LET_IR_TYPES."""
+        """Structural check — the dispatch chain (Fase 18.a refactored
+        it from inline in compile_program to a dedicated
+        `_compile_one_step` helper) references _LET_IR_TYPES."""
         import inspect
-        src = inspect.getsource(BaseBackend.compile_program)
+        src = (
+            inspect.getsource(BaseBackend.compile_program)
+            + inspect.getsource(BaseBackend._compile_one_step)
+        )
         assert "_LET_IR_TYPES" in src
         assert "_compile_let_step" in src
 

@@ -1015,16 +1015,21 @@ class IRGenerator:
         """Compile ReturnStatement → IRReturn.
 
         The return value is extracted from the wrapped LetStatement
-        that stores the parsed expression.  This creates an Early
-        Exit Sink in the cognitive DAG.
+        that stores the parsed expression. This creates an Early Exit
+        Sink in the cognitive DAG. `value_kind` (Fase 18.d) is also
+        propagated so the runtime dispatcher can distinguish a quoted
+        literal from a dotted-identifier reference.
         """
-        value = ""
+        value: str | int | float | bool | tuple = ""
+        value_kind = "literal"
         if node.value_expr and isinstance(node.value_expr, ast.LetStatement):
             value = node.value_expr.value_expr
+            value_kind = getattr(node.value_expr, "value_kind", "literal") or "literal"
         return IRReturn(
             source_line=node.line,
             source_column=node.column,
             value_expr=value,
+            value_kind=value_kind,
         )
 
     # ═══════════════════════════════════════════════════════════════

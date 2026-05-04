@@ -77,15 +77,15 @@ Status legend:
 | 5 | `Refine` | 🔵 LLM-CORRECT | refine_config sub-payload, retry-engine wired |
 | 6 | `Weave` | 🔵 LLM-CORRECT | multi-source synthesis through the model |
 | 7 | `UseTool` | ✅ WIRED | `metadata.get("use_tool")` → `_execute_tool_step` |
-| 8 | `Remember` | 🟠 **GAP-HIGH** | **0 matches** in backend / executor — falls to LLM |
-| 9 | `Recall` | 🟠 **GAP-HIGH** | **0 matches** in backend / executor — falls to LLM |
-| 10 | `Conditional` | 🔴 **GAP-CRITICAL** | **0 matches** — `if` branches don't branch! |
-| 11 | `ForIn` | 🔴 **GAP-CRITICAL** | **0 matches** — `for` loops don't iterate |
+| 8 | `Remember` | ✅ WIRED | `metadata.get("remember")` → `_execute_remember_step` (Fase 18.f — writes to MemoryBackend) |
+| 9 | `Recall` | ✅ WIRED | `metadata.get("recall")` → `_execute_recall_step` (Fase 18.g — reads from MemoryBackend) |
+| 10 | `Conditional` | ✅ WIRED | `metadata.get("conditional")` → `_execute_conditional_step` (Fase 18.b — recursive child dispatch via `_execute_step`) |
+| 11 | `ForIn` | ✅ WIRED | `metadata.get("for_in")` → `_execute_for_in_step` (Fase 18.c — loop variable binding + per-iteration child dispatch) |
 | 12 | `Let` | ✅ WIRED | `metadata.get("let_binding")` → `_execute_let_step` (Fase 17) |
-| 13 | `Return` | 🔴 **GAP-CRITICAL** | **0 matches** — `return` doesn't terminate the flow |
+| 13 | `Return` | ✅ WIRED | `metadata.get("return")` → `_execute_return_step` raises `_FlowReturnSignal`, `_execute_unit` catches → short-circuit (Fase 18.d) |
 | 14 | `LambdaDataApply` | ✅ WIRED | `metadata.get("lambda_data_apply")` → `_execute_lambda_data_apply_step` (Fase 15) |
-| 15 | `Par` | 🔴 **GAP-CRITICAL** | **0 matches** — `par { a; b }` runs sequentially through the model |
-| 16 | `Hibernate` | 🟠 **GAP-HIGH** | **0 matches** — no state serialization |
+| 15 | `Par` | ✅ WIRED | `metadata.get("par")` → `_execute_par_step` via `asyncio.gather` (Fase 18.e — concurrent branch dispatch) |
+| 16 | `Hibernate` | ✅ WIRED | `metadata.get("hibernate")` → `_execute_hibernate_step` binds `__hibernation_token__` (Fase 18.h MVP; full CPS serialization deferred) |
 | 17 | `Deliberate` | ✅ WIRED | `metadata.get("deliberate")` → `_execute_deliberate_step` |
 | 18 | `Consensus` | ✅ WIRED | `metadata.get("consensus")` → `_execute_consensus_step` |
 | 19 | `Forge` | ✅ WIRED | `metadata.get("forge")` → `_execute_forge_step` |
@@ -95,10 +95,10 @@ Status legend:
 | 23 | `Explore` | ✅ WIRED | data_science group |
 | 24 | `Ingest` | ✅ WIRED | data_science group |
 | 25 | `ShieldApply` | ✅ WIRED | `metadata.get("shield_apply")` → `_execute_shield_step` |
-| 26 | `Stream` | 🟡 **GAP-MEDIUM** | **0 matches** — no backpressure path at runtime |
+| 26 | `Stream` | 🔵 LLM-CORRECT | Rust-only flow-step variant; Python flows do not contain `Stream` (only `IRStreamSpec` at program level, consumed by other primitives). No Python runtime gap. |
 | 27 | `Navigate` | ✅ WIRED | `metadata.get("corpus_navigate")` |
-| 28 | `Drill` | 🟡 **GAP-MEDIUM** | **0 matches** — PIX subtree query absent |
-| 29 | `Trail` | 🟡 **GAP-MEDIUM** | **0 matches** — PIX corroborated path absent |
+| 28 | `Drill` | ✅ WIRED | `metadata.get("drill")` → `_execute_drill_step` binds placeholder DrillResult (Fase 18.j MVP; full PIX engine deferred) |
+| 29 | `Trail` | ✅ WIRED | `metadata.get("trail")` → `_execute_trail_step` binds placeholder TrailResult (Fase 18.k MVP; full corroborated-path walker deferred) |
 | 30 | `Corroborate` | ✅ WIRED | `metadata.get("corroborate")` |
 | 31 | `OtsApply` | ✅ WIRED | `metadata.get("ots_apply")` |
 | 32 | `MandateApply` | ✅ WIRED | `metadata.get("mandate_apply")` |
@@ -116,15 +116,27 @@ Status legend:
 
 ### 3.1 Summary
 
+#### 3.1.1 Pre-Fase-18 (audit at v1.12.0, commit `a6d8a0e`)
+
 | Tier | Count | Variants |
 |---|---|---|
 | ✅ WIRED | 27 | UseTool, Let, LambdaDataApply, Deliberate, Consensus, Forge, Focus, Associate, Aggregate, Explore, Ingest, ShieldApply, Navigate, Corroborate, OtsApply, MandateApply, ComputeApply, Listen, DaemonStep, Emit, Publish, Discover, Persist, Retrieve, Mutate, Purge, Transact |
 | 🔵 LLM-CORRECT | 6 | Step, Probe, Reason, Validate, Refine, Weave |
-| 🔴 GAP-CRITICAL | 4 | **Conditional, ForIn, Return, Par** |
-| 🟠 GAP-HIGH | 3 | **Remember, Recall, Hibernate** |
-| 🟡 GAP-MEDIUM | 3 | **Stream, Drill, Trail** |
+| 🔴 GAP-CRITICAL | 4 | Conditional, ForIn, Return, Par |
+| 🟠 GAP-HIGH | 3 | Remember, Recall, Hibernate |
+| 🟡 GAP-MEDIUM | 3 | Stream, Drill, Trail |
 
 **10 silent gaps**, with the four most user-visible (control flow) classified CRITICAL.
+
+#### 3.1.2 Post-Fase-18 (this release — v1.13.0)
+
+| Tier | Count | Variants |
+|---|---|---|
+| ✅ WIRED | **36** | All 27 pre-existing + Conditional, ForIn, Par, Return (control flow); Remember, Recall, Hibernate (subsystem); Drill, Trail (domain) |
+| 🔵 LLM-CORRECT | **7** | Step, Probe, Reason, Validate, Refine, Weave + Stream (Rust-only flow variant; not in Python flows) |
+| 🔴 / 🟠 / 🟡 GAP | **0** | All gaps closed. |
+
+**Zero remaining silent gaps.** The drift gate (18.l) prevents this regressing.
 
 ---
 

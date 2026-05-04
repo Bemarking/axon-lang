@@ -569,17 +569,30 @@ class IRLetBinding(IRNode):
 
 @dataclass(frozen=True)
 class IRReturn(IRNode):
-    """Compiled return — Early Exit Sink in the cognitive DAG.
+    """Compiled return — Early Exit Sink in the cognitive DAG (Fase 18.d
+    runtime-wired).
 
-    The flow collapses when epistemic certainty is achieved and
-    projects its result.  Maps from AST ReturnStatement.
+    Phase-2 lowering produces a CompiledStep with `metadata["return"]`;
+    the executor's `_execute_return_step` resolves the value (literal
+    verbatim or via `ctx.resolve_value_ref`) and raises an internal
+    `_FlowReturnSignal` sentinel that `_execute_unit` catches to
+    short-circuit the step loop. Subsequent steps in the unit are
+    NOT executed — that's the early-exit semantics.
+
+    `value_kind` (Fase 18.d) preserves parser tokenization intent
+    same as `IRLetBinding`. Re-uses the same vocabulary
+    {"literal", "reference", "expression"}.
 
     Example:
       return "workspace/tesis_final.md"
-      → value_expr="workspace/tesis_final.md"
+      → value_expr="workspace/tesis_final.md", value_kind="literal"
+
+      return step_a.summary
+      → value_expr="step_a.summary", value_kind="reference"
     """
     node_type: str = "return"
     value_expr: str | int | float | bool | tuple = ""
+    value_kind: str = "literal"
 
 
 # ═══════════════════════════════════════════════════════════════════
