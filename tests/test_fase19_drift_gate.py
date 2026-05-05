@@ -217,17 +217,49 @@ def test_break_continue_dispatchers_present_in_executor():
 # ═══════════════════════════════════════════════════════════════════
 
 
-@pytest.mark.skip(reason=(
-    "Tier C 19.f/g (Rust dispatchers for the 9 Fase-18 primitives + "
-    "IRBreak/IRContinue Rust mirror) is the next sub-phase per "
-    "docs/fase_19_production_hardening.md. Once the Rust runner has a "
-    "match arm for each WIRED primitive, this test will assert that "
-    "every WIRED Python dispatcher has a Rust counterpart in "
-    "axon-rs/src/runner.rs::execute_stub."
-))
 def test_rust_parity_for_wired_primitives():
-    """When unblocked: parse axon-rs/src/runner.rs::execute_stub for
-    its match arms; intersect with the Python WIRED-classified
-    variants from the Fase 18 matrix; assert no Python WIRED variant
-    lacks a Rust arm."""
-    raise NotImplementedError("see Tier C deliverable")
+    """Rust runner must have stub-correct dispatch for every WIRED
+    primitive (Tier C of Fase 19 — landed in commits e47d813 / etc.).
+
+    Parses ``axon-rs/src/runner.rs`` for match-arm string literals
+    against ``step.step_type`` and asserts the 11 newly-wired
+    primitives all appear. The Rust dispatchers are stub-correct
+    (they bind placeholders + emit traces), not full integrations —
+    that's the explicit ``Out of Scope`` note in the plan. What we
+    enforce here is: no Fase-19 WIRED primitive lacks Rust dispatch.
+    """
+    import re
+    runner = (
+        _project_root() / "axon-rs" / "src" / "runner.rs"
+    ).read_text(encoding="utf-8")
+    # Grab arm patterns of shape `"foo" => {` and pipe-or patterns
+    # like `"foo" | "bar" => {`. We collect every string-literal
+    # arm by extracting all `"<name>"` occurrences from each line
+    # that ends in `=> {`.
+    arm_re = re.compile(r'^\s*((?:"[a-z_]+"\s*(?:\|\s*)?)+)\s*=>\s*\{', re.MULTILINE)
+    string_re = re.compile(r'"([a-z_]+)"')
+    found_arms: set[str] = set()
+    for arm_pattern in arm_re.findall(runner):
+        for name in string_re.findall(arm_pattern):
+            found_arms.add(name)
+
+    expected_arms = {
+        # Fase 18 primitives newly-wired in 18.b/c/e/d/f/g/h/j/k:
+        "conditional", "for_in", "parallel", "return",
+        "remember", "recall",
+        "hibernate", "drill", "trail",
+        # Fase 19.e additions:
+        "break", "continue",
+    }
+    missing = expected_arms - found_arms
+    assert not missing, (
+        f"axon-rs/src/runner.rs is missing Rust dispatch for the "
+        f"following Fase-19 WIRED primitives:\n  {sorted(missing)}\n\n"
+        f"Each WIRED Python dispatcher must have a stub-correct "
+        f"match arm in `execute_stub`. See "
+        f"docs/fase_19_production_hardening.md §19.f/g for the "
+        f"contract — the arm should:\n"
+        f"  1. Recognize step.step_type.\n"
+        f"  2. Bind any adopter-visible placeholders to ExecContext.\n"
+        f"  3. Emit a structured TraceEvent with matching event-type."
+    )
