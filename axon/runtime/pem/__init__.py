@@ -25,6 +25,16 @@ from axon.runtime.pem.continuity_token import (
     ContinuityToken,
     ContinuityTokenError,
     ContinuityTokenSigner,
+    TokenExpired,
+    TokenForgedOrRotated,
+    TokenMalformed,
+    new_token,
+)
+from axon.runtime.pem.hibernation import (
+    HibernationSnapshot,
+    HibernationStore,
+    InMemoryHibernationStore,
+    parse_timeout,
 )
 from axon.runtime.pem.state import (
     Q32_32_SCALE,
@@ -40,10 +50,18 @@ __all__ = [
     "ContinuityTokenError",
     "ContinuityTokenSigner",
     "FixedPoint",
+    "HibernationSnapshot",
+    "HibernationStore",
     "InMemoryBackend",
+    "InMemoryHibernationStore",
     "MemoryEntry",
     "PersistenceBackend",
     "PersistenceError",
     "Q32_32_SCALE",
     "StateDecodeError",
+    "TokenExpired",
+    "TokenForgedOrRotated",
+    "TokenMalformed",
+    "new_token",
+    "parse_timeout",
 ]

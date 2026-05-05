@@ -115,13 +115,19 @@ class TestPhase2Lowering:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  18.h — HIBERNATE DISPATCHER
+#  18.h — HIBERNATE DISPATCHER (Fase 18 MVP shape, retained for
+#         coverage; full integration covered in Fase 19.a tests
+#         further down + tests/test_fase19_hibernate_full.py).
 # ═══════════════════════════════════════════════════════════════════
 
 
 class TestHibernate:
     @pytest.mark.asyncio
-    async def test_hibernate_binds_continuation_token(self):
+    async def test_hibernate_binds_signed_token_string(self):
+        """Fase 19.a: ``__hibernation_token__`` is the signed token
+        string (base64url), not the placeholder dict that Fase 18.h
+        bound. Adopter-facing metadata moved to dedicated
+        ``__hibernation_*__`` variables."""
         step = _hibernate_step(
             event_name="user_input",
             timeout="30s",
@@ -130,10 +136,12 @@ class TestHibernate:
         result, ctx, _ = await _exec([step])
         assert result.success is True
         token = ctx.get_variable("__hibernation_token__")
-        assert token["event_name"] == "user_input"
-        assert token["timeout"] == "30s"
-        assert token["continuation_id"] == "cont-abc"
-        assert "checkpoint_at" in token
+        assert isinstance(token, str)
+        assert token  # non-empty
+        assert ctx.get_variable("__hibernation_event_name__") == "user_input"
+        assert ctx.get_variable("__hibernation_session_id__") == "test_flow:cont-abc"
+        # Expires-at is an ISO-8601 string.
+        assert "T" in ctx.get_variable("__hibernation_expires_at__")
 
     @pytest.mark.asyncio
     async def test_hibernate_no_model_call(self):
@@ -142,11 +150,10 @@ class TestHibernate:
         assert client.call_count == 0
 
     @pytest.mark.asyncio
-    async def test_hibernate_records_flow_name(self):
+    async def test_hibernate_session_id_includes_flow_name(self):
         step = _hibernate_step(continuation_id="x")
         _, ctx, _ = await _exec([step])
-        token = ctx.get_variable("__hibernation_token__")
-        assert token["flow_name"] == "test_flow"
+        assert ctx.get_variable("__hibernation_session_id__") == "test_flow:x"
 
 
 # ═══════════════════════════════════════════════════════════════════
