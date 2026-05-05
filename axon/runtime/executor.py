@@ -61,6 +61,12 @@ from axon.runtime.pem.hibernation import (
     InMemoryHibernationStore,
     parse_timeout,
 )
+from axon.runtime.par_context import (
+    ContextView,
+    ParMergeStrategy,
+    merge_par_views,
+    parse_merge_strategy,
+)
 from axon.runtime.pix_registry import InMemoryPixRegistry, PixRegistry
 from axon.runtime.retry_engine import RefineConfig, RetryEngine, RetryResult
 from axon.engine.pem.pid_controller import PIDController
@@ -4637,43 +4643,64 @@ class Executor:
     ) -> StepResult:
         """Execute a `par { branchA; branchB; branchC }` step.
 
-        Pre-Fase-18 ran sequentially through the LLM (3× wall-clock).
-        Fase 18.e launches branches via `asyncio.gather` so they run
-        concurrently from the event-loop's perspective. Each branch
-        gets its own task wrapping `_execute_step`.
+        Concurrency model (Fase 19.d):
 
-        Concurrency contract (MVP): all branches share `ctx`. Writes
-        to the same variable name resolve to last-writer-wins per
-        the asyncio loop's interleaving. A future sub-phase may add
-        per-branch context views with explicit merge — for now,
-        adopters declaring conflicting writes get warned at compile
-        time (TBD) and well-defined undefined behavior at runtime.
+          * Each branch receives a private :class:`ContextView` —
+            deep-copied seed of the parent context at par-entry time.
+          * Branches run concurrently via ``asyncio.gather`` against
+            their own views; writes never bleed between branches
+            during execution.
+          * After all branches finish, per-branch diffs are merged
+            back into the parent context via the
+            :class:`ParMergeStrategy` named in the IR's
+            ``consolidation`` field. Empty / unknown name →
+            ``LAST_WRITER_WINS`` (matches Fase 18.e MVP behavior so
+            existing flows are unaffected by the upgrade).
+
+        Pre-Fase-19 (Fase 18.e MVP) ran branches against the shared
+        parent context — under high write contention two branches
+        could clobber each other based on event-loop interleaving.
+        That race is closed here.
         """
         step_name = step.step_name
         step_start = time.perf_counter()
         meta = step.metadata["par"]
         branches = meta.get("branches") or []
+        consolidation = meta.get("consolidation", "")
+        strategy = parse_merge_strategy(consolidation)
 
         tracer.emit(
             TraceEventType.STEP_START,
             step_name=step_name,
-            data={"type": "par", "branch_count": len(branches)},
+            data={
+                "type": "par",
+                "branch_count": len(branches),
+                "merge_strategy": strategy.value,
+                "consolidation_raw": consolidation,
+            },
         )
 
-        async def _run_branch(branch_step: CompiledStep) -> StepResult:
+        # Per-branch ContextView — deep-copied seed; writes are
+        # captured locally, merged back after all branches finish.
+        views = [ContextView(ctx) for _ in branches]
+
+        async def _run_branch(
+            branch_step: CompiledStep, view: ContextView,
+        ) -> StepResult:
             return await self._execute_step(
-                step=branch_step, unit=unit, ctx=ctx, tracer=tracer,
+                step=branch_step, unit=unit, ctx=view, tracer=tracer,
             )
 
         results = await asyncio.gather(
-            *(_run_branch(b) for b in branches),
+            *(_run_branch(b, v) for b, v in zip(branches, views)),
             return_exceptions=True,
         )
 
         # Aggregate: any non-exception is a successful branch; collect
         # the first exception (if any) and re-raise so unit error
-        # handling preserves blame attribution. Configurable via the
-        # consolidation field (future sub-phase).
+        # handling preserves blame attribution. Failed branches do
+        # NOT participate in the merge — partial-failure semantics
+        # are explicit-fail by design.
         first_exc = next(
             (r for r in results if isinstance(r, BaseException)),
             None,
@@ -4693,6 +4720,9 @@ class Executor:
             )
             raise first_exc
 
+        # Merge per-branch diffs into the parent context.
+        merge_summary = merge_par_views(ctx, views, strategy=strategy)
+
         duration_ms = (time.perf_counter() - step_start) * 1000
         successful_results = [r for r in results if isinstance(r, StepResult)]
         tracer.emit(
@@ -4703,12 +4733,17 @@ class Executor:
                 "type": "par",
                 "branch_count": len(branches),
                 "completed_count": len(successful_results),
+                "merge_strategy": strategy.value,
+                "variables_written": merge_summary["variables_written"],
+                "step_results_written": merge_summary["step_results_written"],
+                "conflict_keys": merge_summary["conflict_keys"],
             },
             duration_ms=duration_ms,
         )
 
         # Project the last branch's result as the par's outcome
-        # (consolidation strategies TBD in a follow-up).
+        # (consolidation strategies are about ContextManager merge,
+        # not the StepResult selection — that's a separate axis).
         if successful_results:
             return successful_results[-1]
         return StepResult(
