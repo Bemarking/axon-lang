@@ -970,6 +970,12 @@ pub enum FlowStep {
     ForIn(ForInStatement),
     Let(LetStatement),
     Return(ReturnStatement),
+    /// Fase 19.e — `break` keyword. Payload-free; carries only its
+    /// source location for error reporting.
+    Break(BreakStatement),
+    /// Fase 19.e — `continue` keyword. Payload-free; same shape as
+    /// `Break`.
+    Continue(ContinueStatement),
     /// Lambda Data application in a flow step.
     LambdaDataApply(LambdaDataApplyNode),
     // ── Tier 2 flow steps ──
@@ -1142,6 +1148,23 @@ pub struct LetStatement {
 #[derive(Debug)]
 pub struct ReturnStatement {
     pub value_expr: String,
+    pub loc: Loc,
+}
+
+/// Fase 19.e — `break` keyword inside a for-in body. Carries no
+/// payload; the runner translates it into a sentinel that
+/// terminates the loop. Parser scope check (`loop_depth`)
+/// guarantees this only appears inside a for-in body.
+#[derive(Debug)]
+pub struct BreakStatement {
+    pub loc: Loc,
+}
+
+/// Fase 19.e — `continue` keyword inside a for-in body. Same
+/// shape as ``BreakStatement``; the runner uses a different
+/// sentinel type to distinguish loop-exit from iteration-skip.
+#[derive(Debug)]
+pub struct ContinueStatement {
     pub loc: Loc,
 }
 

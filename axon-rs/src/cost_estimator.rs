@@ -133,7 +133,10 @@ fn classify_node(node: &IRFlowNode) -> StepKind {
         | IRFlowNode::Persist(_) | IRFlowNode::Retrieve(_)
         | IRFlowNode::Mutate(_) | IRFlowNode::Purge(_) => StepKind::Memory,
         IRFlowNode::Conditional(_) | IRFlowNode::ForIn(_)
-        | IRFlowNode::Let(_) | IRFlowNode::Return(_) => StepKind::Control,
+        | IRFlowNode::Let(_) | IRFlowNode::Return(_)
+        // Fase 19.e — break/continue are pure control transfers, no
+        // model call, no I/O. Classify as Control alongside Return.
+        | IRFlowNode::Break(_) | IRFlowNode::Continue(_) => StepKind::Control,
         IRFlowNode::Par(_) | IRFlowNode::Stream(_) => StepKind::Parallel,
         IRFlowNode::Deliberate(_) | IRFlowNode::Consensus(_)
         | IRFlowNode::Forge(_) => StepKind::MultiAgent,

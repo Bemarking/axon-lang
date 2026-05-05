@@ -181,6 +181,10 @@ pub enum TokenType {
     Where,
     Let,
     Return,
+    /// Fase 19.e — exit the enclosing for-in body.
+    Break,
+    /// Fase 19.e — skip to the next iteration of the enclosing for-in body.
+    Continue,
     Or,
     // Field keywords
     Given,
@@ -471,6 +475,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "where" => TokenType::Where,
         "let" => TokenType::Let,
         "return" => TokenType::Return,
+        "break" => TokenType::Break,
+        "continue" => TokenType::Continue,
         "or" => TokenType::Or,
         "given" => TokenType::Given,
         "ask" => TokenType::Ask,
