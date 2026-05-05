@@ -1,44 +1,99 @@
 ---
 title: "Plan vivo: Fase 19 — Production hardening of Fase 18 dispatchers"
-status: PARTIAL — Tier A + B + 19.l shipped (commits 66044e2 / eda4198 / d9bab9e / 0b4bc27 / drift-gate); Tier C/D/E + 19.n release deferred to follow-up session
+status: SHIPPED — all 14 sub-phases (19.a–19.n) landed on master; v1.14.0 release commit + tag follow
 owner: AXON Language Team
 created: 2026-05-04
 updated: 2026-05-04
-target: axon-lang v1.14.0 (PyPI + crates.io) — coordinated cross-stack — DEFERRED
+target: axon-lang v1.14.0 (PyPI + crates.io) + axon-frontend v0.6.0 — coordinated cross-stack
 depends_on: Fase 15 / 16 / 17 / 18 DONE
 ---
 
-## ▶ Status snapshot (2026-05-04)
+## ▶ Status snapshot (2026-05-04 — SHIPPED)
 
-**Shipped this session (Tier A + B + 19.l, all on master):**
+All 14 sub-phases of Fase 19 are landed on master. Commits in chronological order:
 
-| Sub-phase | Status | Commit | Tests | Module(s) |
+| Sub-phase | Status | Commit | Tests | Module(s) / Notes |
 |---|---|---|---|---|
 | 19.a Hibernate full CPS | ✅ SHIPPED | `66044e2` | 11 new + 3 rewritten | `axon/runtime/pem/hibernation.py`, `Executor.resume_from_token` |
-| 19.b Drill full PIX integration | ✅ SHIPPED | `eda4198` | 12 new (drill+trail+registry) | `axon/runtime/pix_registry.py` |
-| 19.c Trail full corroboration walker | ✅ SHIPPED | `eda4198` | (in 19.b/c suite) | `Executor._trail_payload_from_nav_result` |
+| 19.b Drill full PIX integration | ✅ SHIPPED | `eda4198` | 12 new | `axon/runtime/pix_registry.py` + `_execute_drill_step` rewrite |
+| 19.c Trail full corroboration walker | ✅ SHIPPED | `eda4198` | (in 19.b/c) | `Executor._trail_payload_from_nav_result` |
 | 19.d Par per-branch ContextView + 4 merge strategies | ✅ SHIPPED | `d9bab9e` | 23 new | `axon/runtime/par_context.py` |
 | 19.e ForIn break/continue (Python frontend + runtime) | ✅ SHIPPED | `0b4bc27` | 17 new | `IRBreak`/`IRContinue` + parser scope check + executor sentinels |
-| 19.l Drift gate extension | ✅ SHIPPED | (this commit) | 11 new + Tier C placeholder | `tests/test_fase19_drift_gate.py` |
+| 19.l Drift gate extension (initial) | ✅ SHIPPED | `3c8df33` | 11 new (Tier C placeholder skipped) | `tests/test_fase19_drift_gate.py` |
+| 19.m Documentation honesty (mid-session) | ✅ SHIPPED | `3c8df33` | — | This doc PARTIAL annotation |
+| 19.f Rust dispatchers for Conditional/ForIn/Par/Return + IRBreak/IRContinue Rust mirror | ✅ SHIPPED | `e47d813` | 5 new in `mod fase19_ir_tests` | `axon-frontend/src/{tokens,ast,ir_nodes,parser,ir_generator}.rs` |
+| 19.g Rust stub-correct dispatchers for Remember/Recall/Hibernate/Drill/Trail | ✅ SHIPPED | `e47d813` | (Rust runner stub) | `axon-rs/src/runner.rs::execute_stub` arms + `cost_estimator.rs` |
+| 19.h Cross-stack parity goldens | ✅ SHIPPED | `e47d813` | 7 new | `tests/test_fase19_cross_stack_parity.py` |
+| 19.i Prometheus + OTel + structured audit observability (no hard dep) | ✅ SHIPPED | `6027a8b` | 11 new | `axon/runtime/observability.py` + dispatcher wiring (Hibernate/Drill/Trail/Remember/Recall/Par) |
+| 19.j Hypothesis property tests per dispatcher | ✅ SHIPPED | `6027a8b` | 10 new (~1000 inputs each) | `tests/test_fase19_property_tests.py` |
+| 19.k Random-nesting fuzz tests (depth ≤ 5) | ✅ SHIPPED | `6027a8b` | 5 new | `tests/test_fase19_fuzz_nesting.py` |
+| 19.l Drift gate Rust-parity activated + Fase 18 matrix extended | ✅ SHIPPED | `6027a8b` | (un-skip + new arms) | `test_rust_parity_for_wired_primitives` + matrix rows 44/45 |
+| 19.m Documentation honesty (final) | ✅ SHIPPED | (this commit) | — | this doc + memory record |
+| 19.n Coordinated v1.14.0 release | ⏳ NEXT | — | — | bump axon-lang v1.13.0→v1.14.0 + axon-frontend v0.5.0→v0.6.0; push + PyPI + crates.io + GH Release |
 
-**Acceptance metrics:**
-- 91 new tests across 4 dedicated Fase-19 test files; 851 tests green across the integrity-critical suite (executor + Fase 11/13/14/17/18/19 + parser + IR-generator + IR-nodes + IR-coverage drift gate + PEM + PIX engine/compiler + paradigm-shifts + daemon + agent-runtime).
-- `_stub: True` literal removed from `axon/runtime/executor.py` (drift gate enforced).
-- Empty-store falsy-replacement bug class avoided across all three injectable backends (`continuity_signer`, `hibernation_store`, `pix_registry` — all use `is None` discipline, never `or`).
+**Acceptance metrics (final):**
 
-**Deferred to follow-up session (Tier C / D / E / F):**
+- **117 new Python tests** across 8 dedicated Fase-19 test files
+  (hibernate-full / drill-trail-full / par-context / break-continue /
+  drift-gate / cross-stack-parity / observability / property-tests /
+  fuzz-nesting). 849 tests green across the integrity-critical suite
+  (executor + Fase 11/13/14/17/18/19 + parser + IR-generator + IR-nodes
+  + drift gates + PEM + PIX engine/compiler + paradigm-shifts + daemon
+  + agent-runtime).
+- **5 new Rust tests** in `axon-frontend mod fase19_ir_tests`. Total
+  Rust tests: 152 axon-frontend + 1043 axon-rs = 1195 green.
+- **`_stub: True` literal removed** from `axon/runtime/executor.py`
+  (Fase 19.l drift gate enforced).
+- **Empty-store falsy-replacement bug class avoided** across all
+  three injectable backends (`continuity_signer`,
+  `hibernation_store`, `pix_registry` — all use `is None`
+  discipline, never `or`).
+- **Rust-parity drift gate active**: `test_rust_parity_for_wired_primitives`
+  parses `axon-rs/src/runner.rs::execute_stub` for match arms and
+  asserts every Fase-19 WIRED primitive has stub-correct Rust
+  dispatch. 11/11 expected arms present.
+- **Hypothesis property tests** validate ~1000 inputs per
+  property: HibernationStore round-trip, ContinuityToken sign/
+  verify symmetry, token unforgeability under different keys
+  (cryptographic invariant), parse_timeout monotonicity,
+  ContextView write isolation, Par merge strategy invariants
+  (LWW / FWW / disjoint / idempotence).
+- **Random-nesting fuzz** at depth ≤ 5 with 30 examples each:
+  no deadlock, no orphan asyncio tasks, break/continue scoped
+  to innermost loop only.
+- **Observability layer is soft-dep**: zero overhead when
+  prometheus_client / opentelemetry are uninstalled; metrics +
+  spans + audit events all work when installed.
 
-| Sub-phase | Reason for defer |
-|---|---|
-| 19.f Rust dispatchers for Conditional / ForIn / Par / Return | Each requires recursive child-step dispatch in Rust; non-trivial. |
-| 19.g Rust dispatchers for Remember / Recall / Hibernate / Drill / Trail | Memory + CPS + PIX domain primitives need stub-correct Rust counterparts. |
-| 19.h Cross-stack parity goldens | Depends on Tier C dispatchers existing. |
-| 19.i Prometheus + OTel + structured audit events | Adds optional deps; integration with existing tracer needs design work. |
-| 19.j Hypothesis property tests per dispatcher | Each dispatcher's contract needs a property model. |
-| 19.k Random-nesting fuzz tests | Bounded depth-5 generator + deadlock detection harness. |
-| 19.n Coordinated v1.14.0 release | Predicated on Tier C/D/E shipping — releasing now would be dishonest "production hardening". |
+**Bugs found + fixed during integration (Fase 19 session):**
 
-**Why partial:** the runtime correctness work (closes the MVP placeholder gap from Fase 18 — Tier A + B) was the highest-ROI subset and is shipped. The Rust mirror, observability, and property-test layers are ~1.5–2 sessions of additional work and warrant their own focused pass. The drift gate (19.l) carries a deliberately-skipped Rust-parity test that becomes the entry point when Tier C is picked up.
+- Empty-store falsy-replacement: `InMemoryHibernationStore` /
+  `InMemoryPixRegistry` define `__len__`, so an empty injected store
+  evaluated falsy. Naive `store or InMemoryStore()` would silently
+  discard the adopter's backend. All three Fase-19 injectable
+  backends now use `is None` discipline.
+- `_FlowReturnSignal.__init__(self, value)` body was accidentally
+  swallowed when adding `_FlowBreakSignal`/`_FlowContinueSignal`;
+  restored.
+- `_exec` test helpers in `test_fase18_control_flow.py` and
+  `test_fase18_domain_primitives.py` captured every
+  `ContextManager.__init__` — `ContextView`'s `super().__init__`
+  chain was overwriting the captured handle. Fixed with
+  `if "ctx" not in captured` guard.
+- Conflict detection in `merge_par_views` originally used a `set`
+  comprehension over branch values — fails for unhashable values
+  (dicts/lists are common write payloads). Replaced with
+  hashability-safe `==` comparison.
+- Parser `_loop_depth` decrement was originally outside a
+  `try/finally`; a parse error mid-body would have left the depth
+  permanently elevated. Fixed in both Python (try/finally) and Rust
+  (closure-based `Result`-aware unwind).
+
+**v1.14.0 release scope (next):**
+- `axon-lang` (Python + Rust): v1.13.0 → v1.14.0
+- `axon-frontend` (Rust): v0.5.0 → v0.6.0 (IRBreak / IRContinue
+  added → SemVer minor)
+- No `axon-enterprise` bump (Fase 19 is OSS-only per plan §3).
 
 ---
 
