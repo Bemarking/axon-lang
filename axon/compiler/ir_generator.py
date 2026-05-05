@@ -61,6 +61,8 @@ from axon.compiler.ir_nodes import (
     IRExplore,
     IRFlow,
     IRFocus,
+    IRBreak,
+    IRContinue,
     IRForIn,
     IRForge,
     IRLetBinding,
@@ -303,6 +305,8 @@ class IRGenerator:
         ast.RecallNode: "_visit_recall",
         ast.ConditionalNode: "_visit_conditional",
         ast.ForInStatement: "_visit_for_in",
+        ast.BreakStatement: "_visit_break",
+        ast.ContinueStatement: "_visit_continue",
         ast.LetStatement: "_visit_let",
         ast.ReturnStatement: "_visit_return",
         ast.RunStatement: "_visit_run",
@@ -990,6 +994,28 @@ class IRGenerator:
             variable=node.variable,
             iterable=node.iterable,
             body=body,
+        )
+
+    def _visit_break(self, node: ast.BreakStatement) -> IRBreak:
+        """Compile BreakStatement → IRBreak (Fase 19.e).
+
+        The parser has already enforced that this only appears inside
+        a for-in body; the IR node carries no payload — the executor's
+        sentinel mechanism handles control transfer.
+        """
+        return IRBreak(
+            source_line=node.line,
+            source_column=node.column,
+        )
+
+    def _visit_continue(self, node: ast.ContinueStatement) -> IRContinue:
+        """Compile ContinueStatement → IRContinue (Fase 19.e).
+
+        Same shape as IRBreak: payload-free, control transfer is
+        sentinel-driven at runtime."""
+        return IRContinue(
+            source_line=node.line,
+            source_column=node.column,
         )
 
     def _visit_let(self, node: ast.LetStatement) -> IRLetBinding:

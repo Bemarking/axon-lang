@@ -90,6 +90,8 @@ from .ast_nodes import (
     SessionDefinition,
     SessionRole,
     SessionStep,
+    BreakStatement,
+    ContinueStatement,
     ReturnStatement,
     RunStatement,
     ShieldApplyNode,
@@ -206,6 +208,11 @@ class Parser:
         # at the start of each `_parse_let` and read at the end.
         # Default "literal" so any spurious access before reset is safe.
         self._last_let_value_kind: str = "literal"
+        # Fase 19.e — loop nesting depth for break/continue scope check.
+        # Incremented at the start of `_parse_for_in`, decremented after.
+        # `_parse_break`/`_parse_continue` raise AxonParseError when
+        # this is zero (the keyword has no meaning outside a loop body).
+        self._loop_depth: int = 0
 
         # Auto-decorate every `_parse_*` method so AST nodes returned
         # from any production rule get their leading/trailing trivia
@@ -937,12 +944,16 @@ class Parser:
                 return self._parse_let()
             case TokenType.RETURN:
                 return self._parse_return()
+            case TokenType.BREAK:
+                return self._parse_break()
+            case TokenType.CONTINUE:
+                return self._parse_continue()
             case _:
                 raise AxonParseError(
                     "Unexpected token in flow body",
                     line=tok.line,
                     column=tok.column,
-                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, mandate, lambda, daemon, listen, persist, retrieve, mutate, purge, transact, focus, associate, aggregate, explore, ingest, let, return",
+                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, mandate, lambda, daemon, listen, persist, retrieve, mutate, purge, transact, focus, associate, aggregate, explore, ingest, let, return, break, continue",
                     found=tok.value,
                 )
 
@@ -2107,6 +2118,9 @@ class Parser:
         Cognitive iteration — systematic traversal of a structured
         collection.  The iterable is a dotted path expression resolved
         at runtime (e.g. ``thesis.chapters``, ``corpus.documents``).
+
+        Fase 19.e: increments ``_loop_depth`` while parsing the body
+        so nested ``break``/``continue`` keywords pass the scope check.
         """
         tok = self._consume(TokenType.FOR)
         var_name = self._consume(TokenType.IDENTIFIER).value
@@ -2121,12 +2135,52 @@ class Parser:
         )
 
         self._consume(TokenType.LBRACE)
-        while not self._check(TokenType.RBRACE):
-            step = self._parse_flow_step()
-            if step is not None:
-                node.body.append(step)
+        self._loop_depth += 1
+        try:
+            while not self._check(TokenType.RBRACE):
+                step = self._parse_flow_step()
+                if step is not None:
+                    node.body.append(step)
+        finally:
+            self._loop_depth -= 1
         self._consume(TokenType.RBRACE)
         return node
+
+    def _parse_break(self) -> BreakStatement:
+        """Parse: break
+
+        Fase 19.e — exit the enclosing for-in body. Compile-time
+        scope check: ``break`` outside a loop body raises
+        ``AxonParseError``.
+        """
+        tok = self._consume(TokenType.BREAK)
+        if self._loop_depth == 0:
+            raise AxonParseError(
+                "'break' outside of a for-in loop body",
+                line=tok.line,
+                column=tok.column,
+                expected="break inside for { ... }",
+                found="break",
+            )
+        return BreakStatement(line=tok.line, column=tok.column)
+
+    def _parse_continue(self) -> ContinueStatement:
+        """Parse: continue
+
+        Fase 19.e — skip to the next iteration of the enclosing
+        for-in body. Compile-time scope check: ``continue`` outside
+        a loop body raises ``AxonParseError``.
+        """
+        tok = self._consume(TokenType.CONTINUE)
+        if self._loop_depth == 0:
+            raise AxonParseError(
+                "'continue' outside of a for-in loop body",
+                line=tok.line,
+                column=tok.column,
+                expected="continue inside for { ... }",
+                found="continue",
+            )
+        return ContinueStatement(line=tok.line, column=tok.column)
 
     # ── LET (SSA immutable binding) ──────────────────────────────
 

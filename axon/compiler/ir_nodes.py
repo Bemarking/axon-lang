@@ -526,6 +526,35 @@ class IRForIn(IRNode):
 
 
 @dataclass(frozen=True)
+class IRBreak(IRNode):
+    """
+    Compiled `break` — exit the enclosing ``for ... in`` body
+    (Fase 19.e).
+
+    Phase-2 backend lowering materialises this into a metadata-only
+    CompiledStep. The Python executor's ``_execute_break_step``
+    raises an internal ``_FlowBreakSignal`` sentinel which
+    ``_execute_for_in_step`` catches to terminate the loop. Mirror
+    of ``IRReturn``'s sentinel pattern (Fase 18.d).
+    """
+    node_type: str = "break"
+
+
+@dataclass(frozen=True)
+class IRContinue(IRNode):
+    """
+    Compiled `continue` — skip to the next iteration of the
+    enclosing ``for ... in`` body (Fase 19.e).
+
+    Phase-2 backend lowering materialises this into a metadata-only
+    CompiledStep. The Python executor's ``_execute_continue_step``
+    raises an internal ``_FlowContinueSignal`` sentinel which
+    ``_execute_for_in_step`` catches to advance to the next element.
+    """
+    node_type: str = "continue"
+
+
+@dataclass(frozen=True)
 class IRLetBinding(IRNode):
     """
     Compiled SSA immutable binding (Fase 17 — runtime-wired).

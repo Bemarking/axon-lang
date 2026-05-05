@@ -213,6 +213,8 @@ class TokenType(Enum):
     WHERE = auto()
     LET = auto()       # let X = V (SSA immutable binding)
     RETURN = auto()    # return expr (Early Exit Sink)
+    BREAK = auto()     # break (exit enclosing for-in body — Fase 19.e)
+    CONTINUE = auto()  # continue (skip to next iteration — Fase 19.e)
     OR = auto()        # or (boolean connective)
 
     # ── FIELD KEYWORDS (inside blocks) ───────────────────────────
@@ -365,6 +367,8 @@ KEYWORDS: dict[str, TokenType] = {
     "in": TokenType.IN,
     "let": TokenType.LET,
     "return": TokenType.RETURN,
+    "break": TokenType.BREAK,
+    "continue": TokenType.CONTINUE,
     "or": TokenType.OR,
     "into": TokenType.INTO,
     "against": TokenType.AGAINST,

@@ -124,6 +124,20 @@ class _FlowReturnSignal(Exception):
         super().__init__(f"flow return: {value!r}")
 
 
+class _FlowBreakSignal(Exception):
+    """Raised by ``_execute_break_step`` (Fase 19.e). Caught by the
+    enclosing ``_execute_for_in_step``, which terminates the loop
+    immediately. If `break` is somehow encountered outside a loop
+    body (parser scope check should prevent this), the signal
+    propagates to the unit-level error path."""
+
+
+class _FlowContinueSignal(Exception):
+    """Raised by ``_execute_continue_step`` (Fase 19.e). Caught by
+    the enclosing ``_execute_for_in_step``, which aborts the current
+    iteration's remaining steps and advances to the next element."""
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  MODEL CLIENT PROTOCOL
 # ═══════════════════════════════════════════════════════════════════
@@ -890,6 +904,20 @@ class Executor:
         # Fase-18 `return` fell through to LLM and the flow continued.
         if step.metadata.get("return"):
             return await self._execute_return_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+
+        # ── break / continue (Fase 19.e — for-in loop control) ────────
+        # Both raise sentinel exceptions caught by the enclosing
+        # _execute_for_in_step. Parser scope check guarantees these
+        # only appear inside a for-in body; outside-loop usage would
+        # propagate the signal to the unit-level error path.
+        if "break" in step.metadata:
+            return await self._execute_break_step(
+                step=step, unit=unit, ctx=ctx, tracer=tracer,
+            )
+        if "continue" in step.metadata:
+            return await self._execute_continue_step(
                 step=step, unit=unit, ctx=ctx, tracer=tracer,
             )
 
@@ -4600,14 +4628,31 @@ class Executor:
 
         last_result: StepResult | None = None
         iterations_run = 0
+        breaks_observed = 0
+        continues_observed = 0
         for element in iterable:
             if variable:
                 ctx.set_variable(variable, element)
-            for inner in body:
-                last_result = await self._execute_step(
-                    step=inner, unit=unit, ctx=ctx, tracer=tracer,
-                )
-            iterations_run += 1
+            iteration_completed = True
+            try:
+                for inner in body:
+                    try:
+                        last_result = await self._execute_step(
+                            step=inner, unit=unit, ctx=ctx, tracer=tracer,
+                        )
+                    except _FlowContinueSignal:
+                        continues_observed += 1
+                        # Abort this iteration's remaining steps;
+                        # outer loop advances to the next element.
+                        break
+            except _FlowBreakSignal:
+                # Caught at iteration scope — break terminates the
+                # whole loop. Iteration is NOT counted as completed.
+                breaks_observed += 1
+                iteration_completed = False
+                break
+            if iteration_completed:
+                iterations_run += 1
 
         duration_ms = (time.perf_counter() - step_start) * 1000
         tracer.emit(
@@ -4618,6 +4663,8 @@ class Executor:
                 "type": "for_in",
                 "variable": variable,
                 "iterations_run": iterations_run,
+                "breaks_observed": breaks_observed,
+                "continues_observed": continues_observed,
             },
             duration_ms=duration_ms,
         )
@@ -5018,6 +5065,66 @@ class Executor:
         # but we construct it so the type checker and any caller
         # that catches at a different level sees a clean object.
         raise _FlowReturnSignal(value)
+
+    # ── break / continue (Fase 19.e) ─────────────────────────────────
+    # Mirror the IRReturn sentinel pattern at loop scope. Both
+    # dispatchers are pure: emit trace, raise the matching signal.
+    # The enclosing _execute_for_in_step catches them; if the keyword
+    # appears outside a loop body (parser scope check should prevent
+    # this), the signal propagates to the unit-level error handler
+    # and surfaces as a clean AxonRuntimeError.
+
+    async def _execute_break_step(
+        self,
+        *,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a `break` step — raise ``_FlowBreakSignal`` to
+        terminate the enclosing for-in loop."""
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={"type": "break"},
+        )
+        duration_ms = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={"success": True, "type": "break", "loop_exit": True},
+            duration_ms=duration_ms,
+        )
+        raise _FlowBreakSignal()
+
+    async def _execute_continue_step(
+        self,
+        *,
+        step: CompiledStep,
+        unit: CompiledExecutionUnit,
+        ctx: ContextManager,
+        tracer: Tracer,
+    ) -> StepResult:
+        """Execute a `continue` step — raise ``_FlowContinueSignal``
+        to skip to the next iteration of the enclosing for-in loop."""
+        step_name = step.step_name
+        step_start = time.perf_counter()
+        tracer.emit(
+            TraceEventType.STEP_START,
+            step_name=step_name,
+            data={"type": "continue"},
+        )
+        duration_ms = (time.perf_counter() - step_start) * 1000
+        tracer.emit(
+            TraceEventType.STEP_END,
+            step_name=step_name,
+            data={"success": True, "type": "continue", "iteration_skip": True},
+            duration_ms=duration_ms,
+        )
+        raise _FlowContinueSignal()
 
     # ═══════════════════════════════════════════════════════════════
     #  ΛD APPLY EXECUTION — pure epistemic binding (Fase 15.b)

@@ -739,6 +739,28 @@ class ReturnStatement(ASTNode):
     value_expr: ASTNode | None = None
 
 
+@dataclass
+class BreakStatement(ASTNode):
+    """break — exit the enclosing ``for ... in`` body (Fase 19.e).
+
+    Like Python's ``break``: terminates the innermost loop and
+    transfers control to the step immediately after the loop.
+    Outside a loop body, the parser raises ``AxonParseError`` —
+    break has no other meaning at flow scope.
+    """
+
+
+@dataclass
+class ContinueStatement(ASTNode):
+    """continue — skip to the next iteration of the enclosing
+    ``for ... in`` body (Fase 19.e).
+
+    Like Python's ``continue``: aborts the current iteration's
+    remaining steps and advances the loop variable to the next
+    element. Outside a loop body, the parser raises
+    ``AxonParseError``."""
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  PARADIGM SHIFT NODES — epistemic scoping, parallelism, yielding
 # ═══════════════════════════════════════════════════════════════════
