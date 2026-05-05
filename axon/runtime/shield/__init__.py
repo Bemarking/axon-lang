@@ -43,6 +43,12 @@ from axon.runtime.shield import (  # noqa: F401 — import for side effects
     pattern_scanner,
     canary_scanner,
     capability_scanner,
+    classifier_scanner,
+    dual_llm_scanner,
+    perplexity_scanner,
+    # ensemble must import LAST — it composes the prior three at
+    # auto-registration time, so they need to be in the registry first.
+    ensemble_scanner,
 )
 
 
@@ -50,4 +56,8 @@ __all__ = [
     "pattern_scanner",
     "canary_scanner",
     "capability_scanner",
+    "classifier_scanner",
+    "dual_llm_scanner",
+    "perplexity_scanner",
+    "ensemble_scanner",
 ]
