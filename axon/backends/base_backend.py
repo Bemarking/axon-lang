@@ -57,6 +57,8 @@ from axon.compiler.ir_nodes import (
     IRParallelBlock,
     IRRecall,
     IRRemember,
+    IRBreak,
+    IRContinue,
     IRReturn,
     IRTrail,
     IRNavigate,
@@ -127,6 +129,14 @@ _RECALL_IR_TYPES = (IRRecall,)
 # Pre-Fase-18 `return` fell through to compile_step → LLM, which meant
 # the flow did NOT terminate (subsequent steps continued executing).
 _RETURN_IR_TYPES = (IRReturn,)
+
+# IR types for the Fase 19.e break/continue keywords. Both compile to
+# metadata-only steps; the executor's ``_execute_break_step`` /
+# ``_execute_continue_step`` raise sentinel exceptions caught by the
+# enclosing ``_execute_for_in_step``. Parser scope check guarantees
+# these only appear inside a for-in body.
+_BREAK_IR_TYPES = (IRBreak,)
+_CONTINUE_IR_TYPES = (IRContinue,)
 
 # IR types for control-flow primitives (Fase 18.b/c/e). These have
 # nested step bodies that must be recursively compiled; the dispatcher
@@ -448,6 +458,10 @@ class BaseBackend(ABC):
             return self._compile_recall_step(step)
         if isinstance(step, _RETURN_IR_TYPES):
             return self._compile_return_step(step)
+        if isinstance(step, _BREAK_IR_TYPES):
+            return self._compile_break_step(step)
+        if isinstance(step, _CONTINUE_IR_TYPES):
+            return self._compile_continue_step(step)
         # Control-flow primitives (Fase 18.b/c/e) — recursive bodies.
         if isinstance(step, _CONDITIONAL_IR_TYPES):
             return self._compile_conditional_step(step, ir, ctx)
@@ -1393,6 +1407,35 @@ class BaseBackend(ABC):
                     "value_kind": getattr(step, "value_kind", "literal") or "literal",
                 },
             },
+        )
+
+    @staticmethod
+    def _compile_break_step(step: IRBreak) -> CompiledStep:
+        """Compile ``break`` into a metadata-only step (Fase 19.e).
+
+        Carries no payload — the executor's ``_execute_break_step``
+        raises a ``_FlowBreakSignal`` sentinel which the enclosing
+        ``_execute_for_in_step`` catches to terminate the loop.
+        Mirror of ``_compile_return_step``'s sentinel pattern.
+        """
+        return CompiledStep(
+            step_name="break",
+            user_prompt="",
+            metadata={"break": {}},
+        )
+
+    @staticmethod
+    def _compile_continue_step(step: IRContinue) -> CompiledStep:
+        """Compile ``continue`` into a metadata-only step (Fase 19.e).
+
+        Same shape as ``_compile_break_step`` — payload-free; the
+        executor raises ``_FlowContinueSignal`` to advance the loop
+        to the next element.
+        """
+        return CompiledStep(
+            step_name="continue",
+            user_prompt="",
+            metadata={"continue": {}},
         )
 
     @staticmethod
