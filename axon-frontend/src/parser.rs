@@ -250,6 +250,11 @@ pub struct Parser {
     /// `parse_let_atom` / `parse_let_value_expr` as they descend; read
     /// at the end of `parse_let` and stored on the LetStatement.
     last_let_value_kind: String,
+    /// Fase 19.e — loop nesting depth for break/continue scope check.
+    /// Incremented at the start of `parse_for_in`, decremented after.
+    /// `parse_break`/`parse_continue` raise ParseError when this is
+    /// zero (the keyword has no meaning outside a loop body).
+    loop_depth: u32,
 }
 
 impl Parser {
@@ -298,6 +303,7 @@ impl Parser {
             leading_trivia: leading,
             trailing_trivia: trailing,
             last_let_value_kind: "literal".to_string(),
+            loop_depth: 0,
         }
     }
 
@@ -1326,6 +1332,8 @@ impl Parser {
             TokenType::For => self.parse_for_in().map(FlowStep::ForIn),
             TokenType::Let => self.parse_let().map(FlowStep::Let),
             TokenType::Return => self.parse_return().map(FlowStep::Return),
+            TokenType::Break => self.parse_break().map(FlowStep::Break),
+            TokenType::Continue => self.parse_continue().map(FlowStep::Continue),
             TokenType::Lambda => self.parse_lambda_data_apply().map(FlowStep::LambdaDataApply),
 
             // ── Tier 2 flow steps (typed AST) ─────────────────────
@@ -1758,10 +1766,22 @@ impl Parser {
         let iterable = self.parse_dotted_identifier()?;
 
         self.consume(TokenType::LBrace)?;
-        let mut body = Vec::new();
-        while !self.check(TokenType::RBrace) {
-            body.push(self.parse_flow_step()?);
-        }
+        // Fase 19.e — increment loop_depth so `parse_break` /
+        // `parse_continue` inside the body pass the scope check.
+        // Decrement on every exit path (Ok / Err) so a parse error
+        // mid-body does not leave the depth permanently elevated
+        // for later top-level parsing — `?` would skip the
+        // decrement otherwise.
+        self.loop_depth += 1;
+        let body_result = (|| -> Result<Vec<FlowStep>, ParseError> {
+            let mut body = Vec::new();
+            while !self.check(TokenType::RBrace) {
+                body.push(self.parse_flow_step()?);
+            }
+            Ok(body)
+        })();
+        self.loop_depth -= 1;
+        let body = body_result?;
         self.consume(TokenType::RBrace)?;
 
         Ok(ForInStatement {
@@ -1770,6 +1790,36 @@ impl Parser {
             body,
             loc,
         })
+    }
+
+    /// Fase 19.e — `break` keyword. Compile-time scope check
+    /// (`loop_depth == 0`) rejects break outside a for-in body.
+    fn parse_break(&mut self) -> Result<BreakStatement, ParseError> {
+        let tok = self.consume(TokenType::Break)?;
+        let loc = self.loc_of(&tok);
+        if self.loop_depth == 0 {
+            return Err(ParseError {
+                message: "'break' outside of a for-in loop body".to_string(),
+                line: tok.line,
+                column: tok.column,
+            });
+        }
+        Ok(BreakStatement { loc })
+    }
+
+    /// Fase 19.e — `continue` keyword. Same scope check as
+    /// `parse_break`.
+    fn parse_continue(&mut self) -> Result<ContinueStatement, ParseError> {
+        let tok = self.consume(TokenType::Continue)?;
+        let loc = self.loc_of(&tok);
+        if self.loop_depth == 0 {
+            return Err(ParseError {
+                message: "'continue' outside of a for-in loop body".to_string(),
+                line: tok.line,
+                column: tok.column,
+            });
+        }
+        Ok(ContinueStatement { loc })
     }
 
     // ── LET ──────────────────────────────────────────────────────

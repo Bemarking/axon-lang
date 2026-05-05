@@ -365,6 +365,10 @@ fn extract_step_info(node: &IRFlowNode) -> (String, String, String) {
         IRFlowNode::Emit(s) => (s.channel_ref.clone(), "emit".to_string(), format!("Emit on {}: {}", s.channel_ref, s.value_ref)),
         IRFlowNode::Publish(s) => (s.channel_ref.clone(), "publish".to_string(), format!("Publish {} within {}", s.channel_ref, s.shield_ref)),
         IRFlowNode::Discover(s) => (s.capability_ref.clone(), "discover".to_string(), format!("Discover {} as {}", s.capability_ref, s.alias)),
+        // Fase 19.e — break / continue. Payload-free; the executor
+        // raises sentinel exceptions caught by the enclosing for-in.
+        IRFlowNode::Break(_) => ("break".to_string(), "break".to_string(), "Break out of for-in loop".to_string()),
+        IRFlowNode::Continue(_) => ("continue".to_string(), "continue".to_string(), "Continue to next for-in iteration".to_string()),
     }
 }
 
@@ -537,6 +541,148 @@ fn execute_stub(
                     }
                     continue;
                 }
+            }
+
+            // ── Fase 19.f/g — stub-correct dispatch for the 11 new
+            // primitives (Conditional / ForIn / Par / Return / Remember /
+            // Recall / Hibernate / Drill / Trail / Break / Continue).
+            //
+            // "Stub-correct" means: recognize the step type, emit a
+            // trace event with the right shape, and bind any
+            // adopter-visible placeholders to ExecContext so downstream
+            // ${X} / $X interpolation continues to resolve. The stub
+            // does NOT perform the real subsystem work (LLM scoring,
+            // PIX traversal, HMAC token signing, MemoryBackend writes)
+            // — that is the Python runner's responsibility. The Rust
+            // stub mirrors the Python contract at the trace boundary
+            // so cross-stack parity goldens (Fase 19.h) compare on the
+            // same structured shapes.
+            match step.step_type.as_str() {
+                "remember" => {
+                    let target = &step.step_name;
+                    if !target.is_empty() {
+                        stub_ctx.set(target, "<remembered>");
+                    }
+                    if trace {
+                        events.push(TraceEvent {
+                            event: "remember".to_string(),
+                            unit: unit.flow_name.clone(),
+                            step: step.step_name.clone(),
+                            detail: step
+                                .memory_expression
+                                .clone()
+                                .unwrap_or_default(),
+                        });
+                    }
+                    continue;
+                }
+                "recall" => {
+                    let source = &step.step_name;
+                    if !source.is_empty() {
+                        stub_ctx.set(source, "<recalled>");
+                    }
+                    if trace {
+                        events.push(TraceEvent {
+                            event: "recall".to_string(),
+                            unit: unit.flow_name.clone(),
+                            step: step.step_name.clone(),
+                            detail: step
+                                .memory_expression
+                                .clone()
+                                .unwrap_or_default(),
+                        });
+                    }
+                    continue;
+                }
+                "return" => {
+                    // Mirror Python's `__return_value__` slot. The stub
+                    // does not actually short-circuit the unit (no
+                    // sentinel mechanism) — it just records the
+                    // intended value so the trace shows the early-exit
+                    // intent. Adopters running `axon run --stub` see
+                    // the binding; the real Python executor enforces
+                    // termination.
+                    stub_ctx.set("__return_value__", &step.user_prompt);
+                    if trace {
+                        events.push(TraceEvent {
+                            event: "return".to_string(),
+                            unit: unit.flow_name.clone(),
+                            step: step.step_name.clone(),
+                            detail: step.user_prompt.clone(),
+                        });
+                    }
+                    continue;
+                }
+                "hibernate" => {
+                    // Bind a placeholder token; full ContinuityTokenSigner
+                    // integration is the Python runner's job.
+                    stub_ctx.set("__hibernation_token__", "<stub-token>");
+                    if trace {
+                        events.push(TraceEvent {
+                            event: "hibernate".to_string(),
+                            unit: unit.flow_name.clone(),
+                            step: step.step_name.clone(),
+                            detail: format!("flow={}", unit.flow_name),
+                        });
+                    }
+                    continue;
+                }
+                "drill" => {
+                    // Bind under `drill:<pix_ref>` so adopter code
+                    // that interpolates the binding finds something.
+                    let key = format!("drill:{}", step.step_name);
+                    stub_ctx.set(&key, "<stub-drill-result>");
+                    if trace {
+                        events.push(TraceEvent {
+                            event: "drill".to_string(),
+                            unit: unit.flow_name.clone(),
+                            step: step.step_name.clone(),
+                            detail: step.user_prompt.clone(),
+                        });
+                    }
+                    continue;
+                }
+                "trail" => {
+                    let key = format!("trail:{}", step.step_name);
+                    stub_ctx.set(&key, "<stub-trail-result>");
+                    if trace {
+                        events.push(TraceEvent {
+                            event: "trail".to_string(),
+                            unit: unit.flow_name.clone(),
+                            step: step.step_name.clone(),
+                            detail: step.user_prompt.clone(),
+                        });
+                    }
+                    continue;
+                }
+                "conditional" | "for_in" | "parallel" => {
+                    // Pure control flow — no adopter-visible binding;
+                    // just record the structural intent in the trace.
+                    if trace {
+                        events.push(TraceEvent {
+                            event: step.step_type.clone(),
+                            unit: unit.flow_name.clone(),
+                            step: step.step_name.clone(),
+                            detail: step.user_prompt.clone(),
+                        });
+                    }
+                    continue;
+                }
+                "break" | "continue" => {
+                    // Loop-control sentinels. Stub doesn't enforce
+                    // loop exit (no sentinel exception machinery here)
+                    // — it just records the keyword in the trace.
+                    if trace {
+                        events.push(TraceEvent {
+                            event: step.step_type.clone(),
+                            unit: unit.flow_name.clone(),
+                            step: step.step_name.clone(),
+                            detail: step.user_prompt.clone(),
+                        });
+                    }
+                    continue;
+                }
+                _ => {}
             }
 
             if trace {

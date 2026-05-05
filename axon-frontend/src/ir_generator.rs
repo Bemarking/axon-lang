@@ -525,6 +525,19 @@ impl IRGenerator {
                 source_column: s.loc.column,
                 value_expr: s.value_expr.clone(),
             }),
+            // Fase 19.e — break / continue. Both are payload-free at
+            // both AST and IR level; the runner translates them into
+            // sentinel exceptions caught by the enclosing for-in loop.
+            FlowStep::Break(s) => IRFlowNode::Break(IRBreakStep {
+                node_type: "break",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+            }),
+            FlowStep::Continue(s) => IRFlowNode::Continue(IRContinueStep {
+                node_type: "continue",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+            }),
             FlowStep::LambdaDataApply(s) => IRFlowNode::LambdaDataApply(IRLambdaDataApply {
                 node_type: "lambda_data_apply",
                 source_line: s.loc.line,
@@ -1496,5 +1509,86 @@ mod fase13_ir_tests {
         assert!(json.contains(r#""node_type":"channel""#));
         assert!(json.contains(r#""node_type":"emit""#));
         assert!(json.contains(r#""value_is_channel":false"#));
+    }
+}
+
+#[cfg(test)]
+mod fase19_ir_tests {
+    //! Fase 19.e — Rust mirror of break/continue keywords. The Python
+    //! frontend already lowers BreakStatement → IRBreak and
+    //! ContinueStatement → IRContinue (see Fase 19.e Python commit);
+    //! these tests guard the Rust side at the IR-generator boundary
+    //! so cross-stack parity goldens (Fase 19.h) compare on aligned
+    //! shapes.
+
+    use super::*;
+    use crate::ir_nodes::IRFlowNode;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    /// Compile a minimal flow whose for-in body is the supplied
+    /// snippet, and return the body's IR list.
+    fn for_body_ir(body_src: &str) -> Vec<IRFlowNode> {
+        let src = format!(
+            "flow Probe() -> Out {{ for x in items.list {{ {body_src} }} }}"
+        );
+        let tokens = Lexer::new(&src, "<test>").tokenize().expect("lex");
+        let prog = Parser::new(tokens).parse().expect("parse");
+        let ir = IRGenerator::new().generate(&prog);
+        let flow = ir
+            .flows
+            .iter()
+            .find(|f| f.name == "Probe")
+            .expect("flow Probe in IR");
+        match flow.steps.first().expect("flow has at least one step") {
+            IRFlowNode::ForIn(inner) => inner.body.clone(),
+            other => panic!("expected ForIn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn break_keyword_lowers_to_ir_break() {
+        let body = for_body_ir("break");
+        assert_eq!(body.len(), 1);
+        match &body[0] {
+            IRFlowNode::Break(b) => assert_eq!(b.node_type, "break"),
+            other => panic!("expected IRFlowNode::Break, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn continue_keyword_lowers_to_ir_continue() {
+        let body = for_body_ir("continue");
+        assert_eq!(body.len(), 1);
+        match &body[0] {
+            IRFlowNode::Continue(c) => assert_eq!(c.node_type, "continue"),
+            other => panic!("expected IRFlowNode::Continue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn break_outside_loop_rejected_by_parser() {
+        // A flow with `break` at the top level (not inside a for-in)
+        // must fail to parse — the loop_depth scope check rejects it.
+        let src = "flow F() -> Out { break }";
+        let tokens = Lexer::new(src, "<test>").tokenize().expect("lex");
+        let result = Parser::new(tokens).parse();
+        assert!(result.is_err(), "parser must reject break outside loop");
+    }
+
+    #[test]
+    fn continue_outside_loop_rejected_by_parser() {
+        let src = "flow F() -> Out { continue }";
+        let tokens = Lexer::new(src, "<test>").tokenize().expect("lex");
+        let result = Parser::new(tokens).parse();
+        assert!(result.is_err(), "parser must reject continue outside loop");
+    }
+
+    #[test]
+    fn break_continue_serialize_with_node_type_field() {
+        let body = for_body_ir("break\ncontinue");
+        let json = serde_json::to_string(&body).expect("serialize");
+        assert!(json.contains(r#""node_type":"break""#));
+        assert!(json.contains(r#""node_type":"continue""#));
     }
 }

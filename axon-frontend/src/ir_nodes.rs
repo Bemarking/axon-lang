@@ -646,6 +646,15 @@ pub enum IRFlowNode {
     ForIn(IRForIn),
     Let(IRLetBinding),
     Return(IRReturnStep),
+    /// Fase 19.e — exit the enclosing for-in body. Payload-free;
+    /// the runner translates it into a sentinel that terminates the
+    /// loop. Parser scope check guarantees this only appears inside
+    /// a for-in body.
+    Break(IRBreakStep),
+    /// Fase 19.e — skip to the next iteration of the enclosing for-in
+    /// body. Same shape as Break — payload-free, sentinel-driven at
+    /// runtime.
+    Continue(IRContinueStep),
     LambdaDataApply(IRLambdaDataApply),
     Par(IRParallelBlock),
     Hibernate(IRHibernateStep),
@@ -797,6 +806,26 @@ pub struct IRReturnStep {
     pub source_line: u32,
     pub source_column: u32,
     pub value_expr: String,
+}
+
+/// Fase 19.e — `break` keyword IR node. Payload-free (the runner
+/// raises a sentinel; no value is carried). Mirrors Python's
+/// ``IRBreak`` (axon/compiler/ir_nodes.py).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRBreakStep {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+}
+
+/// Fase 19.e — `continue` keyword IR node. Same shape as
+/// ``IRBreakStep``; the runner uses a different sentinel type to
+/// distinguish loop-exit (break) from iteration-skip (continue).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRContinueStep {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
