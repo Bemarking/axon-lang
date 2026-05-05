@@ -2911,6 +2911,13 @@ class TypeChecker:
         "prompt_injection", "jailbreak", "data_exfil", "pii_leak",
         "toxicity", "bias", "hallucination", "code_injection",
         "social_engineering", "model_theft", "training_poisoning",
+        # Fase 20.d — D8 capability gate. Validates the
+        # cryptographic integrity of capability tokens
+        # (ed25519 / HMAC / JWT) before allowing the bearer to
+        # proceed. Generalisation of the allow/deny tool list:
+        # adopters mint signed capabilities upstream and the
+        # Shield rejects any token that fails verification.
+        "capability_validate",
     })
 
     _VALID_SHIELD_STRATEGIES = frozenset({
