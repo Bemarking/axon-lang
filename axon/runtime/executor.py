@@ -74,6 +74,13 @@ from axon.runtime.par_context import (
 )
 from axon.runtime.pix_registry import InMemoryPixRegistry, PixRegistry
 from axon.runtime.retry_engine import RefineConfig, RetryEngine, RetryResult
+from axon.runtime.shield_scanners import (
+    InMemoryShieldRegistry,
+    ScanContext,
+    ScanResult,
+    ShieldScannerRegistry,
+    invoke_scanner,
+)
 from axon.engine.pem.pid_controller import PIDController
 from axon.runtime.runtime_errors import (
     AgentBudgetExhaustedError,
@@ -506,6 +513,7 @@ class Executor:
         continuity_signer: ContinuityTokenSigner | None = None,
         hibernation_store: HibernationStore | None = None,
         pix_registry: PixRegistry | None = None,
+        shield_registry: ShieldScannerRegistry | None = None,
     ) -> None:
         """Initialize the Executor.
 
@@ -541,6 +549,18 @@ class Executor:
                                 fail loudly with ``AxonRuntimeError``
                                 until the adopter registers their
                                 navigators.
+            shield_registry:    Optional ``(category, strategy)`` →
+                                ``ShieldScanner`` lookup for shield
+                                steps (Fase 20.a). Defaults to the
+                                module-level
+                                ``shield_scanners.default_registry``,
+                                which OSS sub-phases 20.b–20.h
+                                pre-populate with pattern / canary /
+                                capability_validate / classifier /
+                                dual_llm / perplexity / ensemble
+                                scanners. Enterprise overlays
+                                register vertical scanners (HIPAA /
+                                legal / fintech) at import time.
         """
         self._client = client
         self._validator = validator or SemanticValidator()
@@ -578,6 +598,20 @@ class Executor:
             if pix_registry is not None
             else InMemoryPixRegistry()
         )
+        # ── Fase 20.a — shield scanner registry ──
+        # Same `is None` discipline as the other Fase 19/20
+        # injectable backends: the in-memory registry defines
+        # `__len__`, so an empty injected registry would evaluate
+        # falsy and be silently replaced by `or`. Default falls
+        # back to the module-level `default_registry` so
+        # enterprise overlays that registered scanners at import
+        # time are visible even when the adopter constructs a
+        # bare `Executor(client=...)`.
+        if shield_registry is not None:
+            self._shield_registry: ShieldScannerRegistry = shield_registry
+        else:
+            from axon.runtime.shield_scanners import default_registry
+            self._shield_registry = default_registry
 
     async def execute(self, program: CompiledProgram) -> ExecutionResult:
         """Execute a complete compiled AXON program.
@@ -3474,28 +3508,42 @@ class Executor:
         ctx: ContextManager,
         tracer: Tracer,
     ) -> StepResult:
-        """Execute a shield application step.
+        """Execute a shield application step (Fase 20.a — production
+        scanner registry).
 
-        Shield steps don't call the model — they perform inline
-        security checks against the shield's configuration:
+        Per declared scan category, looks up a scanner from the
+        configured ``ShieldScannerRegistry`` keyed by
+        ``(category, strategy)``, invokes it on the resolved
+        target, and aggregates the results. Pre-Fase-20 the
+        runtime ignored the strategy and unconditionally returned
+        ``passed=True`` — a false security guarantee. Now:
 
-          1. Emit SHIELD_SCAN_START event
-          2. Check capability restrictions (allow/deny lists)
-          3. Attempt taint transformation (Untrusted → Sanitized)
-          4. Emit SHIELD_SCAN_PASS or SHIELD_SCAN_BREACH
-          5. Return metadata-only StepResult
+          1. Emit SHIELD_SCAN_START event with category list +
+             strategy.
+          2. Capability allow/deny check against tool registry.
+          3. Resolve the target value from the unit context
+             (literal or reference).
+          4. For each declared scan category: look up scanner via
+             the registry, invoke it, aggregate. If ANY category
+             reports ``passed=False``, the shield breaches.
+          5. Emit SHIELD_SCAN_PASS or SHIELD_SCAN_BREACH with
+             per-category detail.
+          6. Apply on_breach policy (halt / sanitize_and_retry /
+             escalate / quarantine / deflect).
 
-        The actual scanning (pattern/classifier/dual_llm) is
-        deferred to the runtime's pluggable scanner registry,
-        which will be implemented in a future phase. For now,
-        the shield step records the security boundary crossing
-        and enforces capability restrictions.
+        Missing scanner is a structured failure
+        (``AxonRuntimeError`` with the unregistered ``(category,
+        strategy)`` pair surfaced) — never silently passes. This
+        is the contract that adopters running healthcare / legal /
+        fintech in production rely on.
         """
         step_start = time.perf_counter()
         shield_meta = step.metadata.get("shield_apply", {})
         shield_name = shield_meta.get("shield_name", "")
         target = shield_meta.get("target", "")
         shield_def = shield_meta.get("shield_definition", {})
+        scan_categories = list(shield_def.get("scan", []))
+        strategy = shield_def.get("strategy", "") or "pattern"
 
         step_name = f"shield:{shield_name}"
 
@@ -3505,14 +3553,12 @@ class Executor:
             data={
                 "shield_name": shield_name,
                 "target": target,
-                "scan_categories": shield_def.get("scan", []),
-                "strategy": shield_def.get("strategy", ""),
+                "scan_categories": scan_categories,
+                "strategy": strategy,
             },
         )
 
         # ── Capability check ──────────────────────────────────────
-        # Verify that any tools in the current execution context
-        # are permitted by the shield's allow/deny lists.
         allow_tools = shield_def.get("allow_tools", [])
         deny_tools = shield_def.get("deny_tools", [])
 
@@ -3526,8 +3572,8 @@ class Executor:
         )
 
         # ── Taint check ──────────────────────────────────────────
-        # Record the taint transformation point. Full taint tracking
-        # will be implemented in Phase 2 of the security system.
+        # Recorded at scan time; the actual taint transformation
+        # depends on whether the scanner aggregate passes.
         tracer.emit(
             TraceEventType.SHIELD_TAINT_CHECK,
             step_name=step_name,
@@ -3535,31 +3581,144 @@ class Executor:
                 "target": target,
                 "output_type": shield_meta.get("output_type", ""),
                 "taint_before": "untrusted",
-                "taint_after": "sanitized",
+                "taint_after": "pending",
             },
         )
 
-        # ── Scan result ───────────────────────────────────────────
-        # For now, all shield scans pass. When the scanner registry
-        # is implemented, this will delegate to actual pattern/
-        # classifier/dual_llm scanners.
-        scan_passed = True
+        # ── Resolve target value from context ─────────────────────
+        # A target can be a bare identifier or a dotted path. If
+        # the resolution fails, scan against the literal target
+        # name — adopters writing `apply Shield to literal_string`
+        # see the literal scanned, not a KeyError.
+        try:
+            target_value = (
+                ctx.resolve_value_ref(target)
+                if target
+                else ""
+            )
+        except KeyError:
+            target_value = target
+        target_str = (
+            target_value if isinstance(target_value, str)
+            else str(target_value)
+        )
+
+        # ── Build ScanContext (per-shield, per-category) ──────────
+        capabilities = tuple(
+            ctx.discovered_handles.keys()
+        ) if hasattr(ctx, "discovered_handles") else ()
+        # Canary tokens populated by `canary` strategy infra
+        # (Fase 20.c). Empty here — adopters wire them via the
+        # ScanContext.config dict when they need cross-flow canaries.
+        canary_tokens: tuple[str, ...] = ()
+
+        # ── Run the scanners ──────────────────────────────────────
+        per_category_results: list[dict[str, Any]] = []
+        all_passed = True
+        worst_confidence = 1.0
+        for category in scan_categories:
+            scanner = self._shield_registry.lookup(category, strategy)
+            if scanner is None:
+                duration_ms = (time.perf_counter() - step_start) * 1000
+                tracer.emit(
+                    TraceEventType.SHIELD_SCAN_BREACH,
+                    step_name=step_name,
+                    data={
+                        "shield_name": shield_name,
+                        "stage": "scanner_lookup",
+                        "category": category,
+                        "strategy": strategy,
+                        "error": "no scanner registered",
+                    },
+                    duration_ms=duration_ms,
+                )
+                raise AxonRuntimeError(
+                    f"shield '{shield_name}': no scanner registered for "
+                    f"(category={category!r}, strategy={strategy!r}). "
+                    f"Known: "
+                    f"{self._shield_registry.known()}",
+                    context=ErrorContext(
+                        step_name=step_name,
+                        details={
+                            "shield_name": shield_name,
+                            "category": category,
+                            "strategy": strategy,
+                        },
+                    ),
+                )
+
+            scan_ctx = ScanContext(
+                flow_name=getattr(ctx, "_current_step", "") or "",
+                shield_name=shield_name,
+                category=category,
+                strategy=strategy,
+                capabilities=capabilities,
+                canary_tokens=canary_tokens,
+                config=dict(shield_def),
+            )
+
+            try:
+                result = invoke_scanner(scanner, target_str, scan_ctx)
+            except Exception as exc:
+                duration_ms = (time.perf_counter() - step_start) * 1000
+                tracer.emit(
+                    TraceEventType.SHIELD_SCAN_BREACH,
+                    step_name=step_name,
+                    data={
+                        "shield_name": shield_name,
+                        "stage": "scanner_invoke",
+                        "category": category,
+                        "strategy": strategy,
+                        "exc_type": type(exc).__name__,
+                        "error": str(exc)[:160],
+                    },
+                    duration_ms=duration_ms,
+                )
+                raise AxonRuntimeError(
+                    f"shield '{shield_name}': scanner for "
+                    f"(category={category!r}, strategy={strategy!r}) "
+                    f"raised {type(exc).__name__}: {exc}",
+                    context=ErrorContext(
+                        step_name=step_name,
+                        details={
+                            "shield_name": shield_name,
+                            "category": category,
+                            "strategy": strategy,
+                        },
+                    ),
+                ) from exc
+
+            per_category_results.append({
+                "category": category,
+                "passed": result.passed,
+                "confidence": result.confidence,
+                "reason": result.reason,
+                "detail": result.detail,
+            })
+            if not result.passed:
+                all_passed = False
+            worst_confidence = min(worst_confidence, result.confidence)
 
         step_duration = (time.perf_counter() - step_start) * 1000
 
-        if scan_passed:
+        if all_passed:
             tracer.emit(
                 TraceEventType.SHIELD_SCAN_PASS,
                 step_name=step_name,
                 data={
                     "shield_name": shield_name,
                     "target": target,
-                    "confidence": 1.0,
+                    "confidence": worst_confidence,
+                    "categories_scanned": scan_categories,
+                    "per_category": per_category_results,
                 },
                 duration_ms=step_duration,
             )
         else:
             on_breach = shield_def.get("on_breach", "halt")
+            failing = [
+                r for r in per_category_results if not r["passed"]
+            ]
             tracer.emit(
                 TraceEventType.SHIELD_SCAN_BREACH,
                 step_name=step_name,
@@ -3568,14 +3727,20 @@ class Executor:
                     "target": target,
                     "on_breach": on_breach,
                     "severity": shield_def.get("severity", "critical"),
+                    "failing_categories": [r["category"] for r in failing],
+                    "per_category": per_category_results,
                 },
                 duration_ms=step_duration,
             )
             if on_breach == "halt":
+                reasons = "; ".join(
+                    f"{r['category']}: {r['reason'] or 'breach'}"
+                    for r in failing
+                )
                 raise ShieldBreachError(
                     message=(
-                        f"Shield '{shield_name}' detected a security threat "
-                        f"on target '{target}'"
+                        f"Shield '{shield_name}' detected a security "
+                        f"threat on target '{target}' — {reasons}"
                     ),
                     context=ErrorContext(
                         step_name=step_name,
@@ -3586,7 +3751,10 @@ class Executor:
         return StepResult(
             step_name=step_name,
             response=ModelResponse(
-                content=f"[shield:{shield_name}] passed — {target} sanitized",
+                content=(
+                    f"[shield:{shield_name}] {'passed' if all_passed else 'breach'}"
+                    f" — {target} ({len(scan_categories)} categories)"
+                ),
                 usage={},
             ),
             duration_ms=step_duration,
