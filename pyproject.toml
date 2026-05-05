@@ -10,8 +10,8 @@ axon-enterprise = "axon_enterprise.cli:entrypoint"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-enterprise"
-version = "1.6.0"
-description = "Axon Enterprise — RBAC, SSO, Audit, Metering, Compliance (Fase 10); Replay Tokens + Cognitive State (Fase 11); Primitives endpoint (v1.2.1); v1.3.0 integrated axon-lang 1.5.1 + Rust TypedEventBus (Fase 13.f.2); v1.4.0 integrated axon-lang 1.7.0 closing 13.j/k/l (typed channels end-to-end); v1.5.0 integrates axon-lang 1.9.0 — Fase 14 lossless lexing complete; v1.5.1 picks up axon-lang 1.9.1 parser fix for compound qualifier slugs (Fase 11.c/11.e); v1.5.2 integrates axon-lang 1.10.0 — Fase 15 lambda apply runtime wiring (Phase-2 lowering + Python and Rust dispatchers + Theorem 5.1 runtime guard); v1.6.0 integrates axon-lang 1.11.0 + ships the Fase 16 production-grade Daemon Supervisor: new axon_enterprise.supervisor package with 12 modules implementing telemetry (OTel + Prometheus + structlog), state persistence (Replay tokens + Cognitive States), on_stuck dispatcher (hibernate/escalate/retry/forge/noop), decorrelated-jitter exponential backoff, liveness probes (heartbeat/watchdog/custom), hierarchical supervision tree, audit-chain integration (HMAC-SHA256 + Merkle-chained per tenant), multi-tenant restart budgets, compliance-aware restart hooks (legal-basis re-validation), and distributed leader election (Redis Redlock). Closes every gap from the 4/10 OSS supervisor audit; reaches honest 10/10 production-grade supervision."
+version = "1.7.0"
+description = "Axon Enterprise — RBAC, SSO, Audit, Metering, Compliance (Fase 10); Replay Tokens + Cognitive State (Fase 11); Primitives endpoint (v1.2.1); v1.3.0 integrated axon-lang 1.5.1 + Rust TypedEventBus (Fase 13.f.2); v1.4.0 integrated axon-lang 1.7.0 closing 13.j/k/l (typed channels end-to-end); v1.5.0 integrates axon-lang 1.9.0 — Fase 14 lossless lexing complete; v1.5.1 picks up axon-lang 1.9.1 parser fix for compound qualifier slugs (Fase 11.c/11.e); v1.5.2 integrates axon-lang 1.10.0 — Fase 15 lambda apply runtime wiring (Phase-2 lowering + Python and Rust dispatchers + Theorem 5.1 runtime guard); v1.6.0 integrates axon-lang 1.11.0 + ships the Fase 16 production-grade Daemon Supervisor: new axon_enterprise.supervisor package with 12 modules implementing telemetry (OTel + Prometheus + structlog), state persistence (Replay tokens + Cognitive States), on_stuck dispatcher (hibernate/escalate/retry/forge/noop), decorrelated-jitter exponential backoff, liveness probes (heartbeat/watchdog/custom), hierarchical supervision tree, audit-chain integration (HMAC-SHA256 + Merkle-chained per tenant), multi-tenant restart budgets, compliance-aware restart hooks (legal-basis re-validation), and distributed leader election (Redis Redlock); v1.7.0 integrates axon-lang 1.15.0 + ships the Fase 20 vertical Shield R&D layer: new axon_enterprise.shield package with healthcare (HIPAA Safe Harbor PHI patterns + Security Rule judge prompt calibrated against 45 CFR §§164.308-.314 + GDPR Art. 25), legal (attorney-client privilege + work-product doctrine + FRE 408 settlement-comm patterns + judge calibrated against FRE 502 / Upjohn / Hickman / ABA Rule 1.6), and fintech (Luhn-validated PAN + mod-97-validated IBAN + SWIFT BIC + structured-transaction smurf signatures + OFAC SDN signals + AML judge calibrated against BSA / OFAC / MiFID II / GDPR Art. 6(1)(c)) verticals registering against axon-lang's ShieldScannerRegistry under explicit vertical strategy aliases (`hipaa` / `legal` / `aml` patterns; `hipaa_judge` / `legal_judge` / `aml_judge` rubrics) — multi-vertical safe (no shadowing of OSS baselines or sibling verticals); plus `ensemble_configs.py` factories `healthcare_ensemble()` / `legal_ensemble()` / `fintech_ensemble()` that compose pattern + OSS pattern + judge with vertical-tuned vote thresholds; closes the OSS / ENTERPRISE / SPLIT charter discipline by materialising the privileged vertical R&D the OSS deliberately excludes."
 readme = "README.md"
 license = "LicenseRef-Proprietary"
 requires-python = ">=3.12"
@@ -113,9 +113,17 @@ dependencies = [
     # composes the Protocol with the production-grade hardening
     # (telemetry, persistence, on_stuck dispatch, hierarchical tree,
     # audit-chain integration, multi-tenant isolation, compliance
-    # gating, distributed leader election). Pinning >=1.11.0 ensures
-    # the hook surface is available at install time.
-    "axon-lang>=1.11.0",
+    # gating, distributed leader election). v1.7.0 bumps the pin
+    # to >=1.15.0 — Fase 20 (production Shield runtime + plugin
+    # registry + capability_validate category) ships the
+    # `axon.runtime.shield_scanners.default_registry` and
+    # `ShieldScanner` Protocol that this package's vertical
+    # scanners (HIPAA / legal / fintech) register against at
+    # import time. v1.15.0 also closes the v1.14.0 false-pass
+    # bug where `scan_passed = True` was hardcoded — older pins
+    # would leave the OSS Shield runtime in its pre-Fase-20 state,
+    # neutering the verticals.
+    "axon-lang>=1.15.0",
 
     # Database & ORM
     "sqlalchemy[asyncio]>=2.0.30",
