@@ -156,79 +156,9 @@ class TestHibernate:
         assert ctx.get_variable("__hibernation_session_id__") == "test_flow:x"
 
 
-# ═══════════════════════════════════════════════════════════════════
-#  18.j — DRILL DISPATCHER
-# ═══════════════════════════════════════════════════════════════════
-
-
-class TestDrill:
-    @pytest.mark.asyncio
-    async def test_drill_binds_placeholder_result(self):
-        step = _drill_step("DocTree", "chapters.intro", "conclusions")
-        result, ctx, _ = await _exec([step])
-        assert result.success is True
-        # Default output binding: drill:<pix_ref>
-        bound = ctx.get_variable("drill:DocTree")
-        assert bound["pix_ref"] == "DocTree"
-        assert bound["subtree_path"] == "chapters.intro"
-        assert bound["query"] == "conclusions"
-        assert bound["_stub"] is True
-
-    @pytest.mark.asyncio
-    async def test_drill_explicit_output_name(self):
-        step = _drill_step(
-            "DocTree", "chapters.intro", "q",
-            output_name="findings",
-        )
-        result, ctx, _ = await _exec([step])
-        assert result.success is True
-        assert ctx.get_variable("findings")["pix_ref"] == "DocTree"
-
-    @pytest.mark.asyncio
-    async def test_drill_no_model_call(self):
-        step = _drill_step("DocTree", "x", "y")
-        _, _, client = await _exec([step])
-        assert client.call_count == 0
-
-    @pytest.mark.asyncio
-    async def test_drill_response_content_is_json(self):
-        step = _drill_step("DocTree", "x", "y", output_name="out")
-        result, _, _ = await _exec([step])
-        step_result = result.unit_results[0].step_results[0]
-        parsed = json.loads(step_result.response.content)
-        assert parsed["pix_ref"] == "DocTree"
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  18.k — TRAIL DISPATCHER
-# ═══════════════════════════════════════════════════════════════════
-
-
-class TestTrail:
-    @pytest.mark.asyncio
-    async def test_trail_binds_placeholder(self):
-        step = _trail_step("nav_step_1")
-        result, ctx, _ = await _exec(
-            [step],
-            seed_vars={"nav_step_1": {"hits": ["a", "b"]}},
-        )
-        assert result.success is True
-        bound = ctx.get_variable("trail:nav_step_1")
-        assert bound["navigate_ref"] == "nav_step_1"
-        assert bound["found"] is True
-        assert bound["_stub"] is True
-
-    @pytest.mark.asyncio
-    async def test_trail_missing_ref_still_succeeds(self):
-        """Trail on a missing ref binds a 'found: False' placeholder."""
-        step = _trail_step("ghost")
-        result, ctx, _ = await _exec([step])
-        assert result.success is True
-        bound = ctx.get_variable("trail:ghost")
-        assert bound["found"] is False
-
-    @pytest.mark.asyncio
-    async def test_trail_no_model_call(self):
-        step = _trail_step("nav")
-        _, _, client = await _exec([step])
-        assert client.call_count == 0
+# Drill/Trail dispatcher behavior moved to tests/test_fase19_drill_trail_full.py
+# in Fase 19.b/c. The Fase 18.j/k MVP stubs (placeholder dicts with
+# `_stub: True`) were replaced with full PixRegistry + PixNavigator
+# integration; those dispatcher tests now exercise the production path,
+# not the stub. The lowering tests in TestPhase2Lowering above still
+# guard the IR → CompiledStep boundary.

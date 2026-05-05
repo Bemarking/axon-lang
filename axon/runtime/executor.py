@@ -61,6 +61,7 @@ from axon.runtime.pem.hibernation import (
     InMemoryHibernationStore,
     parse_timeout,
 )
+from axon.runtime.pix_registry import InMemoryPixRegistry, PixRegistry
 from axon.runtime.retry_engine import RefineConfig, RetryEngine, RetryResult
 from axon.engine.pem.pid_controller import PIDController
 from axon.runtime.runtime_errors import (
@@ -479,6 +480,7 @@ class Executor:
         tool_dispatcher: ToolDispatcher | None = None,
         continuity_signer: ContinuityTokenSigner | None = None,
         hibernation_store: HibernationStore | None = None,
+        pix_registry: PixRegistry | None = None,
     ) -> None:
         """Initialize the Executor.
 
@@ -506,6 +508,14 @@ class Executor:
                                 adopters needing durability across
                                 process restarts MUST supply a Postgres /
                                 Redis-backed implementation.
+            pix_registry:       Optional ``pix_ref`` → ``PixNavigator``
+                                lookup for ``drill`` / ``trail`` steps.
+                                Defaults to an empty
+                                :class:`InMemoryPixRegistry` — flows
+                                that contain ``drill``/``trail`` will
+                                fail loudly with ``AxonRuntimeError``
+                                until the adopter registers their
+                                navigators.
         """
         self._client = client
         self._validator = validator or SemanticValidator()
@@ -533,6 +543,15 @@ class Executor:
             hibernation_store
             if hibernation_store is not None
             else InMemoryHibernationStore()
+        )
+        # ── Fase 19.b/c — PIX registry for drill/trail dispatchers ──
+        # Same `is None` discipline as hibernation_store: the empty
+        # registry is falsy via `__len__`, must not be silently
+        # replaced by a fresh default.
+        self._pix_registry = (
+            pix_registry
+            if pix_registry is not None
+            else InMemoryPixRegistry()
         )
 
     async def execute(self, program: CompiledProgram) -> ExecutionResult:
@@ -4105,12 +4124,30 @@ class Executor:
         ctx: ContextManager,
         tracer: Tracer,
     ) -> StepResult:
-        """Execute a `drill pix_ref into subtree_path with query` step.
+        """Execute a `drill pix_ref into subtree_path with query` step
+        (Fase 19.b — full PIX integration).
 
-        Pre-Fase-18 fell through to LLM. Fase 18.j binds a
-        placeholder DrillResult dict to the output_name (or
-        `drill:<pix_ref>` if anonymous). Full PIX-engine integration
-        is a follow-up.
+        Looks up the navigator for ``pix_ref`` in the configured
+        ``PixRegistry``, calls
+        :meth:`PixNavigator.drill(subtree_path, query)`, and binds the
+        resulting :class:`NavigationResult` under ``output_name`` (or
+        ``drill:<pix_ref>`` if anonymous). Both the live
+        ``NavigationResult`` (for downstream Trail walkers) and its
+        ``to_dict()`` JSON projection (for adopter code that consumes
+        the bound variable as data) are exposed:
+
+          * ``output_name``           → ``NavigationResult.to_dict()``
+                                        — JSON-friendly payload.
+          * ``output_name:result``    → live ``NavigationResult`` —
+                                        consumed by ``trail``.
+
+        Errors (raised, not swallowed):
+
+          * ``AxonRuntimeError`` if ``pix_ref`` is unknown to the
+            registry — surfaces the registered refs in the message so
+            adopter typos are immediately diagnosable.
+          * ``AxonRuntimeError`` if ``subtree_path`` is not a
+            ``node_id`` in the navigator's tree.
         """
         step_name = step.step_name
         step_start = time.perf_counter()
@@ -4131,16 +4168,45 @@ class Executor:
             },
         )
 
-        result_payload = {
-            "pix_ref": pix_ref,
-            "subtree_path": subtree_path,
-            "query": query,
-            "matches": [],  # placeholder: real engine populates this
-            "score": 0.0,
-            "_stub": True,  # marker for adopter clarity
-        }
-        if output_name:
-            ctx.set_variable(output_name, result_payload)
+        navigator = self._pix_registry.get(pix_ref)
+        if navigator is None:
+            raise AxonRuntimeError(
+                f"drill: pix_ref '{pix_ref}' is not registered in the "
+                f"PixRegistry. Known refs: "
+                f"{self._pix_registry.known_refs()}",
+                context=ErrorContext(
+                    step_name=step_name,
+                    flow_name=unit.flow_name,
+                    details={"pix_ref": pix_ref, "operation": "drill"},
+                ),
+            )
+
+        try:
+            nav_result = navigator.drill(subtree_path, query)
+        except ValueError as exc:
+            # PixNavigator.drill raises ValueError for unknown subtree.
+            raise AxonRuntimeError(
+                f"drill: subtree '{subtree_path}' not found in pix_ref "
+                f"'{pix_ref}'. {exc}",
+                context=ErrorContext(
+                    step_name=step_name,
+                    flow_name=unit.flow_name,
+                    details={
+                        "pix_ref": pix_ref,
+                        "subtree_path": subtree_path,
+                        "operation": "drill",
+                    },
+                ),
+            ) from exc
+
+        result_dict = nav_result.to_dict()
+        # Stamp the AXON-level identifiers onto the dict so adopter
+        # code can correlate the bound payload back to its source.
+        result_dict["pix_ref"] = pix_ref
+        result_dict["subtree_path"] = subtree_path
+        ctx.set_variable(output_name, result_dict)
+        # Stash the live NavigationResult for `trail` to walk later.
+        ctx.set_variable(f"{output_name}:result", nav_result)
 
         duration_ms = (time.perf_counter() - step_start) * 1000
         tracer.emit(
@@ -4149,15 +4215,20 @@ class Executor:
             data={
                 "success": True,
                 "type": "drill",
+                "pix_ref": pix_ref,
                 "output_name": output_name,
-                "stub": True,
+                "leaf_count": len(nav_result.leaves),
+                "evaluations": nav_result.path.total_evaluations,
+                "depth": nav_result.path.depth,
+                "elapsed_secs": round(nav_result.elapsed_secs, 3),
+                "timed_out": nav_result.timed_out,
             },
             duration_ms=duration_ms,
         )
 
         import json as _json
         response = ModelResponse(
-            content=_json.dumps(result_payload, default=str),
+            content=_json.dumps(result_dict, default=str),
             usage={"input_tokens": 0, "output_tokens": 0},
         )
         return StepResult(
@@ -4165,6 +4236,32 @@ class Executor:
             response=response,
             duration_ms=duration_ms,
         )
+
+    @staticmethod
+    def _trail_payload_from_nav_result(nav_result: Any) -> dict[str, Any]:
+        """Project a ``NavigationResult`` into a JSON-friendly trail
+        payload (Fase 19.c). Walks the ``ReasoningPath`` and surfaces
+        per-step scores + reasoning so adopters auditing "why was
+        this retrieved" get the full chain.
+        """
+        path = nav_result.path
+        steps = [step.to_dict() for step in path.steps]
+        # Mean score over scored steps (root has score 1.0 — exclude
+        # to avoid biasing the corroboration upward).
+        scored = [s["score"] for s in steps if s.get("depth", 0) > 0]
+        mean_score = sum(scored) / len(scored) if scored else 0.0
+        return {
+            "found": True,
+            "depth": path.depth,
+            "total_evaluations": path.total_evaluations,
+            "selected_node_ids": path.selected_nodes,
+            "mean_step_score": round(mean_score, 4),
+            "leaf_node_ids": [leaf.node_id for leaf in nav_result.leaves],
+            "steps": steps,
+            "summary": path.summary(),
+            "elapsed_secs": round(nav_result.elapsed_secs, 3),
+            "timed_out": nav_result.timed_out,
+        }
 
     async def _execute_trail_step(
         self,
@@ -4174,12 +4271,26 @@ class Executor:
         ctx: ContextManager,
         tracer: Tracer,
     ) -> StepResult:
-        """Execute a `trail navigate_ref` step — corroborated-path walker.
+        """Execute a `trail navigate_ref` step — corroborated-path
+        walker (Fase 19.c — full integration).
 
-        Pre-Fase-18 fell through to LLM. Fase 18.k looks up the
-        prior navigate / drill result by ref and binds a placeholder
-        TrailResult dict. Full reasoning-path reconstruction is a
-        follow-up.
+        Looks up the prior navigate/drill result referenced by
+        ``navigate_ref``. Two reference shapes are supported:
+
+          1. ``<name>``         — bare drill output_name; resolves to
+                                  the live ``NavigationResult`` stored
+                                  under ``<name>:result``.
+          2. dotted path        — resolved via
+                                  ``ctx.resolve_value_ref`` and walked
+                                  if the resolved value is itself a
+                                  ``NavigationResult``.
+
+        Walking re-projects the prior reasoning path with per-step
+        scores + reasoning + the leaf node ids retrieved, so adopters
+        can audit *why* each leaf was selected. If the referenced
+        result is missing or not a NavigationResult, a structured
+        ``found: False`` payload is bound — execution continues
+        because adopter flows often probe for trails opportunistically.
         """
         step_name = step.step_name
         step_start = time.perf_counter()
@@ -4195,21 +4306,46 @@ class Executor:
             },
         )
 
-        # Best-effort lookup of the referenced navigate/drill result.
-        try:
-            referenced = ctx.resolve_value_ref(navigate_ref) if navigate_ref else None
-        except KeyError:
-            referenced = None
+        # Resolution order:
+        #   1. `<navigate_ref>:result` — live NavigationResult stashed
+        #      by `_execute_drill_step` for follow-on trails.
+        #   2. resolve_value_ref(<navigate_ref>) — fallback for
+        #      adopter-supplied bindings (e.g. a navigate step that
+        #      bound a NavigationResult under a custom name).
+        from axon.engine.pix.navigator import NavigationResult
+        nav_result = None
+        live_key = f"{navigate_ref}:result" if navigate_ref else ""
+        if live_key and ctx.has_variable(live_key):
+            candidate = ctx.get_variable(live_key)
+            if isinstance(candidate, NavigationResult):
+                nav_result = candidate
+        if nav_result is None and navigate_ref:
+            try:
+                candidate = ctx.resolve_value_ref(navigate_ref)
+            except KeyError:
+                candidate = None
+            if isinstance(candidate, NavigationResult):
+                nav_result = candidate
 
-        result_payload = {
-            "navigate_ref": navigate_ref,
-            "found": referenced is not None,
-            "path": [],  # placeholder: real walker populates this
-            "_stub": True,
-        }
-        # Bind under both `trail:<ref>` and the bare ref name so
-        # adopter code that interpolates either finds it.
-        ctx.set_variable(f"trail:{navigate_ref}", result_payload)
+        if nav_result is not None:
+            payload = self._trail_payload_from_nav_result(nav_result)
+            payload["navigate_ref"] = navigate_ref
+        else:
+            payload = {
+                "navigate_ref": navigate_ref,
+                "found": False,
+                "depth": 0,
+                "total_evaluations": 0,
+                "selected_node_ids": [],
+                "mean_step_score": 0.0,
+                "leaf_node_ids": [],
+                "steps": [],
+                "summary": "",
+                "elapsed_secs": 0.0,
+                "timed_out": False,
+            }
+
+        ctx.set_variable(f"trail:{navigate_ref}", payload)
 
         duration_ms = (time.perf_counter() - step_start) * 1000
         tracer.emit(
@@ -4219,15 +4355,17 @@ class Executor:
                 "success": True,
                 "type": "trail",
                 "navigate_ref": navigate_ref,
-                "referenced_found": referenced is not None,
-                "stub": True,
+                "found": payload["found"],
+                "depth": payload["depth"],
+                "evaluations": payload["total_evaluations"],
+                "leaf_count": len(payload["leaf_node_ids"]),
             },
             duration_ms=duration_ms,
         )
 
         import json as _json
         response = ModelResponse(
-            content=_json.dumps(result_payload, default=str),
+            content=_json.dumps(payload, default=str),
             usage={"input_tokens": 0, "output_tokens": 0},
         )
         return StepResult(
