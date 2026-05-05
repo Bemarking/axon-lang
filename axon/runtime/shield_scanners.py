@@ -303,3 +303,25 @@ __all__ = [
     "default_registry",
     "invoke_scanner",
 ]
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  AUTO-REGISTER OSS BASELINES
+# ═══════════════════════════════════════════════════════════════════
+#
+# Trigger the side-effectful import of the shield/ package so each
+# baseline scanner module (pattern_scanner / canary_scanner /
+# capability_scanner) calls `default_registry.register()` at module
+# load time. Adopters constructing a bare ``Executor(client=...)``
+# get the OSS baselines without having to manually import anything.
+#
+# This import sits AFTER `default_registry` is defined so the
+# baseline modules can find it during their own load. Standard
+# Python import semantics handle the partial-module case correctly
+# because every symbol the baselines need is defined above this
+# line.
+#
+# Adopters / enterprise overlays that want to override an OSS
+# default register their own scanner under the same
+# `(category, strategy)` key — last registration wins.
+from axon.runtime import shield as _shield_baselines  # noqa: E402,F401
