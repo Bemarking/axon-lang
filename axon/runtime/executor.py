@@ -31,7 +31,9 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import secrets
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
@@ -47,6 +49,18 @@ from axon.backends.base_backend import (
 from axon.runtime.context_mgr import ContextManager
 from axon.runtime.effects import EmitEvent, perform
 from axon.runtime.memory_backend import InMemoryBackend, MemoryBackend
+from axon.runtime.pem.continuity_token import (
+    ContinuityToken,
+    ContinuityTokenError,
+    ContinuityTokenSigner,
+    new_token,
+)
+from axon.runtime.pem.hibernation import (
+    HibernationSnapshot,
+    HibernationStore,
+    InMemoryHibernationStore,
+    parse_timeout,
+)
 from axon.runtime.retry_engine import RefineConfig, RetryEngine, RetryResult
 from axon.engine.pem.pid_controller import PIDController
 from axon.runtime.runtime_errors import (
@@ -463,20 +477,35 @@ class Executor:
         retry_engine: RetryEngine | None = None,
         memory: MemoryBackend | None = None,
         tool_dispatcher: ToolDispatcher | None = None,
+        continuity_signer: ContinuityTokenSigner | None = None,
+        hibernation_store: HibernationStore | None = None,
     ) -> None:
         """Initialize the Executor.
 
         Args:
-            client:          The model client for LLM interaction.
-            validator:       Optional custom validator. Defaults to a
-                             new ``SemanticValidator`` instance.
-            retry_engine:    Optional custom retry engine. Defaults to
-                             a new ``RetryEngine`` instance.
-            memory:          Optional custom memory backend. Defaults
-                             to a new ``InMemoryBackend`` instance.
-            tool_dispatcher: Optional tool dispatcher for executing
-                             tool steps (``IRUseTool``). If not provided,
-                             tool steps will raise ``AxonRuntimeError``.
+            client:             The model client for LLM interaction.
+            validator:          Optional custom validator. Defaults to a
+                                new ``SemanticValidator`` instance.
+            retry_engine:       Optional custom retry engine. Defaults to
+                                a new ``RetryEngine`` instance.
+            memory:             Optional custom memory backend. Defaults
+                                to a new ``InMemoryBackend`` instance.
+            tool_dispatcher:    Optional tool dispatcher for executing
+                                tool steps (``IRUseTool``). If not provided,
+                                tool steps will raise ``AxonRuntimeError``.
+            continuity_signer:  Optional HMAC signer for ``hibernate``
+                                tokens. Defaults to a fresh signer keyed
+                                by ``secrets.token_bytes(32)`` — adopters
+                                running multiple Executor processes MUST
+                                supply their own signer with a shared key,
+                                otherwise tokens minted by one process
+                                cannot be verified by another.
+            hibernation_store:  Optional persistence backend for
+                                hibernation snapshots. Defaults to
+                                :class:`InMemoryHibernationStore` —
+                                adopters needing durability across
+                                process restarts MUST supply a Postgres /
+                                Redis-backed implementation.
         """
         self._client = client
         self._validator = validator or SemanticValidator()
@@ -486,6 +515,25 @@ class Executor:
         self._data_dispatcher: DataScienceDispatcher | None = None
         self._store_dispatcher: Any = None  # lazy: StoreDispatcher
         self._store_timeout: float = 30.0   # Enterprise: operation timeout (seconds)
+        # ── Fase 19.a — hibernate full CPS integration ──
+        # Default signer uses a process-local random key. This is fine
+        # for tests and single-process deployments: the same Executor
+        # mints + verifies. Multi-process deployments MUST inject a
+        # shared signer so tokens minted on one node verify on another.
+        self._continuity_signer = (
+            continuity_signer
+            if continuity_signer is not None
+            else ContinuityTokenSigner(secrets.token_bytes(32))
+        )
+        # Use `is None` rather than `or`: InMemoryHibernationStore
+        # defines `__len__`, so an empty store evaluates falsy and
+        # would be silently replaced by a fresh default — losing the
+        # adopter's injected backend.
+        self._hibernation_store = (
+            hibernation_store
+            if hibernation_store is not None
+            else InMemoryHibernationStore()
+        )
 
     async def execute(self, program: CompiledProgram) -> ExecutionResult:
         """Execute a complete compiled AXON program.
@@ -3871,13 +3919,30 @@ class Executor:
     #  DOMAIN PRIMITIVES — Hibernate / Drill / Trail (Fase 18.h/j/k)
     # ═══════════════════════════════════════════════════════════════
     #
-    # Stub-correct dispatch: pre-Fase-18 silently routed to the LLM.
-    # MVP closes the LLM-fall-through gap; full subsystem integration
-    # (CPS continuity_token serialization / PIX engine queries) is a
-    # follow-up sub-phase. The semantic action recorded here is enough
-    # for adopters to verify their flow's structure executes — and for
-    # subsequent integration work to swap the placeholder with the
-    # full implementation without changing the dispatcher contract.
+    # Fase 18 closed the LLM-fall-through gap with stub-correct
+    # dispatchers (Hibernate/Drill/Trail bound `_stub: True` payloads).
+    # Fase 19 replaces those placeholders with full subsystem
+    # integration:
+    #   * 19.a Hibernate → ContinuityTokenSigner + HibernationStore
+    #   * 19.b Drill     → PixNavigator.drill (per-pix_ref registry)
+    #   * 19.c Trail     → PixNavigator path-replay corroboration
+
+    @staticmethod
+    def _hibernation_session_id(
+        flow_name: str, continuation_id: str, event_name: str
+    ) -> str:
+        """Compose the stable session_id used both as the
+        ``ContinuityToken`` body field and the ``HibernationStore``
+        lookup key.
+
+        Composition order: the explicit ``continuation_id`` wins
+        (adopter-controlled, often deterministic). If absent, fall
+        back to ``event_name`` so two waiters on the same event share
+        a key. As a last resort, mint a UUID4 — the resume token will
+        still verify, but the key is opaque.
+        """
+        suffix = continuation_id or event_name or uuid.uuid4().hex
+        return f"{flow_name}:{suffix}"
 
     async def _execute_hibernate_step(
         self,
@@ -3887,13 +3952,29 @@ class Executor:
         ctx: ContextManager,
         tracer: Tracer,
     ) -> StepResult:
-        """Execute a `hibernate` step — CPS serialization checkpoint.
+        """Execute a `hibernate` step — full CPS serialization checkpoint
+        (Fase 19.a).
 
-        Pre-Fase-18 silently fell through to LLM. Fase 18.h binds a
-        `__hibernation_token__` carrying the (event_name, timeout,
-        continuation_id) tuple so the wakeup path can resume from
-        this point. Full state serialization via
-        `axon/runtime/pem/continuity_token.py` is a follow-up.
+        Snapshots the current ContextManager (variables + step
+        results), persists it in the configured ``HibernationStore``
+        keyed by a deterministic ``session_id``, and mints an
+        HMAC-signed ``ContinuityToken`` via
+        :class:`ContinuityTokenSigner`. The signed token string is
+        bound to ``__hibernation_token__`` — adopters present this
+        token on resume, ``Executor.resume_from_token`` verifies the
+        signature + expiry, looks up the snapshot, and returns it for
+        downstream orchestration.
+
+        Adopter-visible bindings after a hibernate step:
+
+        * ``__hibernation_token__``       — signed base64url token string
+        * ``__hibernation_session_id__``  — opaque key into the store
+        * ``__hibernation_event_name__``  — wake-up event the flow waits on
+        * ``__hibernation_expires_at__``  — UTC ISO-8601 expiry timestamp
+
+        The token never carries state inline — ``ContinuityTokenSigner``
+        signs only ``session_id + expires_at``. State lives server-side,
+        in the ``HibernationStore``.
         """
         step_name = step.step_name
         step_start = time.perf_counter()
@@ -3913,14 +3994,37 @@ class Executor:
             },
         )
 
-        token = {
-            "event_name": event_name,
-            "timeout": timeout,
-            "continuation_id": continuation_id,
-            "flow_name": unit.flow_name,
-            "checkpoint_at": time.time(),
-        }
-        ctx.set_variable("__hibernation_token__", token)
+        session_id = self._hibernation_session_id(
+            unit.flow_name, continuation_id, event_name
+        )
+        ttl = parse_timeout(timeout)
+        token_obj = new_token(session_id=session_id, ttl=ttl)
+        token_str = self._continuity_signer.sign(token_obj)
+
+        # Snapshot via ContextManager.snapshot() — returns deep-copied
+        # variables + step_results so subsequent mutation of `ctx` does
+        # not bleed into the persisted snapshot.
+        ctx_snap = ctx.snapshot()
+        snapshot = HibernationSnapshot(
+            session_id=session_id,
+            flow_name=unit.flow_name,
+            event_name=event_name,
+            timeout=timeout,
+            continuation_id=continuation_id,
+            checkpoint_at=time.time(),
+            variables=ctx_snap.variables,
+            step_results=ctx_snap.step_results,
+            completed_steps=tuple(ctx_snap.step_results.keys()),
+        )
+        self._hibernation_store.save(session_id, snapshot)
+
+        ctx.set_variable("__hibernation_token__", token_str)
+        ctx.set_variable("__hibernation_session_id__", session_id)
+        ctx.set_variable("__hibernation_event_name__", event_name)
+        ctx.set_variable(
+            "__hibernation_expires_at__",
+            token_obj.expires_at.isoformat(),
+        )
 
         duration_ms = (time.perf_counter() - step_start) * 1000
         tracer.emit(
@@ -3929,14 +4033,18 @@ class Executor:
             data={
                 "success": True,
                 "type": "hibernate",
+                "session_id": session_id,
                 "continuation_id": continuation_id,
+                "expires_at": token_obj.expires_at.isoformat(),
                 "checkpoint_recorded": True,
+                "snapshot_variables_count": len(snapshot.variables),
+                "snapshot_step_results_count": len(snapshot.step_results),
             },
             duration_ms=duration_ms,
         )
 
         response = ModelResponse(
-            content=f"hibernate:{continuation_id or event_name or 'unspecified'}",
+            content=token_str,
             usage={"input_tokens": 0, "output_tokens": 0},
         )
         return StepResult(
@@ -3944,6 +4052,50 @@ class Executor:
             response=response,
             duration_ms=duration_ms,
         )
+
+    # ── Fase 19.a — resume API ──
+    # Public entry point adopters call when a wakeup event arrives
+    # carrying a signed continuity token. Verifies the token (HMAC +
+    # expiry), looks up the snapshot, and returns it for downstream
+    # orchestration. The Executor itself does NOT auto-resume execution
+    # of the original unit — that orchestration is adopter-driven
+    # (the snapshot tells the adopter where to pick up).
+
+    def resume_from_token(self, token_str: str) -> HibernationSnapshot:
+        """Verify a hibernation token + return the persisted snapshot.
+
+        Args:
+            token_str: The base64url-encoded signed token string that
+                       was bound to ``__hibernation_token__`` by the
+                       prior ``hibernate`` step.
+
+        Returns:
+            The :class:`HibernationSnapshot` recorded at checkpoint
+            time, deep-copied state intact.
+
+        Raises:
+            ContinuityTokenError: If the token is malformed, has been
+                tampered with, or has expired. Subclasses
+                (``TokenMalformed`` / ``TokenForgedOrRotated`` /
+                ``TokenExpired``) discriminate the failure mode.
+            KeyError: If the token verifies but no snapshot is in the
+                store under its ``session_id`` — typically a sign that
+                the snapshot was evicted (TTL / restart with non-
+                durable store) or the wrong store was injected on
+                resume.
+        """
+        token = self._continuity_signer.verify(token_str)
+        snapshot = self._hibernation_store.load(token.session_id)
+        if snapshot is None:
+            raise KeyError(
+                f"Hibernation snapshot for session_id "
+                f"'{token.session_id}' is not present in the store. "
+                f"This usually means the snapshot was evicted, the "
+                f"Executor was restarted without a durable store, or "
+                f"the resume Executor was constructed with a different "
+                f"HibernationStore than the hibernating one."
+            )
+        return snapshot
 
     async def _execute_drill_step(
         self,
