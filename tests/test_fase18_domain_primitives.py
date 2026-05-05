@@ -62,9 +62,14 @@ async def _exec(steps, *, seed_vars=None):
 
     def hooked(self, *a, **kw):
         original_init(self, *a, **kw)
-        for name, value in seed_vars.items():
-            self.set_variable(name, value)
-        captured["ctx"] = self
+        # Capture only the first ContextManager (the unit's parent
+        # ctx). Subsequent inits — e.g. ContextView from Fase 19.d's
+        # per-branch Par isolation — chain through super().__init__
+        # and would otherwise overwrite the captured handle.
+        if "ctx" not in captured:
+            for name, value in seed_vars.items():
+                self.set_variable(name, value)
+            captured["ctx"] = self
 
     _ctxmod.ContextManager.__init__ = hooked  # type: ignore[method-assign]
     try:
