@@ -1,11 +1,45 @@
 ---
 title: "Plan vivo: Fase 19 — Production hardening of Fase 18 dispatchers"
-status: PLANNED — sub-fases 19.a–19.n por shippear
+status: PARTIAL — Tier A + B + 19.l shipped (commits 66044e2 / eda4198 / d9bab9e / 0b4bc27 / drift-gate); Tier C/D/E + 19.n release deferred to follow-up session
 owner: AXON Language Team
 created: 2026-05-04
 updated: 2026-05-04
-target: axon-lang v1.14.0 (PyPI + crates.io) — coordinated cross-stack
+target: axon-lang v1.14.0 (PyPI + crates.io) — coordinated cross-stack — DEFERRED
 depends_on: Fase 15 / 16 / 17 / 18 DONE
+---
+
+## ▶ Status snapshot (2026-05-04)
+
+**Shipped this session (Tier A + B + 19.l, all on master):**
+
+| Sub-phase | Status | Commit | Tests | Module(s) |
+|---|---|---|---|---|
+| 19.a Hibernate full CPS | ✅ SHIPPED | `66044e2` | 11 new + 3 rewritten | `axon/runtime/pem/hibernation.py`, `Executor.resume_from_token` |
+| 19.b Drill full PIX integration | ✅ SHIPPED | `eda4198` | 12 new (drill+trail+registry) | `axon/runtime/pix_registry.py` |
+| 19.c Trail full corroboration walker | ✅ SHIPPED | `eda4198` | (in 19.b/c suite) | `Executor._trail_payload_from_nav_result` |
+| 19.d Par per-branch ContextView + 4 merge strategies | ✅ SHIPPED | `d9bab9e` | 23 new | `axon/runtime/par_context.py` |
+| 19.e ForIn break/continue (Python frontend + runtime) | ✅ SHIPPED | `0b4bc27` | 17 new | `IRBreak`/`IRContinue` + parser scope check + executor sentinels |
+| 19.l Drift gate extension | ✅ SHIPPED | (this commit) | 11 new + Tier C placeholder | `tests/test_fase19_drift_gate.py` |
+
+**Acceptance metrics:**
+- 91 new tests across 4 dedicated Fase-19 test files; 851 tests green across the integrity-critical suite (executor + Fase 11/13/14/17/18/19 + parser + IR-generator + IR-nodes + IR-coverage drift gate + PEM + PIX engine/compiler + paradigm-shifts + daemon + agent-runtime).
+- `_stub: True` literal removed from `axon/runtime/executor.py` (drift gate enforced).
+- Empty-store falsy-replacement bug class avoided across all three injectable backends (`continuity_signer`, `hibernation_store`, `pix_registry` — all use `is None` discipline, never `or`).
+
+**Deferred to follow-up session (Tier C / D / E / F):**
+
+| Sub-phase | Reason for defer |
+|---|---|
+| 19.f Rust dispatchers for Conditional / ForIn / Par / Return | Each requires recursive child-step dispatch in Rust; non-trivial. |
+| 19.g Rust dispatchers for Remember / Recall / Hibernate / Drill / Trail | Memory + CPS + PIX domain primitives need stub-correct Rust counterparts. |
+| 19.h Cross-stack parity goldens | Depends on Tier C dispatchers existing. |
+| 19.i Prometheus + OTel + structured audit events | Adds optional deps; integration with existing tracer needs design work. |
+| 19.j Hypothesis property tests per dispatcher | Each dispatcher's contract needs a property model. |
+| 19.k Random-nesting fuzz tests | Bounded depth-5 generator + deadlock detection harness. |
+| 19.n Coordinated v1.14.0 release | Predicated on Tier C/D/E shipping — releasing now would be dishonest "production hardening". |
+
+**Why partial:** the runtime correctness work (closes the MVP placeholder gap from Fase 18 — Tier A + B) was the highest-ROI subset and is shipped. The Rust mirror, observability, and property-test layers are ~1.5–2 sessions of additional work and warrant their own focused pass. The drift gate (19.l) carries a deliberately-skipped Rust-parity test that becomes the entry point when Tier C is picked up.
+
 ---
 
 # FASE 19 — PRODUCTION HARDENING OF FASE 18 DISPATCHERS
