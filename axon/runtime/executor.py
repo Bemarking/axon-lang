@@ -61,6 +61,11 @@ from axon.runtime.pem.hibernation import (
     InMemoryHibernationStore,
     parse_timeout,
 )
+from axon.runtime.observability import (
+    emit_audit,
+    record_dispatcher,
+    span as _obs_span,
+)
 from axon.runtime.par_context import (
     ContextView,
     ParMergeStrategy,
@@ -4080,6 +4085,25 @@ class Executor:
         )
 
         duration_ms = (time.perf_counter() - step_start) * 1000
+        # Fase 19.i — observability. Records the dispatcher metric +
+        # emits a structured audit event so adopters auditing CPS
+        # checkpoints have a tamper-evident trail. Both calls are
+        # no-ops when the optional libs / sinks are unconfigured.
+        record_dispatcher(
+            "hibernate", duration_seconds=duration_ms / 1000.0,
+        )
+        emit_audit(
+            flow_name=unit.flow_name,
+            primitive="hibernate",
+            action="checkpoint",
+            subject=session_id,
+            detail={
+                "event_name": event_name,
+                "expires_at": token_obj.expires_at.isoformat(),
+                "snapshot_variables_count": len(snapshot.variables),
+                "snapshot_step_results_count": len(snapshot.step_results),
+            },
+        )
         tracer.emit(
             TraceEventType.STEP_END,
             step_name=step_name,
@@ -4243,6 +4267,25 @@ class Executor:
         ctx.set_variable(f"{output_name}:result", nav_result)
 
         duration_ms = (time.perf_counter() - step_start) * 1000
+        # Fase 19.i — observability for PIX queries. Drill is the
+        # adopter-visible boundary where PIX state gets read; the
+        # audit trail records `pix_ref` + `subtree_path` + leaf count
+        # for compliance review of "what was retrieved from where".
+        record_dispatcher(
+            "drill", duration_seconds=duration_ms / 1000.0,
+        )
+        emit_audit(
+            flow_name=unit.flow_name,
+            primitive="drill",
+            action="query",
+            subject=pix_ref,
+            detail={
+                "subtree_path": subtree_path,
+                "query": query,
+                "leaf_count": len(nav_result.leaves),
+                "depth": nav_result.path.depth,
+            },
+        )
         tracer.emit(
             TraceEventType.STEP_END,
             step_name=step_name,
@@ -4382,6 +4425,13 @@ class Executor:
         ctx.set_variable(f"trail:{navigate_ref}", payload)
 
         duration_ms = (time.perf_counter() - step_start) * 1000
+        # Fase 19.i — record the dispatcher metric. No audit event
+        # for trail: the underlying PIX query is already audited at
+        # the drill boundary; trail is a read-only re-projection of
+        # an already-recorded path.
+        record_dispatcher(
+            "trail", duration_seconds=duration_ms / 1000.0,
+        )
         tracer.emit(
             TraceEventType.STEP_END,
             step_name=step_name,
@@ -4772,6 +4822,12 @@ class Executor:
 
         duration_ms = (time.perf_counter() - step_start) * 1000
         successful_results = [r for r in results if isinstance(r, StepResult)]
+        # Fase 19.i — record the parallel-block dispatcher metric. No
+        # audit emission for Par itself (the inner branches' memory /
+        # CPS / PIX ops are audited at their own boundaries).
+        record_dispatcher(
+            "par", duration_seconds=duration_ms / 1000.0,
+        )
         tracer.emit(
             TraceEventType.STEP_END,
             step_name=step_name,
@@ -4868,6 +4924,19 @@ class Executor:
 
         duration_ms = (time.perf_counter() - step_start) * 1000
 
+        # Fase 19.i — observability for memory writes. Memory ops
+        # are the primary compliance audit boundary; emit with the
+        # subject = the memory key being written.
+        record_dispatcher(
+            "remember", duration_seconds=duration_ms / 1000.0,
+        )
+        emit_audit(
+            flow_name=unit.flow_name,
+            primitive="remember",
+            action="store",
+            subject=memory_target,
+            detail={"value_repr": repr(value)[:120]},
+        )
         tracer.emit(
             TraceEventType.STEP_END,
             step_name=step_name,
@@ -4955,6 +5024,24 @@ class Executor:
 
         duration_ms = (time.perf_counter() - step_start) * 1000
 
+        # Fase 19.i — observability for memory reads. Audit emission
+        # captures `subject` = source, `action` = "query" so adopters
+        # can answer "what memory did this flow read and what came
+        # back" for compliance review.
+        record_dispatcher(
+            "recall", duration_seconds=duration_ms / 1000.0,
+        )
+        emit_audit(
+            flow_name=unit.flow_name,
+            primitive="recall",
+            action="query",
+            subject=memory_source,
+            detail={
+                "query": query,
+                "found": value is not None,
+                "result_count": len(results),
+            },
+        )
         tracer.emit(
             TraceEventType.STEP_END,
             step_name=step_name,

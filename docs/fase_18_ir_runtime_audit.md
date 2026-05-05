@@ -113,6 +113,8 @@ Status legend:
 | 41 | `Mutate` | ✅ WIRED | axonstore group |
 | 42 | `Purge` | ✅ WIRED | axonstore group |
 | 43 | `Transact` | ✅ WIRED | axonstore group |
+| 44 | `Break` | ✅ WIRED | (Fase 19.e) `metadata.has("break")` → `_execute_break_step` raises `_FlowBreakSignal`; `_execute_for_in_step` catches at iteration scope and terminates the loop. Parser scope check (`_loop_depth`) rejects `break` outside a for-in body. |
+| 45 | `Continue` | ✅ WIRED | (Fase 19.e) `metadata.has("continue")` → `_execute_continue_step` raises `_FlowContinueSignal`; `_execute_for_in_step` catches at body-step scope and advances to the next element. Same scope check as Break. |
 
 ### 3.1 Summary
 
