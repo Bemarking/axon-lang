@@ -1,5 +1,13 @@
 # Portal API — Tenant Self-Service Guide
 
+> **New here?** If you are integrating an external service with this
+> installation for the first time, start with the
+> [**Adopter Integration Guide**](./INTEGRATION_GUIDE.md). It walks
+> through the bootstrap loop end-to-end (one env var → discovery →
+> auth → first call) in a single page. This document is the deeper
+> reference for individual Portal API endpoints once you have a
+> working integration.
+
 Fase 10.k. The Portal API is the HTTP surface tenant admins and
 end-user applications drive day-to-day. It lives under `/api/v1`
 and is mounted by the same `build_app()` factory as the Admin API

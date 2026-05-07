@@ -1,0 +1,37 @@
+{
+  "axon_capabilities_schema_version": "1.0",
+  "axon_enterprise_version": "<NORMALIZED>",
+  "axon_lang_installed_version": "<NORMALIZED>",
+  "discovery_endpoints": {
+    "capabilities": "/.well-known/axon-capabilities.json",
+    "jwks": "/.well-known/jwks.json",
+    "oauth_authorization_server": "/.well-known/oauth-authorization-server",
+    "openid_configuration": "/.well-known/openid-configuration"
+  },
+  "shield_categories_supported": [
+    "capability_validate",
+    "code_injection",
+    "data_exfil",
+    "hallucination",
+    "jailbreak",
+    "model_theft",
+    "pii_leak",
+    "prompt_injection",
+    "social_engineering",
+    "toxicity",
+    "training_poisoning"
+  ],
+  "shield_strategies_supported": [
+    "canary",
+    "classifier",
+    "dual_llm",
+    "ensemble",
+    "hmac",
+    "pattern",
+    "perplexity"
+  ],
+  "sso_providers_supported": [
+    "oidc",
+    "saml"
+  ]
+}
