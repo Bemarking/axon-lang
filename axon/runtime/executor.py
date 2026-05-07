@@ -1528,9 +1528,19 @@ class Executor:
             from axon.runtime.store_dispatcher import StoreDispatcher
             self._store_dispatcher = StoreDispatcher()
 
+        # v1.15.4 — interpolate {{step_name}} placeholders in the
+        # axonstore metadata BEFORE dispatching to the backend. The
+        # store_dispatcher itself stays a clean pass-through; the
+        # Executor owns variable resolution because it's the only
+        # layer with full ContextManager visibility. Without this,
+        # ``where_expr = "id == '{{prior_step}}'"`` reaches the
+        # backend literal and matches zero rows; ``persist`` writes
+        # the literal placeholder string into the column.
+        resolved_meta = self._interpolate_step_refs(store_meta, ctx)
+
         store_result = await asyncio.wait_for(
             self._store_dispatcher.dispatch(
-                store_meta, context={"step_name": step_name},
+                resolved_meta, context={"step_name": step_name},
             ),
             timeout=self._store_timeout,
         )
@@ -2392,6 +2402,49 @@ class Executor:
 
         return response
 
+    def _interpolate_step_refs(self, value: Any, ctx: ContextManager) -> Any:
+        """Recursively replace ``{{step_name}}`` placeholders inside any
+        JSON-shaped value with the matching step result from ``ctx``.
+
+        Strings are scanned for each completed step's placeholder and
+        substituted; lists, tuples, and dicts are walked. Primitives
+        (int, float, bool, None) and unrecognised types pass through
+        unchanged. Names that don't correspond to a completed step are
+        left literal — the same conservative behaviour
+        ``_build_user_prompt`` had pre-v1.15.4, now consolidated as the
+        single interpolation primitive shared by every consumer of step
+        references in the Executor.
+
+        Single source of truth — three callers route through here:
+          1. ``_build_user_prompt`` (LLM prompt template substitution)
+          2. ``_exec_axonstore_step`` (axonstore where_expr / fields —
+             v1.15.4 fix: pre-v1.15.4 those reached the backend literal,
+             producing 0-row queries or string-literal persists)
+          3. Future Executor dispatchers that consume metadata from the
+             IR; new sites should funnel through here so the
+             interpolation contract stays uniform across primitives.
+        """
+        if isinstance(value, str):
+            if "{{" not in value:
+                return value
+            for name in ctx.completed_steps:
+                placeholder = "{{" + name + "}}"
+                if placeholder in value:
+                    value = value.replace(
+                        placeholder, str(ctx.get_step_result(name))
+                    )
+            return value
+        if isinstance(value, list):
+            return [self._interpolate_step_refs(item, ctx) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._interpolate_step_refs(item, ctx) for item in value)
+        if isinstance(value, dict):
+            return {
+                key: self._interpolate_step_refs(item, ctx)
+                for key, item in value.items()
+            }
+        return value
+
     def _build_user_prompt(
         self, step: CompiledStep, ctx: ContextManager
     ) -> str:
@@ -2408,16 +2461,7 @@ class Executor:
         Returns:
             The fully resolved user prompt string.
         """
-        prompt = step.user_prompt
-
-        # Simple template substitution for step references
-        for name in ctx.completed_steps:
-            value = ctx.get_step_result(name)
-            placeholder = "{{" + name + "}}"
-            if placeholder in prompt:
-                prompt = prompt.replace(placeholder, str(value))
-
-        return prompt
+        return self._interpolate_step_refs(step.user_prompt, ctx)
 
     def _check_anchors_cps(
         self,
