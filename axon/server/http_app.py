@@ -34,6 +34,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+from axon.server.path_matcher import match_path
+
 logger = logging.getLogger(__name__)
 
 # Maximum request body size (1 MB)
@@ -95,13 +97,23 @@ def create_app(server: Any) -> Any:
     # ── Request Helpers ───────────────────────────────────────
 
     async def _read_json(request: Request) -> dict[str, Any] | None:
-        """Read and validate JSON body with size limit."""
+        """Read and validate JSON body with size limit.
+
+        Returns:
+            ``{}`` when the body is empty (legitimate for DELETE /
+            PATCH / POST whose semantics are fully expressed by the
+            URL path + path parameters).
+            ``None`` when the body is non-empty but unreadable
+            (oversized, missing/wrong Content-Type, malformed JSON).
+            The dispatcher maps ``None`` to a 400.
+        """
+        body = await request.body()
+        if not body:
+            return {}
+        if len(body) > _MAX_BODY_SIZE:
+            return None
         content_type = request.headers.get("content-type", "")
         if "application/json" not in content_type:
-            return None
-
-        body = await request.body()
-        if len(body) > _MAX_BODY_SIZE:
             return None
         try:
             return json.loads(body)
@@ -279,19 +291,39 @@ def create_app(server: Any) -> Any:
             )
         return JSONResponse({"stopped": True, "daemon": name})
 
+    def _resolve_endpoint(
+        full_path: str, method: str
+    ) -> tuple[Any, dict[str, str]]:
+        """Resolve a request to a (endpoint, path_params) pair.
+
+        Exact-match endpoints win over template matches when both could
+        apply — adopters declaring ``/api/users/me`` next to
+        ``/api/users/{id}`` get the explicit handler for ``/me``,
+        matching the Starlette / FastAPI / Flask convention.
+        """
+        registered = list(server.list_endpoints())
+        # Phase 1: exact match (cheap, preserves pre-v1.15.3 behaviour
+        # for endpoints declared without templates).
+        for ep in registered:
+            if ep.method.upper() == method and ep.path == full_path:
+                return ep, {}
+        # Phase 2: template match. Skip endpoints with no placeholders —
+        # they were already considered in phase 1.
+        for ep in registered:
+            if ep.method.upper() != method or "{" not in ep.path:
+                continue
+            params = match_path(ep.path, full_path)
+            if params is not None:
+                return ep, params
+        return None, {}
+
     async def dispatch_endpoint(request: Request) -> JSONResponse:
         full_path = "/" + request.path_params.get("full_path", "")
         if full_path.startswith("/v1/"):
             return JSONResponse({"error": "Not found"}, status_code=404)
 
         method = request.method.upper()
-        endpoint = next(
-            (
-                ep for ep in server.list_endpoints()
-                if ep.path == full_path and ep.method.upper() == method
-            ),
-            None,
-        )
+        endpoint, path_params = _resolve_endpoint(full_path, method)
         if endpoint is None:
             return JSONResponse({"error": "Not found"}, status_code=404)
 
@@ -306,6 +338,23 @@ def create_app(server: Any) -> Any:
                         status_code=400,
                     )
                 payload = data
+
+            # Layer path parameters on top — they're more specific than
+            # body or query and authoritative per HTTP convention.
+            # Surface shadowing so adopters notice silent overrides.
+            if path_params:
+                shadowed = sorted(set(path_params) & set(payload))
+                if shadowed:
+                    logger.warning(
+                        "path params %s shadow %s payload keys for %s %s "
+                        "(endpoint %s); path values win",
+                        shadowed,
+                        "query" if method == "GET" else "body",
+                        method,
+                        full_path,
+                        endpoint.name,
+                    )
+                payload = {**payload, **path_params}
 
             trace_id = f"ep_{int(time.time() * 1000)}_{endpoint.name}"
             result = await server.execute_endpoint_request(
