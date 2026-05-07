@@ -87,12 +87,16 @@ from axon.runtime.runtime_errors import (
     AgentStuckError,
     AnchorBreachError,
     AxonRuntimeError,
+    AxonStoreError,
     CapabilityViolationError,
+    DataScienceError,
     ErrorContext,
     ExecutionTimeoutError,
     MandateViolationError,
     ModelCallError,
     ShieldBreachError,
+    ToolDispatchError,
+    ToolExecutionError,
     ValidationError,
 )
 from axon.runtime.semantic_validator import SemanticValidator, ValidationResult
@@ -1273,13 +1277,12 @@ class Executor:
         )
 
         if self._tool_dispatcher is None:
-            raise AxonRuntimeError(
+            raise ToolDispatchError(
                 message=(
                     f"Step '{step_name}' requires a tool "
                     f"('{use_tool_meta.get('tool_name')}') but no "
                     "ToolDispatcher was provided to the Executor."
                 ),
-                error_type="tool_dispatch",
                 context=ErrorContext(
                     flow_name="",
                     step_name=step_name,
@@ -1307,12 +1310,11 @@ class Executor:
         )
 
         if not tool_result.success:
-            raise AxonRuntimeError(
+            raise ToolExecutionError(
                 message=(
                     f"Tool '{ir_use_tool.tool_name}' failed: "
                     f"{tool_result.error}"
                 ),
-                error_type="tool_execution",
                 context=ErrorContext(
                     flow_name="",
                     step_name=step_name,
@@ -1383,13 +1385,12 @@ class Executor:
         ir_node = self._reconstruct_data_ir(ds_meta)
 
         if ir_node is None:
-            from axon.runtime.runtime_errors import AxonRuntimeError, ErrorContext
-            raise AxonRuntimeError(
+            from axon.runtime.runtime_errors import DataScienceError, ErrorContext
+            raise DataScienceError(
                 message=(
                     f"Step '{step_name}' has data_science metadata but "
                     f"unknown operation: '{ds_meta.get('operation')}'"
                 ),
-                error_type="data_science",
                 context=ErrorContext(
                     flow_name="",
                     step_name=step_name,
@@ -1407,13 +1408,12 @@ class Executor:
         )
 
         if not ds_result.success:
-            from axon.runtime.runtime_errors import AxonRuntimeError, ErrorContext
-            raise AxonRuntimeError(
+            from axon.runtime.runtime_errors import DataScienceError, ErrorContext
+            raise DataScienceError(
                 message=(
                     f"Data Science operation '{ds_result.operation}' failed: "
                     f"{ds_result.error}"
                 ),
-                error_type="data_science",
                 context=ErrorContext(
                     flow_name="",
                     step_name=step_name,
@@ -1541,13 +1541,12 @@ class Executor:
         )
 
         if not store_result.success:
-            from axon.runtime.runtime_errors import AxonRuntimeError, ErrorContext
-            raise AxonRuntimeError(
+            from axon.runtime.runtime_errors import AxonStoreError, ErrorContext
+            raise AxonStoreError(
                 message=(
                     f"AxonStore operation '{store_result.operation}' failed: "
                     f"{store_result.error}"
                 ),
-                error_type="axonstore",
                 context=ErrorContext(
                     flow_name="",
                     step_name=step_name,
