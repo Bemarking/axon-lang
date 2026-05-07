@@ -10,6 +10,11 @@ Eight severity levels, from least to most critical:
     Level 3: AnchorBreachError         — hard constraint anchor violated
     Level 4: RefineExhaustedError      — max refine/retry attempts exhausted
     Level 5: ModelCallError            — LLM API call failed
+                                         (also: ToolDispatchError,
+                                          ToolExecutionError,
+                                          DataScienceError,
+                                          AxonStoreError — same severity
+                                          tier, distinct origins)
     Level 6: ExecutionTimeoutError     — execution exceeded time limit
     Level 7: AgentBudgetExhaustedError — agent resource budget exhausted
     Level 8: AgentStuckError           — agent stuck, no progress possible
@@ -224,6 +229,71 @@ class ModelCallError(AxonRuntimeError):
     Example:
         Anthropic API returned HTTP 429 (rate limited)
         during step ``analyze_contract``.
+    """
+
+    level: int = 5
+
+
+class ToolDispatchError(AxonRuntimeError):
+    """The Executor required a ToolDispatcher to satisfy a step but none
+    was provided.
+
+    Distinct from ``ToolExecutionError`` (the dispatcher exists but the
+    tool itself failed). This is a configuration-shaped fault — the
+    runtime cannot proceed because the wiring is incomplete.
+
+    Example:
+        Step ``fetch_user`` declares ``use_tool: get_user_record`` but
+        the Executor was constructed without a ``tool_dispatcher`` arg.
+    """
+
+    level: int = 5
+
+
+class ToolExecutionError(AxonRuntimeError):
+    """A registered tool was invoked but reported failure.
+
+    The dispatcher resolved the tool, the call dispatched, the tool's
+    own logic returned an error result. Distinct from
+    ``ToolDispatchError`` (no dispatcher) and ``ModelCallError`` (LLM
+    transport failure).
+
+    Example:
+        Tool ``query_database`` returned ``success=False`` with
+        ``error="connection refused"`` during step ``load_orders``.
+    """
+
+    level: int = 5
+
+
+class DataScienceError(AxonRuntimeError):
+    """A data_science step failed to dispatch or execute.
+
+    Covers two related failure modes for steps annotated with
+    ``data_science`` metadata: (a) the requested operation slug is
+    not registered with the dispatcher, (b) the dispatcher resolved
+    the operation but execution returned a failure result.
+
+    Example:
+        Step ``aggregate_sales`` declares
+        ``data_science: { operation: 'group_by_month' }`` but no
+        registered operation matches that slug.
+    """
+
+    level: int = 5
+
+
+class AxonStoreError(AxonRuntimeError):
+    """An AxonStore operation (persist/retrieve/mutate/purge/transact)
+    reported failure at the store layer.
+
+    The dispatcher resolved the operation but the underlying store
+    returned an error (e.g., backend unreachable, schema mismatch,
+    quota exhausted, transaction conflict).
+
+    Example:
+        ``axonstore.persist`` of a 200KB cognitive state failed with
+        ``error="quota exceeded"`` during step ``checkpoint_state``.
     """
 
     level: int = 5
