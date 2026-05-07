@@ -1,0 +1,43 @@
+{
+  "audience_supported": [
+    "axon-api"
+  ],
+  "authorization_endpoint": "https://auth.bemarking.com/api/v1/sso/oidc/initiate",
+  "axon_discovery_schema_version": "1.0",
+  "axon_enterprise_version": "<NORMALIZED>",
+  "claims_supported": [
+    "sub",
+    "iss",
+    "aud",
+    "exp",
+    "iat",
+    "tenant_id",
+    "email",
+    "user_id",
+    "roles",
+    "plan"
+  ],
+  "id_token_signing_alg_values_supported": [
+    "RS256"
+  ],
+  "issuer": "https://auth.bemarking.com",
+  "jwks_uri": "https://auth.bemarking.com/.well-known/jwks.json",
+  "response_types_supported": [
+    "id_token",
+    "code"
+  ],
+  "scopes_supported": [
+    "openid",
+    "profile",
+    "email",
+    "tenant"
+  ],
+  "subject_types_supported": [
+    "public"
+  ],
+  "token_endpoint": "https://auth.bemarking.com/api/v1/auth/login",
+  "token_endpoint_auth_methods_supported": [
+    "client_secret_basic",
+    "client_secret_post"
+  ]
+}

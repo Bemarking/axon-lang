@@ -1,0 +1,17 @@
+{
+  "auth": {
+    "access_token_ttl_seconds": 3600,
+    "audience": "axon-api",
+    "expected_signing_alg": "RS256",
+    "issuer": "https://auth.bemarking.com"
+  },
+  "axon_enterprise_version": "<NORMALIZED>",
+  "axon_integration_context_schema_version": "1.0",
+  "discovery": {
+    "jwks": "https://auth.bemarking.com/.well-known/jwks.json",
+    "oauth_authorization_server": "https://auth.bemarking.com/.well-known/oauth-authorization-server",
+    "openid_configuration": "https://auth.bemarking.com/.well-known/openid-configuration"
+  },
+  "plan": "enterprise",
+  "tenant_id": "snapshot-test"
+}

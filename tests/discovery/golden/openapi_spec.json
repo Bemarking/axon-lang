@@ -1,0 +1,716 @@
+{
+  "components": {
+    "schemas": {
+      "AxonCapabilities": {
+        "properties": {
+          "axon_capabilities_schema_version": {
+            "type": "string"
+          },
+          "axon_enterprise_version": {
+            "type": "string"
+          },
+          "axon_lang_installed_version": {
+            "description": "Null when probe fails (axon-lang not importable).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "discovery_endpoints": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "shield_categories_supported": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "shield_strategies_supported": {
+            "description": "Null when Shield registry import fails.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "sso_providers_supported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "axon_enterprise_version",
+          "discovery_endpoints",
+          "axon_capabilities_schema_version"
+        ],
+        "type": "object"
+      },
+      "Error": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "IntegrationContext": {
+        "properties": {
+          "auth": {
+            "properties": {
+              "access_token_ttl_seconds": {
+                "type": "integer"
+              },
+              "audience": {
+                "type": "string"
+              },
+              "expected_signing_alg": {
+                "type": "string"
+              },
+              "issuer": {
+                "format": "uri",
+                "type": "string"
+              }
+            },
+            "required": [
+              "issuer",
+              "audience",
+              "expected_signing_alg",
+              "access_token_ttl_seconds"
+            ],
+            "type": "object"
+          },
+          "axon_enterprise_version": {
+            "type": "string"
+          },
+          "axon_integration_context_schema_version": {
+            "type": "string"
+          },
+          "discovery": {
+            "properties": {
+              "jwks": {
+                "format": "uri",
+                "type": "string"
+              },
+              "oauth_authorization_server": {
+                "format": "uri",
+                "type": "string"
+              },
+              "openid_configuration": {
+                "format": "uri",
+                "type": "string"
+              }
+            },
+            "required": [
+              "openid_configuration",
+              "oauth_authorization_server",
+              "jwks"
+            ],
+            "type": "object"
+          },
+          "plan": {
+            "enum": [
+              "starter",
+              "pro",
+              "enterprise"
+            ],
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "plan",
+          "auth",
+          "discovery",
+          "axon_enterprise_version",
+          "axon_integration_context_schema_version"
+        ],
+        "type": "object"
+      },
+      "JwksDocument": {
+        "properties": {
+          "keys": {
+            "description": "RSA public keys per RFC 7517. The structure is standard JWK; consumers typically use a JOSE library.",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "keys"
+        ],
+        "type": "object"
+      },
+      "OAuthServerMetadata": {
+        "properties": {
+          "authorization_endpoint": {
+            "format": "uri",
+            "type": "string"
+          },
+          "axon_enterprise_version": {
+            "type": "string"
+          },
+          "axon_oauth_metadata_schema_version": {
+            "type": "string"
+          },
+          "grant_types_supported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "issuer": {
+            "format": "uri",
+            "type": "string"
+          },
+          "jwks_uri": {
+            "format": "uri",
+            "type": "string"
+          },
+          "response_types_supported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revocation_endpoint": {
+            "format": "uri",
+            "type": "string"
+          },
+          "token_endpoint": {
+            "format": "uri",
+            "type": "string"
+          },
+          "token_endpoint_auth_methods_supported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "issuer",
+          "response_types_supported",
+          "token_endpoint",
+          "grant_types_supported",
+          "token_endpoint_auth_methods_supported"
+        ],
+        "type": "object"
+      },
+      "OidcDiscoveryDocument": {
+        "properties": {
+          "audience_supported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "authorization_endpoint": {
+            "format": "uri",
+            "type": "string"
+          },
+          "axon_discovery_schema_version": {
+            "type": "string"
+          },
+          "axon_enterprise_version": {
+            "type": "string"
+          },
+          "claims_supported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id_token_signing_alg_values_supported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "issuer": {
+            "format": "uri",
+            "type": "string"
+          },
+          "jwks_uri": {
+            "format": "uri",
+            "type": "string"
+          },
+          "response_types_supported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "scopes_supported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "subject_types_supported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "token_endpoint": {
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "issuer",
+          "authorization_endpoint",
+          "token_endpoint",
+          "jwks_uri",
+          "response_types_supported",
+          "subject_types_supported",
+          "id_token_signing_alg_values_supported"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "bearerFormat": "JWT",
+        "description": "RS256-signed JWT issued by the Portal API. Discover signing keys at /.well-known/jwks.json; discover issuer + audience at /.well-known/openid-configuration. Obtain a token via POST /api/v1/auth/login or the OIDC/SAML SSO flows.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "externalDocs": {
+    "description": "axon-enterprise Portal API guide",
+    "url": "https://auth.bemarking.com/docs"
+  },
+  "info": {
+    "contact": {
+      "name": "axon-enterprise team"
+    },
+    "description": "Authenticated tenant-facing surface for axon-enterprise installations. OIDC discovery is published at /.well-known/openid-configuration; OAuth 2.0 server metadata at /.well-known/oauth-authorization-server; language and runtime capability advertisement at /.well-known/axon-capabilities.json. Use /docs for an interactive Swagger UI rendering of this document, or /redoc for ReDoc.",
+    "license": {
+      "name": "Commercial \u2014 see LICENSE"
+    },
+    "title": "axon-enterprise Portal API",
+    "version": "<NORMALIZED>"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/.well-known/axon-capabilities.json": {
+      "get": {
+        "description": "axon-namespaced extension to the standard discovery surface. Lists registered Shield strategies and categories, supported SSO providers, and installed axon-lang version. SDKs adapt behaviour to the actual server capabilities.",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AxonCapabilities"
+                }
+              }
+            },
+            "description": "Capability document"
+          },
+          "304": {
+            "description": "Not Modified \u2014 the ETag matched the request's If-None-Match header. Body is empty; client should reuse its cached copy."
+          }
+        },
+        "summary": "axon runtime capability advertisement",
+        "tags": [
+          "Discovery"
+        ]
+      }
+    },
+    "/.well-known/jwks.json": {
+      "get": {
+        "description": "Public RSA signing keys used to verify tokens issued by this server. Cache as instructed by Cache-Control headers.",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JwksDocument"
+                }
+              }
+            },
+            "description": "JWKS document"
+          }
+        },
+        "summary": "JSON Web Key Set (RFC 7517)",
+        "tags": [
+          "Discovery"
+        ]
+      }
+    },
+    "/.well-known/oauth-authorization-server": {
+      "get": {
+        "description": "Returns the OAuth Authorization Server Metadata document for non-OIDC OAuth clients. Many fields overlap with the OIDC discovery doc; both are published so clients can consume whichever standard their library expects.",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthServerMetadata"
+                }
+              }
+            },
+            "description": "OAuth metadata document"
+          },
+          "304": {
+            "description": "Not Modified \u2014 the ETag matched the request's If-None-Match header. Body is empty; client should reuse its cached copy."
+          }
+        },
+        "summary": "OAuth 2.0 Authorization Server Metadata (RFC 8414)",
+        "tags": [
+          "Discovery"
+        ]
+      }
+    },
+    "/.well-known/openid-configuration": {
+      "get": {
+        "description": "Returns the OIDC discovery document so any compliant OIDC client can discover this installation's issuer, jwks, supported algorithms, and supported claims. No authentication required.",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OidcDiscoveryDocument"
+                }
+              }
+            },
+            "description": "Discovery document"
+          },
+          "304": {
+            "description": "Not Modified \u2014 the ETag matched the request's If-None-Match header. Body is empty; client should reuse its cached copy."
+          }
+        },
+        "summary": "OIDC Connect Discovery 1.0 document",
+        "tags": [
+          "Discovery"
+        ]
+      }
+    },
+    "/admin/": {
+      "get": {
+        "description": "See docs/ADMIN_API_AND_CLI.md for the canonical request/response contract.",
+        "responses": {
+          "200": {
+            "description": "See linked doc."
+          },
+          "401": {
+            "description": "Authentication required."
+          }
+        },
+        "summary": "Admin control-plane (see ADMIN_API_AND_CLI.md)",
+        "tags": [
+          "Admin"
+        ]
+      }
+    },
+    "/api/v1/auth/invite/accept": {
+      "post": {
+        "description": "See docs/PORTAL_API.md for the canonical request/response contract.",
+        "responses": {
+          "200": {
+            "description": "See linked doc."
+          },
+          "401": {
+            "description": "Authentication required."
+          }
+        },
+        "summary": "Accept a tenant invitation",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "description": "See docs/PORTAL_API.md for the canonical request/response contract.",
+        "responses": {
+          "200": {
+            "description": "See linked doc."
+          },
+          "401": {
+            "description": "Authentication required."
+          }
+        },
+        "summary": "Password + TOTP login \u2192 JWT",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "description": "See docs/PORTAL_API.md for the canonical request/response contract.",
+        "responses": {
+          "200": {
+            "description": "See linked doc."
+          },
+          "401": {
+            "description": "Authentication required."
+          }
+        },
+        "summary": "Revoke the session chain",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "description": "See docs/PORTAL_API.md for the canonical request/response contract.",
+        "responses": {
+          "200": {
+            "description": "See linked doc."
+          },
+          "401": {
+            "description": "Authentication required."
+          }
+        },
+        "summary": "Rotate the refresh token",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/v1/primitives/": {
+      "get": {
+        "description": "See docs/PORTAL_API.md for the canonical request/response contract.",
+        "responses": {
+          "200": {
+            "description": "See linked doc."
+          },
+          "401": {
+            "description": "Authentication required."
+          }
+        },
+        "summary": "Closed catalogues + seeded registries",
+        "tags": [
+          "Discovery"
+        ]
+      }
+    },
+    "/api/v1/sso/oidc/callback": {
+      "get": {
+        "description": "See docs/PORTAL_API.md for the canonical request/response contract.",
+        "responses": {
+          "200": {
+            "description": "See linked doc."
+          },
+          "401": {
+            "description": "Authentication required."
+          }
+        },
+        "summary": "OIDC callback",
+        "tags": [
+          "SSO"
+        ]
+      }
+    },
+    "/api/v1/sso/oidc/initiate": {
+      "get": {
+        "description": "See docs/PORTAL_API.md for the canonical request/response contract.",
+        "responses": {
+          "200": {
+            "description": "See linked doc."
+          },
+          "401": {
+            "description": "Authentication required."
+          }
+        },
+        "summary": "Begin OIDC SSO",
+        "tags": [
+          "SSO"
+        ]
+      }
+    },
+    "/api/v1/tenant/api-keys/": {
+      "get": {
+        "description": "See docs/PORTAL_API.md for the canonical request/response contract.",
+        "responses": {
+          "200": {
+            "description": "See linked doc."
+          },
+          "401": {
+            "description": "Authentication required."
+          }
+        },
+        "summary": "List tenant API keys",
+        "tags": [
+          "Tenant"
+        ]
+      }
+    },
+    "/api/v1/tenant/compliance/": {
+      "get": {
+        "description": "See docs/PORTAL_API.md for the canonical request/response contract.",
+        "responses": {
+          "200": {
+            "description": "See linked doc."
+          },
+          "401": {
+            "description": "Authentication required."
+          }
+        },
+        "summary": "Compliance exports",
+        "tags": [
+          "Tenant"
+        ]
+      }
+    },
+    "/api/v1/tenant/me/integration-context/": {
+      "get": {
+        "description": "Returns the integration parameters visible to the calling tenant \u2014 its own tenant_id, plan, expected JWT issuer / audience / signing alg, and discovery URLs. RLS by construction: the response only ever surfaces the principal's tenant_id.",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrationContext"
+                }
+              }
+            },
+            "description": "Integration context for the principal's tenant"
+          },
+          "304": {
+            "description": "Not Modified \u2014 the ETag matched the request's If-None-Match header. Body is empty; client should reuse its cached copy."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Tenant-scoped integration context",
+        "tags": [
+          "Tenant Introspection"
+        ]
+      }
+    },
+    "/api/v1/tenant/usage/": {
+      "get": {
+        "description": "See docs/PORTAL_API.md for the canonical request/response contract.",
+        "responses": {
+          "200": {
+            "description": "See linked doc."
+          },
+          "401": {
+            "description": "Authentication required."
+          }
+        },
+        "summary": "Current period usage",
+        "tags": [
+          "Tenant"
+        ]
+      }
+    },
+    "/api/v1/tenant/users/": {
+      "get": {
+        "description": "See docs/PORTAL_API.md for the canonical request/response contract.",
+        "responses": {
+          "200": {
+            "description": "See linked doc."
+          },
+          "401": {
+            "description": "Authentication required."
+          }
+        },
+        "summary": "List tenant users",
+        "tags": [
+          "Tenant"
+        ]
+      }
+    },
+    "/webhooks/stripe": {
+      "post": {
+        "description": "See docs/PORTAL_API.md for the canonical request/response contract.",
+        "responses": {
+          "200": {
+            "description": "See linked doc."
+          },
+          "401": {
+            "description": "Authentication required."
+          }
+        },
+        "summary": "Stripe billing events (HMAC-signed)",
+        "tags": [
+          "Webhooks"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "axon-enterprise issuer base",
+      "url": "https://auth.bemarking.com"
+    }
+  ],
+  "tags": [
+    {
+      "description": "Public, unauthenticated well-known endpoints for adopter self-service integration (Fase 21). Adopters consume these to discover issuer, jwks, supported algorithms, registered Shield strategies, and SSO providers.",
+      "name": "Discovery"
+    },
+    {
+      "description": "Authenticated tenant-scoped introspection \u2014 what is configured for the calling tenant. RLS by construction (handler keys off the JWT principal, never off request body).",
+      "name": "Tenant Introspection"
+    },
+    {
+      "description": "Password + refresh-token + invitation acceptance flows. Full reference in docs/PORTAL_API.md.",
+      "name": "Auth"
+    },
+    {
+      "description": "OIDC + SAML provider initiate / callback / metadata flows. Per-tenant IdP configuration. Full reference in docs/SSO.md.",
+      "name": "SSO"
+    },
+    {
+      "description": "Tenant-admin operations \u2014 users, API keys, usage, compliance exports. Full reference in docs/PORTAL_API.md.",
+      "name": "Tenant"
+    },
+    {
+      "description": "Inbound webhook receivers \u2014 Stripe billing events, etc. Auth via provider-specific signature schemes (not JWT). Full reference in docs/PORTAL_API.md.",
+      "name": "Webhooks"
+    },
+    {
+      "description": "Cross-tenant control-plane operations \u2014 restricted to admin principals. Mounted under /admin/*. Full reference in docs/ADMIN_API_AND_CLI.md.",
+      "name": "Admin"
+    }
+  ]
+}
