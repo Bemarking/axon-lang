@@ -30,6 +30,8 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -412,11 +414,24 @@ def create_app(server: Any) -> Any:
 
     middleware = [Middleware(AuthMiddleware)]
 
+    # Starlette 1.0 removed the ``on_startup`` / ``on_shutdown`` kwargs
+    # that prior axon-lang releases relied on. The replacement is a
+    # single ``lifespan`` async context manager: setup before the
+    # ``yield``, teardown after. Both ``server.start`` and
+    # ``server.stop`` are already async, so this is a structural
+    # rename — semantics are identical to the v1.15.1 wiring.
+    @asynccontextmanager
+    async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
+        await server.start()
+        try:
+            yield
+        finally:
+            await server.stop()
+
     app = Starlette(
         routes=routes,
         middleware=middleware,
-        on_startup=[server.start],
-        on_shutdown=[server.stop],
+        lifespan=_lifespan,
     )
 
     return app
