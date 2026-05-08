@@ -1,0 +1,28 @@
+[package]
+name = "axon-csys"
+version = "0.1.0"
+authors = ["AXON Project", "Bemarking AI S.A.S."]
+edition = "2021"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/Bemarking/axon-lang"
+readme = "README.md"
+keywords = ["axon", "c23", "ffi", "kernel", "performance"]
+categories = ["development-tools::ffi", "external-ffi-bindings"]
+description = "axon-csys — Fase 25 (Silicon + Cognition sesión 1). C23 metal-bound kernels for axon-lang. The Rust crate hosts safe wrappers; the c-src/ tree hosts the kernels: cache-line-aligned slab allocator (25.d), G.711 mulaw + linear PCM resampler (25.c), algebraic effects FSM dispatcher with computed gotos (25.e), BPE tokenizer with #embed (25.g), HMAC-SHA256 continuity token (25.h), plus an adopter-facing C transpiler bridge (25.f). Each kernel ships with a byte-identical drift gate against the Rust reference impl. 25.b ships only the build-infrastructure probe; later sub-fases append their kernels."
+
+[lib]
+name = "axon_csys"
+path = "src/lib.rs"
+
+[dependencies]
+
+[build-dependencies]
+# §Fase 25.b D3 — cc-rs is the de facto Rust ecosystem standard for
+# C deps (used by `ring`, `openssl-sys`, `sodiumoxide`, etc); zero adopter
+# setup; build script integrates into `cargo build` natively. Keep the
+# version aligned with the rest of the cargo ecosystem (cc 1.2 supports
+# C23 / `/std:clatest` flag handling).
+cc = "1.2"
+
+[dev-dependencies]

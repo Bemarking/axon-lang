@@ -1,0 +1,32 @@
+//! axon-csys — C23 metal-bound kernels for axon-lang.
+//!
+//! Fase 25 — Silicon + Cognition (sesión 1). This crate is the Rust shim
+//! around a small set of carefully chosen C23 kernels. The C side handles
+//! what C does best — cache-line layout, bit twiddling, hardware
+//! intrinsics, FSM dispatch with computed gotos. The Rust side handles
+//! correctness, ownership, and async glue, exposing a safe API that
+//! adopters consume without ever writing `unsafe` themselves.
+//!
+//! ## Layout
+//!
+//! - `c-src/probe/`   — build-infra probe (25.b)  ✅ shipped
+//! - `c-src/audio/`   — G.711 + resample (25.c)   — pending
+//! - `c-src/buffer/`  — slab allocator (25.d)     — pending
+//! - `c-src/effects/` — FSM dispatcher (25.e)     — pending
+//! - `c-src/tokens/`  — BPE + #embed (25.g)       — pending
+//! - `c-src/crypto/`  — HMAC continuity (25.h)    — pending
+//!
+//! ## Founder principle
+//!
+//! Per the four-pillar reminder (2026-05-08), every C kernel must preserve
+//! the Mathematics / Philosophy / Logic / Computing pillars of the module
+//! it ports. The Rust shim layer is responsible for asserting the byte-
+//! identical / epsilon-bounded drift gate that catches divergence before
+//! it leaves CI.
+
+pub mod probe;
+
+pub use probe::{
+    probe_add, probe_c_standard, probe_cacheline_alignment, probe_cacheline_marker,
+    probe_cacheline_size, probe_features, probe_version, AxonCsysFeatures, AxonCsysVersion,
+};
