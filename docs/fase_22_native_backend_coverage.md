@@ -411,7 +411,7 @@ Post-v1.16.0 audit identificó tres ejes de hardening que el "minimum viable" de
 
 ### 12.2 Sub-fase 22.g — Trace + error handling foundation (HIGH severity, MEDIUM scope)
 
-**Status**: ⏳ NEXT — target axon-lang v1.16.1 patch release.
+**Status**: ✅ SHIPPED 2026-05-08 — axon-lang v1.16.1 publicado (PR #11 merged, tag v1.16.1 pushed, GitHub Release https://github.com/Bemarking/axon-lang/releases/tag/v1.16.1). Lo entregado: 5 typed transport errors + retry policy con Retry-After + extracción per-provider de finish_reason/usage + ModelResponse extendido + tracer emit helpers actualizados + executor preserva typed errors. 30 tests nuevos en `tests/test_v1161_observability_and_typed_errors.py`. 99/99 verdes en touched surface. AST drift gate previene bypass de `_categorise_http_error`. 100% backward compatible.
 
 Cross-cutting; beneficia los 7 backends sin tocar features adopter-visible.
 
