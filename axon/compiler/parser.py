@@ -14,9 +14,11 @@ from __future__ import annotations
 from .ast_nodes import (
     ASTNode,
     Trivia,
+    AbortStatement,
     AgentBudget,
     AgentDefinition,
     AggregateNode,
+    AlgebraicEffectRowNode,
     AnchorConstraint,
     AssociateNode,
     AxonEndpointDefinition,
@@ -35,8 +37,15 @@ from .ast_nodes import (
     DeliberateBlock,
     DiscoverStatement,
     DrillNode,
+    EffectDeclaration,
+    EffectOperation,
     EffectRowNode,
     EmitStatement,
+    ForwardExpression,
+    HandleExpression,
+    HandlerClause,
+    PerformExpression,
+    ResumeStatement,
     EpistemicBlock,
     EnsembleDefinition,
     ExploreNode,
@@ -369,12 +378,15 @@ class Parser:
                 return self._parse_transact()
             case TokenType.LET:
                 return self._parse_let()
+            case TokenType.EFFECT:
+                # Fase 23 — algebraic effect declaration
+                return self._parse_effect_declaration()
             case _:
                 raise AxonParseError(
                     f"Unexpected token at top level",
                     line=tok.line,
                     column=tok.column,
-                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, ots, mandate, lambda, daemon, axonstore, axonendpoint, resource, fabric, manifest, observe, reconcile, lease, ensemble, session, topology, immune, reflex, heal, run, know, speculate, ...)",
+                    expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, ots, mandate, lambda, daemon, axonstore, axonendpoint, resource, fabric, manifest, observe, reconcile, lease, ensemble, session, topology, immune, reflex, heal, run, know, speculate, effect, ...)",
                     found=tok.value,
                 )
 
@@ -948,12 +960,27 @@ class Parser:
                 return self._parse_break()
             case TokenType.CONTINUE:
                 return self._parse_continue()
+            case TokenType.PERFORM:
+                # Fase 23 — perform Effect.Op(args) — invoke algebraic effect
+                return self._parse_perform()
+            case TokenType.HANDLE:
+                # Fase 23 — handle Effect { ... } in { body } — discharge effect
+                return self._parse_handle()
+            case TokenType.RESUME:
+                # Fase 23 — resume(value) — invoke captured one-shot continuation
+                return self._parse_resume()
+            case TokenType.ABORT:
+                # Fase 23 — abort — terminate handle without resuming
+                return self._parse_abort()
+            case TokenType.FORWARD:
+                # Fase 23 — forward Effect.Op(args) — propagate to outer handler
+                return self._parse_forward()
             case _:
                 raise AxonParseError(
                     "Unexpected token in flow body",
                     line=tok.line,
                     column=tok.column,
-                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, mandate, lambda, daemon, listen, persist, retrieve, mutate, purge, transact, focus, associate, aggregate, explore, ingest, let, return, break, continue",
+                    expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, mandate, lambda, daemon, listen, persist, retrieve, mutate, purge, transact, focus, associate, aggregate, explore, ingest, let, return, break, continue, perform, handle, resume, abort, forward",
                     found=tok.value,
                 )
 
@@ -1021,12 +1048,31 @@ class Parser:
                     self._consume(TokenType.COLON)
                     node.apply_ref = self._consume_any_identifier_or_keyword().value
 
+                # ── Fase 23 — algebraic effects in step body ──
+                case TokenType.PERFORM:
+                    node.body.append(self._parse_perform())
+
+                case TokenType.HANDLE:
+                    node.body.append(self._parse_handle())
+
+                case TokenType.RESUME:
+                    node.body.append(self._parse_resume())
+
+                case TokenType.ABORT:
+                    node.body.append(self._parse_abort())
+
+                case TokenType.FORWARD:
+                    node.body.append(self._parse_forward())
+
+                case TokenType.FOR:
+                    node.body.append(self._parse_for_in())
+
                 case _:
                     raise AxonParseError(
                         "Unexpected token in step body",
                         line=inner.line,
                         column=inner.column,
-                        expected="given, ask, use, probe, reason, weave, stream, output, confidence_floor, navigate, apply",
+                        expected="given, ask, use, probe, reason, weave, stream, output, confidence_floor, navigate, apply, perform, handle, resume, abort, forward, for",
                         found=inner.value,
                     )
 
@@ -2423,6 +2469,339 @@ class Parser:
         else:
             self._advance()
             return (tok.value, {})
+
+    # ──────────────────────────────────────────────────────────────────
+    #  ALGEBRAIC EFFECTS — Fase 23 (parser productions)
+    #  Operationalises paper docs/algebraic_effects_streaming.md §1-§6.
+    #  Decisions D1 (operation polymorphism), D2 (one-shot), D3 (delimited
+    #  scope), D11 (row polymorphism), D12 (forward) influence shape.
+    # ──────────────────────────────────────────────────────────────────
+
+    def _parse_effect_declaration(self) -> EffectDeclaration:
+        """Parse: effect Name { Op1(...) -> τ1; Op2(...) -> τ2 }
+
+        Top-level declaration. Each operation is parsed by
+        ``_parse_effect_operation`` and may carry rank-1 type
+        parameters (D1 — `Send<T>(value: T) -> Unit`). Operations are
+        separated by newlines (handled implicitly by the lexer skipping
+        whitespace) or optional semicolons.
+        """
+        tok = self._consume(TokenType.EFFECT)
+        name = self._consume(TokenType.IDENTIFIER)
+        node = EffectDeclaration(
+            name=name.value, line=tok.line, column=tok.column,
+        )
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            op = self._parse_effect_operation()
+            node.operations.append(op)
+            # Optional semicolon between ops; comma also tolerated for
+            # readability when authors prefer single-line blocks.
+            if self._check(TokenType.COMMA):
+                self._advance()
+        self._consume(TokenType.RBRACE)
+        return node
+
+    def _parse_effect_operation(self) -> EffectOperation:
+        """Parse one operation inside an `effect` block.
+
+        Grammar:
+            OpName [ "<" TypeVar { "," TypeVar } ">" ] "(" [ParamList] ")" "->" Type
+
+        Examples:
+            Emit(token: Token) -> Unit
+            Send<T>(value: T) -> Unit          # D1 — operation polymorphism
+            Done() -> Never
+            Recv<T>() -> T
+        """
+        name_tok = self._consume(TokenType.IDENTIFIER)
+        op = EffectOperation(
+            name=name_tok.value, line=name_tok.line, column=name_tok.column,
+        )
+
+        # Optional rank-1 type parameter list: <T1, T2, ...>
+        if self._check(TokenType.LT):
+            self._advance()
+            op.type_parameters = self._parse_identifier_list()
+            self._consume(TokenType.GT)
+
+        self._consume(TokenType.LPAREN)
+        if not self._check(TokenType.RPAREN):
+            op.parameters = self._parse_typed_parameter_list()
+        self._consume(TokenType.RPAREN)
+
+        self._consume(TokenType.ARROW)
+        op.return_type = self._parse_type_expression()
+        return op
+
+    def _parse_typed_parameter_list(self) -> list[ParameterNode]:
+        """Parse a comma-separated typed parameter list: name: τ, name: τ, ...
+
+        Reused by ``_parse_effect_operation`` and ``_parse_handler_clause``.
+        Each element binds an identifier name to a TypeExprNode parsed
+        by ``_parse_type_expression`` (so generic params like
+        ``List<T>`` work transparently).
+        """
+        params: list[ParameterNode] = []
+        while True:
+            name = self._consume(TokenType.IDENTIFIER)
+            self._consume(TokenType.COLON)
+            type_expr = self._parse_type_expression()
+            params.append(ParameterNode(
+                name=name.value,
+                type_expr=type_expr,
+                line=name.line,
+                column=name.column,
+            ))
+            if self._check(TokenType.COMMA):
+                self._advance()
+            else:
+                break
+        return params
+
+    def _parse_type_expression(self) -> TypeExprNode:
+        """Parse a type expression: Name | Name<Inner> | Name?
+
+        Minimal-yet-complete shape used by effect-operation return
+        types and handler-clause parameters. The full type grammar
+        (range constraints, where-clauses, compliance) lives in
+        ``_parse_type`` for type definitions; this helper is a
+        slim subset suitable for type-position references.
+        """
+        name_tok = self._consume_any_identifier_or_keyword()
+        node = TypeExprNode(
+            name=name_tok.value, line=name_tok.line, column=name_tok.column,
+        )
+        if self._check(TokenType.LT):
+            self._advance()
+            inner = self._consume_any_identifier_or_keyword()
+            node.generic_param = inner.value
+            self._consume(TokenType.GT)
+        if self._check(TokenType.QUESTION):
+            self._advance()
+            node.optional = True
+        return node
+
+    def _parse_perform(self) -> PerformExpression:
+        """Parse: perform Effect.Op(arg1, arg2, ...)
+
+        D2 — the captured continuation is one-shot; the parser does not
+        encode that property (it lives in the typechecker), but emits a
+        `PerformExpression` node that downstream treats as a yield to
+        the enclosing handler frame.
+        """
+        tok = self._consume(TokenType.PERFORM)
+        effect_name = self._consume(TokenType.IDENTIFIER).value
+        self._consume(TokenType.DOT)
+        op_name = self._consume(TokenType.IDENTIFIER).value
+        node = PerformExpression(
+            effect_name=effect_name,
+            operation_name=op_name,
+            line=tok.line,
+            column=tok.column,
+        )
+        self._consume(TokenType.LPAREN)
+        if not self._check(TokenType.RPAREN):
+            node.arguments = self._parse_argument_list()
+        self._consume(TokenType.RPAREN)
+        return node
+
+    def _parse_handle(self) -> HandleExpression:
+        """Parse: handle Effect [, Effect2, ...] { clauses } in { body }
+
+        Multi-effect handlers are a comma list of effect names; the
+        clause body inside `{ ... }` lists handler clauses (one per
+        operation across all named effects). The `in { body }` tail
+        delimits the scope where the discharged effects are valid
+        (D3 — delimited scope).
+        """
+        tok = self._consume(TokenType.HANDLE)
+        node = HandleExpression(line=tok.line, column=tok.column)
+
+        # Effect name list: Effect1, Effect2, ...
+        node.effect_names.append(self._consume(TokenType.IDENTIFIER).value)
+        while self._check(TokenType.COMMA):
+            self._advance()
+            node.effect_names.append(self._consume(TokenType.IDENTIFIER).value)
+
+        # Clause block
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            clause = self._parse_handler_clause()
+            node.clauses.append(clause)
+            # Optional separator between clauses
+            if self._check(TokenType.COMMA):
+                self._advance()
+        self._consume(TokenType.RBRACE)
+
+        # `in { body }` — required (D3 delimited scope; no escape).
+        self._consume(TokenType.IN)
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            stmt = self._parse_flow_step()
+            if stmt is not None:
+                node.body.append(stmt)
+        self._consume(TokenType.RBRACE)
+
+        return node
+
+    def _parse_handler_clause(self) -> HandlerClause:
+        """Parse one handler clause inside a `handle` block.
+
+        Grammar:
+            OpName "(" [ParamList] ")" "->" "{" Body "}"
+
+        Example:
+            Emit(token) -> {
+                log.info(token)
+                resume()
+            }
+            Done() -> { abort }
+        """
+        name_tok = self._consume(TokenType.IDENTIFIER)
+        clause = HandlerClause(
+            operation_name=name_tok.value,
+            line=name_tok.line,
+            column=name_tok.column,
+        )
+        self._consume(TokenType.LPAREN)
+        if not self._check(TokenType.RPAREN):
+            clause.parameters = self._parse_handler_clause_params()
+        self._consume(TokenType.RPAREN)
+        self._consume(TokenType.ARROW)
+        self._consume(TokenType.LBRACE)
+        while not self._check(TokenType.RBRACE):
+            stmt = self._parse_flow_step()
+            if stmt is not None:
+                clause.body.append(stmt)
+        self._consume(TokenType.RBRACE)
+        return clause
+
+    def _parse_handler_clause_params(self) -> list[ParameterNode]:
+        """Parse handler-clause parameters.
+
+        Two grammars accepted (LL(1) discriminated by COLON lookahead):
+          1. Untyped (parameters bound by name only):  Op(token)
+             → the typechecker resolves type from the corresponding
+             effect operation declaration.
+          2. Typed (parameter shadows the effect-decl signature with an
+             explicit annotation):  Op(token: Token)
+             → useful when the operation is polymorphic and the clause
+             monomorphises (D1).
+        """
+        params: list[ParameterNode] = []
+        while True:
+            name = self._consume(TokenType.IDENTIFIER)
+            type_expr: TypeExprNode | None = None
+            if self._check(TokenType.COLON):
+                self._advance()
+                type_expr = self._parse_type_expression()
+            params.append(ParameterNode(
+                name=name.value,
+                type_expr=type_expr,
+                line=name.line,
+                column=name.column,
+            ))
+            if self._check(TokenType.COMMA):
+                self._advance()
+            else:
+                break
+        return params
+
+    def _parse_resume(self) -> ResumeStatement:
+        """Parse: resume | resume(value_expr)
+
+        D2 (one-shot): linear-resume discipline is enforced in the
+        typechecker (control-flow walk over the enclosing handler
+        clause body); the parser does not constrain the count.
+        """
+        tok = self._consume(TokenType.RESUME)
+        node = ResumeStatement(line=tok.line, column=tok.column)
+        if self._check(TokenType.LPAREN):
+            self._advance()
+            if not self._check(TokenType.RPAREN):
+                node.value_expr = self._parse_expression_string()
+            self._consume(TokenType.RPAREN)
+        return node
+
+    def _parse_abort(self) -> AbortStatement:
+        """Parse: abort | abort(value_expr)
+
+        Discards the captured continuation entirely — the perform site
+        never resumes, control yields past the enclosing `handle ... in`.
+        Counts as a discharge for the linear-resume discipline (D10).
+        """
+        tok = self._consume(TokenType.ABORT)
+        node = AbortStatement(line=tok.line, column=tok.column)
+        if self._check(TokenType.LPAREN):
+            self._advance()
+            if not self._check(TokenType.RPAREN):
+                node.value_expr = self._parse_expression_string()
+            self._consume(TokenType.RPAREN)
+        return node
+
+    def _parse_forward(self) -> ForwardExpression:
+        """Parse: forward Effect.Op(arg1, arg2, ...)
+
+        D12 — propagates the operation to the next enclosing handler
+        frame (transparent decorator pattern). Counts toward linear-
+        resume discipline because control leaves this frame.
+        """
+        tok = self._consume(TokenType.FORWARD)
+        effect_name = self._consume(TokenType.IDENTIFIER).value
+        self._consume(TokenType.DOT)
+        op_name = self._consume(TokenType.IDENTIFIER).value
+        node = ForwardExpression(
+            effect_name=effect_name,
+            operation_name=op_name,
+            line=tok.line,
+            column=tok.column,
+        )
+        self._consume(TokenType.LPAREN)
+        if not self._check(TokenType.RPAREN):
+            node.arguments = self._parse_argument_list()
+        self._consume(TokenType.RPAREN)
+        return node
+
+    def _parse_algebraic_effect_row(self) -> AlgebraicEffectRowNode:
+        """Parse: !{ EffectName, EffectName2, ε }
+
+        Type-level effect annotation suffix. D11 — a row variable
+        (lowercase Greek letter or any identifier starting with `_`
+        or matching the `epsilon` / `e_*` convention) signals an
+        OPEN row. Without a row variable the row is CLOSED.
+
+        Attached to a TypeExprNode tail by the type-position parser.
+        Standalone parsing here so 23.b can ship the production unit-
+        tested; integration into the type-position grammar happens
+        when 23.c needs it (the lexer + parser already permit `!`).
+        """
+        bang = self._consume(TokenType.BANG)
+        node = AlgebraicEffectRowNode(line=bang.line, column=bang.column)
+        self._consume(TokenType.LBRACE)
+        # Empty row: !{}
+        if self._check(TokenType.RBRACE):
+            self._advance()
+            return node
+        # Otherwise: at least one effect name or row variable
+        while True:
+            name_tok = self._consume(TokenType.IDENTIFIER)
+            # Heuristic: a single lowercase letter or a name starting
+            # with `_` is treated as a row variable. Effect names are
+            # PascalCase by convention. The typechecker (23.c) refines
+            # this distinction with a proper symbol-table lookup.
+            value = name_tok.value
+            looks_like_row_var = value[0].islower() or value.startswith("_")
+            if looks_like_row_var and not node.row_variable:
+                node.row_variable = value
+            else:
+                node.effect_names.append(value)
+            if self._check(TokenType.COMMA):
+                self._advance()
+            else:
+                break
+        self._consume(TokenType.RBRACE)
+        return node
 
     # ── HELPER METHODS ────────────────────────────────────────────
 

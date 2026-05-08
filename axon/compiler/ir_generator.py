@@ -129,6 +129,15 @@ from axon.compiler.ir_nodes import (
     IRHeal,
     IRComponent,
     IRView,
+    # Fase 23 — algebraic effects IR (paper §1-§6, D6 Rust runtime)
+    IRAbort,
+    IREffectDeclaration,
+    IREffectOperation,
+    IRForward,
+    IRHandlerClause,
+    IRHandlerFrame,
+    IRPerform,
+    IRResume,
 )
 
 
@@ -202,6 +211,22 @@ class IRGenerator:
         self._views: dict[str, IRView] = {}
         # Mobile Typed Channels (λ-L-E) — Fase 13
         self._channels: dict[str, IRChannel] = {}
+        # Fase 23 — algebraic effect declarations (paper §1-§6, D6 Rust)
+        self._effects: dict[str, IREffectDeclaration] = {}
+        # Fase 23 — CPS lowering state. Counters reset per-flow so each
+        # flow gets a fresh `(state_id, frame_id)` namespace; the Rust
+        # runtime keys dispatch tables by `(flow_name, state_id)`.
+        # `_handler_stack` carries the active enclosing handler frames'
+        # IDs while a flow body is being lowered, so `resume`/`abort`/
+        # `forward` nodes can record the correct `frame_id` of their
+        # immediate enclosing handler.
+        self._cps_state_counter: int = 0
+        self._cps_frame_counter: int = 0
+        self._handler_stack: list[int] = []  # frame_ids of enclosing handlers
+        # Per-flow accumulator: state_ids assigned to perform sites that
+        # belong to the currently-being-lowered handler frame's body.
+        # Pushed when entering a handle's body, popped on exit.
+        self._frame_body_states_stack: list[list[int]] = []
 
         # EMS: Module registry for cross-file symbol resolution
         self._registry = module_registry
@@ -278,6 +303,7 @@ class IRGenerator:
             components=tuple(self._components.values()),
             views=tuple(self._views.values()),
             channels=tuple(self._channels.values()),
+            effects=tuple(self._effects.values()),
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -387,6 +413,13 @@ class IRGenerator:
         ast.EmitStatement: "_visit_emit",
         ast.PublishStatement: "_visit_publish",
         ast.DiscoverStatement: "_visit_discover",
+        # Fase 23 — algebraic effects (paper §1-§6, D6 Rust runtime)
+        ast.EffectDeclaration: "_visit_effect_declaration",
+        ast.PerformExpression: "_visit_perform",
+        ast.HandleExpression: "_visit_handle",
+        ast.ResumeStatement: "_visit_resume",
+        ast.AbortStatement: "_visit_abort",
+        ast.ForwardExpression: "_visit_forward",
     }
 
     def _visit(self, node: ast.ASTNode) -> IRNode:
@@ -662,6 +695,15 @@ class IRGenerator:
             for p in node.parameters
         )
 
+        # Fase 23 — reset CPS counters per flow. State IDs and frame
+        # IDs are scoped to the flow (Rust runtime keys dispatch tables
+        # by `(flow_name, state_id)`, so they need a fresh namespace
+        # per flow to avoid collisions across the program).
+        self._cps_state_counter = 0
+        self._cps_frame_counter = 0
+        self._handler_stack.clear()
+        self._frame_body_states_stack.clear()
+
         # Compile flow body (steps, probes, reasons, etc.)
         raw_steps = tuple(self._visit(child) for child in node.body)
 
@@ -835,6 +877,220 @@ class IRGenerator:
             navigate_ref=node.navigate_ref,
             apply_ref=node.apply_ref,
             body=tuple(self._visit(child) for child in node.body),
+        )
+
+    # ════════════════════════════════════════════════════════════════
+    #  ALGEBRAIC EFFECTS — Fase 23 IR lowering (CPS state assignment)
+    #
+    #  The lowering pass assigns:
+    #    • each `perform`/`forward` site a unique `state_id` (FSM state
+    #      the runtime jumps to on resumption)
+    #    • each `handle` block a unique `frame_id` (handler-stack ptr)
+    #
+    #  State IDs and frame IDs are scoped per-flow (counters reset at
+    #  flow entry — see `_visit_flow`). The Rust runtime treats
+    #  `(flow_name, state_id)` as the canonical FSM coordinate and
+    #  uses `frame_id` to look up the matching IRHandlerFrame at
+    #  runtime dispatch.
+    #
+    #  `_handler_stack` carries the *active* enclosing handler frame
+    #  IDs while a body is being lowered, so resume/abort/forward
+    #  nodes can record their frame_id without re-walking the AST.
+    # ════════════════════════════════════════════════════════════════
+
+    def _next_state_id(self) -> int:
+        """Allocate the next FSM state ID for the current flow."""
+        sid = self._cps_state_counter
+        self._cps_state_counter += 1
+        return sid
+
+    def _next_frame_id(self) -> int:
+        """Allocate the next handler-frame ID for the current flow."""
+        fid = self._cps_frame_counter
+        self._cps_frame_counter += 1
+        return fid
+
+    def _visit_effect_declaration(
+        self, node: ast.EffectDeclaration,
+    ) -> IREffectDeclaration:
+        """Lower an effect declaration to its IR form.
+
+        Operations preserve their type parameters (D1) so the Rust
+        runtime can monomorphise dispatch at perform-site. Parameter
+        and return types are lowered to plain strings (no nested IR).
+        """
+        ops = tuple(
+            self._visit_effect_operation(op) for op in node.operations
+        )
+        ir_eff = IREffectDeclaration(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            operations=ops,
+        )
+        self._effects[node.name] = ir_eff
+        return ir_eff
+
+    def _visit_effect_operation(
+        self, node: ast.EffectOperation,
+    ) -> IREffectOperation:
+        param_names = tuple(p.name for p in node.parameters)
+        param_types = tuple(
+            (p.type_expr.name if p.type_expr else "") for p in node.parameters
+        )
+        return_type = node.return_type.name if node.return_type else ""
+        return IREffectOperation(
+            source_line=node.line,
+            source_column=node.column,
+            name=node.name,
+            type_parameters=tuple(node.type_parameters),
+            parameter_names=param_names,
+            parameter_types=param_types,
+            return_type=return_type,
+        )
+
+    def _visit_perform(self, node: ast.PerformExpression) -> IRPerform:
+        """Lower `perform Effect.Op(args)` and assign a CPS state ID.
+
+        If we are currently inside a handler frame's body, also record
+        this state in the frame's body_states accumulator so the Rust
+        runtime knows which states belong to which frame.
+        """
+        sid = self._next_state_id()
+        if self._frame_body_states_stack:
+            self._frame_body_states_stack[-1].append(sid)
+        return IRPerform(
+            source_line=node.line,
+            source_column=node.column,
+            effect_name=node.effect_name,
+            operation_name=node.operation_name,
+            arguments=tuple(node.arguments),
+            state_id=sid,
+            resume_label=f"resume_{node.effect_name}_{node.operation_name}_{sid}",
+        )
+
+    def _visit_handle(self, node: ast.HandleExpression) -> IRHandlerFrame:
+        """Lower `handle E1, E2 { clauses } in { body }` to IRHandlerFrame.
+
+        Allocation order matters for the runtime:
+          1. Allocate the frame_id BEFORE walking the body, so
+             nested resume/abort/forward inside clause bodies can
+             reference *this* frame.
+          2. Push the frame_id onto `_handler_stack` so clause bodies
+             see it as their enclosing frame.
+          3. Lower the `in { body }` block first (its perform sites
+             belong to this frame), accumulating their state_ids.
+          4. Lower each clause body (its resume/abort target this frame).
+          5. Pop the frame off the stack.
+        """
+        frame_id = self._next_frame_id()
+        self._handler_stack.append(frame_id)
+        # Track which states the body emits so the runtime can index.
+        self._frame_body_states_stack.append([])
+        try:
+            body_ir = tuple(self._visit(child) for child in node.body)
+            body_states = tuple(self._frame_body_states_stack[-1])
+            # Lower clauses inside the same frame context — clause
+            # bodies' resume/abort/forward record this frame_id.
+            clauses_ir = tuple(
+                self._visit_handler_clause(c) for c in node.clauses
+            )
+        finally:
+            self._frame_body_states_stack.pop()
+            self._handler_stack.pop()
+        return IRHandlerFrame(
+            source_line=node.line,
+            source_column=node.column,
+            effect_names=tuple(node.effect_names),
+            clauses=clauses_ir,
+            body=body_ir,
+            frame_id=frame_id,
+            body_states=body_states,
+        )
+
+    def _visit_handler_clause(self, node: ast.HandlerClause) -> IRHandlerClause:
+        """Lower one handler clause inside an IRHandlerFrame.
+
+        Clause body inherits the frame_id from the enclosing handle's
+        push onto `_handler_stack` (already in scope). Perform sites
+        inside the clause body get their own state_ids but do NOT
+        register in the body_states accumulator — they belong to
+        whichever inner handler discharges them, not this clause's
+        outer body.
+        """
+        # Clause bodies don't contribute to the outer frame's
+        # body_states (those are reserved for the `in { body }` block).
+        # Inner perform sites still get state_ids; they belong to a
+        # nested handler if one exists, else surface as exhaustiveness
+        # errors caught by 23.c. We mute the body_states accumulator
+        # while walking the clause body to avoid leakage.
+        self._frame_body_states_stack.append([])
+        try:
+            body_ir = tuple(self._visit(child) for child in node.body)
+        finally:
+            self._frame_body_states_stack.pop()
+        return IRHandlerClause(
+            source_line=node.line,
+            source_column=node.column,
+            operation_name=node.operation_name,
+            parameter_names=tuple(p.name for p in node.parameters),
+            body=body_ir,
+        )
+
+    def _visit_resume(self, node: ast.ResumeStatement) -> IRResume:
+        """Lower `resume(value)` and link to its enclosing handler frame.
+
+        The frame_id is the topmost entry on `_handler_stack`. The
+        typechecker (23.c) already verified that `resume` only
+        appears inside a handler clause body, so the stack is
+        guaranteed non-empty here at well-typed programs. For
+        defensive lowering we tolerate frame_id=0 if the stack is
+        empty (the program is malformed but the IR generator should
+        not crash on it).
+        """
+        frame_id = self._handler_stack[-1] if self._handler_stack else 0
+        return IRResume(
+            source_line=node.line,
+            source_column=node.column,
+            value_expr=node.value_expr,
+            frame_id=frame_id,
+        )
+
+    def _visit_abort(self, node: ast.AbortStatement) -> IRAbort:
+        """Lower `abort(value)` and link to its enclosing handler frame."""
+        frame_id = self._handler_stack[-1] if self._handler_stack else 0
+        return IRAbort(
+            source_line=node.line,
+            source_column=node.column,
+            value_expr=node.value_expr,
+            frame_id=frame_id,
+        )
+
+    def _visit_forward(self, node: ast.ForwardExpression) -> IRForward:
+        """Lower `forward Effect.Op(args)` (D12) — propagates to outer frame.
+
+        Records:
+          • `source_frame_id` — the frame this forward escapes (the
+            innermost handler whose clause body contains it).
+          • `state_id` — a fresh FSM state for the resumption point
+            after the outer handler resumes.
+          • `resume_label` — codegen jump target.
+
+        D12 + D2: the runtime threads the captured continuation
+        through the outer handler so the *original* perform site
+        ultimately resumes — the inner `forward` is transparent.
+        """
+        source_fid = self._handler_stack[-1] if self._handler_stack else 0
+        sid = self._next_state_id()
+        return IRForward(
+            source_line=node.line,
+            source_column=node.column,
+            effect_name=node.effect_name,
+            operation_name=node.operation_name,
+            arguments=tuple(node.arguments),
+            source_frame_id=source_fid,
+            state_id=sid,
+            resume_label=f"forward_{node.effect_name}_{node.operation_name}_{sid}",
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -1062,25 +1318,51 @@ class IRGenerator:
     #  STREAM VISITOR (CT-1)
     # ═══════════════════════════════════════════════════════════════
 
+    # Fase 23.g — synthetic effect name + clause names for the stream
+    # desugar. These are the well-known builtin operations that the
+    # Rust algebraic-effects runtime uses to implement `stream<τ>`
+    # under the hood. The leading underscore signals "compiler-
+    # synthesised, not adopter-declared" by convention.
+    _STREAM_BUILTIN_EFFECT: str = "_StreamBuiltin"
+    _STREAM_CHUNK_OP: str = "Chunk"
+    _STREAM_COMPLETE_OP: str = "Complete"
+
     def _visit_stream_definition(self, node: ast.StreamDefinition) -> IRStreamSpec:
-        """Compile StreamDefinition → IRStreamSpec.
+        """Compile StreamDefinition → IRStreamSpec (with 23.g desugar).
 
         Maps the AST stream declaration to its IR form with:
         - element_type: the generic type parameter (e.g. Document)
         - initial_gradient: always starts at 'doubt' per CT-1 monotonicity
         - on_chunk_body / on_complete_body: compiled handler steps
+        - desugared_handler (Fase 23.g): the algebraic-effects equivalent
+          (`handle _StreamBuiltin<T> { Chunk -> { ...; resume }
+          Complete -> { ...; abort } } in {}`) for consumption by the
+          Rust runtime's effects FSM. Backward compat 100% — the legacy
+          stream_spec shape remains for existing IR consumers.
         """
         on_chunk_body: tuple[IRNode, ...] = ()
         on_complete_body: tuple[IRNode, ...] = ()
 
-        if node.on_chunk:
+        # Pre-Fase-23 the parser sets `node.on_chunk` / `node.on_complete`
+        # via dynamic attribute assignment (they are not declared in the
+        # StreamDefinition dataclass); a bare `stream<T>` therefore has
+        # neither attribute. Use `getattr` defensively so the desugar
+        # works for both body-less and body-full streams.
+        on_chunk_handler = getattr(node, "on_chunk", None)
+        on_complete_handler = getattr(node, "on_complete", None)
+
+        if on_chunk_handler:
             on_chunk_body = tuple(
-                self._visit(child) for child in node.on_chunk.body
+                self._visit(child) for child in on_chunk_handler.body
             )
-        if node.on_complete:
+        if on_complete_handler:
             on_complete_body = tuple(
-                self._visit(child) for child in node.on_complete.body
+                self._visit(child) for child in on_complete_handler.body
             )
+
+        desugared = self._desugar_stream_to_handler(
+            node, on_chunk_body, on_complete_body,
+        )
 
         return IRStreamSpec(
             source_line=node.line,
@@ -1089,6 +1371,68 @@ class IRGenerator:
             initial_gradient="doubt",  # CT-1: streams start at ⊥
             on_chunk_body=on_chunk_body,
             on_complete_body=on_complete_body,
+            desugared_handler=desugared,
+        )
+
+    def _desugar_stream_to_handler(
+        self,
+        node: ast.StreamDefinition,
+        on_chunk_body: tuple[IRNode, ...],
+        on_complete_body: tuple[IRNode, ...],
+    ) -> 'IRHandlerFrame':
+        """Synthesise `handle _StreamBuiltin<T> { ... } in { }` for a
+        StreamDefinition (Fase 23.g — the algebraic-effects desugar).
+
+        Allocates a fresh `frame_id` from the current flow's CPS state
+        space. Each clause's resume/abort gets that frame_id so the
+        Rust runtime dispatches them correctly back to the synthetic
+        handler frame. The `in { body }` block is empty — a stream is
+        a *passive consumer*; its perform sites are driven externally
+        by the host (the network layer feeding chunks), not by inline
+        program code.
+        """
+        # The synthetic handler frame ID + the (empty) body_states
+        # slice live in the same per-flow namespace as user-written
+        # handlers. This guarantees that the Rust runtime treats
+        # synthetic and user-written frames uniformly.
+        frame_id = self._next_frame_id()
+
+        chunk_clause = IRHandlerClause(
+            source_line=node.line,
+            source_column=node.column,
+            operation_name=self._STREAM_CHUNK_OP,
+            parameter_names=("chunk",),
+            body=on_chunk_body + (
+                IRResume(
+                    source_line=node.line,
+                    source_column=node.column,
+                    value_expr="",       # resume(unit)
+                    frame_id=frame_id,
+                ),
+            ),
+        )
+        complete_clause = IRHandlerClause(
+            source_line=node.line,
+            source_column=node.column,
+            operation_name=self._STREAM_COMPLETE_OP,
+            parameter_names=("response",),
+            body=on_complete_body + (
+                IRAbort(
+                    source_line=node.line,
+                    source_column=node.column,
+                    value_expr="",       # abort(unit) — terminate stream
+                    frame_id=frame_id,
+                ),
+            ),
+        )
+        return IRHandlerFrame(
+            source_line=node.line,
+            source_column=node.column,
+            effect_names=(self._STREAM_BUILTIN_EFFECT,),
+            clauses=(chunk_clause, complete_clause),
+            body=(),               # no inline perform — host drives
+            frame_id=frame_id,
+            body_states=(),
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -1621,6 +1965,12 @@ class IRGenerator:
         self._reflexes.clear()
         self._heals.clear()
         self._channels.clear()
+        # Fase 23 — algebraic effect declarations + CPS state.
+        self._effects.clear()
+        self._cps_state_counter = 0
+        self._cps_frame_counter = 0
+        self._handler_stack.clear()
+        self._frame_body_states_stack.clear()
 
     # ═════════════════════════════════════════════════════════════════
     #  PIX VISITORS — Structured Cognitive Retrieval
