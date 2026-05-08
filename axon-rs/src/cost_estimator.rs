@@ -532,6 +532,7 @@ mod tests {
             components: vec![],
             views: vec![],
             channels: vec![],
+            effects: vec![],
         };
 
         let pricing = PricingModel::default_sonnet();
@@ -597,6 +598,7 @@ mod tests {
             components: vec![],
             views: vec![],
             channels: vec![],
+            effects: vec![],
         };
 
         let pricing = PricingModel::default_sonnet();
@@ -664,6 +666,7 @@ mod tests {
             components: vec![],
             views: vec![],
             channels: vec![],
+            effects: vec![],
         };
 
         let pricing = PricingModel::default_sonnet();
