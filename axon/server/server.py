@@ -473,16 +473,68 @@ class AxonServer:
         Returns:
             (CompiledProgram, list of daemon names, list of endpoint specs)
         """
+        from dataclasses import replace
         from axon.compiler.lexer import Lexer
         from axon.compiler.parser import Parser
         from axon.compiler.type_checker import TypeChecker
         from axon.compiler.ir_generator import IRGenerator
+        from axon.compiler.ir_nodes import IRRun
         from axon.backends import get_backend
 
         tokens = Lexer(source).tokenize()
         ast = Parser(tokens).parse()
         TypeChecker(ast).check()
         ir_program = IRGenerator().generate(ast)
+
+        # Fase 23.i — synthesize IRRuns for axonendpoint-referenced flows
+        # that are not already covered by an explicit `run` statement.
+        #
+        # Pre-Fase-23.i: `backend.compile_program(ir)` walks ONLY
+        # `ir.runs` to produce execution units. A program declaring an
+        # `axonendpoint X { execute: F }` without a corresponding
+        # `run F(...)` would deploy the endpoint metadata but the flow
+        # itself was never compiled into a CompiledExecutionUnit, so
+        # runtime dispatch of `POST /api/...` failed with
+        # `Flow 'F' not found in deployment 'deploy_<id>'`.
+        #
+        # Fix: for each axonendpoint, if its `execute_flow` is not the
+        # target of any explicit run, prepend a synthetic IRRun whose
+        # `resolved_flow` points to the corresponding IRFlow. The
+        # backend compile pipeline now produces the execution unit
+        # the dispatcher expects. Persona / context / anchors default
+        # to empty (the endpoint dispatch supplies its own).
+        explicit_runs = {r.flow_name for r in ir_program.runs}
+        flow_index = {f.name: f for f in ir_program.flows}
+        synthetic_runs: list[IRRun] = []
+        for endpoint in ir_program.endpoints:
+            target_flow = endpoint.execute_flow
+            if not target_flow or target_flow in explicit_runs:
+                continue
+            resolved_flow = flow_index.get(target_flow)
+            if resolved_flow is None:
+                continue  # flow undeclared — let backend report the gap
+            synthetic_runs.append(IRRun(
+                source_line=endpoint.source_line,
+                source_column=endpoint.source_column,
+                flow_name=target_flow,
+                arguments=(),
+                persona_name="",
+                context_name="",
+                anchor_names=(),
+                on_failure="",
+                on_failure_params=(),
+                output_to="",
+                effort=endpoint.effort if hasattr(endpoint, "effort") else "",
+                resolved_flow=resolved_flow,
+                resolved_persona=None,
+                resolved_context=None,
+                resolved_anchors=(),
+            ))
+        if synthetic_runs:
+            ir_program = replace(
+                ir_program,
+                runs=ir_program.runs + tuple(synthetic_runs),
+            )
 
         backend = get_backend(backend_name)
         compiled = backend.compile_program(ir_program)
