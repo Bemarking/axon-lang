@@ -223,12 +223,107 @@ class RefineExhaustedError(AxonRuntimeError):
 class ModelCallError(AxonRuntimeError):
     """The LLM API call itself failed.
 
-    Covers network errors, rate limits, malformed responses,
-    and any other failure at the model communication layer.
+    Covers network errors, malformed responses, and any other
+    failure at the model communication layer that does NOT match
+    one of the specialised subclasses below. v1.16.1 introduced
+    five typed subclasses (``RateLimitError``, ``AuthError``,
+    ``ContextLengthError``, ``SafetyBreachError``,
+    ``ModelNotFoundError``) so callers can ``except`` the specific
+    failure mode without parsing exception messages.
 
     Example:
-        Anthropic API returned HTTP 429 (rate limited)
-        during step ``analyze_contract``.
+        Anthropic API returned HTTP 503 (transient server error)
+        after retries exhausted during step ``analyze_contract``.
+    """
+
+    level: int = 5
+
+
+class RateLimitError(ModelCallError):
+    """Provider rate limit hit; retries exhausted or unavailable.
+
+    HTTP 429. The transport layer attempts exponential backoff (with
+    ``Retry-After`` honoured when present); when the budget is
+    exhausted, this fires. Caller can implement higher-level
+    backpressure (e.g., switch backends via ``MetaBackend`` fallback)
+    or surface to the adopter for capacity planning.
+
+    Example:
+        ``moonshot-v1-32k`` returned 429 three times in a row with
+        ``Retry-After: 60``; total wait would exceed the step's
+        ``timeout``, so the call gives up.
+    """
+
+    level: int = 5
+
+
+class AuthError(ModelCallError):
+    """Provider rejected the request as unauthenticated.
+
+    HTTP 401 (key missing/invalid) or 403 (key valid but lacks the
+    requested capability — e.g., free-tier OpenRouter trying to
+    reach a paid model). Fail-fast: never retried, since the
+    request will keep failing identically. Diagnostic message
+    includes provider name + key env var to help the operator.
+
+    Example:
+        ``AXON_KIMI_API_KEY`` set to a Moonshot key that was
+        revoked; first request returns 401.
+    """
+
+    level: int = 5
+
+
+class ContextLengthError(ModelCallError):
+    """Compiled prompt exceeds the model's context window.
+
+    HTTP 400 with provider-specific shape — ``error.code ==
+    'context_length_exceeded'`` (OpenAI), ``error.type ==
+    'invalid_request_error'`` mentioning context (Anthropic), etc.
+    Surfaces to the caller so the executor can decide between
+    truncation, summarisation, or escalation to a longer-context
+    model.
+
+    Example:
+        Step accumulated 16k tokens of step results; calling
+        ``moonshot-v1-8k`` (8k limit) returns 400.
+    """
+
+    level: int = 5
+
+
+class SafetyBreachError(ModelCallError):
+    """Provider's content filter blocked the request or response.
+
+    Distinct from ``ShieldBreachError`` (axon's own scanner) —
+    this is the *provider's* policy fence. Anthropic's
+    ``stop_reason: "end_turn"`` with empty content, OpenAI's
+    ``finish_reason: "content_filter"``, Gemini's ``candidates[0]
+    .finishReason: "SAFETY"`` all map here. Adopters in regulated
+    domains use this signal for audit trails.
+
+    Example:
+        OpenAI gpt-4o returned a response with
+        ``finish_reason: "content_filter"`` and empty content
+        for a healthcare flow.
+    """
+
+    level: int = 5
+
+
+class ModelNotFoundError(ModelCallError):
+    """Provider does not recognise the requested model identifier.
+
+    HTTP 404 or 400 with ``error.code == 'model_not_found'``.
+    Typical causes: typo in ``model_name``, deprecated model that
+    the provider retired, or trying a paid model on a tier that
+    doesn't grant access. The message includes the rejected slug
+    so the operator can correct it.
+
+    Example:
+        Adopter pinned ``model_name = "gpt-4-32k-0314"`` (retired
+        2024) in production config; first request after that
+        provider's deprecation date returns 404.
     """
 
     level: int = 5
