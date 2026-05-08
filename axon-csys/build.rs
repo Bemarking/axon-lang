@@ -77,11 +77,25 @@ fn main() {
 
     // ─── Sources ───────────────────────────────────────────────────────────
     //
-    // 25.b ships ONE source: the build-infra probe. Subsequent sub-fases
-    // append their files here as they ship.
+    // 25.b: build-infra probe.
+    // 25.c: G.711 μ-law transcoders + linear PCM16 resampler.
+    //       OTS native morphisms — port of axon-rs/src/ots/native/{mulaw,
+    //       resample}.rs preserving the categorical structure documented
+    //       in docs/ontological_tool_synthesis.md.
     build.file(c_src.join("probe").join("probe.c"));
+    build.file(c_src.join("audio").join("mulaw.c"));
+    build.file(c_src.join("audio").join("resample.c"));
 
     build.compile("axon_csys");
+
+    // ─── Math library link (resample.c uses floor / round) ────────────────
+    //
+    // Modern glibc inlines libm functions into libc.so but musl, BSD, and
+    // older glibcs require explicit `-lm`. macOS libSystem covers it; MSVC
+    // bundles math into the CRT. Link explicitly on Unix to be portable.
+    if !cfg!(target_env = "msvc") && !cfg!(target_os = "macos") {
+        println!("cargo:rustc-link-lib=m");
+    }
 
     // ─── Re-build triggers ─────────────────────────────────────────────────
     println!("cargo:rerun-if-changed=c-src");
