@@ -11,10 +11,14 @@ import json
 import logging
 import os
 import random
+import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from axon.runtime.executor import ModelResponse
+
+
+_logger = logging.getLogger(__name__)
 
 
 TransportFn = Callable[[str, dict[str, str], dict[str, Any], float], Awaitable[dict[str, Any]]]
@@ -36,6 +40,130 @@ _BACKOFF_JITTER_SECONDS = 0.5
 _SAFETY_FINISH_REASONS: frozenset[str] = frozenset(
     {"content_filter", "safety", "blocked", "recitation"}
 )
+
+# v1.16.2 — Sampling parameters that the OpenAI Chat Completions
+# request body MAY carry. Listed here so the AST drift gate has a
+# single source of truth: any future code that adds one of these
+# fields to a request body MUST route through the locked-model
+# omission machinery (``_omit_for_locked_model`` below) or trip the
+# gate. Adding a literal-valued field for any of these in
+# ``_build_request`` would re-create the v1.16.2 bug class for the
+# next reasoning-model release.
+_SAMPLING_PARAMETER_NAMES: frozenset[str] = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "top_k",
+        "n",
+        "presence_penalty",
+        "frequency_penalty",
+        "logit_bias",
+        "logprobs",
+    }
+)
+
+# v1.16.2 — Reasoning models that lock body parameters to a single
+# fixed value, rejecting any other value with HTTP 400. Mapping:
+# regex pattern over ``model_name`` → frozenset of parameter names
+# the model rejects when sent.
+#
+# Sources:
+#   - Moonshot Kimi K2.6 / K2.5: https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart
+#     "temperature: k2.6/k2.5 model will use a fixed value 1.0
+#      (thinking) or 0.6 (non-thinking). Any other value will result
+#      in an error. top_p: fixed 0.95. n: fixed 1.
+#      presence_penalty / frequency_penalty: fixed 0.0."
+#   - OpenAI o1 / o3 family: https://platform.openai.com/docs/guides/reasoning
+#     "Most chat completion parameters are not supported. Only the
+#      defaults are used." (temperature, top_p, presence_penalty,
+#      frequency_penalty, logprobs, logit_bias all rejected.)
+#
+# When ``_build_request`` resolves a model name against these
+# patterns, the listed parameters are *omitted from the body* so
+# the provider applies its required default. Adopters who
+# explicitly set such a parameter on a locked model see a single
+# WARNING log line per process (de-duplicated) noting the override
+# was ignored — no exception, since omission is the correct
+# behaviour and surfacing it as an error would block production
+# adoption of every new reasoning model.
+_LOCKED_PARAMETER_MODELS: dict[str, frozenset[str]] = {
+    # Moonshot Kimi K2.x reasoning family.
+    r"^kimi-k2\.": frozenset(
+        {
+            "temperature",
+            "top_p",
+            "top_k",
+            "n",
+            "presence_penalty",
+            "frequency_penalty",
+        }
+    ),
+    # OpenAI o1 family (o1, o1-mini, o1-preview).
+    r"^o1": frozenset(
+        {
+            "temperature",
+            "top_p",
+            "presence_penalty",
+            "frequency_penalty",
+            "logprobs",
+            "logit_bias",
+        }
+    ),
+    # OpenAI o3 family (o3, o3-mini, o3-pro).
+    r"^o3": frozenset(
+        {
+            "temperature",
+            "top_p",
+            "presence_penalty",
+            "frequency_penalty",
+            "logprobs",
+            "logit_bias",
+        }
+    ),
+}
+
+# Compiled at module import — regex evaluation in the hot request
+# path stays cheap.
+_LOCKED_PARAMETER_PATTERNS: tuple[tuple[re.Pattern[str], frozenset[str]], ...] = tuple(
+    (re.compile(pattern), params)
+    for pattern, params in _LOCKED_PARAMETER_MODELS.items()
+)
+
+
+def _locked_params_for_model(model_name: str) -> frozenset[str]:
+    """Return the set of body-parameter names the model rejects.
+
+    Empty frozenset for models without known restrictions —
+    callers can include any sampling parameter freely.
+    """
+    if not model_name:
+        return frozenset()
+    locked: set[str] = set()
+    for pattern, params in _LOCKED_PARAMETER_PATTERNS:
+        if pattern.search(model_name):
+            locked.update(params)
+    return frozenset(locked)
+
+
+# Per-process dedup of the "adopter set X but model rejects it"
+# warning so a flow firing the same call 1000× doesn't spam the
+# logger with 1000 identical lines.
+_WARNED_LOCKED_OVERRIDES: set[tuple[str, str]] = set()
+
+
+def _warn_locked_override_once(model_name: str, parameter: str) -> None:
+    key = (model_name, parameter)
+    if key in _WARNED_LOCKED_OVERRIDES:
+        return
+    _WARNED_LOCKED_OVERRIDES.add(key)
+    _logger.warning(
+        "Model %r locks parameter %r to a fixed provider-side default; "
+        "adopter override is being ignored to avoid a 400 error from "
+        "the provider. See _LOCKED_PARAMETER_MODELS in "
+        "axon.server.model_clients for the documented constraint.",
+        model_name,
+        parameter,
+    )
 
 
 @dataclass(frozen=True)
@@ -211,7 +339,20 @@ class HTTPProviderModelClient:
         max_response_chars: int,
         latency_seconds: float,
         transport: TransportFn | None = None,
+        temperature: float | None = 0.0,
     ) -> None:
+        """Construct a provider model client.
+
+        v1.16.2 — ``temperature`` is now configurable, defaulting to
+        ``0.0`` for backward compatibility (every existing OpenAI-
+        compatible call site emitted ``temperature: 0`` literal pre-
+        v1.16.2). Adopters can override per-deployment.
+
+        For models in ``_LOCKED_PARAMETER_MODELS`` (``kimi-k2.*``,
+        ``o1*``, ``o3*``, etc.) the parameter is omitted from the
+        request body regardless of this value, because those models
+        reject any value other than the provider's fixed default.
+        """
         self._provider = provider
         self._model_name = model_name
         self._api_key = api_key
@@ -221,6 +362,7 @@ class HTTPProviderModelClient:
         self._max_response_chars = max(256, int(max_response_chars))
         self._latency_seconds = max(0.0, float(latency_seconds))
         self._transport = transport or _httpx_transport
+        self._temperature = temperature
 
     @property
     def provider_name(self) -> str:
@@ -604,21 +746,57 @@ class HTTPProviderModelClient:
                 },
             )
 
+        # v1.16.2 — body parameters that the provider may reject with
+        # 400 if their model locks them to a fixed value (kimi-k2.x,
+        # o1*, o3*) are routed through ``_apply_sampling_params``,
+        # which omits the field when the model has it locked. Pre-
+        # v1.16.2 ``temperature: 0`` was hardcoded here; that broke
+        # adopters using ``kimi-k2.6`` (Moonshot rejects anything
+        # other than 1.0/0.6) the moment they shipped to production.
+        body: dict[str, Any] = {
+            "model": self._model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        self._apply_sampling_params(body)
         return (
             f"{self._base_url}/v1/chat/completions",
             {
                 "content-type": _JSON_CONTENT_TYPE,
                 "authorization": f"Bearer {self._api_key}",
             },
-            {
-                "model": self._model_name,
-                "temperature": 0,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            },
+            body,
         )
+
+    def _apply_sampling_params(self, body: dict[str, Any]) -> None:
+        """Conditionally inject sampling params into the request body.
+
+        Each parameter is included only when:
+          1. The adopter set it (non-None on this client instance).
+          2. The current model is NOT in ``_LOCKED_PARAMETER_MODELS``
+             for that parameter — otherwise sending ANY value would
+             trigger a 400 from the provider, regardless of the value
+             matching the lock or not.
+
+        v1.16.2 ships with only ``temperature`` plumbed, because that
+        was the historical hardcoded literal causing the kimi-k2.6
+        breakage. Sub-fase 22.h.1+ (per-provider feature parity) will
+        add ``top_p``, ``presence_penalty``, etc. as configurable
+        client-level parameters, each routed through this same helper
+        so the locked-model dispatch works uniformly. The AST drift
+        gate in tests/test_v1162_locked_model_sampling.py asserts no
+        future code adds a hardcoded literal to ``body`` for any
+        parameter in ``_SAMPLING_PARAMETER_NAMES``.
+        """
+        locked = _locked_params_for_model(self._model_name)
+
+        if self._temperature is not None:
+            if "temperature" in locked:
+                _warn_locked_override_once(self._model_name, "temperature")
+            else:
+                body["temperature"] = self._temperature
 
     def _extract_text(self, payload: dict[str, Any]) -> str:
         try:
@@ -712,6 +890,15 @@ def create_endpoint_model_client(
     base_url = (getattr(config, "endpoint_model_base_url", "") or spec.default_base_url).strip()
     timeout_seconds = float(getattr(config, "endpoint_model_timeout_seconds", 30.0))
 
+    # v1.16.2 — adopter-controlled temperature plumbed through
+    # AxonServerConfig. Default 0.0 preserves the pre-v1.16.2
+    # hardcoded literal so any deployment that worked yesterday
+    # works identically today; deployments using a locked model
+    # (kimi-k2.x, o1*, o3*) automatically get the parameter omitted
+    # from the body instead of the silent 400 they were hitting.
+    temperature_raw = getattr(config, "endpoint_model_temperature", 0.0)
+    temperature = float(temperature_raw) if temperature_raw is not None else None
+
     return HTTPProviderModelClient(
         provider=provider,
         model_name=model_name,
@@ -722,6 +909,7 @@ def create_endpoint_model_client(
         max_response_chars=max_response,
         latency_seconds=latency,
         transport=transport,
+        temperature=temperature,
     )
 
 
