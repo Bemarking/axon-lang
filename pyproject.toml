@@ -188,6 +188,16 @@ dev = [
     "build>=1.2",
     "pyinstaller>=6.13",
     "twine>=6.0",
+    # Property-based + fuzz testing — used by Fase 19 (Hibernate CPS,
+    # Drill/Trail PIX, Par ContextView, break/continue) and Fase 20
+    # (Production Shield Runtime adversarial fuzz). Without this, the
+    # following test modules fail to collect (since v1.16.0):
+    #   tests/test_fase19_fuzz_nesting.py
+    #   tests/test_fase19_property_tests.py
+    #   tests/test_fase20_property_and_fuzz.py
+    # Pinned to >=6 because Fase 20.j uses HealthCheck.suppress_health_check
+    # which landed in 6.x.
+    "hypothesis>=6.0",
     # Coordinated cross-stack version bumping. See [tool.bumpversion] block
     # below + .github/workflows/coordinated-release.yml — invoked as
     # `bump-my-version bump {patch|minor|major}` to atomically update

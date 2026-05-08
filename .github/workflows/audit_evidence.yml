@@ -28,7 +28,20 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  # `contents: write` is required by the "Attach evidence ZIP to GitHub
+  # Release" step (line ~163, softprops/action-gh-release@v2): to upload
+  # `evidence.zip` + `EVIDENCE_SHA256.txt` as release assets the action
+  # calls the `update-a-release` REST endpoint, which fails with HTTP
+  # 403 "Resource not accessible by integration" under the default
+  # `contents: read` token scope.
+  #
+  # Pre-Fase-23.i this scope was left at `read`, so every tag push since
+  # v1.16.0 saw the Audit Evidence workflow fail at the attach step. The
+  # actual evidence bundle still uploaded successfully as a workflow
+  # artifact (see `actions/upload-artifact@v4` step above), but external
+  # auditors expecting the bundle on the release page got an empty asset
+  # list. Fixed in Fase 23.i.
+  contents: write
   # Required only if you emit a signed attestation to GitHub Releases:
   # id-token: write
   # attestations: write
