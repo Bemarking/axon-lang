@@ -582,5 +582,7 @@
       ],
       "route": "/clinician"
     }
-  ]
+  ],
+  "channels": [],
+  "effects": []
 }
