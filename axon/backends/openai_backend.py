@@ -1,85 +1,39 @@
-"""
-AXON Backends — OpenAI Backend (Stub)
-=======================================
-Placeholder for the OpenAI/ChatGPT prompt compiler.
+"""AXON Backends — OpenAI (ChatGPT / GPT-4 / o1) Backend.
 
-This backend will compile AXON IR into structures compatible with
-the OpenAI Chat Completions API:
-  - system/user/assistant message roles
-  - function_call / tool_call declarations
-  - JSON mode for structured output
+Compiles AXON IR into prompt structures for OpenAI's Chat Completions
+API (``https://api.openai.com/v1``). Supports the full GPT-4o / GPT-4.1
+/ o1 / o3-mini family.
 
-Status: NOT YET IMPLEMENTED — scheduled for Phase 2 expansion.
+Pre-v1.16.0 this module was an 85-LOC stub raising ``NotImplementedError``
+on every call — it advertised support in ``BACKEND_REGISTRY`` but
+crashed at runtime. v1.16.0 promotes it to a real implementation
+inheriting :class:`OpenAICompatibleBackend` (which is itself modeled on
+this exact API shape — OpenAI is the canonical reference).
+
+Strengths:
+  - Mature function calling + parallel tool use
+  - Native JSON mode + structured outputs (schema-validated)
+  - Reasoning models (o1, o3-mini) for chain-of-thought workloads
+  - Largest ecosystem of compatible tooling
+
+Auth: Bearer API key via ``AXON_OPENAI_API_KEY`` environment variable.
+Default base URL: ``https://api.openai.com/v1``.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
-from axon.compiler.ir_nodes import (
-    IRAnchor,
-    IRContext,
-    IRNode,
-    IRPersona,
-    IRToolSpec,
-)
-from axon.backends.base_backend import (
-    BaseBackend,
-    CompiledStep,
-    CompilationContext,
-)
+from axon.backends._openai_compatible import OpenAICompatibleBackend
 
 
-class OpenAIBackend(BaseBackend):
-    """
-    Stub implementation for the OpenAI backend.
+class OpenAIBackend(OpenAICompatibleBackend):
+    """OpenAI Chat Completions backend.
 
-    All methods raise NotImplementedError with guidance on
-    what Phase 2 expansion should implement.
+    Inherits all compilation logic from :class:`OpenAICompatibleBackend`
+    — that base class IS the OpenAI Chat Completions reference shape;
+    every other ``*-compatible`` provider differs only in transport
+    (URL + auth), not in compiled output.
     """
 
     @property
     def name(self) -> str:
         return "openai"
-
-    def compile_step(
-        self, step: IRNode, context: CompilationContext
-    ) -> CompiledStep:
-        raise NotImplementedError(
-            "OpenAI backend is not yet implemented. "
-            "Scheduled for Phase 2 expansion. "
-            "See: anthropic_backend.py for reference implementation."
-        )
-
-    def compile_system_prompt(
-        self,
-        persona: IRPersona | None,
-        context: IRContext | None,
-        anchors: list[IRAnchor],
-    ) -> str:
-        raise NotImplementedError(
-            "OpenAI system prompt compilation is not yet implemented. "
-            "Should produce OpenAI Chat Completions 'system' role content."
-        )
-
-    def compile_tool_spec(self, tool: IRToolSpec) -> dict[str, Any]:
-        raise NotImplementedError(
-            "OpenAI tool spec compilation is not yet implemented. "
-            "Should produce OpenAI function_call / tool_call format."
-        )
-
-    def compile_agent_system_prompt(
-        self,
-        agent_name: str,
-        goal: str,
-        strategy: str,
-        tools: list[str],
-        epistemic_state: str,
-        iteration: int,
-        max_iterations: int,
-    ) -> str:
-        raise NotImplementedError(
-            "OpenAI agent system prompt is not yet implemented. "
-            "Should produce BDI-cycle system instructions for GPT. "
-            "See: anthropic_backend.py for reference implementation."
-        )
