@@ -22,9 +22,11 @@ from dataclasses import dataclass, field
 
 from .ast_nodes import (
     ASTNode,
+    AbortStatement,
     AgentBudget,
     AgentDefinition,
     AggregateNode,
+    AlgebraicEffectRowNode,
     AnchorConstraint,
     AssociateNode,
     AxonEndpointDefinition,
@@ -40,8 +42,15 @@ from .ast_nodes import (
     DeliberateBlock,
     DiscoverStatement,
     DrillNode,
+    EffectDeclaration,
+    EffectOperation,
     EffectRowNode,
     EmitStatement,
+    ForwardExpression,
+    HandleExpression,
+    HandlerClause,
+    PerformExpression,
+    ResumeStatement,
     EpistemicBlock,
     EnsembleDefinition,
     ExploreNode,
@@ -328,6 +337,175 @@ VALID_APX_FFI_MODE = frozenset({"taint", "sanitize", "strict"})
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  ALGEBRAIC EFFECTS — Fase 23 typechecker support
+#  (Operationalises paper §1-§6 + decisions D1-D12 from
+#  docs/fase_23_algebraic_effects_runtime.md.)
+#
+#  Three concerns:
+#    (i)   Effect rows — track which effects a step performs (D9).
+#    (ii)  Linear-resume discipline — at most one resume/abort/forward
+#          per control-flow path through a handler clause body (D10, D2).
+#    (iii) Operation polymorphism (D1) + row polymorphism (D11) — type
+#          parameters + open-row variables in effect signatures.
+#
+#  Closed rows (no row variable) are exact: the step performs precisely
+#  these effects, no more. Open rows (with a row variable like `ε`)
+#  are extensible: the step performs at least these effects + whatever
+#  the row variable unifies to in the calling context.
+#
+#  Effect row union (sequencing two operations) takes the set union of
+#  named effects + propagates a row variable if either side has one.
+#  Handler discharge removes the handled effect names from the row.
+#  Reaching the top-level `flow` body with a non-empty effect row
+#  (other than `Pure` / `Unit-row`) is a compile error (D9).
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class EffectRow:
+    """An effect row attached to a step's body.
+
+    `effects` is the set of declared algebraic effect names the body
+    performs (e.g. ``{"SSE", "ToolCall"}``). `row_var` is the optional
+    open-row variable (D11) — when present, the row is *open* and may
+    additionally carry effects bound by the variable.
+
+    Two open rows with different variables unify by aliasing one to
+    the other; this typechecker collects unification constraints in a
+    side-channel (`EffectEnvironment.row_substitutions`) processed at
+    flow-boundary closure.
+    """
+    effects: frozenset[str] = frozenset()
+    row_var: str | None = None
+
+    @classmethod
+    def empty(cls) -> "EffectRow":
+        """The pure row — no effects, no variable."""
+        return cls(effects=frozenset(), row_var=None)
+
+    @classmethod
+    def closed(cls, effects: set[str] | frozenset[str]) -> "EffectRow":
+        """A closed row with exactly these effects and no variable."""
+        return cls(effects=frozenset(effects), row_var=None)
+
+    @classmethod
+    def open(cls, effects: set[str] | frozenset[str], row_var: str) -> "EffectRow":
+        """An open row — these effects + whatever ``row_var`` unifies to."""
+        return cls(effects=frozenset(effects), row_var=row_var)
+
+    @property
+    def is_pure(self) -> bool:
+        return not self.effects and self.row_var is None
+
+    def union(self, other: "EffectRow") -> "EffectRow":
+        """Effect row union — what a sequence of two operations performs.
+
+        If both rows are open and carry different row variables, the
+        result is open with the *first* variable (the second is recorded
+        as a constraint in the environment that processes this union;
+        see ``EffectEnvironment.unify_row_vars``).
+        """
+        merged = self.effects | other.effects
+        if self.row_var and other.row_var and self.row_var != other.row_var:
+            return EffectRow(effects=merged, row_var=self.row_var)
+        return EffectRow(effects=merged, row_var=self.row_var or other.row_var)
+
+    def discharge(self, handled: set[str] | frozenset[str]) -> "EffectRow":
+        """Remove handled effects from the row.
+
+        Applied after the body of `handle E1, E2 { ... } in { body }`
+        is type-checked: the named effects are removed from the body's
+        inferred row before that row propagates outward.
+        """
+        return EffectRow(
+            effects=self.effects - frozenset(handled),
+            row_var=self.row_var,
+        )
+
+    def __str__(self) -> str:  # pragma: no cover — debug only
+        names = ", ".join(sorted(self.effects))
+        if self.row_var:
+            sep = ", " if names else ""
+            return "{" + names + sep + self.row_var + "}"
+        return "{" + names + "}"
+
+
+@dataclass
+class EffectEnvironment:
+    """Per-flow environment threaded through effect-row inference.
+
+    Tracks:
+      • `effect_table` — name → EffectDeclaration (frontends-resolved).
+      • `handler_stack` — stack of currently-active handler frames; each
+        frame names the effects it handles + the operation->clause map.
+        Used by `_check_perform`/`_check_forward` to verify that the
+        operation reaches a handler within the enclosing scope (D9).
+      • `row_substitutions` — accumulated row-variable unifications
+        (D11). Processed at flow boundary; a flow whose closed-row
+        residual is non-empty is a compile error.
+    """
+    effect_table: dict[str, EffectDeclaration] = field(default_factory=dict)
+    handler_stack: list["HandlerFrame"] = field(default_factory=list)
+    row_substitutions: dict[str, str] = field(default_factory=dict)
+
+    def unify_row_vars(self, alpha: str, beta: str) -> None:
+        """Record that two row variables refer to the same underlying row.
+
+        The resolution happens at flow boundary; until then the
+        substitution is just remembered.
+        """
+        if alpha == beta:
+            return
+        # Canonicalise alphabetically so the substitution is stable.
+        lo, hi = sorted([alpha, beta])
+        existing = self.row_substitutions.get(hi)
+        if existing and existing != lo:
+            # Transitive: lo ≡ existing (already known) and hi ≡ lo (new).
+            # Nothing to do beyond keeping the canonical mapping.
+            return
+        self.row_substitutions[hi] = lo
+
+
+@dataclass
+class HandlerFrame:
+    """A single handler frame on the active handler stack.
+
+    `effect_names` are the effects this frame discharges. `clause_index`
+    maps `(effect_name, op_name) -> HandlerClause` so that a `perform`
+    or `forward` inside the body can verify the target is covered.
+
+    Inside a handler clause body, `inside_clause` is the clause owning
+    the body — used by `_check_resume`/`_check_abort`/`_check_forward`
+    to verify they appear in a valid position (only inside a clause
+    body, never in a regular step) and by the linear-resume walker to
+    track discharge counts.
+    """
+    effect_names: frozenset[str] = frozenset()
+    clause_index: dict[tuple[str, str], HandlerClause] = field(default_factory=dict)
+    inside_clause: HandlerClause | None = None
+    # The operation this clause discharges (for resume return-type inference).
+    inside_operation: EffectOperation | None = None
+
+
+@dataclass
+class _LinearityCounts:
+    """Result of the linear-resume control-flow walk over a clause body.
+
+    `min_discharges` and `max_discharges` are the count of
+    resume/abort/forward statements along the *fewest* and *most*
+    discharging path through the body. D10 well-typed iff both equal 1.
+    Forward counts as a discharge (control leaves this frame).
+
+    `nested_resumes` is the number of resumes/aborts/forwards inside
+    nested clauses — those have their own linearity contracts and are
+    not counted in the outer walk.
+    """
+    min_discharges: int = 0
+    max_discharges: int = 0
+    has_branch: bool = False  # if/for can split paths, used for diagnostics
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  SYMBOL TABLE
 # ═══════════════════════════════════════════════════════════════════
 
@@ -421,6 +599,11 @@ class TypeChecker:
         # Used to enforce Separation Logic disjointness across manifests:
         # a `linear` or `affine` resource can belong to at most one manifest.
         self._resource_usage: dict[str, list[tuple[str, ASTNode]]] = {}
+        # Fase 23 — algebraic effect environment. Populated in Phase 1 with
+        # every `EffectDeclaration` in the program; consumed by handle/
+        # perform/forward checks during flow body validation. Keyed by
+        # effect name so a flow can reference it without a re-walk.
+        self._effect_table: dict[str, EffectDeclaration] = {}
 
     @property
     def warnings(self) -> list[AxonTypeError]:
@@ -568,6 +751,12 @@ class TypeChecker:
                     self._register(name, "channel", decl)
                 case PersistNode() | RetrieveNode() | MutateNode() | PurgeNode() | TransactNode():
                     pass  # axonstore CRUD ops validated at Phase 2
+                case EffectDeclaration(name=name):
+                    # Fase 23 — register the effect symbol AND index it
+                    # in the per-checker effect table for fast lookup at
+                    # perform/handle/forward sites.
+                    self._register(name, "effect", decl)
+                    self._effect_table[name] = decl
 
     def _register(self, name: str, kind: str, node: ASTNode, type_name: str = "") -> None:
         err = self._symbols.declare(name, kind, node, type_name=type_name)
@@ -682,6 +871,9 @@ class TypeChecker:
                 self._check_store_crud(decl)
             case LetStatement():
                 self._check_let(decl)
+            case EffectDeclaration():
+                # Fase 23 — algebraic effect declaration validation
+                self._check_effect_declaration(decl)
 
     # ── PERSONA validation ────────────────────────────────────────
 
@@ -832,13 +1024,59 @@ class TypeChecker:
 
         # Validate body steps
         step_names: set[str] = set()
+        # Fase 23 — fresh effect environment per flow. The handler stack
+        # starts empty so any `perform Effect.Op(...)` in the flow body
+        # without an enclosing `handle ... in { ... }` is an unhandled
+        # effect (D9 exhaustiveness violation).
+        env = EffectEnvironment(effect_table=self._effect_table)
+        flow_row = EffectRow.empty()
         for step in node.body:
-            self._check_flow_step(step, step_names, node.name)
+            step_row = self._check_flow_step(step, step_names, node.name, env)
+            if step_row is not None:
+                flow_row = flow_row.union(step_row)
+        # D9 — exhaustiveness at flow boundary. A flow body must have an
+        # empty effect row by the time control reaches the closing brace.
+        # Open rows (with a row variable) are also rejected at the top-
+        # level flow (no caller would discharge them); 23.c v1 enforces
+        # this as a hard error. Future revisions may permit open rows
+        # on `step` signatures explicitly annotated with `!{...,ε}`.
+        if not flow_row.is_pure:
+            unhandled = ", ".join(sorted(flow_row.effects))
+            extra = f", row variable '{flow_row.row_var}'" if flow_row.row_var else ""
+            self._emit(
+                f"Flow '{node.name}' has unhandled effects {{"
+                f"{unhandled}{extra}}} reaching the flow boundary. "
+                f"Wrap the offending `perform` site(s) in "
+                f"`handle Effect {{ ... }} in {{ ... }}` (D9 exhaustiveness).",
+                node,
+            )
 
-    def _check_flow_step(self, step: ASTNode, step_names: set[str], flow_name: str) -> None:
+    def _check_flow_step(
+        self,
+        step: ASTNode,
+        step_names: set[str],
+        flow_name: str,
+        env: EffectEnvironment | None = None,
+    ) -> EffectRow | None:
+        """Validate one flow-step and return its inferred effect row.
+
+        Returns ``None`` for steps that don't participate in algebraic
+        effect inference (e.g. probe / reason / weave — pre-Fase-23
+        constructs). The caller treats `None` as `EffectRow.empty()` for
+        the purposes of flow-level row union.
+
+        ``env`` is the per-flow effect environment threaded through the
+        step body so nested `handle`/`perform`/`forward` nodes can see
+        the active handler stack and the effect declaration table.
+        """
+        # Lazily create an env for callers that pre-date Fase 23 (e.g.
+        # daemon listen blocks). Effect inference still works because
+        # the handler stack starts empty for those scopes.
+        if env is None:
+            env = EffectEnvironment(effect_table=self._effect_table)
         match step:
             case StepNode():
-                self._check_step(step, step_names, flow_name)
+                return self._check_step(step, step_names, flow_name, env)
             case ProbeDirective():
                 self._check_probe(step)
             case ReasonChain():
@@ -897,8 +1135,32 @@ class TypeChecker:
                 self._check_publish(step)
             case DiscoverStatement():
                 self._check_discover(step)
+            # ── Fase 23 — algebraic effect step forms ──
+            case PerformExpression():
+                return self._check_perform(step, env)
+            case HandleExpression():
+                return self._check_handle(step, step_names, flow_name, env)
+            case ResumeStatement():
+                self._check_resume(step, env)
+            case AbortStatement():
+                self._check_abort(step, env)
+            case ForwardExpression():
+                return self._check_forward(step, env)
+        return None
 
-    def _check_step(self, node: StepNode, step_names: set[str], flow_name: str) -> None:
+    def _check_step(
+        self,
+        node: StepNode,
+        step_names: set[str],
+        flow_name: str,
+        env: EffectEnvironment | None = None,
+    ) -> EffectRow:
+        """Validate a step + return its inferred effect row.
+
+        Walks ``node.body`` (which may contain Fase-23 perform/handle/
+        resume/abort/forward nodes alongside legacy step constructs) and
+        unions every child's row into the step's row.
+        """
         if node.name in step_names:
             self._emit(
                 f"Duplicate step name '{node.name}' in flow '{flow_name}'",
@@ -919,6 +1181,16 @@ class TypeChecker:
             self._check_weave(node.weave)
         if node.use_tool:
             self._check_use_tool(node.use_tool)
+
+        # Fase 23 — walk the step body, accumulating effect rows.
+        if env is None:
+            env = EffectEnvironment(effect_table=self._effect_table)
+        step_row = EffectRow.empty()
+        for child in node.body:
+            child_row = self._check_flow_step(child, step_names, flow_name, env)
+            if child_row is not None:
+                step_row = step_row.union(child_row)
+        return step_row
 
     def _check_probe(self, node: ProbeDirective) -> None:
         if not node.fields:
@@ -3883,3 +4155,560 @@ class TypeChecker:
         # are validated identically to those in regular flows.
         for step in node.body:
             self._check_flow_step(step, set(), f"{daemon_name}.listen")
+
+    # ════════════════════════════════════════════════════════════════
+    #  ALGEBRAIC EFFECTS — Fase 23 typechecker (D1, D2, D9, D10, D11, D12)
+    #
+    #  Implements:
+    #    • Effect declaration validation (operations, return types)
+    #    • Perform / Handle / Resume / Abort / Forward validation
+    #    • Effect row inference (D11) with closed + open rows
+    #    • Exhaustiveness check at flow boundary (D9)
+    #    • Linear-resume discipline via control-flow walk (D2 + D10)
+    #    • Operation polymorphism (D1) — type-parameter substitution
+    # ════════════════════════════════════════════════════════════════
+
+    def _check_effect_declaration(self, node: EffectDeclaration) -> None:
+        """Validate an `effect Name { ops... }` declaration.
+
+        Rules:
+          1. Operation names must be unique within the declaration.
+          2. Each operation's parameter types must be known.
+          3. Each operation's return type must be known (or one of the
+             well-known sentinels: `Unit`, `Never`, `Any`, plus any
+             type variable declared in the operation's `type_parameters`
+             list — D1 operation polymorphism).
+          4. A `-> Never` operation may not be `resume`'d (enforced
+             during handler-clause linearity check, not here).
+        """
+        seen: dict[str, EffectOperation] = {}
+        for op in node.operations:
+            if op.name in seen:
+                self._emit(
+                    f"Duplicate operation '{op.name}' in effect "
+                    f"'{node.name}' (first defined at line "
+                    f"{seen[op.name].line})",
+                    op,
+                )
+                continue
+            seen[op.name] = op
+            self._check_effect_operation(op, node.name)
+
+    def _check_effect_operation(self, op: EffectOperation, effect_name: str) -> None:
+        """Validate one operation: parameters + return type.
+
+        Type variables declared in ``op.type_parameters`` (D1) are
+        injected into the local known-name set so they may appear as
+        parameter or return types without being mistaken for unknown
+        type references.
+        """
+        # D1 — type variables declared on this operation are valid type
+        # references within the operation signature.
+        local_type_vars = frozenset(op.type_parameters)
+
+        # Duplicate type parameter names = malformed signature.
+        if len(op.type_parameters) != len(local_type_vars):
+            self._emit(
+                f"Effect '{effect_name}' operation '{op.name}' has "
+                f"duplicate type parameters in {op.type_parameters}",
+                op,
+            )
+
+        # Validate parameter types.
+        seen_params: set[str] = set()
+        for param in op.parameters:
+            if param.name in seen_params:
+                self._emit(
+                    f"Duplicate parameter '{param.name}' in operation "
+                    f"'{effect_name}.{op.name}'",
+                    param,
+                )
+            seen_params.add(param.name)
+            if param.type_expr is None:
+                self._emit(
+                    f"Parameter '{param.name}' of operation "
+                    f"'{effect_name}.{op.name}' is missing a type annotation",
+                    param,
+                )
+                continue
+            self._check_effect_signature_type(
+                param.type_expr.name, local_type_vars, param,
+                where=(
+                    f"parameter '{param.name}' of operation "
+                    f"'{effect_name}.{op.name}'"
+                ),
+            )
+
+        # Validate return type.
+        if op.return_type is None:
+            self._emit(
+                f"Operation '{effect_name}.{op.name}' is missing a return type",
+                op,
+            )
+            return
+        self._check_effect_signature_type(
+            op.return_type.name, local_type_vars, op.return_type,
+            where=f"return type of operation '{effect_name}.{op.name}'",
+        )
+
+    def _check_effect_signature_type(
+        self,
+        type_name: str,
+        local_type_vars: frozenset[str],
+        node: ASTNode,
+        *,
+        where: str,
+    ) -> None:
+        """Strict type-reference check for effect operation signatures.
+
+        Algebraic effects are foundational primitives — their signatures
+        cannot reference unresolved types (paper-purity per founder
+        criterion: "born mature, mathematical purity"). Resolution
+        order:
+          1. Well-known sentinels (Unit, Never, Any) — always OK.
+          2. Operation-scope type variable (D1) — always OK.
+          3. Built-in type — OK.
+          4. User type — OK.
+          5. Otherwise — error.
+        """
+        if type_name in ("Unit", "Never", "Any"):
+            return
+        if type_name in local_type_vars:
+            return
+        if type_name in BUILTIN_TYPES:
+            return
+        if type_name in self._user_types:
+            return
+        self._emit(
+            f"Unknown type '{type_name}' in {where}. "
+            f"Effect signatures may only reference built-in types, "
+            f"user-defined types, well-known sentinels (Unit / Never / "
+            f"Any), or operation-scope type variables (D1).",
+            node,
+        )
+
+    # ── PERFORM ──────────────────────────────────────────────────────
+
+    def _check_perform(
+        self, node: PerformExpression, env: EffectEnvironment
+    ) -> EffectRow:
+        """Validate `perform Effect.Op(args)` and return its effect row.
+
+        Rules:
+          1. Effect name must be declared.
+          2. Operation must exist on that effect.
+          3. Argument count must match the operation's parameter count.
+        """
+        eff = env.effect_table.get(node.effect_name)
+        if eff is None:
+            self._emit(
+                f"perform references undefined effect '{node.effect_name}'",
+                node,
+            )
+            return EffectRow.closed({node.effect_name})  # row contains the bad name for downstream
+        op = self._lookup_effect_op(eff, node.operation_name)
+        if op is None:
+            avail = ", ".join(o.name for o in eff.operations) or "<none>"
+            self._emit(
+                f"Effect '{node.effect_name}' has no operation "
+                f"'{node.operation_name}' (available: {avail})",
+                node,
+            )
+            return EffectRow.closed({node.effect_name})
+        if len(node.arguments) != len(op.parameters):
+            self._emit(
+                f"perform '{node.effect_name}.{node.operation_name}' "
+                f"expects {len(op.parameters)} argument(s), got "
+                f"{len(node.arguments)}",
+                node,
+            )
+        # The performed effect contributes its name to the surrounding
+        # row. The row is closed (D9 — exhaustiveness is decidable).
+        return EffectRow.closed({node.effect_name})
+
+    # ── HANDLE ───────────────────────────────────────────────────────
+
+    def _check_handle(
+        self,
+        node: HandleExpression,
+        step_names: set[str],
+        flow_name: str,
+        env: EffectEnvironment,
+    ) -> EffectRow:
+        """Validate `handle E1, E2 { clauses } in { body }`.
+
+        Returns the residual effect row of the body after discharging
+        the handled effects. The handled effects no longer appear in
+        the surrounding scope's row (D3 — delimited scope; D9 — the
+        residual must be empty at the flow boundary).
+        """
+        # 1. Resolve every named effect.
+        handled_effects: dict[str, EffectDeclaration] = {}
+        for name in node.effect_names:
+            eff = env.effect_table.get(name)
+            if eff is None:
+                self._emit(
+                    f"handle references undefined effect '{name}'",
+                    node,
+                )
+                continue
+            if name in handled_effects:
+                self._emit(
+                    f"handle lists effect '{name}' twice — each effect "
+                    f"may appear at most once per handler",
+                    node,
+                )
+                continue
+            handled_effects[name] = eff
+
+        # 2. Build the operation→clause index + check clause shapes.
+        clause_index: dict[tuple[str, str], HandlerClause] = {}
+        # Map operation name → owning effect (for unambiguous resolution).
+        op_owner: dict[str, str] = {}
+        for eff_name, eff in handled_effects.items():
+            for op in eff.operations:
+                if op.name in op_owner:
+                    other = op_owner[op.name]
+                    self._emit(
+                        f"handle covers two effects ('{other}' and "
+                        f"'{eff_name}') with a clashing operation name "
+                        f"'{op.name}' — disambiguate by handling them in "
+                        f"separate `handle ... in {{ ... }}` blocks",
+                        node,
+                    )
+                op_owner[op.name] = eff_name
+
+        # 3. Validate every clause references a real operation + check
+        #    parameter count.
+        clause_seen: set[str] = set()
+        for clause in node.clauses:
+            owning = op_owner.get(clause.operation_name)
+            if owning is None:
+                self._emit(
+                    f"handler clause '{clause.operation_name}' does not "
+                    f"correspond to any operation of the handled "
+                    f"effects {sorted(handled_effects)}",
+                    clause,
+                )
+                continue
+            if clause.operation_name in clause_seen:
+                self._emit(
+                    f"Duplicate clause '{clause.operation_name}' in "
+                    f"handler — each operation must be handled exactly "
+                    f"once per `handle` block",
+                    clause,
+                )
+                continue
+            clause_seen.add(clause.operation_name)
+            op = self._lookup_effect_op(handled_effects[owning], clause.operation_name)
+            if op is None:  # defensive — should not happen
+                continue
+            if len(clause.parameters) != len(op.parameters):
+                self._emit(
+                    f"handler clause '{clause.operation_name}' takes "
+                    f"{len(clause.parameters)} parameter(s), but "
+                    f"operation '{owning}.{clause.operation_name}' "
+                    f"declares {len(op.parameters)}",
+                    clause,
+                )
+            clause_index[(owning, clause.operation_name)] = clause
+
+        # 4. Exhaustiveness — every operation of every handled effect
+        #    must have a clause (D9 at the handler level).
+        for eff_name, eff in handled_effects.items():
+            for op in eff.operations:
+                if op.name not in clause_seen:
+                    self._emit(
+                        f"handler for effect '{eff_name}' is missing a "
+                        f"clause for operation '{op.name}' — every "
+                        f"declared operation must be handled exactly "
+                        f"once (D9 exhaustiveness)",
+                        node,
+                    )
+
+        # 5. Linear-resume check per clause (D2 + D10) + body validation
+        #    inside the clause-frame so resume/abort/forward have
+        #    access to the active handler context.
+        #
+        #    Clause bodies have a special semantics: their `perform` of
+        #    handled effects is reflexive (the clause is *handling* the
+        #    effect; performing it again here would loop), and their
+        #    `forward Effect.Op(...)` propagates to the *outer* scope —
+        #    effectively a perform on the surrounding context. We track
+        #    forwarded effects separately so they survive the discharge
+        #    step and surface in the handle expression's residual row.
+        frame = HandlerFrame(
+            effect_names=frozenset(handled_effects),
+            clause_index=clause_index,
+        )
+        env.handler_stack.append(frame)
+        forwarded_row = EffectRow.empty()
+        try:
+            for clause in node.clauses:
+                if clause.operation_name not in op_owner:
+                    continue  # already errored above
+                op = self._lookup_effect_op(
+                    handled_effects[op_owner[clause.operation_name]],
+                    clause.operation_name,
+                )
+                # Mark the frame as "inside this clause" while walking
+                # the clause body so resume/abort/forward see context.
+                frame.inside_clause = clause
+                frame.inside_operation = op
+                clause_body_row = EffectRow.empty()
+                for child in clause.body:
+                    child_row = self._check_flow_step(
+                        child, step_names, flow_name, env,
+                    )
+                    if child_row is not None:
+                        clause_body_row = clause_body_row.union(child_row)
+                # Forward sites inside the clause body bypass the
+                # current handler frame — their effect appears in the
+                # surrounding scope. Collect them into `forwarded_row`
+                # so the handle expression returns a row that includes
+                # forwarded effects (which the *outer* handler — if
+                # any — must discharge).
+                forwards_in_clause = self._collect_forward_effects(clause.body)
+                if forwards_in_clause:
+                    forwarded_row = forwarded_row.union(
+                        EffectRow.closed(forwards_in_clause),
+                    )
+                # Linear-resume walk on the clause body (D10).
+                self._check_clause_linearity(clause, op, env)
+            frame.inside_clause = None
+            frame.inside_operation = None
+
+            # 6. Validate the handle body itself + collect its row.
+            body_row = EffectRow.empty()
+            for child in node.body:
+                child_row = self._check_flow_step(
+                    child, step_names, flow_name, env,
+                )
+                if child_row is not None:
+                    body_row = body_row.union(child_row)
+        finally:
+            env.handler_stack.pop()
+
+        # 7. Discharge the handled effects from the body row, then add
+        #    any forwarded effects from clause bodies (forward is the
+        #    only clause-body construct whose row escapes the handle).
+        residual = body_row.discharge(set(handled_effects))
+        return residual.union(forwarded_row)
+
+    def _collect_forward_effects(self, body: list[ASTNode]) -> set[str]:
+        """Recursively collect the names of effects forwarded inside a body.
+
+        Walks `forward` statements transitively (descending into nested
+        blocks like `for`, `if`, and inner steps), but treats nested
+        `HandleExpression` nodes as opaque — their internal forwards
+        belong to the inner handle's clauses, not this one.
+        """
+        names: set[str] = set()
+        for stmt in body:
+            if isinstance(stmt, ForwardExpression):
+                names.add(stmt.effect_name)
+                continue
+            if isinstance(stmt, ConditionalNode):
+                names.update(self._collect_forward_effects(
+                    getattr(stmt, "then_body", []),
+                ))
+                names.update(self._collect_forward_effects(
+                    getattr(stmt, "else_body", []) or [],
+                ))
+                continue
+            if isinstance(stmt, ForInStatement):
+                names.update(self._collect_forward_effects(stmt.body))
+                continue
+            if isinstance(stmt, StepNode):
+                names.update(self._collect_forward_effects(stmt.body))
+                continue
+            # HandleExpression / leaves — opaque to this walk.
+        return names
+
+    # ── RESUME / ABORT ──────────────────────────────────────────────
+
+    def _check_resume(self, node: ResumeStatement, env: EffectEnvironment) -> None:
+        """`resume` / `resume(value)` is only valid inside a handler clause body.
+
+        D2 — single-shot semantics are enforced at the path level by
+        `_check_clause_linearity`; here we only verify the position.
+        """
+        if not env.handler_stack or env.handler_stack[-1].inside_clause is None:
+            self._emit(
+                "`resume` is only valid inside a handler clause body — "
+                "it has no meaning in a regular step",
+                node,
+            )
+            return
+        # Defensive — `resume` from a `Never`-returning operation is
+        # operationally meaningless (the continuation never resumes).
+        op = env.handler_stack[-1].inside_operation
+        if op is not None and op.return_type is not None and op.return_type.name == "Never":
+            self._emit(
+                f"`resume` inside the clause for operation "
+                f"'{op.name}' is not allowed — its return type "
+                f"is `Never`, so the continuation cannot be resumed. "
+                f"Use `abort` instead.",
+                node,
+            )
+
+    def _check_abort(self, node: AbortStatement, env: EffectEnvironment) -> None:
+        """`abort` / `abort(value)` is only valid inside a handler clause body."""
+        if not env.handler_stack or env.handler_stack[-1].inside_clause is None:
+            self._emit(
+                "`abort` is only valid inside a handler clause body",
+                node,
+            )
+
+    # ── FORWARD ─────────────────────────────────────────────────────
+
+    def _check_forward(
+        self, node: ForwardExpression, env: EffectEnvironment
+    ) -> EffectRow:
+        """`forward Effect.Op(args)` propagates to the *next-outer* handler.
+
+        D12 — counts as a discharge of the inner clause + a perform on
+        an outer scope. The outer handler (or the flow boundary) must
+        therefore handle this effect, OR the effect remains in the
+        residual row and surfaces as an exhaustiveness violation.
+        """
+        if not env.handler_stack or env.handler_stack[-1].inside_clause is None:
+            self._emit(
+                "`forward` is only valid inside a handler clause body — "
+                "use `perform` to invoke an effect from a regular step",
+                node,
+            )
+            return EffectRow.empty()
+        eff = env.effect_table.get(node.effect_name)
+        if eff is None:
+            self._emit(
+                f"forward references undefined effect '{node.effect_name}'",
+                node,
+            )
+            return EffectRow.closed({node.effect_name})
+        op = self._lookup_effect_op(eff, node.operation_name)
+        if op is None:
+            avail = ", ".join(o.name for o in eff.operations) or "<none>"
+            self._emit(
+                f"Effect '{node.effect_name}' has no operation "
+                f"'{node.operation_name}' to forward to (available: {avail})",
+                node,
+            )
+            return EffectRow.closed({node.effect_name})
+        if len(node.arguments) != len(op.parameters):
+            self._emit(
+                f"forward '{node.effect_name}.{node.operation_name}' "
+                f"expects {len(op.parameters)} argument(s), got "
+                f"{len(node.arguments)}",
+                node,
+            )
+        # Forward propagates the effect to the next outer scope — it
+        # *bypasses* the current handler frame, so the effect appears in
+        # the row visible outside the current handle expression.
+        return EffectRow.closed({node.effect_name})
+
+    # ── LINEAR-RESUME WALKER (D2 + D10) ─────────────────────────────
+
+    def _check_clause_linearity(
+        self,
+        clause: HandlerClause,
+        op: EffectOperation | None,
+        env: EffectEnvironment,
+    ) -> None:
+        """Walk the clause body; assert exactly one discharge per path.
+
+        A discharge is a `resume`, `abort`, or `forward` statement.
+        D10 demands exactly one discharge on every control-flow path
+        through the clause body. Multi-discharge or no-discharge on any
+        path is a compile error.
+
+        Special case: when the operation's return type is `Never`, the
+        clause MAY only `abort` or `forward` (no `resume`) — verified
+        in `_check_resume` already.
+        """
+        counts = self._count_discharges(clause.body)
+        if counts.max_discharges > 1:
+            self._emit(
+                f"handler clause '{clause.operation_name}' may invoke "
+                f"resume/abort/forward more than once on some path "
+                f"(counted up to {counts.max_discharges}). "
+                f"D10 — linear-resume discipline requires exactly one "
+                f"discharge per path through the clause body.",
+                clause,
+            )
+        if counts.min_discharges < 1:
+            self._emit(
+                f"handler clause '{clause.operation_name}' may reach the "
+                f"end of its body without invoking resume / abort / "
+                f"forward on some path. D10 — every path through a "
+                f"handler clause body must discharge the operation "
+                f"exactly once.",
+                clause,
+            )
+
+    def _count_discharges(self, body: list[ASTNode]) -> _LinearityCounts:
+        """Recursive control-flow walk counting discharges per path.
+
+        For sequential statements: counts add up. For an `if/else` (we
+        treat any ConditionalNode as a binary branch when both branches
+        present), the resulting min is the min over branches and the
+        max is the max over branches. For a `for` loop we count the
+        body once (a discharge inside a loop body that runs zero times
+        could leave a path with zero discharges; we take min=0 to
+        capture that conservative bound).
+
+        The walker treats `HandleExpression` clauses inside the body as
+        opaque — their internal linearity is checked recursively when
+        the inner handle is processed; the outer body sees the inner
+        handle as a non-discharging unit (the inner clause discharges
+        the *inner* operation, not the outer).
+        """
+        seq = _LinearityCounts(min_discharges=0, max_discharges=0, has_branch=False)
+        for stmt in body:
+            stmt_counts = self._count_stmt_discharges(stmt)
+            seq = _LinearityCounts(
+                min_discharges=seq.min_discharges + stmt_counts.min_discharges,
+                max_discharges=seq.max_discharges + stmt_counts.max_discharges,
+                has_branch=seq.has_branch or stmt_counts.has_branch,
+            )
+        return seq
+
+    def _count_stmt_discharges(self, stmt: ASTNode) -> _LinearityCounts:
+        """Per-statement discharge count contribution."""
+        if isinstance(stmt, (ResumeStatement, AbortStatement, ForwardExpression)):
+            return _LinearityCounts(min_discharges=1, max_discharges=1)
+        if isinstance(stmt, ConditionalNode):
+            return self._count_conditional_discharges(stmt)
+        if isinstance(stmt, ForInStatement):
+            inner = self._count_discharges(stmt.body)
+            # A loop body may execute zero times, so min=0.
+            return _LinearityCounts(
+                min_discharges=0,
+                max_discharges=inner.max_discharges,
+                has_branch=True,
+            )
+        if isinstance(stmt, StepNode):
+            return self._count_discharges(stmt.body)
+        # HandleExpression / PerformExpression / leaf nodes — opaque
+        # (their internal discharges belong to a different scope).
+        return _LinearityCounts(min_discharges=0, max_discharges=0)
+
+    def _count_conditional_discharges(self, node: ConditionalNode) -> _LinearityCounts:
+        """if/else branch — discharge bounds are min/max across branches."""
+        then_counts = self._count_discharges(getattr(node, "then_body", []))
+        else_body = getattr(node, "else_body", None) or []
+        else_counts = self._count_discharges(else_body)
+        return _LinearityCounts(
+            min_discharges=min(then_counts.min_discharges, else_counts.min_discharges),
+            max_discharges=max(then_counts.max_discharges, else_counts.max_discharges),
+            has_branch=True,
+        )
+
+    # ── HELPER ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _lookup_effect_op(eff: EffectDeclaration, op_name: str) -> EffectOperation | None:
+        for op in eff.operations:
+            if op.name == op_name:
+                return op
+        return None

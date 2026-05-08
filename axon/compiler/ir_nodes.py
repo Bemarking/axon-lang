@@ -115,6 +115,13 @@ class IRProgram(IRNode):
     components: tuple['IRComponent', ...] = ()
     views: tuple['IRView', ...] = ()
     channels: tuple['IRChannel', ...] = ()
+    # Fase 23 — algebraic effect declarations (paper §1-§6, D6 Rust runtime).
+    # Each declared effect persists into IR so axon-rs can build the
+    # per-effect operation table at startup. The CPS state graph for
+    # perform/handle sites lives inline within IRFlow.steps (each
+    # IRPerform / IRHandlerFrame carries its assigned state_id /
+    # frame_id).
+    effects: tuple['IREffectDeclaration', ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1121,6 +1128,168 @@ class IREffectRow(IRNode):
     epistemic_level: str = ""              # "know" | "believe" | "speculate" | "doubt"
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  ALGEBRAIC EFFECTS IR NODES — Fase 23
+#  (Operationalises paper §1-§6 + D1-D12 from
+#  docs/fase_23_algebraic_effects_runtime.md)
+#
+#  These IR nodes carry the result of the CPS lowering pass. Each
+#  perform site receives a monotonic `state_id` (the FSM state the
+#  Rust runtime jumps to on resumption); each handle block receives a
+#  monotonic `frame_id` (the handler-stack pointer). The state graph
+#  is reconstructable from `body_states` lists on IRHandlerFrame.
+#
+#  Why CPS at IR level (D5):
+#    Per paper §5 the runtime executes a state machine compiled to
+#    native jumps — *not* an interpreter that walks closures. The IR
+#    has to encode the state graph explicitly so axon-rs can lower it
+#    to a `match state_id { ... }` dispatch. Doing CPS at runtime
+#    would require either (a) heap-allocated continuation closures
+#    (forbidden by D2 + D6) or (b) an interpreter loop (forbidden by
+#    paper §5 — we promise native jumps). State assignment must
+#    therefore live in the compiler.
+#
+#  State IDs are scoped per-flow (each flow gets a fresh counter
+#  starting at 0). Frame IDs are also per-flow. The Rust runtime
+#  treats `(flow_name, state_id)` as the canonical FSM coordinate.
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class IREffectOperation(IRNode):
+    """One operation declared inside an effect.
+
+    Mirrors AST EffectOperation but with type-parameters preserved so
+    the Rust runtime can monomorphise at perform-site dispatch (D1).
+    Parameter and return types are stored as their resolved type names
+    (no nested IR — types are leaf strings at this level).
+    """
+    node_type: str = "effect_operation"
+    name: str = ""
+    type_parameters: tuple[str, ...] = ()
+    parameter_names: tuple[str, ...] = ()
+    parameter_types: tuple[str, ...] = ()
+    return_type: str = ""
+
+
+@dataclass(frozen=True)
+class IREffectDeclaration(IRNode):
+    """Top-level effect declaration: `effect Name { ops... }`.
+
+    Persists into IR so the runtime can build a per-effect operation
+    table at startup. Drift gate (Fase 23.h) verifies every declared
+    effect appears in the IR's effect table AND in the Rust runtime's
+    handler-dispatch registry.
+    """
+    node_type: str = "effect_declaration"
+    name: str = ""
+    operations: tuple[IREffectOperation, ...] = ()
+
+
+@dataclass(frozen=True)
+class IRPerform(IRNode):
+    """`perform Effect.Op(args)` lowered to a CPS-state node.
+
+    `state_id` is the FSM state the runtime should resume to when the
+    handler invokes `resume(value)`. `resume_label` is a human-readable
+    label for the resumption point (used by axon-rs codegen for jump
+    targets). The runtime treats `(flow_name, state_id)` as canonical.
+    """
+    node_type: str = "perform"
+    effect_name: str = ""
+    operation_name: str = ""
+    arguments: tuple[str, ...] = ()
+    # CPS state machine fields — assigned during 23.d lowering pass.
+    state_id: int = 0
+    resume_label: str = ""
+
+
+@dataclass(frozen=True)
+class IRHandlerClause(IRNode):
+    """One clause within an IRHandlerFrame: `Op(params) -> { body }`.
+
+    Body nodes are pre-lowered (perform sites inside the clause body
+    have their own state_ids assigned, but `resume`/`abort`/`forward`
+    receive their `frame_id` from the enclosing IRHandlerFrame).
+    """
+    node_type: str = "handler_clause"
+    operation_name: str = ""
+    parameter_names: tuple[str, ...] = ()
+    body: tuple[IRNode, ...] = ()
+
+
+@dataclass(frozen=True)
+class IRHandlerFrame(IRNode):
+    """`handle E1, E2 { clauses } in { body }` lowered to a CPS frame.
+
+    `frame_id` is the handler-stack pointer the Rust runtime uses to
+    dispatch perform/forward sites. `body_states` is the list of
+    state_ids assigned to perform sites inside the body — the Rust
+    runtime indexes this to know which states belong to *this* frame.
+
+    Frame IDs are monotonic within a flow (frame 0 is the outermost
+    handler emitted by lowering; nested handlers get increasing IDs).
+    """
+    node_type: str = "handler_frame"
+    effect_names: tuple[str, ...] = ()
+    clauses: tuple[IRHandlerClause, ...] = ()
+    body: tuple[IRNode, ...] = ()
+    # CPS lowering — assigned during 23.d.
+    frame_id: int = 0
+    body_states: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class IRResume(IRNode):
+    """`resume` / `resume(value)` — invoke captured one-shot continuation.
+
+    `frame_id` is the IRHandlerFrame this resume targets (the
+    immediately enclosing handler clause's frame). The runtime uses it
+    to dispatch back to the perform site that yielded.
+    """
+    node_type: str = "resume"
+    value_expr: str = ""
+    frame_id: int = 0
+
+
+@dataclass(frozen=True)
+class IRAbort(IRNode):
+    """`abort` / `abort(value)` — terminate handle without resuming.
+
+    `frame_id` is the IRHandlerFrame this abort terminates. Control
+    yields past the `handle ... in { ... }` block; the captured
+    continuation is discarded (D2 — one-shot semantics, the
+    continuation is consumed exactly once).
+    """
+    node_type: str = "abort"
+    value_expr: str = ""
+    frame_id: int = 0
+
+
+@dataclass(frozen=True)
+class IRForward(IRNode):
+    """`forward Effect.Op(args)` — propagate to outer handler frame (D12).
+
+    `source_frame_id` is the frame this forward escapes (the inner
+    handler whose clause body contains it). At runtime the dispatcher
+    walks one frame outward to find the next handler that lists the
+    effect — or, if none exists, the effect surfaces at the flow
+    boundary (typechecker D9 catches that statically).
+
+    `state_id` and `resume_label` mirror IRPerform — when the *outer*
+    handler resumes, control returns here, then transparently resumes
+    the originally-yielding perform site (the runtime threads the
+    continuation through, preserving the decorator semantics).
+    """
+    node_type: str = "forward"
+    effect_name: str = ""
+    operation_name: str = ""
+    arguments: tuple[str, ...] = ()
+    source_frame_id: int = 0
+    state_id: int = 0
+    resume_label: str = ""
+
+
 @dataclass(frozen=True)
 class IRStreamSpec(IRNode):
     """
@@ -1151,6 +1320,27 @@ class IRStreamSpec(IRNode):
     on_chunk_body: tuple = ()                       # compiled on_chunk handler IR nodes
     on_complete_body: tuple = ()                    # compiled on_complete handler IR nodes
     shield_ref: str = ""                            # shield for co-inductive eval
+    # Fase 23.g — algebraic-effects desugar of `stream<τ>`.
+    #
+    # `stream<T> { on_chunk(c) {...} on_complete(r) {...} }` is
+    # internally equivalent to:
+    #
+    #     handle _StreamBuiltin<T> {
+    #         Chunk(c)    -> { ...on_chunk body...; resume }
+    #         Complete(r) -> { ...on_complete body...; abort }
+    #     } in { /* upstream subscription, driven by host */ }
+    #
+    # The Python compiler emits BOTH the legacy `stream_spec` shape
+    # (above fields, consumed by the existing axon-rs stream runtime)
+    # AND this synthetic `IRHandlerFrame` (consumed by the Fase 23.f
+    # algebraic-effects FSM in `axon-rs/src/effects/`). Adopters'
+    # source `.axon` files do not change — D8 backward compat is 100%.
+    #
+    # The footnote in `docs/algebraic_effects_streaming.md` ("Integrado
+    # nativamente en la primitiva `stream` de Axon-lang") becomes
+    # factually true post-v1.17.0 because `stream<τ>` IS now an
+    # algebraic-effects handler at the IR level.
+    desugared_handler: 'IRHandlerFrame | None' = None
 
 
 # ═══════════════════════════════════════════════════════════════════

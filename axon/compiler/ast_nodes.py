@@ -2674,3 +2674,231 @@ class DiscoverStatement(ASTNode):
     """
     capability_ref: str = ""             # name of the published channel (ChannelDefinition)
     alias: str = ""                      # local binding introduced
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  ALGEBRAIC EFFECTS — Fase 23
+#  (Operationalises paper docs/algebraic_effects_streaming.md §1-§6)
+#
+#  Plotkin/Pretnar handlers + one-shot delimited continuations as
+#  first-class language citizens. Surface syntax is Koka-shape:
+#  `effect`, `perform`, `handle ... in ...`, `resume`, `abort`, `forward`.
+#
+#  Decisions ratified 2026-05-08 (founder criterion: born mature,
+#  30-year vision, 100% Rust + C destiny, mathematical purity per paper):
+#    D1  — Effect operations are polymorphic in their type parameters
+#          (`Send<T>(value: T) -> Unit`). Typechecker monomorphises at perform site.
+#    D2  — One-shot continuations only (multi-resume = type error). Aligns
+#          with linear logic; permits Rust state-machine without continuation cloning.
+#    D3  — Handler scope delimited via `in` block — preserves referential
+#          transparency local + decidable inference.
+#    D6  — Rust-only runtime — Python frontend compiles to IR, axon-rs executes.
+#    D8  — `stream<τ>` desugars internally to `handle _StreamBuiltin<T> { ... } in { ... }`
+#          (backward compat 100% — adopters' source unchanged).
+#    D9  — Perform without enclosing handle = compile error (no runtime fallback).
+#    D10 — Linear-resume discipline typechecker-enforced (control-flow walk).
+#    D11 — Effect row polymorphism via row variables in step type signatures
+#          (`step compose(...) -> ... !ε`). Open vs closed rows distinguished.
+#    D12 — `forward` keyword for transparent effect propagation to outer handler.
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class EffectOperation(ASTNode):
+    """
+    A single operation declared inside an `effect` block.
+
+      Emit(token: Token) -> Unit
+      Send<T>(value: T) -> Unit          # D1: operation polymorphism
+      Done() -> Never
+      Recv<T>() -> T
+
+    `type_parameters` is the list of operation-scoped type variables
+    (Koka-style rank-1 polymorphism, D1). Empty for monomorphic ops.
+    `parameters` is the parameter list (may be empty). `return_type`
+    is the result type returned to the resumed continuation; for
+    `Done() -> Never` the return type is the bottom type, semantically
+    encoding "this operation never resumes" (handler must `abort` or
+    not call `resume`).
+    """
+    name: str = ""
+    type_parameters: list[str] = field(default_factory=list)  # D1 — operation polymorphism
+    parameters: list[ParameterNode] = field(default_factory=list)
+    return_type: TypeExprNode | None = None
+
+
+@dataclass
+class EffectDeclaration(ASTNode):
+    """
+    Top-level effect declaration.
+
+        effect SSE {
+            Emit(token: Token) -> Unit
+            Done() -> Never
+        }
+
+        effect Channel {
+            Send<T>(value: T) -> Unit          # D1
+            Recv<T>() -> T
+        }
+
+    An effect is a typed signature of operations a step can `perform`.
+    Until discharged by an enclosing `handle SSE { ... } in { ... }`,
+    the effect remains in the step's effect row (visible at type level).
+    Reaching the top-level `run` with a non-empty effect row is a
+    compile error (D9 — exhaustiveness).
+    """
+    name: str = ""
+    operations: list[EffectOperation] = field(default_factory=list)
+
+
+@dataclass
+class PerformExpression(ASTNode):
+    """
+    perform SSE.Emit(token)
+    perform Channel.Send(payload)
+    let result = perform Channel.Recv()        # binds the resumed value
+
+    Invokes an effect operation. The current continuation is captured
+    (one-shot, D2) and yielded to the enclosing handler. When the
+    handler invokes `resume(value)`, the continuation resumes here with
+    `value` as the result of the perform expression.
+
+    `arguments` are stored as raw expression strings (consistent with
+    existing AXON convention for argument lists in `run`, `use`,
+    `emit`, etc.). The typechecker resolves them to typed expressions
+    in 23.c.
+    """
+    effect_name: str = ""
+    operation_name: str = ""
+    arguments: list[str] = field(default_factory=list)
+
+
+@dataclass
+class HandlerClause(ASTNode):
+    """
+    A single clause inside a `handle` block.
+
+        Emit(token) -> { log.info(token); resume() }
+        Done() -> { abort }
+        Send(value) -> {
+            buffer.append(value)
+            resume()
+        }
+
+    `parameters` are the operation parameters bound by this clause
+    (matching the operation's parameter list). `body` is the list of
+    AST nodes (steps / statements) executed when the operation fires.
+    The continuation is implicitly available in scope; the body must
+    invoke either `resume(value)` (continue) exactly once on each path
+    (D10 — linear discipline) or `abort` (terminate). Failure to do
+    either is a compile error (effect operations must be discharged).
+    """
+    operation_name: str = ""
+    parameters: list[ParameterNode] = field(default_factory=list)
+    body: list[ASTNode] = field(default_factory=list)
+
+
+@dataclass
+class HandleExpression(ASTNode):
+    """
+    handle SSE {
+        Emit(token) -> { ... resume() }
+        Done() -> { abort }
+    } in {
+        body containing perform SSE.Emit(...)
+    }
+
+    Multi-effect handlers are a comma list:
+
+        handle SSE, ToolCall {
+            Emit(t) -> { ... }
+            Call(name, args) -> { ... }
+        } in { body }
+
+    Discharges every operation of every named effect within the body.
+    After this expression the named effects no longer appear in the
+    surrounding scope's effect row.
+    """
+    effect_names: list[str] = field(default_factory=list)  # one or more (handle SSE, ToolCall { ... })
+    clauses: list[HandlerClause] = field(default_factory=list)
+    body: list[ASTNode] = field(default_factory=list)
+
+
+@dataclass
+class ResumeStatement(ASTNode):
+    """
+    resume               # resume the captured continuation with Unit
+    resume(value)        # resume with `value` injected at the perform site
+
+    One-shot only (D2). The typechecker enforces that within each
+    handler clause body, on every control-flow path, exactly one of
+    `resume(...)` or `abort(...)` appears (D10 — linear discipline).
+    Multi-resume on the same path is a compile error.
+    """
+    value_expr: str = ""  # raw expression text; empty for bare `resume`
+
+
+@dataclass
+class AbortStatement(ASTNode):
+    """
+    abort               # terminate the handle expression with Unit
+    abort(value)        # terminate with `value` as the handle expression's result
+
+    Discards the captured continuation entirely (the perform site
+    never resumes) and yields control past the enclosing `handle ... in`
+    block. Counts toward the linear-resume discipline (D10) — a
+    handler clause that aborts on every path is well-typed.
+    """
+    value_expr: str = ""
+
+
+@dataclass
+class ForwardExpression(ASTNode):
+    """
+    forward SSE.Emit(token)
+
+    Propagates the operation to the *next* enclosing handler frame
+    (delegate / pass-through). Useful for transparent decorators —
+    a handler that logs / traces / metricates without intercepting:
+
+        handle SSE {
+            Emit(t) -> { log.info(t); forward Emit(t) }
+            Done() -> { log.info("done"); forward Done() }
+        } in { body }
+
+    Counts as a discharge for linear-resume purposes (D10): control
+    leaves this handler frame and the outer frame becomes responsible
+    for resuming the continuation.
+
+    D12 — without `forward`, handlers are strict (intercept-only). With
+    `forward`, they compose middleware-style.
+    """
+    effect_name: str = ""
+    operation_name: str = ""
+    arguments: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AlgebraicEffectRowNode(ASTNode):
+    """
+    A type-level effect annotation attached to a TypeExprNode.
+
+        Token!{SSE}                          # closed row, single effect
+        Token!{SSE, ToolCall}                # closed row, multiple effects
+        Token!{SSE, ε}                       # open row with row variable ε (D11)
+        Token!{}                             # explicit empty row (pure)
+
+    Open rows (those with a row variable) are how Fase 23 supports
+    effect polymorphism: `step compose(f: A -> B!ε, g: B -> C!ε) -> A -> C!ε`
+    works because `ε` unifies with whatever effects the caller's
+    context happens to need.
+
+    Distinct from the legacy `EffectRowNode`, which carries categorical
+    effect classes (`io`, `network`) + epistemic level for tool
+    declarations. The two are orthogonal — declared algebraic effects
+    are typed handles (`SSE`, `ToolCall`); legacy effect rows are taint
+    classifications. They may coexist on the same step in v1.17.0+.
+    """
+    effect_names: list[str] = field(default_factory=list)
+    row_variable: str = ""  # empty = closed row; non-empty (e.g. "ε") = open row

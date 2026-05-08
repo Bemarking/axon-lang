@@ -195,6 +195,17 @@ class TokenType(Enum):
     PUBLISH = auto()          # publish Name within Shield  — (Publish-Ext) capability extrusion
     DISCOVER = auto()         # discover Cap as alias  — dual of publish, dynamic import
 
+    # ── ALGEBRAIC EFFECTS (Fase 23 — paper_algebraic_effects_streaming.md §1-§6) ──
+    # Plotkin/Pretnar handlers + one-shot delimited continuations.
+    # Surface syntax: `effect`, `perform`, `handle`, `resume`, `abort`, `forward`.
+    # `in` is reused (existing token) for `handle E { ... } in { body }`.
+    EFFECT = auto()           # effect SSE { Emit(token: Token) -> Unit }
+    PERFORM = auto()          # perform SSE.Emit(t)
+    HANDLE = auto()           # handle SSE { ... } in { ... }
+    RESUME = auto()           # resume(value) — one-shot continuation invocation
+    ABORT = auto()            # abort or abort(value) — terminate without resuming
+    FORWARD = auto()          # forward SSE.Emit(t) — propagate to outer handler
+
     # ── MODIFIERS (run statement modifiers) ───────────────────────
     AS = auto()
     WITHIN = auto()
@@ -253,6 +264,7 @@ class TokenType(Enum):
     EQ = auto()           # ==
     NEQ = auto()          # !=
     ASSIGN = auto()       # = (SSA binding operator)
+    BANG = auto()         # ! (effect row separator in type signatures: Token!{SSE, ToolCall} — Fase 23)
 
     # ── ARITHMETIC (Compute primitive §CM) ────────────────────────
     PLUS = auto()         # +
@@ -477,6 +489,13 @@ KEYWORDS: dict[str, TokenType] = {
     "emit":     TokenType.EMIT,
     "publish":  TokenType.PUBLISH,
     "discover": TokenType.DISCOVER,
+    # Algebraic Effects (Fase 23 — Plotkin/Pretnar handlers + one-shot continuations)
+    "effect":   TokenType.EFFECT,
+    "perform":  TokenType.PERFORM,
+    "handle":   TokenType.HANDLE,
+    "resume":   TokenType.RESUME,
+    "abort":    TokenType.ABORT,
+    "forward":  TokenType.FORWARD,
 }
 
 # Duration suffixes recognized by the lexer

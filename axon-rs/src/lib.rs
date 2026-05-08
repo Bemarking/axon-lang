@@ -57,6 +57,10 @@ pub mod handlers;
 /// §λ-L-E Fase 3 + 5 runtime primitives. Port of `axon/runtime/` (lease kernel,
 /// reconcile loop, ensemble aggregator, immune kernels).
 pub mod runtime;
+/// §Fase 23.f — Algebraic effects runtime. FSM dispatch loop +
+/// handler stack + Free-Monad interpretation of CPS-lowered IR
+/// (consumes the JSON IR emitted by the Python frontend in 23.b/c/d).
+pub mod effects;
 /// §ESK Fase 6 — Epistemic Security Kernel. Port of `axon/runtime/esk/`.
 pub mod esk;
 /// CLI handlers for the ESK audit commands (dossier, sbom, audit, evidence-package).

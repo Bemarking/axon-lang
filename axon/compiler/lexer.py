@@ -294,11 +294,13 @@ class Lexer:
                 if self._match("="):
                     self._emit(TokenType.NEQ, "!=", line, col)
                 else:
-                    raise AxonLexerError(
-                        "Unexpected '!'. Did you mean '!='?",
-                        line=line,
-                        column=col,
-                    )
+                    # Fase 23 — `!` as effect-row separator in type signatures:
+                    # `Token!{SSE, ToolCall}`. Pre-Fase-23 this raised
+                    # AxonLexerError; the lexer now emits `BANG` and lets
+                    # the parser disambiguate by context (only valid inside
+                    # a TypeExprNode tail). Outside that context the parser
+                    # surfaces a precise error with grammar location.
+                    self._emit(TokenType.BANG, "!", line, col)
 
             # string literal
             case '"':
