@@ -469,11 +469,25 @@ class Tracer:
         step_name: str,
         prompt_tokens: int = 0,
         data: dict[str, Any] | None = None,
+        *,
+        model_name: str = "",
+        provider_name: str = "",
     ) -> TraceEvent:
-        """Convenience: emit a MODEL_CALL event."""
+        """Convenience: emit a MODEL_CALL event.
+
+        v1.16.1 — accepts ``model_name`` and ``provider_name`` so the
+        trace records *which* model and *which* provider received this
+        call. Pre-v1.16.1 the trace omitted both, making post-mortem
+        diagnostics impossible when fallback chains or model-routing
+        changed which provider actually answered.
+        """
         payload = data or {}
         if prompt_tokens > 0:
             payload["prompt_tokens"] = prompt_tokens
+        if model_name:
+            payload["model_name"] = model_name
+        if provider_name:
+            payload["provider_name"] = provider_name
         return self.emit(TraceEventType.MODEL_CALL, step_name=step_name, data=payload)
 
     def emit_model_response(
@@ -482,11 +496,37 @@ class Tracer:
         output_tokens: int = 0,
         duration_ms: float = 0.0,
         data: dict[str, Any] | None = None,
+        *,
+        model_name: str = "",
+        provider_name: str = "",
+        finish_reason: str = "",
+        retry_count: int = 0,
+        usage: dict[str, int] | None = None,
     ) -> TraceEvent:
-        """Convenience: emit a MODEL_RESPONSE event."""
+        """Convenience: emit a MODEL_RESPONSE event.
+
+        v1.16.1 — captures the full observability surface returned by
+        the v1.16.1 ``ModelResponse``: model, provider, finish_reason,
+        retry_count, and the raw provider usage breakdown (which
+        differs per provider — Anthropic emits ``input_tokens`` /
+        ``output_tokens`` / ``cache_read_input_tokens``; OpenAI emits
+        ``prompt_tokens`` / ``completion_tokens`` / ``reasoning_tokens``;
+        the tracer records them verbatim so adopters analysing traces
+        post-hoc see the same shape the provider returned).
+        """
         payload = data or {}
         if output_tokens > 0:
             payload["output_tokens"] = output_tokens
+        if model_name:
+            payload["model_name"] = model_name
+        if provider_name:
+            payload["provider_name"] = provider_name
+        if finish_reason:
+            payload["finish_reason"] = finish_reason
+        if retry_count:
+            payload["retry_count"] = retry_count
+        if usage:
+            payload["usage"] = dict(usage)
         return self.emit(
             TraceEventType.MODEL_RESPONSE,
             step_name=step_name,
