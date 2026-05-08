@@ -1,6 +1,6 @@
 ---
 title: "Plan vivo: Fase 22 — Native multi-provider backend coverage"
-status: DRAFTED 2026-05-08 — sub-fases 22.a–22.f pendientes; target axon-lang v1.16.0 (next minor)
+status: SHIPPED 2026-05-08 — todas las 6 sub-fases (22.a–22.f) en master; axon-lang v1.16.0 publicado (PR #10 merged → tag v1.16.0 → GitHub Release https://github.com/Bemarking/axon-lang/releases/tag/v1.16.0); 88/88 tests verdes en touched surface; 0 nuevas regressions; cero breaking changes
 owner: AXON Language Team
 created: 2026-05-08
 updated: 2026-05-08
@@ -12,12 +12,13 @@ depends_on: Fase 20 SHIPPED (Production Shield Runtime); Fase 21 SHIPPED (Integr
 
 | Sub-phase | Status | LOC target | Module(s) / Notes |
 |---|---|---|---|
-| 22.a Kimi (Moonshot) native backend — **PRIORITY** | ⏳ NEXT | ~600 | `axon/backends/kimi_backend.py` (nuevo) + register + tests |
-| 22.b GLM (Zhipu /智谱AI) native backend — **PRIORITY** | ⏳ pending | ~600 | `axon/backends/glm_backend.py` (nuevo) + register + tests |
-| 22.c OpenAI backend — **complete the stub** | ⏳ pending | ~525 | `axon/backends/openai_backend.py` (currently 85 LOC stub raising `NotImplementedError`) |
-| 22.d Ollama backend — **complete the stub** | ⏳ pending | ~520 | `axon/backends/ollama_backend.py` (currently 90 LOC stub) |
-| 22.e OpenRouter native backend (multi-provider gateway) | ⏳ pending | ~500 | `axon/backends/openrouter_backend.py` — single dep with model routing across providers |
-| 22.f Cross-backend integration test pack + drift gate | ⏳ pending | ~300 | `tests/test_backend_parity.py` — same flow compiled against every backend, asserts IR-shape parity + sane response shape per provider |
+| 22.a Kimi (Moonshot) native backend | ✅ SHIPPED | ~35 LOC (thin subclass) | `axon/backends/kimi_backend.py` — inherits `OpenAICompatibleBackend` (Moonshot expone API OpenAI-compat byte-by-byte) |
+| 22.b GLM (Zhipu /智谱AI) native backend | ✅ SHIPPED | ~40 LOC (thin subclass) | `axon/backends/glm_backend.py` — inherits `OpenAICompatibleBackend` (Zhipu v4 endpoint OpenAI-compat) |
+| 22.c OpenAI backend — stub replaced | ✅ SHIPPED | ~40 LOC (thin subclass) | `axon/backends/openai_backend.py` — full rewrite from 85-LOC `NotImplementedError` stub a thin subclass del base (que ES la canonical OpenAI Chat Completions reference) |
+| 22.d Ollama backend — stub replaced | ✅ SHIPPED | ~50 LOC (thin subclass) | `axon/backends/ollama_backend.py` — full rewrite from 90-LOC stub; usa Ollama `/v1/chat/completions` byte-compat |
+| 22.e OpenRouter native backend | ✅ SHIPPED | ~45 LOC (thin subclass) | `axon/backends/openrouter_backend.py` — multi-provider gateway, slug routing en `model_name` |
+| 22.f Cross-backend test pack + registry drift gate | ✅ SHIPPED | 8 tests verdes | `tests/test_backend_registry_drift_gate.py` — registry walk anti-stub + cross-backend parity + OpenAI-compat invariant + AST source-level stub gate |
+| **Bonus** Shared `_openai_compatible.py` base | ✅ SHIPPED | ~390 LOC base + ~5 LOC × 5 subclasses | Reduce 5 backends de ~600 LOC c/u (estimado original: ~3000 LOC) a base+subclases (~600 LOC total). D1 respetado: cada backend sigue siendo módulo público importable separado; el base es interno (`_` prefix). |
 
 **Acceptance metrics target:**
 
@@ -334,3 +335,140 @@ def test_documented_backends_match_registry():
 ---
 
 **Próximo paso operacional**: confirmar prioridad + arrancar 22.a (Kimi native backend). Trabajo estimado: ~1.5 horas para 22.a sola, end-to-end (incluye tests + register + docs section). Sub-fases 22.b–d shipeadas después de 22.a en cadena.
+
+---
+
+## 11. Post-SHIPPED — what was actually delivered (2026-05-08)
+
+Esta sección documenta cómo el trabajo real divergió del plan, y por qué.
+
+### 11.1 LOC actual vs estimado (~10× menos)
+
+| Plan original | Real shipped |
+|---|---|
+| ~3.4k LOC backends (~600 LOC × 5 archivos) | ~390 LOC base + 5 subclases × ~40 LOC = **~590 LOC total** |
+| ~97 tests | **8 tests** (drift gate + parity + invariant + source-level stub gate) |
+
+**Por qué la diferencia**: durante la implementación descubrí que los 5 backends (Kimi, GLM, OpenAI, Ollama, OpenRouter) **todos** exponen la misma OpenAI Chat Completions API shape. Crear 5 archivos de ~600 LOC c/u habría sido 90% código duplicado. La solución limpia: extraer el shared compilation layer a `axon/backends/_openai_compatible.py` (módulo interno con `_` prefix, no expuesto al adopter), y que cada backend público sea una thin subclass de ~40 LOC con solo `name` overridden + docstring específico de provider.
+
+D1 sigue respetado: cada backend es su propio módulo público importable (`from axon.backends.kimi_backend import KimiBackend`), discoverability + per-provider docstrings preserved. La duplicación se elimina sin sacrificar la separación de responsabilidades.
+
+### 11.2 Cambio de scope: stub gate dual-layer
+
+Plan original: 1 drift gate de registry. Real shipped: **2 layers complementarias**:
+
+1. **Runtime gate** (`test_no_registered_backend_method_raises_notimplementederror`) — itera `BACKEND_REGISTRY`, instancia cada backend, invoca cada abstract method con args mínimos, falla si **alguno** raise `NotImplementedError`. Caza el anti-pattern pre-Fase-22 exactamente.
+2. **Source-level gate** (`test_no_backend_module_contains_notimplementederror_in_method_body`) — regex scan estático de cada `*_backend.py` (whitelist: `base_backend.py`, `_openai_compatible.py` que tienen el sentinel intencional). Caza un backend half-finished **antes** de que entre al registry.
+
+Together: **estructuralmente impossible** re-introducir el patrón pre-Fase-22 sin que CI falle loud, en runtime O en source-level.
+
+### 11.3 Hallazgo lateral: transport layer ya tenía 90% del trabajo
+
+Inspeccionando `axon/server/model_clients.py:292-306` para sizing del scope de transport, descubrí que el `HTTPProviderModelClient._build_request` **ya tenía un default fallback OpenAI Chat Completions** para providers no-anthropic / no-gemini. Significa que los 5 backends nuevos heredan transporte funcional sin tocar `model_clients.py`. Los adopters solo necesitan configurar `base_url` apropiado (e.g., `https://api.moonshot.cn/v1` para Kimi) en el endpoint config — la lógica HTTP ya estaba lista.
+
+Esto explica por qué no se necesitó tocar `model_clients.py` en este release.
+
+### 11.4 Decisiones diferidas (bonus que NO se shipearon)
+
+- **Live integration tests gated por env var** (D5 del plan): no shipped. Tests son 100% unit + structural. Live smoke tests against real Moonshot/Zhipu/etc. APIs son trabajo de fase de QA separada (cuando haya un budget de API keys configurado en CI).
+- **README.md backend matrix**: no actualizado en v1.16.0. Vale incluirlo en v1.16.1 como doc-only patch, o esperar al próximo content update.
+- **Per-provider docstrings exhaustivos**: los 5 thin subclasses tienen docstrings concisos (~10 líneas c/u). Documentación más profunda (ejemplos de modelo IDs, latency benchmarks, cost per million tokens, etc.) queda para cada provider's "deep guide" cuando alguien la pida.
+
+### 11.5 Resumen del shipping
+
+```
+PR #10:       https://github.com/Bemarking/axon-lang/pull/10  (admin merged)
+Tag:          v1.16.0
+Release:      https://github.com/Bemarking/axon-lang/releases/tag/v1.16.0
+Files:        15 changed
+Tests:        88/88 verdes en touched surface, 0 nuevas regressions
+Severity:     Strict improvement — los 2 stubs preexistentes ahora funcionan,
+              los 3 missing ahora existen, los 2 que ya funcionaban quedan
+              byte-identical.
+Breaking:     None. Adopters upgrade sin cambio de código.
+```
+
+---
+
+## 12. Strengthening sub-fases — 22.g / 22.h / 22.i (added 2026-05-08)
+
+Post-v1.16.0 audit identificó tres ejes de hardening que el "minimum viable" de la fase 22 dejó abiertos. Los documento acá como sub-fases formales del plan vivo, en orden de severidad y ROI.
+
+### 12.1 Findings de la auditoría
+
+**Tracer**: `emit_model_call` captura `prompt_tokens = len(user_prompt)` en *characters*, no tokens reales. `MODEL_CALL` y `MODEL_RESPONSE` no incluyen `model_name`, `provider_name`, `finish_reason`, ni breakdown de usage (input/output/cache_read/cache_creation/reasoning). Sin retry events, sin cost, sin TTFB-vs-total.
+
+**Error handling**: una sola red `except Exception → ModelCallError` en [executor.py:2357-2371](axon/runtime/executor.py#L2357). Cero diferenciación de clases (rate limit, auth, context length, safety filter, server error). `_httpx_transport` hace `raise_for_status()` y termina ahí — sin retry, sin `Retry-After` parse, sin circuit breaker.
+
+**Per-backend docs vs implementación**: cada provider documenta best practices que el wrapper no expone:
+- Anthropic: prompt caching, extended thinking, tool_choice, max_tokens hardcoded a 1024.
+- OpenAI: structured outputs (response_format JSON Schema), parallel tool calls, reasoning models (o1/o3).
+- Gemini: safetySettings, responseSchema, generationConfig, multimodal, grounding.
+- Kimi: context caching, $web_search builtin.
+- GLM: web_search, retrieval, JWT refresh.
+- Ollama: streaming, options dict, model availability check.
+- OpenRouter: fallback chains, app attribution headers, cost-routing.
+
+### 12.2 Sub-fase 22.g — Trace + error handling foundation (HIGH severity, MEDIUM scope)
+
+**Status**: ⏳ NEXT — target axon-lang v1.16.1 patch release.
+
+Cross-cutting; beneficia los 7 backends sin tocar features adopter-visible.
+
+- **Trace enrichment**: extender `ModelResponse` con `model_name`, `provider_name`, `finish_reason`, `retry_count`. Actualizar `emit_model_call`/`emit_model_response` para emitir esos + breakdown de usage tal como llega del provider (no agregando, exponiendo verbatim).
+- **5 typed error subclasses** en `runtime_errors.py` (sigue patrón v1.15.1):
+  - `RateLimitError(ModelCallError)` — HTTP 429 después de retries exhaustos
+  - `AuthError(ModelCallError)` — HTTP 401/403
+  - `ContextLengthError(ModelCallError)` — HTTP 400 con shape `context_length_exceeded`
+  - `SafetyBreachError(ModelCallError)` — content filter / safety block
+  - `ModelNotFoundError(ModelCallError)` — HTTP 404 / model deprecated
+- **Retry policy** en `HTTPProviderModelClient.call`: exponential backoff con jitter; `Retry-After` header parseado en 429; cap de N=3 retries por default; 5xx → retry, 4xx (excepto 429) → fail fast.
+- **HTTP status code** preservado en `ErrorContext.details` para todos los errores transport.
+- **AST drift gate** que asserte (a) cada subclass de `ModelCallError` se construye sin TypeError, (b) `categorise_http_error` cubre los 5 status code paths declarados, (c) cada raise de un subclass usa kwargs en signature (mismo gate v1.15.1 extendido).
+
+Estimado: 1.5-2 días, ~250 LOC + ~30 tests. Patch release v1.16.1 limpio (additive, no breaking).
+
+### 12.3 Sub-fase 22.h — Per-provider feature parity (MEDIUM severity, LARGE scope)
+
+**Status**: ⏳ deferred — backlog. Target axon-lang v1.17.x (cadence per-provider).
+
+Adopter-visible. Cada provider expone features documentadas en su API que el wrapper no consume:
+
+- **22.h.1 Anthropic**: `cache_control` blocks (90% cost reduction en system prompt repetido), `thinking` parameter, `tool_choice` control, `stop_sequences`, `max_tokens` configurable per-step (no más hardcoded 1024).
+- **22.h.2 OpenAI**: `response_format: json_schema` (server-side schema validation), parallel tool calls, reasoning models (o1, o3-mini, o3) con request shape distinto, `refusal` field handling, `seed` parameter, logprobs.
+- **22.h.3 Gemini**: `safetySettings` per-category override, `responseSchema` (JSON mode con schema), `generationConfig` exposed (`temperature`/`topK`/`topP`/`maxOutputTokens`), multimodal inputs, `googleSearch` grounding tool, code execution.
+- **22.h.4 Kimi**: context caching (`prompt_cache`), `$web_search` builtin tool, token counter endpoint pre-flight.
+- **22.h.5 GLM**: `web_search` parameter, `retrieval` parameter (RAG sobre KBs registradas), JWT auth refresh para deploys de larga duración, `glm-4v` multimodal request shape.
+- **22.h.6 Ollama**: streaming (`stream: true`), `options` dict (`temperature`/`top_p`/`seed`/`num_ctx`/`num_predict`), `/api/tags` model availability check antes de la call, `/api/show` capability discovery.
+- **22.h.7 OpenRouter**: fallback chains (`models: [a, b, c]`), provider preferences (`provider.order`), app attribution headers (`HTTP-Referer`, `X-Title`), cost tracking via response headers, slug suffixes (`:floor`, `:nitro`).
+
+Estimado: ~1 día por provider × 7 = ~1.5 semanas. Cadence sugerida: shipping incremental v1.17.0/.1/.2/... — cada sub-fase es un patch o minor independiente.
+
+**Trade-off no trivial**: cada nuevo feature exige decisiones de DSL (cómo se expresa en `.axon` source), no solo wrapper. Por eso esta sub-fase queda diferida — requiere design pass antes de implementación.
+
+### 12.4 Sub-fase 22.i — Production-grade transport hardening (HIGH severity, MEDIUM scope)
+
+**Status**: ⏳ deferred — backlog. Target Fase 23 (standalone) o v1.17.x si se prioriza.
+
+Ortogonal a 22.h; complementaria a 22.g.
+
+- **Token budget pre-flight**: estimar tokens del compiled prompt ANTES de enviar; si excede el context window del modelo, fail fast con `ContextLengthError` sin pagar la latency de network round-trip.
+- **Circuit breaker per `(provider, model)`**: abre después de N fails consecutivos (configurable), half-open state con probe call, vuelve a closed en éxito.
+- **Rate limit awareness proactiva**: parsear `X-RateLimit-Remaining` headers donde el provider los expone (Anthropic, OpenAI), aplicar backpressure (delay deliberado entre calls) cuando remaining baja del threshold — no esperar al 429.
+- **Cost ledger persistido**: integration con `axonstore` — cada call deja un row con `(tenant_id, provider, model, input_tokens, output_tokens, cost_usd, trace_id, timestamp)`. Adopters consultan via SQL para billing, optimization, anomaly detection.
+- **Drift gate** que asserte: cada backend en `BACKEND_REGISTRY` tiene retry policy declarada + circuit breaker config + token estimator registrado. Catches a backend que se agrega sin estos invariants.
+
+Estimado: ~2 días, ~400 LOC + ~25 tests.
+
+### 12.5 Cadencia recomendada
+
+```
+v1.16.1 = 22.g          (foundation, ~2 días)        ← NEXT
+v1.17.0 = 22.h.1+22.h.2 (Anthropic + OpenAI feature parity, ~2 días)
+v1.17.1 = 22.h.3        (Gemini, ~1 día)
+v1.17.2 = 22.h.4+22.h.5 (Kimi + GLM, ~2 días)
+v1.17.3 = 22.h.6+22.h.7 (Ollama + OpenRouter, ~2 días)
+Fase 23  = 22.i         (production hardening, standalone)
+```
+
+Esta cadencia exterioriza valor incremental cada release sin acumular un PR enorme. Adopters que upgradan v1.16.0 → v1.16.1 ya reciben observability + error handling decentes; quienes esperan v1.17.x reciben features per-provider conforme aterrizan.
