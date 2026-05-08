@@ -65,6 +65,22 @@ pub struct IRProgram {
     pub views: Vec<IRView>,
     /// §λ-L-E Fase 13 — Mobile typed channels (compiled).
     pub channels: Vec<IRChannel>,
+    /// §Fase 23 — algebraic effect declarations (compiled).
+    /// Each declared effect persists into IR so axon-rs can build the
+    /// per-effect operation table at startup. The CPS state graph for
+    /// perform/handle sites lives inline within IRFlow.steps (each
+    /// IRPerform / IRHandlerFrame carries its assigned state_id /
+    /// frame_id).
+    ///
+    /// This Rust port mirrors the Python-side
+    /// `IRProgram.effects: tuple[IREffectDeclaration, ...]` field so
+    /// the byte-identical structural-parity gate stays green. The Rust
+    /// frontend (axon-frontend) does not yet emit Fase 23 IR itself —
+    /// the field exists to preserve serialization shape; the actual
+    /// algebraic-effects compiler lives on the Python side, and the
+    /// Rust runtime (axon-rs/src/effects/) consumes the JSON IR
+    /// emitted by Python.
+    pub effects: Vec<IREffectDeclaration>,
 }
 
 impl IRProgram {
@@ -111,6 +127,65 @@ impl IRProgram {
             components: Vec::new(),
             views: Vec::new(),
             channels: Vec::new(),
+            effects: Vec::new(),
+        }
+    }
+}
+
+// ── §Fase 23 — Algebraic effect declarations ─────────────────────────────────
+//
+// Mirror of Python's `IREffectDeclaration` and `IREffectOperation`
+// dataclasses. The Rust frontend (axon-frontend) does not yet emit
+// Fase 23 IR itself — these structs exist so the byte-identical
+// structural-parity gate stays green when Python emits an empty
+// `effects: []` field. The actual algebraic-effects compiler lives on
+// the Python side; the Rust runtime (axon-rs/src/effects/) consumes
+// the JSON IR via its own deserialize structs.
+
+#[derive(Debug, Serialize, Default)]
+pub struct IREffectDeclaration {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub operations: Vec<IREffectOperation>,
+}
+
+impl IREffectDeclaration {
+    pub fn new() -> Self {
+        Self {
+            node_type: "effect_declaration",
+            source_line: 0,
+            source_column: 0,
+            name: String::new(),
+            operations: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct IREffectOperation {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub type_parameters: Vec<String>,
+    pub parameter_names: Vec<String>,
+    pub parameter_types: Vec<String>,
+    pub return_type: String,
+}
+
+impl IREffectOperation {
+    pub fn new() -> Self {
+        Self {
+            node_type: "effect_operation",
+            source_line: 0,
+            source_column: 0,
+            name: String::new(),
+            type_parameters: Vec::new(),
+            parameter_names: Vec::new(),
+            parameter_types: Vec::new(),
+            return_type: String::new(),
         }
     }
 }

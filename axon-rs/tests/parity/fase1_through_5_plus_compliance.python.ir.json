@@ -584,9 +584,10 @@
     }
   ],
   "channels": [],
+  "effects": [],
   "_meta": {
     "source": "axon-rs/tests/parity/fase1_through_5_plus_compliance.axon",
     "backend": "anthropic",
-    "axon_version": "1.10.0"
+    "axon_version": "1.17.0"
   }
 }
