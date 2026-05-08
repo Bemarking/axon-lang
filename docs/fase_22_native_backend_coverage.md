@@ -413,6 +413,16 @@ Post-v1.16.0 audit identificó tres ejes de hardening que el "minimum viable" de
 
 **Status**: ✅ SHIPPED 2026-05-08 — axon-lang v1.16.1 publicado (PR #11 merged, tag v1.16.1 pushed, GitHub Release https://github.com/Bemarking/axon-lang/releases/tag/v1.16.1). Lo entregado: 5 typed transport errors + retry policy con Retry-After + extracción per-provider de finish_reason/usage + ModelResponse extendido + tracer emit helpers actualizados + executor preserva typed errors. 30 tests nuevos en `tests/test_v1161_observability_and_typed_errors.py`. 99/99 verdes en touched surface. AST drift gate previene bypass de `_categorise_http_error`. 100% backward compatible.
 
+### 12.2.bis Sub-fase 22.g.2 — Locked-model sampling-parameter omission (HIGH severity, SMALL scope, emergent)
+
+**Status**: ✅ SHIPPED 2026-05-08 — axon-lang v1.16.2 publicado (PR #12 merged, tag v1.16.2 pushed, GitHub Release https://github.com/Bemarking/axon-lang/releases/tag/v1.16.2).
+
+**Por qué emergente**: post-v1.16.1 un adopter (Kivi) reportó HTTP 400 en producción usando `kimi-k2.6`. Verificado contra Moonshot docs oficiales (https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart): los reasoning models (Kimi K2.6, K2.5, OpenAI o1*, o3*) tienen parámetros del body con valores fijos — `temperature` debe ser `1.0`/`0.6`, `top_p` `0.95`, `n` `1`, `presence_penalty`/`frequency_penalty` `0.0`. Cualquier otro valor → 400. El pre-v1.16.2 `_build_request` hardcodeaba `temperature: 0` literal, rompiendo cualquier deploy a estos modelos. v1.16.2 introduce `_LOCKED_PARAMETER_MODELS` registry (regex pattern → frozenset locked params), `_apply_sampling_params(body)` que omite el campo cuando el modelo lo lockea, warning dedup'd per `(model, param)`, y AST drift gate que asserta no haya literales de sampling params en `_build_request` body.
+
+39 tests en `tests/test_v1162_locked_model_sampling.py`. 118/118 verdes touched surface. Default `temperature=0.0` preserva backward compat para flexible models; locked-model deploys dejan de crashear sin cambios del adopter side.
+
+**Lección arquitectónica**: cuando 22.h agregue per-provider feature parity (top_p, presence_penalty, frequency_penalty, etc. configurables), cada nuevo sampling parameter DEBE rutear vía `_apply_sampling_params()` — el AST drift gate lo enforza automáticamente. La locked-model machinery se vuelve la red de seguridad estructural para todos los reasoning models futuros sin trabajo adicional.
+
 Cross-cutting; beneficia los 7 backends sin tocar features adopter-visible.
 
 - **Trace enrichment**: extender `ModelResponse` con `model_name`, `provider_name`, `finish_reason`, `retry_count`. Actualizar `emit_model_call`/`emit_model_response` para emitir esos + breakdown de usage tal como llega del provider (no agregando, exponiendo verbatim).
