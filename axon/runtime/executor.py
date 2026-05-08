@@ -215,13 +215,33 @@ class ModelResponse:
     """Normalized response from a model call.
 
     Attributes:
-        content:     The textual content of the response.
-        structured:  Parsed structured data (if output schema
-                     was provided and model returned JSON).
-        tool_calls:  Any tool invocations returned by the model.
-        confidence:  Model-reported confidence (0.0–1.0), if any.
-        usage:       Token usage statistics.
-        raw:         The raw provider response for debugging.
+        content:        The textual content of the response.
+        structured:     Parsed structured data (if output schema
+                        was provided and model returned JSON).
+        tool_calls:     Any tool invocations returned by the model.
+        confidence:     Model-reported confidence (0.0–1.0), if any.
+        usage:          Token usage statistics.
+        raw:            The raw provider response for debugging.
+        model_name:     The model identifier that produced this
+                        response (e.g., ``"claude-3-5-sonnet-20241022"``,
+                        ``"gpt-4o-mini"``). v1.16.1 — empty string
+                        when the transport layer did not surface it,
+                        which is OK for backward compatibility but
+                        means the trace event will lack model_name.
+        provider_name:  The provider that processed the call
+                        (``"anthropic"``, ``"openai"``, ``"kimi"``,
+                        ...). Distinct from ``model_name`` because
+                        OpenRouter routes a single call to underlying
+                        providers — the response surfaces both.
+        finish_reason:  Why the model stopped emitting tokens.
+                        Common values across providers: ``"stop"``,
+                        ``"length"`` (max_tokens hit), ``"tool_calls"``,
+                        ``"content_filter"``, ``"safety"``. Empty
+                        string when not surfaced by the transport.
+        retry_count:    How many transport-layer retries the call
+                        survived before succeeding. ``0`` for first-
+                        attempt success; positive when 429/5xx
+                        retries fired before the response landed.
     """
 
     content: str = ""
@@ -230,6 +250,13 @@ class ModelResponse:
     confidence: float | None = None
     usage: dict[str, int] = field(default_factory=dict)
     raw: Any = None
+    # v1.16.1 — observability enrichment. All four fields default to
+    # empty/zero so existing call sites that construct ``ModelResponse``
+    # without these args remain valid.
+    model_name: str = ""
+    provider_name: str = ""
+    finish_reason: str = ""
+    retry_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
@@ -242,6 +269,14 @@ class ModelResponse:
             result["confidence"] = self.confidence
         if self.usage:
             result["usage"] = self.usage
+        if self.model_name:
+            result["model_name"] = self.model_name
+        if self.provider_name:
+            result["provider_name"] = self.provider_name
+        if self.finish_reason:
+            result["finish_reason"] = self.finish_reason
+        if self.retry_count:
+            result["retry_count"] = self.retry_count
         return result
 
 
@@ -2346,10 +2381,20 @@ class Executor:
         # Build the user prompt, injecting context from prior steps
         user_prompt = self._build_user_prompt(step, ctx)
 
+        # v1.16.1 — model_name / provider_name pulled from the client
+        # when available so the trace records what's about to be called
+        # (useful for debug even if the call fails before producing a
+        # response). The client may not expose these (e.g., the
+        # deterministic test client); in that case the trace omits them.
+        model_name = str(getattr(self._client, "model_name", "") or "")
+        provider_name = str(getattr(self._client, "provider_name", "") or "")
+
         tracer.emit_model_call(
             step_name=step_name,
             prompt_tokens=len(user_prompt),
             data={"effort": unit.effort, "prompt_preview": user_prompt[:200]},
+            model_name=model_name,
+            provider_name=provider_name,
         )
 
         call_start = time.perf_counter()
@@ -2363,6 +2408,13 @@ class Executor:
                 effort=unit.effort,
                 failure_context=failure_context,
             )
+        except AxonRuntimeError:
+            # v1.16.1 — typed transport errors (RateLimitError /
+            # AuthError / ContextLengthError / SafetyBreachError /
+            # ModelNotFoundError) propagate verbatim so adopters can
+            # ``except`` the specific failure mode. Pre-v1.16.1 every
+            # error became a generic ModelCallError, hiding the cause.
+            raise
         except Exception as exc:
             raise ModelCallError(
                 message=f"Model call failed for step '{step_name}': {exc}",
@@ -2384,16 +2436,27 @@ class Executor:
             }
         ))
 
-        tracer.emit(
-            TraceEventType.MODEL_RESPONSE,
+        # v1.16.1 — emit MODEL_RESPONSE through the typed helper so the
+        # observability fields populated by the transport layer
+        # (model_name / provider_name / finish_reason / retry_count /
+        # usage breakdown) all flow into the trace. Pre-v1.16.1 the
+        # event captured only content_length + structured presence —
+        # impossible to debug "which model returned what, with how
+        # many tokens, after how many retries" from a trace alone.
+        tracer.emit_model_response(
             step_name=step_name,
+            duration_ms=call_duration,
             data={
                 "content_length": len(response.content),
                 "has_structured": response.structured is not None,
                 "has_tool_calls": bool(response.tool_calls),
                 "confidence": response.confidence,
             },
-            duration_ms=call_duration,
+            model_name=response.model_name or model_name,
+            provider_name=response.provider_name or provider_name,
+            finish_reason=response.finish_reason,
+            retry_count=response.retry_count,
+            usage=response.usage or None,
         )
 
         # Record in context message history
