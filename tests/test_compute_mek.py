@@ -343,7 +343,12 @@ class TestDispatcherMEKIntegration:
 
         assert result["result"] == 8
         assert result["output_name"] == "total"
-        assert result["tier"] == "python"
+        # Tier accepts python / rust / c — the MEK kernel selects the
+        # fastest available native tier per (op, dtype). The companion
+        # `test_dispatch_without_mek_bridge` already uses this tolerant
+        # check; pre-Fase-23.i this test was hardcoded to "python" and
+        # broke as soon as the Rust tier shipped.
+        assert result["tier"] in ("python", "rust", "c")
         # Epistemic fields present
         assert result["latent_pointer"].startswith("PTR_LATENT_compute_add_")
         assert result["deterministic"] is True
