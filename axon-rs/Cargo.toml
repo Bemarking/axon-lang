@@ -1,6 +1,6 @@
 [package]
 name = "axon-lang"
-version = "1.17.0"
+version = "1.18.0"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
 edition = "2021"
 rust-version = "1.95"
@@ -66,3 +66,15 @@ urlencoding = "2"
 # §Fase 11.c — ReplayLog trait needs async for the enterprise-adapter
 # shape (Postgres writes) even though the in-memory impl is sync.
 async-trait = "0.1"
+# §Fase 24.b — Native Rust backends shared infra.
+# `regex`: compile-time `LOCKED_PARAMETER_MODELS` patterns (port of
+#   v1.16.2 — Kimi K2.x / OpenAI o1 / OpenAI o3 dispatch).
+# `futures`: `Stream` trait + `StreamExt` for the streaming response
+#   surface (`Backend::stream() -> Pin<Box<dyn Stream<...>>>`).
+# `tiktoken-rs`: offline tokenizer for OpenAI / Kimi / GLM
+#   (pre-resolved BPE tables); Anthropic uses an HTTP-API tokenizer
+#   when needed; Gemini falls back to HTTP `count_tokens` with an
+#   offline estimate cache for the synchronous path.
+regex = "1"
+futures = "0.3"
+tiktoken-rs = "0.6"

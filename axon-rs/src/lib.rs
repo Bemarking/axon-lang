@@ -61,6 +61,13 @@ pub mod runtime;
 /// handler stack + Free-Monad interpretation of CPS-lowered IR
 /// (consumes the JSON IR emitted by the Python frontend in 23.b/c/d).
 pub mod effects;
+/// §Fase 24.b — Native Rust LLM backends. Per-provider async clients
+/// behind a `Backend` trait + `Registry`. Per-provider modules
+/// (anthropic.rs / openai.rs / gemini.rs / kimi.rs / glm.rs / ollama.rs
+/// / openrouter.rs) land in 24.c–24.i; this module ships the shared
+/// infra (trait + types + error + retry + observability + locked_model
+/// + tokens dispatch).
+pub mod backends;
 /// §ESK Fase 6 — Epistemic Security Kernel. Port of `axon/runtime/esk/`.
 pub mod esk;
 /// CLI handlers for the ESK audit commands (dossier, sbom, audit, evidence-package).
