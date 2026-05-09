@@ -28,15 +28,21 @@
 //! in-flight reconnect tokens; worst-case the client sees a
 //! `ForgedOrRotated` error and re-authenticates via the normal
 //! session-establishment flow.
+//!
+//! §Fase 25.h delegation note
+//! --------------------------
+//! As of 2026-05-08 the HMAC-SHA256 + base64url + hex + constant-
+//! time compare + record-separator parsing primitives all live in
+//! the C23 `axon-csys` crate (FIPS 180-4 + FIPS 198-1
+//! algorithmically compliant). This module is now a chrono-aware
+//! wrapper that delegates the wire crypto to
+//! `axon_csys::ContinuityWire` and adds the `expires_at <= now()`
+//! check + the typed `Expired` error variant. Public surface
+//! preserved unchanged for callers (`ContinuityToken`,
+//! `ContinuityTokenError`, `ContinuityTokenSigner`).
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
+use axon_csys::{ContinuityWire, ContinuityWireError};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-use subtle::ConstantTimeEq;
-
-type HmacSha256 = Hmac<Sha256>;
 
 // ── Errors ───────────────────────────────────────────────────────────
 
@@ -49,9 +55,7 @@ pub enum ContinuityTokenError {
     /// rotated its signing key.
     ForgedOrRotated,
     /// Token was well-formed but already expired.
-    Expired {
-        expired_at: DateTime<Utc>,
-    },
+    Expired { expired_at: DateTime<Utc> },
 }
 
 impl std::fmt::Display for ContinuityTokenError {
@@ -73,6 +77,18 @@ impl std::fmt::Display for ContinuityTokenError {
 }
 
 impl std::error::Error for ContinuityTokenError {}
+
+impl From<ContinuityWireError> for ContinuityTokenError {
+    fn from(value: ContinuityWireError) -> Self {
+        match value {
+            ContinuityWireError::ForgedOrRotated => Self::ForgedOrRotated,
+            // Every other wire error surfaces as Malformed with the
+            // C-side message preserved (no information loss for the
+            // adopter / observability path).
+            other => Self::Malformed(other.to_string()),
+        }
+    }
+}
 
 // ── Token body ──────────────────────────────────────────────────────
 
@@ -111,14 +127,21 @@ impl ContinuityTokenSigner {
         ContinuityTokenSigner { key: key.into() }
     }
 
-    /// Produce the wire-encoded token: `base64url(session_id || 0x1e
-    /// || expiry_ms || 0x1e || HMAC(session_id || 0x1e || expiry_ms))`.
+    /// Produce the wire-encoded token. The wire format is
+    /// `base64url_no_pad(session_id || 0x1e || expiry_ms || 0x1e || hex_lower(HMAC-SHA256))`,
+    /// computed by the C23 kernel in `axon-csys`.
     pub fn sign(&self, token: &ContinuityToken) -> String {
         let expiry_ms = token.expires_at.timestamp_millis();
-        let body = format!("{}\x1e{expiry_ms}", token.session_id);
-        let mac = self.hmac_body(&body);
-        let encoded = format!("{body}\x1e{}", hex(&mac));
-        URL_SAFE_NO_PAD.encode(encoded.as_bytes())
+        // The C kernel rejects `session_id` containing 0x1e; the Rust
+        // ContinuityToken type does not enforce that, so this can
+        // panic on adversarial input. In practice session_ids are
+        // adopter-supplied UUIDs that never contain 0x1e — and
+        // panicking is the right response if an adopter manages to
+        // smuggle one in (it indicates programmer error, not a runtime
+        // condition we should silently absorb). Document the panic
+        // here so the contract is clear.
+        ContinuityWire::sign(&self.key, &token.session_id, expiry_ms)
+            .expect("ContinuityToken.session_id must not contain 0x1e and must be ≤ 1024 bytes")
     }
 
     /// Verify + parse. Returns the bound `ContinuityToken` on
@@ -127,88 +150,24 @@ impl ContinuityTokenSigner {
         &self,
         raw: &str,
     ) -> Result<ContinuityToken, ContinuityTokenError> {
-        let decoded = URL_SAFE_NO_PAD.decode(raw.as_bytes()).map_err(|e| {
-            ContinuityTokenError::Malformed(format!("base64: {e}"))
-        })?;
-        let text = std::str::from_utf8(&decoded).map_err(|e| {
-            ContinuityTokenError::Malformed(format!("utf8: {e}"))
-        })?;
-        let parts: Vec<&str> = text.split('\x1e').collect();
-        if parts.len() != 3 {
-            return Err(ContinuityTokenError::Malformed(format!(
-                "expected 3 fields, got {}",
-                parts.len()
-            )));
-        }
-        let session_id = parts[0].to_string();
-        let expiry_ms: i64 = parts[1].parse().map_err(|e| {
-            ContinuityTokenError::Malformed(format!("expiry: {e}"))
-        })?;
-        let expected_mac_hex = parts[2];
-
-        let body = format!("{session_id}\x1e{expiry_ms}");
-        let actual_mac = self.hmac_body(&body);
-        let expected_mac = hex_decode(expected_mac_hex).ok_or(
-            ContinuityTokenError::Malformed("mac hex".into()),
-        )?;
-        if !bool::from(actual_mac.ct_eq(&expected_mac)) {
-            return Err(ContinuityTokenError::ForgedOrRotated);
-        }
-
-        let expires_at = DateTime::<Utc>::from_timestamp_millis(expiry_ms)
-            .ok_or(ContinuityTokenError::Malformed(
-                "expiry timestamp out of range".into(),
-            ))?;
+        let (session_id, expiry_ms) = ContinuityWire::verify(&self.key, raw)?;
+        let expires_at =
+            DateTime::<Utc>::from_timestamp_millis(expiry_ms).ok_or_else(|| {
+                ContinuityTokenError::Malformed(
+                    "expiry timestamp out of range".into(),
+                )
+            })?;
         if expires_at <= Utc::now() {
             return Err(ContinuityTokenError::Expired { expired_at: expires_at });
         }
-
         Ok(ContinuityToken {
             session_id,
             expires_at,
         })
     }
-
-    fn hmac_body(&self, body: &str) -> Vec<u8> {
-        let mut mac = HmacSha256::new_from_slice(&self.key)
-            .expect("HMAC-SHA256 accepts any key length");
-        mac.update(body.as_bytes());
-        mac.finalize().into_bytes().to_vec()
-    }
 }
 
-// ── Tiny hex helpers (kept local to avoid a new dep) ─────────────────
-
-fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
-}
-
-fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(s.len() / 2);
-    for chunk in s.as_bytes().chunks(2) {
-        let hi = match chunk[0] {
-            b'0'..=b'9' => chunk[0] - b'0',
-            b'a'..=b'f' => chunk[0] - b'a' + 10,
-            b'A'..=b'F' => chunk[0] - b'A' + 10,
-            _ => return None,
-        };
-        let lo = match chunk[1] {
-            b'0'..=b'9' => chunk[1] - b'0',
-            b'a'..=b'f' => chunk[1] - b'a' + 10,
-            b'A'..=b'F' => chunk[1] - b'A' + 10,
-            _ => return None,
-        };
-        out.push((hi << 4) | lo);
-    }
-    Some(out)
-}
+// ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -230,18 +189,17 @@ mod tests {
 
     #[test]
     fn verify_rejects_tampered_session_id() {
+        use axon_csys::{b64url_decode, b64url_encode};
         let signer = ContinuityTokenSigner::new([7u8; 32]);
         let token = ContinuityToken::new("sess-a", ChronoDuration::minutes(15));
         let wire = signer.sign(&token);
-        // Decode, mutate the session id, re-encode without
-        // refreshing the HMAC.
-        let decoded_bytes = URL_SAFE_NO_PAD.decode(wire.as_bytes()).unwrap();
+        let decoded_bytes = b64url_decode(&wire).unwrap();
         let text = std::str::from_utf8(&decoded_bytes).unwrap();
         let tampered = text.replacen("sess-a", "sess-b", 1);
-        let tampered_wire = URL_SAFE_NO_PAD.encode(tampered.as_bytes());
+        let tampered_wire = b64url_encode(tampered.as_bytes());
 
         let err = signer.verify(&tampered_wire).unwrap_err();
-        matches!(err, ContinuityTokenError::ForgedOrRotated);
+        assert!(matches!(err, ContinuityTokenError::ForgedOrRotated));
     }
 
     #[test]
@@ -251,7 +209,7 @@ mod tests {
         let token = ContinuityToken::new("sess-1", ChronoDuration::minutes(15));
         let wire = s1.sign(&token);
         let err = s2.verify(&wire).unwrap_err();
-        matches!(err, ContinuityTokenError::ForgedOrRotated);
+        assert!(matches!(err, ContinuityTokenError::ForgedOrRotated));
     }
 
     #[test]
@@ -260,23 +218,23 @@ mod tests {
         let token = ContinuityToken::new("sess-1", ChronoDuration::seconds(-1));
         let wire = signer.sign(&token);
         let err = signer.verify(&wire).unwrap_err();
-        matches!(err, ContinuityTokenError::Expired { .. });
+        assert!(matches!(err, ContinuityTokenError::Expired { .. }));
     }
 
     #[test]
     fn verify_rejects_malformed_base64() {
         let signer = ContinuityTokenSigner::new([7u8; 32]);
         let err = signer.verify("not-valid-base64!@#").unwrap_err();
-        matches!(err, ContinuityTokenError::Malformed(_));
+        assert!(matches!(err, ContinuityTokenError::Malformed(_)));
     }
 
     #[test]
     fn verify_rejects_wrong_field_count() {
-        // Encode a raw body that only has 2 sections instead of 3.
+        use axon_csys::b64url_encode;
         let signer = ContinuityTokenSigner::new([7u8; 32]);
-        let bad = URL_SAFE_NO_PAD.encode(b"sess-1\x1e9999");
+        let bad = b64url_encode(b"sess-1\x1e9999");
         let err = signer.verify(&bad).unwrap_err();
-        matches!(err, ContinuityTokenError::Malformed(_));
+        assert!(matches!(err, ContinuityTokenError::Malformed(_)));
     }
 
     #[test]
@@ -284,21 +242,21 @@ mod tests {
         // Regression: two invalid tokens with wildly different MACs
         // should both fail with `ForgedOrRotated`, not with a
         // timing-observable length-short-circuit.
+        use axon_csys::{b64url_decode, b64url_encode};
         let signer = ContinuityTokenSigner::new([7u8; 32]);
         let token = ContinuityToken::new("sess-1", ChronoDuration::minutes(5));
         let wire_good = signer.sign(&token);
 
-        // Flip a single hex digit in the MAC section.
-        let decoded = URL_SAFE_NO_PAD.decode(wire_good.as_bytes()).unwrap();
+        // Flip the last char of the MAC.
+        let decoded = b64url_decode(&wire_good).unwrap();
         let mut text = std::str::from_utf8(&decoded).unwrap().to_string();
         let len = text.len();
-        // Flip last char.
         let last = text.chars().last().unwrap();
         let flipped = if last == 'a' { 'b' } else { 'a' };
         text.replace_range(len - 1.., &flipped.to_string());
-        let wire_bad = URL_SAFE_NO_PAD.encode(text.as_bytes());
+        let wire_bad = b64url_encode(text.as_bytes());
 
         let err = signer.verify(&wire_bad).unwrap_err();
-        matches!(err, ContinuityTokenError::ForgedOrRotated);
+        assert!(matches!(err, ContinuityTokenError::ForgedOrRotated));
     }
 }

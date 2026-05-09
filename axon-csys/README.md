@@ -18,7 +18,7 @@ adopters consume without ever writing `unsafe` themselves.
 | `c-src/buffer/`  | 25.d — cache-line slab allocator + huge-pages     | ✅ shipped |
 | `c-src/effects/` | 25.e — algebraic effects FSM (computed gotos)     | ✅ shipped |
 | `c-src/tokens/`  | 25.g — BPE tokenizer (`#embed` merges table) + SIMD UTF-8 | ✅ shipped |
-| `c-src/crypto/`  | 25.h — HMAC-SHA256 continuity token (FIPS)        | pending |
+| `c-src/crypto/`  | 25.h — SHA-256 + HMAC-SHA256 + base64url + continuity token (FIPS-friendly) | ✅ shipped |
 
 ## Build
 

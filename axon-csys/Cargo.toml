@@ -40,3 +40,11 @@ cc = "1.2"
 # Production builds DO NOT link tiktoken-rs (the whole point of 25.g
 # was to remove the dep); it is only present in the test target.
 tiktoken-rs = "0.6"
+# §Fase 25.h — crypto drift gate. The Rust ecosystem reference impls
+# for SHA-256 / HMAC / base64url-no-pad / constant-time compare. Not
+# linked into production binaries — purely cross-validation against
+# our in-house C kernel.
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+subtle = "2"

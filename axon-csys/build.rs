@@ -193,6 +193,17 @@ fn main() {
     //       cl100k / o200k hot paths while keeping fancy-regex (which
     //       tiktoken-rs already pulls transitively).
     build.file(c_src.join("tokens").join("bpe.c"));
+    // 25.h: HMAC-SHA256 + base64url + hex + constant-time compare +
+    //       continuity-token wire format. Pure-C FIPS-friendly crypto
+    //       (FIPS 180-4 + FIPS 198-1 algorithmically compliant; not
+    //       formally validated). Replaces sha2 + hmac + base64 + subtle
+    //       crates as the runtime dependency for the PEM continuity
+    //       token; the Rust crates persist only as dev-dependencies in
+    //       axon-csys/tests/crypto.rs for cross-validation drift gates.
+    build.file(c_src.join("crypto").join("sha256.c"));
+    build.file(c_src.join("crypto").join("hmac.c"));
+    build.file(c_src.join("crypto").join("util.c"));
+    build.file(c_src.join("crypto").join("continuity.c"));
 
     build.compile("axon_csys");
 
