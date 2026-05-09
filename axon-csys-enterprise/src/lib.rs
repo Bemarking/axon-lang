@@ -48,6 +48,7 @@
 
 #![doc(html_no_source)]
 
+pub mod audit_log;
 pub mod crypto;
 pub mod probe;
 

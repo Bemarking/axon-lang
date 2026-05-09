@@ -111,12 +111,13 @@ fn main() {
     //
     // 27.b: build-infra probe.
     // 27.c: c-src/crypto/fips_glue.c  (BoringSSL/OpenSSL-FIPS bridge) — gated.
+    // 27.d: c-src/audit/log.c         (tamper-evident mmap audit log).
     // Subsequent sub-fases append their .c files:
-    //   27.d: c-src/audit/log.c         (mmap append-only kernel)
     //   27.e: c-src/tokens/*.c          (vertical BPE registration helpers)
     //   27.f: c-src/audit/evidence.c    (byte-deterministic ZIP encoder)
     //   27.g: c-src/shield/phi_scrub.c  (SIMD PHI scrubber, optional)
     build.file(c_src.join("probe").join("probe.c"));
+    build.file(c_src.join("audit").join("log.c"));
 
     // ─── 27.c — FIPS glue source (conditionally compiled) ─────────────────
     //
@@ -252,6 +253,19 @@ fn main() {
     // emit unconditionally.
     if !cfg!(target_env = "msvc") && !cfg!(target_os = "macos") {
         println!("cargo:rustc-link-lib=m");
+    }
+
+    // ─── pthread link for the audit log mutex (POSIX only) ────────────────
+    //
+    // 27.d's audit log uses pthread_mutex_t for the writer's append
+    // serialization on POSIX. Modern glibc bundles pthread into libc.so
+    // (since glibc 2.34) but musl, BSD, and older glibcs require explicit
+    // `-lpthread`. macOS libSystem covers it. MSVC uses CRITICAL_SECTION
+    // (no link required). Linking unconditionally on non-MSVC + non-macOS
+    // is harmless and matches the convention OSS axon-csys' future
+    // pthread-using kernels will adopt.
+    if !cfg!(target_env = "msvc") && !cfg!(target_os = "macos") {
+        println!("cargo:rustc-link-lib=pthread");
     }
 
     // ─── Re-build triggers ────────────────────────────────────────────────
