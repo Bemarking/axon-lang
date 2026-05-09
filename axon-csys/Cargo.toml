@@ -48,3 +48,38 @@ sha2 = "0.10"
 hmac = "0.12"
 base64 = "0.22"
 subtle = "2"
+# §Fase 25.j — fuzz drift gate uses a deterministic seedable RNG so
+# CI runs are reproducible. Pinned to 0.9 to align with the prod
+# `rand` dep already in axon-rs (no transitive bloat in axon-csys).
+rand = { version = "0.9", default-features = false, features = ["std", "std_rng"] }
+# §Fase 25.j — criterion drives the cross-stack benchmarks. The
+# `html_reports` feature emits target/criterion/<bench>/index.html
+# for visual inspection; CI lanes consume the JSON output for
+# regression gating in 25.k.
+criterion = { version = "0.5", default-features = false, features = ["html_reports", "cargo_bench_support"] }
+
+# §Fase 25.j — bench registration. Each entry corresponds to a
+# `benches/<name>.rs` file; `harness = false` lets criterion install
+# its own runner (the cargo default is libtest, which doesn't know
+# how to drive criterion's groups + sample-size logic).
+[[bench]]
+name = "sha256"
+harness = false
+[[bench]]
+name = "hmac"
+harness = false
+[[bench]]
+name = "base64"
+harness = false
+[[bench]]
+name = "bpe"
+harness = false
+[[bench]]
+name = "audio"
+harness = false
+[[bench]]
+name = "buffer"
+harness = false
+[[bench]]
+name = "effects"
+harness = false
