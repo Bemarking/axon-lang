@@ -1,6 +1,6 @@
 [package]
 name = "axon-lang"
-version = "1.19.0"
+version = "1.19.1"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
 edition = "2021"
 rust-version = "1.95"
@@ -79,4 +79,4 @@ async-trait = "0.1"
 #   the synchronous path.
 regex = "1"
 futures = "0.3"
-axon-csys = { path = "../axon-csys", version = "=0.1.0" }
+axon-csys = { path = "../axon-csys", version = "=0.1.1" }
