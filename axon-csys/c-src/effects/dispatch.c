@@ -350,6 +350,15 @@ AxonCsysDispatchResult axon_csys_effects_run(
     }
 
 #if AXON_CSYS_USE_COMPUTED_GOTOS
+    /* Labels-as-values + computed goto are GNU C extensions; under
+     * `-Werror=pedantic` gcc/clang would otherwise reject the
+     * `&&label` and `goto *expr` syntax. We use them deliberately
+     * (paper §5 — atomic-jump dispatch) and gate behind
+     * `AXON_CSYS_USE_COMPUTED_GOTOS` (which is 0 on MSVC where the
+     * extension is unavailable). Suppress the pedantic noise for
+     * just this block; the switch fallback below stays portable. */
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wpedantic"
     static void *const opcode_labels[AXON_CSYS_OP_COUNT] = {
         [AXON_CSYS_OP_PASSTHROUGH]   = &&label_passthrough,
         [AXON_CSYS_OP_PERFORM]       = &&label_perform,
@@ -358,6 +367,7 @@ AxonCsysDispatchResult axon_csys_effects_run(
         [AXON_CSYS_OP_ABORT]         = &&label_abort,
         [AXON_CSYS_OP_FORWARD]       = &&label_forward,
     };
+#  pragma GCC diagnostic pop
 #endif
 
     /* ── Main dispatch loop ──────────────────────────────────────── */
@@ -411,7 +421,12 @@ dispatch:
         if (instr->opcode >= AXON_CSYS_OP_COUNT) {
             RETURN_RESULT(result_error(AXON_CSYS_ERR_INTERNAL, UINT32_MAX, UINT32_MAX));
         }
+        /* Computed-goto dispatch — GNU C extension; suppress
+         * `-Wpedantic` for the single statement. */
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wpedantic"
         goto *opcode_labels[instr->opcode];
+#  pragma GCC diagnostic pop
 #else
         switch (instr->opcode) {
             case AXON_CSYS_OP_PASSTHROUGH:   goto label_passthrough;

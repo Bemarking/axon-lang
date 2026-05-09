@@ -29,8 +29,14 @@ void axon_csys_hmac_sha256_init(
         memset(k_prime + AXON_CSYS_SHA256_DIGEST_SIZE, 0,
                AXON_CSYS_SHA256_BLOCK_SIZE - AXON_CSYS_SHA256_DIGEST_SIZE);
     } else {
-        /* §5 step 3 — short key: zero-pad in place. */
-        memcpy(k_prime, key, key_len);
+        /* §5 step 3 — short key: zero-pad in place. The NULL-guard
+         * above permits `(key == NULL, key_len == 0)`; standards-
+         * compliant memcpy is a no-op at len 0 even with NULL but
+         * clang-analyzer's NonNullParamChecker flags the call
+         * regardless. Explicit length guard teaches the checker. */
+        if (key_len > 0u) {
+            memcpy(k_prime, key, key_len);
+        }
         memset(k_prime + key_len, 0, AXON_CSYS_SHA256_BLOCK_SIZE - key_len);
     }
 

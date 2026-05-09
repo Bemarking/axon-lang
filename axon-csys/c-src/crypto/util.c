@@ -255,6 +255,28 @@ bool axon_csys_b64url_decode(
     if (out_cap < need) {
         return false;
     }
+    /* Fast-path the trivial empty case explicitly. The decode loop
+     * below writes to `out[j]`; clang-analyzer's NullDereference
+     * checker can't follow the chain (`out_cap >= need` and `need
+     * > 0` together imply `out != NULL`) across the helper
+     * `axon_csys_b64url_decoded_len`, so it flags the loop body's
+     * `out[j]` as a potential null deref. The early return below
+     * teaches the checker that the loop is never reached when
+     * `out` is permitted-NULL (i.e. when `len == 0`). */
+    if (len == 0u) {
+        if (out_len != NULL) {
+            *out_len = 0u;
+        }
+        return true;
+    }
+    /* Belt-and-braces: by here `len > 0` so `need > 0` so
+     * `out_cap > 0` so (per precondition) `out != NULL`. The
+     * explicit defensive check teaches clang-analyzer the same
+     * thing — without it the static checker still flags the
+     * `out[j]` writes below as potential null derefs. */
+    if (out == NULL) {
+        return false;
+    }
     size_t i = 0;
     size_t j = 0;
     /* Full 4 → 3 groups. */

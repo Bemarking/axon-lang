@@ -128,9 +128,18 @@ AxonCsysContinuityError axon_csys_continuity_sign(
         }
     }
 
-    /* Build sign body = session_id || 0x1e || decimal(expiry_ms). */
+    /* Build sign body = session_id || 0x1e || decimal(expiry_ms).
+     * Guard the memcpy on `session_id_len > 0` because the
+     * NULL-arg check above permits `(session_id == NULL,
+     * session_id_len == 0)`. The C standard says memcpy with len 0
+     * is a no-op even on NULL pointers, but clang-analyzer's
+     * `core.NonNullParamChecker` flags the memcpy regardless. The
+     * explicit guard teaches the checker AND matches the principle
+     * of "no operation when there's nothing to operate on". */
     char body[AXON_CSYS_CONT_MAX_SESSION_ID + 1u + AXON_CSYS_CONT_I64_MAX_CHARS + 1u];
-    memcpy(body, session_id, session_id_len);
+    if (session_id_len > 0u) {
+        memcpy(body, session_id, session_id_len);
+    }
     body[session_id_len] = AXON_CSYS_CONT_RECORD_SEPARATOR;
     char expiry_str[AXON_CSYS_CONT_I64_MAX_CHARS + 1u];
     size_t expiry_len = axon_csys_cont_format_i64(expiry_ms, expiry_str, sizeof expiry_str);
