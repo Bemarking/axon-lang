@@ -26,6 +26,7 @@
 
 pub mod audio;
 pub mod buffer;
+pub mod crypto;
 pub mod effects;
 pub mod probe;
 pub mod tokens;
@@ -35,6 +36,10 @@ pub use audio::{
     ResampleError,
 };
 pub use buffer::{BufferPool, BufferPoolSnapshot, PoolClass, Slab};
+pub use crypto::{
+    b64url_decode, b64url_encode, ct_eq, hex_decode, hex_encode, hmac_sha256, sha256,
+    ContinuityWire, ContinuityWireError, HmacSha256, Sha256, SHA256_BLOCK_SIZE, SHA256_DIGEST_SIZE,
+};
 pub use effects::{
     BuiltWire, Clause, DispatchError, DispatchResult, Dispatcher, EffectDecl, Frame, Instruction,
     Opcode, TraceEvent, Value as EffectValue, WireBuilder,
