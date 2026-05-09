@@ -90,3 +90,33 @@ base64 = "0.22"
 subtle = "2"
 # Deterministic seedable RNG for the fuzz drift gate.
 rand = { version = "0.9", default-features = false, features = ["std", "std_rng"] }
+# §Fase 27.i — criterion benchmarks measuring FIPS-routed crypto
+# overhead vs OSS pure-C, audit log throughput (target ≥10k events/sec
+# single-threaded per plan vivo §6), evidence packager build+verify
+# at varying file counts, PHI scrubber throughput (~250 MB/s scalar
+# baseline; SIMD upgrade target 1+ GB/s in 27.g.2). Same `=0.5`
+# pin OSS axon-csys uses to keep CI cache hits stable.
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# ─── Bench targets (criterion auto-discovers `benches/*.rs` files
+#     when `harness = false` is declared per-bench) ────────────────────
+
+[[bench]]
+name = "sha256"
+harness = false
+
+[[bench]]
+name = "hmac"
+harness = false
+
+[[bench]]
+name = "audit_log"
+harness = false
+
+[[bench]]
+name = "evidence"
+harness = false
+
+[[bench]]
+name = "phi_scrub"
+harness = false
