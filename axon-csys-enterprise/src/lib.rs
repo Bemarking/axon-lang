@@ -51,6 +51,7 @@
 pub mod audit_log;
 pub mod crypto;
 pub mod probe;
+pub mod tokens;
 
 // ──────────────────────────────────────────────────────────────────────
 // Top-level convenience re-exports — the [`crypto`] module is the
