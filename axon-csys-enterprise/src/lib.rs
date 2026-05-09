@@ -51,6 +51,7 @@
 pub mod audit_log;
 pub mod crypto;
 pub mod evidence;
+pub mod phi_scrub;
 pub mod probe;
 pub mod tokens;
 

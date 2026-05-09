@@ -118,6 +118,7 @@ fn main() {
     //   27.g: c-src/shield/phi_scrub.c  (SIMD PHI scrubber, optional)
     build.file(c_src.join("probe").join("probe.c"));
     build.file(c_src.join("audit").join("log.c"));
+    build.file(c_src.join("shield").join("phi_scrub.c"));
 
     // ─── 27.c — FIPS glue source (conditionally compiled) ─────────────────
     //
