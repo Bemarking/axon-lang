@@ -1,0 +1,517 @@
+# §Fase 25.i — axon-csys cross-platform C23 CI matrix.
+#
+# Production-grade matrix exercising the axon-csys C23 metal-bound
+# kernels across every realistic adopter toolchain. Three tiers run
+# in parallel on every push + pull request:
+#
+#   1. CORE              — Linux gcc-13 / Linux clang-17 / macOS clang
+#                          / Windows MSVC. Each lane builds debug +
+#                          release, runs the full test suite under
+#                          both profiles (release exercises optimizer-
+#                          dependent UB), then enforces fmt + clippy
+#                          warnings-as-errors.
+#   2. HARDENING         — AddressSanitizer + UndefinedBehaviorSanitizer
+#                          + ThreadSanitizer (each in its own job, all
+#                          on Linux × clang nightly with `-Zbuild-std`)
+#                          + valgrind (Linux × gcc, full leak-check) +
+#                          cppcheck + clang-tidy. Catches FFI memory
+#                          bugs, signed-overflow / null-deref UB,
+#                          races in concurrent kernel paths (slab
+#                          allocator + FSM dispatcher + tokeniser),
+#                          and stylistic / safety issues the unit
+#                          tests miss.
+#   3. CROSS-ARCH        — Linux/aarch64 (Graviton/RPi/M-class) build
+#                          + test, plus a musl-libc smoke build (Alpine
+#                          container) to verify portability beyond
+#                          glibc. macOS Apple-Silicon ARM64 is already
+#                          covered by the CORE macos lane.
+#   4. DRIFT + LINT      — D12 lint (no `cc::Build::new()` outside
+#                          `axon-csys/build.rs`), drift gate verifying
+#                          `merges_*.bin` byte-identical to
+#                          `tools/gen_merges.py` output.
+#
+# Path filtering is intentionally absent — every PR exercises the
+# full matrix because axon-rs / axon-frontend depend on axon-csys
+# transitively, and a Cargo.lock change anywhere can affect linkage.
+# The matrix wall time is ~10-15 minutes (jobs run in parallel);
+# acceptable cost for the audit + safety posture.
+#
+# Founder principle (25.i): "100% nivel producción, no MVP" — every
+# realistic adopter toolchain is exercised; sanitizer + valgrind + ARM
+# + musl coverage is non-optional; toolchain versions are pinned so
+# regressions are reproducible.
+name: axon-csys
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Opt into Node.js 24 for every JS action — keep parity with ci.yml.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # 1. CORE — multi-OS × multi-compiler build + test matrix.
+  # ─────────────────────────────────────────────────────────────────────
+  core:
+    name: core (${{ matrix.os }} / ${{ matrix.toolchain }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux gcc-13 — pinned to the version that ships -std=c23 first
+          # (gcc 13 introduced the C23 alias for what was previously c2x).
+          - os: ubuntu-latest
+            toolchain: gcc-13
+            install: |
+              sudo apt-get update
+              sudo apt-get install -y gcc-13 g++-13
+              echo "CC=gcc-13" >> "$GITHUB_ENV"
+              echo "CXX=g++-13" >> "$GITHUB_ENV"
+            verify: gcc-13 --version
+          # Linux clang-17 — first clang release with full C23 lit support.
+          - os: ubuntu-latest
+            toolchain: clang-17
+            install: |
+              sudo apt-get update
+              sudo apt-get install -y clang-17
+              echo "CC=clang-17" >> "$GITHUB_ENV"
+              echo "CXX=clang++-17" >> "$GITHUB_ENV"
+            verify: clang-17 --version
+          # macOS Apple Clang — system default on macos-latest. Apple
+          # ships clang 15+ on Ventura+, which covers our C2x fallback.
+          - os: macos-latest
+            toolchain: apple-clang
+            install: ""
+            verify: cc --version
+          # Windows MSVC — auto-detected by cc-rs via the Visual Studio
+          # install. /std:clatest reports __STDC_VERSION__=202312L (vendor
+          # quirk, accepted by the probe whitelist in tests/probe.rs).
+          - os: windows-latest
+            toolchain: msvc
+            install: ""
+            verify: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Pin C compiler (${{ matrix.toolchain }})
+        if: matrix.install != ''
+        shell: bash
+        run: ${{ matrix.install }}
+
+      - name: Verify C compiler
+        if: matrix.verify != ''
+        shell: bash
+        run: ${{ matrix.verify }}
+
+      - name: Cache cargo registry + axon-csys target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            axon-csys/target
+          key: ${{ runner.os }}-axon-csys-${{ matrix.toolchain }}-${{ hashFiles('axon-csys/Cargo.toml', 'axon-csys/Cargo.lock', 'axon-csys/build.rs', 'axon-csys/c-src/**/*') }}
+          restore-keys: |
+            ${{ runner.os }}-axon-csys-${{ matrix.toolchain }}-
+
+      - name: cargo build (debug)
+        working-directory: axon-csys
+        run: cargo build --verbose
+
+      - name: cargo build (release)
+        working-directory: axon-csys
+        run: cargo build --release --verbose
+
+      - name: cargo test (debug)
+        working-directory: axon-csys
+        run: cargo test --verbose
+
+      - name: cargo test (release — exercises optimizer-dependent paths)
+        working-directory: axon-csys
+        run: cargo test --release --verbose
+
+      - name: cargo fmt check
+        working-directory: axon-csys
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (warnings → errors)
+        working-directory: axon-csys
+        run: cargo clippy --all-targets -- -D warnings
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 2. HARDENING — sanitizers + valgrind + static analysis.
+  # ─────────────────────────────────────────────────────────────────────
+
+  # Sanitizer matrix runs Rust nightly with `-Zsanitizer=<kind>` plus
+  # matching `CFLAGS=-fsanitize=<kind>` so the C kernels and their Rust
+  # shim are instrumented uniformly. `-Zbuild-std` recompiles the
+  # standard library with sanitizer support — slow on cold cache,
+  # ~10 minutes warm.
+  sanitizer:
+    name: sanitizer (${{ matrix.kind }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [address, undefined, thread]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly + rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install clang-17
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-17 lld-17
+          echo "CC=clang-17" >> "$GITHUB_ENV"
+          echo "CXX=clang++-17" >> "$GITHUB_ENV"
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-sanitizer-${{ matrix.kind }}-${{ hashFiles('axon-csys/Cargo.lock') }}
+
+      - name: Configure sanitizer flags
+        run: |
+          # Per-sanitizer extras: ASan benefits from leak detection +
+          # init-order checks; UBSan wants stack traces on every UB
+          # event; TSan wants verbose race reports.
+          case "${{ matrix.kind }}" in
+            address)
+              echo "ASAN_OPTIONS=detect_leaks=1:abort_on_error=1:check_initialization_order=1:strict_string_checks=1" >> "$GITHUB_ENV"
+              ;;
+            undefined)
+              echo "UBSAN_OPTIONS=print_stacktrace=1:abort_on_error=1:halt_on_error=1" >> "$GITHUB_ENV"
+              ;;
+            thread)
+              echo "TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1:report_atomic_races=1" >> "$GITHUB_ENV"
+              ;;
+          esac
+
+      - name: cargo test under ${{ matrix.kind }} sanitizer
+        working-directory: axon-csys
+        env:
+          # cc-rs picks up CFLAGS for the C kernels; rustc picks up
+          # RUSTFLAGS for the Rust shim. The two flags must match so
+          # the linker doesn't reject mixed-instrumentation objects.
+          CFLAGS: "-fsanitize=${{ matrix.kind }} -fno-omit-frame-pointer -O1 -g"
+          LDFLAGS: "-fsanitize=${{ matrix.kind }}"
+          RUSTFLAGS: "-Zsanitizer=${{ matrix.kind }} -Cforce-frame-pointers=yes -Cdebuginfo=2"
+        run: |
+          cargo +nightly test \
+            -Zbuild-std \
+            --target x86_64-unknown-linux-gnu \
+            --release \
+            --verbose
+
+  # Valgrind exercises a separate-binary code path that ASan can't —
+  # ASan instruments at compile time, valgrind at run time. Both find
+  # different classes of bug; we run both for defence in depth.
+  valgrind:
+    name: valgrind (linux × gcc)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install valgrind + gcc-13 + jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind gcc-13 g++-13 jq
+          echo "CC=gcc-13" >> "$GITHUB_ENV"
+          echo "CXX=g++-13" >> "$GITHUB_ENV"
+          valgrind --version
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            axon-csys/target
+          key: ${{ runner.os }}-axon-csys-valgrind-${{ hashFiles('axon-csys/Cargo.lock', 'axon-csys/c-src/**/*') }}
+
+      - name: Compile test binaries (no run)
+        working-directory: axon-csys
+        run: cargo test --no-run --message-format=json > test_binaries.jsonl
+
+      - name: Run every test binary under valgrind
+        working-directory: axon-csys
+        run: |
+          set -euo pipefail
+          # cargo emits one JSON line per artefact; filter to test
+          # executables only (kind == "test"). Sort + dedupe in case
+          # the same binary appears twice across compilation profiles.
+          mapfile -t binaries < <(
+            jq -r 'select(.profile.test == true and .executable != null) | .executable' \
+              < test_binaries.jsonl | sort -u
+          )
+          if [ ${#binaries[@]} -eq 0 ]; then
+            echo "❌ No test binaries discovered in cargo output"
+            exit 1
+          fi
+          echo "Discovered ${#binaries[@]} test binaries:"
+          for binary in "${binaries[@]}"; do
+            echo "  $binary"
+          done
+          # Run each binary under valgrind. --error-exitcode=99 ensures
+          # any leak / invalid-access / uninitialized-read fails CI;
+          # --leak-check=full exercises both possibly-lost and
+          # definitely-lost categories. We only fail on definite leaks
+          # (some Rust runtime tooling holds reachable allocations on
+          # purpose at process exit).
+          for binary in "${binaries[@]}"; do
+            echo ""
+            echo "→ valgrind: $binary"
+            valgrind \
+              --error-exitcode=99 \
+              --leak-check=full \
+              --show-leak-kinds=definite,indirect \
+              --errors-for-leak-kinds=definite \
+              --track-origins=yes \
+              --num-callers=30 \
+              "$binary" --test-threads=1
+          done
+
+  cppcheck:
+    name: cppcheck static analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cppcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cppcheck
+          cppcheck --version
+
+      - name: Run cppcheck on c-src/
+        working-directory: axon-csys
+        run: |
+          # `--error-exitcode=2` fails the job if cppcheck finds any
+          # issue at the configured severity. We enable warning + style
+          # + performance + portability, but skip "information" (which
+          # is overly noisy for cross-platform code) and the stylistic
+          # `unusedFunction` check (FFI exports are externally consumed
+          # but cppcheck can't know that).
+          cppcheck \
+            --error-exitcode=2 \
+            --enable=warning,style,performance,portability \
+            --suppress=missingIncludeSystem \
+            --suppress=unusedFunction \
+            --std=c23 \
+            --inline-suppr \
+            --quiet \
+            -I c-src \
+            c-src
+
+  clang-tidy:
+    name: clang-tidy static analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-tidy-17
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy-17
+          clang-tidy-17 --version
+
+      - name: Run clang-tidy on every C source
+        working-directory: axon-csys
+        run: |
+          set -euo pipefail
+          # Enable the safety checks that catch real bugs (analyzer +
+          # bugprone + cert + portability) while skipping stylistic
+          # checks that produce noise on FIPS-style code (magic numbers,
+          # short loop counters, function complexity in BPE merge loop).
+          # `-warnings-as-errors=*` makes any enabled diagnostic fail.
+          checks='-*,clang-analyzer-*,bugprone-*,cert-*,portability-*'
+          checks+=',-bugprone-easily-swappable-parameters'
+          checks+=',-bugprone-macro-parentheses'
+          checks+=',-cert-err33-c'
+          checks+=',-clang-analyzer-security.insecureAPI.strcpy'
+          for f in $(find c-src -name '*.c' | sort); do
+            echo ""
+            echo "→ clang-tidy: $f"
+            clang-tidy-17 \
+              --quiet \
+              --checks="$checks" \
+              --warnings-as-errors='*' \
+              "$f" \
+              -- \
+              -std=c23 \
+              -I c-src
+          done
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 3. CROSS-ARCH — non-x86_64 + non-glibc smoke.
+  # ─────────────────────────────────────────────────────────────────────
+
+  arm64:
+    name: cross-arch (linux/aarch64 × gcc)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify CPU + compiler
+        run: |
+          uname -m
+          cc --version
+          echo "Realised arch: $(uname -m) (expecting aarch64)"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            axon-csys/target
+          key: ${{ runner.os }}-axon-csys-arm64-${{ hashFiles('axon-csys/Cargo.lock', 'axon-csys/c-src/**/*') }}
+
+      - name: cargo build (axon-csys / aarch64)
+        working-directory: axon-csys
+        run: cargo build --verbose
+
+      - name: cargo test (axon-csys / aarch64)
+        working-directory: axon-csys
+        run: cargo test --verbose
+
+  musl:
+    name: musl libc smoke (linux × gcc)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: rust:alpine
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl build deps
+        run: apk add --no-cache musl-dev gcc g++ git bash
+
+      - name: Verify toolchain
+        run: |
+          rustc --version
+          cargo --version
+          gcc --version
+
+      - name: cargo build (axon-csys / musl)
+        working-directory: axon-csys
+        run: cargo build --verbose
+
+      - name: cargo test --lib (axon-csys / musl)
+        working-directory: axon-csys
+        # Run only the library smoke tests on musl — the `tests/`
+        # integration suite pulls dev-deps (tiktoken-rs, sha2, hmac,
+        # subtle, base64) whose transitive deps occasionally trip on
+        # musl-specific symbol diffs. Library smoke (which exercises
+        # every C kernel via a Rust unit test) is the meaningful
+        # portability assertion.
+        run: cargo test --lib --verbose
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 4. DRIFT + LINT — D12 enforcement + generated-artefact integrity.
+  # ─────────────────────────────────────────────────────────────────────
+
+  d12-lint:
+    name: D12 lint — no cc::Build outside axon-csys
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for cc::Build calls outside axon-csys/build.rs
+        run: |
+          set -e
+          violations=$(grep -rEn 'cc::Build::new' \
+            --include='*.rs' \
+            axon-rs axon-frontend 2>/dev/null || true)
+          if [ -n "$violations" ]; then
+            echo "❌ D12 violation: cc::Build::new() found outside axon-csys/build.rs"
+            echo ""
+            echo "$violations"
+            echo ""
+            echo "Per founder ratification 2026-05-08, axon-csys is the sole"
+            echo "owner of C build orchestration. Move the C source into"
+            echo "axon-csys/c-src/ and expose it via the axon-csys Rust shim."
+            exit 1
+          fi
+          echo "✅ D12 clean — cc::Build only lives in axon-csys/build.rs"
+
+  drift-merges:
+    name: drift gate — merges_*.bin matches generator
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install tiktoken
+        run: |
+          python -m pip install --upgrade pip
+          pip install tiktoken
+
+      - name: Regenerate merges blobs from canonical tiktoken source
+        working-directory: axon-csys
+        run: |
+          python tools/gen_merges.py
+
+      - name: Verify committed blobs match generator output
+        run: |
+          # `git diff --exit-code` returns non-zero if any committed
+          # bytes drifted. The error message points at the recovery
+          # path: re-run the generator + recommit (intentional bumps
+          # or new tiktoken versions are the only legitimate paths
+          # for these files to change).
+          if ! git diff --exit-code -- \
+            axon-csys/c-src/tokens/merges_cl100k_base.bin \
+            axon-csys/c-src/tokens/merges_o200k_base.bin
+          then
+            echo ""
+            echo "❌ Drift detected — committed merges blobs differ from"
+            echo "   the canonical tiktoken-Python output."
+            echo ""
+            echo "If this drift is intentional (e.g. tiktoken release with"
+            echo "vocabulary changes), regenerate via:"
+            echo ""
+            echo "    cd axon-csys"
+            echo "    python tools/gen_merges.py"
+            echo ""
+            echo "and recommit the .bin files. If unintentional, revert"
+            echo "the byte mutation — the file is content-addressed by"
+            echo "the BPE drift gate in tests/tokens.rs."
+            exit 1
+          fi
+          echo "✅ Merges blobs are byte-identical to gen_merges.py output"
