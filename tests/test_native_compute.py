@@ -179,11 +179,11 @@ class TestNativeCompiler:
         """Verify C transpiler generates correct function signature."""
         with patch("shutil.which", return_value=None):
             nc = NativeCompiler(cache_dir=tempfile.mkdtemp())
-            c_source = nc._transpile_to_c(
+            c_source = nc._c_transpiler.transpile(
                 "let tax = amount * rate\nlet total = amount + tax\nreturn total",
-                "axon_compute_CalcTax",
+                "CalcTax",
                 ["amount", "rate"],
-            )
+            ).c_source
             assert "double axon_compute_CalcTax" in c_source
             assert "double amount" in c_source
             assert "double rate" in c_source
@@ -195,18 +195,18 @@ class TestNativeCompiler:
         """Security: C output must not contain #include directives."""
         with patch("shutil.which", return_value=None):
             nc = NativeCompiler(cache_dir=tempfile.mkdtemp())
-            c_source = nc._transpile_to_c(
+            c_source = nc._c_transpiler.transpile(
                 "return a + b", "fn", ["a", "b"],
-            )
+            ).c_source
             assert "#include" not in c_source
 
     def test_c_transpilation_pure_function(self):
         """Security: C output must not contain I/O or dynamic alloc."""
         with patch("shutil.which", return_value=None):
             nc = NativeCompiler(cache_dir=tempfile.mkdtemp())
-            c_source = nc._transpile_to_c(
+            c_source = nc._c_transpiler.transpile(
                 "let x = a * b\nreturn x", "fn", ["a", "b"],
-            )
+            ).c_source
             assert "malloc" not in c_source
             assert "printf" not in c_source
             assert "scanf" not in c_source
@@ -409,7 +409,7 @@ class TestCTranspilerSecurity:
         params = params or ["a", "b"]
         with patch("shutil.which", return_value=None):
             nc = NativeCompiler(cache_dir=tempfile.mkdtemp())
-        return nc._transpile_to_c(logic, "test_fn", params)
+        return nc._c_transpiler.transpile(logic, "test_fn", params).c_source
 
     def test_no_stdlib_includes(self):
         c = self._get_c_source("return a + b")
@@ -546,7 +546,7 @@ class TestMissingReturn:
         with patch("shutil.which", return_value=None):
             nc = NativeCompiler(cache_dir=tempfile.mkdtemp())
         with pytest.raises(ValueError, match="return"):
-            nc._transpile_to_c("let x = a + b", "fn", ["a", "b"])
+            nc._c_transpiler.transpile("let x = a + b", "fn", ["a", "b"])
 
     def test_rust_transpiler_empty_raises(self):
         t = RustTranspiler()
