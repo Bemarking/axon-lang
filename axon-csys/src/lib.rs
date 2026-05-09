@@ -26,6 +26,7 @@
 
 pub mod audio;
 pub mod buffer;
+pub mod effects;
 pub mod probe;
 
 pub use audio::{
@@ -33,6 +34,10 @@ pub use audio::{
     ResampleError,
 };
 pub use buffer::{BufferPool, BufferPoolSnapshot, PoolClass, Slab};
+pub use effects::{
+    BuiltWire, Clause, DispatchError, DispatchResult, Dispatcher, EffectDecl, Frame, Instruction,
+    Opcode, TraceEvent, Value as EffectValue, WireBuilder,
+};
 pub use probe::{
     probe_add, probe_c_standard, probe_cacheline_alignment, probe_cacheline_marker,
     probe_cacheline_size, probe_features, probe_version, AxonCsysFeatures, AxonCsysVersion,

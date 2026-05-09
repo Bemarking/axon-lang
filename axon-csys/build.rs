@@ -97,6 +97,18 @@ fn main() {
     build.file(c_src.join("audio").join("mulaw.c"));
     build.file(c_src.join("audio").join("resample.c"));
     build.file(c_src.join("buffer").join("pool.c"));
+    // 25.e: Algebraic effects FSM dispatcher with computed gotos
+    //       (gcc/clang) + switch fallback (MSVC). Paper §5 delivery —
+    //       "operaciones atómicas de salto en la pila de CPU sin
+    //       objetos de control opacos" finally honoured by the
+    //       per-opcode label table. Direct port of
+    //       axon-rs/src/effects/runtime.rs preserving D2 (one-shot
+    //       continuations), D9 (typechecker rejects unhandled effect)
+    //       and D10 (typechecker rejects no-discharge / multi-resume)
+    //       — the C runtime mirrors the Rust ref in surfacing those
+    //       cases as defensive error codes for the unlikely path
+    //       where the compiler missed them.
+    build.file(c_src.join("effects").join("dispatch.c"));
 
     build.compile("axon_csys");
 
