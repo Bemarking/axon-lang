@@ -109,33 +109,139 @@ fn main() {
 
     // ─── Sources ──────────────────────────────────────────────────────────
     //
-    // 27.b: build-infra probe (this sub-fase). Subsequent sub-fases
-    // append their .c files here:
-    //   27.c: c-src/crypto/fips_glue.c  (BoringSSL/OpenSSL-FIPS bridge)
+    // 27.b: build-infra probe.
+    // 27.c: c-src/crypto/fips_glue.c  (BoringSSL/OpenSSL-FIPS bridge) — gated.
+    // Subsequent sub-fases append their .c files:
     //   27.d: c-src/audit/log.c         (mmap append-only kernel)
     //   27.e: c-src/tokens/*.c          (vertical BPE registration helpers)
     //   27.f: c-src/audit/evidence.c    (byte-deterministic ZIP encoder)
     //   27.g: c-src/shield/phi_scrub.c  (SIMD PHI scrubber, optional)
     build.file(c_src.join("probe").join("probe.c"));
 
+    // ─── 27.c — FIPS glue source (conditionally compiled) ─────────────────
+    //
+    // The glue file `c-src/crypto/fips_glue.c` includes <openssl/evp.h>
+    // unconditionally. Adopters running the no-fips passthrough do NOT
+    // have OpenSSL/BoringSSL headers in their toolchain — including
+    // those headers in the no-fips build would force every adopter to
+    // install a crypto lib for no reason. The build script therefore
+    // adds the source ONLY when one of the FIPS features is active.
+    //
+    // The OS-side prebuilt include + lib paths come from environment
+    // variables AXON_BORINGSSL_FIPS_PREBUILT / AXON_OPENSSL_FIPS_PREBUILT,
+    // mirroring the convention OpenSSL's own build scripts use
+    // (`OPENSSL_DIR` + the `openssl-sys` crate).
+    if fips_boringssl || fips_openssl {
+        let fips_glue = c_src.join("crypto").join("fips_glue.c");
+        build.file(&fips_glue);
+
+        let (env_var, prebuilt) = if fips_boringssl {
+            (
+                "AXON_BORINGSSL_FIPS_PREBUILT",
+                env::var("AXON_BORINGSSL_FIPS_PREBUILT"),
+            )
+        } else {
+            (
+                "AXON_OPENSSL_FIPS_PREBUILT",
+                env::var("AXON_OPENSSL_FIPS_PREBUILT"),
+            )
+        };
+
+        let prebuilt = prebuilt.unwrap_or_else(|_| {
+            panic!(
+                "axon-csys-enterprise: feature `{feature}` requires \
+                 `{env_var}` to point at a prebuilt {lib} root containing \
+                 `include/` + `lib/`. Per D3 ratified 2026-05-09: adopters \
+                 supply their own NIST-CAVS-validated build (BoringSSL-FIPS \
+                 / OpenSSL-FIPS Provider). The fips-{lib_short} feature is \
+                 a LINK-TIME contract; the source-code path is built but the \
+                 final binary cannot link without `{env_var}` set.",
+                feature = if fips_boringssl {
+                    "fips-boringssl"
+                } else {
+                    "fips-openssl"
+                },
+                env_var = env_var,
+                lib = if fips_boringssl {
+                    "BoringSSL-FIPS"
+                } else {
+                    "OpenSSL-FIPS Provider"
+                },
+                lib_short = if fips_boringssl {
+                    "boringssl"
+                } else {
+                    "openssl"
+                },
+            )
+        });
+        let prebuilt = PathBuf::from(prebuilt);
+        let include_dir = prebuilt.join("include");
+        let lib_dir = prebuilt.join("lib");
+
+        if !include_dir.is_dir() {
+            panic!(
+                "axon-csys-enterprise: {} = {} but `{}` is not a directory. \
+                 Expected layout: <root>/include + <root>/lib.",
+                env_var,
+                prebuilt.display(),
+                include_dir.display(),
+            );
+        }
+        if !lib_dir.is_dir() {
+            panic!(
+                "axon-csys-enterprise: {} = {} but `{}` is not a directory. \
+                 Expected layout: <root>/include + <root>/lib.",
+                env_var,
+                prebuilt.display(),
+                lib_dir.display(),
+            );
+        }
+
+        // Header search path: the FIPS lib's include root. Lib search
+        // path: emitted to rustc as `cargo:rustc-link-search`.
+        build.include(&include_dir);
+        println!("cargo:rustc-link-search=native={}", lib_dir.display());
+
+        if fips_boringssl {
+            // BoringSSL ships a single static archive `libcrypto.a`
+            // that bundles both the crypto + the FIPS module.
+            println!("cargo:rustc-link-lib=static=crypto");
+        } else {
+            // OpenSSL-FIPS Provider exposes `libcrypto` for the EVP
+            // surface; `libssl` is required if any caller pulls TLS
+            // helpers (none in this kernel, but link defensively so
+            // future kernels can use them).
+            println!("cargo:rustc-link-lib=static=crypto");
+            println!("cargo:rustc-link-lib=static=ssl");
+        }
+
+        // Linker-side platform deps: BoringSSL / OpenSSL link against
+        // libdl + libpthread on Unix; on Windows the equivalents are
+        // bundled in the CRT. Emitting these unconditionally on Unix
+        // matches what `openssl-sys` does and avoids a confusing
+        // "undefined reference to dlopen" message at adopter link
+        // time.
+        if !cfg!(target_env = "msvc") {
+            println!("cargo:rustc-link-lib=dylib=dl");
+            println!("cargo:rustc-link-lib=dylib=pthread");
+        }
+    }
+
     build.compile("axon_csys_enterprise");
 
-    // ─── FIPS-validated crypto link (D3 ratified) ─────────────────────────
+    // ─── FIPS-validated crypto link cfg flags ─────────────────────────────
     //
-    // 27.c will populate these helpers. For 27.b we only register the
-    // CARGO_CFG so downstream Rust code can `cfg!(...)` over the active
-    // path — no actual link happens yet because no crypto kernels exist.
+    // The link-search + link-lib emissions for the FIPS prebuilt happen
+    // up in the `if fips_boringssl || fips_openssl { ... }` source-block
+    // above (alongside the conditional fips_glue.c compilation). Here
+    // we only emit the rustc-cfg flags so downstream Rust code can
+    // `cfg!(axon_csys_enterprise_fips_*)` over the active path
+    // independently of feature-flag dispatch.
     if fips_boringssl {
         println!("cargo:rustc-cfg=axon_csys_enterprise_fips_boringssl");
-        // 27.c will: link static BoringSSL-FIPS via
-        //   AXON_BORINGSSL_FIPS_PREBUILT env var → -L<path>/lib + -lcrypto
-        // For 27.b we just emit the cfg so the Rust shim's no-fips
-        // re-export branch can detect it's NOT in effect.
     }
     if fips_openssl {
         println!("cargo:rustc-cfg=axon_csys_enterprise_fips_openssl");
-        // 27.c will: link static OpenSSL-FIPS via
-        //   AXON_OPENSSL_FIPS_PREBUILT env var → -L<path>/lib + -lcrypto -lssl
     }
 
     // ─── Math library link (resample / future hash kernels use libm) ──────

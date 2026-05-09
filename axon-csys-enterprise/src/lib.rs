@@ -48,29 +48,30 @@
 
 #![doc(html_no_source)]
 
+pub mod crypto;
 pub mod probe;
 
 // ──────────────────────────────────────────────────────────────────────
-// OSS pass-through re-export
+// Top-level convenience re-exports — the [`crypto`] module is the
+// source of truth for which backend computes the bytes (FIPS-validated
+// vs OSS pure-C); these aliases give adopters the same import shape
+// they would use against OSS axon-csys directly.
 //
-// With no cargo feature enabled, every public symbol from OSS axon-csys
-// is re-exported under this crate's namespace. Adopters can `use
-// axon_csys_enterprise::sha256` exactly the way they would `use
-// axon_csys::sha256` — the binary path is identical.
-//
-// Subsequent sub-fases (27.c onward) override individual symbols
-// behind feature gates: e.g. when `fips-boringssl` is active, the
-// `crypto` module's `sha256` shadows the OSS re-export and routes to
-// BoringSSL-FIPS. The wire output stays byte-identical (drift gate).
+// Crypto primitives are re-exported THROUGH the crypto module (so the
+// feature-gated routing applies). Non-crypto primitives are re-exported
+// directly from OSS axon-csys (no FIPS surface meaningful).
 // ──────────────────────────────────────────────────────────────────────
 
+pub use crate::crypto::{
+    b64url_decode, b64url_encode, ct_eq, hex_decode, hex_encode, hmac_sha256, sha256,
+    ContinuityWire, ContinuityWireError, HmacSha256, Sha256, SHA256_BLOCK_SIZE, SHA256_DIGEST_SIZE,
+};
+
 pub use axon_csys::{
-    b64url_decode, b64url_encode, cl100k_base, count_tokens, ct_eq, estimate, hex_decode,
-    hex_encode, hmac_sha256, mulaw_decode, mulaw_encode, o200k_base, resample_linear_pcm16,
-    resample_linear_pcm16_output_len, sha256, utf8_boundary_floor, utf8_count_chars, BpeError,
-    BufferPool, BufferPoolSnapshot, ContinuityWire, ContinuityWireError, CountKind, HmacSha256,
-    PoolClass, ResampleError, Sha256, Slab, TokenCount, Tokenizer, SHA256_BLOCK_SIZE,
-    SHA256_DIGEST_SIZE,
+    cl100k_base, count_tokens, estimate, mulaw_decode, mulaw_encode, o200k_base,
+    resample_linear_pcm16, resample_linear_pcm16_output_len, utf8_boundary_floor, utf8_count_chars,
+    BpeError, BufferPool, BufferPoolSnapshot, CountKind, PoolClass, ResampleError, Slab,
+    TokenCount, Tokenizer,
 };
 
 // ──────────────────────────────────────────────────────────────────────
