@@ -1,0 +1,84 @@
+[package]
+name = "axon-csys-enterprise"
+version = "0.1.0"
+authors = ["AXON Project", "Bemarking AI S.A.S."]
+edition = "2021"
+rust-version = "1.95"
+# §Fase 27.b D2 (RATIFIED 2026-05-09) — Business Source License v1.1
+# with 4-year delay to MIT. Pattern matches HashiCorp / Sentry /
+# MariaDB. Source available, commercial use restricted during
+# active lifecycle, automatic conversion to MIT after the change
+# date. NOT publishable to crates.io (which rejects non-OSI
+# licenses); shipped to a private/internal Cargo registry per the
+# 27.k release plan.
+license-file = "LICENSE.bsl"
+repository = "https://github.com/Bemarking/axon-enterprise"
+readme = "README.md"
+keywords = ["axon", "enterprise", "fips", "audit", "compliance"]
+categories = ["development-tools::ffi", "cryptography"]
+description = "axon-csys-enterprise — Fase 27 (Silicon + Cognition Enterprise sesión 1). Companion to OSS axon-csys 0.1.x adding enterprise-only kernels: FIPS-validated crypto link (BoringSSL or OpenSSL-FIPS via cargo features), audit log mmap append-only with Merkle hash chain + tenant seal, byte-deterministic tamper-evident evidence packager, vertical BPE tokenizer templates (medical / legal / fintech). The kernel infrastructure shipped in OSS axon-csys 0.1.1 is reused; this crate adds the audit-posture differentiators (HIPAA / SOC2 / CC-EAL4+ / GDPR / PCI DSS). 27.b ships the build-infrastructure probe + LICENSE.bsl + the no-fips passthrough that re-exports OSS axon-csys verbatim; later sub-fases (27.c onward) append their kernels."
+publish = false
+
+[lib]
+name = "axon_csys_enterprise"
+path = "src/lib.rs"
+
+# §Fase 27.b D3 (RATIFIED 2026-05-09) — both BoringSSL-FIPS and
+# OpenSSL-FIPS as opt-in cargo features. Mutually exclusive: a
+# build-time check in `build.rs` rejects enabling both. Default
+# (no feature) is the no-fips passthrough that re-exports OSS
+# axon-csys verbatim — adopters running unlicensed deployments still
+# build cleanly, but no enterprise-only path is taken.
+[features]
+default = []
+
+# Link statically against a NIST-CAVS-validated BoringSSL-FIPS module
+# (Apache-2 license, integrity self-test runs at first crypto call).
+# Per-release CMVP certification is NOT guaranteed — adopters with
+# strict per-release certificate requirements pick `fips-openssl`
+# instead.
+fips-boringssl = []
+
+# Link statically against OpenSSL-FIPS (CMVP certificate per
+# 3.0 FIPS Provider release; currently #4282). Adopters with
+# strict CMVP-certified-per-release requirements (FedRAMP /
+# FISMA-Moderate / CMMC / HITRUST validation) pick this feature.
+fips-openssl = []
+
+# §Fase 27.f — opt-in feature for tamper-evident evidence packager
+# emitting Merkle root commitments to an external public chain
+# (Bitcoin OP_RETURN OR Ethereum tx data). D11 deferred sesión 2 —
+# this feature is reserved here so the cargo namespace is stable;
+# its body lands in a future fase.
+public-anchor = []
+
+# §Fase 27.g — opt-in feature for the SIMD-accelerated PHI
+# scrubber kernel. Defer-or-cut decision per the plan; the cargo
+# namespace is reserved here.
+phi-scrubber-c = []
+
+[dependencies]
+# §Fase 27 — re-export OSS axon-csys API surface verbatim under the
+# no-fips path. Pinned with `=0.1.1` so the wire-format byte-identity
+# guarantee (D7 RATIFIED) holds: the FIPS-validated path produces the
+# same MAC bytes as the OSS pure-C path, drift-gated.
+axon-csys = "=0.1.1"
+
+[build-dependencies]
+# Same C build orchestration as OSS axon-csys (Fase 25.b D3 —
+# `cc-rs` is the de facto Rust ecosystem standard for C deps;
+# zero adopter setup; integrates into `cargo build` natively).
+cc = "1.2"
+
+[dev-dependencies]
+# §Fase 27.i — drift gate vs OSS axon-csys reference impls. The
+# enterprise crate's wire format MUST stay byte-identical to the
+# OSS path; the only difference is which underlying crypto library
+# computes the MAC. Cross-validation against `sha2 + hmac + base64`
+# is the same contract OSS axon-csys uses in its own dev-deps.
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+subtle = "2"
+# Deterministic seedable RNG for the fuzz drift gate.
+rand = { version = "0.9", default-features = false, features = ["std", "std_rng"] }
