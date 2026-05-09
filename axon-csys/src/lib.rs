@@ -25,12 +25,14 @@
 //! it leaves CI.
 
 pub mod audio;
+pub mod buffer;
 pub mod probe;
 
 pub use audio::{
     mulaw_decode, mulaw_encode, resample_linear_pcm16, resample_linear_pcm16_output_len,
     ResampleError,
 };
+pub use buffer::{BufferPool, BufferPoolSnapshot, PoolClass, Slab};
 pub use probe::{
     probe_add, probe_c_standard, probe_cacheline_alignment, probe_cacheline_marker,
     probe_cacheline_size, probe_features, probe_version, AxonCsysFeatures, AxonCsysVersion,
