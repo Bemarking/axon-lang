@@ -37,10 +37,10 @@
  * compilers that haven't shipped `__has_embed` recognition yet. */
 #ifdef AXON_CSYS_BPE_HAS_C23_EMBED
 static const unsigned char AXON_CSYS_BPE_CL100K_EMBED[] = {
-#  embed "tokens/merges_cl100k_base.bin"
+#  embed "merges_cl100k_base.bin"
 };
 static const unsigned char AXON_CSYS_BPE_O200K_EMBED[] = {
-#  embed "tokens/merges_o200k_base.bin"
+#  embed "merges_o200k_base.bin"
 };
 
 const uint8_t* axon_csys_bpe_embedded_cl100k_base(size_t* out_len) {
@@ -709,7 +709,15 @@ static size_t axon_csys_utf8_count_chars_sse2(
     size_t i = 0;
     size_t count = 0;
     for (; i + 16u <= len; i += 16u) {
-        __m128i v = _mm_loadu_si128((const __m128i*) (bytes + i));
+        /* Load 16 bytes from the byte stream into the SSE register.
+         * `_mm_loadu_si128` is the documented unaligned-load
+         * intrinsic, but the cast `(const __m128i*)bytes` trips
+         * clang's `-Wcast-align` (which scrutinises the cast itself,
+         * not the access semantics). `memcpy` into a stack-resident
+         * __m128i sidesteps the warning + compiles to the same
+         * unaligned MOVDQU instruction at -O1 or higher. */
+        __m128i v;
+        memcpy(&v, bytes + i, sizeof v);
         __m128i top2 = _mm_and_si128(v, mask_top2);
         __m128i is_cont = _mm_cmpeq_epi8(top2, mask_cont);
         unsigned mask = (unsigned) _mm_movemask_epi8(is_cont);
@@ -756,6 +764,17 @@ static size_t axon_csys_utf8_count_chars_neon(
 }
 #endif
 
+/* The scalar fallback is selected only when neither SSE2 nor NEON is
+ * available — i.e. nowhere in our supported target matrix as of
+ * v1.19.x (x86_64 hits SSE2, aarch64 hits NEON). The function still
+ * exists for portability + as the canonical reference the SIMD
+ * variants must agree with. Annotate so `-Wunused-function` does not
+ * fail on platforms that compile only the SIMD variants. */
+#if defined(__has_c_attribute) && __has_c_attribute(maybe_unused)
+[[maybe_unused]]
+#elif defined(__GNUC__) || defined(__clang__)
+__attribute__((unused))
+#endif
 static size_t axon_csys_utf8_count_chars_scalar(
     const uint8_t* bytes,
     size_t len)

@@ -100,6 +100,23 @@ fn main() {
         build.define("AXON_CSYS_BPE_HAS_C23_EMBED", "1");
     }
 
+    // ─── Feature-test macros for POSIX-only declarations ─────────────────
+    //
+    // 25.d's `c-src/buffer/pool.c` calls `posix_memalign` on Unix, which
+    // glibc gates behind `_POSIX_C_SOURCE >= 200112L` (or `_XOPEN_SOURCE`).
+    // In strict C23 mode (`-std=c23`) without an explicit feature-test
+    // macro, glibc hides the declaration → `-Werror=implicit-function-
+    // declaration` fails the build. macOS exposes posix_memalign
+    // unconditionally; MSVC uses `_aligned_malloc` instead and never sees
+    // posix_memalign at all. Define `_POSIX_C_SOURCE` only on Linux/BSD.
+    //
+    // Discovered post-hoc on the v1.19.0 CI run (linux gcc-13 + clang-17
+    // + linux/aarch64 + musl all surfaced the implicit-declaration error;
+    // local Windows MSVC builds were unaffected and shipped the bug).
+    if !cfg!(target_env = "msvc") && !cfg!(target_os = "macos") {
+        build.define("_POSIX_C_SOURCE", "200809L");
+    }
+
     // ─── C23-first standard flag chain (D2 ratified 2026-05-08) ────────────
     //
     // `flag_if_supported` silently drops flags the compiler does not
