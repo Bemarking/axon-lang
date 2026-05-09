@@ -16,6 +16,15 @@ name = "axon_csys"
 path = "src/lib.rs"
 
 [dependencies]
+# §Fase 25.g — fancy-regex provides PCRE-style possessive quantifiers
+# (`++`, `?+`, `*+`) and lookaround (`(?!\S)`) that the cl100k_base /
+# o200k_base pretokeniser patterns rely on. tiktoken-rs already pulled
+# fancy-regex transitively; replacing tiktoken-rs with axon-csys keeps
+# the same regex backend, drops the rest of the tiktoken-rs surface
+# (HTTP downloads of merge tables at build time, the CoreBPE struct,
+# its internal data structures). The result is one direct dep instead
+# of one direct + many transitive.
+fancy-regex = "0.13"
 
 [build-dependencies]
 # §Fase 25.b D3 — cc-rs is the de facto Rust ecosystem standard for
@@ -26,3 +35,8 @@ path = "src/lib.rs"
 cc = "1.2"
 
 [dev-dependencies]
+# §Fase 25.g — drift gate. Reference encoder for cross-validating
+# axon-csys's BPE output against tiktoken's canonical implementation.
+# Production builds DO NOT link tiktoken-rs (the whole point of 25.g
+# was to remove the dep); it is only present in the test target.
+tiktoken-rs = "0.6"

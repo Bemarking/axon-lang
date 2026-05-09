@@ -28,6 +28,7 @@ pub mod audio;
 pub mod buffer;
 pub mod effects;
 pub mod probe;
+pub mod tokens;
 
 pub use audio::{
     mulaw_decode, mulaw_encode, resample_linear_pcm16, resample_linear_pcm16_output_len,
@@ -41,4 +42,8 @@ pub use effects::{
 pub use probe::{
     probe_add, probe_c_standard, probe_cacheline_alignment, probe_cacheline_marker,
     probe_cacheline_size, probe_features, probe_version, AxonCsysFeatures, AxonCsysVersion,
+};
+pub use tokens::{
+    cl100k_base, count_tokens, estimate, o200k_base, utf8_boundary_floor, utf8_count_chars,
+    BpeError, CountKind, TokenCount, Tokenizer,
 };

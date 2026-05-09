@@ -14,10 +14,10 @@ adopters consume without ever writing `unsafe` themselves.
 | Path | Sub-fase | Status |
 |---|---|---|
 | `c-src/probe/`   | 25.b — build infra probe                          | ✅ shipped |
-| `c-src/audio/`   | 25.c — G.711 mulaw + linear PCM resample (SIMD)   | pending |
-| `c-src/buffer/`  | 25.d — cache-line slab allocator + huge-pages     | pending |
-| `c-src/effects/` | 25.e — algebraic effects FSM (computed gotos)     | pending |
-| `c-src/tokens/`  | 25.g — BPE tokenizer (`#embed` merges table)      | pending |
+| `c-src/audio/`   | 25.c — G.711 mulaw + linear PCM resample (SIMD)   | ✅ shipped |
+| `c-src/buffer/`  | 25.d — cache-line slab allocator + huge-pages     | ✅ shipped |
+| `c-src/effects/` | 25.e — algebraic effects FSM (computed gotos)     | ✅ shipped |
+| `c-src/tokens/`  | 25.g — BPE tokenizer (`#embed` merges table) + SIMD UTF-8 | ✅ shipped |
 | `c-src/crypto/`  | 25.h — HMAC-SHA256 continuity token (FIPS)        | pending |
 
 ## Build
