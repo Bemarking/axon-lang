@@ -1,140 +1,39 @@
-//! Unified token-counting surface for native Rust LLM backends — Fase 24.b.
+//! Unified token-counting surface for native Rust LLM backends — Fase 24.b
+//! (§Fase 25.g delegated re-export).
 //!
 //! Provides a single `count_tokens(model, text) -> usize` entry point that
 //! dispatches by model-name prefix to the right per-provider tokenizer:
 //!
-//!   * `gpt-*`, `o1-*`, `o3-*`, `chatgpt-*`              → `tiktoken-rs` (offline)
-//!   * `kimi-*`, `moonshot-*`                            → `tiktoken-rs` (cl100k_base; OpenAI-compat tokenizers)
-//!   * `glm-*`                                            → `tiktoken-rs` (cl100k_base; OpenAI-compat tokenizers)
+//!   * `gpt-*`, `o1-*`, `o3-*`, `chatgpt-*`              → axon-csys cl100k_base / o200k_base
+//!   * `kimi-*`, `moonshot-*`                            → axon-csys cl100k_base
+//!   * `glm-*`                                            → axon-csys cl100k_base
 //!   * `claude-*`                                        → 4-chars-per-token offline estimate
 //!   * `gemini-*`                                        → 4-chars-per-token offline estimate
 //!   * `llama-*`, `mistral-*`, `qwen-*`, `phi-*`         → 4-chars-per-token offline estimate
 //!   * `openrouter:<provider>/<model>`                   → strip prefix + recurse
 //!   * unknown / unmapped                                → 4-chars-per-token offline estimate
 //!
-//! The estimate fallback is intentionally conservative — for accurate
-//! counts on Claude / Gemini / Ollama models, callers can use the
-//! provider's HTTP `count_tokens` endpoint via the per-backend
-//! `Backend::count_tokens` override (when a network round-trip is
-//! acceptable). For sync callers (the trait method is `fn`, not
-//! `async fn`), this module gives a deterministic offline answer.
+//! As of Fase 25.g (2026-05-08) the BPE merge engine is the C23 kernel
+//! in `axon-csys/c-src/tokens/bpe.c`; the merges tables for `cl100k_base`
+//! and `o200k_base` are baked at compile time via `#embed` (when the
+//! toolchain supports it) or `include_bytes!` (universal fallback). The
+//! pretokeniser stays in Rust via `fancy-regex` (PCRE-compat). This
+//! module is now a thin re-export — preserved unchanged in surface so
+//! existing axon-rs call sites don't move.
 //!
-//! # Design intent (D10)
+//! # Design intent (D10, carried over from 24.b)
 //!
 //! `tokens.rs` is designed to be extractable as a standalone crate
 //! (`axon-tokens` 0.x.0) in the future — the public surface
-//! (`count_tokens`, `Tokenizer` enum, the model-prefix routing) does
-//! not depend on any axon-internal types.
+//! (`count_tokens`, `CountKind`, the model-prefix routing) does not
+//! depend on any axon-internal types. With Fase 25.g the BPE
+//! implementation already lives in its own crate (`axon-csys`); the
+//! extraction conversation is now mostly cosmetic.
 
-use std::sync::OnceLock;
-
-use tiktoken_rs::CoreBPE;
-
-/// Result kind from `count_tokens` — useful for callers that want to
-/// distinguish "exact" tokenizer counts from approximate estimates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CountKind {
-    /// Counted by an exact tokenizer (BPE / SentencePiece) for this model
-    /// family. Within ~1% of what the provider charges.
-    Exact,
-    /// Approximated as `text.chars().count() / 4`. Useful for budgeting
-    /// and rough cost estimates; not authoritative.
-    Estimate,
-}
-
-/// Unified token count.
-///
-/// `count` is the integer token count; `kind` reports whether it came
-/// from a real tokenizer or the fallback estimator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TokenCount {
-    pub count: usize,
-    pub kind: CountKind,
-}
-
-impl TokenCount {
-    pub const fn exact(count: usize) -> Self {
-        Self { count, kind: CountKind::Exact }
-    }
-    pub const fn estimate(count: usize) -> Self {
-        Self { count, kind: CountKind::Estimate }
-    }
-}
-
-/// Shared `cl100k_base` BPE handle — the OpenAI-family tokenizer.
-/// Construction is non-trivial (loads the BPE table); cache it once
-/// per process.
-fn cl100k_base() -> Option<&'static CoreBPE> {
-    static CACHE: OnceLock<Option<CoreBPE>> = OnceLock::new();
-    CACHE.get_or_init(|| tiktoken_rs::cl100k_base().ok()).as_ref()
-}
-
-/// Shared `o200k_base` BPE handle — newer OpenAI tokenizer used by gpt-4o,
-/// o1, o3 families.
-fn o200k_base() -> Option<&'static CoreBPE> {
-    static CACHE: OnceLock<Option<CoreBPE>> = OnceLock::new();
-    CACHE.get_or_init(|| tiktoken_rs::o200k_base().ok()).as_ref()
-}
-
-/// Count tokens in `text` for the supplied `model`.
-///
-/// `model` is matched by prefix to determine the tokenizer family. See
-/// the module-level docs for the dispatch table. Unknown model slugs
-/// fall back to a 4-chars-per-token offline estimate.
-pub fn count_tokens(model: &str, text: &str) -> TokenCount {
-    let model_lc = model.to_lowercase();
-
-    // OpenRouter prefix: strip `openrouter:<provider>/` and recurse on
-    // the underlying model slug. E.g. `openrouter:openai/gpt-4o-mini`
-    // → `gpt-4o-mini` → o200k_base.
-    if let Some(rest) = model_lc.strip_prefix("openrouter:") {
-        if let Some((_provider, model_only)) = rest.split_once('/') {
-            return count_tokens(model_only, text);
-        }
-        return count_tokens(rest, text);
-    }
-
-    // OpenAI o-family + gpt-4o use the o200k_base tokenizer.
-    if model_lc.starts_with("o1") || model_lc.starts_with("o3") || model_lc.starts_with("gpt-4o") {
-        if let Some(bpe) = o200k_base() {
-            return TokenCount::exact(bpe.encode_with_special_tokens(text).len());
-        }
-    }
-
-    // OpenAI-family (gpt-3.5, gpt-4, gpt-4-turbo, chatgpt-*) + Kimi +
-    // GLM all share the cl100k_base BPE table (or a compatible variant).
-    // tiktoken-rs is best-effort exact; if the BPE handle fails to load
-    // we degrade gracefully to the estimator.
-    if model_lc.starts_with("gpt-")
-        || model_lc.starts_with("chatgpt-")
-        || model_lc.starts_with("kimi-")
-        || model_lc.starts_with("moonshot-")
-        || model_lc.starts_with("glm-")
-    {
-        if let Some(bpe) = cl100k_base() {
-            return TokenCount::exact(bpe.encode_with_special_tokens(text).len());
-        }
-    }
-
-    // Anthropic, Gemini, Ollama, and unknown prefixes use the 4-cpt
-    // offline estimate. Per-backend `count_tokens` overrides can call
-    // the provider's HTTP `count_tokens` endpoint when an exact answer
-    // is required + a network round-trip is acceptable.
-    estimate(text)
-}
-
-/// Compute the offline 4-chars-per-token estimate. Public so per-backend
-/// overrides can invoke it as their fallback path.
-pub fn estimate(text: &str) -> TokenCount {
-    let chars = text.chars().count();
-    // Round up: 5 chars → 2 tokens, not 1. Errs on the side of
-    // overestimating budget rather than underestimating.
-    let count = chars.div_ceil(4);
-    TokenCount::estimate(count)
-}
+pub use axon_csys::tokens::{count_tokens, estimate, CountKind, TokenCount};
 
 // ────────────────────────────────────────────────────────────────────
-//  Tests
+//  Tests — port of the pre-25.g cases against the new backend.
 // ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -189,7 +88,8 @@ mod tests {
         for model in &["llama-3.1-70b", "mistral-7b", "qwen-2.5-7b", "phi-4"] {
             let r = count_tokens(model, "hello world");
             assert_eq!(
-                r.kind, CountKind::Estimate,
+                r.kind,
+                CountKind::Estimate,
                 "model {model} unexpected kind {r:?}"
             );
         }

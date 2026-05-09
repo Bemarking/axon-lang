@@ -13,7 +13,63 @@
 //! strict diagnostics + cargo's own optimisation level.
 
 use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// §Fase 25.g — probe whether the host C toolchain supports the C23
+/// `#embed` preprocessor directive. Drives the conditional compilation
+/// of `bpe.c`'s `#embed` block: when supported, the merges tables are
+/// embedded directly via `#embed`; otherwise the Rust shim's
+/// `include_bytes!` is the sole binding path.
+///
+/// The probe is a tiny self-contained C source file that uses `#embed`
+/// to bake a 3-byte data file. If the compiler accepts it, the host
+/// supports the directive. Failing to compile the probe is NOT a build
+/// error — it just leaves `AXON_CSYS_BPE_HAS_C23_EMBED` undefined and
+/// the C source skips the embed block.
+fn probe_c23_embed(c_src: &Path, out_dir: &Path) -> bool {
+    let probe_dir = out_dir.join("embed_probe");
+    if let Err(e) = fs::create_dir_all(&probe_dir) {
+        eprintln!("axon-csys: embed probe dir create failed ({e}); assuming no #embed support");
+        return false;
+    }
+    // Probe data file — 3 bytes that compile to a valid C array initialiser
+    // when expanded by `#embed` (each byte becomes a comma-separated int
+    // literal).
+    let probe_data_path = probe_dir.join("probe_embed_data.bin");
+    if let Err(e) = fs::write(&probe_data_path, b"abc") {
+        eprintln!("axon-csys: embed probe data write failed ({e}); assuming no #embed support");
+        return false;
+    }
+    let probe_c_path = probe_dir.join("probe_embed.c");
+    let probe_c = format!(
+        "#include <stddef.h>\n\
+         static const unsigned char probe_embed_data[] = {{\n\
+         #embed \"{}\"\n\
+         }};\n\
+         int axon_csys_embed_probe_size(void) {{ return (int) sizeof(probe_embed_data); }}\n",
+        probe_data_path.display().to_string().replace('\\', "/")
+    );
+    if let Err(e) = fs::write(&probe_c_path, probe_c) {
+        eprintln!("axon-csys: embed probe write failed ({e}); assuming no #embed support");
+        return false;
+    }
+    let mut try_build = cc::Build::new();
+    try_build
+        .file(&probe_c_path)
+        .include(c_src)
+        .out_dir(probe_dir.join("out"))
+        .cargo_metadata(false)
+        .warnings(false)
+        .opt_level(0);
+    if cfg!(target_env = "msvc") {
+        try_build.flag_if_supported("/std:clatest");
+    } else {
+        try_build.flag_if_supported("-std=c23");
+        try_build.flag_if_supported("-std=c2x");
+    }
+    try_build.try_compile("axon_csys_embed_probe").is_ok()
+}
 
 fn main() {
     let manifest_dir = PathBuf::from(
@@ -21,9 +77,28 @@ fn main() {
             .expect("CARGO_MANIFEST_DIR is always set by cargo when invoking build scripts"),
     );
     let c_src = manifest_dir.join("c-src");
+    let out_dir = PathBuf::from(
+        env::var("OUT_DIR").expect("OUT_DIR is always set by cargo when invoking build scripts"),
+    );
+
+    // ─── §Fase 25.g — #embed support probe ────────────────────────────────
+    //
+    // Run BEFORE the main `cc::Build` so the probe doesn't pollute the
+    // primary build's source list. Outcome drives a conditional
+    // `cc::Build::define` for the main `bpe.c` translation unit.
+    let has_c23_embed = probe_c23_embed(&c_src, &out_dir);
+    if has_c23_embed {
+        println!("cargo:rustc-cfg=axon_csys_c23_embed");
+    }
+    // The cargo:rustc-cfg above is the canonical signal exposed to
+    // downstream Rust code; nothing else gates on it. The cc::Build
+    // define below is what the C source consults via #ifdef.
 
     let mut build = cc::Build::new();
     build.include(&c_src);
+    if has_c23_embed {
+        build.define("AXON_CSYS_BPE_HAS_C23_EMBED", "1");
+    }
 
     // ─── C23-first standard flag chain (D2 ratified 2026-05-08) ────────────
     //
@@ -109,6 +184,15 @@ fn main() {
     //       cases as defensive error codes for the unlikely path
     //       where the compiler missed them.
     build.file(c_src.join("effects").join("dispatch.c"));
+    // 25.g: BPE merge engine with #embed-baked merges tables for
+    //       cl100k_base + o200k_base + SIMD UTF-8 codepoint counter.
+    //       The C kernel handles byte-level BPE only — pretokenisation
+    //       (PCRE-style regex with possessive quantifiers + Unicode
+    //       categories) lives in the Rust shim's `tokens.rs` via the
+    //       fancy-regex crate. Replaces the tiktoken-rs dep on the
+    //       cl100k / o200k hot paths while keeping fancy-regex (which
+    //       tiktoken-rs already pulls transitively).
+    build.file(c_src.join("tokens").join("bpe.c"));
 
     build.compile("axon_csys");
 

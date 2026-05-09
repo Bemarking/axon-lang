@@ -71,10 +71,12 @@ async-trait = "0.1"
 #   v1.16.2 — Kimi K2.x / OpenAI o1 / OpenAI o3 dispatch).
 # `futures`: `Stream` trait + `StreamExt` for the streaming response
 #   surface (`Backend::stream() -> Pin<Box<dyn Stream<...>>>`).
-# `tiktoken-rs`: offline tokenizer for OpenAI / Kimi / GLM
-#   (pre-resolved BPE tables); Anthropic uses an HTTP-API tokenizer
-#   when needed; Gemini falls back to HTTP `count_tokens` with an
-#   offline estimate cache for the synchronous path.
+# `axon-csys`: §Fase 25.g — offline BPE tokenizer for OpenAI / Kimi /
+#   GLM model families. Replaces the prior tiktoken-rs dep; the C23
+#   merge engine + #embed-baked merges tables ship inside axon-csys.
+#   Anthropic uses an HTTP-API tokenizer when needed; Gemini falls
+#   back to HTTP `count_tokens` with an offline estimate cache for
+#   the synchronous path.
 regex = "1"
 futures = "0.3"
-tiktoken-rs = "0.6"
+axon-csys = { path = "../axon-csys", version = "=0.1.0" }
