@@ -155,6 +155,63 @@ _TRIVIA_KIND_BY_TOKEN: dict[TokenType, str] = {
     TokenType.INNER_DOC_BLOCK_COMMENT: "inner_doc_block",
 }
 
+# Reserved-keyword tokens that adopters MOST commonly write after
+# `perform` by mistake — confusing the algebraic-effect runtime
+# invocation (Fase 23) with the lowercase keywords used for stream
+# type declarations / effect-set policies / concurrency primitives.
+# The parser surfaces the per-keyword hint instead of the generic
+# `expected IDENTIFIER, found <KEYWORD>` diagnostic so adopters
+# coming from other-language streaming idioms get pointed at the
+# right axon-lang construct.
+_PERFORM_KEYWORD_CONFUSIONS: dict[TokenType, str] = {
+    TokenType.STREAM: (
+        "`stream` is reserved for stream type declarations "
+        "(`output: Stream<T>`) and effect-set syntax "
+        "(`effects: [stream:<policy>]` where <policy> is one of "
+        "drop_oldest / drop_newest / block / fail). To declare a "
+        "streaming output with backpressure, use `output: Stream<T>` "
+        "+ `effects: [stream:drop_oldest]` on the surrounding flow / "
+        "tool. To invoke the algebraic Stream effect at runtime, "
+        "use `perform Stream.Yield(value)` (capitalized effect name)."
+    ),
+    TokenType.HIBERNATE: (
+        "`hibernate` is reserved for the hibernate flow primitive. "
+        "If you meant to invoke the Hibernate algebraic effect, "
+        "use `perform Hibernate.Pause(...)` (capitalized effect name)."
+    ),
+    TokenType.DRILL: (
+        "`drill` is reserved for the drill flow primitive (PIX-bounded "
+        "deep dive). If you meant to invoke the Drill algebraic effect, "
+        "use `perform Drill.Step(...)` (capitalized effect name)."
+    ),
+    TokenType.TRAIL: (
+        "`trail` is reserved for the trail flow primitive (PIX-bounded "
+        "exploration). If you meant to invoke the Trail algebraic "
+        "effect, use `perform Trail.Mark(...)` (capitalized effect name)."
+    ),
+    TokenType.PAR: (
+        "`par` is reserved for the par concurrency primitive "
+        "(parallel branches). If you meant to invoke the Par algebraic "
+        "effect, use `perform Par.Spawn(...)` (capitalized effect name)."
+    ),
+    TokenType.SHIELD: (
+        "`shield` is reserved for shield-strategy declarations. "
+        "If you meant to invoke a Shield algebraic effect, "
+        "use `perform Shield.Check(...)` (capitalized effect name)."
+    ),
+    TokenType.LISTEN: (
+        "`listen` is reserved for the listen flow primitive. If you "
+        "meant to invoke a Listen algebraic effect, use `perform "
+        "Listen.<Op>(...)` (capitalized effect name)."
+    ),
+    TokenType.NETWORK: (
+        "`network` is reserved for the network effect-set tag. If you "
+        "meant to invoke the Net algebraic effect, use `perform "
+        "Net.<Op>(...)` (capitalized; OSS convention names the effect "
+        "`Net`, not `network`)."
+    ),
+}
+
 
 class Parser:
     """Recursive descent parser for the AXON language."""
@@ -2589,8 +2646,39 @@ class Parser:
         encode that property (it lives in the typechecker), but emits a
         `PerformExpression` node that downstream treats as a yield to
         the enclosing handler frame.
+
+        Effect names follow the convention of capitalized identifiers
+        (`Stream`, `SSE`, `Net`, `E1`, etc.) — the lowercase forms
+        (`stream`, `hibernate`, `drill`, `trail`, `par`) are reserved
+        keywords for type declarations + effect-set syntax + concurrency
+        primitives, NOT effect names. When an adopter accidentally writes
+        `perform stream(...)` (lowercase + missing `.Op`), the parser
+        used to surface a generic `expected IDENTIFIER, found STREAM`
+        diagnostic. The targeted error block below recognises the
+        common confusions and surfaces actionable guidance.
         """
         tok = self._consume(TokenType.PERFORM)
+
+        # Targeted diagnostic for the keyword-confusion case. Triggered
+        # when the user writes `perform <reserved-keyword>` — typically
+        # because they confused the algebraic-effect runtime
+        # invocation (Fase 23) with the stream-type-declaration
+        # keyword or the effect-set syntax (`effects: [stream:<policy>]`).
+        next_tok = self._current()
+        if next_tok.type in _PERFORM_KEYWORD_CONFUSIONS:
+            hint = _PERFORM_KEYWORD_CONFUSIONS[next_tok.type]
+            raise AxonParseError(
+                (
+                    f"`perform` expects an effect name (capitalized identifier "
+                    f"like `Stream`, `SSE`, `Net`), got the reserved keyword "
+                    f"`{next_tok.value}`. {hint}"
+                ),
+                line=next_tok.line,
+                column=next_tok.column,
+                expected="IDENTIFIER (capitalized effect name)",
+                found=f"{next_tok.type.name}('{next_tok.value}')",
+            )
+
         effect_name = self._consume(TokenType.IDENTIFIER).value
         self._consume(TokenType.DOT)
         op_name = self._consume(TokenType.IDENTIFIER).value

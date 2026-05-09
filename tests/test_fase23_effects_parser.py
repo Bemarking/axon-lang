@@ -322,6 +322,76 @@ class TestPerform:
         assert node.line > 0
         assert node.column > 0
 
+    def test_perform_with_lowercase_stream_keyword_gives_actionable_error(
+        self,
+    ) -> None:
+        """Adopters confusing the algebraic-effect runtime invocation
+        (Fase 23) with the lowercase `stream` keyword (used for
+        stream-type declarations + effect-set policies) get a
+        targeted error message pointing at the correct constructs.
+
+        Reported by Kivi adopter team 2026-05-09: their `.axon` file
+        contained `perform stream(drop_oldest)` inside a flow body,
+        producing a generic `expected IDENTIFIER, found STREAM` error
+        that didn't help them resolve the confusion. The improved
+        diagnostic explicitly names both legitimate axon-lang
+        constructs (Stream<T> output type + effects:[stream:<policy>]
+        backpressure declaration) and the `perform Stream.Yield(...)`
+        capitalized-effect-name pattern.
+        """
+        with pytest.raises(AxonParseError) as exc_info:
+            _parse(_wrap_in_step("perform stream(drop_oldest)"))
+        msg = str(exc_info.value)
+        # Targeted diagnostic mentions the keyword conflict explicitly.
+        assert "stream" in msg
+        # Points at both legitimate ways to use the construct.
+        assert "Stream<T>" in msg or "stream:<policy>" in msg
+        # Names the correct algebraic-effect invocation form.
+        assert "Stream.Yield" in msg or "capitalized" in msg.lower()
+
+    def test_perform_with_other_reserved_keywords_gives_actionable_error(
+        self,
+    ) -> None:
+        """Same posture for the other 7 keyword-confusion cases:
+        hibernate, drill, trail, par, shield, listen, network.
+        Each surfaces a per-keyword hint pointing at the correct
+        capitalized-effect-name form.
+        """
+        for keyword in [
+            "hibernate",
+            "drill",
+            "trail",
+            "par",
+            "shield",
+            "listen",
+            "network",
+        ]:
+            with pytest.raises(AxonParseError) as exc_info:
+                _parse(_wrap_in_step(f"perform {keyword}(arg)"))
+            msg = str(exc_info.value)
+            assert keyword in msg, (
+                f"error for `perform {keyword}(...)` should mention "
+                f"the conflicting keyword, got: {msg}"
+            )
+            # Each variant points at the capitalized effect-name form.
+            assert "capitalized" in msg.lower(), (
+                f"error for `perform {keyword}(...)` should suggest "
+                f"the capitalized form, got: {msg}"
+            )
+
+    def test_perform_with_capitalized_stream_works_unchanged(self) -> None:
+        """The improved diagnostic ONLY fires on the lowercase keyword
+        case — `perform Stream.Yield(...)` (capitalized) parses
+        normally because `Stream` lexes as IDENTIFIER (keyword lookup
+        is case-sensitive in the lexer).
+        """
+        prog = _parse(_wrap_in_step("perform Stream.Yield(token)"))
+        node = _step_body(prog)[0]
+        assert isinstance(node, PerformExpression)
+        assert node.effect_name == "Stream"
+        assert node.operation_name == "Yield"
+        assert node.arguments == ["token"]
+
 
 # ──────────────────────────────────────────────────────────────────────
 #  TestHandle — `handle Effect { clauses } in { body }`
