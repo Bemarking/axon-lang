@@ -64,6 +64,14 @@ phi-scrubber-c = []
 # same MAC bytes as the OSS pure-C path, drift-gated.
 axon-csys = "=0.1.1"
 
+# §Fase 27.f — Ed25519 detached signature over the evidence-package
+# Merkle root (per-tenant signing key, rotated quarterly per D8).
+# `ed25519-dalek` is the standard pure-Rust audited Ed25519 impl
+# (used by Solana, Cosmos, etc.); dual MIT/Apache-2 license compatible
+# with BSL → MIT conversion. Adopter verification tooling can use
+# any Ed25519 library — the signature bytes are RFC 8032 standard.
+ed25519-dalek = { version = "2", features = ["std"] }
+
 [build-dependencies]
 # Same C build orchestration as OSS axon-csys (Fase 25.b D3 —
 # `cc-rs` is the de facto Rust ecosystem standard for C deps;

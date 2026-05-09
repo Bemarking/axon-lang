@@ -50,6 +50,7 @@
 
 pub mod audit_log;
 pub mod crypto;
+pub mod evidence;
 pub mod probe;
 pub mod tokens;
 
