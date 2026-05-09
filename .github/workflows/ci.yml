@@ -174,83 +174,14 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
 
-  # ── axon-csys (Fase 25 — C23 metal-bound kernels) ────────────────────────
-  # Cross-OS matrix that exercises the cc-rs → C23 → static link → FFI
-  # pipeline. 25.b ships only the build-infrastructure probe; subsequent
-  # sub-fases (25.c onward) reuse this job as their gate. Windows uses
-  # MSVC's `/std:clatest` (which reports __STDC_VERSION__=202312L instead
-  # of the ratified 202311L — accepted as a vendor quirk in the test
-  # whitelist). Linux + macOS exercise the gcc/clang -std=c23 path with
-  # graceful fallback to -std=c2x for older toolchains.
-  axon-csys:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Cache cargo registry and build (axon-csys)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            axon-csys/target
-          key: ${{ runner.os }}-axon-csys-${{ hashFiles('axon-csys/Cargo.toml', 'axon-csys/build.rs', 'axon-csys/c-src/**/*') }}
-          restore-keys: |
-            ${{ runner.os }}-axon-csys-
-
-      - name: Verify C compiler is available (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: |
-          cc --version
-          echo "Realised C compiler: $(cc --version | head -1)"
-
-      - name: cargo build (axon-csys)
-        working-directory: axon-csys
-        run: cargo build --verbose
-
-      - name: cargo test (axon-csys)
-        working-directory: axon-csys
-        run: cargo test --verbose
-
-      - name: cargo fmt check (axon-csys)
-        working-directory: axon-csys
-        run: cargo fmt --all -- --check
-
-      - name: cargo clippy (axon-csys, all warnings → errors)
-        working-directory: axon-csys
-        run: cargo clippy --all-targets -- -D warnings
-
-      # ─── D12 enforcement (Fase 25 plan vivo, 2026-05-08) ─────────────────
-      # axon-csys is the SINGLE place that calls cc::Build. Any new C dep
-      # in axon-rs or axon-frontend MUST live in axon-csys/c-src + ride the
-      # axon-csys FFI surface. This grep catches accidental violations
-      # before they merge.
-      - name: D12 lint — no cc::Build outside axon-csys
-        if: runner.os == 'Linux'
-        run: |
-          set -e
-          violations=$(grep -rEn 'cc::Build::new' \
-            --include='*.rs' \
-            axon-rs axon-frontend 2>/dev/null || true)
-          if [ -n "$violations" ]; then
-            echo "❌ D12 violation: cc::Build::new() outside axon-csys/build.rs"
-            echo "$violations"
-            echo ""
-            echo "Per founder ratification 2026-05-08, axon-csys is the sole"
-            echo "owner of C build orchestration. Move the C source into"
-            echo "axon-csys/c-src/ and expose it via the axon-csys Rust shim."
-            exit 1
-          fi
-          echo "✅ D12 clean — cc::Build only lives in axon-csys/build.rs"
+  # ── axon-csys ────────────────────────────────────────────────────────────
+  # Per Fase 25.i (2026-05-08), the axon-csys CI matrix moved to its own
+  # workflow `.github/workflows/axon_csys.yml`. The dedicated workflow
+  # exercises the production-grade lane set: 4 core (linux gcc-13 / linux
+  # clang-17 / macos clang / windows msvc), 3 sanitizers (ASan + UBSan +
+  # TSan), valgrind, cppcheck + clang-tidy, ARM64 + musl cross-arch,
+  # D12 lint, merges-blob drift gate. Triggers on every push + PR
+  # alongside this file — they run in parallel.
 
   windows-mvp-executable:
     runs-on: windows-latest
