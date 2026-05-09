@@ -354,12 +354,29 @@ struct AxonAuditLogVerifier {
     int last_seal_initialized;
 };
 
-/* Helpers — read + atomic-load fields from the segment header. */
+/* Helpers — read + atomic-load fields from the segment header.
+ *
+ * The atomic fields live at fixed offsets that are 8-byte aligned by
+ * construction:
+ *   - mmap(2)/MapViewOfFile return PAGE-aligned addresses (4K minimum,
+ *     well above the 8-byte alignment _Atomic uint64_t demands).
+ *   - HDR_OFF_HEAD_OFFSET = 80 and HDR_OFF_EVENT_COUNT = 88 are both
+ *     multiples of 8 (verified at compile time by the static_assert
+ *     block at the bottom of this file).
+ *
+ * Therefore the cast from `uint8_t*` to `_Atomic uint64_t*` is sound.
+ * Clang's `-Wcast-align` cannot infer the alignment guarantee from
+ * mmap + the header layout statically, so we silence the diagnostic
+ * for the two helpers below. The pragma scope is intentionally
+ * minimal (two functions); if a future field is added at a non-aligned
+ * offset, the static_assert will trip and the cast must be revisited.
+ */
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+#endif
+
 static uint64_t header_load_atomic_u64(const uint8_t *base, size_t off) {
-    /* The atomic fields live at fixed offsets; we cast the storage
-     * to _Atomic u64 for the load. cc-rs ensures the underlying
-     * memory is naturally 8-byte aligned because the segment header
-     * itself is page-aligned (mmap returns a page-aligned address). */
     const _Atomic uint64_t *p = (const _Atomic uint64_t *)(base + off);
     return atomic_load_explicit(p, memory_order_acquire);
 }
@@ -368,6 +385,10 @@ static void header_store_atomic_u64(uint8_t *base, size_t off, uint64_t val) {
     _Atomic uint64_t *p = (_Atomic uint64_t *)(base + off);
     atomic_store_explicit(p, val, memory_order_release);
 }
+
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 /* Write the magic + format + size fields into a freshly-zeroed
  * mmap region. */

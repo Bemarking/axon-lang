@@ -350,7 +350,7 @@ jobs:
           sudo apt-get install -y cppcheck
           cppcheck --version
 
-      - name: Run cppcheck on c-src/
+      - name: Run cppcheck on c-src/ (excluding FIPS glue)
         working-directory: axon-csys-enterprise
         run: |
           # Same posture as OSS axon-csys cppcheck lane: enable
@@ -361,9 +361,12 @@ jobs:
           #   • `unusedFunction` — every C exported function is "unused"
           #     from cppcheck's perspective (it doesn't see Rust callers).
           #   • `missingIncludeSystem` — FFI headers omit system path.
-          #   • `assignBoolToPointer:c-src/audit/log.c` — defensive in
-          #     case the audit log uses labels-as-values in a future
-          #     SIMD upgrade (none currently; reserved).
+          #
+          # `crypto/fips_glue.c` is excluded for the same reason as
+          # the clang-tidy lane below: cppcheck cannot parse the file
+          # without OpenSSL headers + a FIPS-feature define, and the
+          # `fips-openssl-link` lane covers it indirectly when the
+          # feature is enabled. Cppcheck's `-i` flag excludes by path.
           cppcheck \
             --error-exitcode=2 \
             --enable=warning,performance,portability \
@@ -372,6 +375,7 @@ jobs:
             --std=c23 \
             --inline-suppr \
             --quiet \
+            -i c-src/crypto/fips_glue.c \
             -I c-src \
             c-src
 
@@ -388,21 +392,30 @@ jobs:
           sudo apt-get install -y clang-tidy-17
           clang-tidy-17 --version
 
-      - name: Run clang-tidy on every C source
+      - name: Run clang-tidy on every C source (excluding FIPS glue)
         working-directory: axon-csys-enterprise
         run: |
           set -euo pipefail
           # Same check set OSS axon-csys uses, with the same
           # documented exclusions (signal-poor on FIPS-style code +
-          # cross-platform memcpy). Enterprise crate exception:
-          # FIPS glue includes <openssl/evp.h> conditionally — the
-          # check runs WITHOUT that include path active so we don't
-          # require system OpenSSL on the static-analysis runner.
-          # The fips_glue.c is gated by macros that aren't defined
-          # in the no-fips passthrough mode → the clang-tidy run sees
-          # an effectively-empty translation unit for that file
-          # (every code path is `#ifdef`-disabled). That's acceptable;
-          # the FIPS lane below exercises the actual glue.
+          # cross-platform memcpy).
+          #
+          # `c-src/crypto/fips_glue.c` is excluded from clang-tidy
+          # for two reasons:
+          #   (a) It includes <openssl/evp.h> + <openssl/hmac.h> +
+          #       <openssl/provider.h> which are NOT installed on the
+          #       static-analysis runner (libssl-dev would pull in
+          #       300 MB of headers/libs solely for clang-tidy parse).
+          #   (b) Its first lines contain a defensive `#error` that
+          #       fires when neither AXON_CSYS_ENTERPRISE_FIPS_BORINGSSL
+          #       nor AXON_CSYS_ENTERPRISE_FIPS_OPENSSL is defined —
+          #       i.e. the file is intentionally un-parseable in the
+          #       no-FIPS regime to catch build-script bypasses.
+          # The `fips-openssl-link` lane below exercises fips_glue.c
+          # with the FIPS feature actually enabled + system OpenSSL
+          # installed; clang-tidy coverage is provided indirectly via
+          # the `cargo clippy --all-targets` runs in the CORE matrix
+          # (Rust shim references every C entry point).
           checks='-*,clang-analyzer-*,bugprone-*,cert-*,portability-*'
           checks+=',-bugprone-easily-swappable-parameters'
           checks+=',-bugprone-macro-parentheses'
@@ -411,7 +424,7 @@ jobs:
           checks+=',-cert-err33-c'
           checks+=',-clang-analyzer-security.insecureAPI.strcpy'
           checks+=',-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling'
-          for f in $(find c-src -name '*.c' | sort); do
+          for f in $(find c-src -name '*.c' -not -path '*/crypto/fips_glue.c' | sort); do
             echo ""
             echo "→ clang-tidy: $f"
             clang-tidy-17 \
