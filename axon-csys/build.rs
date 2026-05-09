@@ -38,6 +38,12 @@ fn main() {
         // It does NOT cover labels-as-values or _BitInt — those kernels
         // gate themselves with #ifdef in the C source.
         build.flag_if_supported("/std:clatest");
+        // C11 _Atomic on MSVC is gated behind an experimental flag even
+        // with /std:clatest. Required by 25.d's pool.c — slab allocator
+        // counters use _Atomic uint64_t. Silently ignored by older MSVCs
+        // that don't recognise the flag (the build then fails loudly on
+        // the #include <stdatomic.h>, which is the right behaviour).
+        build.flag_if_supported("/experimental:c11atomics");
     } else {
         build.flag_if_supported("-std=c23");
         build.flag_if_supported("-std=c2x");
@@ -82,9 +88,15 @@ fn main() {
     //       OTS native morphisms — port of axon-rs/src/ots/native/{mulaw,
     //       resample}.rs preserving the categorical structure documented
     //       in docs/ontological_tool_synthesis.md.
+    // 25.d: Cache-line-aligned slab allocator with bitmap free-list +
+    //       huge-pages opt-in. Port of axon-rs/src/buffer/pool.rs.
+    //       Per-tenant accounting stays in the Rust shim (HashMap-of-
+    //       Arc<str>) per founder pillar split — C handles slabs;
+    //       Rust handles symbolic bookkeeping.
     build.file(c_src.join("probe").join("probe.c"));
     build.file(c_src.join("audio").join("mulaw.c"));
     build.file(c_src.join("audio").join("resample.c"));
+    build.file(c_src.join("buffer").join("pool.c"));
 
     build.compile("axon_csys");
 
