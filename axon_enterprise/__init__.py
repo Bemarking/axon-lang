@@ -49,10 +49,60 @@ This package contains enterprise-only features:
   posture warning + audit-log entry, NEVER hard gate).
   231 Rust tests across 8 modules + CI matrix 14/15 hard-green +
   cross-kernel drift gate consolidation + 5 criterion benchmarks.
-  Python integration of these kernels via ctypes wrappers ships as
-  v1.11.0 (27.k.1 followup); v1.10.0 ships the Rust foundation +
-  the Python package version bump signaling the crate is part of
-  the platform.
+  Python integration of these kernels via ctypes wrappers shipped
+  as v1.12.0 (27.k.1 followup, renumbered from v1.11.0 because the
+  Fase 28 catch-up landed in between); v1.10.0 shipped the Rust
+  foundation + the Python package version bump signaling the
+  crate is part of the platform.
+- **Stack catch-up to axon-lang 1.20.0 (Fase 28 Adopter Diagnostic
+  Robustness, v1.11.0)** — inherits transitively every Fase 28
+  surface that ships in axon-lang 1.20.0:
+    * Parser error recovery — `parse_with_recovery() → ParseResult`
+      collects ALL errors per file with panic-mode + sync-points
+      instead of failing on the first; existing `parse()` API
+      preserved verbatim per D9 backwards compat.
+    * Rustc-style source-context diagnostic blocks — every
+      AxonParseError carries an optional SourceSnippet rendered
+      with line numbers + caret + 2 lines before/after (D4 ratified);
+      codepoint-aware caret clamp; splitlines trailing-newline
+      parity with the Rust frontend.
+    * Smart-suggest "Did you mean X?" Levenshtein hints — ≤ 2
+      distance, max 3 candidates (D3 ratified), always on (D11);
+      wired into top-level + flow-body unknown-keyword sites
+      (e.g. `flwo` → `Did you mean \`flow\`?`).
+    * `axon parse <pattern>` multi-file aggregator CLI — recursive
+      directory walks, glob expansion, cascading `.axonignore`,
+      concurrent thread-pool parse, `--max-errors N` cap with D6
+      truncation discipline, exit codes 0/1/2/3 (bitwise OR of
+      parse + I/O classes).
+    * Structured JSON output — `--json --format={array,ndjson}`
+      with rustc-compatible field shape (D5 ratified) +
+      `to_lsp_diagnostic` helper for adopter LSP wrappers.
+    * `--strict` opt-in — CLI flag + `AXON_PARSER_STRICT` env var
+      (D8 ratified, OR semantics) for CI loops that want legacy
+      fail-on-first behavior.
+    * Cross-stack drift gate — Python ↔ Rust frontends produce
+      byte-identical error counts on a shared corpus, locked in
+      axon-lang CI on every PR (D7 ratified).
+  Enterprise tenants on regulated verticals (HIPAA / legal /
+  fintech) immediately benefit on `axon check` + `axon parse`
+  flows: every shield/judge/ensemble compile pass surfaces the
+  full diagnostic landscape in one pass instead of one-error-per-
+  deploy. axon-frontend Rust crate dependency bumps transitively
+  from 0.7.0 → 0.8.0 (in axon-lang 1.20.0).
+
+  v1.11.0 is a lean catch-up — same shape as v1.9.0 (which
+  consumed axon-lang 1.19.1 ahead of v1.10.0's substantive
+  Fase 27 work). The substantive Fase 27.k.1 Python ctypes
+  integration that was originally earmarked for v1.11.0 ships
+  as v1.12.0 (no scope or content change — just renumbered to
+  let this catch-up land first).
+
+  Fase 29 "Enterprise Diagnostic Enhancements" is the announced
+  enterprise-only follow-on layered on top of this OSS surface
+  (default-strict in regulated verticals via vertical-aware
+  policy + ship diagnostics to enterprise telemetry sink +
+  vertical-aware suggest dictionaries).
 """
 
-__version__ = "1.10.0"
+__version__ = "1.11.0"
