@@ -1123,16 +1123,31 @@ impl Parser {
             // MCP declaration
             TokenType::Mcp => self.parse_generic_declaration(),
 
-            _ => Err(ParseError {
-                message: format!(
+            _ => {
+                // §Fase 28.e — append "Did you mean X?" hint when the
+                // unknown token looks like a typo'd top-level keyword
+                // (Levenshtein ≤ 2). D3, D11 ratified 2026-05-10.
+                let hint = crate::smart_suggest::suggest_for(
+                    &tok.value,
+                    crate::smart_suggest::TOP_LEVEL_KEYWORD_NAMES,
+                );
+                let base = format!(
                     "Unexpected token at top level: '{}' — expected declaration \
                      (persona, context, anchor, flow, run, ...)",
                     tok.value
-                ),
-                line: tok.line,
-                column: tok.column,
-                            ..Default::default()
-            }),
+                );
+                let message = if hint.is_empty() {
+                    base
+                } else {
+                    format!("{base}. {hint}")
+                };
+                Err(ParseError {
+                    message,
+                    line: tok.line,
+                    column: tok.column,
+                    ..Default::default()
+                })
+            }
         }
     }
 
@@ -1766,15 +1781,30 @@ impl Parser {
             TokenType::Purge => self.parse_flow_step_simple("purge").map(|l| FlowStep::Purge(PurgeStep { store_name: l.1, where_expr: String::new(), loc: l.0 })),
             TokenType::Transact => self.parse_block_step("transact").map(|l| FlowStep::Transact(TransactBlock { loc: l })),
 
-            _ => Err(ParseError {
-                message: format!(
+            _ => {
+                // §Fase 28.e — append "Did you mean X?" hint when the
+                // unknown token looks like a typo'd flow-body keyword
+                // (e.g. `stepp` / `reasn` / `validte`). D3, D11.
+                let hint = crate::smart_suggest::suggest_for(
+                    &tok.value,
+                    crate::smart_suggest::FLOW_BODY_KEYWORD_NAMES,
+                );
+                let base = format!(
                     "Unexpected token in flow body: '{}' — expected step, if, for, let, return, ...",
                     tok.value
-                ),
-                line: tok.line,
-                column: tok.column,
-                            ..Default::default()
-            }),
+                );
+                let message = if hint.is_empty() {
+                    base
+                } else {
+                    format!("{base}. {hint}")
+                };
+                Err(ParseError {
+                    message,
+                    line: tok.line,
+                    column: tok.column,
+                    ..Default::default()
+                })
+            }
         }
     }
 
@@ -6097,6 +6127,80 @@ mod fase28_source_context_tests {
             "11 | L11",
         );
         assert_eq!(out, expected);
+    }
+}
+
+// ── §Fase 28.e — Parser integration tests for smart-suggest ──────────────────
+//
+// Mirror of `tests/test_fase28_smart_suggest.py::TestParserIntegration`.
+// Verifies that the parser actually wires `suggest_for` into the
+// unknown-keyword diagnostic at both error sites — top-level and
+// flow-body.
+#[cfg(test)]
+mod fase28_smart_suggest_parser_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+
+    fn lex(src: &str) -> Vec<Token> {
+        Lexer::new(src, "<test>").tokenize().expect("lex")
+    }
+
+    #[test]
+    fn top_level_typo_suggests_flow() {
+        let src = "flwo F() { }";
+        let err = Parser::new(lex(src)).parse().expect_err("must error");
+        assert!(
+            err.message.contains("Did you mean `flow`?"),
+            "msg: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn top_level_unknown_far_no_suggestion() {
+        let src = "qwerty F() { }";
+        let err = Parser::new(lex(src)).parse().expect_err("must error");
+        assert!(
+            !err.message.contains("Did you mean"),
+            "msg: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn flow_body_typo_suggests_step() {
+        let src = "flow F() { stepp S {} }";
+        let err = Parser::new(lex(src)).parse().expect_err("must error");
+        assert!(
+            err.message.contains("Did you mean `step`"),
+            "msg: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn flow_body_typo_suggests_reason() {
+        let src = "flow F() { reasn R {} }";
+        let err = Parser::new(lex(src)).parse().expect_err("must error");
+        assert!(
+            err.message.contains("Did you mean `reason`?"),
+            "msg: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn recovery_mode_carries_hint() {
+        let src = "flwo F() { }";
+        let result = Parser::new(lex(src)).parse_with_recovery();
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("Did you mean `flow`?")),
+            "errors: {:?}",
+            result.errors
+        );
     }
 }
 

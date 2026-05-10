@@ -31,6 +31,7 @@ pub mod ir_generator;
 pub mod ir_nodes;
 pub mod lexer;
 pub mod parser;
+pub mod smart_suggest;
 pub mod tokens;
 pub mod type_checker;
 
