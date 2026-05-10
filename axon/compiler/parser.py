@@ -337,7 +337,21 @@ class ParseResult:
 class Parser:
     """Recursive descent parser for the AXON language."""
 
-    def __init__(self, tokens: list[Token]):
+    def __init__(
+        self,
+        tokens: list[Token],
+        *,
+        source: str | None = None,
+        filename: str = "<source>",
+    ):
+        # §Fase 28.d — Optional source text + filename for the
+        # rustc-style source-context block on AxonParseError. Both
+        # are keyword-only and default to no-op so existing callers
+        # (Parser(tokens)) continue to work unchanged. When provided,
+        # `parse_with_recovery` and `parse` attach a SourceSnippet
+        # to every error they raise/collect.
+        self._source: str | None = source
+        self._filename: str = filename
         # ── Fase 14.a — Lossless lexing → trivia channel ──
         # Split the raw token stream into:
         #   - `self._tokens`: only the *effective* tokens the grammar
@@ -457,12 +471,21 @@ class Parser:
 
         For the new RECOVERY mode that collects all errors in one pass
         without raising, use `parse_with_recovery()` (Fase 28.b).
+
+        §Fase 28.d — When the Parser was constructed with `source=...`,
+        any AxonParseError raised here gets a SourceSnippet attached
+        before re-raising so adopters see the rustc-style block in the
+        formatted message.
         """
         program = ProgramNode(line=1, column=1)
-        while not self._check(TokenType.EOF):
-            decl = self._parse_declaration()
-            if decl is not None:
-                program.declarations.append(decl)
+        try:
+            while not self._check(TokenType.EOF):
+                decl = self._parse_declaration()
+                if decl is not None:
+                    program.declarations.append(decl)
+        except AxonParseError as e:
+            self._attach_source_to_error(e)
+            raise
         return program
 
     def parse_with_recovery(self) -> ParseResult:
@@ -500,9 +523,25 @@ class Parser:
                 if decl is not None:
                     program.declarations.append(decl)
             except AxonParseError as e:
+                # §Fase 28.d — attach source-context block when source
+                # was provided to the Parser constructor; otherwise the
+                # error keeps its single-line shape.
+                self._attach_source_to_error(e)
                 errors.append(e)
                 self._advance_to_sync_point()
         return ParseResult(program=program, errors=errors)
+
+    def _attach_source_to_error(self, e: AxonParseError) -> None:
+        """§Fase 28.d — Attach a SourceSnippet if source is available.
+
+        No-op when the Parser was constructed without a `source=`
+        kwarg (legacy callers) or when the error has no line info
+        (line == 0). Idempotent: re-attaches if called twice (the
+        rendered context will reflect whatever source was provided
+        last; in practice we only call this once per error).
+        """
+        if self._source is not None and e.line >= 1:
+            e.attach_source(self._source, self._filename)
 
     def _advance_to_sync_point(self) -> None:
         """Skip tokens until reaching a top-level resync boundary.

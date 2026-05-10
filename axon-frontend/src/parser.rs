@@ -219,16 +219,140 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
 
 // ── Public error type ────────────────────────────────────────────────────────
 
+/// §Fase 28.d — Source-context constants. D4 ratified 2026-05-10:
+/// 2 lines before + 2 lines after the error line. Mirror of the
+/// Python-side `_SOURCE_CONTEXT_LINES_BEFORE` / `_AFTER` so the
+/// rustc-style block has identical shape across stacks.
+pub const SOURCE_CONTEXT_LINES_BEFORE: usize = 2;
+pub const SOURCE_CONTEXT_LINES_AFTER: usize = 2;
+
+/// §Fase 28.d — Rustc-style source-context block for a parse error.
+///
+/// Holds a reference to the source text plus the line/column the
+/// error points at. Rendering is lazy — call ``render()`` to format
+/// the block (line numbers + caret + 2 lines before + 2 after).
+///
+/// Pure and deterministic: no ANSI colors, no terminal-width
+/// detection. Output shape is byte-identical to the Python
+/// `SourceSnippet.render()` on the same input — that's the cross-
+/// stack drift gate (28.i).
 #[derive(Debug, Clone)]
+pub struct SourceSnippet {
+    pub source: String,
+    pub line: u32,
+    pub column: u32,
+    pub filename: String,
+    pub context_before: usize,
+    pub context_after: usize,
+}
+
+impl SourceSnippet {
+    /// Construct with the default 2/2 context window.
+    pub fn new(source: String, line: u32, column: u32, filename: String) -> Self {
+        Self {
+            source,
+            line,
+            column,
+            filename,
+            context_before: SOURCE_CONTEXT_LINES_BEFORE,
+            context_after: SOURCE_CONTEXT_LINES_AFTER,
+        }
+    }
+
+    /// Format the snippet as a multi-line rustc-style block.
+    ///
+    /// Empty source → empty string. Out-of-range line → empty
+    /// string. Caret column is clamped to `[1, line_len + 1]`.
+    /// Output shape matches Python `SourceSnippet.render` byte-
+    /// identically per D7.
+    #[must_use]
+    pub fn render(&self) -> String {
+        if self.source.is_empty() || self.line < 1 {
+            return String::new();
+        }
+        let raw: Vec<&str> = self.source.split('\n').collect();
+        // Match Python's str.splitlines() trailing-newline shape:
+        // strip an empty trailing entry produced by a final '\n'.
+        let lines: Vec<&str> = if raw.last() == Some(&"") {
+            raw[..raw.len() - 1].to_vec()
+        } else {
+            raw
+        };
+        if lines.is_empty() || self.line as usize > lines.len() {
+            return String::new();
+        }
+
+        let line_idx = self.line as usize;
+        let start = line_idx.saturating_sub(self.context_before).max(1);
+        let end = (line_idx + self.context_after).min(lines.len());
+
+        let gutter = end.to_string().len();
+        let empty_gutter = " ".repeat(gutter);
+
+        let mut out: Vec<String> = Vec::with_capacity(end - start + 4);
+        out.push(format!(
+            "{empty_gutter} --> {}:{}:{}",
+            self.filename, self.line, self.column
+        ));
+        out.push(format!("{empty_gutter} |"));
+        for n in start..=end {
+            let line_text = lines[n - 1];
+            out.push(format!("{n:>gutter$} | {line_text}", gutter = gutter));
+            if n == line_idx {
+                let line_len = line_text.chars().count();
+                let col = (self.column as usize).clamp(1, line_len + 1);
+                out.push(format!(
+                    "{empty_gutter} | {pad}^",
+                    pad = " ".repeat(col - 1)
+                ));
+            }
+        }
+        out.join("\n")
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct ParseError {
     pub message: String,
     pub line: u32,
     pub column: u32,
+    /// §Fase 28.d — Optional rustc-style source-context block.
+    /// `None` preserves the legacy single-line shape; populated by
+    /// `Parser::with_source` callers (and by `parse_with_recovery`
+    /// / `parse` when a source has been attached to the parser).
+    /// Existing struct-literal call sites use the `..Default::default()`
+    /// idiom (default = None) to stay terse.
+    pub source_snippet: Option<SourceSnippet>,
+}
+
+impl ParseError {
+    /// §Fase 28.d — Attach a `SourceSnippet` derived from raw source
+    /// text and filename. Returns `self` so the call can be chained
+    /// at the construction site. No-op when `line == 0`. Idempotent.
+    #[must_use]
+    pub fn attach_source(mut self, source: &str, filename: &str) -> Self {
+        if self.line >= 1 {
+            self.source_snippet = Some(SourceSnippet::new(
+                source.to_string(),
+                self.line,
+                self.column,
+                filename.to_string(),
+            ));
+        }
+        self
+    }
 }
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[line {}:{}] {}", self.line, self.column, self.message)
+        write!(f, "[line {}:{}] {}", self.line, self.column, self.message)?;
+        if let Some(snippet) = &self.source_snippet {
+            let block = snippet.render();
+            if !block.is_empty() {
+                write!(f, "\n{block}")?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -370,6 +494,13 @@ pub struct Parser {
     /// `parse_break`/`parse_continue` raise ParseError when this is
     /// zero (the keyword has no meaning outside a loop body).
     loop_depth: u32,
+    /// §Fase 28.d — Optional source text + filename for the rustc-
+    /// style source-context block on `ParseError`. Set via the
+    /// fluent `Parser::with_source` builder; default `None` keeps
+    /// existing callers (`Parser::new(tokens).parse()`) emitting
+    /// the legacy single-line shape.
+    source: Option<String>,
+    filename: String,
 }
 
 impl Parser {
@@ -419,7 +550,27 @@ impl Parser {
             trailing_trivia: trailing,
             last_let_value_kind: "literal".to_string(),
             loop_depth: 0,
+            source: None,
+            filename: "<source>".to_string(),
         }
+    }
+
+    /// §Fase 28.d — Fluent attach of source text + filename for
+    /// rustc-style source-context blocks on emitted `ParseError`s.
+    /// Returns `self` so it chains with `.parse_with_recovery()`:
+    ///
+    /// ```ignore
+    /// let result = Parser::new(tokens)
+    ///     .with_source(src, "foo.axon")
+    ///     .parse_with_recovery();
+    /// ```
+    ///
+    /// No-op of any other behaviour — pure metadata attach.
+    #[must_use]
+    pub fn with_source(mut self, source: &str, filename: &str) -> Self {
+        self.source = Some(source.to_string());
+        self.filename = filename.to_string();
+        self
     }
 
     // ── public API ───────────────────────────────────────────────
@@ -437,7 +588,10 @@ impl Parser {
             // parsing, `pos - 1` is the last token consumed; that
             // position carries the trailing trivia.
             let start_pos = self.pos;
-            let mut decl = self.parse_declaration()?;
+            let mut decl = match self.parse_declaration() {
+                Ok(d) => d,
+                Err(e) => return Err(self.attach_source_to_error(e)),
+            };
             let end_pos = self.pos.saturating_sub(1);
             let leading = self
                 .leading_trivia
@@ -525,7 +679,10 @@ impl Parser {
                         .push(DeclarationTrivia { leading, trailing });
                 }
                 Err(err) => {
-                    errors.push(err);
+                    // §Fase 28.d — attach source-context block when a
+                    // source has been provided via `with_source(...)`;
+                    // otherwise the error keeps its single-line shape.
+                    errors.push(self.attach_source_to_error(err));
                     // Make progress. If parse_declaration returned
                     // immediately on the same token (e.g. unknown
                     // top-level token), we MUST advance at least one
@@ -539,6 +696,17 @@ impl Parser {
         }
 
         ParseResult { program, errors }
+    }
+
+    /// §Fase 28.d — Decorate a `ParseError` with a `SourceSnippet`
+    /// when the parser has source context attached, otherwise return
+    /// the error unchanged. Idempotent: if the error already carries
+    /// a snippet, this overwrites it with the parser's source.
+    fn attach_source_to_error(&self, err: ParseError) -> ParseError {
+        match &self.source {
+            Some(src) if err.line >= 1 => err.attach_source(src, &self.filename),
+            _ => err,
+        }
     }
 
     /// §Fase 28.c — Walk the cursor forward until the next sync
@@ -596,6 +764,7 @@ impl Parser {
                 ),
                 line: tok.line,
                 column: tok.column,
+                            ..Default::default()
             });
         }
         self.pos += 1;
@@ -630,6 +799,7 @@ impl Parser {
                         ),
                         line: tok.line,
                         column: tok.column,
+                                            ..Default::default()
                     })
                 }
             }
@@ -645,12 +815,14 @@ impl Parser {
                     message: format!("Invalid number '{}'", tok.value),
                     line: tok.line,
                     column: tok.column,
+                                    ..Default::default()
                 })
             }
             _ => Err(ParseError {
                 message: format!("Expected number, found {:?}('{}')", tok.ttype, tok.value),
                 line: tok.line,
                 column: tok.column,
+                            ..Default::default()
             }),
         }
     }
@@ -859,6 +1031,7 @@ impl Parser {
                     message: "Unterminated block — expected '}'".to_string(),
                     line: tok.line,
                     column: tok.column,
+                                    ..Default::default()
                 });
             }
             if self.check(TokenType::LBrace) {
@@ -958,6 +1131,7 @@ impl Parser {
                 ),
                 line: tok.line,
                 column: tok.column,
+                            ..Default::default()
             }),
         }
     }
@@ -1599,6 +1773,7 @@ impl Parser {
                 ),
                 line: tok.line,
                 column: tok.column,
+                            ..Default::default()
             }),
         }
     }
@@ -1681,6 +1856,7 @@ impl Parser {
                         ),
                         line: inner.line,
                         column: inner.column,
+                                            ..Default::default()
                     });
                 }
             }
@@ -2018,6 +2194,7 @@ impl Parser {
                 message: "'break' outside of a for-in loop body".to_string(),
                 line: tok.line,
                 column: tok.column,
+                            ..Default::default()
             });
         }
         Ok(BreakStatement { loc })
@@ -2033,6 +2210,7 @@ impl Parser {
                 message: "'continue' outside of a for-in loop body".to_string(),
                 line: tok.line,
                 column: tok.column,
+                            ..Default::default()
             });
         }
         Ok(ContinueStatement { loc })
@@ -2126,6 +2304,7 @@ impl Parser {
                     ),
                     line: tok.line,
                     column: tok.column,
+                                    ..Default::default()
                 })
             }
         }
@@ -3263,6 +3442,7 @@ impl Parser {
                             ),
                             line: lt_tok.line,
                             column: lt_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.lifetime = lt;
@@ -3423,6 +3603,7 @@ impl Parser {
                             ),
                             line: p_tok.line,
                             column: p_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.on_partition = p;
@@ -3484,6 +3665,7 @@ impl Parser {
                             ),
                             line: d_tok.line,
                             column: d_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.on_drift = d;
@@ -3554,6 +3736,7 @@ impl Parser {
                             ),
                             line: a_tok.line,
                             column: a_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.acquire = a;
@@ -3570,6 +3753,7 @@ impl Parser {
                             ),
                             line: e_tok.line,
                             column: e_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.on_expire = e;
@@ -3624,6 +3808,7 @@ impl Parser {
                             ),
                             line: a_tok.line,
                             column: a_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.aggregation = a;
@@ -3640,6 +3825,7 @@ impl Parser {
                             ),
                             line: c_tok.line,
                             column: c_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.certainty_mode = c;
@@ -3759,6 +3945,7 @@ impl Parser {
                 ),
                 line: tok.line,
                 column: tok.column,
+                            ..Default::default()
             }),
         }
     }
@@ -3883,6 +4070,7 @@ impl Parser {
                             ),
                             line: s_tok.line,
                             column: s_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.scope = s;
@@ -3909,6 +4097,7 @@ impl Parser {
                             ),
                             line: d_tok.line,
                             column: d_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.decay = d;
@@ -3963,6 +4152,7 @@ impl Parser {
                             ),
                             line: l_tok.line,
                             column: l_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.on_level = l;
@@ -3989,6 +4179,7 @@ impl Parser {
                             ),
                             line: a_tok.line,
                             column: a_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.action = a;
@@ -4005,6 +4196,7 @@ impl Parser {
                             ),
                             line: s_tok.line,
                             column: s_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.scope = s;
@@ -4071,6 +4263,7 @@ impl Parser {
                             ),
                             line: l_tok.line,
                             column: l_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.on_level = l;
@@ -4087,6 +4280,7 @@ impl Parser {
                             ),
                             line: m_tok.line,
                             column: m_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.mode = m;
@@ -4103,6 +4297,7 @@ impl Parser {
                             ),
                             line: s_tok.line,
                             column: s_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.scope = s;
@@ -4176,6 +4371,7 @@ impl Parser {
                             ),
                             line: h_tok.line,
                             column: h_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.render_hint = h;
@@ -4361,6 +4557,7 @@ impl Parser {
                                 ),
                                 line: val.line,
                                 column: val.column,
+                                                            ..Default::default()
                             });
                         }
                     }
@@ -4416,6 +4613,7 @@ impl Parser {
                 ),
                 line: on_tok.line,
                 column: on_tok.column,
+                            ..Default::default()
             });
         }
 
@@ -4558,6 +4756,7 @@ impl Parser {
                             ),
                             line: q_tok.line,
                             column: q_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.qos = q_tok.value;
@@ -4573,6 +4772,7 @@ impl Parser {
                             ),
                             line: lt_tok.line,
                             column: lt_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.lifetime = lt_tok.value;
@@ -4588,6 +4788,7 @@ impl Parser {
                             ),
                             line: p_tok.line,
                             column: p_tok.column,
+                                                    ..Default::default()
                         });
                     }
                     node.persistence = p_tok.value;
@@ -4668,6 +4869,7 @@ impl Parser {
                     ),
                     line: next_tok.line,
                     column: next_tok.column,
+                                    ..Default::default()
                 });
             }
             self.advance();
@@ -5630,3 +5832,271 @@ mod fase28_recovery_tests {
         assert_eq!(names, vec!["A", "B", "C"]);
     }
 }
+
+// ── §Fase 28.d — Source-context diagnostic block test pack ───────────────────
+//
+// Mirror of `tests/test_fase28_source_context.py` (Python side, 28.d).
+// The render output must be byte-identical to the Python `SourceSnippet.render`
+// on the same input — D7 ratified (cross-stack drift gate). Golden strings
+// in `golden_*` tests are duplicated verbatim in the Python pack; edits
+// here MUST be mirrored on the Python side and vice versa.
+#[cfg(test)]
+mod fase28_source_context_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+
+    fn snippet(source: &str, line: u32, column: u32, filename: &str) -> String {
+        SourceSnippet::new(
+            source.to_string(),
+            line,
+            column,
+            filename.to_string(),
+        )
+        .render()
+    }
+
+    // ── Pure rendering ──────────────────────────────────────────
+
+    #[test]
+    fn rustc_style_block_for_middle_line() {
+        let src = "line one\nline two\nline three\nline four\nline five";
+        let out = snippet(src, 3, 6, "x.axon");
+        assert!(out.contains("--> x.axon:3:6"));
+        assert!(out.contains("1 | line one"));
+        assert!(out.contains("2 | line two"));
+        assert!(out.contains("3 | line three"));
+        assert!(out.contains("4 | line four"));
+        assert!(out.contains("5 | line five"));
+        // Caret col 6 → 5-space pad. Empty gutter is 1 space (gutter=1).
+        assert!(out.contains("\n  |      ^"), "out:\n{out}");
+    }
+
+    #[test]
+    fn caret_column_one_renders_correctly() {
+        let out = snippet("abc\n", 1, 1, "<source>");
+        assert!(out.contains("\n  | ^"));
+    }
+
+    #[test]
+    fn first_line_clamps_context_before_to_zero() {
+        let src = "first\nsecond\nthird\nfourth\nfifth";
+        let out = snippet(src, 1, 1, "<source>");
+        assert!(out.contains("1 | first"));
+        assert!(out.contains("2 | second"));
+        assert!(out.contains("3 | third"));
+        assert!(!out.contains("4 | fourth"));
+    }
+
+    #[test]
+    fn last_line_clamps_context_after_to_eof() {
+        let src = "first\nsecond\nthird\nfourth\nfifth";
+        let out = snippet(src, 5, 2, "<source>");
+        assert!(out.contains("5 | fifth"));
+        assert!(out.contains("3 | third"));
+        assert!(out.contains("4 | fourth"));
+        assert!(!out.contains("2 | second"));
+    }
+
+    #[test]
+    fn gutter_width_grows_with_line_count() {
+        let src: String = (1..=12).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+        let out = snippet(&src, 12, 1, "<source>");
+        assert!(out.contains("12 | line12"));
+        assert!(out.contains("10 | line10"));
+    }
+
+    // ── Edge cases ──────────────────────────────────────────────
+
+    #[test]
+    fn empty_source_returns_empty() {
+        assert_eq!(snippet("", 1, 1, "<source>"), "");
+    }
+
+    #[test]
+    fn zero_line_returns_empty() {
+        assert_eq!(snippet("hi", 0, 1, "<source>"), "");
+    }
+
+    #[test]
+    fn out_of_range_line_returns_empty() {
+        assert_eq!(snippet("hi", 99, 1, "<source>"), "");
+    }
+
+    #[test]
+    fn caret_clamps_past_eol() {
+        let out = snippet("hello", 1, 50, "<source>");
+        assert!(out.contains("\n  |      ^"), "out:\n{out}");
+    }
+
+    #[test]
+    fn unicode_codepoint_count_for_caret_clamp() {
+        // "héllo" = 5 codepoints; column past EOL clamps to 6.
+        let out = snippet("héllo", 1, 99, "<source>");
+        assert!(out.contains("\n  |      ^"), "out:\n{out}");
+    }
+
+    #[test]
+    fn trailing_newline_does_not_create_phantom_last_line() {
+        let out = snippet("first\nsecond\n", 2, 1, "<source>");
+        assert!(!out.contains("3 |"));
+        assert!(out.contains("2 | second"));
+    }
+
+    // ── Parser attach plumbing ──────────────────────────────────
+
+    fn lex(src: &str) -> Vec<Token> {
+        Lexer::new(src, "<test>").tokenize().expect("lex")
+    }
+
+    #[test]
+    fn strict_parse_attaches_snippet_when_source_given() {
+        let src = "garbage_token\nflow F() { }";
+        let err = Parser::new(lex(src))
+            .with_source(src, "x.axon")
+            .parse()
+            .expect_err("must error");
+        assert!(err.source_snippet.is_some());
+        let display = format!("{err}");
+        assert!(display.contains("--> x.axon:"), "display: {display}");
+    }
+
+    #[test]
+    fn strict_parse_no_snippet_when_no_source() {
+        let src = "garbage_token";
+        let err = Parser::new(lex(src)).parse().expect_err("must error");
+        assert!(err.source_snippet.is_none());
+        let display = format!("{err}");
+        assert!(!display.contains("\n  -->"));
+    }
+
+    #[test]
+    fn every_recovered_error_has_snippet() {
+        let src = "garbage1\nflow F() { }\ngarbage2\nflow G() { }";
+        let result = Parser::new(lex(src))
+            .with_source(src, "multi.axon")
+            .parse_with_recovery();
+        assert!(!result.errors.is_empty());
+        for err in &result.errors {
+            assert!(err.source_snippet.is_some());
+            let display = format!("{err}");
+            assert!(
+                display.contains("--> multi.axon:"),
+                "display: {display}"
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_no_snippet_when_no_source() {
+        let src = "garbage1 garbage2";
+        let result = Parser::new(lex(src)).parse_with_recovery();
+        for err in &result.errors {
+            assert!(err.source_snippet.is_none());
+        }
+    }
+
+    #[test]
+    fn snippet_points_at_correct_line_for_each_error() {
+        let src = "garbage_a\nflow F() { }\ngarbage_b\nflow G() { }";
+        let result = Parser::new(lex(src))
+            .with_source(src, "x")
+            .parse_with_recovery();
+        for err in &result.errors {
+            let sn = err.source_snippet.as_ref().expect("snippet");
+            assert_eq!(sn.line, err.line);
+        }
+    }
+
+    // ── Backwards-compat ────────────────────────────────────────
+
+    #[test]
+    fn legacy_constructor_still_works() {
+        let src = "flow F() { }";
+        let prog = Parser::new(lex(src)).parse().expect("clean");
+        assert_eq!(prog.declarations.len(), 1);
+    }
+
+    #[test]
+    fn attach_source_idempotent() {
+        let err = ParseError {
+            message: "bad".to_string(),
+            line: 2,
+            column: 3,
+            ..Default::default()
+        };
+        let err2 = err.clone().attach_source("a\nb\nc\n", "f.axon");
+        let first = format!("{err2}");
+        let err3 = err.attach_source("a\nb\nc\n", "f.axon");
+        let second = format!("{err3}");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn attach_source_noop_when_line_zero() {
+        let err = ParseError {
+            message: "bad".to_string(),
+            line: 0,
+            column: 0,
+            ..Default::default()
+        };
+        let err = err.attach_source("a\nb\nc\n", "f.axon");
+        assert!(err.source_snippet.is_none());
+    }
+
+    // ── Cross-stack golden parity ───────────────────────────────
+    // These golden strings are duplicated verbatim in the Python
+    // test pack at `tests/test_fase28_source_context.py::TestRustParityShape`.
+    // Edits here MUST be mirrored in the Python pack — D7.
+
+    #[test]
+    fn golden_simple_three_line_block() {
+        let src = "alpha\nbeta\ngamma";
+        let out = snippet(src, 2, 3, "g.axon");
+        // Note: gutter=1, so empty_gutter=" " (one space). The
+        // " --> ..." line therefore starts with two spaces ("<empty>"
+        // + literal " --> ...").
+        let expected = concat!(
+            "  --> g.axon:2:3\n",
+            "  |\n",
+            "1 | alpha\n",
+            "2 | beta\n",
+            "  |   ^\n",
+            "3 | gamma",
+        );
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn golden_first_line_caret() {
+        let src = "abc\ndef\n";
+        let out = snippet(src, 1, 1, "x");
+        let expected = concat!(
+            "  --> x:1:1\n",
+            "  |\n",
+            "1 | abc\n",
+            "  | ^\n",
+            "2 | def",
+        );
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn golden_two_digit_gutter() {
+        let src: String = (1..=11)
+            .map(|i| format!("L{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let out = snippet(&src, 10, 2, "big");
+        let expected = concat!(
+            "   --> big:10:2\n",
+            "   |\n",
+            " 8 | L8\n",
+            " 9 | L9\n",
+            "10 | L10\n",
+            "   |  ^\n",
+            "11 | L11",
+        );
+        assert_eq!(out, expected);
+    }
+}
+
