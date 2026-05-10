@@ -2958,8 +2958,49 @@ class Parser:
     def _consume(self, expected: TokenType) -> Token:
         tok = self._current()
         if tok.type != expected:
+            # Context-aware diagnostic for the common "missing-colon-
+            # between-name-and-type" mistake. When the parser expects
+            # COLON and finds an IDENTIFIER directly after another
+            # IDENTIFIER (or a keyword-as-name like `output`), the
+            # adopter almost certainly wrote `name Type` instead of
+            # `name: Type`. The plain "expected COLON, found
+            # IDENTIFIER('String')" message doesn't surface that —
+            # adopters spent multiple deploy cycles understanding it.
+            #
+            # Surfaced 2026-05-09 by enterprise adopter team after
+            # v1.19.2 + v1.19.3 patches unblocked their lexical +
+            # grammatical layers: the next confusion was a missing
+            # `:` in a parameter or field declaration. The hint
+            # below gives them a one-shot "you probably meant
+            # `<prev>: <found>`" instead of forcing another deploy
+            # cycle.
+            message = "Unexpected token"
+            if (
+                expected == TokenType.COLON
+                and tok.type == TokenType.IDENTIFIER
+                and self._pos > 0
+            ):
+                prev = self._tokens[self._pos - 1]
+                # Heuristic: previous token is an identifier OR a
+                # keyword commonly used as a field/parameter name
+                # (output, given, ask, etc.). Excludes obvious
+                # non-name tokens like LPAREN / RBRACE / COMMA where
+                # this advice would be misleading.
+                prev_looks_like_name = prev.type == TokenType.IDENTIFIER or (
+                    prev.value.isidentifier()
+                )
+                if prev_looks_like_name:
+                    message = (
+                        f"Unexpected token. Did you forget `:` between "
+                        f"`{prev.value}` and `{tok.value}`? Parameter and "
+                        f"field declarations use `name: Type` syntax "
+                        f"(e.g. `{prev.value}: {tok.value}`), not "
+                        f"`name Type`. axon-lang requires the colon "
+                        f"separator to disambiguate name-type pairs from "
+                        f"juxtaposed identifiers."
+                    )
             raise AxonParseError(
-                f"Unexpected token",
+                message,
                 line=tok.line,
                 column=tok.column,
                 expected=expected.name,
