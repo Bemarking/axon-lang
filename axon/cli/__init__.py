@@ -348,6 +348,19 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parse.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "§Fase 28.h — Opt into legacy fail-on-first behavior "
+            "(D8 ratified). The parser stops at the first error in "
+            "the first failing file; subsequent files are skipped. "
+            "Equivalent to `AXON_PARSER_STRICT=1` env var. CI "
+            "pipelines that want a tight halt-on-failure loop set "
+            "either; the default (no flag) uses recovery mode and "
+            "surfaces every error in one pass."
+        ),
+    )
+    parse.add_argument(
         "--no-color",
         action="store_true",
         help=_NO_COLOR_HELP,

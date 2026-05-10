@@ -434,3 +434,98 @@ def run(
     paths = collect_paths(patterns, root=root, ignore_patterns=ignore_patterns)
     results = parse_files_concurrent(paths, max_workers=max_workers)
     return aggregate(results, max_errors=max_errors)
+
+
+# ── §Fase 28.h — strict (fail-on-first) mode ───────────────────────
+
+
+def _parse_one_strict(path: Path) -> FileResult:
+    """Strict-mode single-file parser.
+
+    Uses the legacy fail-fast `Parser.parse()` API instead of
+    `parse_with_recovery()`. The first error is captured into a
+    1-element `parse_errors` tuple — same `FileResult` shape as
+    the recovery path so `aggregate()` and rendering work
+    unchanged.
+
+    Adopters opt into this via `--strict` / `AXON_PARSER_STRICT=1`
+    when they want the legacy v1.19.x behavior (one diagnostic per
+    file maximum, fail the build on the first issue).
+    """
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return FileResult(path=path, io_error=f"{exc.__class__.__name__}: {exc}")
+    except UnicodeDecodeError as exc:
+        return FileResult(path=path, io_error=f"UnicodeDecodeError: {exc}")
+
+    try:
+        tokens = Lexer(source).tokenize()
+    except AxonLexerError as exc:
+        synthetic = AxonParseError(
+            str(exc.message),
+            line=exc.line,
+            column=exc.column,
+        )
+        synthetic.attach_source(source, str(path))
+        return FileResult(path=path, parse_errors=(synthetic,))
+
+    parser = Parser(tokens, source=source, filename=str(path))
+    try:
+        parser.parse()
+    except AxonParseError as e:
+        return FileResult(path=path, parse_errors=(e,))
+    return FileResult(path=path)
+
+
+def run_strict(
+    patterns: list[str],
+    *,
+    root: Path | None = None,
+    ignore_patterns: list[str] | None = None,
+) -> AggregateReport:
+    """Strict-mode top-level entry point.
+
+    Walks files in deterministic order and parses each with the
+    fail-fast `Parser.parse()` API. Stops at the FIRST file that
+    surfaces a parse error: subsequent files in the corpus are not
+    parsed, and the report's `truncated` flag is set so the CLI
+    can print the "remaining files skipped" footer.
+
+    The single-thread sequential walk is intentional in strict
+    mode — we don't want a concurrent worker to over-read past the
+    first error and waste work, and adopter expectation under
+    strict mode is "halt at first failure" with zero ambiguity
+    about which file tripped the build.
+
+    `max_errors` is intentionally not exposed for strict mode —
+    strict mode caps at exactly 1 error by definition. `max_workers`
+    is also omitted because the walk is sequential.
+    """
+    paths = collect_paths(patterns, root=root, ignore_patterns=ignore_patterns)
+    report = AggregateReport()
+    halted = False
+    for path in paths:
+        if halted:
+            # Don't parse remaining files; report.files_seen still
+            # reflects the full corpus discovery for the summary.
+            report.files_seen += 1
+            continue
+        report.files_seen += 1
+        fr = _parse_one_strict(path)
+        if fr.io_error is not None:
+            report.files_with_io_error += 1
+            report.results.append(fr)
+            halted = True
+            report.truncated = len(paths) - report.files_seen > 0
+            continue
+        if fr.parse_errors:
+            report.files_with_errors += 1
+            report.total_errors = 1
+            report.results.append(fr)
+            halted = True
+            report.truncated = len(paths) - report.files_seen > 0
+            continue
+        report.files_clean += 1
+        report.results.append(fr)
+    return report
