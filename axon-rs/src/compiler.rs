@@ -69,7 +69,7 @@ pub fn run_compile(
     let mut parser = Parser::new(tokens);
     let program = match parser.parse() {
         Ok(p) => p,
-        Err(ParseError { message, line, column }) => {
+        Err(ParseError { message, line, column, .. }) => {
             let loc = if column > 0 {
                 format!(":{line}:{column}")
             } else {

@@ -118,6 +118,7 @@ pub fn run_check(file: &str, no_color: bool, strict: bool) -> i32 {
             message,
             line,
             column,
+            ..
         }) => {
             let loc = if column > 0 {
                 format!(":{line}:{column}")
