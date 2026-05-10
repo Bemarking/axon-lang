@@ -749,6 +749,18 @@ pub struct AxonEndpointDefinition {
     pub timeout: String,
     /// §ESK Fase 6.1 — regulatory coverage on the boundary.
     pub compliance: Vec<String>,
+    /// §Fase 30 — HTTP wire transport for the response. Closed enum
+    /// per D2 ratified 2026-05-10: {"json" | "sse" | "ndjson"}.
+    /// Default "json" (D1 — backwards-compat preserved). When set
+    /// to "sse", the type-checker (30.c) verifies that
+    /// `execute_flow` produces a Stream<T> (D3).
+    pub transport: String,
+    /// §Fase 30 — Keepalive comment interval for SSE transport (D6).
+    /// Optional; default applied at runtime when transport == "sse"
+    /// (default 15s). Closed enum at parse time:
+    /// {"5s" | "15s" | "30s" | "60s"}. Empty string means
+    /// "use runtime default".
+    pub keepalive: String,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

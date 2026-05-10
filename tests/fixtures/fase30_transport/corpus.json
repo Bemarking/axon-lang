@@ -1,0 +1,102 @@
+[
+  {
+    "name": "transport_default_json",
+    "source": "axonendpoint Plain { method: POST execute: F }",
+    "expected_parse_ok": true,
+    "expected_transport": "json",
+    "expected_keepalive": ""
+  },
+  {
+    "name": "transport_explicit_json",
+    "source": "axonendpoint Plain { method: POST execute: F transport: json }",
+    "expected_parse_ok": true,
+    "expected_transport": "json",
+    "expected_keepalive": ""
+  },
+  {
+    "name": "transport_sse_default_keepalive",
+    "source": "axonendpoint Live { method: POST execute: orchestrate transport: sse }",
+    "expected_parse_ok": true,
+    "expected_transport": "sse",
+    "expected_keepalive": ""
+  },
+  {
+    "name": "transport_sse_explicit_keepalive_5s",
+    "source": "axonendpoint Live { method: POST execute: orchestrate transport: sse keepalive: 5s }",
+    "expected_parse_ok": true,
+    "expected_transport": "sse",
+    "expected_keepalive": "5s"
+  },
+  {
+    "name": "transport_sse_explicit_keepalive_15s",
+    "source": "axonendpoint Live { method: POST execute: orchestrate transport: sse keepalive: 15s }",
+    "expected_parse_ok": true,
+    "expected_transport": "sse",
+    "expected_keepalive": "15s"
+  },
+  {
+    "name": "transport_sse_explicit_keepalive_30s",
+    "source": "axonendpoint Live { method: POST execute: orchestrate transport: sse keepalive: 30s }",
+    "expected_parse_ok": true,
+    "expected_transport": "sse",
+    "expected_keepalive": "30s"
+  },
+  {
+    "name": "transport_sse_explicit_keepalive_60s",
+    "source": "axonendpoint Live { method: POST execute: orchestrate transport: sse keepalive: 60s }",
+    "expected_parse_ok": true,
+    "expected_transport": "sse",
+    "expected_keepalive": "60s"
+  },
+  {
+    "name": "transport_ndjson_reserved_namespace",
+    "source": "axonendpoint Live { method: POST execute: orchestrate transport: ndjson }",
+    "expected_parse_ok": true,
+    "expected_transport": "ndjson",
+    "expected_keepalive": ""
+  },
+  {
+    "name": "transport_invalid_typo_close_to_sse",
+    "source": "axonendpoint Bad { method: POST execute: F transport: sssee }",
+    "expected_parse_ok": false,
+    "expected_error_contains": "Did you mean `sse`"
+  },
+  {
+    "name": "transport_invalid_far_no_suggest",
+    "source": "axonendpoint Bad { method: POST execute: F transport: qwerty }",
+    "expected_parse_ok": false,
+    "expected_error_contains": "Invalid transport"
+  },
+  {
+    "name": "transport_invalid_unsupported_websocket",
+    "source": "axonendpoint Bad { method: POST execute: F transport: websocket }",
+    "expected_parse_ok": false,
+    "expected_error_contains": "Invalid transport"
+  },
+  {
+    "name": "keepalive_invalid_no_unit",
+    "source": "axonendpoint Bad { method: POST execute: F transport: sse keepalive: 15 }",
+    "expected_parse_ok": false,
+    "expected_error_contains": "Invalid keepalive"
+  },
+  {
+    "name": "keepalive_invalid_too_sparse",
+    "source": "axonendpoint Bad { method: POST execute: F transport: sse keepalive: 90s }",
+    "expected_parse_ok": false,
+    "expected_error_contains": "Invalid keepalive"
+  },
+  {
+    "name": "all_fields_full_robusto",
+    "source": "axonendpoint LiveDeliberation { method: POST path: \"/live\" body: ContractInput execute: orchestrate output: Token shield: PHIShield retries: 2 timeout: 10s compliance: [HIPAA] transport: sse keepalive: 15s }",
+    "expected_parse_ok": true,
+    "expected_transport": "sse",
+    "expected_keepalive": "15s"
+  },
+  {
+    "name": "transport_order_independence",
+    "source": "axonendpoint Live { transport: sse method: POST keepalive: 30s execute: orchestrate path: \"/live\" }",
+    "expected_parse_ok": true,
+    "expected_transport": "sse",
+    "expected_keepalive": "30s"
+  }
+]
