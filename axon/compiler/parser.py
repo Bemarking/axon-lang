@@ -840,6 +840,34 @@ class Parser:
 
         return node
 
+    def _parse_output_type_string(self) -> str:
+        """Parse a type expression and return its stringified form.
+
+        Used by step / reason / forge / ots-apply productions that
+        store `output_type` as a flat string (per AST historical
+        choice — these productions predate `TypeExprNode` adoption
+        in flow + intent + tool surfaces).
+
+        Accepts the same shapes as `_parse_type_expr`:
+        - `Identifier`            → `"Identifier"`
+        - `Stream<String>`        → `"Stream<String>"`
+        - `Optional?`             → `"Optional?"`
+        - `Stream<String>?`       → `"Stream<String>?"`
+
+        Surfaced 2026-05-09 by an enterprise adopter team writing
+        `output: Stream<String>` inside a step body — the previous
+        `_consume(TokenType.IDENTIFIER).value` call accepted `Stream`
+        but bailed on the `<` because the OUTPUT case in
+        `_parse_step` did not delegate to a generic-aware parser.
+        """
+        expr = self._parse_type_expr()
+        result = expr.name
+        if expr.generic_param:
+            result = f"{result}<{expr.generic_param}>"
+        if expr.optional:
+            result = f"{result}?"
+        return result
+
     # ── INTENT ────────────────────────────────────────────────────
 
     def _parse_intent(self) -> IntentNode:
@@ -1087,7 +1115,7 @@ class Parser:
                 case TokenType.OUTPUT:
                     self._advance()
                     self._consume(TokenType.COLON)
-                    node.output_type = self._consume(TokenType.IDENTIFIER).value
+                    node.output_type = self._parse_output_type_string()
 
                 case TokenType.IDENTIFIER if inner.value == "confidence_floor":
                     self._advance()
@@ -1186,7 +1214,7 @@ class Parser:
                 case "chain_of_thought":
                     node.chain_of_thought = self._parse_bool()
                 case "output":
-                    node.output_type = self._consume(TokenType.IDENTIFIER).value
+                    node.output_type = self._parse_output_type_string()
                 case _:
                     self._skip_value()
 
@@ -2025,7 +2053,7 @@ class Parser:
         # Optional -> OutputType
         if self._check(TokenType.ARROW):
             self._advance()
-            node.output_type = self._consume(TokenType.IDENTIFIER).value
+            node.output_type = self._parse_output_type_string()
 
         self._consume(TokenType.LBRACE)
 
@@ -2142,8 +2170,8 @@ class Parser:
         
         if self._check(TokenType.ARROW):
             self._advance()
-            node.output_type = self._consume(TokenType.IDENTIFIER).value
-            
+            node.output_type = self._parse_output_type_string()
+
         return node
 
     # ── IF / CONDITIONAL ──────────────────────────────────────────
@@ -3803,7 +3831,7 @@ class Parser:
         # optional -> OutputType
         if self._check(TokenType.ARROW):
             self._advance()
-            node.output_type = self._consume(TokenType.IDENTIFIER).value
+            node.output_type = self._parse_output_type_string()
 
         return node
 
@@ -4052,7 +4080,7 @@ class Parser:
         # optional -> OutputType
         if self._check(TokenType.ARROW):
             self._advance()
-            node.output_type = self._consume(TokenType.IDENTIFIER).value
+            node.output_type = self._parse_output_type_string()
 
         return node
 
@@ -4350,7 +4378,7 @@ class Parser:
         # optional -> OutputType
         if self._check(TokenType.ARROW):
             self._advance()
-            node.output_type = self._consume(TokenType.IDENTIFIER).value
+            node.output_type = self._parse_output_type_string()
 
         return node
 

@@ -393,6 +393,58 @@ class TestPerform:
         assert node.arguments == ["token"]
 
 
+class TestStepOutputGenericType:
+    """Step body `output: Type` field — accepts generic types
+    (`Stream<String>`, `List<Party>`, `Optional?`, etc.).
+
+    Reported by enterprise adopter team 2026-05-09 (after the v1.19.2
+    parser-keyword-diagnostic patch unblocked their first error): they
+    rewrote `perform stream(drop_oldest)` as `output: Stream<String>`,
+    which then hit a SECOND parser bug — the step body's OUTPUT case
+    only consumed a single IDENTIFIER (`Stream`) and bailed on the
+    `<String>` suffix with `expected ... found <`.
+
+    The fix lifts the same generic-type-aware parser that
+    `_parse_type_expr` uses for flow signatures + intent declarations
+    into a string-returning helper (`_parse_output_type_string`) used
+    consistently across step / reason / forge / ots-apply / shield-
+    apply / daemon / listen / agent productions.
+    """
+
+    @staticmethod
+    def _step(prog: ProgramNode) -> StepNode:
+        flow = prog.declarations[0]
+        assert isinstance(flow, FlowDefinition)
+        step = flow.body[0]
+        assert isinstance(step, StepNode)
+        return step
+
+    def test_step_output_simple_identifier(self) -> None:
+        """Plain `output: String` still parses (regression baseline)."""
+        prog = _parse(_wrap_in_step("output: String"))
+        assert self._step(prog).output_type == "String"
+
+    def test_step_output_generic_type(self) -> None:
+        """`output: Stream<String>` — the load-bearing Kivi case."""
+        prog = _parse(_wrap_in_step("output: Stream<String>"))
+        assert self._step(prog).output_type == "Stream<String>"
+
+    def test_step_output_list_generic(self) -> None:
+        """`output: List<Party>` — same shape, different generic."""
+        prog = _parse(_wrap_in_step("output: List<Party>"))
+        assert self._step(prog).output_type == "List<Party>"
+
+    def test_step_output_optional_type(self) -> None:
+        """`output: Document?` — optional-marker preserved."""
+        prog = _parse(_wrap_in_step("output: Document?"))
+        assert self._step(prog).output_type == "Document?"
+
+    def test_step_output_generic_optional_type(self) -> None:
+        """`output: Stream<String>?` — generic + optional combined."""
+        prog = _parse(_wrap_in_step("output: Stream<String>?"))
+        assert self._step(prog).output_type == "Stream<String>?"
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  TestHandle — `handle Effect { clauses } in { body }`
 # ──────────────────────────────────────────────────────────────────────
