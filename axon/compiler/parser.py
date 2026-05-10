@@ -212,6 +212,127 @@ _PERFORM_KEYWORD_CONFUSIONS: dict[TokenType, str] = {
     ),
 }
 
+# §Fase 28.b — Top-level declaration keywords used as resync points
+# during error recovery (D2 ratified 2026-05-10). When the parser
+# recovers from a parse error, it advances tokens until it encounters
+# either: (a) a closing brace `}` from an outer scope (depth becomes
+# negative in the local walk), or (b) one of these top-level keywords
+# at depth 0 of the local walk. EOF is also a valid sync point.
+#
+# The set mirrors `_parse_declaration`'s match-case dispatch — every
+# token that begins a top-level declaration is included. Adding a new
+# top-level construct in the future MUST add the corresponding token
+# here so the recovery walker re-syncs correctly.
+_TOP_LEVEL_DECLARATION_KEYWORDS: frozenset[TokenType] = frozenset({
+    TokenType.IMPORT,
+    TokenType.PERSONA,
+    TokenType.CONTEXT,
+    TokenType.ANCHOR,
+    TokenType.MEMORY,
+    TokenType.TOOL,
+    TokenType.TYPE,
+    TokenType.FLOW,
+    TokenType.INTENT,
+    TokenType.RUN,
+    TokenType.KNOW,
+    TokenType.BELIEVE,
+    TokenType.SPECULATE,
+    TokenType.DOUBT,
+    TokenType.DATASPACE,
+    TokenType.INGEST,
+    TokenType.AGENT,
+    TokenType.SHIELD,
+    TokenType.PIX,
+    TokenType.CORPUS,
+    TokenType.PSYCHE,
+    TokenType.OTS,
+    TokenType.MANDATE,
+    TokenType.COMPUTE,
+    TokenType.LAMBDA,
+    TokenType.DAEMON,
+    TokenType.AXONSTORE,
+    TokenType.AXONENDPOINT,
+    TokenType.RESOURCE,
+    TokenType.FABRIC,
+    TokenType.MANIFEST,
+    TokenType.OBSERVE,
+    TokenType.RECONCILE,
+    TokenType.LEASE,
+    TokenType.ENSEMBLE,
+    TokenType.SESSION,
+    TokenType.TOPOLOGY,
+    TokenType.IMMUNE,
+    TokenType.REFLEX,
+    TokenType.HEAL,
+    TokenType.COMPONENT,
+    TokenType.VIEW,
+    TokenType.CHANNEL,
+    TokenType.PERSIST,
+    TokenType.RETRIEVE,
+    TokenType.MUTATE,
+    TokenType.PURGE,
+    TokenType.TRANSACT,
+    TokenType.LET,
+    TokenType.EFFECT,
+})
+
+
+class ParseResult:
+    """Result of a recovery-mode parse pass.
+
+    Returned by `Parser.parse_with_recovery()` (Fase 28.b — D1 ratified
+    2026-05-10). Contains:
+
+      - `program`: the (possibly partial) `ProgramNode` containing every
+        declaration that parsed successfully. Declarations that raised
+        an error during parsing are NOT included; the parser skips past
+        them to the next resync point and continues. Adopters get the
+        canonical AST for the parts of their corpus that compile cleanly,
+        even if other parts have errors.
+
+      - `errors`: a `list[AxonParseError]` containing every error
+        encountered during the pass, in source order. Empty list iff the
+        full input parsed successfully — equivalent semantically to a
+        `Parser.parse()` call with no exception raised.
+
+    Backwards-compat (D9 ratified): the original `Parser.parse()` API
+    is preserved verbatim — it raises on the first error as before.
+    `parse_with_recovery()` is the new additive surface.
+
+    Adopters typically write:
+
+        result = Parser(tokens).parse_with_recovery()
+        if result.has_errors:
+            for err in result.errors:
+                emit_diagnostic(err)
+            sys.exit(1)
+        # Use result.program ...
+    """
+
+    __slots__ = ("program", "errors")
+
+    def __init__(self, program: "ProgramNode", errors: list[AxonParseError]):
+        self.program = program
+        self.errors = errors
+
+    @property
+    def has_errors(self) -> bool:
+        """True iff at least one error was collected during the pass."""
+        return bool(self.errors)
+
+    @property
+    def is_clean(self) -> bool:
+        """True iff the full input parsed without any errors. Equivalent
+        to `not self.has_errors`."""
+        return not self.errors
+
+    def __repr__(self) -> str:
+        n = len(self.errors)
+        return (
+            f"ParseResult(program=<{len(self.program.declarations)} decls>, "
+            f"errors={n})"
+        )
+
 
 class Parser:
     """Recursive descent parser for the AXON language."""
@@ -328,13 +449,128 @@ class Parser:
     # ── public API ────────────────────────────────────────────────
 
     def parse(self) -> ProgramNode:
-        """Parse the full program → ProgramNode."""
+        """Parse the full program → ProgramNode.
+
+        STRICT mode: raises on the first error (legacy contract,
+        backwards-compatible per D9 ratified 2026-05-10). Existing
+        adopter integrations + CI pipelines depend on this behavior.
+
+        For the new RECOVERY mode that collects all errors in one pass
+        without raising, use `parse_with_recovery()` (Fase 28.b).
+        """
         program = ProgramNode(line=1, column=1)
         while not self._check(TokenType.EOF):
             decl = self._parse_declaration()
             if decl is not None:
                 program.declarations.append(decl)
         return program
+
+    def parse_with_recovery(self) -> ParseResult:
+        """Parse the full program collecting ALL errors in one pass.
+
+        §Fase 28.b — D1 + D2 ratified 2026-05-10. Panic-mode error
+        recovery: when a parse error fires inside `_parse_declaration`,
+        the error is recorded into the result's `errors` list, and the
+        token stream is advanced to the next resync point (top-level
+        keyword or closing brace from outer scope). Parsing continues
+        from there. The pass terminates at EOF; the caller receives
+        every error encountered + a (possibly partial) `ProgramNode`
+        containing every declaration that parsed cleanly.
+
+        Sync points (D2):
+          - Top-level declaration keywords (`flow`, `intent`, `tool`,
+            `persona`, `daemon`, `agent`, etc. — see
+            `_TOP_LEVEL_DECLARATION_KEYWORDS`).
+          - Closing brace `}` from a scope OUTER than where the error
+            fired — detected by tracking brace depth from the error
+            position and advancing past the first matching closing
+            brace that brings depth below 0.
+          - End of file.
+
+        Backwards compat (D9): the original `parse()` API is preserved
+        verbatim. This method is purely additive.
+
+        See `ParseResult` for the return-value contract.
+        """
+        program = ProgramNode(line=1, column=1)
+        errors: list[AxonParseError] = []
+        while not self._check(TokenType.EOF):
+            try:
+                decl = self._parse_declaration()
+                if decl is not None:
+                    program.declarations.append(decl)
+            except AxonParseError as e:
+                errors.append(e)
+                self._advance_to_sync_point()
+        return ParseResult(program=program, errors=errors)
+
+    def _advance_to_sync_point(self) -> None:
+        """Skip tokens until reaching a top-level resync boundary.
+
+        Per D2 ratified 2026-05-10. Walks tokens forward starting at
+        `self._pos`, tracking brace depth in a local counter (NOT the
+        parser's call-stack depth — that's already unwound by the
+        exception). Stops when either:
+
+          1. The local depth becomes negative — this means we've hit a
+             closing brace `}` whose matching `{` was OUTSIDE the
+             current walk window, i.e. the brace closes the broken
+             construct. Consume it + return.
+
+          2. A top-level declaration keyword appears at local depth 0 —
+             we've reached the start of a new top-level construct.
+             Do NOT consume it; the next iteration of the outer
+             `while not EOF` loop in `parse_with_recovery` picks it up.
+
+          3. EOF — exit the walker, the outer loop will terminate.
+
+        Aggressive sync-point selection is intentional (D2): one error
+        per logically broken block, not per token. A flow with three
+        bad fields produces ONE error (the first detected) + the
+        walker advances past the WHOLE broken construct (potentially
+        traversing multiple closing braces if the error fired deep
+        in nested productions like `step S { ... }` inside
+        `flow F { ... }`). Adopters see the structural picture, not
+        a flood.
+        """
+        # Local walker-depth counter. Starts at 0 representing "the
+        # nesting level where the error fired" (the parser's
+        # call-stack depth was already unwound by the AxonParseError
+        # exception, so `_pos` sits at the offending token). The
+        # walker increments on every `{` (entered a new nested block
+        # DURING the walk) and decrements on every `}` (left a block).
+        # `depth <= 0` means we are at the same level as the error or
+        # have ascended OUT of nested blocks — i.e. we have escaped
+        # the broken construct.
+        #
+        # Sync rule: top-level declaration keyword AT depth ≤ 0. We
+        # do NOT sync at the first negative depth alone, because the
+        # broken construct may be nested several levels deep
+        # (e.g. error inside `step S { ... }` inside `flow F { ... }`
+        # requires the walker to advance past TWO closing braces to
+        # reach the top level).
+        depth = 0
+        while not self._check(TokenType.EOF):
+            tok = self._current()
+            tok_type = tok.type
+
+            # Top-level keyword at depth ≤ 0 = next declaration boundary.
+            # Don't consume; let the outer loop pick it up.
+            if (
+                tok_type in _TOP_LEVEL_DECLARATION_KEYWORDS
+                and depth <= 0
+            ):
+                return
+
+            if tok_type == TokenType.LBRACE:
+                depth += 1
+            elif tok_type == TokenType.RBRACE:
+                depth -= 1
+
+            self._advance()
+        # Reached EOF without finding a top-level resync — the outer
+        # loop will terminate on its EOF check. This is the expected
+        # path when a broken construct extends to end-of-file.
 
     # ── top-level dispatch ────────────────────────────────────────
 
