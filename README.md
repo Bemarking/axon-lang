@@ -4652,6 +4652,16 @@ All commands work as native binaries:
 # Validate syntax: lex + parse + type-check
 axon check program.axon
 
+# Multi-file diagnostic pass (v1.20.0+) — surfaces every parse error
+# across a whole corpus in one pass, with rustc-style source-context
+# blocks + "Did you mean X?" hints on typo'd keywords.
+# See docs/ADOPTER_DIAGNOSTICS.md for the full guide.
+axon parse src/                                # walk recursively
+axon parse "src/**/*.axon"                     # glob pattern
+axon parse src/ --json --format=ndjson         # IDE / LSP-friendly
+axon parse src/ --strict                       # halt at first failing file
+axon parse src/ --max-errors 50                # cap diagnostic stream
+
 # Compile to IR JSON
 axon compile program.axon                     # → program.ir.json
 axon compile program.axon --stdout             # pipe to stdout
