@@ -277,6 +277,62 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Output path (default: stdout)",
     )
 
+    # ── axon parse ────────────────────────────────────────────
+    # §Fase 28.f — Multi-file aggregator. Walks files / dirs / globs,
+    # parses each `.axon` file with recovery mode (28.b), and prints
+    # every diagnostic across the whole corpus in one pass. D6
+    # ratified: no default cap on errors, opt-in via `--max-errors`.
+    parse = sub.add_parser(
+        "parse",
+        help=(
+            "Parse one or more .axon files and aggregate diagnostics "
+            "across the corpus."
+        ),
+    )
+    parse.add_argument(
+        "patterns",
+        nargs="+",
+        help=(
+            "File path, directory (walked recursively), or glob "
+            "pattern (e.g. `src/**/*.axon`). Multiple patterns may "
+            "be provided."
+        ),
+    )
+    parse.add_argument(
+        "--max-errors",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Cap the total number of parse errors reported across "
+            "all files (D6, default unlimited). The CLI prints a "
+            "truncation footer when the cap kicks in."
+        ),
+    )
+    parse.add_argument(
+        "--ignore",
+        action="append",
+        default=None,
+        metavar="PATTERN",
+        help=(
+            "fnmatch-style ignore pattern; may be passed multiple "
+            "times. `.axonignore` files in the root and walked "
+            "subdirectories are honoured automatically."
+        ),
+    )
+    parse.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Worker thread count (default: auto).",
+    )
+    parse.add_argument(
+        "--no-color",
+        action="store_true",
+        help=_NO_COLOR_HELP,
+    )
+
     # ── axon evidence-package ─────────────────────────────────
     # Bundle every audit artifact into a deterministic ZIP.
     evidence = sub.add_parser(
@@ -316,6 +372,8 @@ _DISPATCH: dict[str, str] = {
     "sbom": "axon.cli.sbom_cmd:cmd_sbom",
     "audit": "axon.cli.audit_cmd:cmd_audit",
     "evidence-package": "axon.cli.evidence_package_cmd:cmd_evidence_package",
+    # §Fase 28.f — multi-file aggregator
+    "parse": "axon.cli.parse_cmd:cmd_parse",
 }
 
 
