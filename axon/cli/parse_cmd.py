@@ -32,13 +32,36 @@ Flags:
 """
 from __future__ import annotations
 
+import os
 import sys
 from argparse import Namespace
 from pathlib import Path
 
 from axon.cli._json_output import report_to_json
-from axon.cli._multi_file import AggregateReport, FileResult, run
+from axon.cli._multi_file import AggregateReport, FileResult, run, run_strict
 from axon.cli.display import safe_text
+
+
+# §Fase 28.h — Strict-mode env-var name + truthy values. D8
+# ratified: opt-in surface = CLI flag + env var only (no config
+# file). Truthy values follow the standard "1 / true / yes / on"
+# convention; everything else is treated as off, including unset.
+_STRICT_ENV_VAR: str = "AXON_PARSER_STRICT"
+_STRICT_TRUTHY: frozenset[str] = frozenset(
+    {"1", "true", "yes", "on", "y", "t"}
+)
+
+
+def _strict_from_env() -> bool:
+    """Read the `AXON_PARSER_STRICT` env var and return True iff truthy.
+
+    The env var is parsed case-insensitively. Unset / empty / any
+    non-truthy literal returns False. Adopters running CI without
+    being able to edit invocation flags use this to flip behavior
+    via environment, which is the standard 12-factor knob shape.
+    """
+    raw = os.environ.get(_STRICT_ENV_VAR, "").strip().lower()
+    return raw in _STRICT_TRUTHY
 
 
 # ── ANSI colors (mirror of check_cmd) ───────────────────────────
@@ -110,8 +133,21 @@ def _print_file_block(fr: FileResult, *, no_color: bool) -> None:
             print(f"  {line}")
 
 
-def _print_summary(report: AggregateReport, *, no_color: bool) -> None:
-    """Footer block: corpus-wide totals + truncation note (D6)."""
+def _print_summary(
+    report: AggregateReport,
+    *,
+    no_color: bool,
+    strict_mode: bool = False,
+) -> None:
+    """Footer block: corpus-wide totals + truncation note.
+
+    Two truncation modes share the `report.truncated` flag:
+      - D6 `--max-errors` cap (recovery mode): "rerun with a
+        larger cap to see the rest".
+      - D8 `--strict` halt (28.h): "remaining files skipped;
+        rerun without --strict to see all errors".
+    `strict_mode` selects the right hint.
+    """
     if report.is_clean:
         print(
             _c(
@@ -136,14 +172,19 @@ def _print_summary(report: AggregateReport, *, no_color: bool) -> None:
         )
     )
     if report.truncated:
-        print(
-            _c(
-                "  — output truncated by --max-errors; rerun with a "
-                "larger cap to see the rest",
-                _YELLOW,
-                no_color=no_color,
+        if strict_mode:
+            remaining = report.files_seen - len(report.results)
+            footer_text = (
+                f"  — strict mode halted at first failing file; "
+                f"{remaining} remaining file(s) skipped — rerun "
+                f"without --strict to see all errors"
             )
-        )
+        else:
+            footer_text = (
+                "  — output truncated by --max-errors; rerun with a "
+                "larger cap to see the rest"
+            )
+        print(_c(footer_text, _YELLOW, no_color=no_color))
 
 
 # ── entry point ─────────────────────────────────────────────────
@@ -169,13 +210,27 @@ def cmd_parse(args: Namespace) -> int:
     jobs: int | None = getattr(args, "jobs", None)
     json_mode: bool = getattr(args, "json", False)
     json_format: str = getattr(args, "format", "array")
+    # §Fase 28.h — D8: opt-in strict mode via `--strict` flag OR
+    # `AXON_PARSER_STRICT=1` env var. Either source is enough; the
+    # OR ensures CI pipelines can flip behavior without editing
+    # invocation lines.
+    strict_mode: bool = bool(getattr(args, "strict", False)) or _strict_from_env()
 
-    report = run(
-        patterns,
-        ignore_patterns=ignore,
-        max_errors=max_errors,
-        max_workers=jobs,
-    )
+    if strict_mode:
+        # In strict mode the corpus walk halts at the first error.
+        # `--max-errors` and `--jobs` are intentionally ignored
+        # (strict caps at exactly 1 error and runs sequentially).
+        report = run_strict(
+            patterns,
+            ignore_patterns=ignore,
+        )
+    else:
+        report = run(
+            patterns,
+            ignore_patterns=ignore,
+            max_errors=max_errors,
+            max_workers=jobs,
+        )
 
     # §Fase 28.g — JSON mode short-circuits human-friendly rendering.
     # No-match condition still emits valid JSON (empty array / empty
@@ -203,5 +258,5 @@ def cmd_parse(args: Namespace) -> int:
 
     for fr in report.results:
         _print_file_block(fr, no_color=no_color)
-    _print_summary(report, no_color=no_color)
+    _print_summary(report, no_color=no_color, strict_mode=strict_mode)
     return _exit_code(report)
