@@ -1926,6 +1926,21 @@ class AxonEndpointDefinition(ASTNode):
     retries: int = 0
     timeout: str = ""
     compliance: list[str] = field(default_factory=list)  # ESK Fase 6.1
+    # §Fase 30 — HTTP transport for algebraic stream effects.
+    # `transport` is the wire format the server uses to materialise
+    # the response. Closed enum per D2 ratified 2026-05-10:
+    #   - "json"   (default per D1) — application/json single response
+    #   - "sse"    — text/event-stream Server-Sent Events single-shot
+    #   - "ndjson" — application/x-ndjson namespace reserved; wire
+    #                emission deferred to a future Fase (D2)
+    # When `transport == "sse"`, the type-checker (30.c) verifies
+    # that `execute_flow` produces a Stream<T> (D3).
+    transport: str = "json"
+    # §Fase 30 — Keepalive comment interval for SSE transport (D6).
+    # Optional; defaults applied at runtime when transport == "sse".
+    # Closed enum of accepted values: {"5s", "15s", "30s", "60s"}.
+    # Empty string means "use runtime default" (15s).
+    keepalive: str = ""
 
 
 # ═══════════════════════════════════════════════════════════════════

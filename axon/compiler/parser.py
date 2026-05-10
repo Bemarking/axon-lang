@@ -316,6 +316,38 @@ _FLOW_BODY_KEYWORD_NAMES: tuple[str, ...] = (
 )
 
 
+# §Fase 30 — Closed transport enum (D2 ratified 2026-05-10).
+# Extension requires a compiler patch — open-ended values invite
+# incompatible adopter implementations. The Rust frontend mirrors
+# this set verbatim; the drift-gate fixture verifies byte-identical
+# parse for every entry.
+#
+#   - "json"   default per D1; existing v1.20.0 behavior preserved
+#   - "sse"    text/event-stream Server-Sent Events single-shot
+#   - "ndjson" application/x-ndjson namespace reserved; wire
+#              emission deferred to a future Fase but parser accepts
+#              the value so the namespace stays stable
+_AXONENDPOINT_TRANSPORT_VALUES: frozenset[str] = frozenset({
+    "json",
+    "sse",
+    "ndjson",
+})
+
+
+# §Fase 30 — Closed keepalive duration enum (D6 ratified 2026-05-10).
+# Sized for common LB idle-timeout windows:
+#   AWS ALB 60s default, CloudFlare 100s, GCP LB 30s, nginx 60s.
+# Default 15s leaves >4× margin under AWS ALB 60s. Closed enum
+# prevents adopter typos like `keepalive: 15` (no unit) or
+# `keepalive: 90s` (too sparse for tight LBs).
+_AXONENDPOINT_KEEPALIVE_VALUES: frozenset[str] = frozenset({
+    "5s",
+    "15s",
+    "30s",
+    "60s",
+})
+
+
 class ParseResult:
     """Result of a recovery-mode parse pass.
 
@@ -4834,6 +4866,50 @@ class Parser:
                 case "compliance":
                     # ESK Fase 6.1 — regulatory coverage for this HTTP boundary
                     node.compliance = self._parse_bracketed_identifiers()
+                case "transport":
+                    # §Fase 30.b — HTTP transport for stream effects (D1, D2).
+                    # Closed enum {json, sse, ndjson}. Unknown values
+                    # rejected with smart-suggest hint (28.e).
+                    value_tok = self._consume_any_identifier_or_keyword()
+                    value = value_tok.value
+                    if value not in _AXONENDPOINT_TRANSPORT_VALUES:
+                        hint = suggest_for(value, tuple(_AXONENDPOINT_TRANSPORT_VALUES))
+                        base = (
+                            f"Invalid transport '{value}' in axonendpoint "
+                            f"'{name.value}'. "
+                        )
+                        msg = f"{base}{hint}" if hint else base.rstrip()
+                        raise AxonParseError(
+                            msg,
+                            line=value_tok.line,
+                            column=value_tok.column,
+                            expected="json | sse | ndjson",
+                            found=value,
+                        )
+                    node.transport = value
+                case "keepalive":
+                    # §Fase 30.b — SSE keepalive interval (D6).
+                    # Closed enum {5s, 15s, 30s, 60s}.
+                    if self._check(TokenType.DURATION):
+                        value_tok = self._advance()
+                    else:
+                        value_tok = self._consume_any_identifier_or_keyword()
+                    value = value_tok.value
+                    if value not in _AXONENDPOINT_KEEPALIVE_VALUES:
+                        hint = suggest_for(value, tuple(_AXONENDPOINT_KEEPALIVE_VALUES))
+                        base = (
+                            f"Invalid keepalive '{value}' in axonendpoint "
+                            f"'{name.value}'. "
+                        )
+                        msg = f"{base}{hint}" if hint else base.rstrip()
+                        raise AxonParseError(
+                            msg,
+                            line=value_tok.line,
+                            column=value_tok.column,
+                            expected="5s | 15s | 30s | 60s",
+                            found=value,
+                        )
+                    node.keepalive = value
                 case _:
                     self._skip_value()
 

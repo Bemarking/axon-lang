@@ -471,6 +471,33 @@ const fn is_top_level_decl_kw_for_recovery(tt: &TokenType) -> bool {
     )
 }
 
+// ── §Fase 30.b — axonendpoint transport + keepalive closed enums ────────────
+//
+// D2 ratified 2026-05-10: `transport` is a closed enum
+// {json, sse, ndjson}. D6 ratified: `keepalive` is a closed enum
+// {5s, 15s, 30s, 60s}. Both mirror the Python frontend's
+// `_AXONENDPOINT_TRANSPORT_VALUES` / `_AXONENDPOINT_KEEPALIVE_VALUES`
+// frozensets in `axon/compiler/parser.py`. Cross-stack drift gate
+// (30.b fixture) asserts byte-identical parse for every entry.
+
+/// Adopter-facing acceptable values for `transport:` field.
+/// Used by both the parser (validation + smart-suggest) and the
+/// type-checker (30.c) so adopter tooling sees one canonical list.
+pub const AXONENDPOINT_TRANSPORT_VALUES: &[&str] = &["json", "sse", "ndjson"];
+
+/// Adopter-facing acceptable values for `keepalive:` field.
+pub const AXONENDPOINT_KEEPALIVE_VALUES: &[&str] = &["5s", "15s", "30s", "60s"];
+
+#[inline]
+fn axonendpoint_is_valid_transport(s: &str) -> bool {
+    AXONENDPOINT_TRANSPORT_VALUES.iter().any(|&v| v == s)
+}
+
+#[inline]
+fn axonendpoint_is_valid_keepalive(s: &str) -> bool {
+    AXONENDPOINT_KEEPALIVE_VALUES.iter().any(|&v| v == s)
+}
+
 // ── Parser ───────────────────────────────────────────────────────────────────
 
 pub struct Parser {
@@ -4465,6 +4492,9 @@ impl Parser {
             retries: None,
             timeout: String::new(),
             compliance: Vec::new(),
+            // §Fase 30 — Defaults preserve backwards compat per D1.
+            transport: "json".to_string(),
+            keepalive: String::new(),
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -4495,6 +4525,69 @@ impl Parser {
                         node.timeout = t.value.clone();
                     }
                     "compliance" => node.compliance = self.parse_bracketed_identifiers()?,
+                    // §Fase 30.b — HTTP transport enum (D2 closed) + keepalive (D6 closed).
+                    // Mirrors `axon/compiler/parser.py` `_parse_axonendpoint`.
+                    // Drift-gate corpus verifies byte-identical parse cross-stack.
+                    "transport" => {
+                        let value_tok = self.consume_any_ident_or_kw()?;
+                        let value = &value_tok.value;
+                        if !axonendpoint_is_valid_transport(value) {
+                            let hint = crate::smart_suggest::suggest_for(
+                                value,
+                                AXONENDPOINT_TRANSPORT_VALUES,
+                            );
+                            let base = format!(
+                                "Invalid transport '{}' in axonendpoint '{}'.",
+                                value, node.name
+                            );
+                            let message = if hint.is_empty() {
+                                format!("{base} expected json | sse | ndjson, found {value}")
+                            } else {
+                                format!(
+                                    "{base} {hint} (expected json | sse | ndjson, found {value})"
+                                )
+                            };
+                            return Err(ParseError {
+                                message,
+                                line: value_tok.line,
+                                column: value_tok.column,
+                                ..Default::default()
+                            });
+                        }
+                        node.transport = value.clone();
+                    }
+                    "keepalive" => {
+                        // Accepts either a DURATION token (e.g. `15s`) or
+                        // an ident-like token. Validation against the
+                        // closed enum {5s, 15s, 30s, 60s} happens after.
+                        let value_tok = self.current().clone();
+                        self.advance();
+                        let value = &value_tok.value;
+                        if !axonendpoint_is_valid_keepalive(value) {
+                            let hint = crate::smart_suggest::suggest_for(
+                                value,
+                                AXONENDPOINT_KEEPALIVE_VALUES,
+                            );
+                            let base = format!(
+                                "Invalid keepalive '{}' in axonendpoint '{}'.",
+                                value, node.name
+                            );
+                            let message = if hint.is_empty() {
+                                format!("{base} expected 5s | 15s | 30s | 60s, found {value}")
+                            } else {
+                                format!(
+                                    "{base} {hint} (expected 5s | 15s | 30s | 60s, found {value})"
+                                )
+                            };
+                            return Err(ParseError {
+                                message,
+                                line: value_tok.line,
+                                column: value_tok.column,
+                                ..Default::default()
+                            });
+                        }
+                        node.keepalive = value.clone();
+                    }
                     _ => self.skip_value(),
                 }
             } else if self.check(TokenType::LBrace) {
