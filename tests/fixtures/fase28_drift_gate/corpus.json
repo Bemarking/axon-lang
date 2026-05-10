@@ -1,0 +1,107 @@
+[
+  {
+    "name": "clean_flow",
+    "source": "flow F() { }",
+    "expected_error_count": 0,
+    "expected_suggest_count": 0,
+    "expected_decl_count": 1
+  },
+  {
+    "name": "clean_intent",
+    "source": "intent I {}",
+    "expected_error_count": 0,
+    "expected_suggest_count": 0,
+    "expected_decl_count": 1
+  },
+  {
+    "name": "clean_two_decls",
+    "source": "flow F() { } intent I {}",
+    "expected_error_count": 0,
+    "expected_suggest_count": 0,
+    "expected_decl_count": 2
+  },
+  {
+    "name": "typo_top_level_flwo",
+    "source": "flwo F() { }",
+    "expected_error_count": 1,
+    "expected_suggest_count": 1,
+    "expected_decl_count": 0
+  },
+  {
+    "name": "typo_top_level_intnt",
+    "source": "intnt I {}",
+    "expected_error_count": 1,
+    "expected_suggest_count": 1,
+    "expected_decl_count": 0
+  },
+  {
+    "name": "typo_far_no_suggest",
+    "source": "qwerty F() { }",
+    "expected_error_count": 1,
+    "expected_suggest_count": 0,
+    "expected_decl_count": 0
+  },
+  {
+    "name": "two_typos",
+    "source": "flwo F() { } intnt J {}",
+    "expected_error_count": 1,
+    "expected_suggest_count": 1,
+    "expected_decl_count": 0
+  },
+  {
+    "name": "garbage_then_clean",
+    "source": "garbage flow F() { }",
+    "expected_error_count": 1,
+    "expected_suggest_count": 0,
+    "expected_decl_count": 1
+  },
+  {
+    "name": "only_garbage",
+    "source": "foo bar baz",
+    "expected_error_count": 1,
+    "expected_suggest_count": 1,
+    "expected_decl_count": 0
+  },
+  {
+    "name": "empty",
+    "source": "",
+    "expected_error_count": 0,
+    "expected_suggest_count": 0,
+    "expected_decl_count": 0
+  },
+  {
+    "name": "ws_only",
+    "source": "   \n  \n",
+    "expected_error_count": 0,
+    "expected_suggest_count": 0,
+    "expected_decl_count": 0
+  },
+  {
+    "name": "typo_flow_body",
+    "source": "flow F() { stepp S {} }",
+    "expected_error_count": 1,
+    "expected_suggest_count": 1,
+    "expected_decl_count": 0
+  },
+  {
+    "name": "typo_flow_body_reasn",
+    "source": "flow F() { reasn R {} }",
+    "expected_error_count": 1,
+    "expected_suggest_count": 1,
+    "expected_decl_count": 0
+  },
+  {
+    "name": "brace_imbalance",
+    "source": "} flow F() {}",
+    "expected_error_count": 1,
+    "expected_suggest_count": 0,
+    "expected_decl_count": 1
+  },
+  {
+    "name": "nested_error_then_clean",
+    "source": "flow F() { not_a_step { inner } } flow G() {}",
+    "expected_error_count": 1,
+    "expected_suggest_count": 0,
+    "expected_decl_count": 1
+  }
+]
