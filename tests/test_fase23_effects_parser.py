@@ -445,6 +445,53 @@ class TestStepOutputGenericType:
         assert self._step(prog).output_type == "Stream<String>?"
 
 
+class TestMissingColonDiagnostic:
+    """Adopter-facing diagnostic when a colon is forgotten between a
+    parameter / field name and its type.
+
+    Reported by enterprise adopter team 2026-05-09: after the v1.19.2
+    + v1.19.3 patches unblocked the lexical + grammatical layers, the
+    THIRD parser error in the same code path was the most common
+    syntax mistake — writing `name Type` instead of `name: Type` in
+    a parameter or field declaration. The plain `expected COLON,
+    found IDENTIFIER('String')` message didn't surface what was
+    actually missing; the new message names BOTH adjacent tokens
+    and shows the exact rewrite (`name: Type`).
+    """
+
+    def test_missing_colon_in_param_list_gives_actionable_error(self) -> None:
+        """`flow F(arg String) -> Unit { ... }` — typical mistake."""
+        with pytest.raises(AxonParseError) as exc_info:
+            _parse("flow F(arg String) -> Unit {\n  step S { ask: \"q\" }\n}\n")
+        msg = str(exc_info.value)
+        assert "arg" in msg
+        assert "String" in msg
+        assert "name: Type" in msg or ":" in msg
+        # Hints at the correct rewrite explicitly.
+        assert "arg: String" in msg
+
+    def test_missing_colon_in_intent_field_gives_actionable_error(self) -> None:
+        """`intent X { given Document }` — same mistake in different production."""
+        with pytest.raises(AxonParseError) as exc_info:
+            _parse("intent X {\n  given Document\n}\n")
+        msg = str(exc_info.value)
+        assert "given" in msg
+        assert "Document" in msg
+        assert "given: Document" in msg
+
+    def test_correct_param_syntax_unchanged(self) -> None:
+        """`flow F(arg: String) -> Unit { ... }` — canonical syntax
+        parses unchanged (regression baseline)."""
+        prog = _parse(
+            "flow F(arg: String) -> Unit {\n  step S { ask: \"q\" }\n}\n"
+        )
+        flow = prog.declarations[0]
+        assert isinstance(flow, FlowDefinition)
+        assert len(flow.parameters) == 1
+        assert flow.parameters[0].name == "arg"
+        assert flow.parameters[0].type_expr.name == "String"
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  TestHandle — `handle Effect { clauses } in { body }`
 # ──────────────────────────────────────────────────────────────────────
