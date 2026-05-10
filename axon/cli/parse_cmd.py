@@ -36,6 +36,7 @@ import sys
 from argparse import Namespace
 from pathlib import Path
 
+from axon.cli._json_output import report_to_json
 from axon.cli._multi_file import AggregateReport, FileResult, run
 from axon.cli.display import safe_text
 
@@ -166,6 +167,8 @@ def cmd_parse(args: Namespace) -> int:
     ignore: list[str] = list(getattr(args, "ignore", None) or ())
     max_errors: int | None = getattr(args, "max_errors", None)
     jobs: int | None = getattr(args, "jobs", None)
+    json_mode: bool = getattr(args, "json", False)
+    json_format: str = getattr(args, "format", "array")
 
     report = run(
         patterns,
@@ -173,6 +176,19 @@ def cmd_parse(args: Namespace) -> int:
         max_errors=max_errors,
         max_workers=jobs,
     )
+
+    # §Fase 28.g — JSON mode short-circuits human-friendly rendering.
+    # No-match condition still emits valid JSON (empty array / empty
+    # ndjson) so tooling consuming the pipe never sees a half-formed
+    # response. The `--no-color` and stderr "no .axon files matched"
+    # warnings are suppressed in JSON mode for the same reason.
+    if json_mode:
+        sys.stdout.write(report_to_json(report, format=json_format))
+        # ndjson already ends with `\n`; array doesn't — add one for
+        # POSIX-tool friendliness in either case.
+        if json_format != "ndjson":
+            sys.stdout.write("\n")
+        return _exit_code(report)
 
     if report.files_seen == 0:
         print(
