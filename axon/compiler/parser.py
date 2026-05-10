@@ -125,6 +125,7 @@ from .ast_nodes import (
     WeaveNode,
     WhereClause,
 )
+from ._smart_suggest import suggest_for
 from .errors import AxonParseError
 from .tokens import Token, TokenType
 
@@ -275,6 +276,44 @@ _TOP_LEVEL_DECLARATION_KEYWORDS: frozenset[TokenType] = frozenset({
     TokenType.LET,
     TokenType.EFFECT,
 })
+
+
+# §Fase 28.e — Keyword-name strings for smart-suggest "Did you mean
+# X?" hints (D3, D11 ratified 2026-05-10). Two sets cover the two
+# major adopter-facing typo surfaces:
+#
+#   - Top-level: when an unknown identifier appears where a top-
+#     level declaration keyword belongs (Kivi-style migration typos
+#     like `flwo F() { ... }` or `intnt I {}`).
+#   - Flow-body: when an unknown identifier appears where a step /
+#     reason / probe / let / etc. belongs.
+#
+# Both lists mirror the canonical lists embedded in the existing
+# error-message `expected=` fields. The Rust frontend has byte-
+# identical mirrors at `axon-frontend/src/smart_suggest.rs` so the
+# cross-stack drift gate (28.i) can compare suggestion lists
+# input-for-input.
+
+_TOP_LEVEL_KEYWORD_NAMES: tuple[str, ...] = (
+    "agent", "anchor", "axonendpoint", "axonstore", "believe", "channel",
+    "component", "compute", "context", "corpus", "daemon", "dataspace",
+    "doubt", "effect", "ensemble", "fabric", "flow", "heal", "immune",
+    "import", "ingest", "intent", "know", "lambda", "lease", "let",
+    "mandate", "manifest", "memory", "mutate", "observe", "ots",
+    "persist", "persona", "pix", "psyche", "purge", "reconcile", "reflex",
+    "resource", "retrieve", "run", "session", "shield", "speculate",
+    "tool", "topology", "transact", "type", "view",
+)
+
+_FLOW_BODY_KEYWORD_NAMES: tuple[str, ...] = (
+    "abort", "aggregate", "associate", "break", "continue", "corroborate",
+    "daemon", "drill", "explore", "focus", "forward", "handle",
+    "hibernate", "if", "ingest", "let", "listen", "mandate", "mutate",
+    "navigate", "ots", "par", "perform", "persist", "probe", "purge",
+    "reason", "recall", "refine", "remember", "resume", "retrieve",
+    "return", "shield", "step", "stream", "trail", "transact", "use",
+    "validate", "weave", "lambda", "trail",
+)
 
 
 class ParseResult:
@@ -714,8 +753,14 @@ class Parser:
                 # Fase 23 — algebraic effect declaration
                 return self._parse_effect_declaration()
             case _:
+                # §Fase 28.e — append "Did you mean X?" hint when the
+                # unknown token looks like a typo'd top-level keyword
+                # (Levenshtein ≤ 2). D3, D11 ratified 2026-05-10.
+                hint = suggest_for(tok.value, _TOP_LEVEL_KEYWORD_NAMES)
+                base_msg = "Unexpected token at top level"
+                msg = f"{base_msg}. {hint}" if hint else base_msg
                 raise AxonParseError(
-                    f"Unexpected token at top level",
+                    msg,
                     line=tok.line,
                     column=tok.column,
                     expected="declaration (persona, context, anchor, flow, agent, shield, psyche, pix, ots, mandate, lambda, daemon, axonstore, axonendpoint, resource, fabric, manifest, observe, reconcile, lease, ensemble, session, topology, immune, reflex, heal, run, know, speculate, effect, ...)",
@@ -1336,8 +1381,14 @@ class Parser:
                 # Fase 23 — forward Effect.Op(args) — propagate to outer handler
                 return self._parse_forward()
             case _:
+                # §Fase 28.e — append "Did you mean X?" hint when the
+                # unknown token looks like a typo'd flow-body keyword
+                # (e.g. `stepp` / `reasn` / `validte`). D3, D11.
+                hint = suggest_for(tok.value, _FLOW_BODY_KEYWORD_NAMES)
+                base_msg = "Unexpected token in flow body"
+                msg = f"{base_msg}. {hint}" if hint else base_msg
                 raise AxonParseError(
-                    "Unexpected token in flow body",
+                    msg,
                     line=tok.line,
                     column=tok.column,
                     expected="step, probe, reason, validate, refine, weave, use, remember, recall, if, par, hibernate, shield, stream, navigate, drill, trail, corroborate, ots, mandate, lambda, daemon, listen, persist, retrieve, mutate, purge, transact, focus, associate, aggregate, explore, ingest, let, return, break, continue, perform, handle, resume, abort, forward",
