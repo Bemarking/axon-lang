@@ -1,12 +1,32 @@
 ---
 title: "Plan vivo: Fase 29 — Enterprise Diagnostic Enhancements"
-status: DRAFTED 2026-05-10 — awaiting founder bloque ratification of D1–D10; D-letters not yet ratified; sub-fases not yet executable; target axon-enterprise v1.13.0
+status: DRAFTED 2026-05-10 — awaiting founder bloque ratification of D1–D10; D-letters not yet ratified; sub-fases not yet executable
 owner: AXON Enterprise Team
 created: 2026-05-10
-target: axon-enterprise v1.13.0 (axon-lang permanece v1.20.0+; this fase ships ENTERPRISE-only behaviors layered on the OSS Fase 28 surface)
+target: axon-enterprise — next available minor release after the Fase 27.k.1 Python ctypes integration ships; axon-lang permanece v1.20.0+ (no upstream change); this fase ships ENTERPRISE-only behaviors layered on the OSS Fase 28 surface
 depends_on: Fase 28 SHIPPED (axon-lang v1.20.0 cross-stack live — recovery mode + source-context + smart-suggest + multi-file aggregator + JSON output + strict opt-in + cross-stack drift gate); axon-enterprise v1.11.0 catch-up SHIPPED (consumes axon-lang 1.20.0)
 charter_class: ENTERPRISE — privileged R&D layered on top of the OSS Fase 28 baseline; OSS adopters keep getting the OSS surface unchanged
 ---
+
+## ⓘ Versioning convention
+
+This plan vivo describes a **Fase** (a unit of planning work). The
+specific axon-enterprise release version that ships this Fase
+depends on the cadence of preceding releases — Fases can move
+between versions, versions are immutable once published. As of
+2026-05-10:
+
+| Version | Status | Content (what it includes) |
+|---|---|---|
+| v1.10.0 | SHIPPED 2026-05-09 | axon-csys-enterprise crate + 5 C23 kernels (Fase 27 sesión 1 Rust foundation) |
+| v1.11.0 | SHIPPED 2026-05-10 | Catch-up: dep pin `axon-lang>=1.20.0` (Fase 28 cascade adoption) |
+| v1.12.0 | upcoming | Python ctypes integration of the 5 C23 kernels (Fase 27.k.1 followup) |
+| v1.13.0+ | future | Earliest possible target for **this Fase 29** |
+
+The "next available minor release" target is honest about cadence
+uncertainty: if a v1.12.x patch lands first, this Fase ships at
+v1.13.x; if v1.12.0 ships clean, this is v1.13.0. The Fase content
+is what's stable; the version number adapts.
 
 > **Companion documents:**
 > - OSS baseline: [`fase_28_adopter_diagnostic_robustness.md`](fase_28_adopter_diagnostic_robustness.md) — every Fase 29 surface is layered on top of this.
@@ -48,7 +68,7 @@ Fase 29 is the canonical example: every sub-fase below is **ENTERPRISE-only**.
 | 29.f Vertical compliance gate (CI integration) | ⏳ pending | ~250 | Python + YAML | New `axon-enterprise-ci-gate` Python script + GitHub Actions composite action: queries `/v1/diagnostics/recent` for the tenant's repo, asserts zero parse errors (or ≤ N depending on tenant's policy), exits non-zero if gate fails. Adopter installs via single line in their workflow. The gate is enforced AT CI INTEGRATION TIME, NOT inside axon-lang itself (D5 — OSS contract preserved). |
 | 29.g CI matrix: vertical diagnostic gate | ⏳ pending | ~200 (YAML + tests) | YAML + Python | New `.github/workflows/fase_29_vertical_diagnostics.yml` in axon-enterprise: 3 parallel lanes — vertical-policy (HIPAA / legal / fintech / generic resolution), telemetry-sink (OTel + Prom + audit log emit), suggest-dict (vertical-aware Levenshtein hints). Each lane runs against a curated `tests/fixtures/fase29_vertical_corpus.json` corpus. |
 | 29.h Adopter guide: vertical diagnostic recipes | ⏳ pending | ~400 (Markdown) | Docs | Extension of existing `axon-enterprise/docs/INTEGRATION_GUIDE.md` with new section "Vertical Diagnostic Policy" covering: (1) tenant vertical resolution + default policies; (2) opting into / out of strict mode per vertical; (3) configuring the telemetry sink; (4) consuming `/v1/diagnostics/recent`; (5) installing the CI gate; (6) common vertical-suggest patterns. D10 — extend existing doc, no new file. |
-| 29.i Coordinated v1.13.0 release | ⏳ pending | release | — | bump-my-version 1.12.0 → 1.13.0; PR + merge + tag via refspec mapping `enterprise/v1.13.0:refs/tags/v1.13.0`; GitHub Release with comprehensive notes; axon-lang dep pin stays `>=1.20.0` (no upstream change). |
+| 29.i Coordinated release | ⏳ pending | release | — | bump-my-version minor bump from whatever the current shipped version is; PR + merge + tag via refspec mapping `enterprise/vX.Y.Z:refs/tags/vX.Y.Z`; GitHub Release with content-first notes (NOT "Fase 29 release" — describe what it includes per versioning discipline); axon-lang dep pin stays `>=1.20.0` (no upstream change). |
 
 **Tests target**: ~80 new tests covering vertical policy resolution
 + telemetry sink shape + privacy boundaries + suggest dictionary
@@ -223,13 +243,15 @@ since Fase 21.i.
 
 ---
 
-## Why minor release (v1.13.0)
+## Why minor release (SemVer minor bump)
 
 New observable surfaces (vertical policy, telemetry sink, dashboard
 endpoint, CI gate) are pure additions. axon-lang stays at v1.20.0+
 unchanged. Existing axon-enterprise integrations work verbatim;
 generic tenants see no behavior delta (D9). Minor bump signals new
-features without breaking changes.
+features without breaking changes — exact version number depends
+on the cadence of preceding releases (see § Versioning convention
+at the top of this doc).
 
 ---
 
