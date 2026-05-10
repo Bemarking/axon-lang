@@ -1,10 +1,10 @@
 [package]
 name = "axon-frontend"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 rust-version = "1.95"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
-description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator, compile-time checker. Zero runtime dependencies. v0.6.0 adds IRBreak / IRContinue for Fase 19.e ForIn break/continue + Parser loop_depth scope check. v0.5.0 shipped IRReturn.value_kind for Fase 18.d return runtime wiring. v0.4.0 closed Fase 17 (let runtime). v0.3.0 closed Fase 14 (lossless lexing). v0.2.0 added Fase 13 typed channels."
+description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator, compile-time checker. Zero runtime dependencies. v0.8.0 ships Fase 28 adopter diagnostic robustness: parser error recovery (parse_with_recovery → ParseResult), rustc-style source-context blocks (SourceSnippet), smart-suggest 'Did you mean X?' Levenshtein hints (smart_suggest module), cross-stack drift gate vs Python frontend. v0.7.0 Fase 23 algebraic effects runtime IR. v0.6.0 IRBreak/IRContinue. v0.5.0 IRReturn.value_kind. v0.4.0 closed Fase 17 (let). v0.3.0 closed Fase 14 (lossless lexing). v0.2.0 Fase 13 typed channels."
 license = "MIT"
 repository = "https://github.com/Bemarking/axon-lang"
 readme = "README.md"
