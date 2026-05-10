@@ -328,6 +328,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Worker thread count (default: auto).",
     )
     parse.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "§Fase 28.g — Emit machine-readable JSON diagnostics "
+            "instead of human-friendly rendered output. The shape "
+            "is rustc-compatible (D5 ratified) and maps cleanly to "
+            "LSP `Diagnostic`. Use --format=ndjson for streaming."
+        ),
+    )
+    parse.add_argument(
+        "--format",
+        choices=("array", "ndjson"),
+        default="array",
+        help=(
+            "JSON framing when --json is set. `array` (default) "
+            "emits a single JSON array; `ndjson` emits one "
+            "diagnostic per line for streaming consumers."
+        ),
+    )
+    parse.add_argument(
         "--no-color",
         action="store_true",
         help=_NO_COLOR_HELP,
