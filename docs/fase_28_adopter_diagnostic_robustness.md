@@ -1,6 +1,6 @@
 ---
 title: "Plan vivo: Fase 28 — Adopter Diagnostic Robustness"
-status: DRAFTED 2026-05-10 — pending founder ratification of D1–D12
+status: IN PROGRESS 2026-05-10 — 28.a SHIPPED (D1–D12 ratificadas en bloque por founder "todas las Recommendation: notes ratified verbatim, full 100% robusto"); 28.b–28.k execution starting; target axon-lang v1.20.0
 owner: AXON Compiler Team
 created: 2026-05-10
 target: axon-lang v1.20.0 (minor release, cross-stack — Python + Rust)
@@ -8,7 +8,11 @@ depends_on: v1.19.4 SHIPPED (cumulative parser-diagnostic patch series 1.19.2/1.
 charter_class: OSS — every adopter benefits; no enterprise-only surface
 ---
 
-## ▶ Status snapshot (2026-05-10 — DRAFTED, awaiting D1–D12 ratification)
+## ▶ Status snapshot (2026-05-10 — IN PROGRESS)
+
+D1–D12 ratificadas en bloque por founder ("todas las Recommendation:
+notes ratified verbatim, full 100% robusto") — 28.a SHIPPED. 28.b–28.k
+executing sub-fase a sub-fase con incremental sign-off por sub-fase.
 
 Trigger event: an enterprise adopter team (Kivi) hit FOUR distinct parser
 issues during their migration to axon-lang within a single 4-hour window
@@ -30,7 +34,7 @@ must surface every problem.
 
 | Sub-phase | Status | LOC target | Stack | Module(s) / Notes |
 |---|---|---|---|---|
-| 28.a Engineering spec + D-letter ratification | ⏳ pending | doc-only | — | This doc + memoria `project_fase_28_plan.md` + D1–D12 ratification |
+| 28.a Engineering spec + D-letter ratification | ✅ SHIPPED 2026-05-10 | doc-only | — | This doc (commit `d93e99a` initial draft + this commit ratification) + memoria `project_fase_28_plan.md` + D1–D12 ratificadas verbatim per founder bloque approval |
 | 28.b Parser error recovery (Python) | ⏳ pending | ~600 | Python | `axon/compiler/parser.py` + new `parse_with_recovery()` API; panic-mode recovery with sync points; collect errors list instead of raise; `ParseResult { program, errors }` return type; existing `parse()` API preserved (raises on first error per backwards compat) |
 | 28.c Parser error recovery (Rust frontend) | ⏳ pending | ~700 | Rust | `axon-frontend/src/parser.rs` mirror implementation; drift gate verifies Python + Rust produce identical error lists on every input; recovery sync points cross-stack consistent |
 | 28.d Source-context diagnostic block | ⏳ pending | ~400 | Python + Rust | Every `AxonParseError` carries optional source-snippet field; Display formatter renders rustc-style with line numbers + caret + 2-line surrounding context; lexer keeps source-text reference (currently line/col only); structured + plain-text rendering modes |
@@ -218,11 +222,17 @@ sequence in the same order with the same spans.
 
 ---
 
-## 4. D-letters — pending founder ratification
+## 4. D-letters — RATIFIED 2026-05-10 (bloque approval)
+
+All twelve D-letters ratified verbatim with the recommendations as
+originally written. Founder direction: *"todas las Recommendation:
+notes ratified verbatim, full 100% robusto"*. Status flip from
+DRAFTED → IN PROGRESS; 28.a SHIPPED; 28.b execution starts on
+explicit founder go-ahead per sub-fase.
 
 **D1 — Default mode**: recovery (multi-error) vs strict (fail-on-first)?
 
-  Recommendation: **recovery default**. Adopters benefit from seeing
+  ✅ RATIFIED: **recovery default**. Adopters benefit from seeing
   all errors at once; the v1.19.4 series demonstrated the cost of
   serial discovery. Backwards compat preserved via `--strict` opt-in
   + existing `parse()` API. Minor-release-safe because the new behavior
@@ -240,63 +250,63 @@ boundaries?
 **D3 — Smart-suggest threshold**: Levenshtein distance ≤ 2? max 5
 candidates?
 
-  Recommendation: **distance ≤ 2 + max 3 candidates** (rustc uses 2;
+  ✅ RATIFIED: **distance ≤ 2 + max 3 candidates** (rustc uses 2;
   TypeScript uses 3). More candidates create noise; fewer miss
   obvious typos. Suggestions are case-insensitive (catch
   `Output` vs `output`).
 
 **D4 — Source-context block**: how many lines before/after to show?
 
-  Recommendation: **2 before + 2 after** (rustc uses 1+1 or 2+2
+  ✅ RATIFIED: **2 before + 2 after** (rustc uses 1+1 or 2+2
   depending on context; clang uses 1+1). For long lines (>120
   chars), truncate with `...` ellipsis around the offending column.
 
 **D5 — Structured JSON shape**: rustc-compatible? clippy-compatible?
 custom?
 
-  Recommendation: **rustc-compatible at the field level** (the
+  ✅ RATIFIED: **rustc-compatible at the field level** (the
   `severity / message / spans / labels` tree). Adopters with rustc-
   json tooling can reuse parsers. Custom extensions go under a
   reserved `axon` namespace key.
 
 **D6 — Multi-file aggregator**: per-file or global error budget?
 
-  Recommendation: **no error budget by default**. Some adopters
+  ✅ RATIFIED: **no error budget by default**. Some adopters
   may want a `--max-errors=N` flag (matches gcc / clang
   `-fmax-errors`); shipped as a documented flag for CI tooling
   but no default cap.
 
 **D7 — Cross-stack drift gate posture**: byte-identical error lists?
 
-  Recommendation: **yes, byte-identical**. Same input, same error
+  ✅ RATIFIED: **yes, byte-identical**. Same input, same error
   list (order + content + spans). Any divergence = build-time CI
   failure. Same posture as Fase 18 cross-stack drift gate.
 
 **D8 — Strict-mode opt-in surface**: CLI flag, env var, config
 file, all?
 
-  Recommendation: **CLI flag `--strict` AND env var
+  ✅ RATIFIED: **CLI flag `--strict` AND env var
   `AXON_PARSER_STRICT=1`**. CLI for ad-hoc use; env var for CI
   pipeline configuration. No config file (one source of truth per
   invocation).
 
 **D9 — Backwards compat for `parse()` API**: preserve verbatim?
 
-  Recommendation: **yes, preserved verbatim**. `parse()` continues
+  ✅ RATIFIED: **yes, preserved verbatim**. `parse()` continues
   to raise on first error. The new behavior is opt-in via
   `parse_with_recovery()`. Internal callers can migrate at their own
   pace; external integrations don't break.
 
 **D10 — Documentation strategy**: standalone guide or integration?
 
-  Recommendation: **standalone `docs/ADOPTER_DIAGNOSTICS.md` AND
+  ✅ RATIFIED: **standalone `docs/ADOPTER_DIAGNOSTICS.md` AND
   cross-link from `docs/INTEGRATION_GUIDE.md`**. The diagnostic
   surface is substantial enough to deserve its own page; the
   integration guide gets a "Diagnostics" section pointing at it.
 
 **D11 — Smart-suggest activation**: always on or opt-in?
 
-  Recommendation: **always on**. Suggestions are pure additions to
+  ✅ RATIFIED: **always on**. Suggestions are pure additions to
   the error message; cannot break existing tools. Cost is one
   Levenshtein scan per error which is O(N×K) where N = number of
   candidates (typically 10-20) and K = average string length
@@ -304,7 +314,7 @@ file, all?
 
 **D12 — Test budget for fuzz**: 1000 iterations per CI run?
 
-  Recommendation: **1000 iterations**, deterministic-seeded so
+  ✅ RATIFIED: **1000 iterations**, deterministic-seeded so
   failures reproduce. CI wall time impact is minimal (each iteration
   is ms-scale). Same posture as Fase 25.i fuzz drift gate.
 
@@ -391,12 +401,12 @@ materialise ese principle a nivel sistémico — no más loops de "deploy
 
 ## 9. Next operational step
 
-Ratificación del founder sobre las decisiones D1–D12 (especialmente
-D1 default mode, D5 JSON shape compatibility, D7 cross-stack drift
-posture, D11 smart-suggest activation).
+D1–D12 ratificadas en bloque por founder 2026-05-10
+("todas las Recommendation: notes ratified verbatim, full 100%
+robusto"). 28.a SHIPPED. 28.b execution awaits explicit founder
+"procede con 28.b" per the incremental sign-off cadence.
 
-Cuando estén ratificadas → arrancar 28.b (Python parser recovery).
-Estimado calendario total: 5-6 días focused desde 28.b hasta v1.20.0
+Estimated calendar: 5-6 días focused desde 28.b hasta v1.20.0
 publicado.
 
 Esta es una **minor release** porque las nuevas APIs son aditivas —
