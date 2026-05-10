@@ -1,6 +1,6 @@
 ---
 title: "Plan vivo: Fase 30 — HTTP Transport for Algebraic Stream Effects"
-status: DRAFTED 2026-05-10 — awaiting founder bloque ratification of D1–D8; D-letters not yet ratified; sub-fases not yet executable
+status: IN PROGRESS 2026-05-10 — D1–D8 RATIFIED en bloque por founder ("aprobadas todas D-letters"); 30.a SHIPPED; 30.b–30.i execution starting per incremental founder sign-off cadence
 owner: AXON Compiler + Runtime Team
 created: 2026-05-10
 target: axon-lang — next available minor release after v1.20.0 (cadence determined by preceding patches; expected v1.21.0 if no v1.20.x patches intervene). Cross-stack Python + Rust. axon-enterprise catch-up follows the same pattern as v1.11.0 (Fase 28 cascade)
@@ -15,7 +15,20 @@ charter_class: OSS — every adopter benefits; no enterprise-only surface. axon-
 
 ---
 
-## ▶ Status snapshot (2026-05-10 — DRAFTED, awaiting ratification)
+## ▶ Status snapshot (2026-05-10 — IN PROGRESS, D1–D8 ratified)
+
+> **Founder principle reinforced 2026-05-10 con la ratificación de D1–D8:**
+> *"todas las implementaciones de axon se hacen para hacer de axon un
+> mejor lenguaje de programación, robusto, potente, alto nivel,
+> indistintamente de quien o cuantos nos vayan a usar"*.
+>
+> This Fase ships the language primitive, not an adopter fix. Kivi's
+> diagnosis surfaced the gap; the language gains a permanent
+> first-class HTTP transport surface. Future adopters who never
+> knew the trigger existed benefit identically. Quality bar: a
+> compiler PhD reading the resulting parser + type-checker + runtime
+> should see a coherent first-class primitive, not a workaround.
+
 
 Fase 11.a (Stream<T> algebraic effect + 4-policy backpressure catalog) is
 **compile-time complete**: the parser accepts `effects: [stream:drop_oldest]`
@@ -44,7 +57,7 @@ an ad-hoc fix.
 
 | Sub-phase | Status | LOC target | Stack | Module(s) / Notes |
 |---|---|---|---|---|
-| 30.a Engineering spec + D-letter ratification | ⏳ pending | doc-only | — | This doc; founder bloque ratification of D1–D8; no executable sub-fases until ratified |
+| 30.a Engineering spec + D-letter ratification | ✅ SHIPPED 2026-05-10 | doc-only | — | This doc (commit `dec38ba` initial draft) + bloque ratification commit; D1–D8 RATIFIED verbatim per founder ("aprobadas todas D-letters") + founder principle reinforced ("axon implementations are for axon as a better language, independent of adopter set"). Memoria `feedback_axon_for_axon.md` saved as durable directive. |
 | 30.b Parser `transport` + `keepalive` fields (Python + Rust + drift gate) | ⏳ pending | ~150 (Py) + ~150 (Rust) + ~80 (drift fixture + tests) | Python + Rust | `axon/compiler/parser.py` `_parse_axonendpoint` + `axon-frontend/src/parser.rs` `parse_axonendpoint`; AST `AxonEndpointDefinition.transport: str = "json"` + `keepalive: str | None = None`; closed enum `{json, sse, ndjson}` for transport (D2); drift-gate fixture extending `tests/fixtures/fase28_drift_gate/corpus.json` pattern with new `fase30_transport/corpus.json` (10 entries × 4 expected fields); smart-suggest hint added to recognize `transport: <typo>` per Fase 28.e |
 | 30.c Type-checker enforcement (`transport: sse` requires Stream-effect flow) | ⏳ pending | ~250 | Python | `axon/compiler/type_checker.py` — new validation pass: when `axonendpoint.transport == "sse"`, walk to the named `execute:` flow, assert at least one of: (a) `output: Stream<T>` declared on a step, (b) at least one tool reachable from the flow declares `effects: [stream:<policy>]`, (c) the flow body contains `perform Stream.Yield(...)`. Compile error with hint + source-context block (28.d format) when violated. Rust frontend port deferred to 30.c.2 (Python is the canonical type-checker per Fase 18) |
 | 30.d Runtime SSE single-shot path en `/v1/execute` | ⏳ pending | ~350 | Rust | `axon-rs/src/axon_server.rs` `execute_handler`: when the deployed flow's axonendpoint declares `transport: sse` OR (`transport: json` + flow has stream effect + client sent `Accept: text/event-stream`), promote response to `text/event-stream`. SSE chunks emitted per-step: `event: axon.token\ndata: {...}\n\n`. Terminator `event: axon.complete\ndata: {...final...}\n\n`. Error mid-stream: `event: axon.error\ndata: {...}\n\n` then close. New `sse_response_envelope` builder shared with `/v1/execute/stream` two-stage path to avoid drift between transports |
