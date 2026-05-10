@@ -1,6 +1,6 @@
 ---
 title: "Plan vivo: Fase 28 — Adopter Diagnostic Robustness"
-status: IN PROGRESS 2026-05-10 — 28.a SHIPPED (D1–D12 ratificadas en bloque por founder "todas las Recommendation: notes ratified verbatim, full 100% robusto"); 28.b–28.k execution starting; target axon-lang v1.20.0
+status: IN PROGRESS 2026-05-10 — 28.a + 28.b SHIPPED (D1–D12 ratificadas en bloque por founder "todas las Recommendation: notes ratified verbatim, full 100% robusto"); 28.c–28.k execution starting; target axon-lang v1.20.0
 owner: AXON Compiler Team
 created: 2026-05-10
 target: axon-lang v1.20.0 (minor release, cross-stack — Python + Rust)
@@ -35,7 +35,7 @@ must surface every problem.
 | Sub-phase | Status | LOC target | Stack | Module(s) / Notes |
 |---|---|---|---|---|
 | 28.a Engineering spec + D-letter ratification | ✅ SHIPPED 2026-05-10 | doc-only | — | This doc (commit `d93e99a` initial draft + this commit ratification) + memoria `project_fase_28_plan.md` + D1–D12 ratificadas verbatim per founder bloque approval |
-| 28.b Parser error recovery (Python) | ⏳ pending | ~600 | Python | `axon/compiler/parser.py` + new `parse_with_recovery()` API; panic-mode recovery with sync points; collect errors list instead of raise; `ParseResult { program, errors }` return type; existing `parse()` API preserved (raises on first error per backwards compat) |
+| 28.b Parser error recovery (Python) | ✅ SHIPPED 2026-05-10 | ~280 (parser) + ~500 (tests) | Python | `axon/compiler/parser.py` + new `parse_with_recovery()` API; panic-mode recovery; sync rule = top-level keyword at brace-depth ≤ 0 OR EOF; `_TOP_LEVEL_DECLARATION_KEYWORDS` frozenset (~50 token types); `ParseResult { program, errors, has_errors, is_clean }` return type; existing `parse()` API preserved verbatim (D9). Tests: 126/126 pass — 9 classes covering backwards compat (3) + single-error recovery (4) + multi-error (3) + sync points (4) + ParseResult API (4) + edge cases (6) + 1000-iter deterministic-seeded fuzz (100 buckets × 10 mutations) + ghost-error guard (1) + integration with v1.19.4 colon diagnostic (1). Full Python regression sweep: **5175 passed, 4 skipped, 0 failures** |
 | 28.c Parser error recovery (Rust frontend) | ⏳ pending | ~700 | Rust | `axon-frontend/src/parser.rs` mirror implementation; drift gate verifies Python + Rust produce identical error lists on every input; recovery sync points cross-stack consistent |
 | 28.d Source-context diagnostic block | ⏳ pending | ~400 | Python + Rust | Every `AxonParseError` carries optional source-snippet field; Display formatter renders rustc-style with line numbers + caret + 2-line surrounding context; lexer keeps source-text reference (currently line/col only); structured + plain-text rendering modes |
 | 28.e Smart-suggest for unknown tokens | ⏳ pending | ~300 | Python | Levenshtein-distance suggestions when an unknown identifier appears in a field-name position; threshold ≤ 2 distance; max 5 candidates; suggests against the in-scope keyword set + sibling field names; `Did you mean output?` style |
