@@ -17694,6 +17694,268 @@ async fn execute_stream_handler(
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// §Fase 30.d — Single-shot Server-Sent Events response path.
+//
+// Distinct from `execute_stream_handler` above (which is the two-stage
+// pub/sub pattern returning a JSON envelope with `consume_url`; preserved
+// per D8). This handler returns `Content-Type: text/event-stream` DIRECTLY:
+// the response body IS the SSE stream. Adopters who declared
+// `transport: sse` on their axonendpoint get this wire format on
+// `POST /v1/execute/sse` — one HTTP call, one stream, terminates with
+// `event: axon.complete`.
+//
+// Wire format (per plan vivo §4):
+//   - Initial `retry: 5000` directive (W3C SSE reconnect hint)
+//   - Per-step `event: axon.token`, `id: <monotonic>`, `data: { ... }`
+//   - Final `event: axon.complete`, `id: <last>`, `data: { final envelope }`
+//   - Error mid-stream → `event: axon.error`, then server closes
+//
+// Event-ID counter is per-trace and monotonic — adopter EventSource
+// clients can resume after disconnect with the `Last-Event-ID` header
+// (axum forwards it to a future handler if 30.f adds resume support;
+// 30.d ships the wire shape without server-side resume).
+//
+// Cancel-safety: axum + hyper drop the Sse response when the client
+// disconnects. The flow executor today is synchronous (runs to
+// completion BEFORE the SSE iterator starts emitting), so there is no
+// background task to abort. A future Fase that refactors the executor
+// to true incremental streaming will add `tokio::task::JoinHandle::abort`
+// on disconnect; the wire format does NOT change.
+// ──────────────────────────────────────────────────────────────────────────
+
+use axum::response::sse::{Event, Sse};
+use futures::stream::{self, Stream};
+use std::convert::Infallible;
+
+/// Build a single `axon.token` SSE event from a step name + chunk content.
+/// Pure helper — no side effects. `event_id` is the monotonic per-trace
+/// counter; adopter EventSource clients receive it via the `id:` field.
+fn build_token_event(
+    event_id: u64,
+    trace_id: u64,
+    step_name: &str,
+    token: &str,
+    timestamp_ms: i64,
+) -> Event {
+    let data = serde_json::json!({
+        "step": step_name,
+        "trace_id": trace_id,
+        "token": token,
+        "timestamp_ms": timestamp_ms,
+    });
+    Event::default()
+        .event("axon.token")
+        .id(event_id.to_string())
+        .data(serde_json::to_string(&data).unwrap_or_default())
+}
+
+/// Build the final `axon.complete` SSE event carrying the execution
+/// envelope (steps_executed, tokens_input/output, latency, backend,
+/// success). After this event the server closes the response.
+fn build_complete_event(event_id: u64, exec: &ServerExecutionResult) -> Event {
+    let data = serde_json::json!({
+        "trace_id": exec.trace_id,
+        "flow": exec.flow_name,
+        "backend": exec.backend,
+        "steps_executed": exec.steps_executed,
+        "tokens_input": exec.tokens_input,
+        "tokens_output": exec.tokens_output,
+        "latency_ms": exec.latency_ms,
+        "success": exec.success,
+    });
+    Event::default()
+        .event("axon.complete")
+        .id(event_id.to_string())
+        .data(serde_json::to_string(&data).unwrap_or_default())
+}
+
+/// Build an `axon.error` SSE event for mid-stream failures. After this
+/// event the server closes; client EventSource sees the disconnect +
+/// (per default W3C SSE behavior) attempts reconnection after the
+/// `retry:` interval.
+fn build_error_event(event_id: u64, trace_id: u64, error_msg: &str) -> Event {
+    let data = serde_json::json!({
+        "trace_id": trace_id,
+        "error": error_msg,
+        "recoverable": false,
+    });
+    Event::default()
+        .event("axon.error")
+        .id(event_id.to_string())
+        .data(serde_json::to_string(&data).unwrap_or_default())
+}
+
+/// Build the initial `retry:` directive event. Per W3C SSE spec, this
+/// tells the client EventSource how long to wait before reconnecting
+/// on stream drop. 5000ms is the published default in plan vivo §4.5.
+fn build_retry_hint_event() -> Event {
+    Event::default().retry(std::time::Duration::from_millis(5000))
+}
+
+/// POST /v1/execute/sse — single-shot SSE execution.
+///
+/// Identical request body shape to `/v1/execute` (`ExecuteRequest`).
+/// Response Content-Type is `text/event-stream` regardless of the
+/// flow's transport declaration on its axonendpoint — adopters that
+/// hit this route are explicitly opting into SSE. (The auto-promotion
+/// path that consults the axonendpoint `transport: sse` declaration
+/// ships in 30.e as content-negotiation on the existing `/v1/execute`.)
+///
+/// Per-step tokens are emitted from the `StreamEmitter` (the existing
+/// algebraic-effect handler reused verbatim from `execute_stream_handler`).
+/// Errors during flow execution become a single `axon.error` event +
+/// connection close.
+async fn execute_sse_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<StreamExecuteRequest>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    let req_start = Instant::now();
+    let client = client_key_from_headers(&headers);
+    {
+        let mut s = state.lock().unwrap();
+        check_auth(&mut s, &headers, AccessLevel::Write)?;
+    }
+
+    // Look up deployed source. On not-deployed, emit a single error
+    // event so adopter clients see a structured SSE response instead
+    // of a 404 (consistent with the streaming-API expectation that the
+    // wire format is honored even for failures).
+    let (source, source_file) = {
+        let s = state.lock().unwrap();
+        match s
+            .versions
+            .get_history(&payload.flow_name)
+            .and_then(|h| h.active())
+            .map(|v| (v.source.clone(), v.source_file.clone()))
+        {
+            Some(info) => info,
+            None => {
+                let trace_id: u64 = 0;
+                let err_msg = format!("flow '{}' not deployed", payload.flow_name);
+                let events: Vec<Result<Event, Infallible>> = vec![
+                    Ok(build_retry_hint_event()),
+                    Ok(build_error_event(1, trace_id, &err_msg)),
+                ];
+                return Ok(Sse::new(stream::iter(events)));
+            }
+        }
+    };
+
+    // Execute the flow synchronously. The runtime today produces all
+    // tokens before the SSE iterator begins emission (Option B in the
+    // 30.d design rationale — true incremental execution is a future
+    // Fase). The wire format on the client side is identical either way:
+    // events arrive in order with monotonic ids.
+    let exec_outcome = server_execute_full(
+        &state,
+        &source,
+        &source_file,
+        &payload.flow_name,
+        &payload.backend,
+    )
+    .0;
+
+    let mut events: Vec<Result<Event, Infallible>> = Vec::new();
+    // Always lead with the retry directive so every connecting client
+    // gets the reconnect hint before any data event.
+    events.push(Ok(build_retry_hint_event()));
+
+    match exec_outcome {
+        Ok(mut er) => {
+            // Record the trace so audit + observability surfaces match
+            // the JSON `/v1/execute` path verbatim.
+            let mut trace_entry = crate::trace_store::build_trace(
+                &er.flow_name,
+                &er.source_file,
+                &er.backend,
+                &client,
+                if er.success {
+                    crate::trace_store::TraceStatus::Success
+                } else {
+                    crate::trace_store::TraceStatus::Partial
+                },
+                er.steps_executed,
+                er.latency_ms,
+            );
+            trace_entry.tokens_input = er.tokens_input;
+            trace_entry.tokens_output = er.tokens_output;
+            trace_entry.errors = er.errors.clone();
+
+            let (trace_id, emitter) = {
+                let mut s = state.lock().unwrap();
+                let tid = s.trace_store.record(trace_entry);
+
+                // Reuse the existing StreamEmitter — same algebraic-
+                // effect handler the two-stage path uses. The mapping
+                // from emitter tokens → SSE Events is purely the
+                // wire-format choice for 30.d.
+                // Mirror of the existing two-stage path's chunking
+                // (axon_server.rs line ~17637): parallel array
+                // `step_names[i]` ↔ `step_results[i]`. ~3-word chunks
+                // per token approximates LLM token granularity.
+                let mut emitter = StreamEmitter::new(tid, &er.flow_name);
+                for (i, step_name) in er.step_names.iter().enumerate() {
+                    if let Some(chunks) = er.step_results.get(i).map(|r| {
+                        if r.is_empty() {
+                            vec![]
+                        } else {
+                            r.split_whitespace()
+                                .collect::<Vec<&str>>()
+                                .chunks(3)
+                                .map(|c| c.join(" "))
+                                .collect()
+                        }
+                    }) {
+                        emitter.emit_chunks(step_name, &chunks);
+                    }
+                }
+                emitter.finalize();
+
+                (tid, emitter)
+            };
+
+            er.trace_id = trace_id;
+            er.latency_ms = req_start.elapsed().as_millis() as u64;
+
+            // Map each StreamToken to an `axon.token` SSE event with a
+            // monotonic per-trace event-id. Counter starts at 1 (the
+            // `retry:` directive was event 0 implicitly — it carries
+            // no `id:` field per W3C SSE convention for retry-only
+            // events).
+            let mut event_id: u64 = 0;
+            for tok in &emitter.tokens {
+                event_id += 1;
+                events.push(Ok(build_token_event(
+                    event_id,
+                    tok.trace_id,
+                    &tok.step_name,
+                    &tok.content,
+                    tok.timestamp as i64,
+                )));
+            }
+
+            // Final completion envelope. After this the server closes
+            // the response (the iterator ends; axum drops the Sse).
+            event_id += 1;
+            events.push(Ok(build_complete_event(event_id, &er)));
+        }
+        Err(e) => {
+            // Execution failure → single error event + close. trace_id
+            // is unavailable (the flow never reached trace recording)
+            // so we use 0; adopters can correlate via timestamp + auth.
+            {
+                let mut s = state.lock().unwrap();
+                s.metrics.total_errors += 1;
+            }
+            events.push(Ok(build_error_event(1, 0, &e)));
+        }
+    }
+
+    Ok(Sse::new(stream::iter(events)))
+}
+
 /// ΛD Epistemic Envelope — wraps any config value with its epistemic tensor.
 ///
 /// From the paper: ψ = ⟨T, V, E⟩ where E = ⟨c, τ, ρ, δ⟩
@@ -23502,6 +23764,10 @@ pub fn build_router_with_state(config: ServerConfig) -> (Router, SharedState) {
         .route("/v1/execute/dry-run", post(execute_dry_run_handler))
         .route("/v1/execute/pipeline", post(execute_pipeline_handler))
         .route("/v1/execute/stream", post(execute_stream_handler))
+        // §Fase 30.d — single-shot SSE: response IS the stream. Distinct
+        // from /v1/execute/stream above (two-stage pub/sub via EventBus
+        // topic; preserved per D8). Same ExecuteRequest body shape.
+        .route("/v1/execute/sse", post(execute_sse_handler))
         .route("/v1/execute/cache", get(execute_cache_get_handler).put(execute_cache_put_handler).delete(execute_cache_delete_handler))
         .route("/v1/execute/cached", post(execute_cached_handler))
         .route("/v1/execute/stream/{trace_id}/consume", get(stream_consume_handler))
