@@ -1092,6 +1092,99 @@ a Rust frontend completion sub-fase tracked in the
 
 ---
 
+## Dynamic routes (Fase 32, v1.23.0+)
+
+§Fase 32.j addition. Pre-v1.23.0 the SSE wire format above only fired on
+`POST /v1/execute` (legacy RPC path) and `POST /v1/execute/sse`
+(explicit two-stage). v1.23.0 makes every `axonendpoint` declaration a
+real HTTP route at the declared `(method, path)`. **The Fase 30 + 31
+transport semantics described above apply uniformly to dynamic
+routes** — `POST /chat` (the adopter's declared path) returns the same
+wire format `POST /v1/execute` would have under the same `transport:`
+declaration + Accept header + strict-mode flag.
+
+### Per-route negotiation matrix
+
+The 8-cell negotiation matrix is keyed by the ROUTE'S declaration
+(via `axonendpoint.transport:` + `axonendpoint.transport_explicit`),
+not by the underlying flow. Two axonendpoints sharing one flow but
+declaring DIFFERENT transports each honor their own contract:
+
+```axon
+tool chat_tokens { description: "stream" effects: <stream:drop_oldest> }
+flow Chat() -> Unit { step Generate { ask: "x" apply: chat_tokens } }
+
+axonendpoint ChatSse  { method: POST path: "/chat-sse"  execute: Chat transport: sse }
+axonendpoint ChatJson { method: POST path: "/chat-json" execute: Chat transport: json }
+```
+
+- `POST /chat-sse` → `Content-Type: text/event-stream` (D5 declared sse).
+- `POST /chat-json` → `Content-Type: application/json` (D3 sacred opt-out, even with `Accept: text/event-stream`).
+
+The Fase 32.e `classify_dynamic_route_wire` function is a pure +
+total 5-input predicate over `(transport, transport_explicit,
+implicit_transport, client_wants_sse, strict_mode)`. The 8-cell
+truth table is unit-tested in
+[`axon-rs::axon_server::dynamic_route_wire_truth_table`](../axon-rs/src/axon_server.rs).
+
+### Keepalive honored on declared paths
+
+The `keepalive: 5s | 15s | 30s | 60s` field works identically on
+dynamic routes:
+
+```axon
+axonendpoint Chat {
+    method:    POST
+    path:      "/chat"
+    execute:   StreamingChat
+    transport: sse
+    keepalive: 15s        // honored on POST /chat exactly as on /v1/execute/sse
+}
+```
+
+EventSource clients connect to the declared path directly:
+
+```javascript
+const evt = new EventSource("/chat");
+evt.onmessage = (e) => console.log(e.data);
+```
+
+### X-Axon-Stream-Available diagnostic on dynamic routes
+
+Fase 31.e's diagnostic header fires on dynamic-route JSON responses
+when the underlying flow has stream effects (i.e. the inference
+COULD have promoted to SSE but didn't due to D3 declared-json or
+flag-off + missing Accept). The shape is identical to `/v1/execute`:
+
+```
+X-Axon-Stream-Available: 1; reason=flag_off; flow=Chat;
+opt_in=transport:sse,Accept:text/event-stream
+```
+
+Adopters debugging "why am I getting JSON on /chat" find the diagnostic
+in their client logs without spelunking the source.
+
+### Replay-Status on `GET /v1/replay/<trace_id>`
+
+Fase 32.h adds the replay binding for POST/PUT axonendpoints (D9
+plan-vivo). The retrieval handler `GET /v1/replay/<trace_id>` carries
+a `Replay-Status: deterministic | non_deterministic` HTTP header
+indicating whether the original execution can be byte-identically
+re-executed. See [`ADOPTER_REST.md` §9](ADOPTER_REST.md#replay-token-binding--regulator-grade-audit-d9)
+for the full retrieval shape.
+
+### SSE bypasses output validation + replay binding
+
+The runtime validates `output: T` and writes replay entries only on
+JSON-transport responses (the bytes can be captured + hashed at the
+wire layer). SSE / ndjson responses pass through unchanged — per-event
+typed-stream validation + token-chain replay are tracked as a future
+fase. If your flow produces a `Stream<T>` AND you need replay audit,
+declare `transport: json` to opt out of streaming + opt in to replay,
+or layer enterprise streaming-audit primitives.
+
+---
+
 ## Where to file bugs
 
 | Symptom | Where |

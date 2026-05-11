@@ -571,6 +571,187 @@ for the complete D1-D10 ratification trace.
 
 ---
 
+### Pattern 7 — Fase 32 dynamic-route errors (v1.23.0+)
+
+Every error envelope from the dynamic-route handler carries a
+`d_letter` field naming which plan-vivo D-letter ratified the contract
+the request violated. Use the `d_letter` to look up the canonical
+diagnostic shape in [`ADOPTER_REST.md`](ADOPTER_REST.md).
+
+#### Sub-pattern 7.1 — Path collision at deploy time (D2)
+
+**Symptom:** `POST /v1/deploy` returns `success: false`:
+
+```json
+{
+  "success": false,
+  "error": "Path collision (D2): axonendpoint 'One' and 'Two' both declare `method: POST path: /x`. Resolve by editing one of the two axonendpoints to use a distinct (method, path) tuple.",
+  "phase": "route_registration",
+  "d_letter": "D2"
+}
+```
+
+**Fix:** Two axonendpoints in your deployed source declare the same
+`(method, path)` tuple. Rename one of the paths (e.g. `/x/v1` vs
+`/x/v2`) OR change one method (GET vs POST are distinct routes).
+Cross-deploy collisions fire the same diagnostic when a NEW source
+claims a path already owned by a different axonendpoint from a prior
+deploy — restart the server OR re-deploy with a non-colliding path.
+
+#### Sub-pattern 7.2 — Body schema violation (D4)
+
+**Symptom:** `POST /your/path` returns 400:
+
+```json
+{
+  "error": "body_schema_violation",
+  "expected_type": "LoanApplication",
+  "field_path": "amount",
+  "expected": "Money",
+  "got": "integer",
+  "hint": "Body field `amount` must be a `Money` (JSON object) but received a integer. Adjust the request body or the axonendpoint's `body:` declaration.",
+  "d_letter": "D4"
+}
+```
+
+**Fix:** Either correct the request body to match the declared
+`body: T` shape, OR adjust the axonendpoint's `body:` declaration if
+the schema drifted from production reality. The `field_path` points at
+the exact offending field; nested struct fields use dotted notation
+(`applicant.address.city`) and list elements use bracket-indexed
+notation (`symptoms[2].score`).
+
+#### Sub-pattern 7.3 — Invalid method or path at parse time (D3)
+
+**Symptom:** `POST /v1/deploy` fails with a parser error:
+
+```
+AxonParseError [line 6, col 11]: Invalid method 'fetch' in axonendpoint 'BadEndpoint'. Did you mean `PATCH`? (expected GET | POST | PUT | DELETE | PATCH, found fetch)
+```
+
+**Fix:** The method enum is closed (D3) to `{GET, POST, PUT, DELETE,
+PATCH}`. Smart-suggest hints at the nearest valid value. HEAD /
+OPTIONS / CONNECT / TRACE are runtime-managed (CORS preflight, etc.)
+and never declared from source.
+
+#### Sub-pattern 7.4 — Missing capability (D8)
+
+**Symptom:** `POST /your/path` returns 403:
+
+```json
+{
+  "error": "missing_capability",
+  "missing": ["policy.write"],
+  "required": ["admin", "policy.write"],
+  "have": ["admin"],
+  "endpoint": "AdminPolicyUpdate",
+  "method": "POST",
+  "path": "/admin/policy",
+  "hint": "Bearer is missing capabilities [\"policy.write\"] required by axonendpoint 'AdminPolicyUpdate'. Reissue the bearer with the declared capabilities or contact the endpoint's owner to grant access.",
+  "d_letter": "D8"
+}
+```
+
+**Fix:** Reissue the JWT bearer with the listed `missing` capabilities
+in its `capabilities` claim — AND semantics mean every declared slug
+must be present. The slug grammar `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`
+is enforced at parse time, so misspelled slugs (e.g. `Admin` uppercase,
+`bank-officer` hyphen) fail at deploy, not at request.
+
+#### Sub-pattern 7.5 — Idempotency-Key reuse with different body (D7)
+
+**Symptom:** `POST /your/path` returns 422:
+
+```json
+{
+  "error": "idempotency_key_reused_with_different_request",
+  "idempotency_key": "abc-123",
+  "endpoint": "LoanDecision",
+  "method": "POST",
+  "path": "/loan/decision",
+  "cached_body_hash_prefix": "a1b2c3d4e5f60718",
+  "hint": "The Idempotency-Key was previously used with a DIFFERENT request body for this endpoint. Generate a new key for the new request, or send the same body to replay the original response.",
+  "d_letter": "D7"
+}
+```
+
+**Fix:** Your client retried with the same `Idempotency-Key` but a
+DIFFERENT body. Either (a) generate a new key for the new request,
+(b) re-send the original body to replay the original response, OR
+(c) canonicalize the body bytes on the client side (Stripe-aligned
+contract: body hashing is whitespace-sensitive).
+
+#### Sub-pattern 7.6 — Unknown axonendpoint path
+
+**Symptom:** `POST /unknown/path` returns 404:
+
+```json
+{
+  "error": "axonendpoint_not_found",
+  "method": "POST",
+  "path": "/unknown/path",
+  "registered_routes": [
+    {"method": "POST", "path": "/loan/decision"},
+    {"method": "GET", "path": "/health"}
+  ],
+  "hint": "deploy an axonendpoint with this method+path, or use POST /v1/execute with the flow name in the body for the legacy RPC path"
+}
+```
+
+**Fix:** Inspect the `registered_routes` list — your axonendpoint
+declaration either wasn't in the deployed source OR the path differs
+from what your client is sending. Trailing slashes matter
+(`/loan/decision` ≠ `/loan/decision/`); axon uses exact-path matching.
+
+#### Sub-pattern 7.7 — Internal validation error (D5)
+
+**Symptom:** `POST /your/path` returns 500:
+
+```json
+{
+  "error": "internal_validation_error",
+  "trace_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "hint": "The flow produced a response that did not match the declared output schema. The adopter-facing diagnostic is in the audit trail (GET /v1/audit).",
+  "d_letter": "D5"
+}
+```
+
+**Fix:** This is the OWASP-safe envelope — schema details are NOT
+leaked to the client (recon-vector hardening). The full diagnostic
+(field_path, expected, got) is in the **audit log**:
+
+```bash
+curl http://localhost:8000/v1/audit \
+    -H "Authorization: Bearer $READ_ONLY_TOKEN" \
+    | jq '.entries[] | select(.detail.trace_id == "f47ac10b-58cc-4372-a567-0e02b2c3d479")'
+```
+
+The audit entry carries `event: "output_schema_violation"` with the
+full schema-mismatch diagnostic. Fix the FLOW to return a value matching
+the declared `output: T` type, OR adjust the `output:` declaration if
+the contract drifted.
+
+#### Sub-pattern 7.8 — Replay trace not found
+
+**Symptom:** `GET /v1/replay/<trace_id>` returns 404:
+
+```json
+{
+  "error": "replay_trace_not_found",
+  "trace_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "hint": "No replay binding exists for this trace_id. Either the trace_id is wrong, the entry expired past retention (default 30 days), or the original endpoint had `replay: false` declared.",
+  "d_letter": "D9"
+}
+```
+
+**Fix:** One of three causes — (a) the trace_id is wrong (check the
+`X-Axon-Trace-Id` response header on the original POST), (b) the entry
+expired past the 30-day default retention, OR (c) the original
+endpoint had `replay: false` declared (or was a non-POST/PUT method
+without explicit override).
+
+---
+
 ## CI integration cookbook
 
 ### GitHub Actions
