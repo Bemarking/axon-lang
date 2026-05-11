@@ -26,16 +26,17 @@
 4. [The `transport:` and `keepalive:` axonendpoint fields](#the-transport-and-keepalive-axonendpoint-fields)
 5. [SSE wire format specification](#sse-wire-format-specification)
 6. [Content-negotiation fallback semantics](#content-negotiation-fallback-semantics)
-7. [Type-checker enforcement rules](#type-checker-enforcement-rules)
-8. [Common compile errors + fixes](#common-compile-errors--fixes)
-9. [Backwards compatibility matrix](#backwards-compatibility-matrix)
-10. [Production deployment cookbook](#production-deployment-cookbook)
-11. [Troubleshooting checklist](#troubleshooting-checklist)
-12. [Client-side EventSource recipe](#client-side-eventsource-recipe)
-13. [LSP / IDE integration recipe](#lsp--ide-integration-recipe)
-14. [CI integration recipe](#ci-integration-recipe)
-15. [Cross-stack contract: Python ↔ Rust](#cross-stack-contract-python--rust)
-16. [Where to file bugs](#where-to-file-bugs)
+7. [Type-driven default transport (Fase 31, v1.22.0+)](#type-driven-default-transport-fase-31-v1220)
+8. [Type-checker enforcement rules](#type-checker-enforcement-rules)
+9. [Common compile errors + fixes](#common-compile-errors--fixes)
+10. [Backwards compatibility matrix](#backwards-compatibility-matrix)
+11. [Production deployment cookbook](#production-deployment-cookbook)
+12. [Troubleshooting checklist](#troubleshooting-checklist)
+13. [Client-side EventSource recipe](#client-side-eventsource-recipe)
+14. [LSP / IDE integration recipe](#lsp--ide-integration-recipe)
+15. [CI integration recipe](#ci-integration-recipe)
+16. [Cross-stack contract: Python ↔ Rust](#cross-stack-contract-python--rust)
+17. [Where to file bugs](#where-to-file-bugs)
 
 ---
 
@@ -393,6 +394,134 @@ Adopters who want to opt out explicitly add `transport: json` to the
 axonendpoint — the D5 declaration suppresses negotiation. Adopters who
 want SSE always-on add `transport: sse` and never depend on the client's
 Accept header to be set correctly.
+
+---
+
+## Type-driven default transport (Fase 31, v1.22.0+)
+
+Fase 30 D4 + D5 require either an explicit declaration on the
+axonendpoint OR an `Accept: text/event-stream` header from the client
+to promote to SSE. After v1.21.x adoption surfaced an empirical
+mismatch — the language's type system **internally inferred** SSE
+for stream-effect flows yet refused to surface that inference at the
+wire layer without one of the two opt-ins — Fase 31 closed the gap.
+
+The new behavior is **opt-in via flag** in v1.22.0 (D6) and **flips
+to default-on** in v2.0.0 (D9). See [MIGRATION_v1.22.md](MIGRATION_v1.22.md)
+for the four-scenario migration recipe.
+
+### The inference rule (D1)
+
+```
+implicit_transport(F, E) =
+    declared_transport(E)         if declared(transport, E)
+    "sse"                          if produces_stream(F) ∧ ¬declared(transport, E)
+    "json"                         otherwise
+```
+
+The `produces_stream(F)` predicate is the 3-disjunct disjunction
+from Fase 30.c (see § Type-checker enforcement rules below). When
+the flag is on, the inference verdict drives the HTTP wire shape
+directly — no `Accept:` header required, no source declaration
+required.
+
+### Compile-time warning `axon-W001`
+
+When a flow has stream effects AND the axonendpoint omits the
+`transport:` declaration, the compiler emits a non-fatal warning
+at build time:
+
+```
+warning[axon-W001]: implicit `transport: sse` inferred from stream
+effects on axonendpoint 'ChatEndpoint' (flow 'Chat' produces a
+stream via step 'Generate' applies tool 'chat_token_stream' with
+effects `<stream:drop_oldest>`). Declare `transport: sse` to
+silence this warning and lock in SSE behavior, or `transport:
+json` to opt out and keep the legacy JSON wire format. When
+`strict_type_driven_transport: true`, this endpoint emits SSE on
+/v1/execute by default.
+```
+
+The warning is **rate-limited** — one per axonendpoint per build
+pass — and **suppressed** when:
+
+- The axonendpoint declares any explicit `transport:` value.
+- The flow does not produce a stream.
+- The `execute:` flow doesn't resolve (orphan endpoint — a
+  separate error already fires).
+
+Strict mode (Fase 28.h `--strict`) promotes the warning to an
+error. CI pipelines that want the strongest signal turn `--strict`
+on.
+
+### Runtime diagnostic header `X-Axon-Stream-Available`
+
+When `/v1/execute` serves a JSON response for a flow that **does**
+have stream effects (because the flag is off OR because the adopter
+opted out via `transport: json`), the response carries:
+
+```
+X-Axon-Stream-Available: 1; reason=<flag_off|declared_json>;
+                            flow=<name>;
+                            opt_in=transport:sse,Accept:text/event-stream
+```
+
+The `reason` value is a closed set per **D5**:
+
+- `flag_off` — the strict flag is off AND the client sent no
+  `Accept:` header. The opt-in is one of: flip the flag, declare
+  `transport: sse`, or send `Accept: text/event-stream`.
+- `declared_json` — the adopter explicitly declared `transport:
+  json` (D3 opt-out). The header still fires so clients see the
+  trade-off — the language never silently overrides the adopter's
+  choice.
+
+Header is **never** emitted on SSE responses (the wire is already
+streaming), on JSON responses for non-stream-effect flows (nothing
+to surface), or on orphan endpoints (separate error path).
+
+### Opt-in surfaces
+
+The strict flag is opt-in via two converging surfaces (D6 + D7
+cross-stack consistency):
+
+```bash
+# Surface 1 — CLI flag (k8s / docker / systemd)
+axon serve --strict-type-driven-transport
+
+# Surface 2 — env var (12-factor app)
+export AXON_STRICT_TYPE_DRIVEN_TRANSPORT=1
+axon serve
+```
+
+Truthy alphabet: `1`, `true`, `yes`, `on` (case-insensitive,
+whitespace-trimmed). The CLI flag wins when both are set. Default
+is `false` in v1.22.x; flips to `true` in v2.0.0.
+
+### Decision matrix (4 dimensions × 16 cells)
+
+| strict | endpoint decl | stream effect | `Accept:` SSE | response |
+|---|---|---|---|---|
+| any | `json` (D3) | any | any | JSON |
+| any | `sse` / `ndjson` | any | any | SSE |
+| OFF (default) | absent | no | any | JSON |
+| OFF | absent | yes | no | JSON (with `X-Axon-Stream-Available: reason=flag_off`) |
+| OFF | absent | yes | yes | SSE (Fase 30 D4) |
+| ON | absent | no | any | JSON |
+| **ON** | **absent** | **yes** | **any** | **SSE (Fase 31 D1)** |
+
+The bottom-right row is the new Fase 31 behavior. The middle four
+rows preserve Fase 30 verbatim — D8 backwards-compat is absolute
+when the flag is off.
+
+### Cross-stack contract (D7)
+
+The env var name `AXON_STRICT_TYPE_DRIVEN_TRANSPORT` is the
+canonical cross-stack handshake. Python `axon serve` and Rust
+`axon-rs` accept it byte-identically. A 100-bucket × 10-iteration
+deterministic fuzz lane in CI confirms the inference function on
+both stacks produces byte-identical verdicts under adversarial
+input.
 
 ---
 
