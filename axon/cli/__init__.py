@@ -204,6 +204,24 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging level (default: INFO)",
     )
+    # §Fase 31.f (D6 + D7) — Type-Driven Wire Inference activation.
+    # Cross-stack with Rust `axon-rs`: same flag name, same env var
+    # name `AXON_STRICT_TYPE_DRIVEN_TRANSPORT`, same truthy values.
+    serve.add_argument(
+        "--strict-type-driven-transport",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable Type-Driven Wire Inference (Fase 31). When set, "
+            "POST /v1/execute promotes to SSE for any flow inferred "
+            "as stream-producing, regardless of Accept header. "
+            "Adopters with explicit transport: json retain D3 opt-out. "
+            "Also readable from AXON_STRICT_TYPE_DRIVEN_TRANSPORT env "
+            "var (truthy values: 1, true, yes, on — case-insensitive). "
+            "CLI flag wins when both are set. Default: false in v1.22.x; "
+            "flips to true in v2.0.0."
+        ),
+    )
 
     # ── axon deploy ───────────────────────────────────────────
     deploy = sub.add_parser(

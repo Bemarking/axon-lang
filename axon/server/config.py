@@ -63,3 +63,25 @@ class AxonServerConfig:
     endpoint_score_weight_volume: float = 1.0
     log_level: str = "INFO"
     default_backend: str = "anthropic"
+    # §Fase 31.f (D6 + D7) — Type-Driven Wire Inference activation.
+    #
+    # When True, `POST /v1/execute` promotes to SSE for any flow the
+    # type-checker inferred as stream-producing (D1) regardless of the
+    # client's `Accept:` header. Adopters who explicitly declared
+    # `transport: json` retain D3 opt-out semantics.
+    #
+    # The Python CLI accepts the same env var name as the Rust
+    # `axon-rs` binary verbatim (`AXON_STRICT_TYPE_DRIVEN_TRANSPORT`)
+    # per the D7 cross-stack consistency contract. Truthy values:
+    # "1", "true", "yes", "on" (case-insensitive).
+    #
+    # D6 default: False in v1.22.x, flips to True in v2.0.0 (D9).
+    #
+    # Note: The Python AxonServer (`axon serve` Python entry point)
+    # currently runs the FastAPI/uvicorn stack which does NOT yet
+    # ship the SSE negotiation path that the Rust `axon-rs` runtime
+    # implements (Fase 30.d/e + Fase 31.d/e are Rust-only). This
+    # field is stored on the Python config for cross-stack symmetry
+    # — when the Python runtime ports the negotiation path in a
+    # future fase, the field is already wired.
+    strict_type_driven_transport: bool = False

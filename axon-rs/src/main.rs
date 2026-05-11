@@ -117,6 +117,21 @@ enum Commands {
         /// PostgreSQL connection URL (also reads DATABASE_URL env var).
         #[arg(long)]
         database_url: Option<String>,
+        /// §Fase 31.f (D6 + D9) — Type-Driven Wire Inference activation.
+        ///
+        /// When set, `POST /v1/execute` promotes to SSE for any flow
+        /// the type-checker inferred as stream-producing (D1) regardless
+        /// of the client's `Accept:` header. Adopters who explicitly
+        /// declared `transport: json` retain D3 opt-out semantics.
+        ///
+        /// Also readable from the env var
+        /// `AXON_STRICT_TYPE_DRIVEN_TRANSPORT` (truthy values: "1",
+        /// "true", "yes", "on" — case-insensitive). CLI flag wins
+        /// when both are set.
+        ///
+        /// D6 default: false in v1.22.x, flips to true in v2.0.0.
+        #[arg(long)]
+        strict_type_driven_transport: bool,
     },
     /// Lambda Data (ΛD) epistemic codec: encode, decode, inspect.
     Ld {
@@ -258,6 +273,7 @@ fn main() {
             log_format,
             log_file,
             database_url,
+            strict_type_driven_transport,
         } => axon_server::run_serve(axon_server::ServerConfig {
             host,
             port,
@@ -268,13 +284,23 @@ fn main() {
             log_file,
             database_url: database_url.or_else(|| std::env::var("DATABASE_URL").ok()),
             config_path: None,
-            // §Fase 31.d (D6) — D6 default false in v1.22.x. The CLI
-            // flag + env var + config-file surface that lets adopters
-            // opt in ships in 31.f; 31.d only adds the field +
-            // the runtime path that consults it (programmatic
-            // construction in tests can already exercise the strict
-            // behavior).
-            strict_type_driven_transport: false,
+            // §Fase 31.f (D6 + D7) — Resolution order for the strict
+            // flag (highest precedence first):
+            //   1. CLI flag `--strict-type-driven-transport` (when
+            //      present, always wins — explicit at run-time).
+            //   2. Env var `AXON_STRICT_TYPE_DRIVEN_TRANSPORT` (12-
+            //      factor app pattern; common in k8s/docker deploys).
+            //   3. D6 default `false` (v1.22.x — backwards-compat).
+            // D9 ratified — the default flips to `true` in v2.0.0.
+            //
+            // D7 cross-stack consistency — Python `axon serve`
+            // reads the same env var name verbatim. Truthy values
+            // are accepted case-insensitively: "1", "true", "yes",
+            // "on". Any other value (including unset) is false.
+            strict_type_driven_transport: strict_type_driven_transport
+                || axon::axon_server::parse_truthy_env(
+                    "AXON_STRICT_TYPE_DRIVEN_TRANSPORT",
+                ),
         }),
         Commands::Diff {
             file_a,

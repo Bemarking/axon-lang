@@ -229,6 +229,36 @@ impl ServerConfig {
     }
 }
 
+/// §Fase 31.f (D7) — Parse a truthy env var per the cross-stack
+/// contract. Truthy values (case-insensitive): "1", "true", "yes",
+/// "on". Empty / unset / any other value → false.
+///
+/// Public so the Python CLI can call out to the same canonical
+/// parser via FFI if needed (though Python ships its own parser
+/// of the same shape per `axon/cli/serve_cmd.py` — the contract
+/// is the VALUE SET, not a binary link).
+///
+/// Examples:
+///   `AXON_STRICT_TYPE_DRIVEN_TRANSPORT=1`      → true
+///   `AXON_STRICT_TYPE_DRIVEN_TRANSPORT=true`   → true
+///   `AXON_STRICT_TYPE_DRIVEN_TRANSPORT=YES`    → true
+///   `AXON_STRICT_TYPE_DRIVEN_TRANSPORT=on`     → true
+///   `AXON_STRICT_TYPE_DRIVEN_TRANSPORT=0`      → false
+///   `AXON_STRICT_TYPE_DRIVEN_TRANSPORT=false`  → false
+///   `AXON_STRICT_TYPE_DRIVEN_TRANSPORT=`       → false (empty)
+///   (unset)                                    → false
+pub fn parse_truthy_env(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on",
+            )
+        })
+        .unwrap_or(false)
+}
+
 // ── Server state ──────────────────────────────────────────────────────────
 
 /// Shared server state, wrapped in Arc<Mutex<>> for thread safety.
