@@ -18467,6 +18467,147 @@ fn source_text_axonendpoint_has_transport(
 //   COMPUTING  — strictly additive when adopter declares paths;
 //                 /v1/execute preserved verbatim per D10.
 
+/// §Fase 32.e (D6) — Wire-format verdict for a dynamic route.
+///
+/// Total enum returned by `classify_dynamic_route_wire`. The dynamic
+/// fallback handler maps each variant to the corresponding downstream
+/// dispatch: `Sse` → `execute_sse_handler` (text/event-stream wire),
+/// `Json` → `execute_handler` (application/json wire) with the
+/// Fase 31.e `X-Axon-Stream-Available` header attached when the
+/// underlying flow has stream effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynamicRouteWire {
+    Sse,
+    Json,
+}
+
+/// §Fase 32.e (D6) — Per-route negotiation classifier.
+///
+/// Total function over `(transport, transport_explicit,
+/// implicit_transport, client_wants_sse, strict_mode)`. The decision
+/// is single-valued (`DynamicRouteWire`) for every input combination.
+///
+/// The function is **pure** — same inputs always produce the same
+/// output. The drift gate at the test layer locks the truth table
+/// against accidental rewrites.
+///
+/// Truth table (8 meaningful cells; the rest reduce to these via the
+/// `transport_explicit` gate):
+///
+/// | explicit | transport | implicit | strict | accept_sse | wire |
+/// |----------|-----------|----------|--------|------------|------|
+/// | true     | sse       | *        | *      | *          | SSE  |
+/// | true     | ndjson    | *        | *      | *          | SSE  |
+/// | true     | json      | *        | *      | *          | JSON | ← D3 sacred opt-out
+/// | false    | (n/a)     | sse      | true   | *          | SSE  | ← D1 inference fires
+/// | false    | (n/a)     | sse      | false  | true       | SSE  | ← D4 Accept-fallback
+/// | false    | (n/a)     | sse      | false  | false      | JSON | ← D9 backwards-compat
+/// | false    | (n/a)     | json     | *      | *          | JSON |
+/// | false    | (n/a)     | ""       | *      | *          | JSON | ← pre-31.b inference
+///
+/// (Last row catches AST that was consumed without running the
+/// `compute_implicit_transports` pass — defensive default to JSON.)
+pub fn classify_dynamic_route_wire(
+    transport: &str,
+    transport_explicit: bool,
+    implicit_transport: &str,
+    client_wants_sse: bool,
+    strict_mode: bool,
+) -> DynamicRouteWire {
+    if transport_explicit {
+        // Adopter declared explicitly — declaration wins regardless of
+        // strict mode or Accept header. D3 + D5 sacred.
+        return match transport {
+            "sse" | "ndjson" => DynamicRouteWire::Sse,
+            _ => DynamicRouteWire::Json,
+        };
+    }
+    // Implicit path — consult Fase 31.b's pre-computed `implicit_transport`.
+    if implicit_transport == "sse" {
+        // Flow has stream effects.
+        if strict_mode || client_wants_sse {
+            return DynamicRouteWire::Sse;
+        }
+    }
+    DynamicRouteWire::Json
+}
+
+#[cfg(test)]
+mod dynamic_route_wire_truth_table {
+    use super::{classify_dynamic_route_wire, DynamicRouteWire};
+
+    fn s() -> DynamicRouteWire { DynamicRouteWire::Sse }
+    fn j() -> DynamicRouteWire { DynamicRouteWire::Json }
+
+    #[test]
+    fn explicit_sse_always_promotes() {
+        for strict in [false, true] {
+            for accept in [false, true] {
+                assert_eq!(classify_dynamic_route_wire("sse", true, "", accept, strict), s());
+                assert_eq!(classify_dynamic_route_wire("sse", true, "sse", accept, strict), s());
+                assert_eq!(classify_dynamic_route_wire("sse", true, "json", accept, strict), s());
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_ndjson_promotes_to_sse_wire() {
+        // ndjson currently maps onto the SSE handler per Fase 30 D2
+        // (the wire format is still text/event-stream framing).
+        assert_eq!(
+            classify_dynamic_route_wire("ndjson", true, "", false, false),
+            s()
+        );
+    }
+
+    #[test]
+    fn explicit_json_is_sacred_opt_out_d3() {
+        for strict in [false, true] {
+            for accept in [false, true] {
+                assert_eq!(
+                    classify_dynamic_route_wire("json", true, "sse", accept, strict),
+                    j(),
+                    "D3 opt-out must hold for (accept={accept}, strict={strict})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn implicit_sse_strict_mode_promotes_d1() {
+        assert_eq!(classify_dynamic_route_wire("", false, "sse", false, true), s());
+        assert_eq!(classify_dynamic_route_wire("", false, "sse", true, true), s());
+    }
+
+    #[test]
+    fn implicit_sse_legacy_with_accept_promotes_d4() {
+        assert_eq!(classify_dynamic_route_wire("", false, "sse", true, false), s());
+    }
+
+    #[test]
+    fn implicit_sse_legacy_no_accept_stays_json_d9() {
+        assert_eq!(classify_dynamic_route_wire("", false, "sse", false, false), j());
+    }
+
+    #[test]
+    fn implicit_json_always_stays_json() {
+        for strict in [false, true] {
+            for accept in [false, true] {
+                assert_eq!(
+                    classify_dynamic_route_wire("", false, "json", accept, strict),
+                    j()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_implicit_defaults_to_json() {
+        // Catches AST consumed without running compute_implicit_transports.
+        assert_eq!(classify_dynamic_route_wire("", false, "", true, true), j());
+    }
+}
+
 /// Closed method enum per D3. Adopter-declarable methods only;
 /// HEAD/OPTIONS/CONNECT/TRACE are runtime-managed (CORS preflight,
 /// etc.) and never registered from source.
@@ -18784,23 +18925,86 @@ async fn dynamic_endpoint_handler(
         }
     }
 
-    // Dispatch through the Fase 30/31 negotiation classifier. The
-    // dynamic handler constructs a synthetic `ExecuteRequest` from the
-    // route's flow_name + a default backend ("auto" — flow runtime
-    // resolves via the cost-optimizer). The existing
-    // `execute_handler_with_negotiation` then handles transport
-    // promotion, keepalive, diagnostic header, all uniformly.
-    let exec_req = ExecuteRequest {
-        flow: route.flow_name.clone(),
-        backend: "auto".to_string(),
+    // §Fase 32.e (D6) — Per-route transport dispatch.
+    //
+    // The Fase 30+31 negotiation matrix is keyed by `(strict_mode ×
+    // route_declaration × stream_effect × Accept)`. Pre-32.e the
+    // classifier read `route_declaration` from a per-FLOW lookup —
+    // correct for `/v1/execute` (one entrypoint per flow) but wrong
+    // for dynamic routes (one flow can be exposed at multiple paths
+    // with DIFFERENT transports). 32.e dispatches per-route using the
+    // metadata already captured at deploy time, so two endpoints
+    // sharing a flow but declaring different `transport:` fields each
+    // honor their own contract.
+    //
+    // The decision is total over the four inputs:
+    //   1. `transport_explicit && transport == "sse" | "ndjson"`
+    //      → SSE always (D5: declared, sacred).
+    //   2. `transport_explicit && transport == "json"`
+    //      → JSON always (D3: sacred opt-out, even with Accept SSE).
+    //   3. `!transport_explicit && implicit_transport == "sse"`
+    //      (i.e. stream effects detected by 31.b):
+    //        - strict_mode → SSE (D1 inference fires).
+    //        - !strict_mode && Accept SSE → SSE (D4 fallback).
+    //        - !strict_mode && !Accept SSE → JSON (D9 backwards-compat).
+    //   4. `!transport_explicit && implicit_transport == "json"`
+    //      (no stream effects) → JSON always.
+    let strict_mode = state.lock().unwrap().config.strict_type_driven_transport;
+    let client_wants_sse = headers
+        .get("accept")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .contains("text/event-stream");
+    let route_wire = classify_dynamic_route_wire(
+        &route.transport,
+        route.transport_explicit,
+        &route.implicit_transport,
+        client_wants_sse,
+        strict_mode,
+    );
+
+    let response = match route_wire {
+        DynamicRouteWire::Sse => {
+            let stream_req = StreamExecuteRequest {
+                flow_name: route.flow_name.clone(),
+                backend: "auto".to_string(),
+            };
+            execute_sse_handler(State(state.clone()), headers, Json(stream_req))
+                .await
+                .into_response()
+        }
+        DynamicRouteWire::Json => {
+            let exec_req = ExecuteRequest {
+                flow: route.flow_name.clone(),
+                backend: "auto".to_string(),
+            };
+            let mut resp = execute_handler(State(state.clone()), headers.clone(), Json(exec_req))
+                .await
+                .into_response();
+            // §Fase 31.e (D5) — Diagnostic header on dynamic routes.
+            // When the route serves JSON for a flow that has stream
+            // effects (route.implicit_transport == "sse"), attach
+            // X-Axon-Stream-Available so the adopter sees the
+            // inference outcome from their REST client without
+            // spelunking source. Mirror of /v1/execute behavior.
+            if route.implicit_transport == "sse" {
+                let reason = if route.transport_explicit && route.transport == "json" {
+                    "declared_json"
+                } else {
+                    "flag_off"
+                };
+                let header_value = format!(
+                    "1; reason={reason}; flow={}; \
+                     opt_in=transport:sse,Accept:text/event-stream",
+                    route.flow_name
+                );
+                if let Ok(value) = axum::http::HeaderValue::from_str(&header_value) {
+                    resp.headers_mut().insert("x-axon-stream-available", value);
+                }
+            }
+            resp
+        }
     };
-    let response = execute_handler_with_negotiation(
-        State(state.clone()),
-        headers,
-        Json(exec_req),
-    )
-    .await
-    .into_response();
 
     // §Fase 32.d — Output-schema validation gate (D5).
     //
