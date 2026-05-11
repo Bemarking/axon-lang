@@ -18676,6 +18676,15 @@ pub struct DynamicEndpointRoute {
     /// cannot be validated against a static type at the wire layer
     /// (a future fase may add per-event validation for typed streams).
     pub output_type: String,
+    /// §Fase 32.g — Declared capability slugs the request bearer must
+    /// hold for the endpoint to dispatch. Empty vec means "no auth
+    /// gate" (D9 backwards-compat). The runtime checks
+    /// `declared_requires ⊆ token_capabilities` (AND semantics — every
+    /// declared capability must be present). On missing capability
+    /// the fallback handler returns 403 Forbidden with structured
+    /// `{error: "missing_capability", required, have, ...}` so the
+    /// client knows precisely which capability is needed.
+    pub requires_capabilities: Vec<String>,
 }
 
 /// Walk the program's AxonEndpoint declarations and produce the
@@ -18741,6 +18750,7 @@ pub fn collect_axonendpoint_routes(
                     implicit_transport: ae.implicit_transport.clone(),
                     body_type: ae.body_type.clone(),
                     output_type: ae.output_type.clone(),
+                    requires_capabilities: ae.requires_capabilities.clone(),
                 },
             );
         }
@@ -18932,6 +18942,55 @@ async fn dynamic_endpoint_handler(
                     "d_letter": "D4",
                 });
                 return (StatusCode::BAD_REQUEST, Json(payload)).into_response();
+            }
+        }
+    }
+
+    // §Fase 32.g (D8) — Auth-scope gate.
+    //
+    // When the axonendpoint declared `requires: [a, b.c, …]`, the
+    // bearer's `capabilities` JWT claim must contain every listed slug
+    // (AND semantics — subset check `declared ⊆ have`). Empty list
+    // short-circuits to Allow (D9 backwards-compat).
+    //
+    // Gate fires AFTER body validation (cheapest reject for malformed
+    // input) but BEFORE the idempotency cache lookup — unauthorized
+    // requests must not observe cache existence (a basic information-
+    // leak hardening: an attacker probing for a valid Idempotency-Key
+    // shouldn't be able to distinguish "key exists" from "key absent"
+    // when they don't even hold the capability to call the endpoint).
+    //
+    // Returns 403 Forbidden with structured `{error,
+    // missing_capability, required, have, endpoint, method, path,
+    // hint, d_letter: "D8"}` so the client knows precisely what
+    // capability is needed and the auditor can correlate against the
+    // axonendpoint declaration.
+    if !route.requires_capabilities.is_empty() {
+        let have = crate::auth_scope::extract_capabilities_from_bearer(&headers);
+        match crate::auth_scope::check_capabilities(&route.requires_capabilities, &have) {
+            crate::auth_scope::AuthVerdict::Allow => {}
+            crate::auth_scope::AuthVerdict::Deny {
+                missing,
+                required,
+                have,
+            } => {
+                let payload = serde_json::json!({
+                    "error": "missing_capability",
+                    "missing": missing,
+                    "required": required,
+                    "have": have,
+                    "endpoint": route.endpoint_name,
+                    "method": method_str,
+                    "path": path_str,
+                    "hint": format!(
+                        "Bearer is missing capabilities {missing:?} required by axonendpoint \
+                         '{endpoint}'. Reissue the bearer with the declared capabilities or \
+                         contact the endpoint's owner to grant access.",
+                        endpoint = route.endpoint_name,
+                    ),
+                    "d_letter": "D8",
+                });
+                return (StatusCode::FORBIDDEN, Json(payload)).into_response();
             }
         }
     }

@@ -362,6 +362,27 @@ _AXONENDPOINT_METHOD_VALUES: frozenset[str] = frozenset({
 })
 
 
+# §Fase 32.g (D8) — Closed capability-slug grammar. Mirror of Rust
+# `axon::auth_scope::is_valid_capability_slug`. A slug is a sequence of
+# dot-separated segments where each segment matches
+# `^[a-z][a-z0-9_]*$`. Examples valid: `admin`, `legal.read`,
+# `hipaa.phi.read`, `bank.officer.senior`. Invalid: `Admin` (uppercase),
+# `1admin` (starts with digit), `bank-officer` (hyphen), `bank..a`
+# (empty segment), empty string.
+import re as _re_capability  # noqa: E402 (deferred to keep top imports minimal)
+_CAPABILITY_SLUG_RE: "_re_capability.Pattern[str]" = _re_capability.compile(
+    r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$"
+)
+
+
+def _is_valid_capability_slug(slug: str) -> bool:
+    """True iff `slug` matches the closed capability-slug grammar.
+    Mirror of Rust `axon::auth_scope::is_valid_capability_slug`."""
+    if not slug:
+        return False
+    return _CAPABILITY_SLUG_RE.match(slug) is not None
+
+
 class ParseResult:
     """Result of a recovery-mode parse pass.
 
@@ -4903,6 +4924,32 @@ class Parser:
                 case "compliance":
                     # ESK Fase 6.1 — regulatory coverage for this HTTP boundary
                     node.compliance = self._parse_bracketed_identifiers()
+                case "requires":
+                    # §Fase 32.g (D8) — Auth scope per axonendpoint.
+                    # Closed slug grammar `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`
+                    # validated at parse time with smart-suggest hint (28.e
+                    # pattern). Empty list means "no auth gate" (D9
+                    # backwards-compat).
+                    items_start_tok = self._current()
+                    items = self._parse_bracketed_dot_identifiers()
+                    for slug in items:
+                        if not _is_valid_capability_slug(slug):
+                            raise AxonParseError(
+                                (
+                                    f"Invalid capability slug '{slug}' in "
+                                    f"axonendpoint '{name.value}' `requires:`. "
+                                    f"Capability slugs must match "
+                                    f"^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$ — "
+                                    f"dot-separated lowercase identifiers starting "
+                                    f"with a letter. Examples: `admin`, `legal.read`, "
+                                    f"`hipaa.phi.read`."
+                                ),
+                                line=items_start_tok.line,
+                                column=items_start_tok.column,
+                                expected="lowercase dot-separated capability slug",
+                                found=slug,
+                            )
+                    node.requires_capabilities = items
                 case "transport":
                     # §Fase 30.b — HTTP transport for stream effects (D1, D2).
                     # Closed enum {json, sse, ndjson}. Unknown values

@@ -510,6 +510,96 @@ fn axonendpoint_is_valid_keepalive(s: &str) -> bool {
     AXONENDPOINT_KEEPALIVE_VALUES.iter().any(|&v| v == s)
 }
 
+/// §Fase 32.g (D8) — Closed capability-slug grammar. Validates a
+/// `requires:` slug per `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`.
+///
+/// Hand-rolled (no regex dep at parser layer) — each segment must
+/// match `[a-z][a-z0-9_]*` and segments are joined by single dots.
+/// Public so the runtime mirror (`axon::auth_scope`) reuses the same
+/// predicate without duplicating the rule.
+///
+/// Examples valid: `admin`, `legal.read`, `hipaa.phi.read`,
+/// `bank.officer.senior`, `a`, `a_b`, `a1`.
+/// Examples invalid: empty, `Admin` (uppercase), `1admin` (digit
+/// first), `bank-officer` (hyphen), `bank..a` (empty segment),
+/// `.admin`, `admin.`, `admin..` .
+pub fn is_valid_capability_slug(slug: &str) -> bool {
+    if slug.is_empty() {
+        return false;
+    }
+    for segment in slug.split('.') {
+        if !is_valid_slug_segment(segment) {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_valid_slug_segment(seg: &str) -> bool {
+    let mut chars = seg.chars();
+    let first = match chars.next() {
+        Some(c) => c,
+        None => return false,
+    };
+    if !first.is_ascii_lowercase() {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+#[cfg(test)]
+mod capability_slug_tests {
+    use super::is_valid_capability_slug;
+
+    #[test]
+    fn accepts_canonical_examples() {
+        assert!(is_valid_capability_slug("admin"));
+        assert!(is_valid_capability_slug("legal.read"));
+        assert!(is_valid_capability_slug("hipaa.phi.read"));
+        assert!(is_valid_capability_slug("bank.officer.senior"));
+        assert!(is_valid_capability_slug("a"));
+        assert!(is_valid_capability_slug("a_b"));
+        assert!(is_valid_capability_slug("a1"));
+        assert!(is_valid_capability_slug("a.b1_c"));
+    }
+
+    #[test]
+    fn rejects_empty_string() {
+        assert!(!is_valid_capability_slug(""));
+    }
+
+    #[test]
+    fn rejects_uppercase() {
+        assert!(!is_valid_capability_slug("Admin"));
+        assert!(!is_valid_capability_slug("admin.READ"));
+    }
+
+    #[test]
+    fn rejects_digit_first() {
+        assert!(!is_valid_capability_slug("1admin"));
+        assert!(!is_valid_capability_slug("admin.1read"));
+    }
+
+    #[test]
+    fn rejects_hyphen() {
+        assert!(!is_valid_capability_slug("bank-officer"));
+    }
+
+    #[test]
+    fn rejects_empty_segments() {
+        assert!(!is_valid_capability_slug("bank..a"));
+        assert!(!is_valid_capability_slug(".admin"));
+        assert!(!is_valid_capability_slug("admin."));
+    }
+
+    #[test]
+    fn rejects_special_chars() {
+        assert!(!is_valid_capability_slug("admin@read"));
+        assert!(!is_valid_capability_slug("admin/read"));
+        assert!(!is_valid_capability_slug("admin read"));
+    }
+}
+
 // ── Parser ───────────────────────────────────────────────────────────────────
 
 pub struct Parser {
@@ -4514,6 +4604,8 @@ impl Parser {
             // the program to compute `implicit_transport`.
             transport_explicit: false,
             implicit_transport: String::new(),
+            // §Fase 32.g (D8) — auth scope; empty list ≡ no auth gate.
+            requires_capabilities: Vec::new(),
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -4578,6 +4670,34 @@ impl Parser {
                         node.timeout = t.value.clone();
                     }
                     "compliance" => node.compliance = self.parse_bracketed_identifiers()?,
+                    "requires" => {
+                        // §Fase 32.g (D8) — Auth scope per axonendpoint.
+                        // Closed slug grammar
+                        // `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$` enforced
+                        // at parse time with smart-suggest-style hint.
+                        // Empty list means "no auth gate" (D9 backwards-
+                        // compat). Cross-stack with Python parser.
+                        let bracket_tok = self.current().clone();
+                        let items = self.parse_bracketed_dot_identifiers()?;
+                        for slug in &items {
+                            if !is_valid_capability_slug(slug) {
+                                return Err(ParseError {
+                                    message: format!(
+                                        "Invalid capability slug '{slug}' in axonendpoint '{}' \
+                                         `requires:`. Capability slugs must match \
+                                         ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$ — dot-separated \
+                                         lowercase identifiers starting with a letter. Examples: \
+                                         `admin`, `legal.read`, `hipaa.phi.read`.",
+                                        node.name
+                                    ),
+                                    line: bracket_tok.line,
+                                    column: bracket_tok.column,
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                        node.requires_capabilities = items;
+                    }
                     // §Fase 30.b — HTTP transport enum (D2 closed) + keepalive (D6 closed).
                     // Mirrors `axon/compiler/parser.py` `_parse_axonendpoint`.
                     // Drift-gate corpus verifies byte-identical parse cross-stack.

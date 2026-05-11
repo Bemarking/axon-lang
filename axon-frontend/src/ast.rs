@@ -778,6 +778,14 @@ pub struct AxonEndpointDefinition {
     /// reference implementation in `axon/compiler/type_checker.py`
     /// sets the field byte-identically (D7 cross-stack contract).
     pub implicit_transport: String,
+    /// §Fase 32.g (D8) — Auth scope: capability slugs the request
+    /// bearer must hold for the endpoint to dispatch. Empty vec
+    /// means "no auth gate" (D9 backwards-compat). Slug grammar
+    /// (closed): `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`. Examples:
+    /// `admin`, `legal.read`, `hipaa.phi.read`. The runtime checks
+    /// declared_requires ⊆ token_capabilities (AND semantics — every
+    /// declared capability must be present in the bearer's claims).
+    pub requires_capabilities: Vec<String>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
