@@ -761,6 +761,23 @@ pub struct AxonEndpointDefinition {
     /// {"5s" | "15s" | "30s" | "60s"}. Empty string means
     /// "use runtime default".
     pub keepalive: String,
+    /// §Fase 31.b — Type-Driven Wire Inference (D1, D7).
+    /// `transport_explicit` is `true` if the source declared
+    /// `transport:` explicitly (any of json/sse/ndjson). `false` if
+    /// the field was omitted, in which case `transport` reflects the
+    /// D1 default `"json"` but `implicit_transport` (computed by the
+    /// `axon_frontend::type_checker::compute_implicit_transports`
+    /// pass) carries the inferred value.
+    pub transport_explicit: bool,
+    /// §Fase 31.b — Inferred wire transport per D1:
+    ///   implicit_transport(E) =
+    ///     declared_transport(E)   if transport_explicit
+    ///     "sse"                    if produces_stream(execute_flow) ∧ ¬explicit
+    ///     "json"                   otherwise
+    /// Empty string `""` before the type-checker runs. The Python
+    /// reference implementation in `axon/compiler/type_checker.py`
+    /// sets the field byte-identically (D7 cross-stack contract).
+    pub implicit_transport: String,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

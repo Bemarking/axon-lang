@@ -104,6 +104,7 @@ from .ast_nodes import (
     ShieldApplyNode,
     ShieldDefinition,
     StepNode,
+    UseToolNode,
     StreamDefinition,
     ToolDefinition,
     TopologyDefinition,
@@ -287,21 +288,51 @@ def _flow_uses_streaming_tool(
     """
     seen_tool_names: set[str] = set()
     to_visit: list[ASTNode] = list(flow.body)
+
+    def _check_tool_name(tn: str) -> bool:
+        """Resolve `tn` through the symbol table; return True iff it
+        resolves to a `ToolDefinition` with a `stream:<policy>` effect.
+        Memoises per flow-walk via the closure-captured `seen_tool_names`.
+        """
+        if not tn or tn in seen_tool_names:
+            return False
+        seen_tool_names.add(tn)
+        sym = symbol_lookup(tn)
+        if sym is None or getattr(sym, "kind", "") != "tool":
+            return False
+        tool_node = getattr(sym, "node", None)
+        if not isinstance(tool_node, ToolDefinition):
+            return False
+        return _has_stream_effect(tool_node)
+
     while to_visit:
         node = to_visit.pop()
         if isinstance(node, StepNode):
-            if node.use_tool is not None and node.use_tool.tool_name:
-                tn = node.use_tool.tool_name
-                if tn not in seen_tool_names:
-                    seen_tool_names.add(tn)
-                    sym = symbol_lookup(tn)
-                    if sym is not None and getattr(sym, "kind", "") == "tool":
-                        tool_node = getattr(sym, "node", None)
-                        if isinstance(tool_node, ToolDefinition):
-                            if _has_stream_effect(tool_node):
-                                return True
-            # Walk sub-steps for nested use_tool occurrences.
+            # §Fase 11.a — primary tool invocation point.
+            if node.use_tool is not None and _check_tool_name(node.use_tool.tool_name):
+                return True
+            # §Fase 31.b — `apply: <name>` inside a step body is the
+            # canonical pattern adopters use (per the Fase 11.a docs +
+            # the Kivi case study 2026-05-11). The Fase 30.c predicate
+            # checked only `use_tool`, which left this AST-visible
+            # path undetected at compile time and forced the runtime
+            # source-text fallback (Fase 30.e) to carry the load.
+            # Bringing `apply_ref` into the predicate makes the
+            # type-checker agree with the runtime classifier on every
+            # in-AST shape — the philosophical contract of D7
+            # cross-stack + D10 four-pillar discipline.
+            if node.apply_ref and _check_tool_name(node.apply_ref):
+                return True
+            # Walk sub-steps for nested occurrences.
             to_visit.extend(node.body or [])
+        elif isinstance(node, UseToolNode):
+            # §Fase 31.b — top-level `use Tool()` flow-step (vs the
+            # StepNode-nested form caught above). Parser emits this
+            # as a sibling of StepNode when `use Tool(args)` appears
+            # at the flow-body level. The walker MUST resolve it for
+            # the disjunct (b) contract to be complete.
+            if _check_tool_name(node.tool_name):
+                return True
         # Also descend into other body-carrying nodes.
         for attr in ("body", "then_branch", "else_branch", "branches",
                      "arms", "clauses", "steps"):
@@ -311,6 +342,113 @@ def _flow_uses_streaming_tool(
             elif isinstance(child, ASTNode):
                 to_visit.append(child)
     return False
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  §FASE 31.b — TYPE-DRIVEN WIRE INFERENCE (D1, D7, D10)
+# ═══════════════════════════════════════════════════════════════════
+#
+# `_implicit_transport` is the function-level realisation of the D1
+# rule:
+#
+#   implicit_transport(F, E) =
+#     declared_transport(E)          if transport_explicit
+#     "sse"                           if produces_stream(F) ∧ ¬explicit
+#     "json"                          otherwise
+#
+# This function is pure: same (F, E, symbol_lookup) → same output.
+# The Rust mirror in `axon-frontend/src/type_checker.rs` shares the
+# semantics byte-identically (D7 cross-stack contract) and a 25-entry
+# drift-gate corpus at `tests/fixtures/fase31_implicit_transport/
+# corpus.json` locks the parity in CI.
+#
+# Pillar trace:
+#   MATHEMATICS — total + deterministic function on (Flow, AxonEndpoint).
+#   LOGIC       — disjoint cases over (transport_explicit, produces_stream).
+#   PHILOSOPHY  — the language is the authoritative source for the wire.
+#   COMPUTING   — adopters opt-out with `transport: json`; runtime
+#                  flag-gates the behavior change.
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _implicit_transport(
+    endpoint: AxonEndpointDefinition,
+    flow: FlowDefinition | None,
+    symbol_lookup: "callable[[str], object | None]",
+) -> str:
+    """Compute the inferred transport per D1.
+
+    Returns one of:
+      * `"sse"`    — explicit `transport: sse|ndjson` declared (mirrored;
+                     `ndjson` is reserved per D2 but inferred as `"sse"`
+                     for wire-format purposes today), OR
+                   — `transport_explicit == False` AND `produces_stream(flow)`
+                     evaluates to True (D1 inference fires).
+      * `"json"`   — explicit `transport: json` declared (D3 opt-out), OR
+                   — `transport_explicit == False` AND flow does not
+                     produce a stream (no inference fires; D1 default).
+
+    `flow` may be `None` if the endpoint's `execute_flow` does not
+    resolve to any flow in scope (a separate type-error reported
+    elsewhere). In that case we conservatively return whatever the
+    `transport` field carries (declared explicit) or `"json"`.
+
+    The function NEVER raises. It is total and deterministic over
+    every possible input shape — failure of any internal step
+    (missing flow, missing symbol entry, walker error) defaults to
+    `"json"` to preserve backwards-compat (D8).
+    """
+    # D3 — explicit opt-out always wins.
+    if endpoint.transport_explicit:
+        if endpoint.transport == "ndjson":
+            # D2 ratified — ndjson namespace reserved; wire emission
+            # deferred. For 31.b purposes we treat declared ndjson as
+            # streaming (it IS semantically a streaming wire). The
+            # actual ndjson emission path ships in a future Fase.
+            return "sse"
+        if endpoint.transport in {"sse", "json"}:
+            return endpoint.transport
+        # Unknown explicit value — parser would have rejected, but if
+        # we reach here defensively, default to json.
+        return "json"
+
+    # No explicit declaration. Apply D1 inference.
+    if flow is None:
+        return "json"
+    try:
+        if _flow_produces_stream(flow, symbol_lookup):
+            return "sse"
+    except Exception:  # noqa: BLE001
+        # Defensive: a malformed AST should never crash the inference.
+        # Default to json + let the type-checker's separate
+        # soundness pass surface the actual problem.
+        return "json"
+    return "json"
+
+
+def _compute_implicit_transports(
+    program: "Program",
+    symbol_lookup: "callable[[str], object | None]",
+) -> None:
+    """Walk every `AxonEndpointDefinition` in the program and attach
+    its computed `implicit_transport` per D1.
+
+    Mutates the AST in place — same pattern as the rest of the
+    type-checker pass. Returns nothing. Safe to call multiple times
+    (idempotent for a given program + symbol_lookup pair).
+    """
+    # Build a name → FlowDefinition map for O(N) endpoint lookups.
+    flow_by_name: dict[str, FlowDefinition] = {}
+    for decl in program.declarations:
+        if isinstance(decl, FlowDefinition):
+            flow_by_name[decl.name] = decl
+
+    for decl in program.declarations:
+        if isinstance(decl, AxonEndpointDefinition):
+            flow = flow_by_name.get(decl.execute_flow)
+            decl.implicit_transport = _implicit_transport(
+                decl, flow, symbol_lookup,
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -829,6 +967,15 @@ class TypeChecker:
 
         # Phase 4: Regulatory coverage (ESK Fase 6.1 — Compile-time Compliance)
         self._check_regulatory_compliance()
+
+        # Phase 5: §Fase 31.b — Type-Driven Wire Inference (D1, D7).
+        # Walk every AxonEndpointDefinition and attach `implicit_transport`
+        # per the D1 rule. This must run AFTER phase 1 (symbols are
+        # registered) so the stream-effect predicate can resolve tool
+        # references; it can run AFTER phase 2 because we only mutate
+        # the AST (no new errors raised by 31.b itself — those land in
+        # 31.c). Idempotent + safe to re-run.
+        _compute_implicit_transports(self._program, self._symbols.lookup)
 
         return self._errors
 

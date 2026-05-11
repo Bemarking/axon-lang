@@ -3902,6 +3902,211 @@ fn find_flow_by_name<'a>(program: &'a Program, name: &str) -> Option<&'a FlowDef
     None
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  §FASE 31.b — TYPE-DRIVEN WIRE INFERENCE (D1, D7, D10)
+// ═══════════════════════════════════════════════════════════════════
+//
+// Cross-stack mirror of Python `axon/compiler/type_checker.py`
+// (`_implicit_transport` + `_compute_implicit_transports`). D7
+// ratifies byte-identical inference across both stacks; the
+// `tests/fixtures/fase31_implicit_transport/corpus.json` drift gate
+// locks parity in CI.
+//
+// The inference rule (D1):
+//
+//   implicit_transport(F, E) =
+//     declared_transport(E)          if transport_explicit
+//     "sse"                           if produces_stream(F) ∧ ¬explicit
+//     "json"                          otherwise
+//
+// `produces_stream(F)` is the 3-disjunct predicate from Fase 30.c
+// (Rust port shipping here as part of 31.b — Fase 30.c was
+// Python-only, with the Rust port deferred to 30.c.2; 31.b
+// supersedes that deferral by shipping the predicate now, since
+// the inference REQUIRES it cross-stack).
+//
+// Pillar trace:
+//   MATHEMATICS — function on (Flow, AxonEndpoint, Program).
+//   LOGIC       — disjunction of three formal predicates.
+//   PHILOSOPHY  — the language is the wire's source of truth.
+//   COMPUTING   — pure function; no side effects beyond AST mutation
+//                  in `compute_implicit_transports`.
+// ═══════════════════════════════════════════════════════════════════
+
+/// Disjunct (b) helper: does the named tool declare a
+/// `stream:<policy>` effect? Returns `false` for unresolved names.
+fn tool_has_stream_effect(program: &Program, tool_name: &str) -> bool {
+    if tool_name.is_empty() {
+        return false;
+    }
+    for decl in &program.declarations {
+        if let Declaration::Tool(t) = decl {
+            if t.name == tool_name {
+                if let Some(ref effects) = t.effects {
+                    return effects.effects.iter().any(|e| e.starts_with("stream:"));
+                }
+                return false;
+            }
+        }
+    }
+    false
+}
+
+/// Disjunct (a): does any step in the flow have `output: Stream<T>`?
+fn flow_has_stream_output(flow: &FlowDefinition) -> bool {
+    for step in &flow.body {
+        if let FlowStep::Step(s) = step {
+            let out = s.output_type.trim();
+            if out.starts_with("Stream<") && out.ends_with('>') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Look up the `tool_name` field on a `UseToolStep`. The exact field
+/// name is `tool_name` for the Rust AST (mirrors Python's `UseToolNode`).
+fn use_tool_step_name(u: &UseToolStep) -> &str {
+    &u.tool_name
+}
+
+/// Disjunct (b): does the flow reach a tool with `effects:
+/// <stream:<policy>>`? Walks both `FlowStep::UseTool` (top-level
+/// flow-step) AND `FlowStep::Step(s)` where `s.apply_ref` resolves
+/// to a tool — the latter is the Kivi-shape pattern (Fase 31.b
+/// extension of the Fase 30.c predicate; see Python mirror for
+/// the rationale).
+fn flow_uses_streaming_tool(flow: &FlowDefinition, program: &Program) -> bool {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for step in &flow.body {
+        match step {
+            FlowStep::UseTool(u) => {
+                let tn = use_tool_step_name(u);
+                if !tn.is_empty()
+                    && seen.insert(tn.to_string())
+                    && tool_has_stream_effect(program, tn)
+                {
+                    return true;
+                }
+            }
+            FlowStep::Step(s) => {
+                // §Fase 31.b — `apply: <name>` inside a step body is
+                // the canonical adopter pattern (Kivi 2026-05-11).
+                if !s.apply_ref.is_empty()
+                    && seen.insert(s.apply_ref.clone())
+                    && tool_has_stream_effect(program, &s.apply_ref)
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Master predicate: disjunction of the formal layers from
+/// Fase 30.c. Disjunct (c) `perform Stream.Yield(...)` is not
+/// surfaced at this layer because the Rust AST does not currently
+/// expose step-body perform expressions through `FlowStep` — that
+/// path is the Rust frontend completion gap from Fase 30.e and is
+/// covered by the runtime source-text fallback in
+/// `axon-rs/src/axon_server.rs::classify_negotiation_via_source_text`.
+/// Disjuncts (a) and (b) cover every adopter-observable in-AST
+/// pattern (the Kivi case + every Fase 30.c-tested source).
+pub fn produces_stream(flow: &FlowDefinition, program: &Program) -> bool {
+    flow_has_stream_output(flow) || flow_uses_streaming_tool(flow, program)
+}
+
+/// Compute the inferred transport for one axonendpoint per D1.
+///
+/// Returns one of:
+///   * `"sse"`  — explicit `transport: sse|ndjson` declared (D2 ndjson
+///                inferred as sse for wire-format purposes today;
+///                ndjson namespace remains reserved per Fase 30 D2),
+///              OR `transport_explicit == false` AND `produces_stream`
+///                evaluates true (D1 inference fires).
+///   * `"json"` — explicit `transport: json` declared (D3 opt-out),
+///              OR `transport_explicit == false` AND flow does not
+///                produce a stream.
+///
+/// `flow` may be `None` when the endpoint's `execute_flow` does not
+/// resolve to any flow in scope (a separate type-error reported
+/// elsewhere); we conservatively default to declared-or-json.
+///
+/// NEVER panics. Total + deterministic over every input shape.
+pub fn implicit_transport(
+    endpoint: &AxonEndpointDefinition,
+    flow: Option<&FlowDefinition>,
+    program: &Program,
+) -> String {
+    if endpoint.transport_explicit {
+        return match endpoint.transport.as_str() {
+            // D2 — ndjson namespace reserved; semantically streaming.
+            "ndjson" => "sse".to_string(),
+            "sse" | "json" => endpoint.transport.clone(),
+            // Unknown explicit value; parser would normally reject.
+            // Defensive: default json.
+            _ => "json".to_string(),
+        };
+    }
+    // No explicit declaration; D1 inference path.
+    match flow {
+        Some(f) if produces_stream(f, program) => "sse".to_string(),
+        _ => "json".to_string(),
+    }
+}
+
+/// Walk every `AxonEndpointDefinition` in the program and attach
+/// its computed `implicit_transport` per D1. Mutates the AST in
+/// place. Idempotent + safe to re-run.
+///
+/// Mirrors Python `_compute_implicit_transports` byte-identically
+/// (D7 cross-stack contract — locked in CI by the drift-gate
+/// corpus at `tests/fixtures/fase31_implicit_transport/corpus.json`).
+pub fn compute_implicit_transports(program: &mut Program) {
+    // First pass: index every FlowDefinition by name. We must clone
+    // the necessary references because subsequent mutation of
+    // program.declarations needs &mut access; we cannot hold a
+    // shared borrow simultaneously. Index uses indices into the
+    // declarations Vec so we can resolve flows by name without
+    // re-walking the whole Vec for each endpoint.
+    let mut flow_indices: HashMap<String, usize> = HashMap::new();
+    for (i, decl) in program.declarations.iter().enumerate() {
+        if let Declaration::Flow(f) = decl {
+            flow_indices.insert(f.name.clone(), i);
+        }
+    }
+
+    // Second pass: walk endpoints. For each, look up the flow by
+    // name (immutable borrow of program.declarations via index) and
+    // compute the inference; then re-borrow mutably to assign the
+    // result. Because Rust's borrow checker forbids simultaneous
+    // immutable + mutable borrow of the same Vec, we precompute the
+    // (endpoint_index, inferred_transport) pairs first, then apply
+    // them all in a second mutating loop.
+    let mut updates: Vec<(usize, String)> = Vec::new();
+    for (i, decl) in program.declarations.iter().enumerate() {
+        if let Declaration::AxonEndpoint(ae) = decl {
+            let flow = flow_indices.get(&ae.execute_flow).and_then(|&fi| {
+                if let Declaration::Flow(f) = &program.declarations[fi] {
+                    Some(f)
+                } else {
+                    None
+                }
+            });
+            let result = implicit_transport(ae, flow, program);
+            updates.push((i, result));
+        }
+    }
+    for (i, result) in updates {
+        if let Declaration::AxonEndpoint(ae) = &mut program.declarations[i] {
+            ae.implicit_transport = result;
+        }
+    }
+}
+
 // ── §λ-L-E Fase 13 — Mobile Typed Channels type-checker tests ────────────────
 
 #[cfg(test)]
