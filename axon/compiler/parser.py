@@ -348,6 +348,20 @@ _AXONENDPOINT_KEEPALIVE_VALUES: frozenset[str] = frozenset({
 })
 
 
+# §Fase 32.b — Closed HTTP method enum (D3 ratified 2026-05-11).
+# Adopter-declarable methods only; HEAD/OPTIONS/CONNECT/TRACE are
+# runtime-managed (CORS preflight, etc.) and never declared from
+# source. Closed enum refuses interpretation drift; smart-suggest
+# catches near-misses at parse time.
+_AXONENDPOINT_METHOD_VALUES: frozenset[str] = frozenset({
+    "GET",
+    "POST",
+    "PUT",
+    "DELETE",
+    "PATCH",
+})
+
+
 class ParseResult:
     """Result of a recovery-mode parse pass.
 
@@ -4845,7 +4859,30 @@ class Parser:
 
             match field_name:
                 case "method":
-                    node.method = self._consume_any_identifier_or_keyword().value.upper()
+                    # §Fase 32.b D3 — closed method enum
+                    # {GET, POST, PUT, DELETE, PATCH}. Unknown values
+                    # rejected at parse time with smart-suggest hint
+                    # (Fase 28.e). HEAD/OPTIONS/etc. are runtime-
+                    # managed and not adopter-declarable.
+                    value_tok = self._consume_any_identifier_or_keyword()
+                    value_upper = value_tok.value.upper()
+                    if value_upper not in _AXONENDPOINT_METHOD_VALUES:
+                        hint = suggest_for(
+                            value_upper, tuple(_AXONENDPOINT_METHOD_VALUES),
+                        )
+                        base = (
+                            f"Invalid method '{value_tok.value}' in axonendpoint "
+                            f"'{name.value}'. "
+                        )
+                        msg = f"{base}{hint}" if hint else base.rstrip()
+                        raise AxonParseError(
+                            msg,
+                            line=value_tok.line,
+                            column=value_tok.column,
+                            expected="GET | POST | PUT | DELETE | PATCH",
+                            found=value_tok.value,
+                        )
+                    node.method = value_upper
                 case "path":
                     node.path = self._consume(TokenType.STRING).value
                 case "body":
