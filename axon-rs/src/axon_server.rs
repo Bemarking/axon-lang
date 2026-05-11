@@ -17956,6 +17956,430 @@ async fn execute_sse_handler(
     Ok(Sse::new(stream::iter(events)))
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// §Fase 30.e — Content-negotiation fallback (D4 + D5 ratified 2026-05-10)
+//
+// Adds an opt-in auto-promotion of `POST /v1/execute` from JSON to SSE
+// when the client signals `Accept: text/event-stream` AND the deployed
+// flow satisfies the language-level streaming contract. Strictly
+// additive: every existing v1.20.0 client hitting /v1/execute without
+// that Accept header gets the legacy JSON response verbatim (D9).
+//
+// Decision matrix (plan vivo §6.1):
+//
+//   axonendpoint.transport     │ flow has │ Accept:           │ Server
+//   declaration on this flow   │ stream-eff│ text/event-stream │ response
+//   ────────────────────────────┼─────────┼──────────────────┼────────
+//   "sse" or "ndjson"          │ —       │ any              │ SSE  (D5)
+//   "json" explicit            │ —       │ any              │ JSON (D5)
+//   absent / not declared      │ no      │ any              │ JSON (D9)
+//   absent / not declared      │ yes     │ absent or other  │ JSON
+//   absent / not declared      │ yes     │ text/event-stream│ SSE  (D4)
+//
+// D5: explicit declaration on the axonendpoint always wins over the
+// client's Accept header. Adopters who explicitly declare json/sse opt
+// out of negotiation.
+//
+// D4: when no explicit declaration exists, the client's Accept header
+// chooses — but ONLY when the flow can actually produce stream tokens
+// (the language-level streaming contract from 30.c). Without the
+// stream-effect proof, the server returns JSON regardless of Accept.
+//
+// # Predicate scope
+//
+// `flow_produces_stream_runtime` walks the Rust-side AST for two of
+// the three formal disjuncts from 30.c:
+//   (a) type-level — any StepNode with `output: Stream<T>` shape
+//   (b) effect-level — any UseTool flow-step resolving to a tool with
+//       `effects: <stream:<policy>>`
+// Disjunct (c) (`perform Stream.Yield(...)`) is NOT detected here
+// because the Rust frontend AST parses step bodies structurally; the
+// `perform` expression survives only as part of GenericStep payload.
+// Adopters relying ONLY on disjunct (c) fall through to JSON under
+// D4; they have two clean opt-ins to SSE: hit /v1/execute/sse
+// directly (30.d route), OR declare `transport: sse` on the
+// axonendpoint (D5 force-promote here).
+//
+// Per-request source parse is acceptable for initial implementation;
+// a future Fase can cache parsed declarations per deployment if
+// throughput becomes a constraint.
+// ──────────────────────────────────────────────────────────────────────────
+
+use axum::response::IntoResponse;
+use crate::ast::{Declaration, FlowStep};
+
+/// Negotiation verdicts (plan vivo §6.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NegotiationDecision {
+    /// Force SSE — declared `transport: sse|ndjson` (D5) OR
+    /// content-negotiation fallback (D4) when Accept asked.
+    PromoteToSse,
+    /// Force JSON — explicit `transport: json` (D5), OR default
+    /// path (no stream-effect proof OR no Accept header).
+    StayJson,
+}
+
+/// Walk a parsed program to extract the negotiation-relevant facts
+/// for the named flow:
+///   - Any axonendpoint declaration with `execute: <flow_name>` and
+///     its declared `transport` value (empty string = absent).
+///   - Whether the named flow itself produces a stream (Rust-side
+///     subset of the 30.c predicate — disjuncts a + b only).
+fn classify_negotiation_for_flow(
+    program: &crate::ast::Program,
+    flow_name: &str,
+) -> NegotiationDecision {
+    let mut endpoint_transport: Option<String> = None;
+    let mut flow_has_stream_effect = false;
+
+    // First pass: collect endpoint transport for this flow + locate
+    // the FlowDefinition for the predicate walk.
+    let mut target_flow: Option<&crate::ast::FlowDefinition> = None;
+    for decl in &program.declarations {
+        match decl {
+            Declaration::AxonEndpoint(ae) if ae.execute_flow == flow_name => {
+                endpoint_transport = Some(ae.transport.clone());
+            }
+            Declaration::Flow(f) if f.name == flow_name => {
+                target_flow = Some(f);
+            }
+            _ => {}
+        }
+    }
+
+    // Disjunct (a) + (b) walk: only relevant if we don't have an
+    // explicit transport declaration that already decides the case.
+    let needs_predicate_walk = match endpoint_transport.as_deref() {
+        Some("sse") | Some("ndjson") => false, // D5 force SSE
+        Some("json") => false,                  // D5 force JSON
+        _ => true,                              // D4 negotiation territory
+    };
+
+    if needs_predicate_walk {
+        if let Some(flow) = target_flow {
+            flow_has_stream_effect = flow_produces_stream_runtime(flow, program);
+        }
+    }
+
+    // Decision per plan vivo §6.1.
+    match endpoint_transport.as_deref() {
+        Some("sse") | Some("ndjson") => NegotiationDecision::PromoteToSse,
+        Some("json") => NegotiationDecision::StayJson,
+        _ => {
+            if flow_has_stream_effect {
+                // Caller decides via Accept header. We signal this
+                // with PromoteToSse here AND the caller has already
+                // verified the Accept header before calling us (the
+                // wrapper handler short-circuits if Accept is absent).
+                NegotiationDecision::PromoteToSse
+            } else {
+                NegotiationDecision::StayJson
+            }
+        }
+    }
+}
+
+/// Rust-side subset of the 30.c `produces_stream` predicate.
+///
+/// Covers disjuncts (a) type-level + (b) effect-level. Disjunct (c)
+/// `perform Stream.Yield(...)` is NOT detected here (Rust AST step
+/// bodies are parsed structurally; perform expressions don't surface
+/// as discrete nodes). Adopters relying solely on disjunct (c) opt
+/// into SSE via `transport: sse` declaration (D5) or the dedicated
+/// `/v1/execute/sse` route (30.d) instead.
+fn flow_produces_stream_runtime(
+    flow: &crate::ast::FlowDefinition,
+    program: &crate::ast::Program,
+) -> bool {
+    // Index tools by name for the disjunct (b) walk.
+    let mut tools_by_name: std::collections::HashMap<&str, &crate::ast::ToolDefinition> =
+        std::collections::HashMap::new();
+    for decl in &program.declarations {
+        if let Declaration::Tool(t) = decl {
+            tools_by_name.insert(t.name.as_str(), t);
+        }
+    }
+
+    for step in &flow.body {
+        // Disjunct (a): step.output_type matches the Stream<T> shape.
+        if let FlowStep::Step(s) = step {
+            let out = s.output_type.trim();
+            if out.starts_with("Stream<") && out.ends_with('>') {
+                return true;
+            }
+        }
+        // Disjunct (b): UseTool flow-step → tool effects carry "stream:".
+        if let FlowStep::UseTool(u) = step {
+            if let Some(tool) = tools_by_name.get(u.tool_name.as_str()) {
+                if let Some(ref effects) = tool.effects {
+                    if effects.effects.iter().any(|e| e.starts_with("stream:")) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Defensive source-text classifier — used ONLY when the Rust parser
+/// fails on the source (e.g. step-body `output: Stream<T>` shape that
+/// the Rust frontend doesn't yet accept). Brittle by design; the
+/// long-term solution is to bring the Rust parser to v1.19.3 shape
+/// (its own sub-fase). Until then, this bridge keeps 30.e robust
+/// across the cross-stack parser drift.
+///
+/// Looks for the canonical streaming evidence on the wire:
+///   (a) `output: Stream<` anywhere in the source
+///   (b) `effects: <stream:` or `effects: stream:` anywhere
+///   (c) `perform Stream.Yield(` anywhere
+///
+/// Returns PromoteToSse if any pattern is present OR if an
+/// axonendpoint forces SSE; StayJson otherwise. The `flow_name`
+/// arg is reserved for a future tighter match (currently we accept
+/// any streaming evidence in the source; multi-flow files would
+/// benefit from per-flow scoping but that requires partial parse).
+fn classify_negotiation_via_source_text(
+    source: &str,
+    flow_name: &str,
+) -> NegotiationDecision {
+    // D5: explicit transport: json declaration on this flow → respect.
+    if source_text_axonendpoint_has_transport(source, flow_name, "json") {
+        return NegotiationDecision::StayJson;
+    }
+    // D5: explicit transport: sse|ndjson → force promote.
+    if source_text_has_force_decl(source, flow_name) {
+        return NegotiationDecision::PromoteToSse;
+    }
+    // D4 territory: predicate via text patterns.
+    let has_stream_output = source.contains("output: Stream<")
+        || source.contains("output:Stream<");
+    let has_stream_effect = source.contains("stream:drop_oldest")
+        || source.contains("stream:degrade_quality")
+        || source.contains("stream:pause_upstream")
+        || source.contains("stream:fail");
+    let has_stream_yield = source.contains("Stream.Yield(")
+        || source.contains("Stream.Yield (");
+    if has_stream_output || has_stream_effect || has_stream_yield {
+        NegotiationDecision::PromoteToSse
+    } else {
+        NegotiationDecision::StayJson
+    }
+}
+
+/// Does the source text declare an axonendpoint for the given flow
+/// with `transport: sse|ndjson`? Used by both the parse-path and the
+/// source-text-fallback path so the D5 force-decl check has a single
+/// canonical implementation across both paths.
+fn source_text_has_force_decl(source: &str, flow_name: &str) -> bool {
+    source_text_axonendpoint_has_transport(source, flow_name, "sse")
+        || source_text_axonendpoint_has_transport(source, flow_name, "ndjson")
+}
+
+/// Does the source contain an `axonendpoint <name> { ... execute:
+/// <flow_name> ... transport: <transport_value> ... }` block?
+///
+/// Walks `axonendpoint` keyword occurrences, finds the matching
+/// closing brace via depth tracking (string-aware to avoid false
+/// positives inside `path: "..."`), and checks whether the body
+/// contains both `execute: <flow_name>` and `transport: <value>`.
+fn source_text_axonendpoint_has_transport(
+    source: &str,
+    flow_name: &str,
+    transport: &str,
+) -> bool {
+    let bytes = source.as_bytes();
+    let kw = b"axonendpoint";
+    let mut i = 0;
+    while i + kw.len() <= bytes.len() {
+        if &bytes[i..i + kw.len()] == kw {
+            // Find the opening brace.
+            let body_start = source[i..]
+                .find('{')
+                .map(|off| i + off + 1);
+            if let Some(start) = body_start {
+                // Find matching close — string-aware brace counter.
+                let mut depth: i32 = 1;
+                let mut j = start;
+                let mut in_string = false;
+                while j < bytes.len() && depth > 0 {
+                    let c = bytes[j];
+                    match c {
+                        b'"' if !in_string => in_string = true,
+                        b'"' if in_string => in_string = false,
+                        b'\\' if in_string => {
+                            j += 1;
+                        } // skip escape sequence
+                        b'{' if !in_string => depth += 1,
+                        b'}' if !in_string => depth -= 1,
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                let body = &source[start..j.saturating_sub(1)];
+                // Field-shape match: `execute: <flow_name>` (allow
+                // whitespace + optional comma/newline after the
+                // identifier).
+                let has_execute = body.contains(&format!("execute: {flow_name}"))
+                    || body.contains(&format!("execute:{flow_name}"));
+                let has_transport = body.contains(&format!("transport: {transport}"))
+                    || body.contains(&format!("transport:{transport}"));
+                if has_execute && has_transport {
+                    return true;
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Wrapper for `POST /v1/execute` that performs Fase 30.e
+/// content-negotiation upstream of the legacy JSON handler.
+///
+/// Logic:
+///   1. Read the deployed source. If lookup fails → 404 path of the
+///      old handler (we fall through unchanged).
+///   2. If the request's `Accept` header does NOT contain
+///      `text/event-stream` AND no explicit `transport: sse|ndjson`
+///      declaration exists → defer to legacy `execute_handler`
+///      verbatim. (D5 force-promote still fires even without Accept;
+///      adopters who declared sse on the endpoint want SSE always.)
+///   3. Parse the source. On parse failure → defer to legacy handler
+///      (defensive: stale-source parse drift never crashes the
+///      runtime request path).
+///   4. Classify via `classify_negotiation_for_flow`.
+///   5. PromoteToSse → delegate to `execute_sse_handler` with a
+///      `StreamExecuteRequest` adapted from the `ExecuteRequest`.
+///   6. StayJson → defer to legacy handler.
+async fn execute_handler_with_negotiation(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<ExecuteRequest>,
+) -> axum::response::Response {
+    // Fast path: client didn't ask for SSE AND we don't yet know if
+    // any axonendpoint forces SSE. We still need to consult the
+    // declaration in case D5 force-promote applies. So we DO parse
+    // the source on every /v1/execute request — acceptable for the
+    // initial implementation; future Fase can cache.
+    //
+    // Optimization: if Accept neither contains text/event-stream nor
+    // any obvious streaming hint, AND the source is unavailable, skip
+    // the parse entirely and route to the legacy handler.
+    let accept_header = headers
+        .get("accept")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let client_wants_sse = accept_header.contains("text/event-stream");
+
+    // Look up the source. If not deployed, defer to legacy handler
+    // which already produces the canonical not-deployed error.
+    let source_opt: Option<String> = {
+        let s = state.lock().unwrap();
+        s.versions
+            .get_history(&payload.flow)
+            .and_then(|h| h.active())
+            .map(|v| v.source.clone())
+    };
+
+    let source = match source_opt {
+        Some(s) => s,
+        None => {
+            // Not deployed — defer to legacy handler so the error
+            // shape stays consistent with v1.20.0 clients.
+            return execute_handler(State(state), headers, Json(payload))
+                .await
+                .into_response();
+        }
+    };
+
+    // The Rust frontend has two known parser gaps vs Python that
+    // affect this predicate:
+    //   (i)  `output: Stream<T>` inside step bodies (pre-v1.19.3
+    //        shape) — affects disjunct (a)
+    //   (ii) `use <tool>("args")` inside step bodies — StepNode in
+    //        the Rust AST doesn't carry use_tool — affects disjunct (b)
+    // Both gaps belong to a Rust-frontend completion sub-fase. Until
+    // that ships, we DEFENSIVELY consult source-text patterns ALONGSIDE
+    // the AST walk and OR the verdicts. This makes 30.e robust to
+    // cross-stack drift on the predicate while preserving the AST
+    // walk as the authoritative path for declared `transport:` fields
+    // (which the Rust parser handles correctly — verified by the
+    // 30.b drift gate).
+    let program_opt = crate::lexer::Lexer::new(&source, "<runtime-negotiation>")
+        .tokenize()
+        .ok()
+        .and_then(|tokens| crate::parser::Parser::new(tokens).parse().ok());
+
+    let ast_decision = match program_opt {
+        Some(ref program) => classify_negotiation_for_flow(program, &payload.flow),
+        None => NegotiationDecision::StayJson,
+    };
+    let text_decision = classify_negotiation_via_source_text(&source, &payload.flow);
+
+    // Combine: D5 force-stay-json from either path is sticky (the
+    // adopter explicitly opted out of streaming — never override).
+    // Otherwise, PromoteToSse from either path wins.
+    let decision = if matches!(ast_decision, NegotiationDecision::StayJson)
+        && source_text_axonendpoint_has_transport(&source, &payload.flow, "json")
+    {
+        // The explicit `transport: json` declaration suppresses any
+        // promote signal from the source-text predicate.
+        NegotiationDecision::StayJson
+    } else if matches!(ast_decision, NegotiationDecision::PromoteToSse)
+        || matches!(text_decision, NegotiationDecision::PromoteToSse)
+    {
+        NegotiationDecision::PromoteToSse
+    } else {
+        NegotiationDecision::StayJson
+    };
+
+    // D5 force-promote OR D4 fallback-with-Accept → SSE.
+    // D5 force-stay-json OR no-stream-effect-no-Accept → JSON.
+    let promote_sse = match decision {
+        NegotiationDecision::PromoteToSse => {
+            // D5 declared sse/ndjson always wins; D4 needs Accept.
+            // Re-classify the underlying cause to distinguish:
+            //   - axonendpoint with transport == sse/ndjson for this
+            //     flow → D5 wins regardless of Accept
+            //   - Otherwise PromoteToSse was returned because of the
+            //     stream-effect predicate → D4 requires Accept
+            let has_force_decl = match program_opt {
+                Some(ref program) => program.declarations.iter().any(|d| {
+                    matches!(
+                        d,
+                        Declaration::AxonEndpoint(ae)
+                            if ae.execute_flow == payload.flow
+                                && (ae.transport == "sse" || ae.transport == "ndjson")
+                    )
+                }),
+                None => source_text_has_force_decl(&source, &payload.flow),
+            };
+            has_force_decl || client_wants_sse
+        }
+        NegotiationDecision::StayJson => false,
+    };
+
+    if promote_sse {
+        // Adapt ExecuteRequest → StreamExecuteRequest.
+        let stream_req = StreamExecuteRequest {
+            flow_name: payload.flow,
+            backend: payload.backend,
+        };
+        return execute_sse_handler(State(state), headers, Json(stream_req))
+            .await
+            .into_response();
+    }
+
+    // Default path: legacy JSON handler unchanged.
+    execute_handler(State(state), headers, Json(payload))
+        .await
+        .into_response()
+}
+
 /// ΛD Epistemic Envelope — wraps any config value with its epistemic tensor.
 ///
 /// From the paper: ψ = ⟨T, V, E⟩ where E = ⟨c, τ, ρ, δ⟩
@@ -23754,7 +24178,12 @@ pub fn build_router_with_state(config: ServerConfig) -> (Router, SharedState) {
         .route("/v1/metrics/export", post(metrics_export_handler))
         .route("/v1/deploy", post(deploy_handler))
         .route("/v1/deploy/reload", post(deploy_reload_handler))
-        .route("/v1/execute", post(execute_handler))
+        // §Fase 30.e — content-negotiation wrapper. Defers to legacy
+        // `execute_handler` for JSON path; auto-promotes to SSE when
+        // D4/D5 conditions hold. Legacy behavior unchanged for every
+        // existing v1.20.0 client that doesn't send Accept: text/event-stream
+        // and doesn't declare `transport: sse` on an axonendpoint.
+        .route("/v1/execute", post(execute_handler_with_negotiation))
         .route("/v1/execute/enqueue", post(execute_enqueue_handler))
         .route("/v1/execute/queue", get(execute_queue_handler))
         .route("/v1/execute/dequeue", post(execute_dequeue_handler))
