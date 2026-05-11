@@ -296,6 +296,13 @@ pub struct ServerState {
     /// collision (a known limitation of the 32.c surface; a future
     /// type-registry fase will add deploy-scoped namespacing).
     pub dynamic_types: HashMap<String, crate::route_schema::TypeSchema>,
+    /// §Fase 32.f — Idempotency-Key store for POST/PUT axonendpoint
+    /// routes. Stripe-compatible. Indexed by `(client_id,
+    /// endpoint_path, idempotency_key)`. Cross-tenant isolation is a
+    /// property of the composite key — two adopters cannot collide.
+    /// Default 24h retention; eviction is lazy on lookup with a
+    /// `reap_expired` helper available for periodic background sweeps.
+    pub idempotency_store: crate::idempotency::IdempotencyStore,
     pub session: SessionStore,
     pub scoped_sessions: ScopedSessionManager,
     pub rate_limiter: RateLimiter,
@@ -852,6 +859,10 @@ impl ServerState {
             // §Fase 32.c — Per-name type schemas captured alongside the
             // dynamic routes for body-schema validation at request time.
             dynamic_types: HashMap::new(),
+            // §Fase 32.f — Idempotency-Key store with 24h default
+            // retention. Populated on first POST/PUT request bearing
+            // the header; consulted on every repeat.
+            idempotency_store: crate::idempotency::IdempotencyStore::default(),
             session: SessionStore::new("axon-server"),
             scoped_sessions: ScopedSessionManager::new("axon-server"),
             rate_limiter,
@@ -18925,6 +18936,98 @@ async fn dynamic_endpoint_handler(
         }
     }
 
+    // §Fase 32.f (D7) — Idempotency-Key gate.
+    //
+    // Stripe-compatible. When the request carries `Idempotency-Key`
+    // AND the axonendpoint declares method ∈ {POST, PUT}, the runtime
+    // consults the (client_id, endpoint_path, idempotency_key) cache
+    // before dispatch:
+    //   - HIT (same key + same body) → return cached response verbatim
+    //     with `Idempotency-Status: replayed` header attached.
+    //   - CONFLICT (same key + different body) → 422 Unprocessable
+    //     Entity with `idempotency_key_reused_with_different_request`.
+    //   - MISS → mark for post-dispatch caching (only if response is
+    //     2xx — failures must retry actual execution).
+    //
+    // For GET / DELETE the header is logged + ignored: those methods
+    // are natively idempotent per HTTP spec and replaying the cached
+    // response would be a category error.
+    let idempotency_key = headers
+        .get("idempotency-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let idempotency_method_eligible =
+        matches!(method_str.as_str(), "POST" | "PUT");
+
+    let idempotency_cache_marker: Option<(crate::idempotency::IdempotencyCacheKey, [u8; 32])> =
+        if let (Some(key), true) = (&idempotency_key, idempotency_method_eligible) {
+            let client_id = client_key_from_headers(&headers);
+            let request_body_hash = crate::idempotency::IdempotencyStore::hash_body(&body);
+            let cache_key = crate::idempotency::IdempotencyCacheKey {
+                client_id,
+                endpoint_path: path_str.clone(),
+                idempotency_key: key.clone(),
+            };
+            let verdict = {
+                let mut s = state.lock().unwrap();
+                s.idempotency_store.lookup(&cache_key, &request_body_hash)
+            };
+            match verdict {
+                crate::idempotency::IdempotencyVerdict::Hit(entry) => {
+                    // Replay the cached response verbatim. The
+                    // `Idempotency-Status: replayed` header tells the
+                    // client this is a cached body (industry-standard
+                    // diagnostic; some Stripe SDK versions log it).
+                    let status = StatusCode::from_u16(entry.status)
+                        .unwrap_or(StatusCode::OK);
+                    let mut resp = axum::response::Response::builder()
+                        .status(status)
+                        .header("content-type", entry.content_type.clone())
+                        .header("idempotency-status", "replayed")
+                        .body(axum::body::Body::from(entry.body.clone()))
+                        .unwrap_or_else(|_| {
+                            (status, Json(serde_json::json!({
+                                "error": "idempotency_replay_construction_failed",
+                                "d_letter": "D7",
+                            }))).into_response()
+                        });
+                    // Defensive: if Body::from path failed, the
+                    // closure above produces a json fallback already
+                    // with into_response().
+                    let _ = &mut resp;
+                    return resp;
+                }
+                crate::idempotency::IdempotencyVerdict::Conflict {
+                    cached_body_hash_hex,
+                } => {
+                    let payload = serde_json::json!({
+                        "error": "idempotency_key_reused_with_different_request",
+                        "idempotency_key": key,
+                        "endpoint": route.endpoint_name,
+                        "method": method_str,
+                        "path": path_str,
+                        "cached_body_hash_prefix": cached_body_hash_hex,
+                        "hint": "The Idempotency-Key was previously used with a DIFFERENT request body for this endpoint. Generate a new key for the new request, or send the same body to replay the original response.",
+                        "d_letter": "D7",
+                    });
+                    return (StatusCode::UNPROCESSABLE_ENTITY, Json(payload)).into_response();
+                }
+                crate::idempotency::IdempotencyVerdict::Miss => {
+                    Some((cache_key, request_body_hash))
+                }
+            }
+        } else {
+            // Header present on GET/DELETE → log + ignore (HTTP-spec idempotent).
+            if idempotency_key.is_some() && !idempotency_method_eligible {
+                tracing::debug!(
+                    method = %method_str,
+                    path = %path_str,
+                    "axon-rs Fase 32.f D7: Idempotency-Key header ignored on natively-idempotent HTTP method"
+                );
+            }
+            None
+        };
+
     // §Fase 32.e (D6) — Per-route transport dispatch.
     //
     // The Fase 30+31 negotiation matrix is keyed by `(strict_mode ×
@@ -19023,7 +19126,68 @@ async fn dynamic_endpoint_handler(
     // adopter inspects the audit trail to fix the FLOW (the
     // language honoring its own declarations) while the client sees
     // only `{error: "internal_validation_error", trace_id, hint}`.
-    apply_output_validation_gate(state, &route, response, &method_str, &path_str).await
+    let validated =
+        apply_output_validation_gate(state.clone(), &route, response, &method_str, &path_str).await;
+
+    // §Fase 32.f (D7) — Post-dispatch cache write.
+    //
+    // If the request carried an Idempotency-Key on a POST/PUT and the
+    // lookup MISSED (marker is Some), cache the response — but ONLY
+    // for 2xx + non-streaming bodies. Failed requests must retry
+    // actual execution. SSE/ndjson streams cannot be captured into
+    // memory at this layer (the body is a streaming source); the
+    // header is honored only for json-transport responses.
+    if let Some((cache_key, body_hash)) = idempotency_cache_marker {
+        if validated.status().is_success() {
+            let content_type = validated
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            if content_type.starts_with("application/json") {
+                // Capture the body bytes, then rebuild the response.
+                let (parts, body) = validated.into_parts();
+                let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "axon-rs Fase 32.f D7: failed to read response body for idempotency caching"
+                        );
+                        // Best effort — return what we have without caching.
+                        return axum::response::Response::from_parts(
+                            parts,
+                            axum::body::Body::from(Vec::new()),
+                        );
+                    }
+                };
+                {
+                    let mut s = state.lock().unwrap();
+                    s.idempotency_store.insert(
+                        cache_key,
+                        crate::idempotency::IdempotencyEntry {
+                            request_body_hash: body_hash,
+                            status: parts.status.as_u16(),
+                            content_type: content_type.clone(),
+                            body: body_bytes.to_vec(),
+                            inserted_at: std::time::Instant::now(),
+                        },
+                    );
+                }
+                return axum::response::Response::from_parts(
+                    parts,
+                    axum::body::Body::from(body_bytes),
+                );
+            }
+            // Non-JSON 2xx (SSE/ndjson) — pass through without caching.
+        }
+        // Non-2xx — failure path. Skip caching so retries actually
+        // retry execution. This is the Stripe-aligned semantic:
+        // idempotency caches results, not failures.
+    }
+
+    validated
 }
 
 /// §Fase 32.d — Apply the response-side schema validation gate.
