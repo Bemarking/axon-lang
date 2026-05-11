@@ -359,6 +359,18 @@ axonendpoint ContractsAPI {
         assert errors == []
 
     def test_axonendpoint_invalid_method_and_path(self):
+        # §Fase 32.b D3 — invalid methods (fetch ∉ {GET,POST,PUT,DELETE,
+        # PATCH}) are now rejected at PARSE time with smart-suggest, not
+        # at type-check time. The earlier "Unknown HTTP method" type-
+        # checker error path is unreachable because the parser fails
+        # first. Test split into two: this asserts the parser fires the
+        # D3 diagnostic + smart-suggest; the type checker only sees
+        # well-formed methods. Path-rejection remains at type-check
+        # time per the parser's defensive accept-anything-non-empty
+        # contract for `path:` (parse-time path validation is a
+        # candidate for a future fase).
+        from axon.compiler.errors import AxonParseError
+
         source = '''flow Analyze(doc: Document) -> Report {
   step S { ask: "x" output: Report }
 }
@@ -368,9 +380,12 @@ axonendpoint BadEndpoint {
   path: "api/no-leading-slash"
   execute: Analyze
 }'''
-        errors = _check(source)
-        assert any("Unknown HTTP method" in e.message for e in errors)
-        assert any("path must start with '/'" in e.message for e in errors)
+        with pytest.raises(AxonParseError) as exc_info:
+            _check(source)
+        msg = str(exc_info.value)
+        assert "Invalid method 'fetch'" in msg
+        # Smart-suggest hits PATCH as the nearest enum value to "fetch".
+        assert "PATCH" in msg
 
     def test_axonendpoint_undefined_flow(self):
         source = '''axonendpoint Broken {

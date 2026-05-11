@@ -95,6 +95,11 @@ pub mod request_middleware;
 pub mod repl;
 pub mod replay;
 pub mod request_tracing;
+// §Fase 32.c — Body schema validation for first-class axonendpoint
+// routes. `route_schema` hosts the pure `validate_body` primitive +
+// `collect_type_table` walker. The fallback handler in `axon_server`
+// consults the table at request time per (method, path).
+pub mod route_schema;
 pub mod resilient_backend;
 pub mod retry_policy;
 pub mod runner;

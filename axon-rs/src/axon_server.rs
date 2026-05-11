@@ -288,6 +288,14 @@ pub struct ServerState {
     /// this state via FastAPI route registration; both stacks
     /// produce byte-identical route sets from the same source.
     pub dynamic_routes: HashMap<(String, String), DynamicEndpointRoute>,
+    /// §Fase 32.c — Per-name `type T { … }` snapshot consulted by the
+    /// dynamic-route fallback handler at request time to validate the
+    /// HTTP request body against the axonendpoint's declared
+    /// `body: T`. Populated alongside `dynamic_routes` at every
+    /// successful `/v1/deploy`. Last-wins on cross-deploy type name
+    /// collision (a known limitation of the 32.c surface; a future
+    /// type-registry fase will add deploy-scoped namespacing).
+    pub dynamic_types: HashMap<String, crate::route_schema::TypeSchema>,
     pub session: SessionStore,
     pub scoped_sessions: ScopedSessionManager,
     pub rate_limiter: RateLimiter,
@@ -841,6 +849,9 @@ impl ServerState {
             // first /v1/deploy that registers axonendpoints with
             // explicit `path:` declarations.
             dynamic_routes: HashMap::new(),
+            // §Fase 32.c — Per-name type schemas captured alongside the
+            // dynamic routes for body-schema validation at request time.
+            dynamic_types: HashMap::new(),
             session: SessionStore::new("axon-server"),
             scoped_sessions: ScopedSessionManager::new("axon-server"),
             rate_limiter,
@@ -1565,6 +1576,14 @@ async fn deploy_handler(
         }
     };
 
+    // §Fase 32.c — Capture every `type T { … }` declaration in the
+    // deployed source. Consulted by the dynamic-route fallback handler
+    // to validate request bodies against the axonendpoint's declared
+    // `body:` type. Empty programs produce an empty table; routes with
+    // no `body:` declaration skip validation entirely (D9 backwards-
+    // compat).
+    let incoming_types = crate::route_schema::collect_type_table(&program);
+
     let ir = crate::ir_generator::IRGenerator::new().generate(&program);
 
     // Extract flow names from IR and register as daemons
@@ -1613,6 +1632,15 @@ async fn deploy_handler(
                 "phase": "route_registration",
                 "d_letter": "D2",
             })));
+        }
+
+        // §Fase 32.c — Merge the per-deploy type table into live state.
+        // Last-wins semantics on cross-deploy name conflict (a future
+        // type-registry fase will add deploy-scoped namespacing); routes
+        // are atomic above this point, so the type table only updates
+        // when route merge succeeded.
+        for (name, schema) in &incoming_types {
+            s.dynamic_types.insert(name.clone(), schema.clone());
         }
 
         // Record versions
@@ -18472,6 +18500,15 @@ pub struct DynamicEndpointRoute {
     /// Inferred transport per Fase 31.b D1 (`"sse"` / `"json"` /
     /// empty if pre-compute).
     pub implicit_transport: String,
+    /// §Fase 32.c — Declared body type per `body:` field on the source
+    /// axonendpoint. Empty string when omitted (D9 backwards-compat —
+    /// the fallback handler skips body-schema validation entirely).
+    /// When non-empty, the value is looked up in
+    /// `ServerState.dynamic_types` at request time and the request body
+    /// is validated against the resolved `TypeSchema` before the flow
+    /// dispatch. Schema mismatch returns 400 Bad Request with a
+    /// structured `BodyValidationError`.
+    pub body_type: String,
 }
 
 /// Walk the program's AxonEndpoint declarations and produce the
@@ -18535,6 +18572,7 @@ pub fn collect_axonendpoint_routes(
                     transport_explicit: ae.transport_explicit,
                     keepalive: ae.keepalive.clone(),
                     implicit_transport: ae.implicit_transport.clone(),
+                    body_type: ae.body_type.clone(),
                 },
             );
         }
@@ -18580,25 +18618,36 @@ pub fn merge_dynamic_routes(
     Ok(())
 }
 
-/// §Fase 32.b — Fallback handler for dynamic axonendpoint routes.
+/// §Fase 32.b + 32.c — Fallback handler for dynamic axonendpoint routes.
 ///
 /// Fires when no static route in `build_router_with_state` matched
 /// the incoming request. Looks up `(method, path)` in
-/// `ServerState.dynamic_routes`; on hit, dispatches through the
-/// existing Fase 30 + 31 negotiation classifier with the flow_name
-/// from the route. On miss, returns 404 with a structured error
-/// listing all registered dynamic routes (for adopter triage).
+/// `ServerState.dynamic_routes`; on hit, validates the request body
+/// against the route's declared `body:` type (D4, Fase 32.c) and
+/// dispatches through the existing Fase 30 + 31 negotiation classifier
+/// with the flow_name from the route. On miss, returns 404 with a
+/// structured error listing all registered dynamic routes (for
+/// adopter triage).
 ///
-/// Body forwarding to the flow is OUT OF SCOPE for 32.b (the existing
-/// `/v1/execute` handler does not pass body data to flows either —
-/// flows currently receive no parameterized HTTP input). Body schema
-/// validation + flow input forwarding ship in 32.c. 32.b establishes
-/// the routing + transport mapping foundation.
+/// Body validation is OPTIONAL: when `route.body_type` is empty, the
+/// validation step is skipped entirely (D9 backwards-compat — adopters
+/// who don't declare `body:` keep free-form JSON semantics). When set,
+/// the body is parsed as JSON and validated against the resolved
+/// `TypeSchema` from `ServerState.dynamic_types`. Mismatch → 400 Bad
+/// Request with a structured `BodyValidationError`.
+///
+/// Body forwarding to the flow itself remains deferred (existing
+/// `/v1/execute` does not pass body data to flows either — flows
+/// currently receive no parameterized HTTP input). Forward-to-flow
+/// wiring lands in a follow-on fase. 32.c establishes the **validation
+/// gate at the boundary**: malformed bodies never reach the flow
+/// runtime.
 async fn dynamic_endpoint_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
     method: axum::http::Method,
     uri: axum::http::Uri,
+    body: axum::body::Bytes,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
 
@@ -18632,6 +18681,92 @@ async fn dynamic_endpoint_handler(
             return (StatusCode::NOT_FOUND, Json(body)).into_response();
         }
     };
+
+    // §Fase 32.c — Body-schema validation gate. Only runs when the
+    // axonendpoint declared `body: T` in source (route.body_type
+    // non-empty). For methods with a meaningful request body (POST,
+    // PUT, PATCH) the body is parsed as JSON and validated against
+    // the resolved TypeSchema. GET/DELETE skip validation unless an
+    // explicit body is present (HTTP spec is ambiguous about bodies
+    // on GET — we accept-or-skip rather than reject the request
+    // outright; the schema applies only when a body is sent).
+    if !route.body_type.is_empty() {
+        let has_body = !body.is_empty();
+        let body_required = matches!(method_str.as_str(), "POST" | "PUT" | "PATCH");
+        if has_body || body_required {
+            // Parse JSON. Empty body on a method that requires one is
+            // a schema violation (cannot satisfy a non-trivial type T
+            // with an absent body).
+            let parsed: serde_json::Value = if has_body {
+                match serde_json::from_slice(&body) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let payload = serde_json::json!({
+                            "error": "body_schema_violation",
+                            "expected_type": route.body_type,
+                            "field_path": "",
+                            "expected": route.body_type,
+                            "got": "invalid_json",
+                            "hint": format!(
+                                "Request body is not valid JSON: {e}. The \
+                                 axonendpoint declared `body: {body_type}` \
+                                 which requires a well-formed JSON body.",
+                                body_type = route.body_type,
+                            ),
+                            "d_letter": "D4",
+                        });
+                        return (StatusCode::BAD_REQUEST, Json(payload)).into_response();
+                    }
+                }
+            } else {
+                // Missing body where the method + declaration require one.
+                let payload = serde_json::json!({
+                    "error": "body_schema_violation",
+                    "expected_type": route.body_type,
+                    "field_path": "",
+                    "expected": route.body_type,
+                    "got": "missing",
+                    "hint": format!(
+                        "Request body is empty but axonendpoint '{endpoint}' \
+                         declared `body: {body_type}` for `{method} {path}`. \
+                         Send a JSON body matching the declared type.",
+                        endpoint = route.endpoint_name,
+                        body_type = route.body_type,
+                        method = method_str,
+                        path = path_str,
+                    ),
+                    "d_letter": "D4",
+                });
+                return (StatusCode::BAD_REQUEST, Json(payload)).into_response();
+            };
+
+            // Look up the type table snapshot. Holding the lock for the
+            // clone is brief; validation itself runs outside the lock.
+            let type_table = {
+                let s = state.lock().unwrap();
+                s.dynamic_types.clone()
+            };
+            if let Err(verr) = crate::route_schema::validate_body(
+                &parsed,
+                &route.body_type,
+                &type_table,
+            ) {
+                let payload = serde_json::json!({
+                    "error": "body_schema_violation",
+                    "expected_type": verr.expected_type,
+                    "field_path": verr.field_path,
+                    "expected": verr.expected,
+                    "got": verr.got,
+                    "hint": verr.hint,
+                    "endpoint": route.endpoint_name,
+                    "method": method_str,
+                    "path": path_str,
+                    "d_letter": "D4",
+                });
+                return (StatusCode::BAD_REQUEST, Json(payload)).into_response();
+            }
+        }
+    }
 
     // Dispatch through the Fase 30/31 negotiation classifier. The
     // dynamic handler constructs a synthetic `ExecuteRequest` from the
