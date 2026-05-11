@@ -1960,6 +1960,17 @@ class AxonEndpointDefinition(ASTNode):
     # will see "" and must run the inference itself or fall back).
     # The Rust mirror sets the field byte-identically (D7).
     implicit_transport: str = ""
+    # §Fase 32.g — Auth scope per axonendpoint (D8).
+    # Optional list of capability slugs the request bearer must hold
+    # for the endpoint to dispatch. Empty list means "no auth gate"
+    # (D9 backwards-compat — existing axonendpoints without
+    # `requires:` declarations keep current behaviour). Slug grammar
+    # (closed): `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`. Examples:
+    # `admin`, `legal.read`, `hipaa.phi.read`, `bank.officer.senior`.
+    # The runtime checks declared_requires ⊆ token_capabilities (AND
+    # semantics — every declared capability must be present). The
+    # Rust mirror sets the field byte-identically (D11 cross-stack).
+    requires_capabilities: list[str] = field(default_factory=list)
 
 
 # ═══════════════════════════════════════════════════════════════════

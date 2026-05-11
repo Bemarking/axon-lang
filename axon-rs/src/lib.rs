@@ -105,6 +105,12 @@ pub mod route_schema;
 // composite key. 24h default retention. Same-key-different-body
 // returns 422 per industry convention.
 pub mod idempotency;
+// §Fase 32.g — Auth scope (capability subset matching) for first-class
+// axonendpoint routes. `requires: [admin, legal.read, ...]` declarations
+// gate dispatch on declared_requires ⊆ token_capabilities. Closed slug
+// grammar shared with `axon_frontend::parser`. Mirror of Python
+// `_is_valid_capability_slug`.
+pub mod auth_scope;
 pub mod resilient_backend;
 pub mod retry_policy;
 pub mod runner;
