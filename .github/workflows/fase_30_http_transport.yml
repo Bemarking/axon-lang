@@ -1,0 +1,190 @@
+name: Fase 30 — HTTP Transport for Algebraic Stream Effects
+
+# §Fase 30.g — Dedicated CI workflow exercising the cross-stack
+# HTTP transport contract on every PR + master push.
+#
+# Four lanes run in parallel:
+#
+#   1. python-parser-and-typecheck  — Fase 30.b parser + 30.c
+#                                      type-checker + 30.g robustness
+#                                      fuzz (2000 mutated inputs)
+#   2. rust-frontend                — Fase 30.b cross-stack drift gate
+#                                      + 30.g axon-frontend parser fuzz
+#                                      (2000 mutated inputs); 3-OS matrix
+#   3. rust-runtime-sse             — Fase 30.d single-shot SSE handler
+#                                      + 30.e content-negotiation
+#                                      + 30.f keepalive + 30.g SSE wire
+#                                      conformance fuzz (1500+ assertions)
+#   4. cross-stack-drift            — explicit cross-stack parity over
+#                                      the shared corpus.json fixture
+#
+# D7 ratified 2026-05-10 (extends Fase 28 D7): byte-identical parse
+# across Python axon-lang + Rust axon-frontend.
+# D12 budget extended to Fase 30: 100-bucket × 10-iteration
+# deterministic fuzz per CI run on every parser surface that touches
+# the new fields.
+#
+# In addition to ci.yml's full-suite run; the dedicated lanes keep the
+# HTTP transport signal visible on PRs that touch parser / type-checker
+# / runtime / SSE surfaces.
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  # ── 1. Python lane: parser + type-checker + fuzz ───────────────
+  python-parser-and-typecheck:
+    name: Python parser + type-check + fuzz (Fase 30)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,tools,server]"
+
+      - name: Run Fase 30 Python parser pack (30.b)
+        run: |
+          pytest tests/test_fase30_transport_parser.py -v --tb=short
+
+      - name: Run Fase 30 Python type-checker pack (30.c)
+        run: |
+          pytest tests/test_fase30_transport_typecheck.py -v --tb=short
+
+      - name: Run Fase 30 robustness fuzz (30.g — D12 budget)
+        # 2000 mutated inputs across two fuzz classes. Pinned as a
+        # separate step so a fuzz regression is loudly visible in the
+        # workflow timeline rather than buried in the broader pack.
+        run: |
+          pytest tests/test_fase30_transport_fuzz.py -v --tb=short
+
+  # ── 2. Rust frontend: drift gate + axon-frontend fuzz ──────────
+  rust-frontend:
+    name: Rust frontend drift + fuzz (Fase 30)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            axon-frontend/target
+          key: ${{ runner.os }}-cargo-fase30-frontend-${{ hashFiles('axon-frontend/Cargo.lock', 'axon-frontend/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-fase30-frontend-
+
+      - name: Run axon-frontend 30.b drift gate
+        working-directory: axon-frontend
+        run: cargo test --test fase30_drift_gate -- --nocapture
+
+      - name: Run axon-frontend 30.g parser fuzz (D12 budget)
+        working-directory: axon-frontend
+        run: cargo test --test fase30_parser_fuzz -- --nocapture
+
+  # ── 3. Rust runtime: SSE handlers + fuzz ───────────────────────
+  rust-runtime-sse:
+    name: Rust runtime SSE + fuzz (Fase 30)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            axon-rs/target
+          key: ${{ runner.os }}-cargo-fase30-runtime-${{ hashFiles('axon-rs/Cargo.lock', 'axon-rs/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-fase30-runtime-
+
+      - name: Run Fase 30.d single-shot SSE conformance
+        working-directory: axon-rs
+        run: cargo test --test fase30_sse_runtime -- --nocapture
+
+      - name: Run Fase 30.e content-negotiation conformance
+        working-directory: axon-rs
+        run: cargo test --test fase30_negotiation -- --nocapture
+
+      - name: Run Fase 30.f keepalive conformance
+        working-directory: axon-rs
+        run: cargo test --test fase30_keepalive -- --nocapture
+
+      - name: Run Fase 30.g SSE wire-format conformance fuzz
+        working-directory: axon-rs
+        run: cargo test --test fase30_sse_fuzz -- --nocapture
+
+  # ── 4. Cross-stack drift parity (D7) ───────────────────────────
+  #
+  # Both stacks read `tests/fixtures/fase30_transport/corpus.json`.
+  # If both stacks drift in lockstep, neither lane would flag it on
+  # its own — this lane re-runs each side against the committed
+  # corpus and confirms both produce the expected field values, so
+  # any cross-stack divergence is caught at PR-time, not at adopter-
+  # bug-report-time.
+  cross-stack-drift:
+    name: Cross-stack drift parity (D7)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install minimal Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify corpus.json is valid JSON
+        run: |
+          python -c "import json; \
+                     entries = json.load(open('tests/fixtures/fase30_transport/corpus.json')); \
+                     assert isinstance(entries, list) and len(entries) >= 10, \
+                       f'corpus must be a list of >= 10 entries, got {type(entries).__name__} len={len(entries) if isinstance(entries, list) else \"n/a\"}'"
+
+      - name: Run Python corpus drift assertion (D7)
+        # The Python pack contains a parametrized class
+        # `TestPythonAgainstCorpus` that iterates the corpus and
+        # asserts parse output matches each entry's expected fields.
+        run: |
+          pytest tests/test_fase30_transport_parser.py::TestPythonAgainstCorpus \
+            -v --tb=short
+
+      - name: Run Rust corpus drift assertion (D7)
+        working-directory: axon-frontend
+        run: cargo test --test fase30_drift_gate -- --nocapture
