@@ -115,7 +115,202 @@ from .ast_nodes import (
     ViewDefinition,
     WeaveNode,
 )
+from .ast_nodes import UseToolNode
 from .errors import AxonTypeError
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  §Fase 30.c — `produces_stream` predicate (D3 ratified 2026-05-10)
+#
+#  Formal contract enforced when `axonendpoint.transport ∈ {sse, ndjson}`:
+#
+#      is_streaming_transport(t)  ⟹  produces_stream(execute_flow)
+#
+#  where:
+#
+#      produces_stream(F)  ≡
+#          (∃ step ∈ F.body. has_stream_output(step))                  ──(a) type-level
+#        ∨ (∃ tool ∈ tools_used_by(F). has_stream_effect(tool))         ──(b) effect-level
+#        ∨ (∃ expr ∈ AST(F). is_stream_yield_perform(expr))             ──(c) operational
+#
+#  Each disjunct represents a distinct formal layer:
+#    (a) type-level — `output: Stream<T>` is the type signature commitment;
+#        captured statically as `step.output_type` matching the
+#        `Stream<...>` shape.
+#    (b) effect-level — `effects: [stream:<policy>]` declares the
+#        algebraic effect row with one of the 4 ratified Fase 11.a
+#        policies; captured as `tool.effects.effects` containing an
+#        entry with the `"stream:"` prefix.
+#    (c) operational-level — `perform Stream.Yield(...)` is the
+#        explicit chunk-emission operation (Fase 23 algebraic effects);
+#        captured as a `PerformExpression` with effect_name == "Stream"
+#        AND operation_name == "Yield".
+#
+#  Soundness: every accepting case has at least one disjunct that
+#  guarantees the flow CAN produce stream tokens at runtime.
+#  Completeness: any flow that produces stream tokens at runtime
+#  satisfies at least one disjunct at compile time.
+#
+#  Walk discipline: pure single-pass over the flow's AST + a
+#  single symbol-table lookup per `use_tool` reference. No
+#  transitive flow-to-flow resolution (D3 scope is the flow named
+#  in `execute:`; sub-flow expansion is a future Fase). This keeps
+#  the predicate decidable + the implementation O(N) over the AST.
+# ═══════════════════════════════════════════════════════════════════
+
+
+# Transport enum subset that requires a stream-producing flow. Mirror
+# of the streaming-transport set; `json` is the default and never
+# triggers the check. `ndjson` (D2 reserved) is included because it
+# is semantically a streaming wire format (line-delimited JSON);
+# wire emission ships later but the type contract holds today.
+_STREAMING_TRANSPORTS: frozenset[str] = frozenset({"sse", "ndjson"})
+
+
+def _has_stream_output(step: StepNode) -> bool:
+    """Disjunct (a) — type-level: `output: Stream<T>` for any T.
+
+    The `output_type` field is a string per existing AST convention.
+    A stream-typed output renders as `"Stream<T>"`. We accept any
+    inner type; the type-checker elsewhere validates T separately.
+    """
+    out = (step.output_type or "").strip()
+    return out.startswith("Stream<") and out.endswith(">")
+
+
+def _has_stream_effect(tool: ToolDefinition) -> bool:
+    """Disjunct (b) — effect-level: `effects: [stream:<policy>]`.
+
+    The 4 ratified policies (Fase 11.a) are `drop_oldest`,
+    `degrade_quality`, `pause_upstream`, `fail`. The closed
+    catalogue means any `stream:<X>` entry with X in that set is a
+    valid producer; we only check the `"stream:"` prefix because
+    enum validation belongs to the producer-side parser, not here.
+    """
+    if tool.effects is None:
+        return False
+    return any(e.startswith("stream:") for e in tool.effects.effects)
+
+
+def _is_stream_yield_perform(expr: ASTNode) -> bool:
+    """Disjunct (c) — operational: `perform Stream.Yield(...)`.
+
+    Tightest possible match: effect=="Stream" AND operation=="Yield".
+    Other Stream.* operations (Stream.Done, Stream.Cancel) do NOT
+    materialise chunks — they're control operations, not producers.
+    """
+    if not isinstance(expr, PerformExpression):
+        return False
+    return expr.effect_name == "Stream" and expr.operation_name == "Yield"
+
+
+def _walk_perform_expressions(node: ASTNode) -> bool:
+    """Recursive walker: True iff the AST subtree rooted at `node`
+    contains a `Stream.Yield` perform expression at any depth.
+
+    Walks `StepNode.body`, `ConditionalNode.then_branch` /
+    `else_branch`, `ParallelBlock.arms`, `RefineBlock.cycle`, and
+    other body-carrying containers via duck-typed `body` /
+    `branches` attribute access. Stops at the first match.
+
+    Defensive: handles `None` children + non-AST containers
+    gracefully (a malformed sub-tree never crashes the walk).
+    """
+    if node is None:
+        return False
+    if _is_stream_yield_perform(node):
+        return True
+    # Walk common body-carrying attributes. Use getattr with default
+    # to keep the walk resilient against future AST changes.
+    for attr in ("body", "then_branch", "else_branch", "branches", "arms",
+                 "clauses", "steps", "handlers", "on_chunk", "on_complete"):
+        child = getattr(node, attr, None)
+        if child is None:
+            continue
+        if isinstance(child, list):
+            for item in child:
+                if _walk_perform_expressions(item):
+                    return True
+        elif isinstance(child, ASTNode):
+            if _walk_perform_expressions(child):
+                return True
+    return False
+
+
+def _flow_produces_stream(
+    flow: FlowDefinition,
+    symbol_lookup: "callable[[str], object | None]",
+) -> bool:
+    """Master predicate — disjunction of the three formal layers.
+
+    Returns True iff the flow satisfies AT LEAST ONE of:
+      (a) some step has `output: Stream<T>`,
+      (b) some tool used by the flow has `effects: [stream:<policy>]`,
+      (c) some perform expression anywhere in the flow body is
+          `perform Stream.Yield(...)`.
+
+    Pure function; no side effects. `symbol_lookup` is a closure
+    over the type-checker's symbol table — passed in to keep this
+    helper testable without instantiating the full TypeChecker.
+    """
+    # (a) Type-level disjunct: walk the flow body collecting any
+    #     StepNode with a `Stream<...>` output type.
+    for stmt in flow.body:
+        if isinstance(stmt, StepNode) and _has_stream_output(stmt):
+            return True
+
+    # (b) Effect-level disjunct: walk every step + sub-step looking
+    #     for `use_tool` references; resolve tool name via the symbol
+    #     table; check `effects.effects` for a `stream:` entry.
+    if _flow_uses_streaming_tool(flow, symbol_lookup):
+        return True
+
+    # (c) Operational disjunct: recursive walk for Stream.Yield.
+    for stmt in flow.body:
+        if _walk_perform_expressions(stmt):
+            return True
+
+    return False
+
+
+def _flow_uses_streaming_tool(
+    flow: FlowDefinition,
+    symbol_lookup: "callable[[str], object | None]",
+) -> bool:
+    """Helper for disjunct (b): does the flow use a tool with a
+    `stream:<policy>` effect?
+
+    Walks every StepNode's `use_tool` reference (the primary tool
+    invocation point) AND any `use_tool` deeper in nested step
+    bodies. Resolves tool names through the supplied symbol_lookup
+    closure. Returns True at first hit.
+    """
+    seen_tool_names: set[str] = set()
+    to_visit: list[ASTNode] = list(flow.body)
+    while to_visit:
+        node = to_visit.pop()
+        if isinstance(node, StepNode):
+            if node.use_tool is not None and node.use_tool.tool_name:
+                tn = node.use_tool.tool_name
+                if tn not in seen_tool_names:
+                    seen_tool_names.add(tn)
+                    sym = symbol_lookup(tn)
+                    if sym is not None and getattr(sym, "kind", "") == "tool":
+                        tool_node = getattr(sym, "node", None)
+                        if isinstance(tool_node, ToolDefinition):
+                            if _has_stream_effect(tool_node):
+                                return True
+            # Walk sub-steps for nested use_tool occurrences.
+            to_visit.extend(node.body or [])
+        # Also descend into other body-carrying nodes.
+        for attr in ("body", "then_branch", "else_branch", "branches",
+                     "arms", "clauses", "steps"):
+            child = getattr(node, attr, None)
+            if isinstance(child, list):
+                to_visit.extend(child)
+            elif isinstance(child, ASTNode):
+                to_visit.append(child)
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1697,6 +1892,41 @@ class TypeChecker:
                 f"axonendpoint '{node.name}' retries must be >= 0, got {node.retries}",
                 node,
             )
+
+        # §Fase 30.c — D3: streaming transports require a Stream-producing
+        # `execute:` flow. Soundness invariant:
+        #   transport ∈ {sse, ndjson}  ⟹  produces_stream(execute_flow)
+        # Skip when the execute-flow lookup already failed (avoid double-
+        # flagging the same axonendpoint).
+        if node.transport in _STREAMING_TRANSPORTS and node.execute_flow:
+            sym = self._symbols.lookup(node.execute_flow)
+            if sym is not None and sym.kind == "flow":
+                flow_node = sym.node
+                if isinstance(flow_node, FlowDefinition):
+                    if not _flow_produces_stream(
+                        flow_node, self._symbols.lookup
+                    ):
+                        # Multi-line error message with the 4-option
+                        # remediation hint (§5.2 plan vivo). When source
+                        # is available at the CLI layer, the rustc-style
+                        # source-context block (28.d) gets attached via
+                        # `AxonTypeError.attach_source()` downstream.
+                        self._emit(
+                            f"axonendpoint '{node.name}' declares "
+                            f"transport: {node.transport}, but its execute "
+                            f"flow '{node.execute_flow}' does not produce "
+                            f"a Stream<T>.\n"
+                            f"  note: transport: {node.transport} requires "
+                            f"streaming output\n"
+                            f"  help: either (a) change a step's output to "
+                            f"`output: Stream<T>`, (b) add "
+                            f"`effects: [stream:<policy>]` to the tool the "
+                            f"flow uses, (c) emit chunks via "
+                            f"`perform Stream.Yield(<value>)` in the flow "
+                            f"body, or (d) drop `transport: {node.transport}` "
+                            f"and let the endpoint return JSON",
+                            node,
+                        )
 
     # ═══════════════════════════════════════════════════════════════
     #  I/O COGNITIVO — Cálculo Lambda Lineal Epistémico (λ-L-E) · Fase 1
