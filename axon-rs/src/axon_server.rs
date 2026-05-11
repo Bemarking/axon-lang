@@ -18509,6 +18509,21 @@ pub struct DynamicEndpointRoute {
     /// dispatch. Schema mismatch returns 400 Bad Request with a
     /// structured `BodyValidationError`.
     pub body_type: String,
+    /// §Fase 32.d — Declared output type per `output:` field on the
+    /// source axonendpoint. Empty string when omitted (D9 backwards-
+    /// compat — the fallback handler skips output-schema validation).
+    /// When non-empty, the flow's response body is validated against
+    /// the resolved `TypeSchema` BEFORE returning to the client.
+    /// Per OWASP, validation failure returns a GENERIC 500 to the
+    /// client + records the full diagnostic in `audit_log` so the
+    /// adopter can fix the FLOW without schema details leaking to
+    /// potentially malicious clients.
+    ///
+    /// Output validation only fires when the response Content-Type is
+    /// `application/json` — SSE/ndjson streams are token-by-token and
+    /// cannot be validated against a static type at the wire layer
+    /// (a future fase may add per-event validation for typed streams).
+    pub output_type: String,
 }
 
 /// Walk the program's AxonEndpoint declarations and produce the
@@ -18573,6 +18588,7 @@ pub fn collect_axonendpoint_routes(
                     keepalive: ae.keepalive.clone(),
                     implicit_transport: ae.implicit_transport.clone(),
                     body_type: ae.body_type.clone(),
+                    output_type: ae.output_type.clone(),
                 },
             );
         }
@@ -18778,13 +18794,187 @@ async fn dynamic_endpoint_handler(
         flow: route.flow_name.clone(),
         backend: "auto".to_string(),
     };
-    execute_handler_with_negotiation(
-        State(state),
+    let response = execute_handler_with_negotiation(
+        State(state.clone()),
         headers,
         Json(exec_req),
     )
     .await
-    .into_response()
+    .into_response();
+
+    // §Fase 32.d — Output-schema validation gate (D5).
+    //
+    // After the flow executes, validate the response body against the
+    // declared `output: T` type. Validation runs ONLY when:
+    //   - `route.output_type` is non-empty (D9 backwards-compat skip),
+    //   - the response status is 2xx (4xx/5xx are already error
+    //     responses, not the flow's typed output),
+    //   - the response Content-Type starts with `application/json`
+    //     (SSE/ndjson streams cannot be validated against a static
+    //     type at the wire layer; per-event typed-stream validation
+    //     is a candidate for a future fase).
+    //
+    // Per OWASP, validation failure returns a GENERIC 500 to the
+    // client + records the full diagnostic in `audit_log`. The
+    // adopter inspects the audit trail to fix the FLOW (the
+    // language honoring its own declarations) while the client sees
+    // only `{error: "internal_validation_error", trace_id, hint}`.
+    apply_output_validation_gate(state, &route, response, &method_str, &path_str).await
+}
+
+/// §Fase 32.d — Apply the response-side schema validation gate.
+///
+/// Pillar trace per D12:
+///   - MATHEMATICS — same pure + total `validate_body` primitive as
+///                   32.c, consumed on the response side.
+///   - PHILOSOPHY — the declared `output:` IS the contract; adopters'
+///                   downstream consumers can trust the schema.
+///   - LOGIC      — no widening of the declared output type; flows
+///                   producing a wider response fail loudly at the
+///                   audit boundary.
+///   - COMPUTING  — OWASP-aligned: schema details never leak to a
+///                   potentially malicious client; only the
+///                   trace_id is exposed.
+async fn apply_output_validation_gate(
+    state: SharedState,
+    route: &DynamicEndpointRoute,
+    response: axum::response::Response,
+    method_str: &str,
+    path_str: &str,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if route.output_type.is_empty() {
+        return response; // D9 backwards-compat — no `output:` declared.
+    }
+    if !response.status().is_success() {
+        return response; // Already an error path; not the typed output.
+    }
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if !content_type.starts_with("application/json") {
+        // SSE/ndjson stream — out of scope for static-type validation.
+        return response;
+    }
+
+    // Read the body. `usize::MAX` is the max-size cap — the response
+    // bodies we expect here are kilobytes, not gigabytes, so no DoS
+    // surface. If we ever expect larger bodies, this is the place to
+    // add a per-endpoint cap.
+    let (parts, body) = response.into_parts();
+    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "axon-rs Fase 32.d: failed to read response body for output validation"
+            );
+            return internal_validation_500(&state, route, method_str, path_str, None);
+        }
+    };
+    let parsed: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+        Ok(v) => v,
+        Err(_) => {
+            // Response body claimed application/json but isn't valid JSON.
+            // Pass through (the upstream handler shaped the response —
+            // we don't fabricate a violation that may be the user's
+            // intentional, e.g. a 200 OK with a custom serializer that
+            // returned non-JSON despite the header).
+            return axum::response::Response::from_parts(parts, axum::body::Body::from(body_bytes));
+        }
+    };
+
+    let type_table = {
+        let s = state.lock().unwrap();
+        s.dynamic_types.clone()
+    };
+    match crate::route_schema::validate_body(&parsed, &route.output_type, &type_table) {
+        Ok(()) => {
+            // Validation passed — rebuild the response with the original body.
+            axum::response::Response::from_parts(parts, axum::body::Body::from(body_bytes))
+        }
+        Err(verr) => internal_validation_500(&state, route, method_str, path_str, Some(verr)),
+    }
+}
+
+/// §Fase 32.d — Build the OWASP-safe 500 response for output
+/// validation failures. Records the FULL diagnostic in `audit_log` +
+/// emits a `tracing::error!` for adopter-side log tooling; the
+/// CLIENT only sees the generic envelope `{error, trace_id, hint}`.
+///
+/// Schema details (expected_type, field_path, expected, got) are
+/// NEVER serialised into the client response per OWASP API-Security
+/// guidance — leaking a server-side type contract to a potentially
+/// malicious caller is a recon vector.
+fn internal_validation_500(
+    state: &SharedState,
+    route: &DynamicEndpointRoute,
+    method_str: &str,
+    path_str: &str,
+    violation: Option<crate::route_schema::BodyValidationError>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let trace_id = uuid::Uuid::new_v4().to_string();
+    let audit_detail = match &violation {
+        Some(v) => serde_json::json!({
+            "event": "output_schema_violation",
+            "endpoint": route.endpoint_name,
+            "flow_name": route.flow_name,
+            "method": method_str,
+            "path": path_str,
+            "expected_type": v.expected_type,
+            "field_path": v.field_path,
+            "expected": v.expected,
+            "got": v.got,
+            "hint": v.hint,
+            "trace_id": trace_id,
+            "d_letter": "D5",
+        }),
+        None => serde_json::json!({
+            "event": "output_body_read_error",
+            "endpoint": route.endpoint_name,
+            "flow_name": route.flow_name,
+            "method": method_str,
+            "path": path_str,
+            "trace_id": trace_id,
+            "d_letter": "D5",
+        }),
+    };
+
+    if let Some(v) = &violation {
+        tracing::error!(
+            endpoint = %route.endpoint_name,
+            flow = %route.flow_name,
+            field_path = %v.field_path,
+            expected = %v.expected,
+            got = %v.got,
+            trace_id = %trace_id,
+            "axon-rs Fase 32.d D5: output schema violation — flow produced response not matching declared `output:` type"
+        );
+    }
+
+    {
+        let mut s = state.lock().unwrap();
+        s.audit_log.record(
+            "axon-runtime",
+            crate::audit_trail::AuditAction::Execute,
+            &route.endpoint_name,
+            audit_detail,
+            false,
+        );
+        s.metrics.total_errors += 1;
+    }
+
+    let client_body = serde_json::json!({
+        "error": "internal_validation_error",
+        "trace_id": trace_id,
+        "hint": "The flow produced a response that did not match the declared output schema. The adopter-facing diagnostic is in the audit trail (GET /v1/audit).",
+        "d_letter": "D5",
+    });
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(client_body)).into_response()
 }
 
 /// Wrapper for `POST /v1/execute` that performs Fase 30.e

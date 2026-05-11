@@ -480,3 +480,122 @@ def test_error_as_corpus_dict_strips_hint():
     }
     assert "hint" not in d
     assert error_as_corpus_dict(None) is None
+
+
+# ── 32.d response-side semantics: same primitive, two call sites ─────
+
+
+class TestResponseSideValidation:
+    """§Fase 32.d — The validate_body primitive runs on the RESPONSE
+    side too. Same shape, same drift-gate assertions; the semantic
+    difference (OWASP-safe 500 vs adopter-facing 400) is at the HTTP
+    boundary in Rust, not in this pure validator. These tests anchor
+    that the validator behaves identically when consumed against a
+    response body."""
+
+    def test_response_envelope_against_partial_schema_extra_fields_ok(self):
+        """A flow that produces `{"success": true, "result": "...",
+        "trace_id": 1}` validates against a partial output type that
+        only declares some fields. Postel's Law: extras are OK."""
+        envelope_response = {
+            "success": True,
+            "result": "approved",
+            "trace_id": 12345,
+            "backend": "stub",
+        }
+        table = {
+            "DecisionEnvelope": TypeSchema(
+                name="DecisionEnvelope",
+                fields=[
+                    FieldSchema(name="success", type_name="Boolean"),
+                    FieldSchema(name="result", type_name="String"),
+                ],
+            ),
+        }
+        assert validate_body(envelope_response, "DecisionEnvelope", table) is None
+
+    def test_response_string_rejects_object_envelope(self):
+        """When the adopter declares `output: String` but the actual
+        response is an object envelope, validation fails. The HTTP
+        layer projects this into a generic 500 (Rust integration test
+        covers the OWASP shape)."""
+        envelope_response = {"success": True, "result": "x"}
+        err = validate_body(envelope_response, "String", {})
+        assert err is not None
+        assert err.expected == "String"
+        assert err.got == "object"
+
+    def test_response_any_passes_any_envelope(self):
+        """`output: Any` is the universal accept — symmetric with
+        `body: Any` request-side."""
+        assert validate_body({"any": "shape"}, "Any", {}) is None
+        assert validate_body([1, 2, 3], "Any", {}) is None
+        assert validate_body("string", "Any", {}) is None
+
+    def test_response_empty_output_type_passes_anything_d9(self):
+        """D9 absolute backwards-compat — empty `output_type` is the
+        no-op path; the validator returns None unconditionally."""
+        assert validate_body({"flow_result": "anything"}, "", {}) is None
+
+    def test_response_nested_struct_dotted_path_for_audit_trail(self):
+        """The dotted field_path is the audit-trail anchor — auditors
+        can trace a 500 in production back to the exact field that
+        violated the declared output type."""
+        table = {
+            "Decision": TypeSchema(
+                name="Decision",
+                fields=[
+                    FieldSchema(name="approved", type_name="Boolean"),
+                    FieldSchema(name="risk_score", type_name="RiskScore"),
+                ],
+            ),
+        }
+        # Flow returned risk_score out of [0,1] — clinical/banking
+        # vertical concern; auditor traces this in /v1/audit.
+        bad_response = {"approved": True, "risk_score": 1.5}
+        err = validate_body(bad_response, "Decision", table)
+        assert err is not None
+        assert err.field_path == "risk_score"
+        assert "RiskScore" in err.expected
+
+    def test_response_missing_required_field_fails(self):
+        """Flow output missing a declared required field is a D5
+        violation — the audit trail captures the missing field, the
+        client sees only the generic 500."""
+        table = {
+            "Decision": TypeSchema(
+                name="Decision",
+                fields=[FieldSchema(name="approved", type_name="Boolean")],
+            ),
+        }
+        bad_response = {"some_other_field": True}
+        err = validate_body(bad_response, "Decision", table)
+        assert err is not None
+        assert err.field_path == "approved"
+        assert err.got == "missing"
+
+    def test_validator_is_symmetric_request_and_response(self):
+        """Anchor: the validator's behaviour on the same input is
+        IDENTICAL whether the caller treats the result as request-
+        side (400) or response-side (500). This is the contract that
+        lets both stacks share one primitive."""
+        body = {"name": "alice", "age": "thirty"}
+        table = {
+            "Person": TypeSchema(
+                name="Person",
+                fields=[
+                    FieldSchema(name="name", type_name="String"),
+                    FieldSchema(name="age", type_name="Integer"),
+                ],
+            ),
+        }
+        req_side = validate_body(body, "Person", table)
+        resp_side = validate_body(body, "Person", table)
+        assert req_side is not None
+        assert resp_side is not None
+        # Identical structured shape — the HTTP layer's response code
+        # (400 vs 500) is the ONLY semantic difference.
+        assert req_side.expected_type == resp_side.expected_type
+        assert req_side.field_path == resp_side.field_path
+        assert req_side.expected == resp_side.expected
+        assert req_side.got == resp_side.got

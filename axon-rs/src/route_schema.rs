@@ -1,9 +1,27 @@
-//! §Fase 32.c — Body schema validation for first-class axonendpoint routes.
+//! §Fase 32.c + 32.d — Schema validation for first-class axonendpoint routes.
 //!
-//! Given an axonendpoint's declared `body: T`, validate that every accepted
-//! request body matches `T`'s schema verbatim or return a structured 400.
-//! The validation function is **pure + total over the declared type
-//! system** (D4).
+//! Given an axonendpoint's declared `body: T` (request side, D4) or
+//! `output: T` (response side, D5), validate that every accepted body
+//! matches `T`'s schema verbatim. The validation function is **pure +
+//! total over the declared type system**.
+//!
+//! ## Same primitive, two call sites
+//!
+//! `validate_body` is consumed twice in the dynamic-route fallback:
+//!
+//! 1. **Request side (D4)** — before flow dispatch. On violation the
+//!    HTTP layer returns 400 Bad Request with the full structured
+//!    `BodyValidationError` so the adopter client can correct the
+//!    request.
+//! 2. **Response side (D5)** — after flow dispatch, before returning
+//!    to the client. On violation the HTTP layer returns **GENERIC
+//!    500** to the client (OWASP — schema details never leak to a
+//!    potentially malicious caller) but records the full
+//!    `BodyValidationError` in the audit log so the adopter inspects
+//!    the trail to fix the FLOW.
+//!
+//! The validator itself does not care which side it runs on — same
+//! primitive, same drift gate.
 //!
 //! ## Pillar trace (D12)
 //!
