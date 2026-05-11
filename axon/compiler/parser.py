@@ -4924,6 +4924,16 @@ class Parser:
                 case "compliance":
                     # ESK Fase 6.1 — regulatory coverage for this HTTP boundary
                     node.compliance = self._parse_bracketed_identifiers()
+                case "replay":
+                    # §Fase 32.h (D9 plan-vivo) — Replay-token binding.
+                    # Boolean `replay: true | false`. Default (when
+                    # omitted) is method-derived: POST/PUT → True,
+                    # GET/DELETE → False, resolved at deploy time. An
+                    # explicit declaration sets `replay_explicit=True`
+                    # so the runtime knows NOT to override.
+                    replay_tok = self._consume(TokenType.BOOL)
+                    node.replay = replay_tok.value.lower() == "true"
+                    node.replay_explicit = True
                 case "requires":
                     # §Fase 32.g (D8) — Auth scope per axonendpoint.
                     # Closed slug grammar `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`

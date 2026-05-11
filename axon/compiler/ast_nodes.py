@@ -1971,6 +1971,21 @@ class AxonEndpointDefinition(ASTNode):
     # semantics — every declared capability must be present). The
     # Rust mirror sets the field byte-identically (D11 cross-stack).
     requires_capabilities: list[str] = field(default_factory=list)
+    # §Fase 32.h — Replay-token binding (D9 plan-vivo).
+    # When True (the resolved default for POST/PUT, or explicitly
+    # declared `replay: true` on any method), every successful 2xx
+    # response is recorded in the runtime's axonendpoint replay log
+    # keyed by trace_id. Auditors can later replay the exact request
+    # via `GET /v1/replay/<trace_id>` and get the same response back
+    # (deterministic backends only — temperature>0 LLM calls are
+    # marked `non_deterministic` per the Replay-Status header).
+    #
+    # `replay_explicit` is True when the source declared `replay:`
+    # explicitly. False when the field was omitted, in which case
+    # `replay` reflects the method-default heuristic (POST/PUT →
+    # True, GET/DELETE → False) computed at deploy-time.
+    replay_explicit: bool = False
+    replay: bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════

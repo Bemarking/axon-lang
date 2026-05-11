@@ -786,6 +786,16 @@ pub struct AxonEndpointDefinition {
     /// declared_requires ⊆ token_capabilities (AND semantics — every
     /// declared capability must be present in the bearer's claims).
     pub requires_capabilities: Vec<String>,
+    /// §Fase 32.h — Replay-token binding (D9 plan-vivo).
+    /// `replay_explicit` is `true` when the source declared `replay:`
+    /// explicitly. `false` when the field was omitted, in which case
+    /// `replay` reflects the method-default (POST/PUT → true, GET/
+    /// DELETE → false) computed at deploy time. When the effective
+    /// value resolves to `true`, every successful 2xx response is
+    /// recorded in the runtime's axonendpoint replay log keyed by
+    /// trace_id; auditors retrieve it via GET /v1/replay/<trace_id>.
+    pub replay_explicit: bool,
+    pub replay: bool,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

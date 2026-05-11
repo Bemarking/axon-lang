@@ -303,6 +303,11 @@ pub struct ServerState {
     /// Default 24h retention; eviction is lazy on lookup with a
     /// `reap_expired` helper available for periodic background sweeps.
     pub idempotency_store: crate::idempotency::IdempotencyStore,
+    /// §Fase 32.h — Axonendpoint replay log. Append-only, keyed by
+    /// trace_id. Populated on every successful 2xx response when the
+    /// route's `replay_enabled` is true. Consulted by
+    /// `GET /v1/replay/<trace_id>` for regulatory audit.
+    pub axonendpoint_replay: crate::axonendpoint_replay::AxonendpointReplayLog,
     pub session: SessionStore,
     pub scoped_sessions: ScopedSessionManager,
     pub rate_limiter: RateLimiter,
@@ -863,6 +868,12 @@ impl ServerState {
             // retention. Populated on first POST/PUT request bearing
             // the header; consulted on every repeat.
             idempotency_store: crate::idempotency::IdempotencyStore::default(),
+            // §Fase 32.h — Axonendpoint replay log with 30-day default
+            // retention. Populated on every successful 2xx response
+            // when route.replay_enabled is true; consulted by
+            // `GET /v1/replay/<trace_id>` for regulatory audit.
+            axonendpoint_replay:
+                crate::axonendpoint_replay::AxonendpointReplayLog::default(),
             session: SessionStore::new("axon-server"),
             scoped_sessions: ScopedSessionManager::new("axon-server"),
             rate_limiter,
@@ -9086,6 +9097,108 @@ pub struct AuditExportQuery {
 
 fn default_audit_export_format() -> String { "jsonl".into() }
 fn default_audit_export_limit() -> usize { 1000 }
+
+/// §Fase 32.h — `GET /v1/replay/<trace_id>` — return the recorded
+/// replay binding for an axonendpoint POST/PUT.
+///
+/// Auth: `AccessLevel::ReadOnly` (same as `/v1/audit` — auditors
+/// AND adopter ops with a read-only API key). Missing trace_id → 404.
+///
+/// Response shape (status 200):
+/// ```json
+/// {
+///   "trace_id": "uuid",
+///   "timestamp_ms": 1715459123000,
+///   "endpoint_name": "LoanDecision",
+///   "flow_name": "ApproveOrDeny",
+///   "method": "POST",
+///   "path": "/loan/decision",
+///   "client_id": "tenant-X",
+///   "capabilities_used": ["bank.officer"],
+///   "request_body_hash_hex": "...",
+///   "request_body_base64": "...",   // bytes ↦ base64
+///   "response_status": 200,
+///   "response_body_hash_hex": "...",
+///   "response_body_base64": "...",
+///   "response_content_type": "application/json",
+///   "model_version": "axon.runtime.dynamic_route.v1",
+///   "deterministic": true
+/// }
+/// ```
+///
+/// Response header `Replay-Status: deterministic | non_deterministic`
+/// per plan vivo §9.2.
+async fn replay_get_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    axum::extract::Path(trace_id): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    {
+        let s = state.lock().unwrap();
+        if check_auth_peek(&s, &headers, AccessLevel::ReadOnly).is_err() {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": "unauthorized",
+                    "hint": "GET /v1/replay/<trace_id> requires read-only auth (same as /v1/audit).",
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let entry_opt = {
+        let s = state.lock().unwrap();
+        s.axonendpoint_replay.get(&trace_id).cloned()
+    };
+    let entry = match entry_opt {
+        Some(e) => e,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "replay_trace_not_found",
+                    "trace_id": trace_id,
+                    "hint": "No replay binding exists for this trace_id. Either the trace_id is wrong, the entry expired past retention (default 30 days), or the original endpoint had `replay: false` declared.",
+                    "d_letter": "D9",
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine;
+    let payload = serde_json::json!({
+        "trace_id": entry.trace_id,
+        "timestamp_ms": entry.timestamp_ms,
+        "endpoint_name": entry.endpoint_name,
+        "flow_name": entry.flow_name,
+        "method": entry.method,
+        "path": entry.path,
+        "client_id": entry.client_id,
+        "capabilities_used": entry.capabilities_used,
+        "request_body_hash_hex": entry.request_body_hash_hex,
+        "request_body_base64": B64.encode(&entry.request_body),
+        "response_status": entry.response_status,
+        "response_body_hash_hex": entry.response_body_hash_hex,
+        "response_body_base64": B64.encode(&entry.response_body),
+        "response_content_type": entry.response_content_type,
+        "model_version": entry.model_version,
+        "deterministic": entry.deterministic,
+    });
+    let replay_status = if entry.deterministic {
+        "deterministic"
+    } else {
+        "non_deterministic"
+    };
+    let mut resp = (StatusCode::OK, Json(payload)).into_response();
+    if let Ok(val) = axum::http::HeaderValue::from_str(replay_status) {
+        resp.headers_mut().insert("replay-status", val);
+    }
+    resp
+}
 
 /// GET /v1/audit/export — export audit trail as JSONL or CSV.
 async fn audit_export_handler(
@@ -18685,6 +18798,13 @@ pub struct DynamicEndpointRoute {
     /// `{error: "missing_capability", required, have, ...}` so the
     /// client knows precisely which capability is needed.
     pub requires_capabilities: Vec<String>,
+    /// §Fase 32.h — Effective replay-binding boolean resolved at
+    /// deploy time. `true` ⟹ every successful 2xx POST/PUT response
+    /// is recorded in `ServerState.axonendpoint_replay` keyed by
+    /// trace_id. Default is method-derived (POST/PUT → true;
+    /// GET/DELETE → false); an explicit `replay: true | false`
+    /// declaration overrides.
+    pub replay_enabled: bool,
 }
 
 /// Walk the program's AxonEndpoint declarations and produce the
@@ -18751,6 +18871,9 @@ pub fn collect_axonendpoint_routes(
                     body_type: ae.body_type.clone(),
                     output_type: ae.output_type.clone(),
                     requires_capabilities: ae.requires_capabilities.clone(),
+                    replay_enabled: crate::axonendpoint_replay::resolve_replay_enabled(
+                        &method, ae.replay_explicit, ae.replay,
+                    ),
                 },
             );
         }
@@ -19125,6 +19248,14 @@ async fn dynamic_endpoint_handler(
         strict_mode,
     );
 
+    // §Fase 32.h — Capture client identity + capabilities BEFORE
+    // dispatch so the SSE path (which moves `headers` into the
+    // streaming handler) doesn't leave the replay binding unable to
+    // record them. Cheap clones — both fields are small.
+    let replay_client_id = client_key_from_headers(&headers);
+    let replay_capabilities_used =
+        crate::auth_scope::extract_capabilities_from_bearer(&headers);
+
     let response = match route_wire {
         DynamicRouteWire::Sse => {
             let stream_req = StreamExecuteRequest {
@@ -19188,65 +19319,122 @@ async fn dynamic_endpoint_handler(
     let validated =
         apply_output_validation_gate(state.clone(), &route, response, &method_str, &path_str).await;
 
-    // §Fase 32.f (D7) — Post-dispatch cache write.
+    // §Fase 32.f (D7) + §Fase 32.h (D9 plan-vivo) — Unified post-
+    // dispatch capture: idempotency cache write + replay-token
+    // binding share the same body-read so we never read the response
+    // body twice. The trace_id is generated once and attached as
+    // `X-Axon-Trace-Id` on EVERY response from the dynamic-route
+    // handler — this is the correlation anchor between client logs,
+    // server audit, and the GET /v1/replay/<trace_id> retrieval path.
     //
-    // If the request carried an Idempotency-Key on a POST/PUT and the
-    // lookup MISSED (marker is Some), cache the response — but ONLY
-    // for 2xx + non-streaming bodies. Failed requests must retry
-    // actual execution. SSE/ndjson streams cannot be captured into
-    // memory at this layer (the body is a streaming source); the
-    // header is honored only for json-transport responses.
-    if let Some((cache_key, body_hash)) = idempotency_cache_marker {
-        if validated.status().is_success() {
-            let content_type = validated
-                .headers()
-                .get(axum::http::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_string();
-            if content_type.starts_with("application/json") {
-                // Capture the body bytes, then rebuild the response.
-                let (parts, body) = validated.into_parts();
-                let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::error!(
-                            error = %e,
-                            "axon-rs Fase 32.f D7: failed to read response body for idempotency caching"
-                        );
-                        // Best effort — return what we have without caching.
-                        return axum::response::Response::from_parts(
-                            parts,
-                            axum::body::Body::from(Vec::new()),
-                        );
-                    }
-                };
-                {
-                    let mut s = state.lock().unwrap();
-                    s.idempotency_store.insert(
-                        cache_key,
-                        crate::idempotency::IdempotencyEntry {
-                            request_body_hash: body_hash,
-                            status: parts.status.as_u16(),
-                            content_type: content_type.clone(),
-                            body: body_bytes.to_vec(),
-                            inserted_at: std::time::Instant::now(),
-                        },
+    // Body capture fires only when status is 2xx AND Content-Type
+    // starts with `application/json`. SSE/ndjson streams pass through
+    // unchanged — replay binding for streaming bodies is a candidate
+    // for a future fase (per-event token chain). 4xx/5xx error paths
+    // skip BOTH caches because the response is not the flow's typed
+    // output — replaying a 422 schema violation would be a category
+    // error.
+    let trace_id = uuid::Uuid::new_v4().to_string();
+    let trace_hdr =
+        axum::http::HeaderValue::from_str(&trace_id).unwrap_or_else(|_| {
+            // The Uuid::to_string() produces only ASCII hex — this
+            // path is unreachable, but be defensive.
+            axum::http::HeaderValue::from_static("unknown")
+        });
+
+    let should_capture_body = idempotency_cache_marker.is_some()
+        || route.replay_enabled;
+    if should_capture_body && validated.status().is_success() {
+        let content_type = validated
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        if content_type.starts_with("application/json") {
+            // Capture the body bytes once; replay log + idempotency
+            // cache share the bytes; the rebuilt response carries the
+            // same bytes back to the client.
+            let (mut parts, response_body_stream) = validated.into_parts();
+            let body_bytes = match axum::body::to_bytes(response_body_stream, usize::MAX).await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "axon-rs Fase 32.f+h: failed to read response body for post-dispatch capture"
+                    );
+                    parts.headers.insert("x-axon-trace-id", trace_hdr);
+                    return axum::response::Response::from_parts(
+                        parts,
+                        axum::body::Body::from(Vec::new()),
                     );
                 }
-                return axum::response::Response::from_parts(
-                    parts,
-                    axum::body::Body::from(body_bytes),
+            };
+
+            // 32.f cache write (if marker present).
+            if let Some((cache_key, body_hash)) = idempotency_cache_marker {
+                let mut s = state.lock().unwrap();
+                s.idempotency_store.insert(
+                    cache_key,
+                    crate::idempotency::IdempotencyEntry {
+                        request_body_hash: body_hash,
+                        status: parts.status.as_u16(),
+                        content_type: content_type.clone(),
+                        body: body_bytes.to_vec(),
+                        inserted_at: std::time::Instant::now(),
+                    },
                 );
             }
-            // Non-JSON 2xx (SSE/ndjson) — pass through without caching.
-        }
-        // Non-2xx — failure path. Skip caching so retries actually
-        // retry execution. This is the Stripe-aligned semantic:
-        // idempotency caches results, not failures.
-    }
 
-    validated
+            // 32.h replay-binding write (if route.replay_enabled).
+            if route.replay_enabled {
+                let entry = crate::axonendpoint_replay::AxonendpointReplayEntry {
+                    trace_id: trace_id.clone(),
+                    timestamp_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0),
+                    endpoint_name: route.endpoint_name.clone(),
+                    flow_name: route.flow_name.clone(),
+                    method: method_str.to_string(),
+                    path: path_str.to_string(),
+                    client_id: replay_client_id.clone(),
+                    capabilities_used: replay_capabilities_used.clone(),
+                    request_body_hash_hex:
+                        crate::axonendpoint_replay::AxonendpointReplayLog::hash_body_hex(
+                            &body,
+                        ),
+                    request_body: body.to_vec(),
+                    response_status: parts.status.as_u16(),
+                    response_body_hash_hex:
+                        crate::axonendpoint_replay::AxonendpointReplayLog::hash_body_hex(
+                            &body_bytes,
+                        ),
+                    response_content_type: content_type.clone(),
+                    response_body: body_bytes.to_vec(),
+                    model_version: "axon.runtime.dynamic_route.v1".to_string(),
+                    // Deterministic if the dispatched backend is
+                    // verified deterministic (stub today; locked-model
+                    // surfaces layered on top by enterprise).
+                    deterministic:
+                        crate::axonendpoint_replay::is_backend_deterministic("stub"),
+                };
+                let mut s = state.lock().unwrap();
+                s.axonendpoint_replay.append(entry);
+            }
+
+            parts.headers.insert("x-axon-trace-id", trace_hdr);
+            return axum::response::Response::from_parts(
+                parts,
+                axum::body::Body::from(body_bytes),
+            );
+        }
+        // Non-JSON 2xx (SSE/ndjson) — pass through with trace header.
+    }
+    // Non-2xx OR no capture needed — attach trace header + return.
+    let mut resp = validated;
+    resp.headers_mut().insert("x-axon-trace-id", trace_hdr);
+    resp
 }
 
 /// §Fase 32.d — Apply the response-side schema validation gate.
@@ -25721,6 +25909,11 @@ pub fn build_router_with_state(config: ServerConfig) -> (Router, SharedState) {
         .route("/v1/audit", get(audit_handler))
         .route("/v1/audit/stats", get(audit_stats_handler))
         .route("/v1/audit/export", get(audit_export_handler))
+        // §Fase 32.h — Replay-token retrieval. Auditors fetch the
+        // recorded (request, response, metadata) tuple by trace_id
+        // for regulatory replay (PCI DSS Req 10, FedRAMP AU-2,
+        // FRE 502, 21 CFR Part 11).
+        .route("/v1/replay/{trace_id}", get(replay_get_handler))
         .route("/v1/logs", get(logs_handler))
         .route("/v1/logs/stats", get(logs_stats_handler))
         .route("/v1/logs/export", get(logs_export_handler))
