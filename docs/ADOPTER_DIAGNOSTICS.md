@@ -452,6 +452,45 @@ flwo F() {}   // → "Did you mean `flow`?"
 Smart-suggest catches Levenshtein-≤-2 typos automatically — adopters
 see the fix in the error message, no manual diagnosis needed.
 
+The same smart-suggest engine fires on Fase 30 closed-enum violations:
+
+```axon
+axonendpoint Live {
+    transport: streaming   // → "Did you mean `sse`? Valid: json, sse, ndjson."
+}
+```
+
+### Pattern 5 (NEW in v1.21.0): `transport: sse` on a non-streaming flow
+
+```axon
+flow Compute() {
+    step S { ask: "x" }   // no Stream<T> output, no stream effect
+}
+
+axonendpoint Live {
+    transport: sse        // ← compile error
+    execute:   Compute
+}
+```
+
+The Fase 30.c type-checker enforces the **soundness invariant** that
+`transport: sse|ndjson` requires the execute flow to produce a stream.
+The error message offers four remediation options inline:
+
+```
+error: axonendpoint 'Live' declares `transport: sse` but flow 'Compute'
+       does not produce a stream. Four ways to satisfy the contract:
+         1. Add a step with `output: Stream<T>`.
+         2. Use a tool with `effects: <stream:<policy>>`.
+         3. Add `perform Stream.Yield(...)` in a step body.
+         4. Drop `transport: sse` and emit a single JSON value.
+```
+
+See [ADOPTER_STREAMING.md](ADOPTER_STREAMING.md) for the comprehensive
+streaming-surface guide, including the formal predicate, all four
+backpressure policies, the SSE wire-format spec, and load-balancer
+deployment recipes.
+
 ---
 
 ## CI integration cookbook
