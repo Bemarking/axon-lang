@@ -79,6 +79,15 @@ jobs:
 
       - name: Install musl tooling
         if: runner.os == 'Linux' && contains(matrix.target, 'musl')
+        # `musl-tools` installs `musl-gcc` (a wrapper that exposes
+        # libc.musl-x86_64.so.1 and the musl include tree). Without
+        # explicit CC/LINKER overrides downstream, cc-rs picks the
+        # host gcc and rustc's default linker resolves `-lm` to glibc's
+        # `libm.a` from /usr/lib/x86_64-linux-gnu/ — which contains
+        # references to `_dl_x86_cpu_features` that the static musl
+        # binary cannot satisfy. The env vars in "Cargo build" below
+        # force cc-rs (for axon-csys's C kernels) and rustc (for final
+        # linking) to use musl-gcc end-to-end.
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install cross (aarch64 Linux)
@@ -88,6 +97,17 @@ jobs:
       - name: Cargo build (release)
         working-directory: axon-rs
         shell: bash
+        env:
+          # Force cc-rs (used by axon-csys's build.rs) AND rustc's
+          # linker to musl-gcc for the x86_64-musl target. Without
+          # this, cc-rs picks system gcc (compiles fine but emits
+          # objects that reference glibc-only symbols) and rustc
+          # pulls in /usr/lib/x86_64-linux-gnu/libm.a at link time
+          # (the glibc static libm references _dl_x86_cpu_features
+          # which doesn't exist in a static-musl binary).
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          AR_x86_64_unknown_linux_musl: ar
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
             cross build --bin axon --release --target ${{ matrix.target }}
@@ -131,37 +151,46 @@ jobs:
           retention-days: 90
 
   # ────────────────────────────────────────────────────────────────
-  # Optional WASM build — compiles the crate to wasm32-wasip1 (formerly
-  # wasm32-wasi; the target was renamed in Rust 1.84) so the Axon
-  # compiler can be embedded in browser-side tools.
+  # Optional WASM build — compiles `axon-frontend` (the pure-frontend
+  # crate: lexer + parser + AST + type checker + IR generator with
+  # zero runtime deps) to `wasm32-unknown-unknown` as a `cdylib` so
+  # the Axon compiler can be embedded in browser-side tools (LSP-in-
+  # browser, playground REPL, sandboxed IDEs).
+  #
+  # We DO NOT attempt to compile `axon-rs` (the full-stack runtime)
+  # to wasm — `tokio = { features = ["full"] }` is incompatible with
+  # wasm32 (`compile_error!("Only features sync,macros,io-util,rt,
+  # time are supported on wasm.")`). The runtime is a Linux/macOS/
+  # Windows server; the COMPILER is the browser-embeddable surface.
   #
   # Job-level `continue-on-error: true` so a wasm failure does not
-  # propagate to the workflow's overall conclusion. Historically this
-  # job was failing on the toolchain-install step (target name had been
-  # changed upstream), which marked the entire `Rust Release Binaries`
-  # workflow as `failed` even though the five real platform binaries
-  # (linux x2 + macos x2 + windows) had been built and published. The
-  # downstream `Enterprise Release` workflow only depends on
-  # axon-linux-x86_64, so a wasm failure must not block enterprise
-  # ECR builds.
+  # propagate to the workflow's overall conclusion. The downstream
+  # `Enterprise Release` workflow only depends on axon-linux-x86_64,
+  # so a wasm failure must not block enterprise ECR builds.
   # ────────────────────────────────────────────────────────────────
   wasm:
-    name: wasm32-wasip1
+    name: wasm32-unknown-unknown (axon-frontend)
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip1
-      - name: Cargo build (release, wasm32-wasip1)
-        working-directory: axon-rs
-        run: cargo build --bin axon --release --target wasm32-wasip1
+          targets: wasm32-unknown-unknown
+      - name: Cargo build (release, wasm32-unknown-unknown — axon-frontend cdylib)
+        # `cargo rustc --crate-type=cdylib` produces a `.wasm` artifact
+        # without requiring axon-frontend's Cargo.toml to declare
+        # `crate-type = ["cdylib"]` (which would force every other
+        # downstream build to also produce a shared library — wasteful
+        # since axon-frontend is normally consumed as an rlib by
+        # axon-rs and axon-lsp).
+        working-directory: axon-frontend
+        run: cargo rustc --release --target wasm32-unknown-unknown --crate-type=cdylib
       - name: Upload wasm artefact
         uses: actions/upload-artifact@v4
         with:
-          name: axon-wasm32-wasip1
-          path: axon-rs/target/wasm32-wasip1/release/axon.wasm
+          name: axon-frontend-wasm32
+          path: axon-frontend/target/wasm32-unknown-unknown/release/*.wasm
           if-no-files-found: warn
           retention-days: 90
 

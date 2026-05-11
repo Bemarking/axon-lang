@@ -770,11 +770,21 @@ static size_t axon_csys_utf8_count_chars_neon(
  * exists for portability + as the canonical reference the SIMD
  * variants must agree with. Annotate so `-Wunused-function` does not
  * fail on platforms that compile only the SIMD variants. */
-#if defined(__has_c_attribute) && __has_c_attribute(maybe_unused)
-[[maybe_unused]]
-#elif defined(__GNUC__) || defined(__clang__)
-__attribute__((unused))
+/* Pre-C23 GCC short-circuit caveat — see probe.c (nested-#ifdef pattern). */
+#ifdef __has_c_attribute
+#  if __has_c_attribute(maybe_unused)
+#    define AXON_CSYS_BPE_MAYBE_UNUSED [[maybe_unused]]
+#  endif
 #endif
+#ifndef AXON_CSYS_BPE_MAYBE_UNUSED
+#  if defined(__GNUC__) || defined(__clang__)
+#    define AXON_CSYS_BPE_MAYBE_UNUSED __attribute__((unused))
+#  else
+#    define AXON_CSYS_BPE_MAYBE_UNUSED
+#  endif
+#endif
+
+AXON_CSYS_BPE_MAYBE_UNUSED
 static size_t axon_csys_utf8_count_chars_scalar(
     const uint8_t* bytes,
     size_t len)
