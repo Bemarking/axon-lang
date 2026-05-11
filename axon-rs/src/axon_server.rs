@@ -18476,10 +18476,99 @@ async fn execute_handler_with_negotiation(
             .into_response();
     }
 
-    // Default path: legacy JSON handler unchanged.
-    execute_handler(State(state), headers, Json(payload))
+    // §Fase 31.e (D5) — diagnostic response header for legacy JSON
+    // responses on stream-effect flows. The header makes the
+    // language's type-driven inference observable at runtime when
+    // the wire format is JSON either because the strict flag is off
+    // (reason=flag_off) or because the adopter explicitly opted
+    // out via `transport: json` (reason=declared_json — D3 sacred).
+    //
+    // Header is NEVER emitted on:
+    //   * SSE responses (we promoted; wire is already streaming)
+    //   * JSON responses for non-stream-effect flows (no inference
+    //     fired; nothing to surface)
+    //
+    // Header text per plan vivo §7.2 verbatim:
+    //   `X-Axon-Stream-Available: 1; reason=<flag_off|declared_json>;
+    //    opt_in=transport:sse,Accept:text/event-stream`
+    //
+    // The flow name is also embedded so adopters debugging multi-
+    // endpoint deployments can grep the diagnostic by flow.
+    let flow_for_header = payload.flow.clone();
+    let mut resp = execute_handler(State(state), headers, Json(payload))
         .await
-        .into_response()
+        .into_response();
+    let stream_evidence_present = flow_has_any_stream_evidence(
+        program_opt.as_ref(), &source, &flow_for_header,
+    );
+    if stream_evidence_present {
+        // We're serving JSON for a flow that genuinely has stream
+        // effects. Distinguish the two reasons for the diagnostic.
+        let declared_json = source_text_axonendpoint_has_transport(
+            &source, &flow_for_header, "json",
+        );
+        let reason = if declared_json { "declared_json" } else { "flag_off" };
+        let header_value = format!(
+            "1; reason={reason}; flow={flow_for_header}; \
+             opt_in=transport:sse,Accept:text/event-stream"
+        );
+        if let Ok(value) = axum::http::HeaderValue::from_str(&header_value) {
+            resp.headers_mut()
+                .insert("x-axon-stream-available", value);
+        }
+        // HeaderValue::from_str failing means the flow name carried
+        // a CR/LF or other illegal byte — we silently skip the
+        // header rather than crash the request. The diagnostic is
+        // informational; never a hard contract.
+    }
+    resp
+}
+
+/// §Fase 31.e — Does the flow named `flow_name` have any stream
+/// effects, regardless of any `transport:` declaration the adopter
+/// may have made? Used by `execute_handler_with_negotiation` to
+/// decide whether to attach the `X-Axon-Stream-Available` header
+/// to a JSON response.
+///
+/// Dual-signal predicate, matching the architecture of
+/// `classify_negotiation_via_source_text` from Fase 30.e: AST walk
+/// for the canonical path + source-text patterns as the defensive
+/// fallback (catches the Rust frontend parser gaps for `output:
+/// Stream<T>` inside step bodies + `use Tool()` at flow-body level).
+///
+/// CRITICALLY DIFFERENT from `classify_negotiation_via_source_text`:
+/// this predicate **ignores** the `transport: json` declaration. We
+/// WANT to know whether the flow genuinely produces a stream — the
+/// declaration is what the adopter SAID, not what the flow IS. The
+/// header is meaningful for the D3 opt-out case (adopter declared
+/// json BUT the flow does have stream effects).
+fn flow_has_any_stream_evidence(
+    program_opt: Option<&crate::ast::Program>,
+    source: &str,
+    flow_name: &str,
+) -> bool {
+    // AST path — uses the Fase 30.e flow_produces_stream_runtime
+    // helper which already covers disjuncts (a) + (b).
+    if let Some(program) = program_opt {
+        for decl in &program.declarations {
+            if let Declaration::Flow(f) = decl {
+                if f.name == flow_name && flow_produces_stream_runtime(f, program) {
+                    return true;
+                }
+            }
+        }
+    }
+    // Source-text fallback — covers Rust parser gaps + disjunct (c)
+    // (`perform Stream.Yield(...)` which AST may not surface).
+    let has_stream_output = source.contains("output: Stream<")
+        || source.contains("output:Stream<");
+    let has_stream_effect = source.contains("stream:drop_oldest")
+        || source.contains("stream:degrade_quality")
+        || source.contains("stream:pause_upstream")
+        || source.contains("stream:fail");
+    let has_stream_yield = source.contains("Stream.Yield(")
+        || source.contains("Stream.Yield (");
+    has_stream_output || has_stream_effect || has_stream_yield
 }
 
 // ──────────────────────────────────────────────────────────────────────────
