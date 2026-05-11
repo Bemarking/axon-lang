@@ -4606,6 +4606,11 @@ impl Parser {
             implicit_transport: String::new(),
             // §Fase 32.g (D8) — auth scope; empty list ≡ no auth gate.
             requires_capabilities: Vec::new(),
+            // §Fase 32.h — Replay-token binding (D9 plan-vivo).
+            // Parser defaults: not explicit; effective value resolved
+            // at deploy time using the method-default heuristic.
+            replay_explicit: false,
+            replay: false,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -4670,6 +4675,17 @@ impl Parser {
                         node.timeout = t.value.clone();
                     }
                     "compliance" => node.compliance = self.parse_bracketed_identifiers()?,
+                    "replay" => {
+                        // §Fase 32.h (D9 plan-vivo) — Replay-token binding.
+                        // Boolean `replay: true | false`. Default (when
+                        // omitted) is method-derived at deploy-time:
+                        // POST/PUT → true, GET/DELETE → false. Explicit
+                        // declaration sets `replay_explicit = true` so
+                        // the runtime knows NOT to override.
+                        let value_tok = self.consume(TokenType::Bool)?;
+                        node.replay = value_tok.value.eq_ignore_ascii_case("true");
+                        node.replay_explicit = true;
+                    }
                     "requires" => {
                         // §Fase 32.g (D8) — Auth scope per axonendpoint.
                         // Closed slug grammar

@@ -111,6 +111,12 @@ pub mod idempotency;
 // grammar shared with `axon_frontend::parser`. Mirror of Python
 // `_is_valid_capability_slug`.
 pub mod auth_scope;
+// §Fase 32.h — Replay-token binding for first-class axonendpoint routes.
+// Append-only log keyed by trace_id; populated on every successful 2xx
+// POST/PUT where `replay:` resolves to true. `GET /v1/replay/<trace_id>`
+// returns the original request body + response body + metadata for
+// regulatory audit (PCI DSS Req 10, FedRAMP AU-2, FRE 502, 21 CFR Part 11).
+pub mod axonendpoint_replay;
 pub mod resilient_backend;
 pub mod retry_policy;
 pub mod runner;
