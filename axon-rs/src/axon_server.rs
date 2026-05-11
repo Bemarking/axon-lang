@@ -193,6 +193,28 @@ pub struct ServerConfig {
     pub database_url: Option<String>,
     /// Optional path for persisted config file.
     pub config_path: Option<String>,
+    /// §Fase 31.d (D6) — Type-Driven Wire Inference activation flag.
+    ///
+    /// When `true`, `POST /v1/execute` promotes to SSE for any flow
+    /// the type-checker inferred as stream-producing (i.e. the
+    /// AxonEndpoint AST node carries `implicit_transport == "sse"`)
+    /// REGARDLESS of the `Accept:` header. The D1 inference becomes
+    /// the wire's authoritative source.
+    ///
+    /// When `false` (D6 default in v1.22.x — backwards-compat first),
+    /// the Fase 30.e D4 + D5 negotiation matrix is preserved verbatim.
+    /// Only the additive 31.e diagnostic header is observable for
+    /// existing clients.
+    ///
+    /// D9 ratified — this flag flips to default `true` in v2.0.0
+    /// (Fase 35+ candidate) with the full migration guide already
+    /// published in `docs/MIGRATION_v1.22.md` (31.h).
+    ///
+    /// Adopters opt in via three converging surfaces (31.f):
+    ///   * CLI: `axon serve --strict-type-driven-transport`
+    ///   * Config file: `[server] strict_type_driven_transport = true`
+    ///   * Env var:    `AXON_STRICT_TYPE_DRIVEN_TRANSPORT=1`
+    pub strict_type_driven_transport: bool,
 }
 
 impl ServerConfig {
@@ -18391,7 +18413,27 @@ async fn execute_handler_with_negotiation(
         NegotiationDecision::StayJson
     };
 
-    // D5 force-promote OR D4 fallback-with-Accept → SSE.
+    // §Fase 31.d (D1, D6, D8) — strict-mode flag for type-driven
+    // default transport. When enabled, a `PromoteToSse` verdict
+    // (from EITHER the explicit declaration OR the stream-effect
+    // inference) is honored regardless of the client's `Accept:`
+    // header. When disabled (D6 default in v1.22.x), Fase 30.e D4
+    // + D5 negotiation is preserved verbatim.
+    //
+    // Critically, `decision == StayJson` is sticky in both modes:
+    // when the adopter explicitly declared `transport: json` (D3
+    // opt-out, captured by the combine logic above), strict mode
+    // does NOT override the opt-out. The four-pillar discipline
+    // requires the language to honor the adopter's explicit choice
+    // — the inference defers when the source declared.
+    let strict_mode = state
+        .lock()
+        .unwrap()
+        .config
+        .strict_type_driven_transport;
+
+    // D5 force-promote OR D4 fallback-with-Accept (legacy) OR
+    // D1 type-driven default (strict mode) → SSE.
     // D5 force-stay-json OR no-stream-effect-no-Accept → JSON.
     let promote_sse = match decision {
         NegotiationDecision::PromoteToSse => {
@@ -18400,7 +18442,9 @@ async fn execute_handler_with_negotiation(
             //   - axonendpoint with transport == sse/ndjson for this
             //     flow → D5 wins regardless of Accept
             //   - Otherwise PromoteToSse was returned because of the
-            //     stream-effect predicate → D4 requires Accept
+            //     stream-effect predicate → D4 requires Accept (when
+            //     `strict_mode == false`) OR fires unconditionally
+            //     (when `strict_mode == true`).
             let has_force_decl = match program_opt {
                 Some(ref program) => program.declarations.iter().any(|d| {
                     matches!(
@@ -18412,7 +18456,11 @@ async fn execute_handler_with_negotiation(
                 }),
                 None => source_text_has_force_decl(&source, &payload.flow),
             };
-            has_force_decl || client_wants_sse
+            // strict_mode upgrades the D4 fallback into a default:
+            // any stream-effect flow (whose decision is PromoteToSse
+            // because the inference fired) returns SSE without
+            // requiring `Accept: text/event-stream`.
+            has_force_decl || client_wants_sse || strict_mode
         }
         NegotiationDecision::StayJson => false,
     };
@@ -24858,6 +24906,7 @@ mod tests {
             log_file: None,
             database_url: None,
             config_path: None,
+            strict_type_driven_transport: false,
         }
     }
 
@@ -24872,6 +24921,7 @@ mod tests {
             log_file: None,
             database_url: None,
             config_path: None,
+            strict_type_driven_transport: false,
         }
     }
 

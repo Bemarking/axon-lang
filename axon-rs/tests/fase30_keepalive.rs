@@ -48,6 +48,7 @@ fn server_cfg() -> ServerConfig {
         log_file: None,
         database_url: None,
         config_path: None,
+        strict_type_driven_transport: false,
     }
 }
 
