@@ -452,6 +452,201 @@ def _compute_implicit_transports(
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  §FASE 31.c — COMPILE-TIME WARNING `axon-W001` (D4, D10)
+# ═══════════════════════════════════════════════════════════════════
+#
+# When the type-checker infers `implicit_transport == "sse"` AND the
+# axonendpoint did not declare `transport:` explicitly, emit a
+# WARNING (not an error) per D4. The warning is rate-limited to one
+# per axonendpoint (naturally — the walker visits each endpoint
+# once), suppressed when `transport:` is declared explicitly, and
+# promoted to error under `--strict` mode (Fase 28.h opt-in).
+#
+# Warning code namespace: `axon-Wnnn` for warnings (W prefix);
+# errors keep their `axon-Ennn` namespace from Fase 28 + Fase 30.
+# W001 is the first entry in the warning namespace.
+#
+# The message names the inference origin (disjunct a / b / c + the
+# offending step or tool, when known) so the adopter can paste the
+# fix without re-reading the source. This is the four-pillar
+# discipline (D10): a silent default is a contract the adopter
+# can't reason about; the warning makes the inference visible.
+#
+# Pillar trace:
+#   PHILOSOPHY — the language MUST be honest about its inferences.
+#   LOGIC      — the warning fires iff a precise predicate holds.
+#   COMPUTING  — rate-limited per-endpoint; suppression rules
+#                 spelled out; promoted to error in strict mode.
+# ═══════════════════════════════════════════════════════════════════
+
+
+_W001_CODE = "axon-W001"
+
+
+def _describe_stream_origin(
+    flow: FlowDefinition,
+    symbol_lookup: "callable[[str], object | None]",
+) -> str:
+    """Find the most informative description of WHY the flow
+    produces a stream — to make the W001 warning paste-actionable.
+
+    Returns one of:
+      * `"step '<name>' has output: Stream<T>"` (disjunct a)
+      * `"step '<name>' applies tool '<tool>' with effects <stream:<policy>>"` (disjunct b — apply_ref)
+      * `"tool '<tool>' is used directly with effects <stream:<policy>>"` (disjunct b — use_tool)
+      * `"perform Stream.Yield(...) inside step '<name>'"` (disjunct c)
+      * `"its declared algebraic effects"` (catch-all)
+    """
+    # Disjunct (a) check first — most direct.
+    for stmt in flow.body:
+        if isinstance(stmt, StepNode) and _has_stream_output(stmt):
+            return f"step '{stmt.name}' has `output: {stmt.output_type}`"
+    # Disjunct (b) — apply_ref and use_tool variants.
+    to_visit: list[ASTNode] = list(flow.body)
+    seen: set[str] = set()
+    while to_visit:
+        node = to_visit.pop()
+        if isinstance(node, StepNode):
+            # apply_ref → tool with stream effect
+            if node.apply_ref and node.apply_ref not in seen:
+                seen.add(node.apply_ref)
+                sym = symbol_lookup(node.apply_ref)
+                if sym is not None and getattr(sym, "kind", "") == "tool":
+                    tool_node = getattr(sym, "node", None)
+                    if isinstance(tool_node, ToolDefinition) and _has_stream_effect(tool_node):
+                        policy = next(
+                            (e for e in tool_node.effects.effects if e.startswith("stream:")),
+                            "stream:?",
+                        )
+                        return (
+                            f"step '{node.name}' applies tool '{tool_node.name}' "
+                            f"with effects `<{policy}>`"
+                        )
+            # use_tool variant
+            if node.use_tool is not None and node.use_tool.tool_name and node.use_tool.tool_name not in seen:
+                seen.add(node.use_tool.tool_name)
+                sym = symbol_lookup(node.use_tool.tool_name)
+                if sym is not None and getattr(sym, "kind", "") == "tool":
+                    tool_node = getattr(sym, "node", None)
+                    if isinstance(tool_node, ToolDefinition) and _has_stream_effect(tool_node):
+                        policy = next(
+                            (e for e in tool_node.effects.effects if e.startswith("stream:")),
+                            "stream:?",
+                        )
+                        return (
+                            f"step '{node.name}' uses tool '{tool_node.name}' "
+                            f"with effects `<{policy}>`"
+                        )
+            to_visit.extend(node.body or [])
+        elif isinstance(node, UseToolNode):
+            if node.tool_name and node.tool_name not in seen:
+                seen.add(node.tool_name)
+                sym = symbol_lookup(node.tool_name)
+                if sym is not None and getattr(sym, "kind", "") == "tool":
+                    tool_node = getattr(sym, "node", None)
+                    if isinstance(tool_node, ToolDefinition) and _has_stream_effect(tool_node):
+                        policy = next(
+                            (e for e in tool_node.effects.effects if e.startswith("stream:")),
+                            "stream:?",
+                        )
+                        return (
+                            f"tool '{tool_node.name}' is used directly "
+                            f"with effects `<{policy}>`"
+                        )
+        for attr in ("body", "then_branch", "else_branch", "branches",
+                     "arms", "clauses", "steps"):
+            child = getattr(node, attr, None)
+            if isinstance(child, list):
+                to_visit.extend(child)
+            elif isinstance(child, ASTNode):
+                to_visit.append(child)
+    # Disjunct (c) — perform Stream.Yield
+    for stmt in flow.body:
+        if _walk_perform_expressions(stmt):
+            step_name = getattr(stmt, "name", "?")
+            return f"`perform Stream.Yield(...)` inside step '{step_name}'"
+    return "its declared algebraic effects"
+
+
+def _build_w001_message(
+    endpoint: AxonEndpointDefinition,
+    flow: FlowDefinition | None,
+    symbol_lookup: "callable[[str], object | None]",
+) -> str:
+    """Build the canonical W001 message text per D4 + plan vivo §6.2.
+
+    Structure (single line — source-context block rendered separately
+    by AxonTypeError's `source_snippet` when present):
+
+      `warning[axon-W001]: implicit `transport: sse` inferred from
+       stream effects on axonendpoint 'X' (flow 'Y' produces a stream
+       via <origin>). Declare `transport: sse` to silence this warning
+       and lock in SSE behavior, or `transport: json` to opt out and
+       keep the legacy JSON wire format. When
+       `strict_type_driven_transport: true`, this endpoint emits SSE
+       on /v1/execute by default.`
+    """
+    origin = (
+        _describe_stream_origin(flow, symbol_lookup)
+        if flow is not None
+        else "its declared algebraic effects"
+    )
+    return (
+        f"warning[{_W001_CODE}]: implicit `transport: sse` inferred "
+        f"from stream effects on axonendpoint '{endpoint.name}' "
+        f"(flow '{endpoint.execute_flow}' produces a stream via "
+        f"{origin}). Declare `transport: sse` to silence this warning "
+        f"and lock in SSE behavior, or `transport: json` to opt out "
+        f"and keep the legacy JSON wire format. When "
+        f"`strict_type_driven_transport: true`, this endpoint emits "
+        f"SSE on /v1/execute by default."
+    )
+
+
+def _emit_implicit_transport_warnings(
+    program: "Program",
+    symbol_lookup: "callable[[str], object | None]",
+    warnings: "list[AxonTypeError]",
+) -> None:
+    """Walk every `AxonEndpointDefinition` and append an `axon-W001`
+    warning to `warnings` for each implicit-sse site (D4).
+
+    Conditions for emission (all must hold):
+      1. `endpoint.transport_explicit == False` (field omitted in source)
+      2. `endpoint.implicit_transport == "sse"` (inference fired)
+      3. The endpoint resolves an `execute_flow` — orphan endpoints
+         emit no W001 (their separate error is unrelated; a W001
+         attached would be noise).
+
+    Rate-limited naturally — one warning per axonendpoint. The
+    `warnings` list is mutated in place; caller threads it from the
+    `TypeChecker._warnings` collection (or any other compatible list).
+    """
+    # Build flow map once for efficient lookup.
+    flow_by_name: dict[str, FlowDefinition] = {}
+    for decl in program.declarations:
+        if isinstance(decl, FlowDefinition):
+            flow_by_name[decl.name] = decl
+
+    for decl in program.declarations:
+        if not isinstance(decl, AxonEndpointDefinition):
+            continue
+        if decl.transport_explicit:
+            continue  # Adopter declared explicitly — no warning.
+        if decl.implicit_transport != "sse":
+            continue  # No inference fired — no warning.
+        flow = flow_by_name.get(decl.execute_flow)
+        if flow is None:
+            continue  # Orphan endpoint — separate error reports.
+        msg = _build_w001_message(decl, flow, symbol_lookup)
+        warnings.append(AxonTypeError(
+            message=msg,
+            line=decl.line,
+            column=decl.column,
+        ))
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  TYPE COMPATIBILITY MATRIX
 # ═══════════════════════════════════════════════════════════════════
 
@@ -973,9 +1168,19 @@ class TypeChecker:
         # per the D1 rule. This must run AFTER phase 1 (symbols are
         # registered) so the stream-effect predicate can resolve tool
         # references; it can run AFTER phase 2 because we only mutate
-        # the AST (no new errors raised by 31.b itself — those land in
-        # 31.c). Idempotent + safe to re-run.
+        # the AST. Idempotent + safe to re-run.
         _compute_implicit_transports(self._program, self._symbols.lookup)
+
+        # Phase 6: §Fase 31.c — Compile-time `axon-W001` warning (D4).
+        # For every axonendpoint where the type system inferred SSE
+        # but the source omitted the `transport:` declaration, append
+        # a non-fatal warning to `self._warnings`. Rate-limited per
+        # endpoint by construction (each endpoint visited once).
+        # Strict mode (Fase 28.h) promotes warnings → errors at the
+        # rendering layer — no change needed here.
+        _emit_implicit_transport_warnings(
+            self._program, self._symbols.lookup, self._warnings,
+        )
 
         return self._errors
 

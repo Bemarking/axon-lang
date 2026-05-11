@@ -4058,6 +4058,150 @@ pub fn implicit_transport(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  §FASE 31.c — COMPILE-TIME WARNING `axon-W001` (D4, D10)
+// ═══════════════════════════════════════════════════════════════════
+//
+// Rust mirror of Python `_emit_implicit_transport_warnings`. Same
+// emission conditions, same message shape, same warning code
+// `axon-W001`. D7 cross-stack contract: both stacks render
+// byte-identical warning text for byte-identical input.
+
+/// Warning code namespace per D4 — first entry in the warning
+/// namespace `axon-Wnnn`. Errors keep their `axon-Ennn` namespace
+/// from Fase 28 + Fase 30.
+pub const W001_CODE: &str = "axon-W001";
+
+/// Find the most informative description of WHY the flow produces
+/// a stream — mirror of Python `_describe_stream_origin`. Used by
+/// the W001 warning builder to make the diagnostic paste-actionable.
+fn describe_stream_origin(flow: &FlowDefinition, program: &Program) -> String {
+    // Disjunct (a) — step with `output: Stream<T>`.
+    for step in &flow.body {
+        if let FlowStep::Step(s) = step {
+            let out = s.output_type.trim();
+            if out.starts_with("Stream<") && out.ends_with('>') {
+                return format!("step '{}' has `output: {}`", s.name, s.output_type);
+            }
+        }
+    }
+    // Disjunct (b) — find the first stream-effect tool reference.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for step in &flow.body {
+        match step {
+            FlowStep::Step(s) => {
+                if !s.apply_ref.is_empty() && seen.insert(s.apply_ref.clone()) {
+                    if let Some(policy) = tool_stream_policy(program, &s.apply_ref) {
+                        return format!(
+                            "step '{}' applies tool '{}' with effects `<{}>`",
+                            s.name, s.apply_ref, policy
+                        );
+                    }
+                }
+            }
+            FlowStep::UseTool(u) => {
+                let tn = use_tool_step_name(u);
+                if !tn.is_empty() && seen.insert(tn.to_string()) {
+                    if let Some(policy) = tool_stream_policy(program, tn) {
+                        return format!(
+                            "tool '{}' is used directly with effects `<{}>`",
+                            tn, policy
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    "its declared algebraic effects".to_string()
+}
+
+/// Resolve a tool by name and return the first `stream:<policy>`
+/// effect, or `None` if the tool doesn't exist / has no stream effect.
+fn tool_stream_policy(program: &Program, tool_name: &str) -> Option<String> {
+    for decl in &program.declarations {
+        if let Declaration::Tool(t) = decl {
+            if t.name == tool_name {
+                if let Some(ref effects) = t.effects {
+                    for e in &effects.effects {
+                        if e.starts_with("stream:") {
+                            return Some(e.clone());
+                        }
+                    }
+                }
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// Build the canonical W001 message text per D4. Mirrors Python
+/// `_build_w001_message` byte-identically.
+fn build_w001_message(endpoint: &AxonEndpointDefinition, flow: &FlowDefinition, program: &Program) -> String {
+    let origin = describe_stream_origin(flow, program);
+    format!(
+        "warning[{}]: implicit `transport: sse` inferred from stream \
+         effects on axonendpoint '{}' (flow '{}' produces a stream \
+         via {}). Declare `transport: sse` to silence this warning \
+         and lock in SSE behavior, or `transport: json` to opt out \
+         and keep the legacy JSON wire format. When \
+         `strict_type_driven_transport: true`, this endpoint emits \
+         SSE on /v1/execute by default.",
+        W001_CODE, endpoint.name, endpoint.execute_flow, origin
+    )
+}
+
+/// Walk every `AxonEndpointDefinition` and emit one `axon-W001`
+/// warning per implicit-sse site (D4). Returns the list of new
+/// `TypeError` warnings — caller appends to whatever warning
+/// collection it manages (e.g. `TypeChecker.warnings` or a
+/// CLI-rendering buffer).
+///
+/// Emission conditions (all must hold):
+///   1. `endpoint.transport_explicit == false`
+///   2. `endpoint.implicit_transport == "sse"`
+///   3. The endpoint's `execute_flow` resolves to a flow in scope
+///      (orphan endpoints emit no W001 — their separate error is
+///      unrelated; a W001 attached would be noise).
+///
+/// Rate-limited per axonendpoint by construction. Safe to call
+/// repeatedly (each call rebuilds the warning list — idempotent).
+pub fn compute_implicit_transport_warnings(program: &Program) -> Vec<TypeError> {
+    let mut warnings: Vec<TypeError> = Vec::new();
+    let mut flow_indices: HashMap<String, usize> = HashMap::new();
+    for (i, decl) in program.declarations.iter().enumerate() {
+        if let Declaration::Flow(f) = decl {
+            flow_indices.insert(f.name.clone(), i);
+        }
+    }
+    for decl in &program.declarations {
+        let ae = match decl {
+            Declaration::AxonEndpoint(ae) => ae,
+            _ => continue,
+        };
+        if ae.transport_explicit {
+            continue;
+        }
+        if ae.implicit_transport != "sse" {
+            continue;
+        }
+        let flow = match flow_indices.get(&ae.execute_flow) {
+            Some(&fi) => match &program.declarations[fi] {
+                Declaration::Flow(f) => f,
+                _ => continue,
+            },
+            None => continue,
+        };
+        warnings.push(TypeError {
+            message: build_w001_message(ae, flow, program),
+            line: ae.loc.line,
+            column: ae.loc.column,
+        });
+    }
+    warnings
+}
+
 /// Walk every `AxonEndpointDefinition` in the program and attach
 /// its computed `implicit_transport` per D1. Mutates the AST in
 /// place. Idempotent + safe to re-run.
