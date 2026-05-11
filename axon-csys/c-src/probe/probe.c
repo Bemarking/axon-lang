@@ -102,11 +102,21 @@
  * [[nodiscard]] portable guard.
  * `__has_c_attribute(nodiscard)` is C23-mandated; in pre-C23 we compile
  * the attribute away.
+ *
+ * Pre-C23 GCC (≤ ~10 on aarch64-linux-musl in cross 0.2.5) does NOT define
+ * the `__has_c_attribute` builtin and does NOT short-circuit it inside a
+ * `#if defined(X) && X(y)` expression — it eagerly expands the second
+ * conjunct and emits "missing binary operator before token (". Nested
+ * `#ifdef` / `#if` guards avoid the eager-expansion path on those
+ * pre-C23 toolchains.
  * ------------------------------------------------------------------------- */
 
-#if defined(__has_c_attribute) && __has_c_attribute(nodiscard)
-#  define AXON_CSYS_NODISCARD [[nodiscard]]
-#else
+#ifdef __has_c_attribute
+#  if __has_c_attribute(nodiscard)
+#    define AXON_CSYS_NODISCARD [[nodiscard]]
+#  endif
+#endif
+#ifndef AXON_CSYS_NODISCARD
 #  define AXON_CSYS_NODISCARD
 #endif
 

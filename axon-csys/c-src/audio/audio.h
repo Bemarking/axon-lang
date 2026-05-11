@@ -26,9 +26,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#if defined(__has_c_attribute) && __has_c_attribute(nodiscard)
-#  define AXON_CSYS_AUDIO_NODISCARD [[nodiscard]]
-#else
+/* Pre-C23 GCC short-circuit caveat — see probe.c (nested-#ifdef pattern). */
+#ifdef __has_c_attribute
+#  if __has_c_attribute(nodiscard)
+#    define AXON_CSYS_AUDIO_NODISCARD [[nodiscard]]
+#  endif
+#endif
+#ifndef AXON_CSYS_AUDIO_NODISCARD
 #  define AXON_CSYS_AUDIO_NODISCARD
 #endif
 

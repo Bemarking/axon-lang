@@ -532,7 +532,7 @@ dependencies = [
 
 [[package]]
 name = "axon-csys"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "cc",
  "fancy-regex",
@@ -548,7 +548,7 @@ dependencies = [
 
 [[package]]
 name = "axon-lang"
-version = "1.21.0"
+version = "1.21.1"
 dependencies = [
  "async-trait",
  "aws-config",
