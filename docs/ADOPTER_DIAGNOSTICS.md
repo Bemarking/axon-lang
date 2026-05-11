@@ -491,6 +491,84 @@ streaming-surface guide, including the formal predicate, all four
 backpressure policies, the SSE wire-format spec, and load-balancer
 deployment recipes.
 
+### Pattern 6 (NEW in v1.22.0): `axon-W001` — implicit `transport: sse` warning
+
+```axon
+tool chat_token_stream {
+    effects: <stream:drop_oldest>
+}
+
+flow Chat() -> String {
+    step Generate {
+        ask: "Hello, AI"
+        apply: chat_token_stream
+    }
+}
+
+axonendpoint ChatEndpoint {
+    method:  POST
+    path:    "/chat"
+    execute: Chat                  // ← stream effects but no transport: declared
+}
+```
+
+```
+warning[axon-W001]: implicit `transport: sse` inferred from stream
+effects on axonendpoint 'ChatEndpoint' (flow 'Chat' produces a stream
+via step 'Generate' applies tool 'chat_token_stream' with effects
+`<stream:drop_oldest>`). Declare `transport: sse` to silence this
+warning and lock in SSE behavior, or `transport: json` to opt out and
+keep the legacy JSON wire format. When `strict_type_driven_transport:
+true`, this endpoint emits SSE on /v1/execute by default.
+```
+
+The Fase 31.c type-checker emits this **non-fatal warning** when:
+
+1. An axonendpoint's `execute:` flow has stream effects (the
+   produces_stream predicate fires per the Fase 30.c 3-disjunct
+   disjunction), AND
+2. The axonendpoint omits the `transport:` declaration.
+
+The warning is rate-limited (one per axonendpoint per build pass)
+and **suppressed** when:
+
+- The axonendpoint declares any explicit `transport:` value
+  (`sse`, `json`, or `ndjson`).
+- The flow does not produce a stream.
+- The `execute:` flow doesn't resolve (a separate error fires).
+
+**Three remediation paths** — pick the one that matches your intent:
+
+1. **Lock in SSE behavior (recommended for streaming chat / live
+   transcription / token-by-token UIs):**
+   ```axon
+   transport: sse        // explicit; future-proof; survives v2.0.0 default flip
+   ```
+
+2. **Opt out of streaming wire (D3 sacred — JSON wrapper preserved):**
+   ```axon
+   transport: json       // explicit opt-out; warning silenced; runtime
+                         // header X-Axon-Stream-Available still fires with
+                         // reason=declared_json so clients see the trade-off
+   ```
+
+3. **Flip the server flag and let inference rule the wire (one config line):**
+   ```bash
+   axon serve --strict-type-driven-transport
+   # OR
+   export AXON_STRICT_TYPE_DRIVEN_TRANSPORT=1
+   ```
+
+`--strict` mode (Fase 28.h opt-in) promotes the warning to an
+error — useful for CI pipelines that want the strongest signal at
+build time.
+
+See [MIGRATION_v1.22.md](MIGRATION_v1.22.md) for the four migration
+scenarios (Kivi-shape quick-fix, default-everywhere, intentional
+JSON wrapping, staged rollout) and [ADOPTER_STREAMING.md §Type-driven
+default transport](ADOPTER_STREAMING.md#type-driven-default-transport-fase-31-v1220)
+for the complete D1-D10 ratification trace.
+
 ---
 
 ## CI integration cookbook

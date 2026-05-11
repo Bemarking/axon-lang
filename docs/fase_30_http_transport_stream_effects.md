@@ -12,6 +12,9 @@ charter_class: OSS — every adopter benefits; no enterprise-only surface. axon-
 > - [`ADOPTER_STREAMING.md`](ADOPTER_STREAMING.md) (NEW, ships in 30.h) — end-to-end adopter guide for the transport surface.
 > - [`STREAM_EFFECTS.md`](STREAM_EFFECTS.md) — Fase 11.a doc covering the `Stream<T>` algebraic effect + the 4 backpressure policies. Extended in 30.h with a new "HTTP wire format" section.
 > - [`ADOPTER_DIAGNOSTICS.md`](ADOPTER_DIAGNOSTICS.md) — Fase 28 adopter-facing diagnostic guide; cross-linked from the new streaming guide.
+>
+> **Successor plan vivo (Fase 31, v1.22.0+):**
+> - [`fase_31_type_driven_wire_inference.md`](fase_31_type_driven_wire_inference.md) — Fase 31 extends Fase 30 with the **Type-Driven Wire Inference** surface (D1: the type system computes `implicit_transport` from stream-effect predicates and rules the wire when the strict flag is on). Fase 30 D4 + D5 + D9 negotiation matrix is preserved verbatim when the Fase 31 flag is off (D8 backwards-compat absolute). The Kivi adopter case 2026-05-11 — which reached 7 version iterations searching for the SSE wire format because the Fase 30 D4 fallback required an `Accept:` header the client didn't send — surfaced the philosophical gap that Fase 31 closes. Adopter-facing migration guide at [`MIGRATION_v1.22.md`](MIGRATION_v1.22.md).
 
 ---
 
