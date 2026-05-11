@@ -271,6 +271,23 @@ pub struct ServerState {
     pub event_bus: EventBus,
     pub supervisor: DaemonSupervisor,
     pub versions: VersionRegistry,
+    /// §Fase 32.b — Dynamic HTTP routes registered from axonendpoint
+    /// declarations at deploy time (D1, D11). Key is
+    /// `(method_uppercase, path)`; value carries the metadata needed
+    /// for request-time dispatch (flow name + transport + keepalive +
+    /// source file for the negotiation classifier).
+    ///
+    /// Populated by `register_axonendpoint_routes` after every
+    /// successful `/v1/deploy`. Path conflicts detected at deploy
+    /// time per D2 (deploy fails with 409 when the same
+    /// `(method, path)` tuple is already owned by a different
+    /// `(flow_name, source_file)` pair). Re-deploying the same flow
+    /// updates its routes in place.
+    ///
+    /// Cross-stack contract (D11): the Python `AxonServer` mirrors
+    /// this state via FastAPI route registration; both stacks
+    /// produce byte-identical route sets from the same source.
+    pub dynamic_routes: HashMap<(String, String), DynamicEndpointRoute>,
     pub session: SessionStore,
     pub scoped_sessions: ScopedSessionManager,
     pub rate_limiter: RateLimiter,
@@ -818,6 +835,12 @@ impl ServerState {
             event_bus,
             supervisor,
             versions: VersionRegistry::new(),
+            // §Fase 32.b — dynamic_routes is populated lazily by
+            // deploy_handler. Empty at startup; the legacy fallback
+            // handler returns 404 for unrecognized paths until the
+            // first /v1/deploy that registers axonendpoints with
+            // explicit `path:` declarations.
+            dynamic_routes: HashMap::new(),
             session: SessionStore::new("axon-server"),
             scoped_sessions: ScopedSessionManager::new("axon-server"),
             rate_limiter,
@@ -1491,7 +1514,7 @@ async fn deploy_handler(
     };
 
     let mut parser = crate::parser::Parser::new(tokens);
-    let program = match parser.parse() {
+    let mut program = match parser.parse() {
         Ok(p) => p,
         Err(e) => {
             let mut s = state.lock().unwrap();
@@ -1516,6 +1539,31 @@ async fn deploy_handler(
             "error_count": type_errors.len(),
         })));
     }
+
+    // §Fase 31.b — populate AxonEndpoint.implicit_transport on the
+    // AST so downstream consumers (route registration, runtime
+    // classifier, audit log) see the type-driven inference. Mutates
+    // program in place; idempotent.
+    crate::type_checker::compute_implicit_transports(&mut program);
+
+    // §Fase 32.b — Collect dynamic routes from the program's
+    // AxonEndpoint declarations + detect intra-program path
+    // collisions (D2 within deploy). The collected table is merged
+    // into ServerState.dynamic_routes below; cross-deploy collisions
+    // are detected by the merge step.
+    let incoming_routes = match collect_axonendpoint_routes(&program, &source, &filename) {
+        Ok(r) => r,
+        Err(msg) => {
+            let mut s = state.lock().unwrap();
+            s.metrics.total_errors += 1;
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": msg,
+                "phase": "route_registration",
+                "d_letter": "D2",
+            })));
+        }
+    };
 
     let ir = crate::ir_generator::IRGenerator::new().generate(&program);
 
@@ -1552,6 +1600,20 @@ async fn deploy_handler(
             .collect();
 
         s.metrics.active_daemons = s.daemons.len() as u32;
+
+        // §Fase 32.b — Merge dynamic routes into live state. Cross-
+        // deploy path collisions (D2) detected here; on collision we
+        // return early before recording the deploy + emitting events
+        // so the failed deploy doesn't pollute the audit trail.
+        if let Err(msg) = merge_dynamic_routes(&mut s.dynamic_routes, incoming_routes.clone()) {
+            s.metrics.total_errors += 1;
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": msg,
+                "phase": "route_registration",
+                "d_letter": "D2",
+            })));
+        }
 
         // Record versions
         let version_results = s.versions.record_deploy(
@@ -18342,6 +18404,254 @@ fn source_text_axonendpoint_has_transport(
     false
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  §FASE 32.b — DYNAMIC AXONENDPOINT ROUTES (D1, D2, D3, D11)
+// ═══════════════════════════════════════════════════════════════════
+//
+// Every `axonendpoint` declaration in a deployed program produces
+// exactly one HTTP route at the declared (method, path). The path is
+// no longer decorative metadata — it IS the canonical URL the adopter
+// exposes (D1).
+//
+// Path conflict resolution is deterministic (D2): two axonendpoints
+// declaring the same (method, path) tuple — within one program OR
+// across two deploys of different flows — fail the deploy with a
+// structured 409 response naming both endpoints. No silent "last
+// wins" override.
+//
+// Method enum closed (D3): `axonendpoint.method ∈ {GET, POST, PUT,
+// DELETE, PATCH}`. Other methods (HEAD, OPTIONS, CONNECT, TRACE) are
+// runtime-managed (CORS preflight, etc.) and not adopter-declarable.
+// Closed enum refuses interpretation drift.
+//
+// Cross-stack consistency (D11): the Python `AxonServer.create_app()`
+// mirror registers routes via FastAPI's `app.add_api_route()`; both
+// stacks produce byte-identical route sets from the same source.
+// Drift gate over a shared corpus locks parity in CI.
+//
+// Pillar trace per D12:
+//   MATHEMATICS — `(method, path) → DynamicEndpointRoute` is a pure
+//                  function of the deployed program.
+//   LOGIC      — path conflicts detected at deploy time; orphan
+//                 paths impossible.
+//   PHILOSOPHY — declarative source IS the HTTP behavior; auditors
+//                 inspect source + know the REST surface verbatim.
+//   COMPUTING  — strictly additive when adopter declares paths;
+//                 /v1/execute preserved verbatim per D10.
+
+/// Closed method enum per D3. Adopter-declarable methods only;
+/// HEAD/OPTIONS/CONNECT/TRACE are runtime-managed (CORS preflight,
+/// etc.) and never registered from source.
+pub const AXONENDPOINT_METHODS: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH"];
+
+/// Metadata stored per registered dynamic route. Populated at deploy
+/// time from `AxonEndpointDefinition`; consulted at request time by
+/// the fallback handler to dispatch to the correct flow with the
+/// correct transport semantics.
+#[derive(Debug, Clone)]
+pub struct DynamicEndpointRoute {
+    /// The flow name the axonendpoint's `execute:` field declared.
+    pub flow_name: String,
+    /// The axonendpoint name (for diagnostic + audit).
+    pub endpoint_name: String,
+    /// Source file the axonendpoint was deployed from. Used by the
+    /// negotiation classifier (Fase 30.e + Fase 31.d) for source-text
+    /// dual-signal predicate.
+    pub source_file: String,
+    /// Full source of the deployed program. Required for runtime
+    /// transport inference (Fase 31.b `produces_stream` predicate).
+    pub source: String,
+    /// `transport:` field verbatim — one of `{json, sse, ndjson}` per
+    /// Fase 30 D2; empty string when omitted (Fase 31.b
+    /// `transport_explicit == false` path).
+    pub transport: String,
+    /// Was `transport:` explicitly declared in source (Fase 31.b)?
+    pub transport_explicit: bool,
+    /// `keepalive:` field per Fase 30 D6; empty when omitted.
+    pub keepalive: String,
+    /// Inferred transport per Fase 31.b D1 (`"sse"` / `"json"` /
+    /// empty if pre-compute).
+    pub implicit_transport: String,
+}
+
+/// Walk the program's AxonEndpoint declarations and produce the
+/// route table that the deploy_handler will merge into
+/// `ServerState.dynamic_routes`. Detects intra-program path
+/// collisions (D2 within a single deploy) and returns a structured
+/// `Err` naming both colliding endpoints.
+///
+/// Method enum validation (D3) is done at PARSER level (axon-frontend)
+/// + Python parser; this function trusts that all methods reaching it
+/// are in `AXONENDPOINT_METHODS`. Defensive: if an unknown method
+/// slipped through, we skip with a warning logged to stderr (never
+/// panic; never silently accept).
+pub fn collect_axonendpoint_routes(
+    program: &crate::ast::Program,
+    source: &str,
+    source_file: &str,
+) -> Result<HashMap<(String, String), DynamicEndpointRoute>, String> {
+    let mut routes: HashMap<(String, String), DynamicEndpointRoute> = HashMap::new();
+    for decl in &program.declarations {
+        if let crate::ast::Declaration::AxonEndpoint(ae) = decl {
+            let method = ae.method.trim().to_ascii_uppercase();
+            if !AXONENDPOINT_METHODS.contains(&method.as_str()) {
+                eprintln!(
+                    "axon-rs: axonendpoint '{}' declared invalid method '{}' \
+                     (closed enum D3: {AXONENDPOINT_METHODS:?}); skipping route \
+                     registration. Parser should have rejected this — defensive \
+                     skip applied at runtime.",
+                    ae.name, method
+                );
+                continue;
+            }
+            let path = ae.path.trim().to_string();
+            if path.is_empty() || !path.starts_with('/') {
+                eprintln!(
+                    "axon-rs: axonendpoint '{}' declared invalid path '{}' \
+                     (must be non-empty and start with '/'); skipping route \
+                     registration.",
+                    ae.name, path
+                );
+                continue;
+            }
+            let key = (method.clone(), path.clone());
+            if let Some(existing) = routes.get(&key) {
+                return Err(format!(
+                    "Path collision (D2): axonendpoint '{}' and '{}' both \
+                     declare `method: {method} path: {path}`. Resolve by \
+                     editing one of the two axonendpoints to use a distinct \
+                     (method, path) tuple.",
+                    existing.endpoint_name, ae.name
+                ));
+            }
+            routes.insert(
+                key,
+                DynamicEndpointRoute {
+                    flow_name: ae.execute_flow.clone(),
+                    endpoint_name: ae.name.clone(),
+                    source_file: source_file.to_string(),
+                    source: source.to_string(),
+                    transport: ae.transport.clone(),
+                    transport_explicit: ae.transport_explicit,
+                    keepalive: ae.keepalive.clone(),
+                    implicit_transport: ae.implicit_transport.clone(),
+                },
+            );
+        }
+    }
+    Ok(routes)
+}
+
+/// Merge a freshly-collected route table into the live
+/// `ServerState.dynamic_routes`. Detects cross-deploy path collisions
+/// (D2 across deploys) — if the incoming table contains a
+/// `(method, path)` tuple that already exists in the live state for
+/// a DIFFERENT axonendpoint (different `endpoint_name`), the merge
+/// fails with a structured error. Same-endpoint re-deploys update
+/// the route in place.
+pub fn merge_dynamic_routes(
+    live: &mut HashMap<(String, String), DynamicEndpointRoute>,
+    incoming: HashMap<(String, String), DynamicEndpointRoute>,
+) -> Result<(), String> {
+    // First pass: validate the incoming table against the live state
+    // before mutating. This keeps the merge atomic (all-or-nothing).
+    for (key, new_route) in &incoming {
+        if let Some(existing) = live.get(key) {
+            if existing.endpoint_name != new_route.endpoint_name {
+                return Err(format!(
+                    "Path collision (D2 cross-deploy): axonendpoint '{}' \
+                     (from {}) and existing axonendpoint '{}' (from {}) both \
+                     claim `method: {} path: {}`. Resolve by editing one of \
+                     the two axonendpoints to use a distinct (method, path) \
+                     tuple.",
+                    new_route.endpoint_name, new_route.source_file,
+                    existing.endpoint_name, existing.source_file,
+                    key.0, key.1,
+                ));
+            }
+        }
+    }
+    // Second pass: apply the merge (overwrites same-endpoint entries
+    // with the new metadata — re-deploy refreshes transport / keepalive
+    // / implicit_transport if the source changed).
+    for (key, route) in incoming {
+        live.insert(key, route);
+    }
+    Ok(())
+}
+
+/// §Fase 32.b — Fallback handler for dynamic axonendpoint routes.
+///
+/// Fires when no static route in `build_router_with_state` matched
+/// the incoming request. Looks up `(method, path)` in
+/// `ServerState.dynamic_routes`; on hit, dispatches through the
+/// existing Fase 30 + 31 negotiation classifier with the flow_name
+/// from the route. On miss, returns 404 with a structured error
+/// listing all registered dynamic routes (for adopter triage).
+///
+/// Body forwarding to the flow is OUT OF SCOPE for 32.b (the existing
+/// `/v1/execute` handler does not pass body data to flows either —
+/// flows currently receive no parameterized HTTP input). Body schema
+/// validation + flow input forwarding ship in 32.c. 32.b establishes
+/// the routing + transport mapping foundation.
+async fn dynamic_endpoint_handler(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    let method_str = method.as_str().to_ascii_uppercase();
+    let path_str = uri.path().to_string();
+
+    // Snapshot the route metadata while holding the lock briefly.
+    let route_opt: Option<DynamicEndpointRoute> = {
+        let s = state.lock().unwrap();
+        s.dynamic_routes.get(&(method_str.clone(), path_str.clone())).cloned()
+    };
+
+    let route = match route_opt {
+        Some(r) => r,
+        None => {
+            // 404 — list registered routes for adopter triage.
+            let registered: Vec<serde_json::Value> = {
+                let s = state.lock().unwrap();
+                s.dynamic_routes
+                    .keys()
+                    .map(|(m, p)| serde_json::json!({"method": m, "path": p}))
+                    .collect()
+            };
+            let body = serde_json::json!({
+                "error": "axonendpoint_not_found",
+                "method": method_str,
+                "path": path_str,
+                "registered_routes": registered,
+                "hint": "deploy an axonendpoint with this method+path, or use POST /v1/execute with the flow name in the body for the legacy RPC path",
+            });
+            return (StatusCode::NOT_FOUND, Json(body)).into_response();
+        }
+    };
+
+    // Dispatch through the Fase 30/31 negotiation classifier. The
+    // dynamic handler constructs a synthetic `ExecuteRequest` from the
+    // route's flow_name + a default backend ("auto" — flow runtime
+    // resolves via the cost-optimizer). The existing
+    // `execute_handler_with_negotiation` then handles transport
+    // promotion, keepalive, diagnostic header, all uniformly.
+    let exec_req = ExecuteRequest {
+        flow: route.flow_name.clone(),
+        backend: "auto".to_string(),
+    };
+    execute_handler_with_negotiation(
+        State(state),
+        headers,
+        Json(exec_req),
+    )
+    .await
+    .into_response()
+}
+
 /// Wrapper for `POST /v1/execute` that performs Fase 30.e
 /// content-negotiation upstream of the legacy JSON handler.
 ///
@@ -24866,6 +25176,17 @@ pub fn build_router_with_state(config: ServerConfig) -> (Router, SharedState) {
             state.clone(),
             crate::request_middleware::request_middleware_fn,
         ))
+        // §Fase 32.b — Fallback handler for dynamic axonendpoint
+        // routes. Fires when no static route above matched. Looks
+        // up `(method, path)` in `ServerState.dynamic_routes` and
+        // dispatches through the Fase 30/31 negotiation classifier
+        // with the flow_name from the route. On miss returns 404
+        // with the full registered-routes table for adopter triage.
+        //
+        // Strictly additive per D10 — /v1/execute is matched by the
+        // static route ABOVE this fallback, so legacy clients see
+        // zero behavior change. Dynamic routes are coexistent.
+        .fallback(dynamic_endpoint_handler)
         .layer(axum::middleware::from_fn(
             crate::request_tracing::request_tracing_middleware,
         ))

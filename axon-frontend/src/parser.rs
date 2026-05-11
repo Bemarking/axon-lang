@@ -488,9 +488,21 @@ pub const AXONENDPOINT_TRANSPORT_VALUES: &[&str] = &["json", "sse", "ndjson"];
 /// Adopter-facing acceptable values for `keepalive:` field.
 pub const AXONENDPOINT_KEEPALIVE_VALUES: &[&str] = &["5s", "15s", "30s", "60s"];
 
+/// §Fase 32.b D3 — Closed method enum for `method:` field. Adopter-
+/// declarable methods only; HEAD/OPTIONS/CONNECT/TRACE are
+/// runtime-managed (CORS preflight, etc.) and never declared from
+/// source. Closed enum refuses interpretation drift; smart-suggest
+/// catches near-misses at parse time.
+pub const AXONENDPOINT_METHOD_VALUES: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH"];
+
 #[inline]
 fn axonendpoint_is_valid_transport(s: &str) -> bool {
     AXONENDPOINT_TRANSPORT_VALUES.iter().any(|&v| v == s)
+}
+
+#[inline]
+fn axonendpoint_is_valid_method(s: &str) -> bool {
+    AXONENDPOINT_METHOD_VALUES.iter().any(|&v| v == s)
 }
 
 #[inline]
@@ -4517,8 +4529,42 @@ impl Parser {
                 self.advance();
                 match field_name.as_str() {
                     "method" => {
-                        let v = self.consume_any_ident_or_kw()?.value;
-                        node.method = v.to_uppercase();
+                        // §Fase 32.b D3 — closed method enum
+                        // `{GET, POST, PUT, DELETE, PATCH}`. Unknown
+                        // values rejected at parse time with smart-
+                        // suggest hint (Fase 28.e). HEAD/OPTIONS/etc.
+                        // are runtime-managed and not adopter-
+                        // declarable.
+                        let value_tok = self.consume_any_ident_or_kw()?;
+                        let value_upper = value_tok.value.to_uppercase();
+                        if !axonendpoint_is_valid_method(&value_upper) {
+                            let hint = crate::smart_suggest::suggest_for(
+                                &value_upper,
+                                AXONENDPOINT_METHOD_VALUES,
+                            );
+                            let base = format!(
+                                "Invalid method '{}' in axonendpoint '{}'.",
+                                value_tok.value, node.name
+                            );
+                            let message = if hint.is_empty() {
+                                format!(
+                                    "{base} expected GET | POST | PUT | DELETE | PATCH, found {}",
+                                    value_tok.value
+                                )
+                            } else {
+                                format!(
+                                    "{base} {hint} (expected GET | POST | PUT | DELETE | PATCH, found {})",
+                                    value_tok.value
+                                )
+                            };
+                            return Err(ParseError {
+                                message,
+                                line: value_tok.line,
+                                column: value_tok.column,
+                                ..Default::default()
+                            });
+                        }
+                        node.method = value_upper;
                     }
                     "path" => node.path = self.consume(TokenType::StringLit)?.value.clone(),
                     "body" => node.body_type = self.consume_any_ident_or_kw()?.value.clone(),

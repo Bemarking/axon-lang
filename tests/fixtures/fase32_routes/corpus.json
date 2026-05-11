@@ -1,0 +1,129 @@
+[
+  {
+    "name": "empty_program_no_routes",
+    "source": "flow F() -> Unit { step S { ask: \"x\" } }",
+    "source_file": "empty.axon",
+    "expected_parse_ok": true,
+    "expected_routes": []
+  },
+  {
+    "name": "single_post_route",
+    "source": "flow F() -> Unit { step S { ask: \"x\" } }\naxonendpoint E { method: POST path: \"/chat\" execute: F }",
+    "source_file": "single.axon",
+    "expected_parse_ok": true,
+    "expected_routes": [
+      {"method": "POST", "path": "/chat", "flow_name": "F", "endpoint_name": "E", "transport": "json", "transport_explicit": false, "keepalive": "", "implicit_transport": "json"}
+    ]
+  },
+  {
+    "name": "all_five_methods",
+    "source": "flow F() -> Unit { step S { ask: \"x\" } }\naxonendpoint G { method: GET path: \"/g\" execute: F }\naxonendpoint P { method: POST path: \"/p\" execute: F }\naxonendpoint Pu { method: PUT path: \"/pu\" execute: F }\naxonendpoint De { method: DELETE path: \"/d\" execute: F }\naxonendpoint Pa { method: PATCH path: \"/pa\" execute: F }",
+    "source_file": "five.axon",
+    "expected_parse_ok": true,
+    "expected_routes": [
+      {"method": "DELETE", "path": "/d", "flow_name": "F", "endpoint_name": "De", "transport": "json", "transport_explicit": false, "keepalive": "", "implicit_transport": "json"},
+      {"method": "GET", "path": "/g", "flow_name": "F", "endpoint_name": "G", "transport": "json", "transport_explicit": false, "keepalive": "", "implicit_transport": "json"},
+      {"method": "PATCH", "path": "/pa", "flow_name": "F", "endpoint_name": "Pa", "transport": "json", "transport_explicit": false, "keepalive": "", "implicit_transport": "json"},
+      {"method": "POST", "path": "/p", "flow_name": "F", "endpoint_name": "P", "transport": "json", "transport_explicit": false, "keepalive": "", "implicit_transport": "json"},
+      {"method": "PUT", "path": "/pu", "flow_name": "F", "endpoint_name": "Pu", "transport": "json", "transport_explicit": false, "keepalive": "", "implicit_transport": "json"}
+    ]
+  },
+  {
+    "name": "method_lowercase_normalized_to_uppercase",
+    "source": "flow F() -> Unit { step S { ask: \"x\" } }\naxonendpoint E { method: post path: \"/chat\" execute: F }",
+    "source_file": "lowercase.axon",
+    "expected_parse_ok": true,
+    "expected_routes": [
+      {"method": "POST", "path": "/chat", "flow_name": "F", "endpoint_name": "E", "transport": "json", "transport_explicit": false, "keepalive": "", "implicit_transport": "json"}
+    ]
+  },
+  {
+    "name": "invalid_method_rejected_OPTIONS",
+    "source": "flow F() -> Unit { step S { ask: \"x\" } }\naxonendpoint E { method: OPTIONS path: \"/chat\" execute: F }",
+    "source_file": "options.axon",
+    "expected_parse_ok": false,
+    "expected_error_contains": "Invalid method 'OPTIONS'",
+    "expected_routes": []
+  },
+  {
+    "name": "invalid_method_rejected_HEAD",
+    "source": "flow F() -> Unit { step S { ask: \"x\" } }\naxonendpoint E { method: HEAD path: \"/chat\" execute: F }",
+    "source_file": "head.axon",
+    "expected_parse_ok": false,
+    "expected_error_contains": "Invalid method 'HEAD'",
+    "expected_routes": []
+  },
+  {
+    "name": "invalid_method_typo_smart_suggest",
+    "source": "flow F() -> Unit { step S { ask: \"x\" } }\naxonendpoint E { method: POSST path: \"/chat\" execute: F }",
+    "source_file": "typo.axon",
+    "expected_parse_ok": false,
+    "expected_error_contains": "POSST",
+    "expected_routes": []
+  },
+  {
+    "name": "stream_flow_transport_sse",
+    "source": "tool t { description: \"t\" effects: <stream:drop_oldest> }\nflow F() -> Unit { step S { ask: \"x\" apply: t } }\naxonendpoint E { method: POST path: \"/chat\" execute: F transport: sse keepalive: 15s }",
+    "source_file": "stream.axon",
+    "expected_parse_ok": true,
+    "expected_routes": [
+      {"method": "POST", "path": "/chat", "flow_name": "F", "endpoint_name": "E", "transport": "sse", "transport_explicit": true, "keepalive": "15s", "implicit_transport": "sse"}
+    ]
+  },
+  {
+    "name": "stream_flow_no_decl_implicit_sse",
+    "source": "tool t { description: \"t\" effects: <stream:drop_oldest> }\nflow F() -> Unit { step S { ask: \"x\" apply: t } }\naxonendpoint E { method: POST path: \"/chat\" execute: F }",
+    "source_file": "implicit_sse.axon",
+    "expected_parse_ok": true,
+    "expected_routes": [
+      {"method": "POST", "path": "/chat", "flow_name": "F", "endpoint_name": "E", "transport": "json", "transport_explicit": false, "keepalive": "", "implicit_transport": "sse"}
+    ]
+  },
+  {
+    "name": "stream_flow_decl_json_d3_opt_out",
+    "source": "tool t { description: \"t\" effects: <stream:drop_oldest> }\nflow F() -> Unit { step S { ask: \"x\" apply: t } }\naxonendpoint E { method: POST path: \"/chat\" execute: F transport: json }",
+    "source_file": "json_optout.axon",
+    "expected_parse_ok": true,
+    "expected_routes": [
+      {"method": "POST", "path": "/chat", "flow_name": "F", "endpoint_name": "E", "transport": "json", "transport_explicit": true, "keepalive": "", "implicit_transport": "json"}
+    ]
+  },
+  {
+    "name": "multiple_endpoints_same_flow_different_paths",
+    "source": "flow F() -> Unit { step S { ask: \"x\" } }\naxonendpoint A { method: POST path: \"/a\" execute: F }\naxonendpoint B { method: POST path: \"/b\" execute: F }\naxonendpoint C { method: GET path: \"/c\" execute: F }",
+    "source_file": "multi.axon",
+    "expected_parse_ok": true,
+    "expected_routes": [
+      {"method": "GET", "path": "/c", "flow_name": "F", "endpoint_name": "C", "transport": "json", "transport_explicit": false, "keepalive": "", "implicit_transport": "json"},
+      {"method": "POST", "path": "/a", "flow_name": "F", "endpoint_name": "A", "transport": "json", "transport_explicit": false, "keepalive": "", "implicit_transport": "json"},
+      {"method": "POST", "path": "/b", "flow_name": "F", "endpoint_name": "B", "transport": "json", "transport_explicit": false, "keepalive": "", "implicit_transport": "json"}
+    ]
+  },
+  {
+    "name": "path_collision_within_program_d2_intra",
+    "source": "flow F() -> Unit { step S { ask: \"x\" } }\nflow G() -> Unit { step T { ask: \"y\" } }\naxonendpoint Alpha { method: POST path: \"/chat\" execute: F }\naxonendpoint Beta { method: POST path: \"/chat\" execute: G }",
+    "source_file": "collide.axon",
+    "expected_parse_ok": true,
+    "expected_collect_error_contains": "Path collision (D2)",
+    "expected_routes": []
+  },
+  {
+    "name": "different_method_same_path_no_collision",
+    "source": "flow F() -> Unit { step S { ask: \"x\" } }\naxonendpoint Read { method: GET path: \"/chat\" execute: F }\naxonendpoint Write { method: POST path: \"/chat\" execute: F }",
+    "source_file": "rest_pattern.axon",
+    "expected_parse_ok": true,
+    "expected_routes": [
+      {"method": "GET", "path": "/chat", "flow_name": "F", "endpoint_name": "Read", "transport": "json", "transport_explicit": false, "keepalive": "", "implicit_transport": "json"},
+      {"method": "POST", "path": "/chat", "flow_name": "F", "endpoint_name": "Write", "transport": "json", "transport_explicit": false, "keepalive": "", "implicit_transport": "json"}
+    ]
+  },
+  {
+    "name": "path_with_segments_no_params",
+    "source": "flow F() -> Unit { step S { ask: \"x\" } }\naxonendpoint Deep { method: POST path: \"/api/v1/loans/decision\" execute: F }",
+    "source_file": "deep.axon",
+    "expected_parse_ok": true,
+    "expected_routes": [
+      {"method": "POST", "path": "/api/v1/loans/decision", "flow_name": "F", "endpoint_name": "Deep", "transport": "json", "transport_explicit": false, "keepalive": "", "implicit_transport": "json"}
+    ]
+  }
+]
