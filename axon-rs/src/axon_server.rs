@@ -17725,7 +17725,7 @@ async fn execute_stream_handler(
 // ──────────────────────────────────────────────────────────────────────────
 
 use axum::response::sse::{Event, Sse};
-use futures::stream::{self, Stream};
+use futures::stream::Stream;
 use std::convert::Infallible;
 
 /// Build a single `axon.token` SSE event from a step name + chunk content.
@@ -17806,11 +17806,28 @@ fn build_retry_hint_event() -> Event {
 /// algebraic-effect handler reused verbatim from `execute_stream_handler`).
 /// Errors during flow execution become a single `axon.error` event +
 /// connection close.
+///
+/// # 30.f channel-fed streaming architecture
+///
+/// The flow executor (`server_execute_full`) is synchronous and may
+/// block the worker for seconds-to-minutes on real LLM calls. Before
+/// 30.f the handler awaited execution before returning the Sse
+/// response — KeepAlive comments had no inactivity window to fire
+/// into. 30.f spawns the executor onto the blocking pool
+/// (`tokio::task::spawn_blocking`) so the handler returns the Sse
+/// response IMMEDIATELY with the `retry:` directive pre-queued. The
+/// channel-fed stream gives `axum::response::sse::KeepAlive` a real
+/// inactivity window between "stream-start" and "first axon.token
+/// event" during which `: keepalive\n\n` comment lines fire at the
+/// declared interval (D6 closed enum `{5s, 15s, 30s, 60s}`, default
+/// 15s — see `resolve_keepalive_for_flow`).
 async fn execute_sse_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Json(payload): Json<StreamExecuteRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    use futures::SinkExt;
+
     let req_start = Instant::now();
     let client = client_key_from_headers(&headers);
     {
@@ -17818,142 +17835,179 @@ async fn execute_sse_handler(
         check_auth(&mut s, &headers, AccessLevel::Write)?;
     }
 
-    // Look up deployed source. On not-deployed, emit a single error
-    // event so adopter clients see a structured SSE response instead
-    // of a 404 (consistent with the streaming-API expectation that the
-    // wire format is honored even for failures).
-    let (source, source_file) = {
+    // Look up deployed source. Not-deployed flows still get a
+    // wire-format-valid SSE response (retry + axon.error) rather than
+    // a 404, per the streaming-API expectation that the wire format
+    // is honored even for failures.
+    let source_info = {
         let s = state.lock().unwrap();
-        match s
-            .versions
+        s.versions
             .get_history(&payload.flow_name)
             .and_then(|h| h.active())
             .map(|v| (v.source.clone(), v.source_file.clone()))
-        {
-            Some(info) => info,
-            None => {
-                let trace_id: u64 = 0;
-                let err_msg = format!("flow '{}' not deployed", payload.flow_name);
-                let events: Vec<Result<Event, Infallible>> = vec![
-                    Ok(build_retry_hint_event()),
-                    Ok(build_error_event(1, trace_id, &err_msg)),
-                ];
-                return Ok(Sse::new(stream::iter(events)));
-            }
-        }
     };
 
-    // Execute the flow synchronously. The runtime today produces all
-    // tokens before the SSE iterator begins emission (Option B in the
-    // 30.d design rationale — true incremental execution is a future
-    // Fase). The wire format on the client side is identical either way:
-    // events arrive in order with monotonic ids.
-    let exec_outcome = server_execute_full(
-        &state,
-        &source,
-        &source_file,
-        &payload.flow_name,
-        &payload.backend,
-    )
-    .0;
+    // 30.f: resolve the KeepAlive interval BEFORE spawning the
+    // executor so the Sse response is fully configured before any
+    // event flows. When the flow is not deployed we still use the
+    // default 15s — the error event fires immediately so the
+    // keepalive timer is moot, but the configuration stays consistent.
+    let keepalive_duration = source_info
+        .as_ref()
+        .map(|(src, _)| resolve_keepalive_for_flow(src, &payload.flow_name))
+        .unwrap_or_else(|| std::time::Duration::from_secs(15));
 
-    let mut events: Vec<Result<Event, Infallible>> = Vec::new();
-    // Always lead with the retry directive so every connecting client
-    // gets the reconnect hint before any data event.
-    events.push(Ok(build_retry_hint_event()));
+    // Unified channel-fed stream for both the deployed + not-deployed
+    // paths so the return type stays a single `impl Stream`. Capacity
+    // 16 is comfortably above the retry + axon.error + ~N tokens +
+    // complete shape; backpressure via `send().await` handles overflow
+    // cleanly when adopter clients drain slowly.
+    let (mut tx, rx) = futures::channel::mpsc::channel::<Result<Event, Infallible>>(16);
 
-    match exec_outcome {
-        Ok(mut er) => {
-            // Record the trace so audit + observability surfaces match
-            // the JSON `/v1/execute` path verbatim.
-            let mut trace_entry = crate::trace_store::build_trace(
-                &er.flow_name,
-                &er.source_file,
-                &er.backend,
-                &client,
-                if er.success {
-                    crate::trace_store::TraceStatus::Success
-                } else {
-                    crate::trace_store::TraceStatus::Partial
-                },
-                er.steps_executed,
-                er.latency_ms,
-            );
-            trace_entry.tokens_input = er.tokens_input;
-            trace_entry.tokens_output = er.tokens_output;
-            trace_entry.errors = er.errors.clone();
+    // Retry directive always leads — the W3C SSE reconnect hint must
+    // reach the client before any data event. try_send is non-blocking
+    // and the channel has capacity 16, so this never fails here.
+    let _ = tx.try_send(Ok(build_retry_hint_event()));
 
-            let (trace_id, emitter) = {
-                let mut s = state.lock().unwrap();
-                let tid = s.trace_store.record(trace_entry);
+    match source_info {
+        Some((source, source_file)) => {
+            // Move execution onto the blocking pool so a long-running
+            // flow does not steal a tokio worker. The handler returns
+            // the Sse response (below) immediately while execution
+            // proceeds in the background.
+            let state_for_task = state.clone();
+            let flow_name_owned = payload.flow_name.clone();
+            let backend_owned = payload.backend.clone();
+            let client_owned = client.clone();
+            tokio::spawn(async move {
+                let state_for_exec = state_for_task.clone();
+                let source_for_exec = source.clone();
+                let source_file_for_exec = source_file.clone();
+                let flow_for_exec = flow_name_owned.clone();
+                let backend_for_exec = backend_owned.clone();
+                let exec_outcome = tokio::task::spawn_blocking(move || {
+                    server_execute_full(
+                        &state_for_exec,
+                        &source_for_exec,
+                        &source_file_for_exec,
+                        &flow_for_exec,
+                        &backend_for_exec,
+                    )
+                    .0
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("execution task panicked: {e}")));
 
-                // Reuse the existing StreamEmitter — same algebraic-
-                // effect handler the two-stage path uses. The mapping
-                // from emitter tokens → SSE Events is purely the
-                // wire-format choice for 30.d.
-                // Mirror of the existing two-stage path's chunking
-                // (axon_server.rs line ~17637): parallel array
-                // `step_names[i]` ↔ `step_results[i]`. ~3-word chunks
-                // per token approximates LLM token granularity.
-                let mut emitter = StreamEmitter::new(tid, &er.flow_name);
-                for (i, step_name) in er.step_names.iter().enumerate() {
-                    if let Some(chunks) = er.step_results.get(i).map(|r| {
-                        if r.is_empty() {
-                            vec![]
-                        } else {
-                            r.split_whitespace()
-                                .collect::<Vec<&str>>()
-                                .chunks(3)
-                                .map(|c| c.join(" "))
-                                .collect()
+                match exec_outcome {
+                    Ok(mut er) => {
+                        // Record the trace so audit + observability
+                        // surfaces match the JSON `/v1/execute` path
+                        // verbatim. The StreamEmitter mapping mirrors
+                        // the existing two-stage handler chunking
+                        // (~3-word chunks per token approximates LLM
+                        // token granularity).
+                        let mut trace_entry = crate::trace_store::build_trace(
+                            &er.flow_name,
+                            &er.source_file,
+                            &er.backend,
+                            &client_owned,
+                            if er.success {
+                                crate::trace_store::TraceStatus::Success
+                            } else {
+                                crate::trace_store::TraceStatus::Partial
+                            },
+                            er.steps_executed,
+                            er.latency_ms,
+                        );
+                        trace_entry.tokens_input = er.tokens_input;
+                        trace_entry.tokens_output = er.tokens_output;
+                        trace_entry.errors = er.errors.clone();
+
+                        let (trace_id, emitter) = {
+                            let mut s = state_for_task.lock().unwrap();
+                            let tid = s.trace_store.record(trace_entry);
+                            let mut emitter = StreamEmitter::new(tid, &er.flow_name);
+                            for (i, step_name) in er.step_names.iter().enumerate() {
+                                if let Some(chunks) = er.step_results.get(i).map(|r| {
+                                    if r.is_empty() {
+                                        vec![]
+                                    } else {
+                                        r.split_whitespace()
+                                            .collect::<Vec<&str>>()
+                                            .chunks(3)
+                                            .map(|c| c.join(" "))
+                                            .collect()
+                                    }
+                                }) {
+                                    emitter.emit_chunks(step_name, &chunks);
+                                }
+                            }
+                            emitter.finalize();
+                            (tid, emitter)
+                        };
+
+                        er.trace_id = trace_id;
+                        er.latency_ms = req_start.elapsed().as_millis() as u64;
+
+                        // Per-trace monotonic event-id counter. The
+                        // `retry:` directive carries no `id:` per W3C
+                        // convention so the data-event counter starts
+                        // at 1.
+                        let mut event_id: u64 = 0;
+                        for tok in &emitter.tokens {
+                            event_id += 1;
+                            // .ok() swallows SendError when the
+                            // client disconnected mid-stream — axum
+                            // dropped the Sse response → rx dropped
+                            // → send errors. Cancel-safety: we stop
+                            // sending but the executor already
+                            // completed so there's nothing else to
+                            // clean up.
+                            let _ = tx
+                                .send(Ok(build_token_event(
+                                    event_id,
+                                    tok.trace_id,
+                                    &tok.step_name,
+                                    &tok.content,
+                                    tok.timestamp as i64,
+                                )))
+                                .await;
                         }
-                    }) {
-                        emitter.emit_chunks(step_name, &chunks);
+                        event_id += 1;
+                        let _ = tx.send(Ok(build_complete_event(event_id, &er))).await;
+                    }
+                    Err(e) => {
+                        {
+                            let mut s = state_for_task.lock().unwrap();
+                            s.metrics.total_errors += 1;
+                        }
+                        let _ = tx.send(Ok(build_error_event(1, 0, &e))).await;
                     }
                 }
-                emitter.finalize();
-
-                (tid, emitter)
-            };
-
-            er.trace_id = trace_id;
-            er.latency_ms = req_start.elapsed().as_millis() as u64;
-
-            // Map each StreamToken to an `axon.token` SSE event with a
-            // monotonic per-trace event-id. Counter starts at 1 (the
-            // `retry:` directive was event 0 implicitly — it carries
-            // no `id:` field per W3C SSE convention for retry-only
-            // events).
-            let mut event_id: u64 = 0;
-            for tok in &emitter.tokens {
-                event_id += 1;
-                events.push(Ok(build_token_event(
-                    event_id,
-                    tok.trace_id,
-                    &tok.step_name,
-                    &tok.content,
-                    tok.timestamp as i64,
-                )));
-            }
-
-            // Final completion envelope. After this the server closes
-            // the response (the iterator ends; axum drops the Sse).
-            event_id += 1;
-            events.push(Ok(build_complete_event(event_id, &er)));
+                // tx drops here → rx stream ends → axum closes
+                // the response body. KeepAlive stops firing.
+            });
         }
-        Err(e) => {
-            // Execution failure → single error event + close. trace_id
-            // is unavailable (the flow never reached trace recording)
-            // so we use 0; adopters can correlate via timestamp + auth.
-            {
-                let mut s = state.lock().unwrap();
-                s.metrics.total_errors += 1;
-            }
-            events.push(Ok(build_error_event(1, 0, &e)));
+        None => {
+            // Not-deployed: emit a single error event + close. The
+            // wire shape is `retry: 5000` (already queued above)
+            // followed by `event: axon.error`. tx drops at the end
+            // of this arm.
+            let err_msg = format!("flow '{}' not deployed", payload.flow_name);
+            let _ = tx.try_send(Ok(build_error_event(1, 0, &err_msg)));
         }
     }
 
-    Ok(Sse::new(stream::iter(events)))
+    // 30.f: wire the configured KeepAlive into the Sse response. The
+    // comment text "keepalive" emits as `: keepalive\n\n` per W3C SSE
+    // §"comment line"; EventSource clients silently discard it, but
+    // intermediate load balancers see it as wire activity and refrain
+    // from tearing the TCP connection down.
+    Ok(Sse::new(rx).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(keepalive_duration)
+            .text("keepalive"),
+    ))
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -18378,6 +18432,200 @@ async fn execute_handler_with_negotiation(
     execute_handler(State(state), headers, Json(payload))
         .await
         .into_response()
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// §Fase 30.f — Keepalive comment emission for SSE responses (D6 ratified
+//              2026-05-10 bloque). Plan vivo §2.4 + §6.2.
+//
+// W3C Server-Sent Events allows comment-only events of the shape
+// `: <text>\n\n` which adopter EventSource clients silently discard but
+// which DO count as on-the-wire traffic for load-balancer idle-timeout
+// purposes. Without this, long-running flows (>idle-timeout: AWS ALB
+// 60s default, CloudFlare 100s, GCP HTTPS LB 30s, nginx 60s) would have
+// their TCP connection torn down by the LB before any `axon.token`
+// event fires, breaking SSE consumption from production-grade adopters.
+//
+// D6 closed enum of intervals: `{5s, 15s, 30s, 60s}`. Default when the
+// axonendpoint omits the `keepalive` field (or the entire axonendpoint
+// is absent): 15s — comfortably below all common LB idle-timeouts while
+// not flooding the wire on quiet flows.
+//
+// Implementation rationale: this sub-fase ALSO refactors
+// `execute_sse_handler` from "synchronous-execute-then-emit" to
+// "channel-fed-stream-with-spawn_blocking" so axum's `KeepAlive` has
+// a real inactivity window to fire into. Before 30.f the executor
+// blocked the handler for the entire flow duration — `Sse::keep_alive`
+// would have had no opportunity to emit comments because the response
+// body was never polled until execution completed.
+//
+// Wire emission (axum 0.8 `KeepAlive`):
+//   `axum::response::sse::KeepAlive::new()
+//        .interval(parse_keepalive_duration(declared))
+//        .text("keepalive")`
+//   → emits `: keepalive\n\n` after `interval` of stream inactivity.
+//
+// Cancel-safety: when the client disconnects, axum drops the Sse
+// response → drops `rx` → the spawned task's `tx.send().await` returns
+// SendError(Disconnected) → all subsequent sends become no-ops via
+// `.ok()`. The spawn_blocking flow execution continues to completion
+// (we don't have an abort signal yet — that's a future sub-fase) but
+// the spawned task drops its tx without blocking on the dead client.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Parse a `keepalive` declaration value from the D6 closed enum
+/// `{"5s", "15s", "30s", "60s"}` into a `Duration`. Unknown or empty
+/// values fall back to the D6 default of 15 seconds.
+///
+/// The closed enum is enforced upstream by the parser (Python + Rust
+/// drift-gated). If the source ever reaches the runtime with an
+/// out-of-enum value (e.g. a stale source-text patched outside the
+/// parser path), the default keeps the response wire-compliant rather
+/// than panicking.
+pub fn parse_keepalive_duration(s: &str) -> std::time::Duration {
+    match s.trim() {
+        "5s" => std::time::Duration::from_secs(5),
+        "15s" => std::time::Duration::from_secs(15),
+        "30s" => std::time::Duration::from_secs(30),
+        "60s" => std::time::Duration::from_secs(60),
+        _ => std::time::Duration::from_secs(15),
+    }
+}
+
+/// Walk the parsed program for the named flow's axonendpoint
+/// declaration and return its declared `keepalive` value verbatim
+/// (the raw string — empty `""` when the field was omitted). Returns
+/// `None` if no axonendpoint declaration targets this flow.
+pub fn lookup_keepalive_from_program(
+    program: &crate::ast::Program,
+    flow_name: &str,
+) -> Option<String> {
+    for decl in &program.declarations {
+        if let Declaration::AxonEndpoint(ae) = decl {
+            if ae.execute_flow == flow_name {
+                return Some(ae.keepalive.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Defensive source-text lookup for the `keepalive` value declared
+/// on the axonendpoint that executes `flow_name`. Mirror of
+/// `source_text_axonendpoint_has_transport` (30.e) but extracts the
+/// value rather than matching against one. Returns the declared
+/// value (one of "5s"/"15s"/"30s"/"60s") or `None` if no matching
+/// axonendpoint block declares a keepalive.
+///
+/// String-aware brace counter avoids false positives inside
+/// `path: "..."` literals; iteration over the closed enum candidates
+/// avoids false positives from substring matches (e.g. `keepalive:
+/// 150s` would never match `keepalive: 5s`).
+pub fn source_text_axonendpoint_keepalive(
+    source: &str,
+    flow_name: &str,
+) -> Option<String> {
+    let bytes = source.as_bytes();
+    let kw = b"axonendpoint";
+    let mut i = 0;
+    while i + kw.len() <= bytes.len() {
+        if &bytes[i..i + kw.len()] == kw {
+            let body_start = source[i..].find('{').map(|off| i + off + 1);
+            if let Some(start) = body_start {
+                let mut depth: i32 = 1;
+                let mut j = start;
+                let mut in_string = false;
+                while j < bytes.len() && depth > 0 {
+                    let c = bytes[j];
+                    match c {
+                        b'"' if !in_string => in_string = true,
+                        b'"' if in_string => in_string = false,
+                        b'\\' if in_string => {
+                            j += 1;
+                        }
+                        b'{' if !in_string => depth += 1,
+                        b'}' if !in_string => depth -= 1,
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                let body = &source[start..j.saturating_sub(1)];
+                let has_execute = body.contains(&format!("execute: {flow_name}"))
+                    || body.contains(&format!("execute:{flow_name}"));
+                if has_execute {
+                    for candidate in ["5s", "15s", "30s", "60s"] {
+                        let pat_space = format!("keepalive: {candidate}");
+                        let pat_tight = format!("keepalive:{candidate}");
+                        // Tail-anchored match: ensure the candidate is
+                        // not a prefix of a longer literal (e.g. "5s"
+                        // inside "15s"). The character immediately
+                        // after the match must NOT be alphanumeric.
+                        if substring_with_word_boundary(body, &pat_space)
+                            || substring_with_word_boundary(body, &pat_tight)
+                        {
+                            return Some(candidate.to_string());
+                        }
+                    }
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `haystack` contains `needle`, and the character immediately after
+/// the match is not alphanumeric (so `"5s"` doesn't match inside
+/// `"15s"`). Pure helper — pure ASCII semantics suffice because
+/// `keepalive` values are always ASCII per the closed enum.
+fn substring_with_word_boundary(haystack: &str, needle: &str) -> bool {
+    let bytes = haystack.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    if needle_bytes.is_empty() || bytes.len() < needle_bytes.len() {
+        return false;
+    }
+    for i in 0..=bytes.len() - needle_bytes.len() {
+        if &bytes[i..i + needle_bytes.len()] == needle_bytes {
+            let after = i + needle_bytes.len();
+            if after >= bytes.len() {
+                return true;
+            }
+            let next = bytes[after];
+            if !(next.is_ascii_alphanumeric() || next == b'_') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Resolve the keepalive `Duration` for an SSE response on
+/// `flow_name`. Dual-signal — AST walk authoritative when the source
+/// parses cleanly; source-text fallback when the Rust frontend has
+/// parser gaps (30.e rationale: same architecture). D6 default of 15s
+/// when no declaration is found anywhere.
+///
+/// This is the single canonical entry point used by
+/// `execute_sse_handler` to decide the `KeepAlive::interval(...)`
+/// argument before constructing the Sse response.
+pub fn resolve_keepalive_for_flow(source: &str, flow_name: &str) -> std::time::Duration {
+    let program_opt = crate::lexer::Lexer::new(source, "<runtime-keepalive-lookup>")
+        .tokenize()
+        .ok()
+        .and_then(|tokens| crate::parser::Parser::new(tokens).parse().ok());
+    if let Some(program) = program_opt {
+        if let Some(declared) = lookup_keepalive_from_program(&program, flow_name) {
+            if !declared.is_empty() {
+                return parse_keepalive_duration(&declared);
+            }
+        }
+    }
+    if let Some(declared) = source_text_axonendpoint_keepalive(source, flow_name) {
+        return parse_keepalive_duration(&declared);
+    }
+    std::time::Duration::from_secs(15)
 }
 
 /// ΛD Epistemic Envelope — wraps any config value with its epistemic tensor.
