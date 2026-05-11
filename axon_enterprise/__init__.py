@@ -95,14 +95,117 @@ This package contains enterprise-only features:
   consumed axon-lang 1.19.1 ahead of v1.10.0's substantive
   Fase 27 work). The substantive Fase 27.k.1 Python ctypes
   integration that was originally earmarked for v1.11.0 ships
-  as v1.12.0 (no scope or content change — just renumbered to
-  let this catch-up land first).
+  in a future release (no scope or content change — just
+  re-sequenced after this Fase 30+31 catch-up lands).
 
-  Fase 29 "Enterprise Diagnostic Enhancements" is the announced
-  enterprise-only follow-on layered on top of this OSS surface
-  (default-strict in regulated verticals via vertical-aware
-  policy + ship diagnostics to enterprise telemetry sink +
-  vertical-aware suggest dictionaries).
+- **Stack catch-up to axon-lang 1.22.0 (Fase 30 HTTP Transport +
+  Fase 31 Type-Driven Wire Inference, v1.12.0)** — inherits
+  transitively the v1.21.0 + v1.21.1 + v1.22.0 surface cascade:
+
+    * **Fase 30 (axon-lang v1.21.0)** — HTTP Transport for
+      Algebraic Stream Effects. The Stream<T> algebraic effect
+      from Fase 11.a now has a first-class HTTP wire format. New
+      axonendpoint fields `transport: {json,sse,ndjson}` + `keepalive:
+      {5s,15s,30s,60s}` declare the wire shape and the SSE comment
+      interval. New routes `POST /v1/execute/sse` (single-shot) +
+      content-negotiated promotion on legacy `POST /v1/execute`
+      (D4 fallback). Type-checker enforces `transport: sse|ndjson`
+      requires a stream-producing flow (D3 soundness). 9 sub-fases,
+      D1–D8 ratificadas.
+
+    * **Fase 30.f patches (axon-lang v1.21.1)** — multi-arch
+      binary fixes in `rust_release.yml`: pre-C23 GCC compat in
+      axon-csys (7 `__has_c_attribute` refactors using nested
+      `#ifdef` instead of `defined(...) && ...(arg)` to defeat
+      pre-C23 GCC eager short-circuit), x86_64-musl linker via
+      explicit `CC_*_LINKER` env vars, wasm32 pivot from axon-rs
+      (impossible target — tokio full) to axon-frontend cdylib.
+      First green `rust_release.yml` end-to-end since v1.18.0.
+
+    * **Fase 31 (axon-lang v1.22.0)** — Type-Driven Wire Inference.
+      The Kivi enterprise adopter case 2026-05-11 (7 version
+      iterations searching for SSE because the Fase 30 D4 fallback
+      required an `Accept:` header the client didn't send) revealed
+      that the language internally inferred SSE for stream-effect
+      flows yet refused to surface that inference at the wire
+      layer without an `Accept:` opt-in. Fase 31 closes the gap:
+
+        * D1 inference rule —
+            `implicit_transport(F, E) =
+              declared_transport(E)   if transport_explicit
+              "sse"                    if produces_stream(F) ∧ ¬explicit
+              "json"                   otherwise`
+          The 3-disjunct `produces_stream` predicate from Fase 30.c
+          is extended to ALSO resolve `apply: <tool_name>` step-
+          body references (the Kivi-shape pattern Fase 30.c missed
+          at compile time + the AST-visible disjunct (b) path the
+          Fase 30.e runtime source-text fallback was carrying
+          alone).
+
+        * D4 compile-time warning `axon-W001` — non-fatal warning
+          surfaces the inference at build time with disjunct-
+          specific origin (`step '<n>' applies tool '<t>' with
+          effects <stream:<policy>>`) so adopters paste fixes
+          without re-reading source. Opens the new `axon-Wnnn`
+          warnings namespace. Strict mode (Fase 28.h `--strict`)
+          promotes to error.
+
+        * D5 runtime header `X-Axon-Stream-Available: 1;
+          reason=<flag_off|declared_json>; flow=<name>;
+          opt_in=transport:sse,Accept:text/event-stream` — fires
+          on JSON responses for stream-effect flows; informational
+          only (body byte-identical).
+
+        * D6 flag-gated runtime — `ServerConfig.strict_type_driven_
+          transport: bool` (default false v1.22.x per D6 backwards-
+          compat; flips to default true in v2.0.0 per D9). When ON,
+          the inference rules the wire — every stream-effect flow
+          on `POST /v1/execute` returns SSE regardless of `Accept:`
+          header. Adopters opt in via two converging surfaces:
+          `axon serve --strict-type-driven-transport` CLI flag OR
+          `AXON_STRICT_TYPE_DRIVEN_TRANSPORT=1` env var (D7 cross-
+          stack contract — Python `axon serve` + Rust `axon-rs`
+          read the same env var name verbatim; truthy alphabet
+          `{1,true,yes,on}` case-insensitive, intentionally
+          constrained to refuse drift like `y`/`t`/`enabled`).
+
+        * D3 ratified sacred — explicit `transport: json` always
+          wins in both modes. Adopters who intentionally wrap
+          stream tokens in a single JSON response keep that
+          behavior unchanged. The runtime header still fires with
+          `reason=declared_json` so clients see the trade-off.
+
+        * D8 backwards-compat absolute — when the strict flag is
+          off (v1.22.x default), the Fase 30 D4 + D5 + D9
+          negotiation matrix is preserved byte-identically. Every
+          v1.21.x adopter sees zero behavior change on `axon
+          parse` + `axon serve` (other than the new informational
+          header on JSON responses for stream-effect flows).
+
+  Enterprise tenants on regulated verticals (HIPAA / legal /
+  fintech) immediately benefit on streaming compliance audit
+  flows: the shield + audit pipelines that synthesise final
+  answers from streaming tokens now emit the streaming wire
+  format BY DEFAULT (when the strict flag is on) — no per-
+  axonendpoint declaration churn required. The vertical
+  ensembles in `axon_enterprise.shield` (healthcare / legal /
+  fintech ensembles) all consume `Stream<T>` upstream of their
+  judge LLM calls; v1.12.0 surfaces that streaming at the
+  wire automatically. axon-frontend Rust crate dependency
+  bumps transitively from 0.9.0 → 0.10.0 (in axon-lang
+  1.22.0).
+
+  v1.12.0 is a lean catch-up — same shape as v1.9.0 + v1.11.0.
+  The substantive Fase 27.k.1 Python ctypes integration (FFI
+  foundation already on `feature/27k1-ctypes-foundation`
+  branch) ships in a future release once its Python wrapper
+  modules + supervisor wiring + audit_engine integration land.
+
+  Fase 29 "Enterprise Diagnostic Enhancements" remains the
+  announced enterprise-only follow-on layered on top of this
+  OSS surface (default-strict in regulated verticals via
+  vertical-aware policy + ship diagnostics to enterprise
+  telemetry sink + vertical-aware suggest dictionaries).
 """
 
-__version__ = "1.11.0"
+__version__ = "1.12.0"
