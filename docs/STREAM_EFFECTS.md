@@ -100,6 +100,70 @@ error: Unknown backpressure policy 'retry_forever' in tool 'x'.
        Valid: drop_oldest, degrade_quality, pause_upstream, fail.
 ```
 
+## HTTP wire format (Fase 30)
+
+§λ-L-E Fase 30 closes the gap between `Stream<T>` (the algebraic effect)
+and its on-the-wire HTTP transport. Before Fase 30 there was no
+language-level way to declare *"this axonendpoint emits Server-Sent
+Events"* — the parser silently accepted `transport: sse` on the
+axonendpoint and the runtime returned a single JSON response anyway.
+Fase 30 makes the wire shape a first-class declaration.
+
+### Quick mapping
+
+| `Stream<T>` shape in the flow | `axonendpoint` declaration | HTTP response |
+|---|---|---|
+| Any of the 3 disjuncts (a/b/c — see [`ADOPTER_STREAMING.md`](ADOPTER_STREAMING.md#type-checker-enforcement-rules)) | `transport: sse` | `Content-Type: text/event-stream` — see W3C SSE wire format spec below |
+| Any of the 3 disjuncts | omitted (defaults to `transport: json`) | `Content-Type: application/json` — single value, last step's output |
+| No stream effect | `transport: sse` declared | **compile error** — type-checker enforces the soundness rule (Fase 30.c) |
+| No stream effect | omitted | `Content-Type: application/json` — unchanged |
+
+### W3C SSE wire format
+
+Each per-step token emitted by the `Stream<T>` runtime surfaces as one
+W3C SSE event with the shape:
+
+```
+event: axon.token
+id: <monotonic_u64>
+data: {"step":"<step_name>","trace_id":<int>,"token":"<text>","timestamp_ms":<int>}
+```
+
+The final completion envelope:
+
+```
+event: axon.complete
+id: <last>
+data: {"trace_id":<int>,"flow":"<name>","backend":"<provider>",...}
+```
+
+Each response also leads with the W3C `retry: 5000` reconnect hint and
+honors the `keepalive:` field on the axonendpoint by emitting
+`: keepalive\n\n` comment lines at the declared interval (default 15s,
+closed enum `{5s, 15s, 30s, 60s}`).
+
+### Where to look in the code
+
+- Axonendpoint parser surface (Python + Rust): `transport: {json,sse,ndjson}` + `keepalive: {5s,15s,30s,60s}` closed-enum frozensets in [`axon/compiler/parser.py`](../axon/compiler/parser.py) + [`axon-frontend/src/parser.rs`](../axon-frontend/src/parser.rs).
+- Type-checker enforcement (Fase 30.c): [`axon/compiler/type_checker.py`](../axon/compiler/type_checker.py) `_flow_produces_stream` master predicate.
+- Runtime SSE handler: [`axon-rs/src/axon_server.rs`](../axon-rs/src/axon_server.rs) `execute_sse_handler` (`POST /v1/execute/sse`).
+- Content-negotiation wrapper: same file, `execute_handler_with_negotiation` (`POST /v1/execute`).
+- Adopter-facing guide: [`ADOPTER_STREAMING.md`](ADOPTER_STREAMING.md) — comprehensive recipe + deployment cookbook + troubleshooting.
+
+### Backpressure policy reaches the wire
+
+The four `Stream<T>` backpressure policies operate at the runtime layer
+(buffer overflow handling) — they do NOT change the wire format. A
+`Stream<Bytes>` declared with `<stream:drop_oldest>` and routed onto
+`transport: sse` emits exactly the same `axon.token`/`axon.complete`
+event shape as one declared with `<stream:fail>`. The policy choice
+shows up in the response body only via the `axon.error` event if the
+runtime invokes `fail` and aborts mid-stream — adopters who picked
+`drop_oldest`/`degrade_quality` see a clean `axon.complete` envelope
+even when the buffer overflowed (the dropped/degraded items are
+reflected in the `axon_stream_*` metrics above, never in the wire
+events).
+
 ## What §11.a does NOT include (deferred)
 
 - **Full dataflow-propagating check.** §11.a does the conservative
