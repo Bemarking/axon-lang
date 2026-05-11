@@ -100,6 +100,11 @@ pub mod request_tracing;
 // `collect_type_table` walker. The fallback handler in `axon_server`
 // consults the table at request time per (method, path).
 pub mod route_schema;
+// §Fase 32.f — Idempotency-Key store for POST/PUT axonendpoint routes.
+// Stripe-compatible. Cross-tenant isolation via (client_id, path, key)
+// composite key. 24h default retention. Same-key-different-body
+// returns 422 per industry convention.
+pub mod idempotency;
 pub mod resilient_backend;
 pub mod retry_policy;
 pub mod runner;
