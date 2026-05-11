@@ -268,6 +268,13 @@ fn main() {
             log_file,
             database_url: database_url.or_else(|| std::env::var("DATABASE_URL").ok()),
             config_path: None,
+            // §Fase 31.d (D6) — D6 default false in v1.22.x. The CLI
+            // flag + env var + config-file surface that lets adopters
+            // opt in ships in 31.f; 31.d only adds the field +
+            // the runtime path that consults it (programmatic
+            // construction in tests can already exercise the strict
+            // behavior).
+            strict_type_driven_transport: false,
         }),
         Commands::Diff {
             file_a,
