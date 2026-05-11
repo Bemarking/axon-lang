@@ -1927,8 +1927,8 @@ class AxonEndpointDefinition(ASTNode):
     timeout: str = ""
     compliance: list[str] = field(default_factory=list)  # ESK Fase 6.1
     # §Fase 30 — HTTP transport for algebraic stream effects.
-    # `transport` is the wire format the server uses to materialise
-    # the response. Closed enum per D2 ratified 2026-05-10:
+    # `transport` is the EFFECTIVE wire format the server uses to
+    # materialise the response. Closed enum per D2 ratified 2026-05-10:
     #   - "json"   (default per D1) — application/json single response
     #   - "sse"    — text/event-stream Server-Sent Events single-shot
     #   - "ndjson" — application/x-ndjson namespace reserved; wire
@@ -1941,6 +1941,25 @@ class AxonEndpointDefinition(ASTNode):
     # Closed enum of accepted values: {"5s", "15s", "30s", "60s"}.
     # Empty string means "use runtime default" (15s).
     keepalive: str = ""
+    # §Fase 31.b — Type-Driven Wire Inference (D1, D7).
+    # `transport_explicit` is True if the source declared `transport:`
+    # explicitly (any of json/sse/ndjson). False if the field was
+    # omitted, in which case `transport` reflects the dataclass D1
+    # default "json" but `implicit_transport` (computed by the
+    # type-checker pass) carries the inferred value.
+    transport_explicit: bool = False
+    # §Fase 31.b — Inferred wire transport per D1:
+    #   implicit_transport(E) =
+    #     declared_transport(E)   if transport_explicit
+    #     "sse"                    if produces_stream(execute_flow) ∧ ¬explicit
+    #     "json"                   otherwise
+    # Computed by `_implicit_transport` in type_checker.py and attached
+    # to every AxonEndpointDefinition during the type-check pass.
+    # Empty string "" before the type-checker runs (an AST consumed
+    # without type-checking — e.g. raw parser output for tooling —
+    # will see "" and must run the inference itself or fall back).
+    # The Rust mirror sets the field byte-identically (D7).
+    implicit_transport: str = ""
 
 
 # ═══════════════════════════════════════════════════════════════════

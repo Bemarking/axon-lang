@@ -4495,6 +4495,13 @@ impl Parser {
             // §Fase 30 — Defaults preserve backwards compat per D1.
             transport: "json".to_string(),
             keepalive: String::new(),
+            // §Fase 31.b — Inference fields (parser-default state).
+            // Both fields toggle/populate only when the source provides
+            // an explicit `transport:` declaration (parser sets
+            // `transport_explicit = true`) AND the type-checker walks
+            // the program to compute `implicit_transport`.
+            transport_explicit: false,
+            implicit_transport: String::new(),
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -4555,6 +4562,11 @@ impl Parser {
                             });
                         }
                         node.transport = value.clone();
+                        // §Fase 31.b D1 — mark the field as explicitly
+                        // declared so the type-checker's implicit-transport
+                        // inference knows NOT to override this value with
+                        // the produces_stream-driven inference.
+                        node.transport_explicit = true;
                     }
                     "keepalive" => {
                         // Accepts either a DURATION token (e.g. `15s`) or

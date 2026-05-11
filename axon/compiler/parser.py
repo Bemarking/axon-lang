@@ -4887,6 +4887,11 @@ class Parser:
                             found=value,
                         )
                     node.transport = value
+                    # §Fase 31.b D1 — mark the field as explicitly
+                    # declared so the type-checker's implicit-transport
+                    # inference knows NOT to override this value with
+                    # the produces_stream-driven inference.
+                    node.transport_explicit = True
                 case "keepalive":
                     # §Fase 30.b — SSE keepalive interval (D6).
                     # Closed enum {5s, 15s, 30s, 60s}.
