@@ -1,8 +1,23 @@
-"""§Fase 32.c — Body schema validation (Python mirror).
+"""§Fase 32.c + 32.d — Schema validation (Python mirror).
 
 Byte-identical sibling of `axon-rs/src/route_schema.rs`. The same input
-program + the same JSON body produce the same `BodyValidationError`
+program + the same JSON value produce the same `BodyValidationError`
 fields (expected_type, field_path, expected, got, hint).
+
+Consumed at TWO call sites in the runtime (same primitive, two
+semantic boundaries):
+
+  1. **Request side (D4, 32.c)** — before flow dispatch. On violation
+     the HTTP layer returns 400 Bad Request with the full structured
+     error so the adopter client can fix the request.
+  2. **Response side (D5, 32.d)** — after flow dispatch, before
+     returning to the client. On violation the HTTP layer returns
+     **GENERIC 500** to the client (OWASP — schema details never leak)
+     but records the full diagnostic in the audit log so the adopter
+     fixes the FLOW.
+
+The validator itself does not care which side it runs on — same pure
+function, same drift gate.
 
 Consumed by:
 
@@ -13,7 +28,7 @@ Consumed by:
 
   * Future Python `AxonServer` integration (FastAPI request validation
     wiring) when the Python runtime catches up on the dynamic-route
-    fallback handler shape Rust ships in 32.b/c.
+    fallback handler shape Rust ships in 32.b/c/d.
 
 Pillar trace per D12:
 
@@ -21,10 +36,12 @@ Pillar trace per D12:
                    type system. Same input → same Result.
   - LOGIC       — every accepted body matches the declared schema.
                    No widening, no coercion. `Integer` rejects `"42"`.
-  - PHILOSOPHY  — the source declaration IS the request contract.
-                   Auditors read source + KNOW the accepted shapes.
-  - COMPUTING   — D9 backwards-compat: empty `body_type` skips
+  - PHILOSOPHY  — the source declaration IS the contract — both for
+                   accepted requests (D4) and produced responses (D5).
+  - COMPUTING   — D9 backwards-compat: empty type name skips
                    validation entirely. Adopters opt in by declaring.
+                   OWASP-aligned on the response side: client never
+                   sees schema details on D5 violations.
 """
 from __future__ import annotations
 
