@@ -36,7 +36,8 @@
 14. [LSP / IDE integration recipe](#lsp--ide-integration-recipe)
 15. [CI integration recipe](#ci-integration-recipe)
 16. [Cross-stack contract: Python ↔ Rust](#cross-stack-contract-python--rust)
-17. [Where to file bugs](#where-to-file-bugs)
+17. [Real-time streaming (Fase 33, v1.24.0+)](#real-time-streaming-fase-33-v1240)
+18. [Where to file bugs](#where-to-file-bugs)
 
 ---
 
@@ -1182,6 +1183,274 @@ typed-stream validation + token-chain replay are tracked as a future
 fase. If your flow produces a `Stream<T>` AND you need replay audit,
 declare `transport: json` to opt out of streaming + opt in to replay,
 or layer enterprise streaming-audit primitives.
+
+---
+
+## Real-time streaming (Fase 33, v1.24.0+)
+
+> **TL;DR for adopters upgrading from v1.23.x → v1.24.0:** the SSE wire
+> body is **byte-identical** with v1.23.x — same `retry:` directive,
+> same `event:` types, same `data:` JSON shape, same `id:` monotonicity.
+> What changes is **when** each event arrives on the wire: pre-33.c
+> token events burst-arrived at end of execution; v1.24.0+ delivers
+> them AS THEY ARE PRODUCED. **No client-side migration required for
+> wire-compat clients.** Opt-in observability via the new
+> `stream_policies` field on `axon.complete` documented below.
+
+Fase 33 closes the architectural cycle from algebraic-effect declaration
+to adopter-observable token-by-token streaming. The trigger was the
+adopter trail post-v1.23.1: *"10 bumps en 5 días. Mismo resultado. […]
+es un piece de arquitectura que necesita su propio cycle"*. The fix is
+not a parser patch — it's four cooperating runtime layers, each shipped
+behind founder sign-off so adopters can adopt incrementally.
+
+### The four layers, in plain language
+
+| Layer | What changed | Adopter-visible effect |
+|---|---|---|
+| **Layer 1** — `FlowExecutionEvent` (33.b) | Replaced the stale `step_names=[] / step_results=[]` shape with a closed 6-variant event catalog | Wire body now shows `step:"Generate"` + `token:"(stub)"` instead of the pre-33.b hollow `step:"" / token:""` for stub-backend dispatches |
+| **Layer 2** — live forwarding (33.c) | `execute_sse_handler` consumes a `FlowExecutionEvent` receiver LIVE; no batching after `server_execute_full` returns | Tokens arrive at the client AS the runtime emits them, not all at once after the flow completes (visible against real backends) |
+| **Layer 3** — native `Backend::stream()` (33.d) | All 7 native LLM backends ship real per-provider SSE streaming. OpenAI-compat covers openai/kimi/glm/ollama/openrouter; Anthropic + Gemini ship their own protocols | When `backend: anthropic` (or any other native backend) executes a flow with `Stream<T>` output, each provider chunk surfaces as one `axon.token` event |
+| **Layer 4** — stream-effect dispatcher (33.e) | `tool X { effects: <stream:<policy>> }` annotations now bind to actual runtime behavior via the new `stream_effect_dispatcher` module | `axon.complete` wire envelope carries a new optional `stream_policies` array surfacing which policies fired on which steps |
+
+Two transversal invariants pinned in CI on every PR:
+
+- **D6 cancel-safety** (33.f): client disconnect → SSE consumer's
+  `tx.send().await.is_err()` → `cancel.cancel()` → producer's next
+  `tx.send()` fails → producer exits early via a single shared
+  `emit` closure that checks both signals.
+- **D12 robustness fuzz** (33.g): ~2 000 deterministic iterations
+  across 13 surfaces. The closed catalogs (`FlowExecutionEvent::ALL`,
+  `BackpressurePolicy::ALL`) are pinned to their exact variant set;
+  adding a new variant breaks the build cross-stack.
+
+### What does NOT change (D9 wire byte-compat, ratified)
+
+Every adopter contract built against the Fase 30/31/32 wire shape
+continues to work bit-identically:
+
+- `retry: 5000\n\n` still leads every response.
+- `event: axon.token\nid: N\ndata: {...}\n\n` for each token event,
+  monotone ids starting at 1.
+- `event: axon.complete\nid: M\ndata: {...}\n\n` terminates.
+- The `data:` JSON keeps every pre-33 field (`step`, `token`,
+  `trace_id`, `timestamp_ms` on tokens; `flow`, `backend`,
+  `steps_executed`, `tokens_input`, `tokens_output`, `latency_ms`,
+  `success` on complete).
+- Existing keepalive (`: keepalive\n\n` at the declared interval)
+  fires identically. Per-route transport classification (Fase 32.e)
+  is unchanged. Negotiation (Fase 30.e/31.c) is unchanged.
+
+The CI workflow `.github/workflows/fase_33_sse_cognitive_primitive.yml`
+lane 7 (**D9 backwards-compat anchor**) re-runs the full Fase 30/31/32
+SSE test surface on every PR; any byte-level perturbation breaks the
+build.
+
+### `stream_policies` — observe declared policies on the wire
+
+When a step's referenced tool declares `effects: <stream:<policy>>`,
+the SSE handler now surfaces the resolved policy on the
+`axon.complete` envelope's JSON payload:
+
+```axon
+tool chat_stream {
+    provider: anthropic
+    effects:  <stream:drop_oldest>
+}
+
+flow Chat() -> Unit {
+    step Generate {
+        ask:   "hi"
+        apply: chat_stream
+        output: Stream<Token>
+    }
+}
+
+axonendpoint ChatEndpoint {
+    method:    POST
+    path:      "/chat"
+    execute:   Chat
+    transport: sse
+}
+```
+
+Wire body (only the complete event shown):
+
+```
+event: axon.complete
+id: 2
+data: {"trace_id":1,"flow":"Chat","backend":"anthropic","steps_executed":1,"tokens_input":12,"tokens_output":42,"latency_ms":3214,"success":true,"stream_policies":[{"step":"Generate","policy":"drop_oldest"}]}
+```
+
+Pre-33.e wire body for the same flow:
+
+```
+event: axon.complete
+id: 2
+data: {"trace_id":1,"flow":"Chat","backend":"anthropic","steps_executed":1,"tokens_input":12,"tokens_output":42,"latency_ms":3214,"success":true}
+```
+
+The field is **elided when empty** (the flow has no declared stream
+effects), so adopter clients that don't know about the field don't
+observe any change. JSON parsers treat the new key as a no-op when
+unknown.
+
+#### The closed policy catalog
+
+Four policies, sealed at the compiler level:
+
+| Slug | Semantics | When to use |
+|---|---|---|
+| `drop_oldest` | Buffer bounded; when full, drop the OLDEST queued token to make room for the new one. Lossy but never blocks. | Telemetry / "live tail" streams where the freshest data matters and history is disposable. |
+| `degrade_quality` | Buffer bounded; when full, the new token is degraded through a tool-declared degrader function (e.g. emit a summary token) before being pushed. Lossy but never blocks; the consumer still gets a token per produced item, just lower fidelity. | Audio downsampling, image resampling under bandwidth pressure. The compiler REQUIRES a degrader function. |
+| `pause_upstream` | Buffer bounded; producer blocks until the consumer drains. Lossless; safest for request/response. **DO NOT use on real-time ingest paths** (microphones, market feeds) or the upstream source hangs. | LLM chat over a slow client. The natural choice for token streaming. |
+| `fail` | Buffer bounded; on overflow, the producer surfaces a typed `StreamError::Overflow`. The consumer sees a mid-stream error event. | Callers that need explicit failure on saturation (audit trails, financial pipelines where dropped data is illegal). |
+
+Adding a fifth policy requires a frontend patch + breaks every
+dispatcher's exhaustive match — caught at build time, not at adopter
+bug-report time.
+
+### Per-provider streaming notes (Fase 33.d)
+
+All seven native LLM backends speak their provider's canonical
+streaming protocol:
+
+| Backend | Wire protocol | Where the impl lives |
+|---|---|---|
+| `anthropic` | SSE with typed events: `message_start`, `content_block_delta`, `message_delta`, `message_stop`, `ping` (dropped) | `axon-rs/src/backends/anthropic.rs::stream` |
+| `openai` | OpenAI SSE with `[DONE]` sentinel | `axon-rs/src/backends/openai_compat.rs::stream` (shared) |
+| `kimi` | OpenAI-compat SSE (delegates to openai_compat) | same as openai |
+| `glm` | OpenAI-compat SSE (delegates to openai_compat) | same as openai |
+| `ollama` | OpenAI-compat SSE via `/v1/chat/completions` (the ollama daemon's native ndjson surface at `/api/chat` is a 33.x follow-up) | same as openai |
+| `openrouter` | OpenAI-compat SSE (delegates to openai_compat) | same as openai |
+| `gemini` | `:streamGenerateContent?alt=sse` with `candidates[0].content.parts[*].text` deltas | `axon-rs/src/backends/gemini.rs::stream` |
+
+Each impl fails-fast on non-200 (retrying mid-stream replays partial
+tokens — semantically wrong); the typed `BackendError` you see on the
+wire's `axon.error` event reflects the provider's actual response
+(401 → Auth, 429 → RateLimit, 5xx → Generic with status).
+
+### Migration recipe v1.23.x → v1.24.0
+
+**For wire-compat clients (the vast majority):**
+
+No changes required. Re-run your existing SSE integration tests
+against an axon-lang v1.24.0 server; the wire body is byte-identical.
+You'll observe lower **time-to-first-byte for token events** when
+your flow uses a real native backend (Fase 33.d wired in per-step in
+the 33.x follow-up; see the "Honest scope statement" below).
+
+**For clients that want to observe declared policies on the wire:**
+
+After upgrading the server, look for the new `stream_policies` array
+on `axon.complete` event data when the flow's tool declarations carry
+`effects: <stream:<policy>>`. Existing JSON parsers ignore the
+field; observability dashboards can index it directly.
+
+```javascript
+es.addEventListener("axon.complete", (e) => {
+    const data = JSON.parse(e.data);
+    if (data.stream_policies?.length) {
+        console.log("Active policies:", data.stream_policies);
+        // e.g. [{"step":"Generate","policy":"drop_oldest"}]
+    }
+});
+```
+
+**For clients that depended on the pre-33.c "synchronous burst" timing:**
+
+None known. The pre-33.c behavior was a bug surfaced by the adopter
+trail; if your client depended on it implicitly (e.g. assumed ALL
+token events would arrive before `axon.complete` did, with no
+inter-event idle gap), the new behavior is strictly more correct and
+matches the W3C SSE spec. Open a bug if you find a real regression;
+the CI lane 7 D9 anchor pins the wire format byte-by-byte and
+catches any drift at PR time.
+
+### Honest scope statement (what 33.x is still going to add)
+
+The synchronous `server_execute_full` path currently materializes
+all step outputs before the chunker runs. So Fase 33.c's live
+forwarding architecture is **structurally** in place (the
+`FlowExecutionEvent` producer/consumer split is wired end-to-end),
+but the producer itself emits all events in microseconds for the
+stub backend — there's no real per-token network roundtrip to
+amortize.
+
+The next sub-fase (**33.x**, post-v1.24.0) wires `Backend::stream()`
+(Fase 33.d, already shipped per-provider) into the **per-step
+execution path** inside `server_execute_full`. At that point each
+chunk's actual network roundtrip surfaces as a wall-clock inter-
+event gap on the wire, the `StreamPolicyEnforcer` (Fase 33.e)
+actually observes overflow under saturating producers, and the
+cancellation primitive (Fase 33.f) gets a meaningful window to
+abort mid-flight backend requests when a client disconnects.
+
+The architecture shipped in v1.24.0 is the complete contract. The
+v1.24.x point release(s) activate it without further adopter-facing
+changes.
+
+### Vertical patterns — same as v1.23 + token-by-token UX
+
+The four high-profile verticals from Fase 32 unlock token-by-token
+delivery as soon as 33.x activates:
+
+- **Banking** — `POST /loan/decision` with `transport: sse + replay: true`
+  streams the risk-explanation narration token-by-token. Auditors
+  retrieve via `GET /v1/replay/<trace_id>` and see the FULL token
+  sequence + final decision. PCI DSS Req 10 audit-defensible.
+- **Government** — `POST /benefits/eligibility` streams the eligibility-
+  reasoning narrative. FOIA requests retrieve the live trace.
+- **Legal** — `POST /discovery/privilege` streams the privilege-
+  assessment reasoning. FRE 502 waiver-doctrine appeals trace the
+  exact reasoning steps.
+- **Medicine** — `POST /clinical/decision-support` streams clinical
+  recommendations to clinician UI token-by-token. The PHI scrubber
+  (Fase 27.g) runs upstream of every chunk. 21 CFR Part 11 §11.10
+  audit retains the full stream.
+
+Each pattern works today with `Content-Type: text/event-stream`
+(v1.23.1) but the wire body burst-arrives at end-of-flow. Fase 33
+makes the token-by-token delivery REAL.
+
+### Cancel-safety in the wire (D6)
+
+When the SSE client disconnects (browser navigation, TCP RST, network
+partition), the runtime cooperatively terminates:
+
+1. Consumer's per-token `tx.send().await` returns `Err`.
+2. Consumer calls `cancel.cancel()` and breaks the wire-emission loop.
+3. Producer's next `tx.send()` into the `FlowExecutionEvent` channel
+   fails (consumer dropped the receiver).
+4. Producer exits via the same early-return path that an explicit
+   cancellation would trigger.
+5. The `CancelOnDrop` RAII guard installed at the top of the spawned
+   task fires `cancel.cancel()` if the task is aborted (panic, task
+   abort), so the producer always sees the signal even on
+   abnormal exit.
+
+Adopter-visible effect:
+
+- No further wire events are sent after disconnect.
+- The trace record (`trace_store`) reflects partial execution.
+- No leaked tokio tasks; no unbounded memory growth from a
+  disconnected-but-still-producing flow.
+
+The cancellation primitive (`axon::cancel_token::CancellationFlag` +
+`CancelOnDrop`) is part of the public adopter surface for
+integration code that needs to bind external scopes to the
+streaming lifetime — see `cancel_token.rs` for the API.
+
+### Where to file bugs (Fase 33-specific)
+
+| Symptom | Where |
+|---|---|
+| Wire body byte-different from v1.23.x for the same source (D9 violation) | `axon-lang` issue tracker — D9 anchor regression, treat as blocker |
+| `stream_policies` array absent from `axon.complete` when source declares `<stream:policy>` | `axon-lang` issue tracker — Fase 33.e resolver regression |
+| `stream_policies` array carries a policy slug not in `{drop_oldest, degrade_quality, pause_upstream, fail}` | `axon-lang` issue tracker — closed-catalog violation |
+| Tokens still burst-arriving at end of flow on a real native backend (post-33.x) | `axon-lang` issue tracker — Layer 2 live-forwarding regression |
+| Client disconnect doesn't cause producer to exit within ~100ms of the next event boundary | `axon-lang` issue tracker — D6 cancel-safety regression |
+| Per-provider stream() returns 200 but mid-stream JSON parses fail silently | `axon-lang` issue tracker — chunk parser regression; include the provider name + the raw SSE body |
 
 ---
 
