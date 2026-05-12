@@ -73,6 +73,16 @@ pub mod esk;
 /// CLI handlers for the ESK audit commands (dossier, sbom, audit, evidence-package).
 pub mod audit_cli;
 pub mod flow_inspect;
+/// §Fase 33.x.b — Streaming-shaped execution plan extractor. Builds
+/// `StreamingExecutionPlan` from `.axon` source for the production
+/// async SSE path; pre-resolves per-step `BackpressurePolicy` via
+/// `stream_effect_dispatcher` so the hot per-chunk loop in
+/// `axon_server::server_execute_streaming_async` does not re-walk
+/// the AST per chunk. Rejects flows that use 33.x.b-unsupported
+/// features (anchors / lambda apply / let bindings / mid-stream
+/// use_tool / hibernate / pix) with a closed-catalog `PlanFallback`
+/// so the SSE handler can route them to the legacy synchronous path.
+pub mod flow_plan;
 pub mod flow_version;
 pub mod exec_context;
 pub mod graceful_shutdown;

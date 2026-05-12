@@ -68,6 +68,12 @@ pub mod openai_compat;
 pub mod openrouter;
 pub mod retry;
 pub mod sse_streaming;
+/// §Fase 33.x.b — `StubBackend` implementing the [`Backend`] trait so
+/// the production async streaming path resolves "stub" through the
+/// uniform [`Registry`] surface (no special-cased branches in the
+/// runtime). Excluded from the Fase 24.j cross-stack drift gate
+/// SHARED_INFRA_MODULES because it is not a real provider.
+pub mod stub;
 pub mod tokens;
 pub(crate) mod transport;
 
@@ -80,6 +86,7 @@ pub use ollama::OllamaBackend;
 pub use openai::OpenAIBackend;
 pub use openai_compat::{OpenAICompatConfig, OpenAICompatibleBackend};
 pub use openrouter::OpenRouterBackend;
+pub use stub::{StubBackend, STUB_CONTENT, STUB_DEFAULT_MODEL, STUB_PROVIDER_NAME};
 
 // ────────────────────────────────────────────────────────────────────
 //  Request / Response types — the wire shape every backend speaks
@@ -379,6 +386,146 @@ impl Registry {
         registry.register(Box::new(openrouter::OpenRouterBackend::from_env()));
         registry
     }
+
+    /// §Fase 33.x.b — Production registry PLUS the `stub` backend.
+    ///
+    /// Used by the server streaming path so dispatch through the
+    /// uniform `Registry` surface includes the stub. The 7 canonical
+    /// production backends are unchanged; `stub` is added as an 8th
+    /// entry. The Fase 24.j cross-stack drift gate continues to pin
+    /// the 7 canonical entries exactly via filesystem enumeration of
+    /// `axon-rs/src/backends/*.rs` minus the `SHARED_INFRA_MODULES`
+    /// set (which includes `stub`).
+    ///
+    /// Adopters who call [`Registry::production()`] directly do not
+    /// see the stub — it surfaces only on the streaming-path
+    /// dispatcher, where its content matches the legacy synchronous
+    /// stub-mode output byte-for-byte (D4 wire byte-compat).
+    pub fn production_with_stub() -> Self {
+        let mut registry = Self::production();
+        registry.register(Box::new(stub::StubBackend::new()));
+        registry
+    }
+}
+
+/// §Fase 33.x.b — Owned-backend resolver for the streaming dispatch
+/// path.
+///
+/// Returns `Some(Box<dyn Backend>)` for the 7 canonical production
+/// providers plus `"stub"`. Returns `None` for any other name (e.g.
+/// `"auto"` after upstream resolution failed, or an unknown name
+/// the adopter supplied).
+///
+/// The dispatch set MUST match [`Registry::production_with_stub`]
+/// exactly — adding a backend here without adding it to the
+/// registry (or vice versa) is caught by the
+/// `resolve_streaming_backend_dispatch_set_matches_production_with_stub`
+/// drift test below.
+///
+/// Each lookup constructs a fresh backend via `from_env()` so the
+/// returned `Box` owns its own reqwest client + retry policy.
+/// Async tasks own their backend for the duration of one flow
+/// (the trait is `Send + Sync` but not `Clone`, so per-task
+/// ownership keeps the dispatch path simple).
+pub fn resolve_streaming_backend(name: &str) -> Option<Box<dyn Backend>> {
+    match name {
+        "anthropic" => Some(Box::new(anthropic::AnthropicBackend::from_env())),
+        "openai" => Some(Box::new(openai::OpenAIBackend::from_env())),
+        "gemini" => Some(Box::new(gemini::GeminiBackend::from_env())),
+        "kimi" => Some(Box::new(kimi::KimiBackend::from_env())),
+        "glm" => Some(Box::new(glm::GLMBackend::from_env())),
+        "ollama" => Some(Box::new(ollama::OllamaBackend::from_env())),
+        "openrouter" => Some(Box::new(openrouter::OpenRouterBackend::from_env())),
+        "stub" => Some(Box::new(stub::StubBackend::new())),
+        _ => None,
+    }
+}
+
+/// Names recognised by [`resolve_streaming_backend`]. Sorted.
+/// Pinned by the drift test below.
+pub const STREAMING_BACKEND_NAMES: &[&str] = &[
+    "anthropic",
+    "gemini",
+    "glm",
+    "kimi",
+    "ollama",
+    "openai",
+    "openrouter",
+    "stub",
+];
+
+#[cfg(test)]
+mod resolver_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_streaming_backend_returns_none_for_unknown_name() {
+        assert!(resolve_streaming_backend("does-not-exist").is_none());
+        assert!(resolve_streaming_backend("").is_none());
+        assert!(resolve_streaming_backend("auto").is_none());
+    }
+
+    #[test]
+    fn resolve_streaming_backend_returns_some_for_each_streaming_name() {
+        for name in STREAMING_BACKEND_NAMES {
+            let backend = resolve_streaming_backend(name)
+                .unwrap_or_else(|| panic!("resolver should return Some for {name:?}"));
+            assert_eq!(backend.name(), *name);
+        }
+    }
+
+    #[test]
+    fn resolve_streaming_backend_dispatch_set_matches_production_with_stub() {
+        let registry = Registry::production_with_stub();
+        let registry_names = registry.provider_names();
+        let mut resolver_names: Vec<String> =
+            STREAMING_BACKEND_NAMES.iter().map(|s| s.to_string()).collect();
+        resolver_names.sort();
+        assert_eq!(
+            registry_names, resolver_names,
+            "resolve_streaming_backend() and Registry::production_with_stub() \
+             must dispatch the same set of backends — drift here breaks the \
+             D1 contract that Backend::stream() is the only production path \
+             for Stream<T>"
+        );
+    }
+
+    #[test]
+    fn streaming_backend_names_pins_eight_entries() {
+        // 7 canonical providers + stub. Adding a ninth requires
+        // updating both the resolver match and the
+        // `Registry::production_with_stub()` constructor — and
+        // re-running the drift test above.
+        assert_eq!(STREAMING_BACKEND_NAMES.len(), 8);
+    }
+
+    #[test]
+    fn streaming_backend_names_are_sorted() {
+        let mut sorted = STREAMING_BACKEND_NAMES.to_vec();
+        sorted.sort();
+        assert_eq!(sorted.as_slice(), STREAMING_BACKEND_NAMES);
+    }
+
+    #[tokio::test]
+    async fn resolved_stub_streams_one_canonical_chunk() {
+        let backend = resolve_streaming_backend("stub").expect("stub resolves");
+        let req = ChatRequest::default();
+        let mut stream = backend.stream(req).await.expect("stub streams");
+        use futures::StreamExt;
+        let chunk = stream.next().await.expect("one chunk").expect("ok");
+        assert_eq!(chunk.delta, stub::STUB_CONTENT);
+        assert!(stream.next().await.is_none(), "single-chunk semantics");
+    }
+}
+
+impl Registry {
+    /// Internal marker reserved for future expansion of the
+    /// streaming-resolver dispatch surface. Currently a no-op; kept
+    /// as a public-crate anchor so future Fase 33.x sub-fases can
+    /// extend the dispatch table without re-opening the parent impl
+    /// block. Untyped const is a zero-cost marker in monomorphisation.
+    #[doc(hidden)]
+    pub(crate) const __FASE_33X_B_RESOLVER_BOUNDARY: () = ();
 
     /// Register `backend` under the key `backend.name()`. Replaces any
     /// existing entry with the same name (last-write-wins).

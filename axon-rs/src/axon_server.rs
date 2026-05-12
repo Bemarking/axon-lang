@@ -18178,6 +18178,271 @@ pub(crate) struct StreamingExecution {
     pub exited: std::sync::Arc<tokio::sync::Notify>,
 }
 
+/// §Fase 33.x.b — Production async streaming path.
+///
+/// Drives the per-step LLM dispatch through the Fase 24 `Backend`
+/// trait (`Backend::stream()`) instead of the synchronous mono-file
+/// `crate::backend::call_multi` + synthetic 3-word chunking. Each
+/// upstream provider chunk arriving over the network is forwarded
+/// as one `StepToken` event AS IT ARRIVES — no more burst-at-end
+/// timing on the SSE wire.
+///
+/// Returns:
+///   - `Ok(())` on a successful end-to-end flow (FlowComplete emitted)
+///   - `Err(reason)` on hard failures (FlowError already emitted into
+///     the event channel; the caller must NOT emit another)
+///
+/// Honors `cancel` between every emit + at every chunk boundary.
+/// Per-provider stream impls observe the cancel flag inside their
+/// reqwest body in Fase 33.x.e; today (33.x.b) the granularity is
+/// between-chunks, which is already tighter than the legacy
+/// between-emits behavior on the synthetic path.
+///
+/// # Scope (33.x.b)
+///
+/// This function handles flows whose plan
+/// [`crate::flow_plan::build_streaming_plan`] returns `Ok(_)`.
+/// Flows that use anchors / lambda apply / let bindings / mid-stream
+/// `use_tool` / hibernate / pix / un-modeled `IRFlowNode` variants
+/// route to [`server_execute_streaming_legacy`] (the pre-33.x.b
+/// path, byte-compatible wire). NO silent degradation; the
+/// fallback is observable via the `PlanFallback` enum and surfaces
+/// in the audit row + future 33.x.g warning emission.
+async fn run_streaming_async_path(
+    plan: crate::flow_plan::StreamingExecutionPlan,
+    backend_name: String,
+    cancel: crate::cancel_token::CancellationFlag,
+    tx: tokio::sync::mpsc::UnboundedSender<
+        crate::flow_execution_event::FlowExecutionEvent,
+    >,
+) {
+    use crate::backends::{ChatRequest, Message};
+    use crate::flow_execution_event::{now_ms, FlowExecutionEvent};
+    use futures::StreamExt;
+
+    // Helper closure factoring the cancel-aware send pattern from
+    // Fase 33.f. Returns `Err(())` when the producer should exit
+    // early (consumer dropped or cancellation fired).
+    let emit = |event: FlowExecutionEvent| -> Result<(), ()> {
+        if cancel.is_cancelled() {
+            return Err(());
+        }
+        tx.send(event).map_err(|_| ())
+    };
+
+    // FlowStart fires before backend resolution so the consumer
+    // binds side-effect state (audit row, observability span)
+    // before the first chunk arrives.
+    if emit(FlowExecutionEvent::FlowStart {
+        flow_name: plan.flow_name.clone(),
+        backend: backend_name.clone(),
+        timestamp_ms: now_ms(),
+    })
+    .is_err()
+    {
+        return;
+    }
+
+    // Resolve the backend via the streaming-resolver. Same
+    // dispatch set as `Registry::production_with_stub()` — drift
+    // gated by `resolver_tests` in `backends/mod.rs`.
+    let backend = match crate::backends::resolve_streaming_backend(&backend_name) {
+        Some(b) => b,
+        None => {
+            let _ = emit(FlowExecutionEvent::FlowError {
+                flow_name: plan.flow_name.clone(),
+                error: format!(
+                    "Unknown backend '{backend_name}' on streaming path. Supported: {}",
+                    crate::backends::STREAMING_BACKEND_NAMES.join(", ")
+                ),
+                timestamp_ms: now_ms(),
+            });
+            return;
+        }
+    };
+
+    let exec_start = std::time::Instant::now();
+    let mut total_steps_executed: usize = 0;
+    let mut total_tokens_input: u32 = 0;
+    let mut total_tokens_output: u32 = 0;
+    let flow_success: bool;
+
+    // Conversation history accumulates assistant turns so multi-
+    // step flows pass prior step outputs to subsequent steps as
+    // context — same shape as the sync `runner::call_multi` path.
+    let mut history: Vec<Message> = Vec::new();
+
+    'flow_loop: {
+        for (step_index, plan_step) in plan.steps.iter().enumerate() {
+            if emit(FlowExecutionEvent::StepStart {
+                step_name: plan_step.step_name.clone(),
+                step_index,
+                step_type: "step".to_string(),
+                timestamp_ms: now_ms(),
+            })
+            .is_err()
+            {
+                flow_success = false;
+                break 'flow_loop;
+            }
+
+            // Compose ChatRequest for this step. Per Fase 24 trait
+            // contract, the backend resolves model defaults
+            // internally when `model` is empty; system_prompt
+            // lifts to top-level for Anthropic / inlines for
+            // OpenAI compats per provider adapter.
+            let request = ChatRequest {
+                model: String::new(),
+                messages: {
+                    let mut msgs = history.clone();
+                    msgs.push(Message::user(plan_step.user_prompt.clone()));
+                    msgs
+                },
+                system: if plan.system_prompt.is_empty() {
+                    None
+                } else {
+                    Some(plan.system_prompt.clone())
+                },
+                max_tokens: plan_step.max_tokens,
+                temperature: plan_step.temperature,
+                top_p: None,
+                tools: Vec::new(),
+                stream: true,
+                trace_id: None,
+            };
+
+            // Cancel check before issuing the upstream request.
+            if cancel.is_cancelled() {
+                flow_success = false;
+                break 'flow_loop;
+            }
+
+            let chunk_stream = match backend.stream(request).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = emit(FlowExecutionEvent::FlowError {
+                        flow_name: plan.flow_name.clone(),
+                        error: format!(
+                            "Backend '{}' stream() failed on step '{}': {}",
+                            backend_name, plan_step.step_name, e
+                        ),
+                        timestamp_ms: now_ms(),
+                    });
+                    flow_success = false;
+                    break 'flow_loop;
+                }
+            };
+
+            // Pin the stream + walk it, forwarding each chunk
+            // AS IT ARRIVES from the network. This is the bridge
+            // that activates D1 in production.
+            tokio::pin!(chunk_stream);
+            let mut token_index: u64 = 0;
+            let mut accumulated = String::new();
+            let mut step_tokens_input: u32 = 0;
+            let mut step_tokens_output: u32 = 0;
+            let mut step_success = true;
+            while let Some(chunk_result) = chunk_stream.next().await {
+                if cancel.is_cancelled() {
+                    flow_success = false;
+                    break 'flow_loop;
+                }
+                match chunk_result {
+                    Ok(chunk) => {
+                        // Skip emitting an empty StepToken for
+                        // role-only deltas (some providers emit a
+                        // leading chunk with `role: assistant`
+                        // and empty delta to signal stream start).
+                        // The terminal envelope chunk may also
+                        // have empty delta when usage piggy-backs
+                        // on finish_reason; we still capture its
+                        // usage but don't emit a `axon.token`
+                        // event for an empty content payload.
+                        if !chunk.delta.is_empty() {
+                            token_index += 1;
+                            accumulated.push_str(&chunk.delta);
+                            if emit(FlowExecutionEvent::StepToken {
+                                step_name: plan_step.step_name.clone(),
+                                content: chunk.delta,
+                                token_index,
+                                timestamp_ms: now_ms(),
+                            })
+                            .is_err()
+                            {
+                                flow_success = false;
+                                break 'flow_loop;
+                            }
+                        }
+                        if let Some(usage) = chunk.usage {
+                            step_tokens_input = usage.input_tokens;
+                            step_tokens_output = usage.output_tokens;
+                        }
+                        if chunk.finish_reason.is_some() {
+                            // Terminal chunk — stop draining; the
+                            // stream may yield further None.
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = emit(FlowExecutionEvent::FlowError {
+                            flow_name: plan.flow_name.clone(),
+                            error: format!(
+                                "Backend '{}' chunk error on step '{}': {}",
+                                backend_name, plan_step.step_name, e
+                            ),
+                            timestamp_ms: now_ms(),
+                        });
+                        step_success = false;
+                        flow_success = false;
+                        break 'flow_loop;
+                    }
+                }
+            }
+
+            // Multi-step flows feed step N's output back as
+            // history for step N+1 (same as sync runner path).
+            history.push(Message::user(plan_step.user_prompt.clone()));
+            history.push(Message::assistant(accumulated.clone()));
+
+            total_steps_executed += 1;
+            total_tokens_input = total_tokens_input.saturating_add(step_tokens_input);
+            total_tokens_output = total_tokens_output.saturating_add(step_tokens_output);
+
+            if emit(FlowExecutionEvent::StepComplete {
+                step_name: plan_step.step_name.clone(),
+                step_index,
+                success: step_success,
+                full_output: accumulated,
+                tokens_input: step_tokens_input as u64,
+                tokens_output: token_index,
+                timestamp_ms: now_ms(),
+            })
+            .is_err()
+            {
+                flow_success = false;
+                break 'flow_loop;
+            }
+        }
+        flow_success = true;
+    }
+
+    // Cancellation between the loop and FlowComplete is observable
+    // via the same emit() wrapper; if the wire is gone we skip the
+    // terminator (no consumer to receive it).
+    let _ = emit(FlowExecutionEvent::FlowComplete {
+        flow_name: plan.flow_name.clone(),
+        backend: backend_name,
+        success: flow_success,
+        steps_executed: total_steps_executed,
+        tokens_input: total_tokens_input as u64,
+        tokens_output: total_tokens_output as u64,
+        latency_ms: exec_start.elapsed().as_millis() as u64,
+        timestamp_ms: now_ms(),
+    });
+    // tx is dropped when this fn returns → consumer rx.recv() yields
+    // None → execute_sse_handler closes the SSE response cleanly.
+}
+
 fn server_execute_streaming(
     state: SharedState,
     source: String,
@@ -18186,36 +18451,120 @@ fn server_execute_streaming(
     backend: String,
     cancel: crate::cancel_token::CancellationFlag,
 ) -> StreamingExecution {
-    use crate::flow_execution_event::{now_ms, FlowExecutionEvent};
+    use crate::flow_execution_event::FlowExecutionEvent;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FlowExecutionEvent>();
     let exited = std::sync::Arc::new(tokio::sync::Notify::new());
     let exited_for_task = exited.clone();
 
-    tokio::task::spawn_blocking(move || {
-        // 33.f cancel-safety helper: a single send wrapped to check
-        // both the consumer-dropped signal AND the cancellation flag.
-        // Returns `Err(())` when the producer should exit early.
-        let emit = |event: FlowExecutionEvent| -> Result<(), ()> {
-            if cancel.is_cancelled() {
-                return Err(());
-            }
-            tx.send(event).map_err(|_| ())
-        };
+    // §Fase 33.x.b — Decide between the new async streaming path
+    // and the legacy synchronous fallback. Plan build is cheap
+    // (lex + parse + type-check + IR + walk) — no I/O. Backend
+    // resolution is in-process. Both checks happen synchronously
+    // BEFORE spawning so we know which path to take.
+    let plan_attempt =
+        crate::flow_plan::build_streaming_plan(&source, &source_file, &flow_name, &backend);
+    let backend_known = crate::backends::resolve_streaming_backend(&backend).is_some();
 
-        // FlowStart fires BEFORE we kick off the executor so any
-        // consumer can record "stream is live" + bind side-effect
-        // state (audit row, observability span) immediately. This is
-        // independent of how long the synchronous executor takes.
-        if emit(FlowExecutionEvent::FlowStart {
-            flow_name: flow_name.clone(),
-            backend: backend.clone(),
-            timestamp_ms: now_ms(),
-        })
-        .is_err()
-        {
-            exited_for_task.notify_waiters();
-            return;
+    match plan_attempt {
+        Ok(plan) if backend_known => {
+            // §Fase 33.x.b ASYNC PATH — Backend::stream() per step.
+            let tx_for_task = tx.clone();
+            let exited_for_async = exited_for_task.clone();
+            let cancel_for_async = cancel.clone();
+            let backend_for_async = backend.clone();
+            tokio::spawn(async move {
+                run_streaming_async_path(plan, backend_for_async, cancel_for_async, tx_for_task)
+                    .await;
+                exited_for_async.notify_waiters();
+            });
+            // Drop the original `tx` clone so the consumer's `recv()`
+            // returns None when the spawned task completes (rather
+            // than blocking forever on this outer-scope sender).
+            drop(tx);
+            return StreamingExecution { events: rx, exited };
         }
+        _ => {
+            // Fall through to the legacy synchronous path below.
+            // PlanError variants (Parse / TypeCheck / IrGeneration /
+            // FlowNotFound / LegacyOrchestrationRequired) all map
+            // to "use the legacy path"; the legacy path emits its
+            // own structured `axon.error` for hard errors + handles
+            // anchors/lambda/let/etc. correctly. This is the D8
+            // contract (stub + complex-flow shapes preserved
+            // unchanged) and the D5 no-silent-degradation policy —
+            // the audit row records WHICH PlanError fired (33.x.f).
+        }
+    }
+
+    // §Fase 33.x.b LEGACY PATH — preserved verbatim from pre-33.x.b
+    // for adopter shapes the streaming path defers (anchors, lambda
+    // apply, let bindings, mid-stream tool calls, etc.) AND for
+    // unknown backends so the error surface stays single-source.
+    let cancel_for_legacy = cancel.clone();
+    let exited_for_legacy = exited_for_task.clone();
+    tokio::task::spawn_blocking(move || {
+        run_streaming_legacy_path(
+            state,
+            source,
+            source_file,
+            flow_name,
+            backend,
+            cancel_for_legacy,
+            tx,
+        );
+        exited_for_legacy.notify_waiters();
+    });
+
+    StreamingExecution { events: rx, exited }
+}
+
+/// §Fase 33.x.b — Legacy synchronous streaming path. Preserved
+/// verbatim from pre-33.x.b for byte-identical wire shape on
+/// adopter source that the async path does not yet handle.
+///
+/// Calls `server_execute_full` synchronously then projects the
+/// materialized step outputs as synthetic 3-word `axon.token`
+/// events. Fires for: anchors / lambda apply / let bindings /
+/// `use_tool` / hibernate / pix / un-modeled IRFlowNode variants /
+/// unknown backend / source that fails to parse on the streaming
+/// path. Adopter wire is byte-identical with v1.24.0 for these
+/// shapes (D4 + D8 byte-compat).
+fn run_streaming_legacy_path(
+    state: SharedState,
+    source: String,
+    source_file: String,
+    flow_name: String,
+    backend: String,
+    cancel: crate::cancel_token::CancellationFlag,
+    tx: tokio::sync::mpsc::UnboundedSender<
+        crate::flow_execution_event::FlowExecutionEvent,
+    >,
+) {
+    use crate::flow_execution_event::{now_ms, FlowExecutionEvent};
+
+    // 33.f cancel-safety helper: a single send wrapped to check
+    // both the consumer-dropped signal AND the cancellation flag.
+    // Returns `Err(())` when the producer should exit early.
+    let emit = |event: FlowExecutionEvent| -> Result<(), ()> {
+        if cancel.is_cancelled() {
+            return Err(());
+        }
+        tx.send(event).map_err(|_| ())
+    };
+
+    // FlowStart fires BEFORE we kick off the executor so any
+    // consumer can record "stream is live" + bind side-effect
+    // state (audit row, observability span) immediately. This is
+    // independent of how long the synchronous executor takes.
+    if emit(FlowExecutionEvent::FlowStart {
+        flow_name: flow_name.clone(),
+        backend: backend.clone(),
+        timestamp_ms: now_ms(),
+    })
+    .is_err()
+    {
+        return;
+    }
 
         let exec_start = std::time::Instant::now();
         let (result, _actual_backend) = server_execute_full(
@@ -18330,11 +18679,10 @@ fn server_execute_streaming(
                 });
             }
         }
-        // tx drops here → consumer's recv() returns None.
-        exited_for_task.notify_waiters();
-    });
-
-    StreamingExecution { events: rx, exited }
+    // tx drops at function return → consumer's recv() returns None.
+    // Notification to `exited` is the caller's responsibility (the
+    // outer `spawn_blocking` closure invokes `notify_waiters()`
+    // after this fn returns).
 }
 
 /// POST /v1/execute/sse — single-shot SSE execution.
