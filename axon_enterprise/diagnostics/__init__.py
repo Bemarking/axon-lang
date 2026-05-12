@@ -26,6 +26,14 @@ from .policy import (
     resolve_policy_for_vertical,
     set_tenant_vertical,
 )
+from .store import (
+    AggregatedDiagnostic,
+    DiagnosticRecord,
+    RecentDiagnosticsStore,
+    StoreBackedAuditSink,
+    get_default_store,
+    set_default_store,
+)
 from .suggest_dicts import (
     DictEntry,
     VerticalDictionary,
@@ -47,12 +55,16 @@ from .telemetry import (
 )
 
 __all__ = [
+    "AggregatedDiagnostic",
     "AuditSink",
     "DiagnosticPolicy",
+    "DiagnosticRecord",
     "DiagnosticSeverity",
     "DictEntry",
     "InMemoryAuditSink",
     "ParserDiagnostic",
+    "RecentDiagnosticsStore",
+    "StoreBackedAuditSink",
     "TenantVertical",
     "VerticalDictionary",
     "assert_no_cross_vertical_contamination",
@@ -60,6 +72,7 @@ __all__ = [
     "clear_vertical_registry",
     "emit_parser_error",
     "get_audit_sink",
+    "get_default_store",
     "get_tenant_vertical",
     "load_vertical_dictionary",
     "policy_with_suggest_dict",
@@ -67,6 +80,7 @@ __all__ = [
     "resolve_policy_for_vertical",
     "resolve_policy_with_dict_for_vertical",
     "set_audit_sink",
+    "set_default_store",
     "set_tenant_vertical",
     "terms_for_vertical",
 ]

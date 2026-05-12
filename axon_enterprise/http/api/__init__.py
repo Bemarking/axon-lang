@@ -12,6 +12,7 @@ from axon_enterprise.http.api import (
     api_keys,
     auth,
     compliance,
+    diagnostics,
     integration_context,
     primitives,
     sso_routes,
@@ -29,6 +30,12 @@ def build_api_router() -> list[Route | Mount]:
         Mount("/tenant/api-keys", routes=api_keys.routes()),
         Mount("/tenant/usage", routes=usage.routes()),
         Mount("/tenant/compliance", routes=compliance.routes()),
+        # §Fase 29.e — vertical-aware diagnostic dashboard surface.
+        # Auth via existing tenant-context middleware (Q4 resolution —
+        # no new RBAC slug); D4 privacy posture (no source text in
+        # any response field); D8 tenant isolation by construction
+        # (every query keyed on `principal.tenant_id`).
+        Mount("/tenant/diagnostics", routes=diagnostics.routes()),
         # Fase 21.c — tenant introspection of integration context.
         # Auth-required, RLS by construction (uses principal.tenant_id).
         Mount(

@@ -17,6 +17,8 @@ Covers:
 
 from __future__ import annotations
 
+from collections.abc import Generator
+
 import pytest
 from prometheus_client import CollectorRegistry, Counter
 
@@ -45,7 +47,7 @@ from axon_enterprise.tenant.context import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_state() -> None:
+def _clean_state() -> Generator[None, None, None]:
     """Reset registry + audit sink + tenant context between tests."""
     clear_vertical_registry()
     set_audit_sink(None)
@@ -62,7 +64,7 @@ def audit_sink() -> InMemoryAuditSink:
 
 
 @pytest.fixture
-def hipaa_tenant() -> str:
+def hipaa_tenant() -> Generator[str, None, None]:
     set_tenant_vertical("clinic-x", TenantVertical.HIPAA)
     token = set_current_tenant(TenantContext(tenant_id="clinic-x"))
     yield "clinic-x"
@@ -70,7 +72,7 @@ def hipaa_tenant() -> str:
 
 
 @pytest.fixture
-def fintech_tenant() -> str:
+def fintech_tenant() -> Generator[str, None, None]:
     set_tenant_vertical("bank-y", TenantVertical.FINTECH)
     token = set_current_tenant(TenantContext(tenant_id="bank-y"))
     yield "bank-y"
@@ -121,7 +123,7 @@ def test_parser_diagnostic_has_no_source_text_field() -> None:
     # Defensive: enumerate the slots that exist and check none look
     # like a source-text leak channel.
     forbidden = {"source", "snippet", "content", "text", "body"}
-    field_names = {f for f in ParserDiagnostic.__dataclass_fields__}
+    field_names = set(ParserDiagnostic.__dataclass_fields__)
     assert field_names.isdisjoint(forbidden), (
         f"ParserDiagnostic carries forbidden source-text field(s): "
         f"{field_names & forbidden}"
@@ -202,7 +204,7 @@ def test_audit_entry_payload_has_no_source_text_field(
     """
     emit_parser_error(_diag("AX-0042"))
     entry = audit_sink.entries()[0]
-    field_names = {f for f in entry.__slots__}
+    field_names = set(entry.__slots__)
     forbidden = {"source", "snippet", "content", "text", "body", "excerpt"}
     assert field_names.isdisjoint(forbidden)
 

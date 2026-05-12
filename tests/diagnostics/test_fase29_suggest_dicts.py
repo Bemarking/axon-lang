@@ -19,10 +19,11 @@ Covers:
 from __future__ import annotations
 
 import json
+from collections.abc import Generator
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
-from importlib.resources import files
 
 from axon_enterprise.diagnostics import (
     DictEntry,
@@ -42,7 +43,7 @@ from axon_enterprise.diagnostics import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_cache() -> None:
+def _clean_cache() -> Generator[None, None, None]:
     """Each test gets a fresh load cache so D8 invariants are checked
     against re-loaded JSON, not stale state."""
     clear_dictionary_cache()

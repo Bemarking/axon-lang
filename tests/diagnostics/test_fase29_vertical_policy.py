@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import threading
+from collections.abc import Generator
 
 import pytest
 
@@ -42,7 +43,7 @@ from axon_enterprise.tenant.context import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_registry() -> None:
+def _clean_registry() -> Generator[None, None, None]:
     """Every test runs against an empty registry to keep cases isolated.
     Mirrors the D8 multi-vertical-safety invariant: no cross-test
     bleed between tenants.
@@ -53,7 +54,7 @@ def _clean_registry() -> None:
 
 
 @pytest.fixture
-def reset_tenant_context() -> None:
+def reset_tenant_context() -> Generator[None, None, None]:
     """Reset CURRENT_TENANT to None between tests that exercise it."""
     token = CURRENT_TENANT.set(None)
     yield
