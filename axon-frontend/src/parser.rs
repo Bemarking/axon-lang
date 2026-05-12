@@ -1789,6 +1789,44 @@ impl Parser {
         })
     }
 
+    /// Parse a type expression in a context where the AST stores the
+    /// shape as a flat string (step / reason / forge / ots-apply
+    /// productions). Mirrors Python `_parse_output_type_string`.
+    ///
+    /// Accepts:
+    /// - `Identifier`        → `"Identifier"`
+    /// - `Stream<String>`    → `"Stream<String>"`
+    /// - `Optional?`         → `"Optional?"`
+    /// - `Stream<String>?`   → `"Stream<String>?"`
+    ///
+    /// **Why this exists** — pre-fix, the step parser called
+    /// `consume(TokenType::Identifier)?.value` which captured only
+    /// the head identifier and left `< … >` unconsumed. For
+    /// `output: Stream<Token>`, this produced `output_type =
+    /// "Stream"`, and downstream `flow_has_stream_output`'s
+    /// `starts_with("Stream<") && ends_with('>')` predicate then
+    /// returned false → `implicit_transport == "json"` → the
+    /// dynamic-route fallback in `axon-rs` served JSON instead of
+    /// SSE even when the adopter's source canonically declared the
+    /// algebraic stream effect. Surfaced 2026-05-12 by adopter
+    /// `docs/MIGRATION_TO_AXON.md` audit after the v1.23.0 wire-
+    /// layer didn't honor the declarative effect. Python parser was
+    /// fixed for the same gap 2026-05-09; this is the Rust cross-
+    /// stack catch-up.
+    fn parse_output_type_string(&mut self) -> Result<String, ParseError> {
+        let expr = self.parse_type_expr()?;
+        let mut s = expr.name;
+        if !expr.generic_param.is_empty() {
+            s.push('<');
+            s.push_str(&expr.generic_param);
+            s.push('>');
+        }
+        if expr.optional {
+            s.push('?');
+        }
+        Ok(s)
+    }
+
     // ── FLOW ─────────────────────────────────────────────────────
 
     fn parse_flow(&mut self) -> Result<FlowDefinition, ParseError> {
@@ -1979,9 +2017,18 @@ impl Parser {
                     node.ask = self.consume(TokenType::StringLit)?.value;
                 }
                 TokenType::Output => {
+                    // Mirror of Python `_parse_step` `case "output":`
+                    // which uses `_parse_output_type_string` — accepts
+                    // the FULL generic-aware shape `Stream<T>`,
+                    // `Stream<T>?`, `Identifier?`, NOT just the bare
+                    // head identifier. Pre-fix the step parser dropped
+                    // `<T>` and downstream `flow_has_stream_output`'s
+                    // `starts_with("Stream<") && ends_with('>')` then
+                    // returned false → `implicit_transport == "json"`
+                    // → dynamic routes served JSON instead of SSE.
                     self.advance();
                     self.consume(TokenType::Colon)?;
-                    node.output_type = self.consume(TokenType::Identifier)?.value;
+                    node.output_type = self.parse_output_type_string()?;
                 }
                 TokenType::Navigate => {
                     self.advance();
