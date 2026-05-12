@@ -51,7 +51,8 @@ RUST_BACKENDS_DIR = REPO_ROOT / "axon-rs" / "src" / "backends"
 # implementations — they're shared infrastructure (trait definitions,
 # error types, retry policy, observability helpers, locked-model
 # registry, tokens dispatch, OpenAI-compat shared base, transport
-# layer, mod.rs itself). Excluded from the per-provider drift check.
+# layer, SSE streaming infra, mod.rs itself). Excluded from the
+# per-provider drift check.
 SHARED_INFRA_MODULES: frozenset[str] = frozenset({
     "mod",
     "error",
@@ -61,6 +62,7 @@ SHARED_INFRA_MODULES: frozenset[str] = frozenset({
     "tokens",
     "openai_compat",
     "transport",
+    "sse_streaming",
 })
 
 # Canonical per-provider env var names. Pinned here to match the

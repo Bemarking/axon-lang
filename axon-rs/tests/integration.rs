@@ -524,8 +524,24 @@ fn tc_axonstore_bad_backend() {
 
 #[test]
 fn tc_axonendpoint_bad_method() {
-    let errors = type_check(r#"axonendpoint Bad { method: YEET path: "/api" }"#);
-    assert!(errors.iter().any(|e| e.message.contains("Unknown HTTP method")));
+    // §Fase 28 — the parser now rejects unknown HTTP methods up front
+    // with a "Did you mean ..." hint, before the type checker runs.
+    // The adopter-facing diagnostic is what we assert on here.
+    let tokens = lex(r#"axonendpoint Bad { method: YEET path: "/api" }"#);
+    let mut parser = Parser::new(tokens);
+    let err = parser
+        .parse()
+        .expect_err("parser must reject the unknown HTTP method 'YEET'");
+    assert!(
+        err.message.contains("Invalid method 'YEET'"),
+        "unexpected parser diagnostic: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("Did you mean"),
+        "Fase 28 hint missing from diagnostic: {}",
+        err.message
+    );
 }
 
 #[test]

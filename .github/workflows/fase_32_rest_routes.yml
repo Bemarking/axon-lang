@@ -190,8 +190,8 @@ jobs:
         run: |
           python -c "import json; \
                      data = json.load(open('tests/fixtures/fase32_routes/corpus.json')); \
-                     assert 'entries' in data, 'routes corpus must carry entries key'; \
-                     assert len(data['entries']) >= 14, f'routes corpus has only {len(data[\"entries\"])} entries (need >= 14)'"
+                     assert isinstance(data, list), f'routes corpus must be a JSON array, got {type(data).__name__}'; \
+                     assert len(data) >= 14, f'routes corpus has only {len(data)} entries (need >= 14)'"
 
       - name: Verify Fase 32.c body schema corpus shape
         run: |
