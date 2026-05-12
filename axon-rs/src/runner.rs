@@ -1975,7 +1975,44 @@ pub fn execute_server_flow(
     let mut registry = crate::tool_registry::ToolRegistry::new();
 
     let (success, _events) = if backend == "stub" {
-        execute_stub(&execution_units, false, false)
+        let result = execute_stub(&execution_units, false, false);
+        // §Fase 33.b Layer 1 — close the steps_executed:0 hollow-wire bug.
+        //
+        // execute_stub prints step results to stdout and updates its
+        // local stub_ctx but does NOT touch the ReportBuilder. The CLI
+        // path at the bottom of this file handles the gap by manually
+        // populating the report after execute_stub returns; the server
+        // path (this function) historically did not, so every dynamic-
+        // route SSE dispatch over the stub backend served a hollow
+        // body: `step:""`, `token:""`, `steps_executed:0`.
+        //
+        // Mirror the CLI path here: enumerate the execution_units +
+        // record one StepReport per step. `result: "(stub)"` matches
+        // the CLI's placeholder — adopters running on stub see the
+        // step name + a sentinel result, NOT an empty event. Real
+        // backend streaming (Fase 33.d) replaces "(stub)" with the
+        // actual backend chunk text.
+        for unit in &execution_units {
+            report.begin_unit(&unit.flow_name, &unit.persona_name);
+            for step in &unit.steps {
+                report.record_step(crate::output::StepReport {
+                    name: step.step_name.clone(),
+                    step_type: step.step_type.clone(),
+                    result: "(stub)".to_string(),
+                    duration_ms: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    anchor_breaches: 0,
+                    chain_activations: 0,
+                    was_retried: false,
+                });
+            }
+            let mut stub_hooks = crate::hooks::HookManager::new();
+            stub_hooks.on_unit_start(&unit.flow_name, &unit.persona_name);
+            stub_hooks.on_unit_end();
+            report.end_unit(&stub_hooks);
+        }
+        result
     } else {
         execute_real(
             &execution_units,
