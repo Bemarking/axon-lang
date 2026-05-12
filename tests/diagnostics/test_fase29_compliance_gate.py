@@ -390,9 +390,23 @@ def runner() -> CliRunner:
 
 
 def test_cli_help_exits_zero(runner: CliRunner) -> None:
-    result = runner.invoke(diagnostics_app, ["gate", "--help"])
+    # Force a wide pseudo-terminal so Rich/Click never wraps the long
+    # `--max-errors` flag mid-name; strip ANSI escapes before the
+    # substring check so styled help output still passes on CI where
+    # the renderer emits colour codes by default.
+    import re as _re
+
+    result = runner.invoke(
+        diagnostics_app,
+        ["gate", "--help"],
+        env={"COLUMNS": "200", "TERM": "dumb", "NO_COLOR": "1"},
+    )
     assert result.exit_code == 0
-    assert "max-errors" in result.stdout
+    plain = _re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", result.stdout)
+    plain = plain.replace("\n", " ").replace("  ", " ")
+    assert "max-errors" in plain, (
+        f"help output missing --max-errors flag; got:\n{result.stdout}"
+    )
 
 
 def test_cli_missing_endpoint_exits_2(runner: CliRunner) -> None:
