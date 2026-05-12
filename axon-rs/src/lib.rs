@@ -117,6 +117,11 @@ pub mod auth_scope;
 // returns the original request body + response body + metadata for
 // regulatory audit (PCI DSS Req 10, FedRAMP AU-2, FRE 502, 21 CFR Part 11).
 pub mod axonendpoint_replay;
+// §Fase 33.b — Layer 1: flow execution event stream. Closed catalog of
+// {FlowStart, StepStart, StepToken, StepComplete, FlowComplete,
+// FlowError} per D2. Consumed by execute_sse_handler (33.c) for live
+// SSE forwarding; cross-stack drift-gated against the Python mirror.
+pub mod flow_execution_event;
 pub mod resilient_backend;
 pub mod retry_policy;
 pub mod runner;
