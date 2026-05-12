@@ -26,13 +26,29 @@ from .policy import (
     resolve_policy_for_vertical,
     set_tenant_vertical,
 )
+from .telemetry import (
+    AuditSink,
+    DiagnosticSeverity,
+    InMemoryAuditSink,
+    ParserDiagnostic,
+    emit_parser_error,
+    get_audit_sink,
+    set_audit_sink,
+)
 
 __all__ = [
+    "AuditSink",
     "DiagnosticPolicy",
+    "DiagnosticSeverity",
+    "InMemoryAuditSink",
+    "ParserDiagnostic",
     "TenantVertical",
     "clear_vertical_registry",
+    "emit_parser_error",
+    "get_audit_sink",
     "get_tenant_vertical",
     "resolve_policy_for_current_tenant",
     "resolve_policy_for_vertical",
+    "set_audit_sink",
     "set_tenant_vertical",
 ]
