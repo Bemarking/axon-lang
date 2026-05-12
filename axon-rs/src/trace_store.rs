@@ -197,6 +197,51 @@ impl TraceStore {
         id
     }
 
+    /// §Fase 33.c — Reserve a trace ID without recording the entry yet.
+    ///
+    /// Wire-streaming sites (`execute_sse_handler`) need a trace ID up
+    /// front so the first `axon.token` event can carry it on the wire
+    /// — adopters bind the live stream to the eventual replay surface
+    /// via this id. The entry is finalized via `record_with_id` once
+    /// the executor closes the FlowExecutionEvent channel.
+    ///
+    /// When the store is disabled the call still returns 0 to match
+    /// `record`'s disabled-path semantics.
+    pub fn reserve_id(&mut self) -> u64 {
+        if !self.config.enabled {
+            return 0;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    /// §Fase 33.c — Persist a trace entry under a previously reserved id.
+    ///
+    /// Pairs with `reserve_id`: callers reserve early to plumb the id
+    /// into wire events, then call here once execution has completed
+    /// with final stats. The capacity / eviction / timestamp semantics
+    /// match `record` verbatim — only the id-allocation timing differs.
+    pub fn record_with_id(&mut self, mut trace: TraceEntry, id: u64) {
+        if !self.config.enabled {
+            return;
+        }
+        self.total_recorded += 1;
+        trace.id = id;
+        trace.timestamp = wall_clock_secs();
+
+        if trace.events.len() > self.config.max_events_per_trace {
+            trace.events.truncate(self.config.max_events_per_trace);
+        }
+
+        if self.entries.len() >= self.config.capacity && self.config.capacity > 0 {
+            self.entries.pop_front();
+        }
+        if self.config.capacity > 0 {
+            self.entries.push_back(trace);
+        }
+    }
+
     /// Get a trace by ID.
     pub fn get(&self, id: u64) -> Option<&TraceEntry> {
         self.entries.iter().find(|e| e.id == id)
@@ -941,6 +986,87 @@ mod tests {
         assert_eq!(id, 0);
         assert_eq!(store.len(), 0);
         assert_eq!(store.total_recorded(), 0);
+    }
+
+    // §Fase 33.c — reserve_id / record_with_id
+
+    #[test]
+    fn reserve_id_monotonic_and_consumes_next_id() {
+        let mut store = TraceStore::new(TraceStoreConfig::default());
+        let id1 = store.reserve_id();
+        let id2 = store.reserve_id();
+        let id3 = store.reserve_id();
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+        assert_eq!(id3, 3);
+        // No entries persisted by reserve_id — it only allocates the
+        // sequence number.
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.total_recorded(), 0);
+    }
+
+    #[test]
+    fn reserve_id_disabled_store_returns_zero() {
+        let mut store = TraceStore::new(TraceStoreConfig::disabled());
+        let id = store.reserve_id();
+        assert_eq!(id, 0);
+    }
+
+    #[test]
+    fn record_with_id_persists_under_reserved_id() {
+        let mut store = TraceStore::new(TraceStoreConfig::default());
+        let id = store.reserve_id();
+        store.record_with_id(sample_trace("ReservedFlow", TraceStatus::Success), id);
+        let entry = store.get(id).expect("entry must exist under reserved id");
+        assert_eq!(entry.id, id);
+        assert_eq!(entry.flow_name, "ReservedFlow");
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.total_recorded(), 1);
+    }
+
+    #[test]
+    fn record_with_id_does_not_advance_next_id() {
+        let mut store = TraceStore::new(TraceStoreConfig::default());
+        let reserved = store.reserve_id();
+        store.record_with_id(sample_trace("X", TraceStatus::Success), reserved);
+        // record() after record_with_id() should produce a NEW id
+        // (the next sequence number), not reuse the reserved id.
+        let next = store.record(sample_trace("Y", TraceStatus::Success));
+        assert!(
+            next > reserved,
+            "record after record_with_id must produce a strictly greater id"
+        );
+    }
+
+    #[test]
+    fn record_with_id_disabled_store_is_noop() {
+        let mut store = TraceStore::new(TraceStoreConfig::disabled());
+        let id = store.reserve_id();
+        store.record_with_id(sample_trace("X", TraceStatus::Success), id);
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.total_recorded(), 0);
+    }
+
+    #[test]
+    fn reserve_then_record_preserves_audit_correlation() {
+        // Live-streaming pattern from execute_sse_handler: reserve up
+        // front so wire events carry the trace_id, then record the
+        // final entry once execution completes.
+        let mut store = TraceStore::new(TraceStoreConfig::default());
+        let wire_trace_id = store.reserve_id();
+
+        // …flow executes; wire emits axon.token + axon.complete with
+        // trace_id = wire_trace_id…
+
+        let mut entry = sample_trace("LiveStreaming", TraceStatus::Success);
+        entry.steps_executed = 5;
+        entry.tokens_output = 42;
+        store.record_with_id(entry, wire_trace_id);
+
+        let recovered = store.get(wire_trace_id).expect("audit lookup must succeed");
+        assert_eq!(recovered.id, wire_trace_id);
+        assert_eq!(recovered.steps_executed, 5);
+        assert_eq!(recovered.tokens_output, 42);
     }
 
     #[test]

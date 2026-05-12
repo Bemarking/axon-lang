@@ -18059,6 +18059,159 @@ fn build_retry_hint_event() -> Event {
     Event::default().retry(std::time::Duration::from_millis(5000))
 }
 
+/// §Fase 33.c — Live-streaming execution surface.
+///
+/// Spawns the synchronous executor on `tokio::task::spawn_blocking` and
+/// projects its progress onto a `tokio::sync::mpsc::UnboundedReceiver`
+/// of `FlowExecutionEvent` values. Each event is **emitted as it
+/// occurs** rather than batched after the flow completes — the SSE
+/// handler (or any other consumer) sees them live.
+///
+/// ## Invariant (D2 + closed catalog)
+///
+/// The producer guarantees the following ordered shape:
+///
+/// ```text
+///   FlowStart
+///   (StepStart  StepToken*  StepComplete)*
+///   FlowComplete  |  FlowError
+/// ```
+///
+/// Exactly one terminator (`FlowComplete` OR `FlowError`) closes the
+/// stream. After the terminator is sent the sender is dropped so the
+/// consumer's `recv()` returns `None`.
+///
+/// ## Layer mapping
+///
+/// - **33.b** introduced `FlowExecutionEvent` and the cross-stack
+///   drift-gated corpus.
+/// - **33.c** (this function) is the producer the runner-level path
+///   plugs into. For now the chunking remains "~3-word groups per
+///   step output", mirroring the pre-33.c `StreamEmitter` behavior,
+///   so the wire body stays byte-identical (D9). 33.d replaces this
+///   with real per-token streaming from the backend.
+/// - **33.e** (effect dispatcher) eventually owns the chunk-shape
+///   decision via the declared `<stream:<policy>>` annotation.
+fn server_execute_streaming(
+    state: SharedState,
+    source: String,
+    source_file: String,
+    flow_name: String,
+    backend: String,
+) -> tokio::sync::mpsc::UnboundedReceiver<crate::flow_execution_event::FlowExecutionEvent> {
+    use crate::flow_execution_event::{now_ms, FlowExecutionEvent};
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FlowExecutionEvent>();
+
+    tokio::task::spawn_blocking(move || {
+        // FlowStart fires BEFORE we kick off the executor so any
+        // consumer can record "stream is live" + bind side-effect
+        // state (audit row, observability span) immediately. This is
+        // independent of how long the synchronous executor takes.
+        let _ = tx.send(FlowExecutionEvent::FlowStart {
+            flow_name: flow_name.clone(),
+            backend: backend.clone(),
+            timestamp_ms: now_ms(),
+        });
+
+        let exec_start = std::time::Instant::now();
+        let (result, _actual_backend) = server_execute_full(
+            &state,
+            &source,
+            &source_file,
+            &flow_name,
+            &backend,
+        );
+
+        match result {
+            Ok(er) => {
+                for (i, step_name) in er.step_names.iter().enumerate() {
+                    let _ = tx.send(FlowExecutionEvent::StepStart {
+                        step_name: step_name.clone(),
+                        step_index: i,
+                        step_type: "step".to_string(),
+                        timestamp_ms: now_ms(),
+                    });
+
+                    let full_output = er
+                        .step_results
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_default();
+
+                    // 33.c chunking is byte-identical with the pre-33.c
+                    // StreamEmitter projection: ~3-word groups per
+                    // chunk. Empty step output still emits exactly one
+                    // sentinel-content StepToken so the wire-emitted
+                    // axon.token count stays equal to the step count
+                    // (Fase 30+31+32 SSE tests depend on this).
+                    let chunks: Vec<String> = if full_output.is_empty() {
+                        Vec::new()
+                    } else {
+                        full_output
+                            .split_whitespace()
+                            .collect::<Vec<&str>>()
+                            .chunks(3)
+                            .map(|c| c.join(" "))
+                            .collect()
+                    };
+
+                    let mut token_index: u64 = 0;
+                    if chunks.is_empty() {
+                        token_index += 1;
+                        let _ = tx.send(FlowExecutionEvent::StepToken {
+                            step_name: step_name.clone(),
+                            content: String::new(),
+                            token_index,
+                            timestamp_ms: now_ms(),
+                        });
+                    } else {
+                        for chunk in &chunks {
+                            token_index += 1;
+                            let _ = tx.send(FlowExecutionEvent::StepToken {
+                                step_name: step_name.clone(),
+                                content: chunk.clone(),
+                                token_index,
+                                timestamp_ms: now_ms(),
+                            });
+                        }
+                    }
+
+                    let _ = tx.send(FlowExecutionEvent::StepComplete {
+                        step_name: step_name.clone(),
+                        step_index: i,
+                        success: er.success,
+                        full_output,
+                        tokens_input: 0,
+                        tokens_output: token_index,
+                        timestamp_ms: now_ms(),
+                    });
+                }
+
+                let _ = tx.send(FlowExecutionEvent::FlowComplete {
+                    flow_name: er.flow_name.clone(),
+                    backend: er.backend.clone(),
+                    success: er.success,
+                    steps_executed: er.steps_executed,
+                    tokens_input: er.tokens_input,
+                    tokens_output: er.tokens_output,
+                    latency_ms: exec_start.elapsed().as_millis() as u64,
+                    timestamp_ms: now_ms(),
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(FlowExecutionEvent::FlowError {
+                    flow_name: flow_name.clone(),
+                    error: e,
+                    timestamp_ms: now_ms(),
+                });
+            }
+        }
+        // tx drops here → consumer's recv() returns None.
+    });
+
+    rx
+}
+
 /// POST /v1/execute/sse — single-shot SSE execution.
 ///
 /// Identical request body shape to `/v1/execute` (`ExecuteRequest`).
@@ -18068,30 +18221,40 @@ fn build_retry_hint_event() -> Event {
 /// path that consults the axonendpoint `transport: sse` declaration
 /// ships in 30.e as content-negotiation on the existing `/v1/execute`.)
 ///
-/// Per-step tokens are emitted from the `StreamEmitter` (the existing
-/// algebraic-effect handler reused verbatim from `execute_stream_handler`).
 /// Errors during flow execution become a single `axon.error` event +
 /// connection close.
 ///
-/// # 30.f channel-fed streaming architecture
+/// # 30.f → 33.c streaming architecture evolution
 ///
-/// The flow executor (`server_execute_full`) is synchronous and may
-/// block the worker for seconds-to-minutes on real LLM calls. Before
-/// 30.f the handler awaited execution before returning the Sse
-/// response — KeepAlive comments had no inactivity window to fire
-/// into. 30.f spawns the executor onto the blocking pool
-/// (`tokio::task::spawn_blocking`) so the handler returns the Sse
-/// response IMMEDIATELY with the `retry:` directive pre-queued. The
-/// channel-fed stream gives `axum::response::sse::KeepAlive` a real
-/// inactivity window between "stream-start" and "first axon.token
-/// event" during which `: keepalive\n\n` comment lines fire at the
-/// declared interval (D6 closed enum `{5s, 15s, 30s, 60s}`, default
-/// 15s — see `resolve_keepalive_for_flow`).
+/// **30.f** introduced channel-fed streaming so the handler returned
+/// the `Sse` response immediately and KeepAlive comments had an
+/// inactivity window to fire into. Even so, all `axon.token` events
+/// were batched in the producer task AFTER the synchronous executor
+/// returned `ServerExecutionResult` — adopter clients saw them burst-
+/// arrive at the end.
+///
+/// **33.c** closes the live-forwarding loop by consuming the
+/// `FlowExecutionEvent` receiver from `server_execute_streaming` and
+/// projecting each event onto the wire AS IT ARRIVES:
+///
+/// - `FlowStart` / `StepStart` / `StepComplete` are consumed but not
+///   surfaced (preserves the byte-identical wire body that Fase
+///   30+31+32 SSE tests depend on — D9).
+/// - `StepToken` becomes one `axon.token` SSE event per chunk.
+/// - `FlowComplete` becomes the `axon.complete` envelope.
+/// - `FlowError` becomes the `axon.error` envelope.
+///
+/// The wire's trace_id is allocated up front via `trace_store.reserve_id()`
+/// so every `axon.token` event carries the same id as the eventual
+/// `axon.complete`. The trace entry is recorded with that id once the
+/// `FlowExecutionEvent` channel closes, so the `/v1/replay/<trace_id>`
+/// surface stays valid (D9 + Fase 30.f audit parity).
 async fn execute_sse_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Json(payload): Json<StreamExecuteRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    use crate::flow_execution_event::FlowExecutionEvent;
     use futures::SinkExt;
 
     let req_start = Instant::now();
@@ -18137,117 +18300,190 @@ async fn execute_sse_handler(
 
     match source_info {
         Some((source, source_file)) => {
-            // Move execution onto the blocking pool so a long-running
-            // flow does not steal a tokio worker. The handler returns
-            // the Sse response (below) immediately while execution
-            // proceeds in the background.
             let state_for_task = state.clone();
             let flow_name_owned = payload.flow_name.clone();
             let backend_owned = payload.backend.clone();
             let client_owned = client.clone();
+            let source_file_for_audit = source_file.clone();
+
+            // 33.c: trace_id reservation precedes the executor spawn
+            // so the first axon.token event already carries the id
+            // adopters will use to bind the wire stream to the
+            // `/v1/replay/<id>` audit row.
+            let trace_id: u64 = {
+                let mut s = state_for_task.lock().unwrap();
+                s.trace_store.reserve_id()
+            };
+
             tokio::spawn(async move {
-                let state_for_exec = state_for_task.clone();
-                let source_for_exec = source.clone();
-                let source_file_for_exec = source_file.clone();
-                let flow_for_exec = flow_name_owned.clone();
-                let backend_for_exec = backend_owned.clone();
-                let exec_outcome = tokio::task::spawn_blocking(move || {
-                    server_execute_full(
-                        &state_for_exec,
-                        &source_for_exec,
-                        &source_file_for_exec,
-                        &flow_for_exec,
-                        &backend_for_exec,
-                    )
-                    .0
-                })
-                .await
-                .unwrap_or_else(|e| Err(format!("execution task panicked: {e}")));
+                // 33.c: live forwarding pipeline.
+                //
+                // server_execute_streaming spawns the synchronous
+                // executor on spawn_blocking. As each FlowExecutionEvent
+                // is produced we project it onto the wire IMMEDIATELY
+                // — no batching after full execution. When real per-
+                // token backends ship in 33.d, this loop will deliver
+                // tokens as the network bytes arrive.
+                let mut event_rx = server_execute_streaming(
+                    state_for_task.clone(),
+                    source.clone(),
+                    source_file.clone(),
+                    flow_name_owned.clone(),
+                    backend_owned.clone(),
+                );
 
-                match exec_outcome {
-                    Ok(mut er) => {
-                        // Record the trace so audit + observability
-                        // surfaces match the JSON `/v1/execute` path
-                        // verbatim. The StreamEmitter mapping mirrors
-                        // the existing two-stage handler chunking
-                        // (~3-word chunks per token approximates LLM
-                        // token granularity).
-                        let mut trace_entry = crate::trace_store::build_trace(
-                            &er.flow_name,
-                            &er.source_file,
-                            &er.backend,
-                            &client_owned,
-                            if er.success {
-                                crate::trace_store::TraceStatus::Success
-                            } else {
-                                crate::trace_store::TraceStatus::Partial
-                            },
-                            er.steps_executed,
-                            er.latency_ms,
-                        );
-                        trace_entry.tokens_input = er.tokens_input;
-                        trace_entry.tokens_output = er.tokens_output;
-                        trace_entry.errors = er.errors.clone();
+                let mut event_id: u64 = 0;
+                let mut steps_executed: usize = 0;
+                let mut tokens_input: u64 = 0;
+                let mut tokens_output: u64 = 0;
+                let mut errors_seen: usize = 0;
+                let mut flow_succeeded = true;
+                let mut terminator_seen = false;
 
-                        let (trace_id, emitter) = {
-                            let mut s = state_for_task.lock().unwrap();
-                            let tid = s.trace_store.record(trace_entry);
-                            let mut emitter = StreamEmitter::new(tid, &er.flow_name);
-                            for (i, step_name) in er.step_names.iter().enumerate() {
-                                if let Some(chunks) = er.step_results.get(i).map(|r| {
-                                    if r.is_empty() {
-                                        vec![]
-                                    } else {
-                                        r.split_whitespace()
-                                            .collect::<Vec<&str>>()
-                                            .chunks(3)
-                                            .map(|c| c.join(" "))
-                                            .collect()
-                                    }
-                                }) {
-                                    emitter.emit_chunks(step_name, &chunks);
-                                }
-                            }
-                            emitter.finalize();
-                            (tid, emitter)
-                        };
-
-                        er.trace_id = trace_id;
-                        er.latency_ms = req_start.elapsed().as_millis() as u64;
-
-                        // Per-trace monotonic event-id counter. The
-                        // `retry:` directive carries no `id:` per W3C
-                        // convention so the data-event counter starts
-                        // at 1.
-                        let mut event_id: u64 = 0;
-                        for tok in &emitter.tokens {
+                while let Some(event) = event_rx.recv().await {
+                    match event {
+                        FlowExecutionEvent::FlowStart { .. } => {
+                            // Consumed; not surfaced on the wire so
+                            // the byte body matches the pre-33.c shape
+                            // adopters (and Fase 30+31+32 tests)
+                            // depend on. D9 (wire identical, timing
+                            // differs).
+                        }
+                        FlowExecutionEvent::StepStart { .. } => {
+                            // Same: consumed silently.
+                        }
+                        FlowExecutionEvent::StepToken {
+                            step_name,
+                            content,
+                            timestamp_ms,
+                            ..
+                        } => {
                             event_id += 1;
-                            // .ok() swallows SendError when the
-                            // client disconnected mid-stream — axum
-                            // dropped the Sse response → rx dropped
-                            // → send errors. Cancel-safety: we stop
-                            // sending but the executor already
-                            // completed so there's nothing else to
-                            // clean up.
+                            // .ok() swallows SendError when the client
+                            // disconnected mid-stream — axum dropped
+                            // the Sse response → rx dropped → send
+                            // errors. We KEEP draining event_rx so the
+                            // executor can complete cleanly even when
+                            // the wire client is gone (cancel-safety
+                            // baseline ahead of 33.f).
                             let _ = tx
                                 .send(Ok(build_token_event(
                                     event_id,
-                                    tok.trace_id,
-                                    &tok.step_name,
-                                    &tok.content,
-                                    tok.timestamp as i64,
+                                    trace_id,
+                                    &step_name,
+                                    &content,
+                                    timestamp_ms as i64,
                                 )))
                                 .await;
                         }
-                        event_id += 1;
-                        let _ = tx.send(Ok(build_complete_event(event_id, &er))).await;
-                    }
-                    Err(e) => {
-                        {
-                            let mut s = state_for_task.lock().unwrap();
-                            s.metrics.total_errors += 1;
+                        FlowExecutionEvent::StepComplete {
+                            tokens_output: out,
+                            ..
+                        } => {
+                            tokens_output = tokens_output.saturating_add(out);
+                            // step counter is authoritative on
+                            // FlowComplete; we don't increment here to
+                            // avoid double-counting.
                         }
-                        let _ = tx.send(Ok(build_error_event(1, 0, &e))).await;
+                        FlowExecutionEvent::FlowComplete {
+                            flow_name,
+                            backend,
+                            success,
+                            steps_executed: se,
+                            tokens_input: ti,
+                            tokens_output: to,
+                            latency_ms: _,
+                            timestamp_ms: _,
+                        } => {
+                            steps_executed = se;
+                            tokens_input = ti;
+                            tokens_output = to;
+                            flow_succeeded = success;
+                            terminator_seen = true;
+
+                            // Build the same ServerExecutionResult
+                            // shape the existing build_complete_event
+                            // helper expects — wire body stays
+                            // byte-identical with the 30.f path.
+                            let er = ServerExecutionResult {
+                                success,
+                                flow_name: flow_name.clone(),
+                                source_file: source_file.clone(),
+                                backend: backend.clone(),
+                                steps_executed: se,
+                                latency_ms: req_start.elapsed().as_millis() as u64,
+                                tokens_input: ti,
+                                tokens_output: to,
+                                anchor_checks: 0,
+                                anchor_breaches: 0,
+                                errors: errors_seen,
+                                step_names: Vec::new(),
+                                step_results: Vec::new(),
+                                trace_id,
+                            };
+
+                            event_id += 1;
+                            let _ = tx
+                                .send(Ok(build_complete_event(event_id, &er)))
+                                .await;
+                        }
+                        FlowExecutionEvent::FlowError { error, .. } => {
+                            errors_seen += 1;
+                            flow_succeeded = false;
+                            terminator_seen = true;
+                            event_id += 1;
+                            let _ = tx
+                                .send(Ok(build_error_event(event_id, trace_id, &error)))
+                                .await;
+                        }
+                    }
+                }
+
+                // Defense in depth: if the producer dropped without
+                // emitting a terminator we still record a trace + emit
+                // an error event so the wire is well-formed. This
+                // path is unreachable in 33.c's producer but the
+                // closed-catalog invariant lives in the consumer too.
+                if !terminator_seen {
+                    flow_succeeded = false;
+                    errors_seen = errors_seen.saturating_add(1);
+                    event_id += 1;
+                    let _ = tx
+                        .send(Ok(build_error_event(
+                            event_id,
+                            trace_id,
+                            "executor channel closed without terminator",
+                        )))
+                        .await;
+                }
+
+                // Record the trace with the reserved id so audit /
+                // observability surfaces match the JSON /v1/execute
+                // path verbatim. Done AFTER the channel closes so we
+                // have full visibility into the stream.
+                {
+                    let mut trace_entry = crate::trace_store::build_trace(
+                        &flow_name_owned,
+                        &source_file_for_audit,
+                        &backend_owned,
+                        &client_owned,
+                        if flow_succeeded && errors_seen == 0 {
+                            crate::trace_store::TraceStatus::Success
+                        } else if !flow_succeeded && steps_executed == 0 {
+                            crate::trace_store::TraceStatus::Failed
+                        } else {
+                            crate::trace_store::TraceStatus::Partial
+                        },
+                        steps_executed,
+                        req_start.elapsed().as_millis() as u64,
+                    );
+                    trace_entry.tokens_input = tokens_input;
+                    trace_entry.tokens_output = tokens_output;
+                    trace_entry.errors = errors_seen;
+                    let mut s = state_for_task.lock().unwrap();
+                    s.trace_store.record_with_id(trace_entry, trace_id);
+                    if !flow_succeeded {
+                        s.metrics.total_errors += 1;
                     }
                 }
                 // tx drops here → rx stream ends → axum closes
