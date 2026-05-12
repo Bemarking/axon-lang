@@ -332,7 +332,7 @@ async fn d1_v1_24_0_synthetic_three_word_chunking_baseline() {
 // delivered/dropped/degraded counts per step that had a policy.
 
 #[tokio::test]
-async fn d2_v1_24_0_stream_policies_populated_enforcement_summary_absent() {
+async fn d2_post_33_x_d_stream_policies_and_enforcement_summary_both_present() {
     let app = build_router(server_cfg(false));
     deploy(app.clone(), ADOPTER_STREAM_DROP_OLDEST).await;
     let (status, _ct, body) = fetch_sse_body(app, "/chat", "{}").await;
@@ -345,34 +345,40 @@ async fn d2_v1_24_0_stream_policies_populated_enforcement_summary_absent() {
         .first()
         .expect("axon.complete must be present per D4");
 
-    // PRE-33.x.d: stream_policies is populated by Fase 33.e for
-    // declared effects.
+    // PRE-33.x.d + POST-33.x.d: stream_policies stays populated by
+    // Fase 33.e for declared effects (D4 byte-compat).
     let policies = complete
         .get("stream_policies")
         .expect("stream_policies array MUST be present (Fase 33.e wired this field — D4 byte-compat)");
-    assert!(policies.is_array());
-    let policies_arr = policies.as_array().unwrap();
-    assert_eq!(
-        policies_arr.len(),
-        1,
-        "Single step with declared effect → single entry in stream_policies"
-    );
-    let entry = &policies_arr[0];
-    assert_eq!(entry["step"], "Generate");
-    assert_eq!(entry["policy"], "drop_oldest");
+    let policies_arr = policies.as_array().expect("stream_policies is an array");
+    assert_eq!(policies_arr.len(), 1);
+    assert_eq!(policies_arr[0]["step"], "Generate");
+    assert_eq!(policies_arr[0]["policy"], "drop_oldest");
 
-    // PRE-33.x.d: enforcement_summary is ABSENT (enforcer doesn't run
-    // in production today, only in unit tests).
-    //
-    // POST-33.x.d: this assertion FLIPS to assert PRESENCE + shape
-    // {step → {pushed, delivered, dropped, degraded}}. The rewrite
-    // happens in the 33.x.d commit.
-    assert!(
-        complete.get("enforcement_summary").is_none(),
-        "PRE-33.x.d: enforcement_summary MUST be absent (enforcer not \
-         wired into production path). When 33.x.d lands, this \
-         assertion inverts."
-    );
+    // POST-33.x.d: enforcement_summary is now PRESENT — the enforcer
+    // runs on the production async path. Shape: `{step_name -> {
+    // policy_slug, chunks_pushed, chunks_delivered, drop_oldest_hits,
+    // degrade_quality_hits, pause_upstream_blocks, fail_overflows,
+    // failed }}`.
+    let summary_obj = complete
+        .get("enforcement_summary")
+        .expect("POST-33.x.d: enforcement_summary MUST be present when a step declares <stream:<policy>>")
+        .as_object()
+        .expect("enforcement_summary is an object");
+    let generate_summary = summary_obj
+        .get("Generate")
+        .expect("summary keyed by step_name 'Generate'");
+    assert_eq!(generate_summary["policy_slug"], "drop_oldest");
+    // For the stub backend (1-chunk stream), the enforcer pushed
+    // exactly the chunks it received from the source and the
+    // consumer drained all of them — no policy fired.
+    assert_eq!(generate_summary["chunks_pushed"].as_u64(), Some(1));
+    assert_eq!(generate_summary["chunks_delivered"].as_u64(), Some(1));
+    assert_eq!(generate_summary["drop_oldest_hits"].as_u64(), Some(0));
+    assert_eq!(generate_summary["degrade_quality_hits"].as_u64(), Some(0));
+    assert_eq!(generate_summary["pause_upstream_blocks"].as_u64(), Some(0));
+    assert_eq!(generate_summary["fail_overflows"].as_u64(), Some(0));
+    assert_eq!(generate_summary["failed"], false);
 }
 
 // ─── §3 — D2 anchor: no effect → no stream_policies (D4 byte-compat) ─

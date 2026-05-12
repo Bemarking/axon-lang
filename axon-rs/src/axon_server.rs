@@ -1760,6 +1760,68 @@ struct ServerExecutionResult {
     /// policy is bound to runtime.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     effect_policies: Vec<(String, String)>,
+
+    /// §Fase 33.x.d — Per-step `EnforcementSummary` from the
+    /// `StreamPolicyEnforcer` runs. Empty in two cases:
+    ///   1. Legacy synchronous path (`run_streaming_legacy_path`) —
+    ///      the enforcer is not run; the wire stays byte-identical
+    ///      with v1.24.0 (D4 byte-compat).
+    ///   2. Async streaming path where no step in the flow has a
+    ///      declared `<stream:<policy>>` effect — the enforcer is
+    ///      not constructed (no policy to enforce); D2 contract.
+    /// Surfaced on the SSE `axon.complete` wire envelope so adopters
+    /// can observe whether the declared policy actually fired in
+    /// production (a `drop_oldest` policy that never fires under
+    /// sustained load is a configuration smell).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    enforcement_summaries: Vec<(String, EnforcementSummaryWire)>,
+}
+
+/// §Fase 33.x.d — Wire-serializable mirror of
+/// [`crate::stream_effect_dispatcher::EnforcementSummary`] published
+/// on `axon.complete` per the D2 contract.
+///
+/// `policy_slug` is the closed-catalog slug of the policy that the
+/// enforcer ran (`drop_oldest` / `degrade_quality` / `pause_upstream`
+/// / `fail`); `pushed`/`delivered` count chunks the enforcer's input
+/// stream produced + the consumer drained respectively. The four
+/// `*_hits` / `*_blocks` / `*_overflows` counters surface
+/// policy-specific activations so adopters can verify the declared
+/// policy actually fired (D2 contract — declaration ⟺ runtime
+/// behavior).
+///
+/// All counters are `u64` so high-throughput long-running flows
+/// don't risk overflow. `failed` is set only when the enforcer's
+/// internal stream surfaced `BackpressurePolicy::Fail` overflow.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub(crate) struct EnforcementSummaryWire {
+    pub policy_slug: String,
+    pub chunks_pushed: u64,
+    pub chunks_delivered: u64,
+    pub drop_oldest_hits: u64,
+    pub degrade_quality_hits: u64,
+    pub pause_upstream_blocks: u64,
+    pub fail_overflows: u64,
+    pub failed: bool,
+}
+
+impl EnforcementSummaryWire {
+    /// Project from the rich internal `EnforcementSummary` (which has
+    /// `policy: Option<&'static str>`) into the wire-stable shape.
+    pub(crate) fn from_summary(
+        s: &crate::stream_effect_dispatcher::EnforcementSummary,
+    ) -> Self {
+        Self {
+            policy_slug: s.policy.unwrap_or("").to_string(),
+            chunks_pushed: s.chunks_pushed,
+            chunks_delivered: s.chunks_delivered,
+            drop_oldest_hits: s.drop_oldest_hits,
+            degrade_quality_hits: s.degrade_quality_hits,
+            pause_upstream_blocks: s.pause_upstream_blocks,
+            fail_overflows: s.fail_overflows,
+            failed: s.failed,
+        }
+    }
 }
 
 /// Compile and execute a deployed flow server-side.
@@ -1816,6 +1878,7 @@ fn server_execute(
         step_results: run_res.step_results,
         trace_id: 0, // set after recording
         effect_policies: Vec::new(), // populated by server_execute_streaming
+        enforcement_summaries: Vec::new(), // populated by 33.x.d async path
     })
 }
 
@@ -18056,6 +18119,25 @@ fn build_complete_event(event_id: u64, exec: &ServerExecutionResult) -> Event {
             .expect("json object")
             .insert("stream_policies".to_string(), serde_json::Value::Array(arr));
     }
+    // §Fase 33.x.d — enforcement summary per step. Emitted ONLY when
+    // the enforcer actually ran (D4 byte-compat with v1.24.0 + with
+    // pre-33.x.d wire: empty map is elided so parsers ignoring
+    // unknown fields see no observable change).
+    if !exec.enforcement_summaries.is_empty() {
+        let mut obj = serde_json::Map::new();
+        for (step, summary) in &exec.enforcement_summaries {
+            obj.insert(
+                step.clone(),
+                serde_json::to_value(summary).unwrap_or(serde_json::Value::Null),
+            );
+        }
+        data.as_object_mut()
+            .expect("json object")
+            .insert(
+                "enforcement_summary".to_string(),
+                serde_json::Value::Object(obj),
+            );
+    }
     Event::default()
         .event("axon.complete")
         .id(event_id.to_string())
@@ -18176,6 +18258,31 @@ pub(crate) struct StreamingExecution {
     /// on a dropped consumer). Pairs with the [`crate::cancel_token::CancellationFlag`]
     /// the producer observes between emits.
     pub exited: std::sync::Arc<tokio::sync::Notify>,
+    /// §Fase 33.x.d — Per-step `EnforcementSummary` side-channel.
+    ///
+    /// Populated by the async streaming producer
+    /// (`run_streaming_async_path`) as each step's
+    /// [`crate::stream_effect_dispatcher::StreamPolicyEnforcer`]
+    /// finishes draining. Read by the consumer (`execute_sse_handler`)
+    /// when emitting `axon.complete` so the wire body includes the
+    /// enforcement summary per step that had a declared
+    /// `<stream:<policy>>` effect.
+    ///
+    /// Empty for:
+    ///   - The legacy synchronous fallback path
+    ///     (`run_streaming_legacy_path`) — preserves v1.24.0 wire
+    ///     byte-compat for adopter shapes the streaming path defers.
+    ///   - The async path when no step has a declared effect policy
+    ///     — no enforcer is constructed; no summary to publish.
+    ///
+    /// The lock is `tokio::sync::Mutex` so the producer can hold it
+    /// across `.await` points without risk of deadlock from
+    /// `std::sync::Mutex` blocking the executor.
+    pub enforcement_summaries: std::sync::Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, EnforcementSummaryWire>,
+        >,
+    >,
 }
 
 /// §Fase 33.x.b — Production async streaming path.
@@ -18208,12 +18315,44 @@ pub(crate) struct StreamingExecution {
 /// path, byte-compatible wire). NO silent degradation; the
 /// fallback is observable via the `PlanFallback` enum and surfaces
 /// in the audit row + future 33.x.g warning emission.
+/// §Fase 33.x.d — Construct a `StreamPolicyEnforcer` for the given
+/// policy. Closed-catalog dispatch over the four `BackpressurePolicy`
+/// variants; adding a fifth breaks the build (exhaustive match).
+///
+/// `DegradeQuality` requires a degrader function. The OSS default is
+/// the identity degrader (chunk passes through unchanged); enterprise
+/// vertical impls hook real degraders via 33.x.h's tokenizer-fallback
+/// path. The enforcer's `degrade_quality_hits` counter still increments
+/// on every push so adopters observe the policy fired (D2 contract:
+/// declaration ⟺ runtime behavior).
+fn construct_enforcer_for_policy(
+    policy: crate::stream_effect::BackpressurePolicy,
+) -> crate::stream_effect_dispatcher::StreamPolicyEnforcer {
+    use crate::stream_effect::BackpressurePolicy;
+    use crate::stream_effect_dispatcher::{
+        StreamPolicyEnforcer, DEFAULT_STREAM_BUFFER_CAPACITY,
+    };
+    match policy {
+        BackpressurePolicy::DegradeQuality => StreamPolicyEnforcer::with_degrader(
+            policy,
+            DEFAULT_STREAM_BUFFER_CAPACITY,
+            std::sync::Arc::new(|chunk| chunk),
+        ),
+        BackpressurePolicy::DropOldest
+        | BackpressurePolicy::PauseUpstream
+        | BackpressurePolicy::Fail => StreamPolicyEnforcer::new(policy),
+    }
+}
+
 async fn run_streaming_async_path(
     plan: crate::flow_plan::StreamingExecutionPlan,
     backend_name: String,
     cancel: crate::cancel_token::CancellationFlag,
     tx: tokio::sync::mpsc::UnboundedSender<
         crate::flow_execution_event::FlowExecutionEvent,
+    >,
+    enforcement_summaries: std::sync::Arc<
+        tokio::sync::Mutex<std::collections::HashMap<String, EnforcementSummaryWire>>,
     >,
 ) {
     use crate::backends::{ChatRequest, Message};
@@ -18333,31 +18472,88 @@ async fn run_streaming_async_path(
                 }
             };
 
-            // Pin the stream + walk it, forwarding each chunk
-            // AS IT ARRIVES from the network. This is the bridge
-            // that activates D1 in production.
-            tokio::pin!(chunk_stream);
+            // §Fase 33.x.d — Two-path dispatch by declared effect:
+            //   - `plan_step.effect_policy.is_some()` →
+            //     wrap the chunk_stream with StreamPolicyEnforcer;
+            //     spawn a producer-side drain task; consume via
+            //     pop_chunk; capture EnforcementSummary at end.
+            //   - `None` → direct pull from chunk_stream
+            //     (unchanged from 33.x.b).
+            //
+            // The wire-emitted StepToken events look IDENTICAL on
+            // both paths (one token per non-empty chunk delivered
+            // to the consumer); only the policy-fire counters
+            // differ. D4 byte-compat preserved.
             let mut token_index: u64 = 0;
             let mut accumulated = String::new();
             let mut step_tokens_input: u32 = 0;
             let mut step_tokens_output: u32 = 0;
             let mut step_success = true;
-            while let Some(chunk_result) = chunk_stream.next().await {
-                if cancel.is_cancelled() {
-                    flow_success = false;
-                    break 'flow_loop;
-                }
-                match chunk_result {
-                    Ok(chunk) => {
-                        // Skip emitting an empty StepToken for
-                        // role-only deltas (some providers emit a
-                        // leading chunk with `role: assistant`
-                        // and empty delta to signal stream start).
-                        // The terminal envelope chunk may also
-                        // have empty delta when usage piggy-backs
-                        // on finish_reason; we still capture its
-                        // usage but don't emit a `axon.token`
-                        // event for an empty content payload.
+            let mut step_enforcement_summary: Option<EnforcementSummaryWire> = None;
+
+            match plan_step.effect_policy {
+                Some(policy) => {
+                    // §Fase 33.x.d ENFORCER ACTIVATED.
+                    let enforcer = construct_enforcer_for_policy(policy);
+                    let enforcer_for_drain = enforcer.clone();
+
+                    // Captured-error channel for the drain side
+                    // (the source stream's Result<ChatChunk,
+                    // BackendError> errors don't reach the
+                    // consumer's pop_chunk; they're surfaced via
+                    // this side-channel and converted to
+                    // FlowError after pop_chunk returns None).
+                    let drain_error: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+                        std::sync::Arc::new(std::sync::Mutex::new(None));
+                    let drain_error_for_task = drain_error.clone();
+                    let backend_name_for_drain = backend_name.clone();
+                    let step_name_for_drain = plan_step.step_name.clone();
+
+                    let drain_handle = tokio::spawn(async move {
+                        // The enforcer's `drain` requires
+                        // `S: Stream + Unpin`. `ChatStream` is
+                        // `Pin<Box<dyn Stream + Send>>` which is
+                        // already Unpin. The returned summary is
+                        // taken BEFORE the consumer finishes
+                        // popping the buffered chunks; we discard
+                        // its `chunks_delivered` field and
+                        // re-snapshot the enforcer's metrics
+                        // AFTER the consumer loop completes below
+                        // so the wire reflects the actual delivery
+                        // count.
+                        enforcer_for_drain
+                            .drain(chunk_stream, move |e| {
+                                let mut g = drain_error_for_task
+                                    .lock()
+                                    .expect("drain_error mutex poisoned");
+                                if g.is_none() {
+                                    *g = Some(format!(
+                                        "Backend '{}' chunk error on step '{}': {}",
+                                        backend_name_for_drain,
+                                        step_name_for_drain,
+                                        e
+                                    ));
+                                }
+                            })
+                            .await
+                    });
+
+                    // Consumer side: pop_chunk until enforcer
+                    // closes. Each delivered chunk becomes a
+                    // StepToken event AS THE ENFORCER RELEASES IT
+                    // (subject to policy: DropOldest may have
+                    // dropped chunks before they reached us;
+                    // PauseUpstream throttled the producer to
+                    // match our drain rate).
+                    while let Some(chunk) = enforcer.pop_chunk().await {
+                        if cancel.is_cancelled() {
+                            flow_success = false;
+                            // Abort the drain task before we
+                            // bail; ignore the error since the
+                            // task may already be exiting.
+                            drain_handle.abort();
+                            break 'flow_loop;
+                        }
                         if !chunk.delta.is_empty() {
                             token_index += 1;
                             accumulated.push_str(&chunk.delta);
@@ -18370,6 +18566,7 @@ async fn run_streaming_async_path(
                             .is_err()
                             {
                                 flow_success = false;
+                                drain_handle.abort();
                                 break 'flow_loop;
                             }
                         }
@@ -18377,26 +18574,126 @@ async fn run_streaming_async_path(
                             step_tokens_input = usage.input_tokens;
                             step_tokens_output = usage.output_tokens;
                         }
-                        if chunk.finish_reason.is_some() {
-                            // Terminal chunk — stop draining; the
-                            // stream may yield further None.
-                            break;
-                        }
+                        // NOTE: unlike the no-enforcer path, we
+                        // don't `break` on finish_reason — let
+                        // the enforcer signal end-of-stream by
+                        // returning None from pop_chunk after
+                        // drain.close().await fires.
                     }
-                    Err(e) => {
+
+                    // Drain has finished (or was aborted). The
+                    // drain-returned summary captured metrics
+                    // BEFORE the consumer finished popping, so we
+                    // discard its `chunks_delivered`/`failed` and
+                    // re-snapshot the enforcer's metrics directly
+                    // AFTER the consumer loop completed (both pop
+                    // and drain end-points are now done).
+                    let drain_summary = drain_handle.await.unwrap_or_else(|_| {
+                        // Task panicked or was aborted; return a
+                        // default summary with policy slug set so
+                        // the wire still carries the policy
+                        // metadata.
+                        crate::stream_effect_dispatcher::EnforcementSummary {
+                            policy: Some(policy.slug()),
+                            ..Default::default()
+                        }
+                    });
+                    let final_snap = enforcer.metrics_snapshot();
+                    let final_summary =
+                        crate::stream_effect_dispatcher::EnforcementSummary::from_snapshot(
+                            policy,
+                            &final_snap,
+                            drain_summary.failed,
+                        );
+                    step_enforcement_summary =
+                        Some(EnforcementSummaryWire::from_summary(&final_summary));
+
+                    // If the drain captured a backend error,
+                    // surface it as FlowError now. We've already
+                    // emitted any pre-error chunks; the error is
+                    // terminal.
+                    let drain_err = drain_error
+                        .lock()
+                        .expect("drain_error mutex poisoned")
+                        .take();
+                    if let Some(err_msg) = drain_err {
                         let _ = emit(FlowExecutionEvent::FlowError {
                             flow_name: plan.flow_name.clone(),
-                            error: format!(
-                                "Backend '{}' chunk error on step '{}': {}",
-                                backend_name, plan_step.step_name, e
-                            ),
+                            error: err_msg,
                             timestamp_ms: now_ms(),
                         });
                         step_success = false;
                         flow_success = false;
+                        // Record summary before bailing — adopter
+                        // observes partial enforcement counters
+                        // on the audit row.
+                        if let Some(s) = step_enforcement_summary.take() {
+                            let mut map = enforcement_summaries.lock().await;
+                            map.insert(plan_step.step_name.clone(), s);
+                        }
                         break 'flow_loop;
                     }
                 }
+                None => {
+                    // §Fase 33.x.b NO-ENFORCER PATH — direct pull
+                    // from chunk_stream. Unchanged behavior.
+                    tokio::pin!(chunk_stream);
+                    while let Some(chunk_result) = chunk_stream.next().await {
+                        if cancel.is_cancelled() {
+                            flow_success = false;
+                            break 'flow_loop;
+                        }
+                        match chunk_result {
+                            Ok(chunk) => {
+                                if !chunk.delta.is_empty() {
+                                    token_index += 1;
+                                    accumulated.push_str(&chunk.delta);
+                                    if emit(FlowExecutionEvent::StepToken {
+                                        step_name: plan_step.step_name.clone(),
+                                        content: chunk.delta,
+                                        token_index,
+                                        timestamp_ms: now_ms(),
+                                    })
+                                    .is_err()
+                                    {
+                                        flow_success = false;
+                                        break 'flow_loop;
+                                    }
+                                }
+                                if let Some(usage) = chunk.usage {
+                                    step_tokens_input = usage.input_tokens;
+                                    step_tokens_output = usage.output_tokens;
+                                }
+                                if chunk.finish_reason.is_some() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = emit(FlowExecutionEvent::FlowError {
+                                    flow_name: plan.flow_name.clone(),
+                                    error: format!(
+                                        "Backend '{}' chunk error on step '{}': {}",
+                                        backend_name, plan_step.step_name, e
+                                    ),
+                                    timestamp_ms: now_ms(),
+                                });
+                                step_success = false;
+                                flow_success = false;
+                                break 'flow_loop;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // §Fase 33.x.d — Record this step's enforcement
+            // summary on the shared side-channel BEFORE emitting
+            // StepComplete so the consumer at execute_sse_handler
+            // sees the map populated when it builds the
+            // axon.complete wire JSON.
+            if let Some(s) = step_enforcement_summary {
+                let mut map = enforcement_summaries.lock().await;
+                map.insert(plan_step.step_name.clone(), s);
             }
 
             // Multi-step flows feed step N's output back as
@@ -18456,32 +18753,84 @@ fn server_execute_streaming(
     let exited = std::sync::Arc::new(tokio::sync::Notify::new());
     let exited_for_task = exited.clone();
 
+    // §Fase 33.x.d — Shared per-step EnforcementSummary side-channel.
+    // The async producer writes one entry per step that has a declared
+    // `<stream:<policy>>` effect; the consumer reads the map when
+    // emitting `axon.complete` so the wire body includes the summary.
+    // Empty map on the legacy path + on flows with no declared
+    // effects = D4 byte-compat preserved.
+    let enforcement_summaries: std::sync::Arc<
+        tokio::sync::Mutex<std::collections::HashMap<String, EnforcementSummaryWire>>,
+    > = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
+    // §Fase 33.x.b + 33.x.d — Resolve `auto` to a concrete backend
+    // BEFORE the routing decision. The dynamic-route dispatch path
+    // (`dispatch_dynamic_route_handler`) passes `backend: "auto"`
+    // unconditionally; the streaming-resolver doesn't recognize
+    // "auto", so without this step every dynamic-route flow would
+    // fall through to the legacy synchronous path — and the
+    // enforcer (D2) + per-chunk granularity (D1) would never
+    // activate. Resolution mirrors `server_execute_full`'s
+    // identical "auto" branch (compute_backend_scores +
+    // fall-back to "stub") so wire byte-compat with v1.24.0 is
+    // preserved for adopters that never set a real provider key.
+    let effective_backend = if backend == "auto" {
+        let scores = {
+            let s = state.lock().unwrap();
+            compute_backend_scores(&s, "balanced")
+        };
+        scores
+            .first()
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| "stub".to_string())
+    } else {
+        backend.clone()
+    };
+
     // §Fase 33.x.b — Decide between the new async streaming path
     // and the legacy synchronous fallback. Plan build is cheap
     // (lex + parse + type-check + IR + walk) — no I/O. Backend
     // resolution is in-process. Both checks happen synchronously
     // BEFORE spawning so we know which path to take.
-    let plan_attempt =
-        crate::flow_plan::build_streaming_plan(&source, &source_file, &flow_name, &backend);
-    let backend_known = crate::backends::resolve_streaming_backend(&backend).is_some();
+    let plan_attempt = crate::flow_plan::build_streaming_plan(
+        &source,
+        &source_file,
+        &flow_name,
+        &effective_backend,
+    );
+    let backend_known =
+        crate::backends::resolve_streaming_backend(&effective_backend).is_some();
 
     match plan_attempt {
         Ok(plan) if backend_known => {
             // §Fase 33.x.b ASYNC PATH — Backend::stream() per step.
+            // §Fase 33.x.d — enforcer activation wired through the
+            // shared `enforcement_summaries` side-channel.
             let tx_for_task = tx.clone();
             let exited_for_async = exited_for_task.clone();
             let cancel_for_async = cancel.clone();
-            let backend_for_async = backend.clone();
+            let backend_for_async = effective_backend.clone();
+            let summaries_for_async = enforcement_summaries.clone();
             tokio::spawn(async move {
-                run_streaming_async_path(plan, backend_for_async, cancel_for_async, tx_for_task)
-                    .await;
+                run_streaming_async_path(
+                    plan,
+                    backend_for_async,
+                    cancel_for_async,
+                    tx_for_task,
+                    summaries_for_async,
+                )
+                .await;
                 exited_for_async.notify_waiters();
             });
             // Drop the original `tx` clone so the consumer's `recv()`
             // returns None when the spawned task completes (rather
             // than blocking forever on this outer-scope sender).
             drop(tx);
-            return StreamingExecution { events: rx, exited };
+            return StreamingExecution {
+                events: rx,
+                exited,
+                enforcement_summaries,
+            };
         }
         _ => {
             // Fall through to the legacy synchronous path below.
@@ -18500,6 +18849,8 @@ fn server_execute_streaming(
     // for adopter shapes the streaming path defers (anchors, lambda
     // apply, let bindings, mid-stream tool calls, etc.) AND for
     // unknown backends so the error surface stays single-source.
+    // The enforcement_summaries map stays empty for this path
+    // (D4 byte-compat with v1.24.0 wire).
     let cancel_for_legacy = cancel.clone();
     let exited_for_legacy = exited_for_task.clone();
     tokio::task::spawn_blocking(move || {
@@ -18515,7 +18866,11 @@ fn server_execute_streaming(
         exited_for_legacy.notify_waiters();
     });
 
-    StreamingExecution { events: rx, exited }
+    StreamingExecution {
+        events: rx,
+        exited,
+        enforcement_summaries,
+    }
 }
 
 /// §Fase 33.x.b — Legacy synchronous streaming path. Preserved
@@ -18824,6 +19179,7 @@ async fn execute_sse_handler(
                 let StreamingExecution {
                     events: mut event_rx,
                     exited: _producer_exited,
+                    enforcement_summaries: enforcement_summaries_for_consumer,
                 } = server_execute_streaming(
                     state_for_task.clone(),
                     source.clone(),
@@ -18913,6 +19269,25 @@ async fn execute_sse_handler(
                             // shape the existing build_complete_event
                             // helper expects — wire body stays
                             // byte-identical with the 30.f path.
+                            //
+                            // §Fase 33.x.d — read enforcement_summaries
+                            // from the shared side-channel that the
+                            // streaming async producer populates as
+                            // each step's enforcer drains. The map
+                            // is empty for the legacy path + for
+                            // flows with no declared `<stream:<policy>>`
+                            // effect, so the wire stays byte-identical
+                            // with v1.24.0 in those cases (D4).
+                            let summaries_vec: Vec<(String, EnforcementSummaryWire)> = {
+                                let guard = enforcement_summaries_for_consumer
+                                    .lock()
+                                    .await;
+                                let mut ordered: Vec<(String, EnforcementSummaryWire)> =
+                                    guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                                // Sort by step name for deterministic wire shape.
+                                ordered.sort_by(|a, b| a.0.cmp(&b.0));
+                                ordered
+                            };
                             let er = ServerExecutionResult {
                                 success,
                                 flow_name: flow_name.clone(),
@@ -18929,6 +19304,7 @@ async fn execute_sse_handler(
                                 step_results: Vec::new(),
                                 trace_id,
                                 effect_policies: effect_policies.clone(),
+                                enforcement_summaries: summaries_vec,
                             };
 
                             event_id += 1;
