@@ -152,6 +152,14 @@ pub mod stream_runtime;
 // and the AST resolver (which extracts the declared policy from the
 // tool referenced by each step).
 pub mod stream_effect_dispatcher;
+// §Fase 33.f — Cooperative cancellation primitives (D6 cancel-safety).
+// `CancellationFlag` + `CancelOnDrop` are the building blocks that
+// bind SSE response lifetime to the executor's spawn_blocking task:
+// when the wire client disconnects, the consumer cancels the flag,
+// which the producer observes between event emissions and exits
+// early instead of running the flow to completion against a dropped
+// channel.
+pub mod cancel_token;
 // §λ-L-E Fase 11.b — Zero-Copy Multimodal Buffers.
 // `buffer` defines ZeroCopyBuffer (Arc<[u8]>-backed) + BufferKind
 // (open registry) + BufferPool (slab allocator with per-tenant

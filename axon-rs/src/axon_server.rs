@@ -18162,26 +18162,60 @@ fn resolve_stream_policies_for_flow(
     out
 }
 
+/// §Fase 33.f — Handles returned by [`server_execute_streaming`].
+///
+/// Bundles the [`FlowExecutionEvent`] receiver with an "exited"
+/// signal the consumer can await to confirm the producer task has
+/// terminated (e.g. for cancel-safety budgets in tests / metrics).
+pub(crate) struct StreamingExecution {
+    pub events: tokio::sync::mpsc::UnboundedReceiver<
+        crate::flow_execution_event::FlowExecutionEvent,
+    >,
+    /// Resolves once the producer's `spawn_blocking` task exits, for
+    /// any reason (normal completion, cancellation, or send-failure
+    /// on a dropped consumer). Pairs with the [`crate::cancel_token::CancellationFlag`]
+    /// the producer observes between emits.
+    pub exited: std::sync::Arc<tokio::sync::Notify>,
+}
+
 fn server_execute_streaming(
     state: SharedState,
     source: String,
     source_file: String,
     flow_name: String,
     backend: String,
-) -> tokio::sync::mpsc::UnboundedReceiver<crate::flow_execution_event::FlowExecutionEvent> {
+    cancel: crate::cancel_token::CancellationFlag,
+) -> StreamingExecution {
     use crate::flow_execution_event::{now_ms, FlowExecutionEvent};
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FlowExecutionEvent>();
+    let exited = std::sync::Arc::new(tokio::sync::Notify::new());
+    let exited_for_task = exited.clone();
 
     tokio::task::spawn_blocking(move || {
+        // 33.f cancel-safety helper: a single send wrapped to check
+        // both the consumer-dropped signal AND the cancellation flag.
+        // Returns `Err(())` when the producer should exit early.
+        let emit = |event: FlowExecutionEvent| -> Result<(), ()> {
+            if cancel.is_cancelled() {
+                return Err(());
+            }
+            tx.send(event).map_err(|_| ())
+        };
+
         // FlowStart fires BEFORE we kick off the executor so any
         // consumer can record "stream is live" + bind side-effect
         // state (audit row, observability span) immediately. This is
         // independent of how long the synchronous executor takes.
-        let _ = tx.send(FlowExecutionEvent::FlowStart {
+        if emit(FlowExecutionEvent::FlowStart {
             flow_name: flow_name.clone(),
             backend: backend.clone(),
             timestamp_ms: now_ms(),
-        });
+        })
+        .is_err()
+        {
+            exited_for_task.notify_waiters();
+            return;
+        }
 
         let exec_start = std::time::Instant::now();
         let (result, _actual_backend) = server_execute_full(
@@ -18194,13 +18228,17 @@ fn server_execute_streaming(
 
         match result {
             Ok(er) => {
-                for (i, step_name) in er.step_names.iter().enumerate() {
-                    let _ = tx.send(FlowExecutionEvent::StepStart {
+                'flow_loop: for (i, step_name) in er.step_names.iter().enumerate() {
+                    if emit(FlowExecutionEvent::StepStart {
                         step_name: step_name.clone(),
                         step_index: i,
                         step_type: "step".to_string(),
                         timestamp_ms: now_ms(),
-                    });
+                    })
+                    .is_err()
+                    {
+                        break 'flow_loop;
+                    }
 
                     let full_output = er
                         .step_results
@@ -18228,25 +18266,33 @@ fn server_execute_streaming(
                     let mut token_index: u64 = 0;
                     if chunks.is_empty() {
                         token_index += 1;
-                        let _ = tx.send(FlowExecutionEvent::StepToken {
+                        if emit(FlowExecutionEvent::StepToken {
                             step_name: step_name.clone(),
                             content: String::new(),
                             token_index,
                             timestamp_ms: now_ms(),
-                        });
+                        })
+                        .is_err()
+                        {
+                            break 'flow_loop;
+                        }
                     } else {
                         for chunk in &chunks {
                             token_index += 1;
-                            let _ = tx.send(FlowExecutionEvent::StepToken {
+                            if emit(FlowExecutionEvent::StepToken {
                                 step_name: step_name.clone(),
                                 content: chunk.clone(),
                                 token_index,
                                 timestamp_ms: now_ms(),
-                            });
+                            })
+                            .is_err()
+                            {
+                                break 'flow_loop;
+                            }
                         }
                     }
 
-                    let _ = tx.send(FlowExecutionEvent::StepComplete {
+                    if emit(FlowExecutionEvent::StepComplete {
                         step_name: step_name.clone(),
                         step_index: i,
                         success: er.success,
@@ -18254,10 +18300,18 @@ fn server_execute_streaming(
                         tokens_input: 0,
                         tokens_output: token_index,
                         timestamp_ms: now_ms(),
-                    });
+                    })
+                    .is_err()
+                    {
+                        break 'flow_loop;
+                    }
                 }
 
-                let _ = tx.send(FlowExecutionEvent::FlowComplete {
+                // Cancellation between the loop and FlowComplete is
+                // observable via the same emit() wrapper; if the
+                // wire is gone we skip the terminator (no consumer
+                // to receive it).
+                let _ = emit(FlowExecutionEvent::FlowComplete {
                     flow_name: er.flow_name.clone(),
                     backend: er.backend.clone(),
                     success: er.success,
@@ -18269,7 +18323,7 @@ fn server_execute_streaming(
                 });
             }
             Err(e) => {
-                let _ = tx.send(FlowExecutionEvent::FlowError {
+                let _ = emit(FlowExecutionEvent::FlowError {
                     flow_name: flow_name.clone(),
                     error: e,
                     timestamp_ms: now_ms(),
@@ -18277,9 +18331,10 @@ fn server_execute_streaming(
             }
         }
         // tx drops here → consumer's recv() returns None.
+        exited_for_task.notify_waiters();
     });
 
-    rx
+    StreamingExecution { events: rx, exited }
 }
 
 /// POST /v1/execute/sse — single-shot SSE execution.
@@ -18408,12 +18463,26 @@ async fn execute_sse_handler(
                 .map(|(step, slug)| (step, slug.to_string()))
                 .collect::<Vec<_>>();
 
-                let mut event_rx = server_execute_streaming(
+                // §Fase 33.f cancel-safety — bind the executor's
+                // lifetime to this spawned task. If the task is
+                // aborted (e.g. axum drops the Sse response because
+                // the client disconnected), the `CancelOnDrop` guard
+                // fires the cancellation flag the producer observes
+                // between emit calls.
+                let cancel = crate::cancel_token::CancellationFlag::new();
+                let _cancel_guard =
+                    crate::cancel_token::CancelOnDrop::new(cancel.clone());
+
+                let StreamingExecution {
+                    events: mut event_rx,
+                    exited: _producer_exited,
+                } = server_execute_streaming(
                     state_for_task.clone(),
                     source.clone(),
                     source_file.clone(),
                     flow_name_owned.clone(),
                     backend_owned.clone(),
+                    cancel.clone(),
                 );
 
                 let mut event_id: u64 = 0;
@@ -18443,14 +18512,16 @@ async fn execute_sse_handler(
                             ..
                         } => {
                             event_id += 1;
-                            // .ok() swallows SendError when the client
-                            // disconnected mid-stream — axum dropped
-                            // the Sse response → rx dropped → send
-                            // errors. We KEEP draining event_rx so the
-                            // executor can complete cleanly even when
-                            // the wire client is gone (cancel-safety
-                            // baseline ahead of 33.f).
-                            let _ = tx
+                            // §Fase 33.f cancel-safety — when the SSE
+                            // tx returns Err the client disconnected
+                            // (axum dropped the Sse response → rx
+                            // dropped). Cancel the upstream producer
+                            // so it stops emitting events into a
+                            // dropped channel; break out of the
+                            // consumer loop so the trace gets recorded
+                            // with the partial-execution status (no
+                            // FlowComplete observed).
+                            if tx
                                 .send(Ok(build_token_event(
                                     event_id,
                                     trace_id,
@@ -18458,7 +18529,12 @@ async fn execute_sse_handler(
                                     &content,
                                     timestamp_ms as i64,
                                 )))
-                                .await;
+                                .await
+                                .is_err()
+                            {
+                                cancel.cancel();
+                                break;
+                            }
                         }
                         FlowExecutionEvent::StepComplete {
                             tokens_output: out,
