@@ -51,8 +51,8 @@ RUST_BACKENDS_DIR = REPO_ROOT / "axon-rs" / "src" / "backends"
 # implementations — they're shared infrastructure (trait definitions,
 # error types, retry policy, observability helpers, locked-model
 # registry, tokens dispatch, OpenAI-compat shared base, transport
-# layer, SSE streaming infra, mod.rs itself). Excluded from the
-# per-provider drift check.
+# layer, SSE streaming infra, the §Fase 33.x.b `stub` test/streaming
+# backend, mod.rs itself). Excluded from the per-provider drift check.
 SHARED_INFRA_MODULES: frozenset[str] = frozenset({
     "mod",
     "error",
@@ -63,6 +63,14 @@ SHARED_INFRA_MODULES: frozenset[str] = frozenset({
     "openai_compat",
     "transport",
     "sse_streaming",
+    # §Fase 33.x.b — `stub` is the test/streaming-fallback backend
+    # implementing `Backend` trait so the production async streaming
+    # path resolves "stub" uniformly via `Registry`. Not a real
+    # provider; no Python `BACKEND_REGISTRY` counterpart. The
+    # streaming-resolver drift gate (axon-rs/src/backends/mod.rs
+    # `resolver_tests`) pins it as the 8th entry of
+    # `Registry::production_with_stub()`.
+    "stub",
 })
 
 # Canonical per-provider env var names. Pinned here to match the

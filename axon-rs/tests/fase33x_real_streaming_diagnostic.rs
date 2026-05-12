@@ -232,15 +232,29 @@ fn parse_sse_body(body: &str) -> SseEvents {
     events
 }
 
-// ─── §1 — D1 anchor: synthetic chunking on the SSE production path ──
+// ─── §1 — D1 anchor: Backend::stream() reached on production path ──
 //
-// Pre-33.x.b: stub backend goes through `server_execute_full` →
-// `crate::backend::call_multi` → final String → `split_whitespace().
-// chunks(3)`. Adopter sees 1 synthetic `axon.token` per 3-word group.
+// **POST-33.x.b STATE** (this version): stub backend implements
+// `Backend::stream()` (axon-rs/src/backends/stub.rs) and resolves
+// through the streaming registry. The production async path
+// `run_streaming_async_path` calls `backend.stream(req).await` per
+// step and forwards each chunk's delta verbatim as one
+// `StepToken` event.
 //
-// Post-33.x.b: stub backend SHOULD fall through to §2.5/2.6 fallback
-// (no `Backend::stream()` impl for stub) — adopter sees synthetic
-// chunking PLUS `axon-W002` warning emitted at flow-start (D5 anchor).
+// For stub backend specifically (one-chunk-per-call), the wire is
+// BYTE-IDENTICAL with the pre-33.x.b synthetic-chunking output:
+// one `axon.token` event with content `"(stub)"` per step. This is
+// the D4 byte-compat invariant — D1 activates the trait surface;
+// D4 keeps the wire schema unchanged.
+//
+// The DIFFERENCE post-33.x.b vs pre-33.x.b is observable when
+// adopters wire a real backend (Anthropic / OpenAI / etc.):
+// pre-33.x.b sliced the final materialized String into 3-word
+// groups; post-33.x.b each upstream provider chunk becomes one
+// wire event. The real-backend invariant is verified via the
+// `fase33x_b_real_backend_e2e.rs` E2E tests at the trait layer
+// (HTTP-level real-provider verification ships in 33.x.j gated
+// on `AXON_RUN_REAL_PROVIDER_TEST`).
 //
 // Post-33.x.h with `axon_runtime.streaming.tokenizer_fallback = true`:
 // adopter sees BPE-tokenized chunks (~1 per token) PLUS `axon-W002`.
@@ -264,14 +278,23 @@ async fn d1_v1_24_0_synthetic_three_word_chunking_baseline() {
     assert!(ct.starts_with("text/event-stream"));
     assert!(events.retry_directive_count >= 1);
 
-    // PRE-33.x.b invariant: at least one axon.token event arrives,
-    // and exactly one axon.complete event closes the stream. Token
-    // count is bounded by step count × ceil(words/3).
-    assert!(
-        !events.tokens.is_empty(),
-        "v1.24.0 production path emits >=1 axon.token even on stub. \
-         When 33.x.b lands this assertion holds; when 33.x.h opts into \
-         tokenizer fallback the count grows; the contract is monotone."
+    // POST-33.x.b invariant: stub backend's `Backend::stream()`
+    // emits exactly 1 chunk per step → exactly 1 axon.token event
+    // per step. For this single-step flow → 1 axon.token (D4 byte-
+    // compat with pre-33.x.b synthetic chunking of `"(stub)"`).
+    //
+    // For real backends post-33.x.b the count would be N (one per
+    // provider chunk); that invariant is asserted by
+    // `fase33x_b_real_backend_e2e.rs::backend_stream_emits_one_chunk_per_upstream_event`.
+    assert_eq!(
+        events.tokens.len(),
+        1,
+        "post-33.x.b: stub.stream() emits 1 chunk → 1 axon.token (D1 \
+         activates the trait surface; D4 keeps the schema unchanged)"
+    );
+    assert_eq!(
+        events.tokens[0]["token"], "(stub)",
+        "D4 byte-compat: stub chunk delta is canonical (stub) marker"
     );
     assert_eq!(
         events.completes.len(),
@@ -540,17 +563,24 @@ async fn d3_v1_24_0_wire_shape_well_formed_on_happy_path() {
 
 // ─── §7 — Cycle closure summary (commentary, no assertions) ─────────
 //
-// When 33.x.m ships v1.25.0, the assertions above are rewritten:
+// **POST-33.x.b STATE** (this version): §1 D1 anchor has been
+// rewritten — the assertion now reads "stub.stream() emits 1
+// chunk → 1 axon.token" instead of "≥ 1 token from synthetic
+// chunking". The real-backend N-chunks-in-N-tokens-out invariant
+// is asserted by `fase33x_b_real_backend_e2e.rs` against the
+// trait surface; HTTP-level real-provider verification ships in
+// 33.x.j.
 //
-//   §1 (D1) — `events.tokens.len() >= 5` for a real-backend prompt of
-//             ~50 tokens (vs `>= 1` today)
+// **REMAINING REWRITES** as each subsequent sub-fase lands:
+//
 //   §2 (D2) — `complete.get("enforcement_summary").is_some()` (vs
-//             `.is_none()` today)
+//             `.is_none()` today) — flips in 33.x.d
 //   §3 (D2) — unchanged (D4 byte-compat invariant)
 //   §4 (D5) — `body.contains("axon-W002")` (vs `!body.contains(...)`
-//             today) when stub-or-no-stream backend is used
+//             today) when adopter custom backend has no stream() —
+//             flips in 33.x.g
 //   §5 (D6) — `entries.len() == step_count` (vs `<= 1` today) for SSE
-//             flows with `replay: true`
+//             flows with `replay: true` — flips in 33.x.f
 //   §6 (D3) — unchanged structurally; the real cancel-in-body anchor
 //             lives in `fase33x_cancel_inside_reqwest_body.rs` (lands
 //             33.x.e) with a local axum slow-drip mock
