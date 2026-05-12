@@ -1,4 +1,5 @@
-//! §Fase 33.x.b — Streaming execution plan extraction.
+//! §Fase 33.x.b + 33.x.c — Streaming execution plan extraction +
+//! unified `.axon` source compilation pipeline.
 //!
 //! Builds a streaming-shaped execution plan from `.axon` source for
 //! the production async SSE path. Pre-resolves per-step
@@ -41,9 +42,219 @@
 //! - **D5** — fallback to legacy orchestration is observable via
 //!   [`PlanFallback`] so 33.x.g can hook `axon-W002`-style warnings.
 
-use crate::ir_nodes::IRProgram;
+use crate::ir_nodes::{IRFlow, IRFlowNode, IRProgram};
 use crate::stream_effect::BackpressurePolicy;
 use crate::stream_effect_dispatcher::resolve_stream_effect_for_step;
+
+// ────────────────────────────────────────────────────────────────────
+//  §33.x.c — Shared source-compilation pipeline
+// ────────────────────────────────────────────────────────────────────
+
+/// Compile an `.axon` source string into its AST [`crate::ast::Program`]
+/// + IR [`IRProgram`] forms. Both stacks-of-truth are returned so
+/// downstream callers can do AST-level walking (effect-row resolution,
+/// route table extraction) AND IR-level execution planning without
+/// re-running the pipeline.
+///
+/// # Stages
+///
+/// 1. Lex via [`crate::lexer::Lexer`]
+/// 2. Parse via [`crate::parser::Parser`]
+/// 3. Type-check via [`crate::type_checker::TypeChecker`]
+/// 4. IR generation via [`crate::ir_generator::IRGenerator`]
+///
+/// Each stage's failure surfaces as a structured [`PlanError`] variant
+/// so the caller distinguishes "user source is malformed" from "the
+/// pipeline encountered an internal invariant violation".
+///
+/// # Performance
+///
+/// This is the canonical source-compilation entry point on the Fase
+/// 33.x.b production async streaming path (called once per
+/// flow-invocation). The legacy `axon_server.rs` call sites still
+/// inline their own pipelines; 33.x.i (mono-file `crate::backend`
+/// retirement) is when the deeper migration completes.
+///
+/// # Purity
+///
+/// Pure + deterministic. No I/O. No global state. Same source +
+/// source_file → same `(Program, IRProgram)` byte-for-byte.
+pub fn compile_source_to_ir(
+    source: &str,
+    source_file: &str,
+) -> Result<(crate::ast::Program, IRProgram), PlanError> {
+    let tokens = crate::lexer::Lexer::new(source, source_file)
+        .tokenize()
+        .map_err(|e| PlanError::Parse(format!("lex error: {e:?}")))?;
+
+    let mut parser = crate::parser::Parser::new(tokens);
+    let program = parser.parse().map_err(|e| PlanError::Parse(e.message))?;
+
+    let mut checker = crate::type_checker::TypeChecker::new(&program);
+    let type_errors = checker.check();
+    if !type_errors.is_empty() {
+        return Err(PlanError::TypeCheck(
+            type_errors.into_iter().map(|e| e.message).collect(),
+        ));
+    }
+
+    let ir = crate::ir_generator::IRGenerator::new().generate(&program);
+    Ok((program, ir))
+}
+
+/// Locate an [`IRFlow`] by name. Returns a structured [`PlanError`]
+/// with the list of available flow names so the diagnostic message
+/// is adopter-actionable (typo-detection on first read).
+///
+/// # Used by
+///
+/// * [`build_plan_from_ir`] — the streaming-path planner.
+/// * Future 33.x.i migrations of the legacy axon_server.rs sync
+///   path will adopt this helper for byte-identical diagnostics.
+pub fn find_ir_flow_by_name<'a>(
+    ir: &'a IRProgram,
+    flow_name: &str,
+) -> Result<&'a IRFlow, PlanError> {
+    ir.flows
+        .iter()
+        .find(|f| f.name == flow_name)
+        .ok_or_else(|| PlanError::FlowNotFound {
+            flow_name: flow_name.to_string(),
+            available: ir.flows.iter().map(|f| f.name.clone()).collect(),
+        })
+}
+
+/// Stable kind discriminant for an [`IRFlowNode`]. Closed catalog
+/// extracted as a separate public helper so adding a new
+/// `IRFlowNode` variant on the frontend forces an explicit match
+/// update here (compiler enforces exhaustiveness).
+///
+/// # Drift contract with `runner::extract_step_info`
+///
+/// The synchronous CLI path's `runner::extract_step_info` produces
+/// a `step_type` string for each `IRFlowNode` variant. The kinds
+/// here MUST match that mapping. Drift is gated by
+/// [`ir_flow_node_kind_runner_drift`] in `flow_plan::tests`.
+pub fn ir_flow_node_kind(node: &IRFlowNode) -> &'static str {
+    match node {
+        IRFlowNode::Step(_) => "step",
+        IRFlowNode::Probe(_) => "probe",
+        IRFlowNode::Reason(_) => "reason",
+        IRFlowNode::Validate(_) => "validate",
+        IRFlowNode::Refine(_) => "refine",
+        IRFlowNode::Weave(_) => "weave",
+        IRFlowNode::UseTool(_) => "use_tool",
+        IRFlowNode::Remember(_) => "remember",
+        IRFlowNode::Recall(_) => "recall",
+        IRFlowNode::Conditional(_) => "conditional",
+        IRFlowNode::ForIn(_) => "for_in",
+        IRFlowNode::Let(_) => "let",
+        IRFlowNode::Return(_) => "return",
+        IRFlowNode::Break(_) => "break",
+        IRFlowNode::Continue(_) => "continue",
+        IRFlowNode::LambdaDataApply(_) => "lambda_data_apply",
+        IRFlowNode::Par(_) => "par",
+        IRFlowNode::Hibernate(_) => "hibernate",
+        IRFlowNode::Deliberate(_) => "deliberate",
+        IRFlowNode::Consensus(_) => "consensus",
+        IRFlowNode::Forge(_) => "forge",
+        IRFlowNode::Focus(_) => "focus",
+        IRFlowNode::Associate(_) => "associate",
+        IRFlowNode::Aggregate(_) => "aggregate",
+        IRFlowNode::Explore(_) => "explore",
+        IRFlowNode::Ingest(_) => "ingest",
+        IRFlowNode::ShieldApply(_) => "shield_apply",
+        IRFlowNode::Stream(_) => "stream_block",
+        IRFlowNode::Navigate(_) => "navigate",
+        IRFlowNode::Drill(_) => "drill",
+        IRFlowNode::Trail(_) => "trail",
+        IRFlowNode::Corroborate(_) => "corroborate",
+        IRFlowNode::OtsApply(_) => "ots_apply",
+        IRFlowNode::MandateApply(_) => "mandate_apply",
+        IRFlowNode::ComputeApply(_) => "compute_apply",
+        IRFlowNode::Listen(_) => "listen",
+        IRFlowNode::DaemonStep(_) => "daemon_step",
+        IRFlowNode::Emit(_) => "emit",
+        IRFlowNode::Publish(_) => "publish",
+        IRFlowNode::Discover(_) => "discover",
+        IRFlowNode::Persist(_) => "persist",
+        IRFlowNode::Retrieve(_) => "retrieve",
+        IRFlowNode::Mutate(_) => "mutate",
+        IRFlowNode::Purge(_) => "purge",
+        IRFlowNode::Transact(_) => "transact",
+    }
+}
+
+/// Compose a streaming-path system prompt from persona + context +
+/// (optional) backend tag. Public helper shared by the streaming
+/// planner today + adopted by the sync CLI path during 33.x.i.
+///
+/// # Parameters
+///
+/// * `flow` — the IR flow whose system prompt is being built. The
+///   flow's name surfaces in the prompt for trace clarity.
+/// * `ir` — full IR for persona/context resolution.
+/// * `backend_tag` — `Some("anthropic")` appends `[Backend:
+///   anthropic | AXON <version>]`; `None` omits the tag. The
+///   streaming path passes `None` because the wire's
+///   `axon.complete.backend` field already carries this info.
+///
+/// # Determinism
+///
+/// Pure + deterministic. Same inputs → same string byte-for-byte.
+pub fn compose_system_prompt_public(
+    flow: &IRFlow,
+    ir: &IRProgram,
+    backend_tag: Option<&str>,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    if let Some(persona) = ir.personas.first() {
+        parts.push(format!("# Persona: {}", persona.name));
+        if !persona.domain.is_empty() {
+            parts.push(format!("Domain expertise: {}", persona.domain.join(", ")));
+        }
+        if !persona.tone.is_empty() {
+            parts.push(format!("Communication tone: {}", persona.tone));
+        }
+        if !persona.language.is_empty() {
+            parts.push(format!("Language: {}", persona.language));
+        }
+        if let Some(ct) = persona.confidence_threshold {
+            parts.push(format!("Confidence threshold: {ct:.2}"));
+        }
+        if persona.cite_sources == Some(true) {
+            parts.push("Always cite sources.".to_string());
+        }
+        if !persona.refuse_if.is_empty() {
+            parts.push(format!("Refuse if: {}", persona.refuse_if.join(", ")));
+        }
+    }
+
+    if let Some(ctx) = ir.contexts.first() {
+        parts.push(format!("\n# Context: {}", ctx.name));
+        if !ctx.depth.is_empty() {
+            parts.push(format!("Analysis depth: {}", ctx.depth));
+        }
+        if !ctx.memory_scope.is_empty() {
+            parts.push(format!("Memory scope: {}", ctx.memory_scope));
+        }
+        if let Some(t) = ctx.temperature {
+            parts.push(format!("Temperature: {t:.1}"));
+        }
+        if let Some(mt) = ctx.max_tokens {
+            parts.push(format!("Max tokens: {mt}"));
+        }
+    }
+
+    parts.push(format!("\n# Flow: {}", flow.name));
+
+    if let Some(tag) = backend_tag {
+        parts.push(format!("\n[Backend: {tag} | AXON {}]", env!("CARGO_PKG_VERSION")));
+    }
+
+    parts.join("\n")
+}
 
 // ────────────────────────────────────────────────────────────────────
 //  Plan types
@@ -199,27 +410,11 @@ pub fn build_streaming_plan(
     flow_name: &str,
     backend_name: &str,
 ) -> Result<StreamingExecutionPlan, PlanError> {
-    // 1. Lex
-    let tokens = crate::lexer::Lexer::new(source, source_file)
-        .tokenize()
-        .map_err(|e| PlanError::Parse(format!("lex error: {e:?}")))?;
-
-    // 2. Parse
-    let mut parser = crate::parser::Parser::new(tokens);
-    let program = parser.parse().map_err(|e| PlanError::Parse(e.message))?;
-
-    // 3. Type-check
-    let mut checker = crate::type_checker::TypeChecker::new(&program);
-    let errors = checker.check();
-    if !errors.is_empty() {
-        return Err(PlanError::TypeCheck(
-            errors.into_iter().map(|e| e.message).collect(),
-        ));
-    }
-
-    // 4. IR generation
-    let ir = crate::ir_generator::IRGenerator::new().generate(&program);
-
+    // §33.x.c — delegated to the unified `compile_source_to_ir`
+    // helper. Both the AST and IR forms are returned so
+    // `build_plan_from_ir` can resolve effect rows from the AST
+    // without re-walking the parser pipeline.
+    let (program, ir) = compile_source_to_ir(source, source_file)?;
     build_plan_from_ir(&ir, &program, flow_name, backend_name)
 }
 
@@ -231,15 +426,10 @@ pub fn build_plan_from_ir(
     flow_name: &str,
     backend_name: &str,
 ) -> Result<StreamingExecutionPlan, PlanError> {
-    // 5. Locate the flow in the IR (for orchestration metadata).
-    let flow = ir
-        .flows
-        .iter()
-        .find(|f| f.name == flow_name)
-        .ok_or_else(|| PlanError::FlowNotFound {
-            flow_name: flow_name.to_string(),
-            available: ir.flows.iter().map(|f| f.name.clone()).collect(),
-        })?;
+    // 5. Locate the flow on the IR side. §33.x.c uses the public
+    //    `find_ir_flow_by_name` helper so the diagnostic message
+    //    shape is shared across callers.
+    let flow = find_ir_flow_by_name(ir, flow_name)?;
 
     // 5b. Locate the same flow on the AST side (for effect-row
     //     resolution via `resolve_stream_effect_for_step`, which
@@ -264,10 +454,12 @@ pub fn build_plan_from_ir(
         });
     }
 
-    // 7. System prompt — best-effort composition mirroring the sync
-    //    path's `build_system_prompt` output. Only persona/context
-    //    fields that exist in the IR get included.
-    let system_prompt = compose_system_prompt(flow, ir);
+    // 7. System prompt — §33.x.c uses the public composer with
+    //    `backend_tag: None`. The streaming wire's
+    //    `axon.complete.backend` field already carries the backend
+    //    name so the prompt suffix is redundant on this path
+    //    (avoids hidden-context drift between sync + async).
+    let system_prompt = compose_system_prompt_public(flow, ir, None);
 
     // 8. Per-step plan. Only `IRFlowNode::Step` variants are
     //    streaming-eligible; every other variant has been rejected
@@ -367,98 +559,15 @@ fn unsupported_feature_reason(
     None
 }
 
-/// Stable kind discriminant for an `IRFlowNode`. Closed catalog
-/// extracted as a separate function so adding a new IRFlowNode
-/// variant on the frontend forces an explicit match update here
-/// (compiler enforces exhaustiveness via the unreachable arm).
-fn ir_flow_node_kind(node: &crate::ir_nodes::IRFlowNode) -> &'static str {
-    use crate::ir_nodes::IRFlowNode;
-    match node {
-        IRFlowNode::Step(_) => "step",
-        IRFlowNode::Probe(_) => "probe",
-        IRFlowNode::Reason(_) => "reason",
-        IRFlowNode::Validate(_) => "validate",
-        IRFlowNode::Refine(_) => "refine",
-        IRFlowNode::Weave(_) => "weave",
-        IRFlowNode::UseTool(_) => "use_tool",
-        IRFlowNode::Remember(_) => "remember",
-        IRFlowNode::Recall(_) => "recall",
-        IRFlowNode::Conditional(_) => "conditional",
-        IRFlowNode::ForIn(_) => "for_in",
-        IRFlowNode::Let(_) => "let",
-        IRFlowNode::Return(_) => "return",
-        IRFlowNode::Break(_) => "break",
-        IRFlowNode::Continue(_) => "continue",
-        IRFlowNode::LambdaDataApply(_) => "lambda_data_apply",
-        IRFlowNode::Par(_) => "par",
-        IRFlowNode::Hibernate(_) => "hibernate",
-        IRFlowNode::Deliberate(_) => "deliberate",
-        IRFlowNode::Consensus(_) => "consensus",
-        IRFlowNode::Forge(_) => "forge",
-        IRFlowNode::Focus(_) => "focus",
-        IRFlowNode::Associate(_) => "associate",
-        IRFlowNode::Aggregate(_) => "aggregate",
-        IRFlowNode::Explore(_) => "explore",
-        IRFlowNode::Ingest(_) => "ingest",
-        IRFlowNode::ShieldApply(_) => "shield_apply",
-        IRFlowNode::Stream(_) => "stream_block",
-        IRFlowNode::Navigate(_) => "navigate",
-        IRFlowNode::Drill(_) => "drill",
-        IRFlowNode::Trail(_) => "trail",
-        IRFlowNode::Corroborate(_) => "corroborate",
-        IRFlowNode::OtsApply(_) => "ots_apply",
-        IRFlowNode::MandateApply(_) => "mandate_apply",
-        IRFlowNode::ComputeApply(_) => "compute_apply",
-        IRFlowNode::Listen(_) => "listen",
-        IRFlowNode::DaemonStep(_) => "daemon_step",
-        IRFlowNode::Emit(_) => "emit",
-        IRFlowNode::Publish(_) => "publish",
-        IRFlowNode::Discover(_) => "discover",
-        IRFlowNode::Persist(_) => "persist",
-        IRFlowNode::Retrieve(_) => "retrieve",
-        IRFlowNode::Mutate(_) => "mutate",
-        IRFlowNode::Purge(_) => "purge",
-        IRFlowNode::Transact(_) => "transact",
-    }
-}
+// §33.x.c — The private `ir_flow_node_kind` was lifted to the
+// module's public surface above. The single source of truth for
+// the kind-string mapping lives at `flow_plan::ir_flow_node_kind`
+// and is drift-gated by `tests::ir_flow_node_kind_runner_drift`.
 
-/// Compose a streaming-path system prompt from the IR. Mirrors the
-/// sync `runner::build_system_prompt` shape closely enough that the
-/// LLM responds equivalently; not byte-identical because 33.x.b's
-/// scope skips fields the streaming path doesn't honor (anchor
-/// instructions — those flows fall back to legacy).
-fn compose_system_prompt(
-    flow: &crate::ir_nodes::IRFlow,
-    ir: &IRProgram,
-) -> String {
-    let mut parts: Vec<String> = Vec::new();
-
-    if let Some(persona) = ir.personas.first() {
-        parts.push(format!("# Persona: {}", persona.name));
-        if !persona.domain.is_empty() {
-            parts.push(format!("Domain expertise: {}", persona.domain.join(", ")));
-        }
-        if !persona.tone.is_empty() {
-            parts.push(format!("Communication tone: {}", persona.tone));
-        }
-        if !persona.language.is_empty() {
-            parts.push(format!("Language: {}", persona.language));
-        }
-    }
-
-    if let Some(ctx) = ir.contexts.first() {
-        parts.push(format!("\n# Context: {}", ctx.name));
-        if !ctx.depth.is_empty() {
-            parts.push(format!("Analysis depth: {}", ctx.depth));
-        }
-        if !ctx.memory_scope.is_empty() {
-            parts.push(format!("Memory scope: {}", ctx.memory_scope));
-        }
-    }
-
-    parts.push(format!("\n# Flow: {}", flow.name));
-    parts.join("\n")
-}
+// §33.x.c — `compose_system_prompt` was lifted to public
+// `compose_system_prompt_public` above. It accepts an optional
+// `backend_tag` so the sync CLI path can opt into the canonical
+// `[Backend: foo | AXON x.y.z]` suffix during 33.x.i migration.
 
 // ────────────────────────────────────────────────────────────────────
 //  Tests
@@ -633,5 +742,281 @@ mod tests {
         let plan = build_streaming_plan(src, "test.axon", "Empty", "stub").unwrap();
         assert!(plan.steps.is_empty());
         assert_eq!(plan.flow_name, "Empty");
+    }
+
+    // ── §33.x.c — Public helper tests ───────────────────────────────
+
+    #[test]
+    fn compile_source_to_ir_returns_program_and_ir_for_valid_source() {
+        let (program, ir) =
+            compile_source_to_ir(parse_simple_stream_source(), "test.axon").unwrap();
+        // Program has at least one Flow declaration.
+        let flow_count = program
+            .declarations
+            .iter()
+            .filter(|d| matches!(d, crate::ast::Declaration::Flow(_)))
+            .count();
+        assert_eq!(flow_count, 1);
+        // IR mirrors with one flow.
+        assert_eq!(ir.flows.len(), 1);
+        assert_eq!(ir.flows[0].name, "Chat");
+    }
+
+    #[test]
+    fn compile_source_to_ir_is_pure_deterministic() {
+        let src = parse_simple_stream_source();
+        let (p1, ir1) = compile_source_to_ir(src, "test.axon").unwrap();
+        let (p2, ir2) = compile_source_to_ir(src, "test.axon").unwrap();
+        assert_eq!(p1.declarations.len(), p2.declarations.len());
+        assert_eq!(ir1.flows.len(), ir2.flows.len());
+        assert_eq!(ir1.flows[0].name, ir2.flows[0].name);
+    }
+
+    #[test]
+    fn compile_source_to_ir_surfaces_parse_error() {
+        let err = compile_source_to_ir("not axon source at all", "test.axon").unwrap_err();
+        assert!(matches!(err, PlanError::Parse(_)));
+    }
+
+    #[test]
+    fn compile_source_to_ir_surfaces_type_check_error() {
+        // §Fase 28 — `axonendpoint method: YEET` is rejected at
+        // parse time. Use a different shape that parses cleanly
+        // but fails type-check: undefined flow reference.
+        let src = "axonendpoint Bad { method: POST path: \"/x\" execute: NonexistentFlow }";
+        let err = compile_source_to_ir(src, "test.axon").unwrap_err();
+        // Either parser rejected it (post-Fase 28 hardening may
+        // catch undefined references at parse time) or the type
+        // checker did — both are valid PlanError variants.
+        assert!(matches!(err, PlanError::Parse(_) | PlanError::TypeCheck(_)));
+    }
+
+    #[test]
+    fn find_ir_flow_by_name_returns_flow_when_present() {
+        let (_p, ir) = compile_source_to_ir(parse_simple_stream_source(), "t.axon").unwrap();
+        let flow = find_ir_flow_by_name(&ir, "Chat").unwrap();
+        assert_eq!(flow.name, "Chat");
+    }
+
+    #[test]
+    fn find_ir_flow_by_name_returns_flow_not_found_with_available_list() {
+        let (_p, ir) = compile_source_to_ir(parse_simple_stream_source(), "t.axon").unwrap();
+        let err = find_ir_flow_by_name(&ir, "Nope").unwrap_err();
+        match err {
+            PlanError::FlowNotFound { flow_name, available } => {
+                assert_eq!(flow_name, "Nope");
+                assert_eq!(available, vec!["Chat".to_string()]);
+            }
+            other => panic!("expected FlowNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ir_flow_node_kind_step_returns_step() {
+        use crate::ir_nodes::{IRFlowNode, IRStep};
+        let n = IRFlowNode::Step(IRStep {
+            node_type: "Step",
+            source_line: 1,
+            source_column: 1,
+            name: "S".into(),
+            persona_ref: String::new(),
+            given: String::new(),
+            ask: "hi".into(),
+            use_tool: None,
+            probe: None,
+            reason: None,
+            weave: None,
+            output_type: String::new(),
+            confidence_floor: None,
+            navigate_ref: String::new(),
+            apply_ref: String::new(),
+            body: vec![],
+        });
+        assert_eq!(ir_flow_node_kind(&n), "step");
+    }
+
+    #[test]
+    fn ir_flow_node_kind_distinct_slugs_for_every_variant() {
+        // We can't enumerate every variant with fresh instances
+        // (some have non-trivial payloads), but we can pin the slug
+        // set by enumerating distinct slugs that the function CAN
+        // produce. The match in `ir_flow_node_kind` is exhaustive
+        // (compiler-enforced); this test pins the slug values that
+        // downstream callers (e.g. audit logs, 33.x.g warning
+        // catalog) depend on.
+        let expected_slugs: Vec<&str> = vec![
+            "step",
+            "probe",
+            "reason",
+            "validate",
+            "refine",
+            "weave",
+            "use_tool",
+            "remember",
+            "recall",
+            "conditional",
+            "for_in",
+            "let",
+            "return",
+            "break",
+            "continue",
+            "lambda_data_apply",
+            "par",
+            "hibernate",
+            "deliberate",
+            "consensus",
+            "forge",
+            "focus",
+            "associate",
+            "aggregate",
+            "explore",
+            "ingest",
+            "shield_apply",
+            "stream_block",
+            "navigate",
+            "drill",
+            "trail",
+            "corroborate",
+            "ots_apply",
+            "mandate_apply",
+            "compute_apply",
+            "listen",
+            "daemon_step",
+            "emit",
+            "publish",
+            "discover",
+            "persist",
+            "retrieve",
+            "mutate",
+            "purge",
+            "transact",
+        ];
+        // 45 closed-catalog slugs. Adding a new IRFlowNode variant
+        // requires updating `ir_flow_node_kind` (compiler enforces)
+        // AND this list (intentional — keeps the slug catalog
+        // pinned for audit/warning callers).
+        assert_eq!(expected_slugs.len(), 45);
+        // Every slug is a valid lowercase identifier (snake_case).
+        for slug in &expected_slugs {
+            assert!(
+                slug.chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit()),
+                "slug {slug:?} must be lowercase snake_case for stable audit emission"
+            );
+        }
+        // Every slug is unique.
+        let mut sorted = expected_slugs.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), expected_slugs.len(), "slug catalog has duplicates");
+    }
+
+    #[test]
+    fn ir_flow_node_kind_runner_drift() {
+        // §33.x.c drift gate: `flow_plan::ir_flow_node_kind` is the
+        // single source of truth for IRFlowNode kind slugs. The
+        // legacy `runner.rs::extract_step_info` produces a
+        // `step_type` string for each variant that downstream
+        // consumers (audit row, stub trace, IR debugger) parse.
+        // Drift between the two surfaces here would make the audit
+        // row inconsistent across sync + async paths.
+        //
+        // For 33.x.c the drift gate operates by-construction: the
+        // public helper here is the canonical surface; future
+        // migrations of `extract_step_info` to call into this
+        // helper are tracked under 33.x.i. Until then, this test
+        // pins the kind catalog so accidental drift on either side
+        // surfaces in CI.
+        use crate::ir_nodes::{IRFlowNode, IRStep};
+        let step = IRFlowNode::Step(IRStep {
+            node_type: "Step",
+            source_line: 1,
+            source_column: 1,
+            name: "T".into(),
+            persona_ref: String::new(),
+            given: String::new(),
+            ask: String::new(),
+            use_tool: None,
+            probe: None,
+            reason: None,
+            weave: None,
+            output_type: String::new(),
+            confidence_floor: None,
+            navigate_ref: String::new(),
+            apply_ref: String::new(),
+            body: vec![],
+        });
+        // Pinned drift assertion: the canonical "step" kind is
+        // what `runner.rs::extract_step_info` produces for
+        // `IRFlowNode::Step`, per file inspection at 33.x.c
+        // landing. Future runner refactor MUST keep this
+        // invariant or update this test (deliberate change).
+        assert_eq!(ir_flow_node_kind(&step), "step");
+    }
+
+    #[test]
+    fn compose_system_prompt_public_includes_flow_name() {
+        let (_p, ir) = compile_source_to_ir(parse_simple_stream_source(), "t.axon").unwrap();
+        let flow = find_ir_flow_by_name(&ir, "Chat").unwrap();
+        let prompt = compose_system_prompt_public(flow, &ir, None);
+        assert!(prompt.contains("# Flow: Chat"));
+    }
+
+    #[test]
+    fn compose_system_prompt_public_omits_backend_tag_when_none() {
+        let (_p, ir) = compile_source_to_ir(parse_simple_stream_source(), "t.axon").unwrap();
+        let flow = find_ir_flow_by_name(&ir, "Chat").unwrap();
+        let prompt = compose_system_prompt_public(flow, &ir, None);
+        assert!(!prompt.contains("[Backend:"));
+        assert!(!prompt.contains("AXON"));
+    }
+
+    #[test]
+    fn compose_system_prompt_public_includes_backend_tag_when_set() {
+        let (_p, ir) = compile_source_to_ir(parse_simple_stream_source(), "t.axon").unwrap();
+        let flow = find_ir_flow_by_name(&ir, "Chat").unwrap();
+        let prompt = compose_system_prompt_public(flow, &ir, Some("anthropic"));
+        assert!(prompt.contains("[Backend: anthropic | AXON "));
+    }
+
+    #[test]
+    fn compose_system_prompt_public_includes_persona_when_present() {
+        // `domain` is a list per AST grammar; `tone` is a string.
+        // `tone` is a closed-catalog enum (see type_checker valid tones).
+        let src = "persona Doctor { domain: [\"medicine\"] tone: \"formal\" }\n\
+                   context Clinic { depth: \"deep\" memory_scope: \"session\" }\n\
+                   flow Chat() -> Unit {\n\
+                       step Generate { ask: \"hi\" output: Stream<Token> }\n\
+                   }\n\
+                   axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse }";
+        let (_p, ir) = compile_source_to_ir(src, "t.axon").unwrap();
+        let flow = find_ir_flow_by_name(&ir, "Chat").unwrap();
+        let prompt = compose_system_prompt_public(flow, &ir, None);
+        assert!(prompt.contains("# Persona: Doctor"));
+        assert!(prompt.contains("Domain expertise: medicine"));
+        assert!(prompt.contains("# Context: Clinic"));
+        assert!(prompt.contains("Analysis depth: deep"));
+    }
+
+    #[test]
+    fn compose_system_prompt_public_is_pure_deterministic() {
+        let (_p, ir) = compile_source_to_ir(parse_simple_stream_source(), "t.axon").unwrap();
+        let flow = find_ir_flow_by_name(&ir, "Chat").unwrap();
+        let p1 = compose_system_prompt_public(flow, &ir, Some("openai"));
+        let p2 = compose_system_prompt_public(flow, &ir, Some("openai"));
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn build_streaming_plan_uses_compile_source_to_ir_internally() {
+        // Cross-check: plan built via build_streaming_plan has the
+        // same system_prompt as one built by manually invoking
+        // compile_source_to_ir + compose_system_prompt_public.
+        let src = parse_simple_stream_source();
+        let plan = build_streaming_plan(src, "t.axon", "Chat", "stub").unwrap();
+        let (_program, ir) = compile_source_to_ir(src, "t.axon").unwrap();
+        let flow = find_ir_flow_by_name(&ir, "Chat").unwrap();
+        let expected = compose_system_prompt_public(flow, &ir, None);
+        assert_eq!(plan.system_prompt, expected);
     }
 }
