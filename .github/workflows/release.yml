@@ -123,47 +123,107 @@ jobs:
           echo "vcs_ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
       # ────────────────────────────────────────────────────────────
-      # Wait for axon-lang to publish its Rust binaries (race
-      # condition fix — pre-fix Enterprise Release could outrun the
-      # axon-lang `Rust Release Binaries` workflow that publishes the
-      # required `axon-linux-x86_64.tar.gz` to the v${AXON_VERSION}
-      # GitHub Release; the docker build then 404'd at FROM-fetch).
+      # Wait for axon-lang to publish its Rust binaries — with CDN
+      # consistency probe.
       #
-      # Polls a HEAD request to the canonical asset URL every 30s
-      # with a 25-minute deadline. The historical p99 build time of
-      # `Rust Release Binaries` is ~19 min (windows-msvc target);
-      # 25 min gives a 30 % safety margin. axon-lang is a public
-      # repo so no authentication is required.
+      # Race-condition history:
+      #   v1.13.0 (2026-05-11) — HEAD probe returned 200 at minute 7
+      #   (asset just uploaded), but `docker/build-push-action`'s
+      #   internal `curl` got 404 23 seconds later. Root cause: GitHub
+      #   Releases CDN propagates the new asset to edge nodes
+      #   asynchronously. The runner's HEAD hit an edge that already
+      #   had the asset; the Docker build's GET (via a different
+      #   network path inside buildx) hit an edge that didn't yet.
+      #
+      # Fix: a TWO-PHASE probe.
+      #
+      #   Phase 1 — availability: poll HEAD every 30s until 1 success
+      #     (asset record exists somewhere in the CDN).
+      #   Phase 2 — consistency: do `CONSISTENCY_PROBES` (default 3)
+      #     consecutive successful range-GETs spaced
+      #     `CONSISTENCY_INTERVAL` (default 15s) apart. The GET issues
+      #     a `Range: bytes=0-0` request — confirms the storage layer
+      #     actually serves bytes (HEAD can pass on edge-cached metadata
+      #     even before storage replication is complete). Three
+      #     consecutive successes signal propagation across all the
+      #     edges the workflow's network paths touch.
+      #
+      # Total worst-case overhead added: ~45s beyond the Phase 1
+      # success. Cheap insurance against the ECR-image-missing failure
+      # mode that blocks every adopter pull until the release workflow
+      # is manually re-run.
       #
       # We probe only `axon-linux-x86_64.tar.gz` — the Dockerfile
       # downloads exactly that asset (linux/amd64 platform), and the
-      # axon-lang release workflow publishes all assets atomically
-      # via softprops/action-gh-release in a single step, so seeing
-      # this one is sufficient evidence the rest are also live.
+      # axon-lang release workflow publishes assets in a single
+      # `softprops/action-gh-release` invocation, so seeing this one
+      # is sufficient evidence the rest are also live.
       # ────────────────────────────────────────────────────────────
-      - name: Wait for axon-lang Rust binaries
+      - name: Wait for axon-lang Rust binaries (with CDN-consistency probe)
+        env:
+          CONSISTENCY_PROBES: "3"
+          CONSISTENCY_INTERVAL: "15"
         run: |
           set -euo pipefail
           AXON_VER="${{ steps.axon.outputs.version }}"
           ASSET_URL="https://github.com/Bemarking/axon-lang/releases/download/v${AXON_VER}/axon-linux-x86_64.tar.gz"
-          DEADLINE=$((SECONDS + 1500))   # 25 minutes
+          DEADLINE=$((SECONDS + 1500))   # 25 minutes for Phase 1
           POLL_INTERVAL=30
+
+          # ── Phase 1 — availability (HEAD until first success) ────
           attempt=0
           while true; do
             attempt=$((attempt + 1))
             if curl --silent --location --fail --head "$ASSET_URL" -o /dev/null; then
-              echo "✓ Asset available after ${SECONDS}s (attempt $attempt): $ASSET_URL"
+              echo "✓ Phase 1: asset advertised after ${SECONDS}s (attempt $attempt): $ASSET_URL"
               break
             fi
             if [ "$SECONDS" -ge "$DEADLINE" ]; then
-              echo "::error::Timed out after 25 min waiting for $ASSET_URL"
+              echo "::error::Phase 1 timed out after 25 min waiting for $ASSET_URL"
               echo "::error::The axon-lang \`Rust Release Binaries\` workflow may have failed."
               echo "::error::Inspect: gh run list --repo Bemarking/axon-lang --workflow=\"Rust Release Binaries\""
               exit 1
             fi
-            echo "  attempt $attempt — asset not yet available, sleeping ${POLL_INTERVAL}s (elapsed: ${SECONDS}s / 1500s)"
+            echo "  Phase 1 attempt $attempt — asset not yet available, sleeping ${POLL_INTERVAL}s (elapsed: ${SECONDS}s / 1500s)"
             sleep "$POLL_INTERVAL"
           done
+
+          # ── Phase 2 — CDN consistency (N consecutive byte-fetches) ─
+          # A real GET (range request: 1 byte) confirms the storage
+          # layer is actually serving the asset, not just an edge
+          # cache reporting "exists" via HEAD. N consecutive successes
+          # spaced CONSISTENCY_INTERVAL seconds apart give time for
+          # asynchronous CDN propagation to converge across edges.
+          echo ""
+          echo "── Phase 2: CDN consistency probe (${CONSISTENCY_PROBES} consecutive byte-fetches, ${CONSISTENCY_INTERVAL}s apart) ──"
+          consistency_attempts=0
+          consecutive_successes=0
+          consistency_deadline=$((SECONDS + 600))   # 10 min hard cap for Phase 2
+          while [ "$consecutive_successes" -lt "$CONSISTENCY_PROBES" ]; do
+            consistency_attempts=$((consistency_attempts + 1))
+            # `--range 0-0` = fetch first byte only. `--fail` ⇒ non-zero on any 4xx/5xx.
+            # `-o /dev/null` ⇒ discard the byte; we only care about exit status.
+            if curl --silent --location --fail --range 0-0 "$ASSET_URL" -o /dev/null; then
+              consecutive_successes=$((consecutive_successes + 1))
+              echo "  ✓ Phase 2 GET probe $consistency_attempts/$consistency_attempts — success ($consecutive_successes/$CONSISTENCY_PROBES consecutive)"
+            else
+              # Any failure resets the consecutive-success counter — we
+              # need N IN A ROW to declare convergence.
+              consecutive_successes=0
+              echo "  × Phase 2 GET probe $consistency_attempts — 4xx/5xx, resetting consecutive counter to 0"
+            fi
+            if [ "$SECONDS" -ge "$consistency_deadline" ]; then
+              echo "::error::Phase 2 timed out after 10 min — CDN never converged on $ASSET_URL"
+              echo "::error::Manual intervention required: verify the release assets are present, then re-run this workflow."
+              exit 1
+            fi
+            if [ "$consecutive_successes" -lt "$CONSISTENCY_PROBES" ]; then
+              sleep "$CONSISTENCY_INTERVAL"
+            fi
+          done
+          echo ""
+          echo "✓ Phase 2: $CONSISTENCY_PROBES consecutive successful GETs confirm CDN coherence."
+          echo "Total wait: ${SECONDS}s (Phase 1 + Phase 2)."
 
       - name: Set up QEMU (multi-arch emulation)
         uses: docker/setup-qemu-action@v3
