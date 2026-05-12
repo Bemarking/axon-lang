@@ -1,0 +1,163 @@
+name: axon-enterprise-ci-gate
+description: >-
+  §Fase 29.f — Vertical compliance gate. Queries the
+  /api/v1/tenant/diagnostics/recent endpoint for the authenticated
+  tenant + asserts diagnostic count is below the configured
+  threshold. Exit codes per the closed catalog: 0 = pass,
+  1 = threshold exceeded, 2 = configuration / transport error.
+
+  D5 ratificada — gate runs at CI integration time, NOT inside
+  axon-lang. The OSS axon parse contract is preserved.
+  Q5 ratificada — composite action (not reusable workflow) for
+  one-line adopter integration.
+
+# Q5 ratificada: composite action.
+inputs:
+  endpoint:
+    description: >-
+      Base URL of the axon-enterprise server, e.g.
+      `https://api.example.com`. REQUIRED.
+    required: true
+  token:
+    description: >-
+      Bearer JWT for the authenticated tenant. Adopters MUST pass
+      via `${{ secrets.AXON_ENTERPRISE_TOKEN }}` — NEVER hard-code
+      in workflow files. REQUIRED.
+    required: true
+  max-errors:
+    description: >-
+      Maximum error-severity diagnostics before the gate fails.
+      Default 0 (any error fails). Override per per-tenant policy
+      (HIPAA / legal tenants typically run with max-errors=0;
+      fintech may tolerate a small backlog).
+    required: false
+    default: "0"
+  max-warnings:
+    description: >-
+      Maximum warning-severity diagnostics before the gate fails.
+      Empty (default) means warnings don't fail the gate.
+    required: false
+    default: ""
+  fail-on-hint:
+    description: >-
+      Fail the gate when ANY hint-severity diagnostic is present.
+      Default false.
+    required: false
+    default: "false"
+  since:
+    description: >-
+      Pagination cursor: ISO-8601 timestamp OR relative duration
+      (e.g. `30m`, `2h`, `1d`). Filters to diagnostics emitted
+      strictly after this point. Default: no cursor (every
+      recent diagnostic the dashboard retains).
+    required: false
+    default: ""
+  mode:
+    description: >-
+      Dashboard response mode — `aggregated` (default; groups by
+      file + code + line-bucket) or `raw` (per-record list).
+    required: false
+    default: "aggregated"
+  limit:
+    description: >-
+      Max entries pulled from the dashboard endpoint (1..500).
+      Default 500 — covers a normal CI lane's diagnostic budget.
+    required: false
+    default: "500"
+  bucket-size:
+    description: >-
+      Line-bucket size for aggregated mode (1..1000). Default 10.
+    required: false
+    default: "10"
+  python-version:
+    description: >-
+      Python version used for the action's Python step. Default
+      3.13 (matches the axon-enterprise CI matrix).
+    required: false
+    default: "3.13"
+  axon-enterprise-version:
+    description: >-
+      Specific axon-enterprise version to install. Empty (default)
+      installs the latest pinned in the action's Python step.
+    required: false
+    default: ""
+  json-output:
+    description: >-
+      Emit machine-readable JSON on stdout instead of the human
+      summary. Useful for downstream parsers / Slack bots.
+    required: false
+    default: "false"
+
+# Q5: outputs the verdict + exit code so downstream workflow steps
+# can branch on the gate result without re-running the CLI.
+outputs:
+  verdict:
+    description: One of `pass` / `fail_exceeded` / `fail_input`.
+    value: ${{ steps.run-gate.outputs.verdict }}
+  exit-code:
+    description: CLI exit code (0 / 1 / 2 per the closed catalog).
+    value: ${{ steps.run-gate.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install axon-enterprise CLI
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "${{ inputs.axon-enterprise-version }}" ]; then
+          python -m pip install "axon-enterprise==${{ inputs.axon-enterprise-version }}"
+        else
+          python -m pip install axon-enterprise
+        fi
+        # Sanity: confirm the diagnostics subcommand registered.
+        axon-enterprise diagnostics gate --help >/dev/null
+
+    - name: Run compliance gate
+      id: run-gate
+      shell: bash
+      env:
+        AXON_ENTERPRISE_ENDPOINT: ${{ inputs.endpoint }}
+        AXON_ENTERPRISE_TOKEN: ${{ inputs.token }}
+      run: |
+        set +e
+        ARGS=(
+          --max-errors "${{ inputs.max-errors }}"
+          --since "${{ inputs.since }}"
+          --mode "${{ inputs.mode }}"
+          --limit "${{ inputs.limit }}"
+          --bucket-size "${{ inputs.bucket-size }}"
+        )
+        # Optional flags emitted only when set (avoid passing empty values
+        # that the CLI would reject).
+        if [ -n "${{ inputs.max-warnings }}" ]; then
+          ARGS+=(--max-warnings "${{ inputs.max-warnings }}")
+        fi
+        if [ "${{ inputs.fail-on-hint }}" = "true" ]; then
+          ARGS+=(--fail-on-hint)
+        fi
+        if [ "${{ inputs.json-output }}" = "true" ]; then
+          ARGS+=(--json)
+          OUTPUT=$(axon-enterprise diagnostics gate "${ARGS[@]}")
+          EXIT_CODE=$?
+          echo "$OUTPUT"
+          VERDICT=$(echo "$OUTPUT" | python -c "import sys, json; print(json.loads(sys.stdin.read()).get('verdict', 'unknown'))")
+        else
+          axon-enterprise diagnostics gate "${ARGS[@]}"
+          EXIT_CODE=$?
+          # Verdict not directly parseable from human summary; infer from exit code.
+          case "$EXIT_CODE" in
+            0) VERDICT="pass" ;;
+            1) VERDICT="fail_exceeded" ;;
+            2) VERDICT="fail_input" ;;
+            *) VERDICT="unknown" ;;
+          esac
+        fi
+        echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+        echo "exit-code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        exit "$EXIT_CODE"

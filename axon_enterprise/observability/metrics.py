@@ -146,6 +146,18 @@ SSO_LOGINS_TOTAL: Counter = Counter(
 )
 
 
+# ── §Fase 29.c — Parser-error telemetry counter ──────────────────────
+
+PARSER_ERRORS_TOTAL: Counter = Counter(
+    "axon_parser_errors_total",
+    "Parser errors emitted by the OSS axon-lang parser, grouped by "
+    "tenant + vertical + error code. NEVER carries source text in any "
+    "label — privacy boundary documented in plan vivo D4.",
+    labelnames=("tenant_id", "vertical", "code"),
+    registry=default_registry,
+)
+
+
 # ── Infra gauges ─────────────────────────────────────────────────────
 
 DB_POOL_CHECKED_OUT: Gauge = Gauge(

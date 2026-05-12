@@ -294,12 +294,393 @@ forbidden-substring list.
 | `GET /api/v1/tenant/api-keys/` | Bearer JWT | Tenant API key management — see `PORTAL_API.md` |
 | `GET /api/v1/tenant/usage/` | Bearer JWT | Period usage — see `PORTAL_API.md` |
 | `GET /api/v1/tenant/compliance/` | Bearer JWT | Compliance exports — see `PORTAL_API.md` |
+| `GET /api/v1/tenant/diagnostics/recent` | Bearer JWT | Vertical-aware parse-error dashboard — see §10 (Fase 29.e, v1.15.0+) |
 | `GET /api/v1/primitives/` | Public | Closed catalogues + seeded registries |
 | `POST /webhooks/stripe` | HMAC | Inbound Stripe billing events |
 
 ---
 
-## 10. Versioning + deprecation policy
+## 10. Vertical Diagnostic Policy (v1.15.0+)
+
+Audience: enterprise tenants on regulated verticals (HIPAA / legal /
+fintech) integrating axon-enterprise with their CI / compliance
+pipelines. Generic-vertical tenants get the OSS axon-lang Fase 28
+diagnostic surface unchanged — this section is opt-in.
+
+> **D9 ratified.** If your tenant has no registered vertical, every
+> surface in this section behaves identically to the OSS baseline.
+> No code changes required; ignore this section.
+
+### 10.1 Tenant vertical resolution + default policies
+
+Every tenant resolves to exactly one **vertical** drawn from the
+closed catalog:
+
+| Vertical | strict mode | telemetry | recovery | When to use |
+|---|---|---|---|---|
+| `generic` | off | off | on | Default for OSS-style tenants — OSS surface unchanged (D9). |
+| `hipaa` | **on** | **on** | off | Healthcare (45 CFR Parts 160 + 164). Strict by default to avoid noisy diagnostic logs in CI surfacing PHI fragments. |
+| `legal` | **on** | **on** | off | Legal (FRE / FRCP / ABA Model Rules). Strict by default to keep privilege-adjacent fragments out of CI artifacts. |
+| `fintech` | off | **on** | on | Banking / payments / AML (BSA / OFAC / MiFID II). Recovery + telemetry-on for full diagnostic surface — auditors expect every error captured. |
+
+Defaults derive from **D1 + D2** ratified 2026-05-12. Adopters can
+override any field per-tenant via the diagnostic-policy override
+surface (see §10.2).
+
+#### How the vertical is set
+
+Vertical assignment is operator-driven. The bootstrap path:
+
+```python
+from axon_enterprise.diagnostics import (
+    TenantVertical,
+    set_tenant_vertical,
+    resolve_policy_for_vertical,
+)
+
+# At tenant-provisioning time (one-shot):
+set_tenant_vertical("clinic-x", TenantVertical.HIPAA)
+
+# Anywhere else in the codebase, the policy is resolved per-request:
+policy = resolve_policy_for_vertical(TenantVertical.HIPAA)
+# policy.strict_mode      → True
+# policy.telemetry_enabled → True
+# policy.to_parse_args()   → ["--strict"]
+```
+
+`TenantVertical` is a closed `StrEnum`. Adding a fifth vertical
+requires a compiler patch + CODEOWNERS sign-off per D7. The
+registry is process-local in the in-tree implementation; production
+deployments wrap with a DB-backed lookup.
+
+### 10.2 Opting into / out of strict mode per vertical
+
+D1 ratified default-strict for HIPAA + legal; D9 leaves generic
+unchanged. Individual tenants can override at runtime via
+`DiagnosticPolicy.with_override(...)`:
+
+```python
+from axon_enterprise.diagnostics import resolve_policy_for_vertical, TenantVertical
+
+# Resolve the vertical default:
+base_policy = resolve_policy_for_vertical(TenantVertical.HIPAA)
+# strict_mode=True, telemetry_enabled=True
+
+# Override strict-off for this tenant (e.g. during a backfill window):
+relaxed = base_policy.with_override(strict_mode=False)
+
+# Pass the projection to axon-lang:
+import subprocess
+subprocess.run(["axon", "parse", "src/", *relaxed.to_parse_args()], check=True)
+```
+
+`with_override(...)` returns a **new** `DiagnosticPolicy` instance
+(frozen + slots). The original is untouched; concurrent requests
+see no race.
+
+The **vertical** itself is not overridable through this path —
+changing a tenant's vertical is a tenant-management operation (set
+through `set_tenant_vertical` at provisioning, not per-request).
+This separation prevents accidental cross-vertical drift.
+
+### 10.3 Configuring the telemetry sink
+
+Every parser error emitted by `axon parse` for a tenant whose
+policy has `telemetry_enabled=True` fans out to **three sinks** in
+parallel (D2 ratified):
+
+1. **OpenTelemetry span** under `axon.diagnostics.parse_error`
+   with attributes `axon.tenant_id`, `axon.vertical`,
+   `axon.severity`, `axon.error.code`, `axon.file`, `axon.line`,
+   `axon.column`. Reuses the existing OTel pipeline configured by
+   `axon_enterprise.observability.tracing`.
+
+2. **Prometheus counter** `axon_parser_errors_total{tenant_id,
+   vertical, code}`. Labels are bounded-cardinality; file path and
+   line number are NOT label dimensions (explodes per-tenant
+   series).
+
+3. **Audit-log entry** of type `compliance:parse_error`
+   (HMAC-chained per tenant via the existing audit_engine path).
+   Payload: file path + line + column + error code + severity ONLY.
+
+> **D4 privacy boundary (ratified).** No sink EVER carries source
+> text. The privacy guarantee is baked into the `ParserDiagnostic`
+> type — it has no `source` / `snippet` / `content` / `text` /
+> `body` field. Even a future PR that adds a leak vector breaks
+> the type-level assertion + the corpus drift gate fails.
+
+#### Wiring the sink at app bootstrap
+
+The telemetry sink emits via an injectable `AuditSink` Protocol.
+Production deployments wire the real audit service; bootstrap
+and tests use the in-memory adapter:
+
+```python
+from axon_enterprise.diagnostics import StoreBackedAuditSink, set_audit_sink
+from axon_enterprise.diagnostics.store import get_default_store
+
+# At app startup:
+set_audit_sink(StoreBackedAuditSink(get_default_store()))
+```
+
+Once wired, every `emit_parser_error(diagnostic)` call fans out to
+all three sinks automatically when the resolved policy has
+`telemetry_enabled=True`. Telemetry is silenced for generic
+tenants (D9) — no code path runs.
+
+### 10.4 Consuming `/api/v1/tenant/diagnostics/recent`
+
+The dashboard endpoint returns recent parse diagnostics for the
+authenticated tenant. Auth via existing tenant-context middleware
+(Q4 ratified — no new RBAC slug introduced).
+
+```bash
+# Aggregated mode (default) — groups by (file, code, line-bucket):
+curl -s -H "Authorization: Bearer $JWT" \
+     "$AXON_API_BASE/api/v1/tenant/diagnostics/recent?limit=50" | jq .
+
+# Raw mode — one entry per diagnostic:
+curl -s -H "Authorization: Bearer $JWT" \
+     "$AXON_API_BASE/api/v1/tenant/diagnostics/recent?aggregated=false&limit=200" | jq .
+
+# Pagination — pass the last_seen from the previous response as `since`:
+curl -s -H "Authorization: Bearer $JWT" \
+     "$AXON_API_BASE/api/v1/tenant/diagnostics/recent?since=2026-05-12T10:00:00%2B00:00"
+```
+
+#### Response shape (aggregated)
+
+```json
+{
+  "tenant_id": "clinic-x",
+  "vertical": "hipaa",
+  "mode": "aggregated",
+  "bucket_size": 10,
+  "limit": 50,
+  "entries": [
+    {
+      "file_path": "src/cds_flow.axon",
+      "code": "AX-0042",
+      "line_bucket": 10,
+      "vertical": "hipaa",
+      "count": 7,
+      "first_seen": "2026-05-12T09:14:22+00:00",
+      "last_seen":  "2026-05-12T09:32:01+00:00"
+    }
+  ]
+}
+```
+
+#### Response shape (raw)
+
+```json
+{
+  "tenant_id": "clinic-x",
+  "vertical": "hipaa",
+  "mode": "raw",
+  "limit": 200,
+  "entries": [
+    {
+      "code": "AX-0042",
+      "file_path": "src/cds_flow.axon",
+      "line": 17,
+      "column": 4,
+      "vertical": "hipaa",
+      "severity": "error",
+      "timestamp": "2026-05-12T09:32:01+00:00"
+    }
+  ]
+}
+```
+
+#### Query parameters
+
+| Param | Default | Range | Mode |
+|---|---|---|---|
+| `since` | (none) | ISO-8601 timestamp | both |
+| `limit` | 50 | 1–500 | both |
+| `aggregated` | `true` | `true` / `false` | both |
+| `bucket_size` | 10 | 1–1000 | aggregated only |
+| `file_path` | (none) | equality | raw only |
+| `code` | (none) | equality | raw only |
+
+#### Privacy posture (D4)
+
+The response **NEVER** carries source text. Even when the dashboard's
+underlying store hypothetically captures additional fields, the
+projection layer only emits the declared structural keys. If you
+need source context for an error, fetch it from your repo via
+existing access controls — the diagnostic surface is intentionally
+metadata-only.
+
+### 10.5 Installing the CI compliance gate
+
+The vertical compliance gate (29.f) wraps `/api/v1/tenant/diagnostics/recent`
++ a configurable threshold into a GitHub Actions composite action.
+Adopters install via one line in their workflow file (**Q5
+ratified** — composite action, not reusable workflow):
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+on: [push, pull_request]
+
+jobs:
+  axon-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Run axon-lang's `axon parse` to populate the dashboard.
+      - run: axon parse src/
+
+      # Gate: fail the build if any parse error sat in the dashboard
+      # for the last hour (anything before that is older state, not
+      # this PR's fault).
+      - uses: Bemarking/axon-enterprise/.github/actions/axon-enterprise-ci-gate@v1.15.0
+        with:
+          endpoint: ${{ vars.AXON_ENTERPRISE_ENDPOINT }}
+          token: ${{ secrets.AXON_ENTERPRISE_TOKEN }}
+          max-errors: 0
+          since: 1h
+```
+
+> **Adopters MUST pass the token via `${{ secrets.* }}`, NOT
+> hard-coded.** The composite action's `token` input has no
+> default — workflows that omit it fail at validation time.
+
+#### Action inputs (full reference)
+
+| Input | Required | Default | Notes |
+|---|---|---|---|
+| `endpoint` | yes | — | Base URL of axon-enterprise (e.g. `https://api.example.com`). |
+| `token` | yes | — | Bearer JWT for the authenticated tenant. **Use `${{ secrets.* }}`.** |
+| `max-errors` | no | `0` | Maximum error-severity diagnostics before the gate fails. |
+| `max-warnings` | no | (none) | Maximum warning-severity diagnostics. Empty disables the warning threshold. |
+| `fail-on-hint` | no | `false` | Fail when ANY hint-severity diagnostic is present. |
+| `since` | no | (none) | ISO-8601 timestamp OR relative duration (`30m`, `2h`, `1d`). |
+| `mode` | no | `aggregated` | `aggregated` or `raw`. |
+| `limit` | no | `500` | Dashboard fetch size; 1–500. |
+| `bucket-size` | no | `10` | Line-bucket size for aggregated mode; 1–1000. |
+| `python-version` | no | `3.13` | Python version for the action's CLI step. |
+| `axon-enterprise-version` | no | (latest) | Pin a specific axon-enterprise CLI version. |
+| `json-output` | no | `false` | Emit machine-readable JSON instead of the human summary. |
+
+#### Outputs
+
+| Output | Values |
+|---|---|
+| `verdict` | `pass` / `fail_exceeded` / `fail_input` |
+| `exit-code` | `0` / `1` / `2` (matches the closed `GateVerdict.exit_code` projection) |
+
+#### Exit codes (closed catalog)
+
+| Exit | Meaning |
+|---|---|
+| `0` | Gate passed — diagnostics ≤ thresholds. |
+| `1` | Gate failed — diagnostics exceed threshold. CI fails. |
+| `2` | Configuration / transport error (auth failure, malformed payload, server 5xx, DNS failure). Treat as build infrastructure issue, not compliance failure. |
+
+#### Running the gate locally
+
+The composite action wraps `axon-enterprise diagnostics gate`. To
+run the same gate locally during development:
+
+```bash
+export AXON_ENTERPRISE_ENDPOINT="https://api.example.com"
+export AXON_ENTERPRISE_TOKEN="$(< ~/.axon-token)"
+
+axon-enterprise diagnostics gate \
+    --max-errors 0 \
+    --since 1h
+```
+
+### 10.6 Common vertical-suggest patterns
+
+Each regulated vertical ships a curated **suggest dictionary**
+(D3 ratified) that extends axon-lang's Levenshtein `'Did you
+mean X?'` hints with vertical-specific terminology. The
+dictionaries live in version control at
+`axon_enterprise/diagnostics/dicts/<vertical>.json`; updates ship
+as PRs labeled `vertical-dict:<vertical>` with CODEOWNERS sign-off
+per D7.
+
+| Vertical | Term count | Sample terms | Anchored to |
+|---|---|---|---|
+| `hipaa` | 52 | `phi`, `ephi`, `covered_entity`, `safe_harbor`, `business_associate` | 45 CFR Parts 160 + 164, Safe Harbor §164.514(b)(2), PSQIA |
+| `legal` | 51 | `fre_502`, `fre_408`, `attorney_client_privilege`, `work_product`, `litigation_hold` | Upjohn, Hickman, FRE 408/502/801/901, FRCP 26-65, ABA Model Rules |
+| `fintech` | 51 | `kyc`, `ofac`, `sdn`, `pci_req_10`, `iban`, `bic`, `swift` | BSA / USA PATRIOT §§311-314, FinCEN SAR/CTR, FATF, PCI DSS, ISO 13616/9362/20022 |
+
+Every entry carries a `provenance` field — explicit URL or
+canonical regulatory reference. D3 ratified: empty provenance
+fails the loader at module-load time AND fails the corpus drift
+gate in CI.
+
+#### Wiring suggest hints into your build
+
+```python
+from axon_enterprise.diagnostics import (
+    TenantVertical,
+    resolve_policy_with_dict_for_vertical,
+)
+
+# Resolve the policy + load the vertical dictionary in one call:
+policy = resolve_policy_with_dict_for_vertical(TenantVertical.HIPAA)
+
+# `policy.extra_keywords` now carries the vertical's term tuple;
+# pass it to your parser-invocation wrapper to merge into the
+# Levenshtein hint dictionary.
+for keyword in policy.extra_keywords:
+    register_suggest_keyword(keyword)  # adopter-side wiring
+```
+
+The dictionary is loaded once per process and cached; subsequent
+calls return the same instance (the wrapper layer pays no
+overhead).
+
+#### Inspecting provenance for an audit
+
+```python
+from axon_enterprise.diagnostics import load_vertical_dictionary, TenantVertical
+
+dictionary = load_vertical_dictionary(TenantVertical.HIPAA)
+for entry in dictionary.entries:
+    if entry.term == "phi":
+        print(entry.provenance)
+        # "45 CFR §160.103 — Protected Health Information definition"
+```
+
+Every term's provenance is traceable to the regulatory source it
+was curated from. Compliance auditors can replay the full chain
+from a deployed dictionary back to the published regulation.
+
+### 10.7 D-letter index (operational summary)
+
+The behavioral contract above is locked at the engineering process
+level by ten ratified D-letters. Adopters citing these in audit
+artifacts:
+
+| D-letter | Locks |
+|---|---|
+| **D1** | HIPAA + legal default-strict; fintech recovery + telemetry-on; generic OSS surface unchanged. |
+| **D2** | Three-sink telemetry shape (OTel + Prom + audit). Opt-out via existing tenant-settings toggles. |
+| **D3** | Vertical-suggest dictionary entries MUST carry provenance. Updates via PR review. |
+| **D4** | No source text in any sink, response, or audit-log payload. Enforced at the type level. |
+| **D5** | CI gate runs at integration time; axon-lang's `axon parse` contract is unchanged. |
+| **D6** | Telemetry retention follows existing per-tenant policy. |
+| **D7** | Vertical-suggest dictionary updates require CODEOWNERS sign-off from the respective vertical's reviewer. |
+| **D8** | Vertical X policy / dictionary / telemetry NEVER affects vertical Y tenants. Multi-tenant safety. |
+| **D9** | Generic tenants get the OSS axon-lang Fase 28 surface verbatim. This entire section is invisible to them. |
+| **D10** | Extend the existing INTEGRATION_GUIDE; no new file. This section IS the canonical adopter doc for Fase 29. |
+
+The full plan vivo (with sub-fase shipped status + commit hashes
++ test counts) lives upstream in axon-lang at
+`docs/fase_29_enterprise_diagnostic_enhancements.md`.
+
+---
+
+## 11. Versioning + deprecation policy
 
 - Every discovery doc carries an `axon_*_schema_version` semver field.
 - Additive changes (new fields, new enum values) bump **minor**: clients
@@ -313,7 +694,7 @@ forbidden-substring list.
 
 ---
 
-## 11. Where to ask
+## 12. Where to ask
 
 - Spec questions, integration patterns: `docs/PORTAL_API.md`,
   `docs/JWT.md`, `docs/SSO.md` in this repository.

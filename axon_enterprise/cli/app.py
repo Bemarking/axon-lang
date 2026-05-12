@@ -6,6 +6,7 @@ import typer
 
 from axon_enterprise.cli.audit import app as audit_app
 from axon_enterprise.cli.compliance import app as compliance_app
+from axon_enterprise.cli.diagnostics import app as diagnostics_app
 from axon_enterprise.cli.keys import app as keys_app
 from axon_enterprise.cli.migrate import app as migrate_app
 from axon_enterprise.cli.tenant import app as tenant_app
@@ -26,6 +27,12 @@ app.add_typer(
     compliance_app, name="compliance", help="GDPR/CCPA/SOC 2 tooling."
 )
 app.add_typer(migrate_app, name="migrate", help="Alembic wrapper.")
+# §Fase 29.f — CI compliance gate (composite-action wrapper).
+app.add_typer(
+    diagnostics_app,
+    name="diagnostics",
+    help="Vertical compliance gate + diagnostic dashboard CLI.",
+)
 
 
 def entrypoint() -> None:

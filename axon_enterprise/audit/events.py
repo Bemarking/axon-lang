@@ -111,6 +111,10 @@ class AuditEventType(StrEnum):
     COMPLIANCE_LEGAL_HOLD_RELEASED = "compliance:legal_hold_released"
     COMPLIANCE_EVIDENCE_BUNDLE_GENERATED = "compliance:evidence_bundle_generated"
     COMPLIANCE_RESIDENCY_VIOLATION = "compliance:residency_violation"
+    # §Fase 29.c — parser-error emitted to telemetry per the vertical
+    # diagnostic policy. Payload carries file path + line + col + code
+    # ONLY (no source text — D4 privacy boundary).
+    COMPLIANCE_PARSE_ERROR = "compliance:parse_error"
 
     # ── §Fase 11.c — Deterministic Replay ────────────────────────────
     REPLAY_TOKEN_EMITTED = "replay:token_emitted"
