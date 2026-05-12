@@ -1,0 +1,285 @@
+{
+  "description": "§Fase 29.g — Curated cross-stack corpus for the vertical-diagnostic CI lanes. Single source of truth shared by the 3 parallel lanes (vertical-policy / telemetry-sink / suggest-dict) so a regression in any one of them surfaces in exactly one lane. D-letter anchors documented per case.",
+  "d_letter_anchors": [
+    "D1 — HIPAA + legal default-strict; fintech recovery+telemetry; generic OSS",
+    "D2 — Telemetry sink shape (OTel + Prom + audit) with privacy boundary",
+    "D3 — Vertical-suggest dict provenance per entry; ~50 terms first-cut",
+    "D4 — NO source text in any sink / response field",
+    "D8 — Multi-vertical safety (X never affects Y)",
+    "D9 — Generic tenants get OSS surface unchanged"
+  ],
+  "policy_resolution_cases": [
+    {
+      "name": "hipaa_default_strict_with_telemetry",
+      "vertical": "hipaa",
+      "expected_strict_mode": true,
+      "expected_telemetry_enabled": true,
+      "expected_recovery_mode": false,
+      "matches_oss_default": false,
+      "expected_parse_args": ["--strict"],
+      "d_anchor": "D1 + D2 — HIPAA risk posture + 21 CFR Part 11 audit trail"
+    },
+    {
+      "name": "legal_default_strict_with_telemetry",
+      "vertical": "legal",
+      "expected_strict_mode": true,
+      "expected_telemetry_enabled": true,
+      "expected_recovery_mode": false,
+      "matches_oss_default": false,
+      "expected_parse_args": ["--strict"],
+      "d_anchor": "D1 + D2 — FRE 502 + ABA Rule 1.6 reasoning-trace retention"
+    },
+    {
+      "name": "fintech_recovery_with_telemetry",
+      "vertical": "fintech",
+      "expected_strict_mode": false,
+      "expected_telemetry_enabled": true,
+      "expected_recovery_mode": true,
+      "matches_oss_default": false,
+      "expected_parse_args": [],
+      "d_anchor": "D1 + D2 — BSA / OFAC / MiFID II full diagnostic surface"
+    },
+    {
+      "name": "generic_oss_surface_unchanged",
+      "vertical": "generic",
+      "expected_strict_mode": false,
+      "expected_telemetry_enabled": false,
+      "expected_recovery_mode": true,
+      "matches_oss_default": true,
+      "expected_parse_args": [],
+      "d_anchor": "D9 — generic tenants get OSS Fase 28 surface verbatim"
+    }
+  ],
+  "telemetry_emission_cases": [
+    {
+      "name": "hipaa_error_emit_full_three_sink_fanout",
+      "vertical": "hipaa",
+      "tenant_id": "clinic-x",
+      "diagnostic": {
+        "code": "AX-0042",
+        "file_path": "src/cds_flow.axon",
+        "line": 17,
+        "column": 4,
+        "severity": "error"
+      },
+      "expected_audit_entry": {
+        "tenant_id": "clinic-x",
+        "vertical": "hipaa",
+        "code": "AX-0042",
+        "file_path": "src/cds_flow.axon",
+        "line": 17,
+        "column": 4,
+        "severity": "error"
+      },
+      "expected_counter_increment": 1,
+      "forbidden_fields_on_audit": [
+        "source", "snippet", "content", "text", "body", "excerpt"
+      ],
+      "d_anchor": "D2 + D4 + D8 — three-sink emit with tenant-scoped labels + privacy boundary"
+    },
+    {
+      "name": "fintech_warning_emit_severity_propagation",
+      "vertical": "fintech",
+      "tenant_id": "bank-y",
+      "diagnostic": {
+        "code": "AX-W042",
+        "file_path": "src/aml_flow.axon",
+        "line": 99,
+        "column": 12,
+        "severity": "warning"
+      },
+      "expected_audit_entry": {
+        "tenant_id": "bank-y",
+        "vertical": "fintech",
+        "code": "AX-W042",
+        "file_path": "src/aml_flow.axon",
+        "line": 99,
+        "column": 12,
+        "severity": "warning"
+      },
+      "expected_counter_increment": 1,
+      "forbidden_fields_on_audit": [
+        "source", "snippet", "content", "text", "body", "excerpt"
+      ],
+      "d_anchor": "D2 — warning severity propagates through all sinks"
+    },
+    {
+      "name": "legal_hint_severity_isolated_per_tenant",
+      "vertical": "legal",
+      "tenant_id": "firm-z",
+      "diagnostic": {
+        "code": "AX-H001",
+        "file_path": "src/privilege_flow.axon",
+        "line": 5,
+        "column": 1,
+        "severity": "hint"
+      },
+      "expected_audit_entry": {
+        "tenant_id": "firm-z",
+        "vertical": "legal",
+        "code": "AX-H001",
+        "file_path": "src/privilege_flow.axon",
+        "line": 5,
+        "column": 1,
+        "severity": "hint"
+      },
+      "expected_counter_increment": 1,
+      "forbidden_fields_on_audit": [
+        "source", "snippet", "content", "text", "body", "excerpt"
+      ],
+      "d_anchor": "D8 — tenant-A emit cannot affect tenant-B series"
+    },
+    {
+      "name": "generic_tenant_d9_no_emit",
+      "vertical": "generic",
+      "tenant_id": "open-source-co",
+      "diagnostic": {
+        "code": "AX-0099",
+        "file_path": "src/x.axon",
+        "line": 1,
+        "column": 1,
+        "severity": "error"
+      },
+      "expected_audit_entry": null,
+      "expected_counter_increment": 0,
+      "forbidden_fields_on_audit": [],
+      "d_anchor": "D9 — generic tenants telemetry-off; no sink fires"
+    }
+  ],
+  "suggest_dict_cases": [
+    {
+      "name": "hipaa_dict_first_cut_size_and_provenance",
+      "vertical": "hipaa",
+      "expected_min_terms": 50,
+      "sample_terms": ["phi", "ephi", "covered_entity", "safe_harbor"],
+      "sample_term_provenance_must_contain": "45 CFR",
+      "categories_present": ["compliance", "security", "policy", "deidentification", "audit"],
+      "d_anchor": "D3 — every entry has provenance referencing 45 CFR Parts 160/164"
+    },
+    {
+      "name": "legal_dict_first_cut_size_and_provenance",
+      "vertical": "legal",
+      "expected_min_terms": 50,
+      "sample_terms": ["fre_502", "fre_408", "attorney_client_privilege", "work_product"],
+      "sample_term_provenance_must_contain": "FRE",
+      "categories_present": ["privilege", "evidence", "discovery", "ethics", "civil_procedure"],
+      "d_anchor": "D3 — provenance references FRE / FRCP / ABA Model Rules / canonical cases"
+    },
+    {
+      "name": "fintech_dict_first_cut_size_and_provenance",
+      "vertical": "fintech",
+      "expected_min_terms": 50,
+      "sample_terms": ["kyc", "ofac", "sdn", "pci_req_10", "iban", "bic"],
+      "sample_term_provenance_must_contain": "31",
+      "categories_present": ["compliance", "sanctions", "aml", "pci_dss", "payments", "reporting"],
+      "d_anchor": "D3 — provenance references 31 CFR / FATF / PCI DSS / ISO standards"
+    },
+    {
+      "name": "generic_dict_d9_empty",
+      "vertical": "generic",
+      "expected_min_terms": 0,
+      "expected_max_terms": 0,
+      "sample_terms": [],
+      "categories_present": [],
+      "d_anchor": "D9 — generic tenants have no vertical dict; OSS surface unchanged"
+    },
+    {
+      "name": "d8_no_cross_vertical_contamination",
+      "verticals_compared": ["hipaa", "legal", "fintech"],
+      "expected_pairwise_disjoint": true,
+      "d_anchor": "D8 — vertical terms never overlap across verticals"
+    }
+  ],
+  "compliance_gate_cases": [
+    {
+      "name": "empty_payload_passes_default_threshold",
+      "config": {
+        "max_errors": 0,
+        "max_warnings": null,
+        "fail_on_hint": false
+      },
+      "payload_entries": [],
+      "payload_mode": "aggregated",
+      "expected_verdict": "pass",
+      "expected_exit_code": 0,
+      "d_anchor": "D9 — generic tenants pass trivially"
+    },
+    {
+      "name": "errors_exceed_default_threshold_fails",
+      "config": {
+        "max_errors": 0,
+        "max_warnings": null,
+        "fail_on_hint": false
+      },
+      "payload_entries": [
+        {"count": 3, "code": "AX-0042", "file_path": "src/x.axon", "line_bucket": 0, "vertical": "hipaa"}
+      ],
+      "payload_mode": "aggregated",
+      "expected_verdict": "fail_exceeded",
+      "expected_exit_code": 1,
+      "expected_threshold_breached": "errors",
+      "d_anchor": "D5 — default max_errors=0; any error fails"
+    },
+    {
+      "name": "warnings_below_threshold_passes",
+      "config": {
+        "max_errors": 100,
+        "max_warnings": 5,
+        "fail_on_hint": false
+      },
+      "payload_entries": [
+        {"severity": "warning", "code": "AX-W001"},
+        {"severity": "warning", "code": "AX-W002"}
+      ],
+      "payload_mode": "raw",
+      "expected_verdict": "pass",
+      "expected_exit_code": 0,
+      "d_anchor": "D5 — adopter can raise warning threshold"
+    },
+    {
+      "name": "warnings_exceed_threshold_fails",
+      "config": {
+        "max_errors": 100,
+        "max_warnings": 1,
+        "fail_on_hint": false
+      },
+      "payload_entries": [
+        {"severity": "warning", "code": "AX-W001"},
+        {"severity": "warning", "code": "AX-W002"}
+      ],
+      "payload_mode": "raw",
+      "expected_verdict": "fail_exceeded",
+      "expected_exit_code": 1,
+      "expected_threshold_breached": "warnings",
+      "d_anchor": "D5 — warnings-only threshold honored"
+    },
+    {
+      "name": "hint_with_fail_on_hint_fails",
+      "config": {
+        "max_errors": 100,
+        "max_warnings": null,
+        "fail_on_hint": true
+      },
+      "payload_entries": [
+        {"severity": "hint", "code": "AX-H001"}
+      ],
+      "payload_mode": "raw",
+      "expected_verdict": "fail_exceeded",
+      "expected_exit_code": 1,
+      "expected_threshold_breached": "hints",
+      "d_anchor": "D5 — fail_on_hint opt-in for HIPAA/legal posture"
+    },
+    {
+      "name": "malformed_payload_mode_fails_input",
+      "config": {
+        "max_errors": 0,
+        "max_warnings": null,
+        "fail_on_hint": false
+      },
+      "raw_payload": {"mode": "bogus", "entries": []},
+      "expected_verdict": "fail_input",
+      "expected_exit_code": 2,
+      "d_anchor": "D5 — malformed payloads surface as configuration error, not compliance failure"
+    }
+  ]
+}

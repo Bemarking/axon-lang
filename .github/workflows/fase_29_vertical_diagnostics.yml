@@ -1,0 +1,318 @@
+name: Fase 29 — Vertical Diagnostic Enhancements
+
+# §Fase 29.g — Dedicated CI workflow exercising the full Fase 29
+# enterprise diagnostic surface on every PR + master push. D1–D10
+# RATIFICADAS bloque 2026-05-12; this workflow locks every D-letter
+# invariant at PR time so the v1.15.0 release ships with the
+# regulated-vertical contract pinned end-to-end.
+#
+# Five parallel lanes:
+#
+#   1. vertical-policy — 29.b DiagnosticPolicy resolution across
+#      the closed TenantVertical catalog (HIPAA / legal / fintech /
+#      generic). Pins D1 default-strict for HIPAA+legal, D9 OSS
+#      surface for generic, D8 multi-tenant isolation.
+#
+#   2. telemetry-sink — 29.c three-sink fan-out (OTel + Prometheus
+#      + audit log). D2 sink shape, D4 privacy boundary baked into
+#      ParserDiagnostic type, D8 per-tenant counter labels.
+#
+#   3. suggest-dict — 29.d vertical-aware dictionaries with D3
+#      provenance discipline. ~154 curated terms across hipaa /
+#      legal / fintech; D8 pairwise-disjoint contamination assertion.
+#
+#   4. dashboard-and-gate — 29.e `/api/v1/tenant/diagnostics/recent`
+#      endpoint + 29.f compliance gate CLI + composite action YAML.
+#      D4 wire-level privacy + Q4 auth via tenant-context middleware
+#      + Q5 composite-action shape.
+#
+#   5. corpus-drift — 29.g corpus-driven drift gate. Loads
+#      tests/fixtures/fase29_vertical_corpus.json and replays
+#      every case through the live modules; drift in ANY lane
+#      surfaces in exactly one lane.
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  # ── 1. Lane 1 — Vertical policy resolution (29.b) ──────────────────
+  vertical-policy:
+    name: Vertical policy resolution (Fase 29.b)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run 29.b vertical-policy unit tests
+        run: pytest tests/diagnostics/test_fase29_vertical_policy.py -v --tb=short
+
+      - name: Verify TenantVertical closed-catalog invariant
+        # D1 + D9 sanity — every variant has a default policy registered
+        # at module-load time. Catches the closed-catalog drift the
+        # module-load assertion enforces.
+        run: |
+          python -c "
+          from axon_enterprise.diagnostics import TenantVertical, resolve_policy_for_vertical
+          for v in TenantVertical:
+              p = resolve_policy_for_vertical(v)
+              assert p.vertical == v
+              print(f'{v.value:8s}: strict={p.strict_mode} telemetry={p.telemetry_enabled} recovery={p.recovery_mode}')
+          "
+
+  # ── 2. Lane 2 — Telemetry sink three-way emit (29.c) ───────────────
+  telemetry-sink:
+    name: Telemetry sink three-way fan-out (Fase 29.c)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run 29.c telemetry-sink unit tests
+        run: pytest tests/diagnostics/test_fase29_telemetry_sink.py -v --tb=short
+
+      - name: Verify D4 privacy boundary baked into ParserDiagnostic type
+        # Re-runs the D4 type-level assertion outside the test pack
+        # so a CI failure here is unambiguously a privacy regression.
+        run: |
+          python -c "
+          from axon_enterprise.diagnostics import ParserDiagnostic
+          forbidden = {'source', 'snippet', 'content', 'text', 'body', 'excerpt'}
+          fields = set(ParserDiagnostic.__dataclass_fields__)
+          overlap = fields & forbidden
+          assert not overlap, f'D4 violation — ParserDiagnostic carries forbidden source-text field(s): {overlap}'
+          print('D4 boundary verified — ParserDiagnostic has no source-text field')
+          "
+
+      - name: Verify COMPLIANCE_PARSE_ERROR audit event registered
+        # 29.c adds AuditEventType.COMPLIANCE_PARSE_ERROR; this lane
+        # pins the catalog membership so a future migration that drops
+        # the variant surfaces here.
+        run: |
+          python -c "
+          from axon_enterprise.audit.events import AuditEventType
+          assert AuditEventType.COMPLIANCE_PARSE_ERROR.value == 'compliance:parse_error'
+          print('AuditEventType.COMPLIANCE_PARSE_ERROR verified')
+          "
+
+  # ── 3. Lane 3 — Suggest dictionaries (29.d) ────────────────────────
+  suggest-dict:
+    name: Vertical suggest dictionaries (Fase 29.d)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run 29.d suggest-dict unit tests
+        run: pytest tests/diagnostics/test_fase29_suggest_dicts.py -v --tb=short
+
+      - name: Run D8 cross-vertical contamination assertion
+        # Explicit standalone CI gate (the in-tree
+        # assert_no_cross_vertical_contamination helper) so a
+        # contamination regression surfaces here without parsing the
+        # full pytest output.
+        run: |
+          python -c "
+          from axon_enterprise.diagnostics import assert_no_cross_vertical_contamination
+          snap = assert_no_cross_vertical_contamination()
+          for v, terms in snap.items():
+              print(f'{v.value:8s}: {len(terms):3d} terms')
+          print('D8 cross-vertical contamination: NONE detected')
+          "
+
+      - name: Verify every dict file declares a vertical matching its
+              file name + provenance present on every entry
+        # D3 + D8 raw-file shape pin. Catches a PR that copies a JSON
+        # file under a misnamed slug.
+        run: |
+          python <<'PYEOF'
+          import json
+          from importlib.resources import files
+
+          ok = True
+          for slug in ("hipaa", "legal", "fintech"):
+              path = files("axon_enterprise.diagnostics.dicts").joinpath(f"{slug}.json")
+              with path.open("r", encoding="utf-8") as f:
+                  payload = json.load(f)
+              if payload["vertical"] != slug:
+                  print(f"FAIL: {slug}.json declares vertical={payload['vertical']!r}")
+                  ok = False
+                  continue
+              for i, entry in enumerate(payload["entries"]):
+                  if not entry.get("provenance", "").strip():
+                      print(f"FAIL: {slug}.json entry #{i} has empty provenance")
+                      ok = False
+              print(f"{slug}.json: {len(payload['entries'])} entries, vertical OK")
+          if not ok:
+              raise SystemExit(1)
+          PYEOF
+
+  # ── 4. Lane 4 — Dashboard endpoint + compliance gate (29.e + 29.f) ─
+  dashboard-and-gate:
+    name: Dashboard + compliance gate (Fase 29.e + 29.f)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run 29.e dashboard endpoint tests
+        run: pytest tests/diagnostics/test_fase29_dashboard_endpoint.py -v --tb=short
+
+      - name: Run 29.f compliance gate tests
+        run: pytest tests/diagnostics/test_fase29_compliance_gate.py -v --tb=short
+
+      - name: Verify `axon-enterprise diagnostics gate --help` registers
+        # Sanity: the gate subcommand is callable from a fresh install.
+        # Composite action depends on this exact invocation succeeding.
+        run: axon-enterprise diagnostics gate --help
+
+      - name: Verify Q5 composite action YAML parseable
+        # Pins the composite-action shape outside the pytest harness
+        # so the action file's integrity is independently auditable.
+        run: |
+          python <<'PYEOF'
+          import yaml
+          from pathlib import Path
+
+          path = Path(".github/actions/axon-enterprise-ci-gate/action.yml")
+          assert path.exists(), f"composite action missing at {path}"
+          with path.open("r", encoding="utf-8") as f:
+              data = yaml.safe_load(f)
+          assert data["runs"]["using"] == "composite"
+          assert "endpoint" in data["inputs"]
+          assert "token" in data["inputs"]
+          steps_run = " ".join(s.get("run", "") for s in data["runs"]["steps"])
+          assert "axon-enterprise diagnostics gate" in steps_run
+          print("Composite action shape verified (Q5 ratificada)")
+          PYEOF
+
+  # ── 5. Lane 5 — Corpus drift gate (29.g cross-lane) ────────────────
+  corpus-drift:
+    name: Cross-lane corpus drift gate (Fase 29.g)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Verify shared corpus shape (≥ 4 cases per lane, D1-D9 anchors)
+        run: |
+          python <<'PYEOF'
+          import json
+          from pathlib import Path
+
+          path = Path("tests/fixtures/fase29_vertical_corpus.json")
+          assert path.exists(), f"corpus missing at {path}"
+          with path.open("r", encoding="utf-8") as f:
+              corpus = json.load(f)
+          assert len(corpus["policy_resolution_cases"]) >= 4
+          assert len(corpus["telemetry_emission_cases"]) >= 3
+          assert len(corpus["suggest_dict_cases"]) >= 4
+          assert len(corpus["compliance_gate_cases"]) >= 3
+          anchors_text = " ".join(corpus["d_letter_anchors"])
+          for letter in ("D1", "D2", "D3", "D4", "D8", "D9"):
+              assert letter in anchors_text, f"missing {letter} anchor"
+          print(
+              f"Corpus shape OK: "
+              f"{len(corpus['policy_resolution_cases'])} policy + "
+              f"{len(corpus['telemetry_emission_cases'])} telemetry + "
+              f"{len(corpus['suggest_dict_cases'])} dict + "
+              f"{len(corpus['compliance_gate_cases'])} gate cases"
+          )
+          PYEOF
+
+      - name: Run cross-lane corpus drift tests
+        run: pytest tests/diagnostics/test_fase29_vertical_corpus_drift.py -v --tb=short
+
+  # ── 6. Lane 6 — Full diagnostics suite (regression anchor) ─────────
+  diagnostics-suite-regression:
+    name: Full diagnostics suite regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run full Fase 29 diagnostics suite
+        # Single command exercising every sub-fase's test pack +
+        # the corpus drift gate. The 5 specialised lanes above
+        # parallelise the breakdown; this lane is the regression
+        # anchor that catches cross-cutting issues a single lane
+        # might miss in isolation.
+        run: pytest tests/diagnostics/ -v --tb=short
+
+      - name: Report combined test count
+        run: |
+          echo "Fase 29 diagnostics suite: every sub-fase exercised."
+          echo "Expected ≥195 tests (29.b 36 + 29.c 22 + 29.d 29 +"
+          echo "29.e 33 + 29.f 52 + 29.g 23)."
