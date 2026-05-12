@@ -1,6 +1,6 @@
 ---
 title: "Plan vivo: Fase 33 — SSE as Cognitive Primitive (real-time algebraic-effect streaming end-to-end)"
-status: DRAFTED 2026-05-12 — D1-D10 PROPOSED pending founder bloque approval; trigger = adopter MIGRATION_TO_AXON.md trail 2026-05-12 post-v1.23.1
+status: IN PROGRESS 2026-05-12 — D1–D10 RATIFICADAS en bloque (founder "Ratifico las todas las D-letter"); 33.a SHIPPED (this doc + memory entry); 33.b–33.i execution per incremental founder sign-off cadence (Fase 28/30/31/32 established pattern). Trigger = adopter MIGRATION_TO_AXON.md trail 2026-05-12 post-v1.23.1
 owner: AXON Runtime + Backends Team
 created: 2026-05-12
 target: axon-lang v1.24.0 (minor — SSE wire semantics change from synchronous-burst to live incremental streaming; D9 backwards-compat preserved for clients that don't depend on incremental delivery)
@@ -129,7 +129,7 @@ Each sub-fase ships independently behind founder sign-off (Fase 28/30/31/32 incr
 
 | Sub-phase | Layer | LOC target | Description |
 |---|---|---|---|
-| **33.a** | spec | doc-only | This doc + D1–D10 ratification + memory entry. |
+| **33.a** | spec | doc-only | ✅ SHIPPED 2026-05-12 — This doc + memory entry `project_fase_33_plan.md` + MEMORY.md index update. Founder bloque ratification of D1–D10 locked verbatim ("Ratifico las todas las D-letter. Procede con 33.a"). Diagnostic anchor `axon-rs/tests/fase33_sse_full_body_diagnostic.rs` (commit `bb98347`) captures the v1.23.1 hollow wire shape as the snapshot the cycle rewrites. |
 | **33.b** | Layer 1 | ~600 | `FlowExecutionEvent` enum (Rust + Python) + `runner.rs` refactor to emit events instead of populating `ServerExecutionResult` strings + `server_execute_full` returns `mpsc::Receiver<FlowExecutionEvent>` instead of `ServerExecutionResult`. Cross-stack drift gate locks the event-shape JSON. |
 | **33.c** | Layer 2 | ~400 | `execute_sse_handler` consumes the receiver from 33.b live — each `FlowExecutionEvent::StepToken` becomes one `axon.token` SSE event AS IT ARRIVES (no spawn-blocking-await-complete-then-emit). Tower::oneshot tests can't measure timing; a new `tokio::test` with a `TcpListener` + `reqwest::EventSource` client verifies live token delivery. |
 | **33.d** | Layer 3 | ~1200 | Per-provider `Backend::stream()` impls: Anthropic (SSE), OpenAI (SSE), Gemini (JSON-stream), Kimi (OpenAI-compat), GLM (SSE), Ollama (JSON-stream), OpenRouter (OpenAI-compat). Each provider: ~150 LOC + ~30 LOC of unit tests (parse-chunk + error-mid-stream + completion + cancellation). |
@@ -170,15 +170,15 @@ The cycle ends when the diagnostic test
 
 ---
 
-## ▶ 7. Bloque ratification request 2026-05-12
+## ▶ 7. Bloque ratification — RATIFICADAS 2026-05-12
 
-Founder reviews §1 (what shipped) + §2 (what didn't) + §3 (D-letters D1-D10) + §4 (sub-fase shape) + §5 (vertical-grounded) + §6 (founder framing), then either:
+Founder reviewed §1 (what shipped) + §2 (what didn't) + §3 (D-letters D1–D10) + §4 (sub-fase shape) + §5 (vertical-grounded) + §6 (founder framing) and ratified verbatim:
 
-- **Approves bloque** — D1–D10 ratified verbatim; we proceed with 33.a (doc commit + memory entry) and await `procede con 33.b` for Layer 1.
-- **Selective approval** — specific D-letters questioned / reframed / cut.
-- **Defers** — Fase 33 is a multi-week cycle; adopter trail acknowledged but timing reframed.
+> **"Ratifico las todas las D-letter. Procede con 33.a (100% robusto)."** — 2026-05-12
 
-Until ratification, this doc IS the spec; no code changes ship.
+D1–D10 are now the locked contract for the Fase 33 cycle. 33.a (this doc + memory entry + diagnostic anchor) is SHIPPED with this ratification commit. 33.b–33.i proceed per the established Fase 28/30/31/32 incremental founder sign-off cadence (`procede con 33.X (100% robusto)` per sub-fase).
+
+The diagnostic test [`axon-rs/tests/fase33_sse_full_body_diagnostic.rs`](../axon-rs/tests/fase33_sse_full_body_diagnostic.rs) (commit `bb98347`) is the snapshot anchor — its current `step:""`, `token:""`, `steps_executed:0` assertions rewrite as each sub-fase lands. When 33.i ships, those assertions read the dense, time-spaced, per-backend-chunk wire the founder principle requires.
 
 ---
 
