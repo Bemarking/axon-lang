@@ -314,11 +314,21 @@ mod tests {
     // ── Streaming surface ───────────────────────────────────────────
 
     #[tokio::test]
-    async fn stream_delegates_to_base_not_implemented_path() {
-        let b = OpenAIBackend::with_api_key(Some("k".into()));
+    async fn stream_delegates_to_base_real_sse_implementation() {
+        // §Fase 33.d — OpenAI-compat now implements SSE streaming
+        // natively. Without a reachable server this test exercises the
+        // transport-error path (early failure before any chunk).
+        let b = OpenAIBackend::with_api_key(Some("k".into()))
+            .with_base_url("http://127.0.0.1:1");
         match b.stream(ChatRequest::default()).await {
             Err(BackendError::Generic { ref message, .. }) => {
-                assert!(message.contains("streaming not yet implemented"));
+                // Transport failure on unreachable port; message
+                // contains the connect-error string from reqwest.
+                assert!(
+                    message.contains("streaming transport failure")
+                        || message.contains("transport"),
+                    "unexpected message: {message}"
+                );
             }
             Err(other) => panic!("expected Generic, got {other:?}"),
             Ok(_) => panic!("expected error, got Ok"),

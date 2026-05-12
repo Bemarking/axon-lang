@@ -300,27 +300,112 @@ impl Backend for AnthropicBackend {
 
     async fn stream(
         &self,
-        _request: ChatRequest,
+        request: ChatRequest,
     ) -> Result<ChatStream, BackendError> {
-        // 24.c v1 — non-streaming complete path is the priority. The
-        // streaming impl lands as 24.c.2 (separate sub-PR) since SSE
-        // parsing for Anthropic is non-trivial: 5 distinct event types
-        // (message_start / content_block_start / content_block_delta /
-        // message_delta / message_stop) and partial-line buffering.
+        // §Fase 33.d — Real Anthropic SSE streaming.
         //
-        // Surfaces here as a clean BackendError::Generic with a
-        // documented message so callers can branch on it explicitly
-        // until the streaming path lands. Per Fase 24 acceptance "no
-        // unimplemented!() / panic!() in merged code" — this is an
-        // explicit, named runtime error, not a panic.
-        Err(BackendError::Generic {
+        // Wire shape per https://docs.anthropic.com/claude/reference/streaming:
+        //   POST /v1/messages  (body { ..., "stream": true })
+        //   Content-Type: text/event-stream
+        //
+        //   event: message_start
+        //   data: {"type":"message_start","message":{...,"usage":{"input_tokens":N}}}
+        //
+        //   event: content_block_start
+        //   data: {"type":"content_block_start","index":0,"content_block":{...}}
+        //
+        //   event: ping        ← Anthropic emits keepalive pings; we drop them.
+        //   data: {"type":"ping"}
+        //
+        //   event: content_block_delta
+        //   data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}
+        //   ... many of these ...
+        //
+        //   event: content_block_stop
+        //   data: {"type":"content_block_stop","index":0}
+        //
+        //   event: message_delta
+        //   data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},
+        //          "usage":{"output_tokens":N}}
+        //
+        //   event: message_stop
+        //   data: {"type":"message_stop"}
+        //
+        // Mapping to `ChatChunk`:
+        //   - `content_block_delta` with `delta.type == "text_delta"`  → chunk with delta=text
+        //   - `message_start` → carry usage.input_tokens (no delta)
+        //   - `message_delta` → carry finish_reason + cumulative usage
+        //   - all others (message_stop, content_block_start/stop, ping) → drop
+        let model = self.resolve_model(&request).to_string();
+
+        // Step 1 — build streaming body.
+        let body = build_request_body(&request, &self.default_model, true);
+        let body_bytes = serde_json::to_vec(&body).map_err(|e| BackendError::Generic {
             provider: PROVIDER_NAME.into(),
-            model: self.default_model.clone(),
+            model: model.clone(),
             status: None,
-            message: "streaming not yet implemented for the Anthropic backend (Fase 24.c.2 \
-                      — track docs/fase_24_native_rust_backends.md)"
-                .into(),
-        })
+            message: format!("failed to encode streaming request body: {e}"),
+        })?;
+
+        // Step 2 — build headers (returns None when no API key).
+        let headers = self.build_headers().ok_or_else(|| BackendError::Auth {
+            provider: PROVIDER_NAME.into(),
+            model: model.clone(),
+            api_key_env: Some(API_KEY_ENV.into()),
+            status: 0,
+            body_preview: format!("{API_KEY_ENV} not set in environment"),
+        })?;
+
+        // Step 3 — fire request. Streaming MUST fail-fast on non-200
+        // (retrying mid-stream replays partial tokens — semantically
+        // wrong).
+        let url = format!("{}/v1/messages", self.base_url);
+        let response = self
+            .http_client
+            .post(&url)
+            .headers(headers)
+            .body(body_bytes)
+            .send()
+            .await
+            .map_err(|e| BackendError::Generic {
+                provider: PROVIDER_NAME.into(),
+                model: model.clone(),
+                status: None,
+                message: format!("streaming transport failure: {e}"),
+            })?;
+
+        let status = response.status().as_u16();
+        if status != 200 {
+            let headers_clone = response.headers().clone();
+            let body = response.text().await.unwrap_or_default();
+            return Err(super::error::categorise_http(
+                PROVIDER_NAME,
+                &model,
+                status,
+                &headers_clone,
+                &body,
+                Some(API_KEY_ENV),
+            ));
+        }
+
+        // Step 4 — wrap byte-stream + project each Anthropic event to
+        // a ChatChunk via the closed event-shape catalog.
+        let events = super::sse_streaming::sse_event_stream(
+            response,
+            PROVIDER_NAME,
+            model.clone(),
+        );
+        let model_owned = model.clone();
+        let chunks = futures::StreamExt::filter_map(events, move |event| {
+            let model = model_owned.clone();
+            async move {
+                match event {
+                    Ok(event) => parse_anthropic_chunk(event, &model),
+                    Err(e) => Some(Err(e)),
+                }
+            }
+        });
+        Ok(Box::pin(chunks))
     }
 
     fn count_tokens(&self, model: &str, text: &str) -> usize {
@@ -551,6 +636,142 @@ fn finish_reason_label(reason: &FinishReason) -> &'static str {
 #[allow(dead_code)]
 type AnthropicChatStream =
     Pin<Box<dyn Stream<Item = Result<ChatChunk, BackendError>> + Send>>;
+
+// ────────────────────────────────────────────────────────────────────
+//  §Fase 33.d — SSE chunk parsing
+// ────────────────────────────────────────────────────────────────────
+
+/// Parse one Anthropic SSE event into an optional `ChatChunk`.
+///
+/// Returns:
+///   * `None` — the event is a non-text-delta type (ping, message_stop,
+///     content_block_start/stop) the consumer can safely ignore.
+///   * `Some(Ok(chunk))` — a usable chunk (text delta, usage hint, or
+///     terminal stop_reason carrier).
+///   * `Some(Err(...))` — JSON parse failure surfaces as a typed
+///     transport error.
+///
+/// Event-type → chunk mapping (closed catalog):
+///   - `content_block_delta` w/ `delta.type == "text_delta"` → chunk
+///     with `delta = delta.text`, no finish_reason yet.
+///   - `content_block_delta` w/ other delta types (input_json_delta
+///     for tool use, etc.) → empty-delta chunk; tool-use streaming
+///     surface lands in Fase 33.e.
+///   - `message_start` → empty-delta chunk carrying initial usage
+///     `{input_tokens: N}` so adopters can show "tokens budgeted"
+///     before any text arrives.
+///   - `message_delta` → empty-delta chunk carrying `finish_reason` +
+///     final usage `{output_tokens: N}`.
+///   - `message_stop` / `content_block_start` / `content_block_stop`
+///     / `ping` → dropped silently (no observable wire change).
+///   - Unknown event type → dropped (forward-compat).
+pub(crate) fn parse_anthropic_chunk(
+    event: super::sse_streaming::SseEvent,
+    model: &str,
+) -> Option<Result<ChatChunk, BackendError>> {
+    let event_type = event.event.as_deref().unwrap_or("");
+    let data = event.data?;
+
+    // Empty data: no observable change.
+    if data.trim().is_empty() {
+        return None;
+    }
+
+    let payload: Value = match serde_json::from_str(&data) {
+        Ok(v) => v,
+        Err(e) => {
+            return Some(Err(BackendError::Generic {
+                provider: PROVIDER_NAME.into(),
+                model: model.into(),
+                status: Some(200),
+                message: format!("failed to parse Anthropic streaming JSON chunk: {e}"),
+            }));
+        }
+    };
+
+    match event_type {
+        "content_block_delta" => {
+            // delta.type may be "text_delta" / "input_json_delta" / ...
+            let delta_obj = payload.get("delta");
+            let delta_text = delta_obj
+                .and_then(|d| d.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            Some(Ok(ChatChunk {
+                delta: delta_text,
+                finish_reason: None,
+                usage: None,
+            }))
+        }
+        "message_start" => {
+            // Carry initial input_tokens budget so adopters can show
+            // "0 / N tokens" before any text arrives.
+            let usage = payload
+                .get("message")
+                .and_then(|m| m.get("usage"))
+                .map(|u| Usage {
+                    input_tokens: u
+                        .get("input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as u32,
+                    output_tokens: u
+                        .get("output_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as u32,
+                    total_tokens: 0,
+                    cache_read_tokens: u
+                        .get("cache_read_input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as u32,
+                    cache_creation_tokens: u
+                        .get("cache_creation_input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as u32,
+                    reasoning_tokens: 0,
+                });
+            Some(Ok(ChatChunk {
+                delta: String::new(),
+                finish_reason: None,
+                usage,
+            }))
+        }
+        "message_delta" => {
+            // Final stop_reason + cumulative output_tokens.
+            let stop_reason = payload
+                .get("delta")
+                .and_then(|d| d.get("stop_reason"))
+                .and_then(Value::as_str);
+            let finish_reason = stop_reason
+                .map(|raw| FinishReason::from_provider(PROVIDER_NAME, raw));
+            let usage = payload.get("usage").map(|u| Usage {
+                input_tokens: 0,
+                output_tokens: u
+                    .get("output_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as u32,
+                total_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                reasoning_tokens: 0,
+            });
+            Some(Ok(ChatChunk {
+                delta: String::new(),
+                finish_reason,
+                usage,
+            }))
+        }
+        // Dropped silently — these events are not observable on the
+        // ChatChunk wire (the consumer can derive equivalent state
+        // from message_start + content_block_delta + message_delta).
+        "message_stop" | "content_block_start" | "content_block_stop" | "ping" => None,
+        // Unknown event type — forward-compat: drop silently. Per
+        // Anthropic's streaming spec evolution clauses, new event
+        // types may be introduced; existing event types' semantics
+        // never change.
+        _ => None,
+    }
+}
 
 // ────────────────────────────────────────────────────────────────────
 //  Tests
@@ -935,20 +1156,174 @@ mod tests {
     // ── Streaming surface ───────────────────────────────────────────
 
     #[tokio::test]
-    async fn stream_returns_explicit_not_implemented_error_in_24c_v1() {
-        let b = AnthropicBackend::with_api_key(Some("k".into()));
-        // ChatStream = Pin<Box<dyn Stream<...>>> doesn't implement Debug
-        // so we can't use `unwrap_err()` directly — match instead.
+    async fn stream_real_anthropic_sse_implementation_transport_path() {
+        // §Fase 33.d — Anthropic now ships a real SSE streamer.
+        // Unreachable-port test exercises the transport-error path.
+        let b = AnthropicBackend::with_api_key(Some("k".into()))
+            .with_base_url("http://127.0.0.1:1");
         match b.stream(ChatRequest::default()).await {
             Err(BackendError::Generic { ref message, .. }) => {
                 assert!(
-                    message.contains("streaming not yet implemented"),
+                    message.contains("streaming transport failure"),
                     "unexpected message: {message}",
                 );
             }
             Err(other) => panic!("expected Generic, got {other:?}"),
             Ok(_) => panic!("expected error, got Ok"),
         }
+    }
+
+    #[tokio::test]
+    async fn stream_without_api_key_returns_auth_error() {
+        let b = AnthropicBackend::with_api_key(None)
+            .with_base_url("http://127.0.0.1:1");
+        match b.stream(ChatRequest::default()).await {
+            Err(BackendError::Auth { provider, .. }) => {
+                assert_eq!(provider, "anthropic");
+            }
+            Err(other) => panic!("expected Auth, got {other:?}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    // ── §Fase 33.d — Anthropic SSE chunk parsing (pure-unit) ────────
+
+    use super::parse_anthropic_chunk;
+    use super::super::sse_streaming::SseEvent;
+
+    fn anthropic_event(event_type: &str, data: &str) -> SseEvent {
+        SseEvent {
+            event: Some(event_type.to_string()),
+            data: Some(data.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn parse_anthropic_content_block_delta_extracts_text() {
+        let ev = anthropic_event(
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":0,
+                "delta":{"type":"text_delta","text":"Hello"}}"#,
+        );
+        let chunk = parse_anthropic_chunk(ev, "claude-x")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.delta, "Hello");
+        assert!(chunk.finish_reason.is_none());
+    }
+
+    #[test]
+    fn parse_anthropic_message_start_carries_input_token_budget() {
+        let ev = anthropic_event(
+            "message_start",
+            r#"{"type":"message_start","message":{"id":"msg_x","usage":{"input_tokens":42,"output_tokens":0}}}"#,
+        );
+        let chunk = parse_anthropic_chunk(ev, "claude-x")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.delta, "");
+        assert!(chunk.finish_reason.is_none());
+        let usage = chunk.usage.expect("message_start carries usage");
+        assert_eq!(usage.input_tokens, 42);
+    }
+
+    #[test]
+    fn parse_anthropic_message_delta_carries_stop_reason_and_output_tokens() {
+        let ev = anthropic_event(
+            "message_delta",
+            r#"{"type":"message_delta",
+                "delta":{"stop_reason":"end_turn","stop_sequence":null},
+                "usage":{"output_tokens":17}}"#,
+        );
+        let chunk = parse_anthropic_chunk(ev, "claude-x")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.delta, "");
+        assert_eq!(chunk.finish_reason, Some(FinishReason::Stop));
+        let usage = chunk.usage.expect("message_delta carries usage");
+        assert_eq!(usage.output_tokens, 17);
+    }
+
+    #[test]
+    fn parse_anthropic_message_delta_maps_max_tokens_to_length() {
+        let ev = anthropic_event(
+            "message_delta",
+            r#"{"delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":4096}}"#,
+        );
+        let chunk = parse_anthropic_chunk(ev, "claude-x")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.finish_reason, Some(FinishReason::Length));
+    }
+
+    #[test]
+    fn parse_anthropic_ping_dropped() {
+        let ev = anthropic_event("ping", r#"{"type":"ping"}"#);
+        assert!(parse_anthropic_chunk(ev, "claude-x").is_none());
+    }
+
+    #[test]
+    fn parse_anthropic_message_stop_dropped() {
+        let ev = anthropic_event("message_stop", r#"{"type":"message_stop"}"#);
+        assert!(parse_anthropic_chunk(ev, "claude-x").is_none());
+    }
+
+    #[test]
+    fn parse_anthropic_content_block_start_dropped() {
+        let ev = anthropic_event(
+            "content_block_start",
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+        );
+        assert!(parse_anthropic_chunk(ev, "claude-x").is_none());
+    }
+
+    #[test]
+    fn parse_anthropic_unknown_event_type_dropped_for_forward_compat() {
+        let ev = anthropic_event("future_event_type_42", r#"{"foo":"bar"}"#);
+        assert!(parse_anthropic_chunk(ev, "claude-x").is_none());
+    }
+
+    #[test]
+    fn parse_anthropic_invalid_json_surfaces_as_error() {
+        let ev = anthropic_event("content_block_delta", "not-json{");
+        let result = parse_anthropic_chunk(ev, "claude-x")
+            .expect("yields error");
+        match result {
+            Err(BackendError::Generic { message, .. }) => {
+                assert!(message.contains("failed to parse Anthropic streaming JSON"));
+            }
+            other => panic!("expected Generic error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_anthropic_input_json_delta_yields_empty_text_chunk() {
+        // Tool-use streams emit input_json_delta — for 33.d we emit
+        // an empty-delta chunk; the tool-use streaming surface lands
+        // in Fase 33.e.
+        let ev = anthropic_event(
+            "content_block_delta",
+            r#"{"delta":{"type":"input_json_delta","partial_json":"{\"loc\":"}}"#,
+        );
+        let chunk = parse_anthropic_chunk(ev, "claude-x")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.delta, "");
+    }
+
+    #[test]
+    fn parse_anthropic_message_start_with_cache_fields() {
+        let ev = anthropic_event(
+            "message_start",
+            r#"{"message":{"usage":{"input_tokens":10,"cache_read_input_tokens":80,"cache_creation_input_tokens":20}}}"#,
+        );
+        let chunk = parse_anthropic_chunk(ev, "claude-x")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        let usage = chunk.usage.expect("usage present");
+        assert_eq!(usage.cache_read_tokens, 80);
+        assert_eq!(usage.cache_creation_tokens, 20);
     }
 
     // ── complete() — early failure paths (no real HTTP) ─────────────

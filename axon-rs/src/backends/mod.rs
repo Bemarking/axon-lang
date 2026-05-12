@@ -67,6 +67,7 @@ pub mod openai;
 pub mod openai_compat;
 pub mod openrouter;
 pub mod retry;
+pub mod sse_streaming;
 pub mod tokens;
 pub(crate) mod transport;
 

@@ -28,7 +28,7 @@ path = "src/main.rs"
 # deps to carry a version specifier).
 axon-frontend = { path = "../axon-frontend", version = "=0.11.1" }
 clap = { version = "4.5", features = ["derive"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -79,4 +79,9 @@ async-trait = "0.1"
 #   the synchronous path.
 regex = "1"
 futures = "0.3"
+# §Fase 33.d — Native backend streaming consumes reqwest's bytes_stream(),
+# which surfaces `bytes::Bytes`. The crate is re-exported by reqwest but
+# only via the `stream` feature; pinning a direct dep keeps the surface
+# stable across reqwest minor bumps.
+bytes = "1"
 axon-csys = { path = "../axon-csys", version = "=0.1.2" }
