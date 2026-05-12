@@ -1751,6 +1751,15 @@ struct ServerExecutionResult {
     step_names: Vec<String>,
     step_results: Vec<String>,
     trace_id: u64,
+    /// §Fase 33.e — Per-step stream-effect policies declared in the
+    /// source. Each entry is `(step_name, policy_slug)` where slug is
+    /// one of the closed catalog `{drop_oldest, degrade_quality,
+    /// pause_upstream, fail}`. Empty when no step in the flow declares
+    /// a `<stream:<policy>>` effect. Surfaced on the SSE
+    /// `axon.complete` wire envelope so adopters can observe the
+    /// policy is bound to runtime.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    effect_policies: Vec<(String, String)>,
 }
 
 /// Compile and execute a deployed flow server-side.
@@ -1806,6 +1815,7 @@ fn server_execute(
         step_names: run_res.step_names,
         step_results: run_res.step_results,
         trace_id: 0, // set after recording
+        effect_policies: Vec::new(), // populated by server_execute_streaming
     })
 }
 
@@ -18019,8 +18029,14 @@ fn build_token_event(
 /// Build the final `axon.complete` SSE event carrying the execution
 /// envelope (steps_executed, tokens_input/output, latency, backend,
 /// success). After this event the server closes the response.
+///
+/// §Fase 33.e — When the flow declares any `<stream:<policy>>` effect,
+/// the wire envelope additionally carries a `stream_policies` array of
+/// `{step, policy}` objects so adopters can verify the algebraic-effect
+/// declaration bound to the runtime path. Empty arrays are elided so
+/// pre-33.e wire-shape expectations stay byte-identical (D9).
 fn build_complete_event(event_id: u64, exec: &ServerExecutionResult) -> Event {
-    let data = serde_json::json!({
+    let mut data = serde_json::json!({
         "trace_id": exec.trace_id,
         "flow": exec.flow_name,
         "backend": exec.backend,
@@ -18030,6 +18046,16 @@ fn build_complete_event(event_id: u64, exec: &ServerExecutionResult) -> Event {
         "latency_ms": exec.latency_ms,
         "success": exec.success,
     });
+    if !exec.effect_policies.is_empty() {
+        let arr = exec
+            .effect_policies
+            .iter()
+            .map(|(step, policy)| serde_json::json!({"step": step, "policy": policy}))
+            .collect::<Vec<_>>();
+        data.as_object_mut()
+            .expect("json object")
+            .insert("stream_policies".to_string(), serde_json::Value::Array(arr));
+    }
     Event::default()
         .event("axon.complete")
         .id(event_id.to_string())
@@ -18092,6 +18118,50 @@ fn build_retry_hint_event() -> Event {
 ///   with real per-token streaming from the backend.
 /// - **33.e** (effect dispatcher) eventually owns the chunk-shape
 ///   decision via the declared `<stream:<policy>>` annotation.
+/// §Fase 33.e — Resolve per-step `<stream:<policy>>` effects for a
+/// flow's source. Returns a list of `(step_name, policy_slug)` pairs
+/// for steps that declare a stream effect.
+///
+/// Pure best-effort: source-parse failures return an empty vec rather
+/// than propagating up (the runtime path already handles malformed
+/// source at a different layer; we don't want a parse failure here to
+/// drop streaming).
+fn resolve_stream_policies_for_flow(
+    source: &str,
+    source_file: &str,
+    flow_name: &str,
+) -> Vec<(String, &'static str)> {
+    let tokens = match crate::lexer::Lexer::new(source, source_file).tokenize() {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let mut parser = crate::parser::Parser::new(tokens);
+    let program = match parser.parse() {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+
+    let flow = program.declarations.iter().find_map(|d| match d {
+        crate::ast::Declaration::Flow(f) if f.name == flow_name => Some(f),
+        _ => None,
+    });
+    let Some(flow) = flow else { return Vec::new() };
+
+    let mut out = Vec::new();
+    for step in &flow.body {
+        if let crate::ast::FlowStep::Step(node) = step {
+            if let Some(policy) = crate::stream_effect_dispatcher::resolve_stream_effect_for_step(
+                &node.name,
+                flow,
+                &program,
+            ) {
+                out.push((node.name.clone(), policy.slug()));
+            }
+        }
+    }
+    out
+}
+
 fn server_execute_streaming(
     state: SharedState,
     source: String,
@@ -18324,6 +18394,20 @@ async fn execute_sse_handler(
                 // — no batching after full execution. When real per-
                 // token backends ship in 33.d, this loop will deliver
                 // tokens as the network bytes arrive.
+                // §Fase 33.e — Resolve declared `<stream:<policy>>`
+                // effects once per execution so the axon.complete wire
+                // envelope can surface the active policies. Best-effort:
+                // parse failures yield an empty vec; the streaming path
+                // continues unchanged.
+                let effect_policies = resolve_stream_policies_for_flow(
+                    &source,
+                    &source_file,
+                    &flow_name_owned,
+                )
+                .into_iter()
+                .map(|(step, slug)| (step, slug.to_string()))
+                .collect::<Vec<_>>();
+
                 let mut event_rx = server_execute_streaming(
                     state_for_task.clone(),
                     source.clone(),
@@ -18420,6 +18504,7 @@ async fn execute_sse_handler(
                                 step_names: Vec::new(),
                                 step_results: Vec::new(),
                                 trace_id,
+                                effect_policies: effect_policies.clone(),
                             };
 
                             event_id += 1;

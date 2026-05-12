@@ -144,6 +144,14 @@ pub mod jwt_verifier;
 // `refinement` and `stream_effect` catalogs live in `axon-frontend`.
 pub mod trust_verifiers;
 pub mod stream_runtime;
+// §Fase 33.e — Stream-effect dispatcher (Layer 4 of the Fase 33 cycle).
+// Bridges the `effects: <stream:<policy>>` declarations on tool
+// definitions to actual runtime backpressure behavior on the SSE
+// wire. The dispatcher itself is a thin composition over
+// `stream_runtime::Stream<T>` (which carries the policy semantics)
+// and the AST resolver (which extracts the declared policy from the
+// tool referenced by each step).
+pub mod stream_effect_dispatcher;
 // §λ-L-E Fase 11.b — Zero-Copy Multimodal Buffers.
 // `buffer` defines ZeroCopyBuffer (Arc<[u8]>-backed) + BufferKind
 // (open registry) + BufferPool (slab allocator with per-tenant
