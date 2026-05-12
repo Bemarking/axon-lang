@@ -311,11 +311,19 @@ mod tests {
     // ── Streaming surface ───────────────────────────────────────────
 
     #[tokio::test]
-    async fn stream_delegates_to_base_not_implemented_path() {
-        let b = GLMBackend::with_api_key(Some("k".into()));
+    async fn stream_delegates_to_base_real_sse_implementation() {
+        // §Fase 33.d — GLM delegates to OpenAI-compat which now ships
+        // a real SSE streamer; unreachable-port test exercises the
+        // transport-error path.
+        let b = GLMBackend::with_api_key(Some("k".into()))
+            .with_base_url("http://127.0.0.1:1");
         match b.stream(ChatRequest::default()).await {
             Err(BackendError::Generic { ref message, .. }) => {
-                assert!(message.contains("streaming not yet implemented"));
+                assert!(
+                    message.contains("streaming transport failure")
+                        || message.contains("transport"),
+                    "unexpected message: {message}"
+                );
             }
             Err(other) => panic!("expected Generic, got {other:?}"),
             Ok(_) => panic!("expected error, got Ok"),

@@ -269,21 +269,89 @@ impl Backend for GeminiBackend {
 
     async fn stream(
         &self,
-        _request: ChatRequest,
+        request: ChatRequest,
     ) -> Result<ChatStream, BackendError> {
-        // 24.e v1 — non-streaming complete path is the priority.
-        // Streaming impl lands as 24.e.2 (separate sub-PR): Gemini's
-        // SSE shape (`:streamGenerateContent` endpoint, server-side
-        // events with full Candidate envelopes per chunk) is its own
-        // parser. Born mature: explicit typed error rather than panic.
-        Err(BackendError::Generic {
+        // §Fase 33.d — Real Gemini SSE streaming.
+        //
+        // Wire: POST <base>/v1beta/models/<model>:streamGenerateContent?alt=sse&key=…
+        // Response: SSE with `data:` lines carrying a Candidate-shape
+        // JSON envelope per chunk. Each chunk:
+        //   data: {"candidates":[{"content":{"parts":[{"text":"..."}],"role":"model"},
+        //                         "finishReason":"STOP"}], "usageMetadata":{...}}
+        //
+        // Mapping to ChatChunk:
+        //   - parts[*].text concatenated → chunk.delta
+        //   - candidates[0].finishReason → chunk.finish_reason (final
+        //     chunk only; intermediate chunks usually omit it or set
+        //     null/empty)
+        //   - usageMetadata → chunk.usage (final chunk only)
+        let model = self.resolve_model(&request).to_string();
+        let api_key = self.api_key.as_ref().ok_or_else(|| BackendError::Auth {
             provider: PROVIDER_NAME.into(),
-            model: self.default_model.clone(),
+            model: model.clone(),
+            api_key_env: Some(API_KEY_ENV.into()),
+            status: 0,
+            body_preview: format!("{API_KEY_ENV} not set in environment"),
+        })?;
+
+        let body = build_request_body(&request, &self.default_model, true);
+        let body_bytes = serde_json::to_vec(&body).map_err(|e| BackendError::Generic {
+            provider: PROVIDER_NAME.into(),
+            model: model.clone(),
             status: None,
-            message: "streaming not yet implemented for the Gemini backend (Fase 24.e.2 \
-                      — track docs/fase_24_native_rust_backends.md)"
-                .into(),
-        })
+            message: format!("failed to encode streaming request body: {e}"),
+        })?;
+
+        let url = format!(
+            "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
+            self.base_url, model, api_key
+        );
+        let headers = Self::build_headers();
+
+        let response = self
+            .http_client
+            .post(&url)
+            .headers(headers)
+            .body(body_bytes)
+            .send()
+            .await
+            .map_err(|e| BackendError::Generic {
+                provider: PROVIDER_NAME.into(),
+                model: model.clone(),
+                status: None,
+                message: format!("streaming transport failure: {e}"),
+            })?;
+
+        let status = response.status().as_u16();
+        if status != 200 {
+            let headers_clone = response.headers().clone();
+            let body = response.text().await.unwrap_or_default();
+            return Err(super::error::categorise_http(
+                PROVIDER_NAME,
+                &model,
+                status,
+                &headers_clone,
+                &body,
+                Some(API_KEY_ENV),
+            ));
+        }
+
+        let events = super::sse_streaming::sse_event_stream(
+            response,
+            PROVIDER_NAME,
+            model.clone(),
+        );
+        let model_owned = model.clone();
+        let chunks = futures::StreamExt::filter_map(events, move |event| {
+            let model = model_owned.clone();
+            async move {
+                match event {
+                    Ok(event) => parse_gemini_chunk(event, &model),
+                    Err(e) => Some(Err(e)),
+                }
+            }
+        });
+        Ok(Box::pin(chunks))
     }
 
     fn count_tokens(&self, model: &str, text: &str) -> usize {
@@ -545,6 +613,116 @@ fn finish_reason_label(reason: &FinishReason) -> &'static str {
 #[allow(dead_code)]
 type GeminiChatStream =
     Pin<Box<dyn Stream<Item = Result<ChatChunk, BackendError>> + Send>>;
+
+// ────────────────────────────────────────────────────────────────────
+//  §Fase 33.d — SSE chunk parsing
+// ────────────────────────────────────────────────────────────────────
+
+/// Parse one Gemini SSE event into an optional `ChatChunk`.
+///
+/// Returns:
+///   * `None` — event has no usable data (empty data, no candidates, or
+///     all candidates without text).
+///   * `Some(Ok(chunk))` — usable streaming delta or terminal envelope.
+///   * `Some(Err(...))` — JSON parse failure surfaces as a typed
+///     transport error.
+///
+/// Gemini's `:streamGenerateContent?alt=sse` wire shape:
+///
+/// ```text
+/// data: {"candidates":[{"content":{"parts":[{"text":"Hi"}],"role":"model"},
+///                       "finishReason":null,"index":0}],
+///        "usageMetadata":{"promptTokenCount":5}}
+/// ...
+/// data: {"candidates":[{"content":{"parts":[{"text":""}],"role":"model"},
+///                       "finishReason":"STOP","index":0}],
+///        "usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":10,
+///                         "totalTokenCount":15}}
+/// ```
+///
+/// Each chunk envelope carries:
+///   - text deltas concatenated from `candidates[0].content.parts[*].text`
+///   - optional `candidates[0].finishReason` (UPPERCASE per Gemini docs)
+///   - optional `usageMetadata` (final chunk usually carries totals)
+pub(crate) fn parse_gemini_chunk(
+    event: super::sse_streaming::SseEvent,
+    model: &str,
+) -> Option<Result<ChatChunk, BackendError>> {
+    let data = event.data?;
+    let trimmed = data.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let payload: Value = match serde_json::from_str(trimmed) {
+        Ok(v) => v,
+        Err(e) => {
+            return Some(Err(BackendError::Generic {
+                provider: PROVIDER_NAME.into(),
+                model: model.into(),
+                status: Some(200),
+                message: format!("failed to parse Gemini streaming JSON chunk: {e}"),
+            }));
+        }
+    };
+
+    let first_candidate = payload
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|c| c.first());
+
+    // Concatenate all text parts from this chunk's first candidate.
+    let delta_text = first_candidate
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.get("parts"))
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
+
+    let finish_raw = first_candidate
+        .and_then(|c| c.get("finishReason"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+    let finish_reason =
+        finish_raw.map(|raw| FinishReason::from_provider(PROVIDER_NAME, raw));
+
+    // Usage metadata is present on most chunks (Gemini sends cumulative
+    // totals); we surface it whenever the field is present.
+    let usage = payload.get("usageMetadata").map(|u| {
+        let input = u
+            .get("promptTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        let output = u
+            .get("candidatesTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        let total = u
+            .get("totalTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        Usage {
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: if total > 0 { total } else { input + output },
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            reasoning_tokens: 0,
+        }
+    });
+
+    Some(Ok(ChatChunk {
+        delta: delta_text,
+        finish_reason,
+        usage,
+    }))
+}
 
 /// Module-level factory — `let b = backends::gemini::from_env();`.
 pub fn from_env() -> GeminiBackend {
@@ -986,15 +1164,164 @@ mod tests {
     // ── Streaming surface ───────────────────────────────────────────
 
     #[tokio::test]
-    async fn stream_returns_explicit_not_implemented_in_24e_v1() {
-        let b = GeminiBackend::with_api_key(Some("k".into()));
+    async fn stream_real_gemini_sse_implementation_transport_path() {
+        // §Fase 33.d — Gemini now ships a real SSE streamer.
+        // Unreachable port exercises the transport-error path.
+        let b = GeminiBackend::with_api_key(Some("k".into()))
+            .with_base_url("http://127.0.0.1:1");
         match b.stream(ChatRequest::default()).await {
             Err(BackendError::Generic { ref message, .. }) => {
-                assert!(message.contains("streaming not yet implemented"));
+                assert!(
+                    message.contains("streaming transport failure"),
+                    "unexpected message: {message}",
+                );
             }
             Err(other) => panic!("expected Generic, got {other:?}"),
             Ok(_) => panic!("expected error, got Ok"),
         }
+    }
+
+    #[tokio::test]
+    async fn stream_without_api_key_returns_auth_error() {
+        let b = GeminiBackend::with_api_key(None)
+            .with_base_url("http://127.0.0.1:1");
+        match b.stream(ChatRequest::default()).await {
+            Err(BackendError::Auth { provider, .. }) => assert_eq!(provider, "gemini"),
+            Err(other) => panic!("expected Auth error, got {other:?}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    // ── §Fase 33.d — Gemini SSE chunk parsing (pure-unit) ───────────
+
+    use super::parse_gemini_chunk;
+    use super::super::sse_streaming::SseEvent;
+
+    fn gemini_event(data: &str) -> SseEvent {
+        SseEvent {
+            data: Some(data.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn parse_gemini_chunk_extracts_text_delta() {
+        let ev = gemini_event(
+            r#"{"candidates":[{"content":{"parts":[{"text":"Hello"}],"role":"model"},"index":0}]}"#,
+        );
+        let chunk = parse_gemini_chunk(ev, "gemini-x")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.delta, "Hello");
+        assert!(chunk.finish_reason.is_none());
+    }
+
+    #[test]
+    fn parse_gemini_chunk_concatenates_multiple_text_parts() {
+        let ev = gemini_event(
+            r#"{"candidates":[{"content":{"parts":[
+                {"text":"Hello "},
+                {"text":"World"}
+            ],"role":"model"}}]}"#,
+        );
+        let chunk = parse_gemini_chunk(ev, "gemini-x")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.delta, "Hello World");
+    }
+
+    #[test]
+    fn parse_gemini_chunk_final_chunk_carries_stop_and_usage() {
+        let ev = gemini_event(
+            r#"{"candidates":[{"content":{"parts":[{"text":""}],"role":"model"},"finishReason":"STOP"}],
+                "usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":10,"totalTokenCount":15}}"#,
+        );
+        let chunk = parse_gemini_chunk(ev, "gemini-x")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.finish_reason, Some(FinishReason::Stop));
+        let usage = chunk.usage.expect("usage present");
+        assert_eq!(usage.input_tokens, 5);
+        assert_eq!(usage.output_tokens, 10);
+        assert_eq!(usage.total_tokens, 15);
+    }
+
+    #[test]
+    fn parse_gemini_chunk_max_tokens_finish_reason_maps_to_length() {
+        let ev = gemini_event(
+            r#"{"candidates":[{"content":{"parts":[]},"finishReason":"MAX_TOKENS"}]}"#,
+        );
+        let chunk = parse_gemini_chunk(ev, "gemini-x")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.finish_reason, Some(FinishReason::Length));
+    }
+
+    #[test]
+    fn parse_gemini_chunk_safety_finish_reason_maps_to_safety_breach() {
+        let ev = gemini_event(
+            r#"{"candidates":[{"content":{"parts":[]},"finishReason":"SAFETY"}]}"#,
+        );
+        let chunk = parse_gemini_chunk(ev, "gemini-x")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.finish_reason, Some(FinishReason::SafetyBreach));
+    }
+
+    #[test]
+    fn parse_gemini_chunk_missing_finish_reason_yields_none() {
+        let ev = gemini_event(
+            r#"{"candidates":[{"content":{"parts":[{"text":"x"}]}}]}"#,
+        );
+        let chunk = parse_gemini_chunk(ev, "gemini-x")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert!(chunk.finish_reason.is_none());
+    }
+
+    #[test]
+    fn parse_gemini_chunk_empty_data_returns_none() {
+        let ev = gemini_event("");
+        assert!(parse_gemini_chunk(ev, "gemini-x").is_none());
+    }
+
+    #[test]
+    fn parse_gemini_chunk_invalid_json_surfaces_as_error() {
+        let ev = gemini_event("{not-json");
+        let result = parse_gemini_chunk(ev, "gemini-x").expect("yields error");
+        match result {
+            Err(BackendError::Generic { message, .. }) => {
+                assert!(message.contains("failed to parse Gemini streaming JSON"));
+            }
+            other => panic!("expected Generic error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_gemini_chunk_no_candidates_yields_empty_delta() {
+        // Gemini may emit envelopes without candidates (rare; safety
+        // pre-filter). We surface an empty-delta chunk so the consumer
+        // sees the event without panicking.
+        let ev = gemini_event(r#"{"candidates":[],"usageMetadata":{"promptTokenCount":1}}"#);
+        let chunk = parse_gemini_chunk(ev, "gemini-x")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.delta, "");
+        let usage = chunk.usage.expect("usage present");
+        assert_eq!(usage.input_tokens, 1);
+    }
+
+    #[test]
+    fn parse_gemini_chunk_usage_falls_back_to_sum_when_total_missing() {
+        let ev = gemini_event(
+            r#"{"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}],
+                "usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4}}"#,
+        );
+        let chunk = parse_gemini_chunk(ev, "gemini-x")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        let usage = chunk.usage.expect("usage present");
+        assert_eq!(usage.total_tokens, 7);
     }
 
     // ── complete() — early failure paths ────────────────────────────

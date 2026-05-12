@@ -81,10 +81,11 @@ use super::error::BackendError;
 use super::locked_model;
 use super::observability;
 use super::retry::BackendRetryPolicy;
+use super::sse_streaming::sse_event_stream;
 use super::tokens;
 use super::transport;
 use super::{
-    Backend, Capability, ChatRequest, ChatResponse, ChatStream,
+    Backend, Capability, ChatChunk, ChatRequest, ChatResponse, ChatStream,
     FinishReason, Role, Usage,
 };
 
@@ -376,23 +377,85 @@ impl Backend for OpenAICompatibleBackend {
 
     async fn stream(
         &self,
-        _request: ChatRequest,
+        request: ChatRequest,
     ) -> Result<ChatStream, BackendError> {
-        // 24.d v1 — non-streaming complete path is the priority.
-        // Streaming impl lands as 24.d.2 (separate sub-PR) since
-        // OpenAI SSE has its own quirks (`data: [DONE]` sentinel,
-        // delta chunks split at arbitrary token boundaries, partial-
-        // line buffering across reads).
-        Err(BackendError::Generic {
-            provider: self.config.provider_name.into(),
-            model: self.config.default_model.clone(),
+        // §Fase 33.d — Real OpenAI-compatible SSE streaming.
+        //
+        // Wire shape per OpenAI streaming docs (shared by Kimi, GLM,
+        // Ollama-as-openai-compat, OpenRouter):
+        //   POST /v1/chat/completions  (body { ..., "stream": true })
+        //   Content-Type: text/event-stream
+        //   data: {"choices":[{"delta":{"content":"..."},"finish_reason":null}]}
+        //   data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{...}}
+        //   data: [DONE]
+        //
+        // Each `data:` line is a JSON object except the final
+        // `data: [DONE]` sentinel which closes the stream.
+        let model = self.resolve_model(&request).to_string();
+        let provider = self.config.provider_name;
+
+        // Step 1 — build streaming body (stream=true).
+        let body = build_request_body(&request, &self.config.default_model, true);
+        let body_bytes = serde_json::to_vec(&body).map_err(|e| BackendError::Generic {
+            provider: provider.into(),
+            model: model.clone(),
             status: None,
-            message: format!(
-                "streaming not yet implemented for the {} backend (Fase 24.d.2 \
-                 — track docs/fase_24_native_rust_backends.md)",
-                self.config.provider_name,
-            ),
-        })
+            message: format!("failed to encode streaming request body: {e}"),
+        })?;
+
+        // Step 2 — build headers.
+        let headers = self.build_headers()?;
+
+        // Step 3 — fire the request. We do NOT use the shared retry
+        // loop because retrying mid-stream is semantically wrong (an
+        // adopter already saw partial tokens; a retry would replay
+        // them). Streaming MUST fail-fast on any non-200 status.
+        let url = format!("{}/v1/chat/completions", self.config.base_url);
+        let response = self
+            .http_client
+            .post(&url)
+            .headers(headers)
+            .body(body_bytes)
+            .send()
+            .await
+            .map_err(|e| BackendError::Generic {
+                provider: provider.into(),
+                model: model.clone(),
+                status: None,
+                message: format!("streaming transport failure: {e}"),
+            })?;
+
+        let status = response.status().as_u16();
+        if status != 200 {
+            let headers_clone = response.headers().clone();
+            let body = response.text().await.unwrap_or_default();
+            return Err(super::error::categorise_http(
+                provider,
+                &model,
+                status,
+                &headers_clone,
+                &body,
+                self.config.api_key_env,
+            ));
+        }
+
+        // Step 4 — wrap the byte-stream in an SSE event iterator and
+        // project each event onto a ChatChunk. The chunk parser is
+        // pure + total over the closed event-shape catalog.
+        let provider_owned = provider.to_string();
+        let model_owned = model.clone();
+        let events = sse_event_stream(response, provider_owned.clone(), model_owned.clone());
+        let chunks = futures::StreamExt::filter_map(events, move |event| {
+            let provider = provider_owned.clone();
+            let model = model_owned.clone();
+            async move {
+                match event {
+                    Ok(event) => parse_openai_compat_chunk(event, &provider, &model),
+                    Err(e) => Some(Err(e)),
+                }
+            }
+        });
+        Ok(Box::pin(chunks))
     }
 
     fn count_tokens(&self, model: &str, text: &str) -> usize {
@@ -631,6 +694,87 @@ fn finish_reason_label(reason: &FinishReason) -> &'static str {
         FinishReason::SafetyBreach => "safety_breach",
         FinishReason::Other(_) => "other",
     }
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  §Fase 33.d — SSE chunk parsing
+// ────────────────────────────────────────────────────────────────────
+
+/// Parse one OpenAI-compatible SSE event into an optional `ChatChunk`.
+///
+/// Returns:
+///   * `None` — event carries no `data:` field, or the `[DONE]`
+///     sentinel (which closes the stream silently).
+///   * `Some(Ok(chunk))` — a usable streaming delta.
+///   * `Some(Err(...))` — JSON in the event body was unparseable; this
+///     surfaces to the caller's stream as a typed transport error.
+///
+/// Per OpenAI streaming docs (`docs/api/streaming`) and verified
+/// against Moonshot Kimi / Zhipu GLM / OpenRouter SSE samples:
+///
+/// ```text
+/// data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}
+/// data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}
+/// data: [DONE]
+/// ```
+pub(crate) fn parse_openai_compat_chunk(
+    event: super::sse_streaming::SseEvent,
+    provider: &str,
+    model: &str,
+) -> Option<Result<ChatChunk, BackendError>> {
+    let data = event.data?;
+    let trimmed = data.trim();
+
+    // [DONE] sentinel — close stream silently per OpenAI spec.
+    if trimmed == "[DONE]" {
+        return None;
+    }
+
+    // Parse the JSON envelope.
+    let payload: Value = match serde_json::from_str(trimmed) {
+        Ok(v) => v,
+        Err(e) => {
+            return Some(Err(BackendError::Generic {
+                provider: provider.into(),
+                model: model.into(),
+                status: Some(200),
+                message: format!("failed to parse streaming JSON chunk: {e}"),
+            }));
+        }
+    };
+
+    // Extract delta text from `choices[0].delta.content`. May be absent
+    // on chunks that carry only a finish_reason / role-only delta — in
+    // that case we still emit a ChatChunk with empty delta + the
+    // finish_reason populated.
+    let choices = payload.get("choices").and_then(Value::as_array);
+    let first_choice = choices.and_then(|c| c.first());
+    let delta_text = first_choice
+        .and_then(|c| c.get("delta"))
+        .and_then(|d| d.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    let finish_raw = first_choice
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(Value::as_str);
+    let finish_reason =
+        finish_raw.map(|raw| FinishReason::from_provider(provider, raw));
+
+    // Usage is only present on the terminal chunk for most providers
+    // (some send usage on every chunk — both shapes are valid).
+    let usage = if payload.get("usage").is_some() {
+        Some(extract_usage(&payload))
+    } else {
+        None
+    };
+
+    Some(Ok(ChatChunk {
+        delta: delta_text,
+        finish_reason,
+        usage,
+    }))
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1001,23 +1145,111 @@ mod tests {
         assert!(!b.supports(Capability::LockedParams, "moonshot-v1-8k"));
     }
 
-    // ── Streaming surface ───────────────────────────────────────────
+    // ── §Fase 33.d — SSE chunk parsing (pure-unit, network-free) ────
 
-    #[tokio::test]
-    async fn stream_returns_explicit_not_implemented_in_24d_v1() {
-        let b = OpenAICompatibleBackend::new(OpenAICompatConfig::openai(), Some("k".into()));
-        // ChatStream = Pin<Box<dyn Stream<...>>> doesn't implement Debug
-        // so we can't `{:?}` the whole Result; match Err arms only.
-        match b.stream(ChatRequest::default()).await {
-            Err(BackendError::Generic { ref message, .. }) => {
-                assert!(
-                    message.contains("streaming not yet implemented"),
-                    "unexpected: {message}"
-                );
-            }
-            Err(other) => panic!("expected Generic, got {other:?}"),
-            Ok(_) => panic!("expected error, got Ok"),
+    use super::parse_openai_compat_chunk;
+    use super::super::sse_streaming::SseEvent;
+
+    fn sse_event_with_data(data: &str) -> SseEvent {
+        SseEvent {
+            data: Some(data.to_string()),
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn parse_chunk_extracts_delta_content() {
+        let ev = sse_event_with_data(
+            r#"{"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}"#,
+        );
+        let chunk = parse_openai_compat_chunk(ev, "openai", "gpt-4o-mini")
+            .expect("data event yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.delta, "hello");
+        assert!(chunk.finish_reason.is_none());
+        assert!(chunk.usage.is_none());
+    }
+
+    #[test]
+    fn parse_chunk_done_sentinel_returns_none() {
+        let ev = sse_event_with_data("[DONE]");
+        assert!(parse_openai_compat_chunk(ev, "openai", "gpt-4o-mini").is_none());
+    }
+
+    #[test]
+    fn parse_chunk_done_sentinel_with_surrounding_whitespace_recognized() {
+        // Some providers emit `data:[DONE]\n\n`; the SSE parser drops
+        // the leading space already, but if a provider sends extra
+        // whitespace inside the value we still recognize it.
+        let ev = sse_event_with_data("  [DONE]  ");
+        assert!(parse_openai_compat_chunk(ev, "openai", "gpt-4o-mini").is_none());
+    }
+
+    #[test]
+    fn parse_chunk_final_chunk_carries_finish_reason_and_usage() {
+        let ev = sse_event_with_data(
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}"#,
+        );
+        let chunk = parse_openai_compat_chunk(ev, "openai", "gpt-4o-mini")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.delta, "");
+        assert_eq!(chunk.finish_reason, Some(FinishReason::Stop));
+        let usage = chunk.usage.expect("usage on terminal chunk");
+        assert_eq!(usage.input_tokens, 3);
+        assert_eq!(usage.output_tokens, 5);
+        assert_eq!(usage.total_tokens, 8);
+    }
+
+    #[test]
+    fn parse_chunk_role_only_delta_yields_empty_delta() {
+        // First chunk often carries only `delta.role="assistant"`.
+        let ev = sse_event_with_data(
+            r#"{"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}"#,
+        );
+        let chunk = parse_openai_compat_chunk(ev, "openai", "gpt-4o-mini")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.delta, "");
+        assert!(chunk.finish_reason.is_none());
+    }
+
+    #[test]
+    fn parse_chunk_invalid_json_surfaces_as_error() {
+        let ev = sse_event_with_data("not-valid-json{");
+        let result = parse_openai_compat_chunk(ev, "openai", "gpt-4o-mini")
+            .expect("yields error");
+        match result {
+            Err(BackendError::Generic { message, .. }) => {
+                assert!(message.contains("failed to parse streaming JSON chunk"));
+            }
+            other => panic!("expected Generic error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_chunk_event_without_data_returns_none() {
+        // Comment-only / event-name-only events have no data payload
+        // and must drop silently.
+        let ev = SseEvent {
+            event: Some("ping".into()),
+            ..Default::default()
+        };
+        assert!(parse_openai_compat_chunk(ev, "openai", "gpt-4o-mini").is_none());
+    }
+
+    #[test]
+    fn parse_chunk_kimi_locked_model_finish_reason_mapping() {
+        // Kimi uses OpenAI-shape SSE; FinishReason mapping is provider-
+        // agnostic here. Verifies the dispatch.
+        let ev = sse_event_with_data(
+            r#"{"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+        );
+        let chunk = parse_openai_compat_chunk(ev, "kimi", "moonshot-v1-8k")
+            .expect("yields chunk")
+            .expect("valid JSON");
+        assert_eq!(chunk.finish_reason, Some(FinishReason::Length));
     }
 
     // ── complete() — early failure paths ────────────────────────────

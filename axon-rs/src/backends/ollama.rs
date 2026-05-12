@@ -22,11 +22,14 @@
 //!
 //! # Streaming
 //!
-//! Ollama's native streaming surface uses ndjson (one JSON object per
-//! line, not SSE). The shared base's `stream()` returns the
-//! "not yet implemented" typed error — Ollama's ndjson parser is its
-//! own thing and lands in 24.h.2 follow-up. The non-streaming
-//! `complete()` path works today.
+//! §Fase 33.d — Ollama streams via its OpenAI-compatible surface
+//! (`POST <base>/v1/chat/completions` with `stream: true`), inheriting
+//! the SSE wire format directly from the shared
+//! [`OpenAICompatibleBackend::stream`] implementation. Ollama also
+//! exposes a native ndjson surface at `/api/chat` for adopters that
+//! want the provider-native protocol; that route is a 33.x follow-up
+//! and not needed for in-tree adopter consumption since the OpenAI-
+//! compat path covers every model the daemon serves.
 //!
 //! # Example
 //!
@@ -147,12 +150,12 @@ impl Backend for OllamaBackend {
     }
 
     async fn stream(&self, request: ChatRequest) -> Result<ChatStream, BackendError> {
-        // 24.h v1 — non-streaming complete path is the priority.
-        // Ollama's native streaming surface is ndjson (one JSON object
-        // per line, not SSE), so it needs its own parser distinct from
-        // the OpenAI / Anthropic / Gemini SSE paths. Lands in 24.h.2
-        // follow-up. Surfaces here as the typed "not yet implemented"
-        // error from the shared base.
+        // §Fase 33.d — Ollama streams via its OpenAI-compatible
+        // /v1/chat/completions surface; the shared
+        // OpenAICompatibleBackend::stream impl handles the SSE wire
+        // shape. Ollama-native ndjson (/api/chat) is a 33.x follow-up
+        // that isn't needed for in-tree adopter consumption — every
+        // model the daemon serves is reachable via OpenAI-compat SSE.
         self.inner.stream(request).await
     }
 
@@ -374,11 +377,17 @@ mod tests {
     // ── Streaming surface ───────────────────────────────────────────
 
     #[tokio::test]
-    async fn stream_delegates_to_base_not_implemented_path() {
-        let b = OllamaBackend::local();
+    async fn stream_delegates_to_base_real_sse_implementation() {
+        // §Fase 33.d — Ollama streams via OpenAI-compat SSE; unreachable
+        // port exercises the transport-error path.
+        let b = OllamaBackend::local().with_base_url("http://127.0.0.1:1");
         match b.stream(ChatRequest::default()).await {
             Err(BackendError::Generic { ref message, .. }) => {
-                assert!(message.contains("streaming not yet implemented"));
+                assert!(
+                    message.contains("streaming transport failure")
+                        || message.contains("transport"),
+                    "unexpected message: {message}"
+                );
             }
             Err(other) => panic!("expected Generic, got {other:?}"),
             Ok(_) => panic!("expected error, got Ok"),
