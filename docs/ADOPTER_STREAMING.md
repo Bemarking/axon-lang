@@ -1454,6 +1454,261 @@ streaming lifetime — see `cancel_token.rs` for the API.
 
 ---
 
+## Production-path activation (Fase 33.x, v1.25.0+)
+
+**D4 wire byte-compat ratified up front**: every adopter on
+v1.24.0 can upgrade to v1.25.0 **without changing a single line
+of `.axon` source**. The wire shape adopters consume is byte-
+identical for stub-backed flows + the canonical happy path; new
+features (per-step replay audit, BPE tokenizer fallback, W002
+warning) surface ONLY via optional wire fields that are elided
+when not active.
+
+Fase 33.x activates the four-pillar contract on the production
+SSE path. Where Fase 33.a-i shipped the architectural primitives
+in isolation, Fase 33.x activates them inside
+`server_execute_streaming` so adopter flows that declare
+`output: Stream<T>` or `apply: <stream-effect-tool>` see:
+
+- **D1 + D2** — real per-chunk delivery via `Backend::stream()` +
+  `StreamPolicyEnforcer` running in production on declared
+  `<stream:<policy>>` effects (not just compile-time validated).
+- **D3** — cancel inside the reqwest body, **p95 cancel→None
+  ≤ 100ms wall-clock** (measured 12.6µs against the local-loopback
+  slow-drip mock — 7950× under budget; live wire is asserted by
+  the opt-in real-provider lane).
+- **D5** — closed-catalog `axon-W002 streaming-not-supported`
+  warning surfaces on `axon.complete.warnings[*]` when the
+  async path falls back to the legacy synchronous-burst delivery.
+- **D6** — per-step audit trail in `/v1/replay/<trace_id>` for
+  SSE routes whose axonendpoint declared `replay: true`.
+- **D7** — mono-file `crate::backend` retirement (Phase 1):
+  consolidated single source of truth for the canonical 7-provider
+  set + deprecated synchronous call surface.
+- **D9** — opt-in BPE-tokenized fallback chunking for legacy-path
+  flow shapes (defaults OFF; preserves v1.24.0 wire byte-compat).
+- **D10** — real-provider E2E lane (Anthropic / OpenAI / Gemini +
+  4 vertical canonical patterns) gated on
+  `AXON_RUN_REAL_PROVIDER_TEST` repository variable.
+- **D12** — robustness fuzz across 11 surfaces, ~2050 deterministic
+  LCG iterations.
+
+### Adopter checklist — what changes, what doesn't
+
+| Concern | v1.24.0 | v1.25.0 |
+|---|---|---|
+| `.axon` source needed? | — | NONE for the happy path; `replay: true` enables per-step audit |
+| Wire body for stub + canonical `Stream<T>` | 1 axon.token "(stub)" + 1 axon.complete | **Identical** (D4 byte-compat) |
+| Wire body for real backend (Anthropic / OpenAI / Gemini) | Hits `crate::backend::call_multi`; synthetic 3-word chunking | **Per upstream provider chunk** (real granularity via `Backend::stream()`) |
+| `axon.complete.stream_policies` for declared effects | Populated (Fase 33.e) | **Populated + `enforcement_summary` adds production counters** |
+| `axon.complete.warnings` | (field does not exist) | New optional field; carries W002 when LEGACY path fires |
+| `GET /v1/replay/<uuid>` for SSE routes with `replay: true` | Returns 404 (Fase 32.h SSE bypasses replay) | **Returns entry with `step_audit` array (D6 per-step audit)** |
+| Client-disconnect cancel propagation latency | Between event emissions (Fase 33.f baseline) | **p95 12.6µs measured (D3 invariant); reqwest body aborts mid-stream** |
+| Adopter-side EventSource code | Unchanged | Unchanged |
+| Auth surface (Fase 32.g `requires:` capabilities) | Unchanged | Unchanged |
+| Adopter test suites | Pass unchanged | Pass unchanged (verified: 49 integration suites + 1614 lib + Python parity) |
+
+### 4-policy production behavior table
+
+When a tool declares `effects: <stream:<policy>>` and the flow
+activates the async streaming path (33.x.b), the
+`StreamPolicyEnforcer` runs on the per-step
+`Stream<ChatChunk>`. Each policy produces a specific behavior +
+specific counters on the wire's `enforcement_summary` field.
+
+| Policy declaration | Production behavior | Wire counters fire when... |
+|---|---|---|
+| `<stream:drop_oldest>` | Bounded buffer; when full, **drops the oldest queued chunk** + accepts the new one | Fast producer + slow consumer; `drop_oldest_hits` > 0 |
+| `<stream:degrade_quality>` | Calls the configured degrader fn on every push (identity-degrader OSS default; enterprise vertical impls override) | Always — counter increments per push regardless of saturation |
+| `<stream:pause_upstream>` | Bounded buffer; when full, **blocks the producer's push until the consumer drains** | Fast producer + slow consumer; `pause_upstream_blocks` > 0 |
+| `<stream:fail>` | Bounded buffer; when full, **returns Overflow error to the producer** + closes the stream | Fast producer reaches capacity; `fail_overflows` ≥ 1 |
+
+Adopters reading `axon.complete.enforcement_summary` get the
+exhaustive snapshot per step:
+
+```json
+"enforcement_summary": {
+  "Generate": {
+    "policy_slug": "drop_oldest",
+    "chunks_pushed": 46,
+    "chunks_delivered": 46,
+    "drop_oldest_hits": 0,
+    "degrade_quality_hits": 0,
+    "pause_upstream_blocks": 0,
+    "fail_overflows": 0,
+    "failed": false
+  }
+}
+```
+
+### `axon-W002 streaming-not-supported` reading guide
+
+The W002 warning surfaces on `axon.complete.warnings[*]` when
+`server_execute_streaming` decides the LEGACY synchronous path
+instead of the async per-step `Backend::stream()` loop. **No
+silent degradation** — the warning is OBSERVABLE on every wire
+that fell back.
+
+`FallbackMode` closed catalog (4 variants):
+
+| `fallback_mode` value | What it means | Adopter action |
+|---|---|---|
+| `"unsupported_flow_shape"` | Flow uses `anchors`, `apply: <lambda>`, `let` bindings, mid-stream `use_tool`, `hibernate`, `drill`/`trail` PIX, or another IRFlowNode variant the streaming planner doesn't model (33.x.b scope) | None required for compatibility — flow runs correctly on the legacy path. To gain per-token streaming, refactor the flow to the canonical `step S { ask: "..." [apply: tool] }` shape. |
+| `"unknown_backend"` | Resolver returned `None` for the requested backend name | Check the backend name spelling; consult `CANONICAL_PROVIDERS` for the canonical 7-name set. |
+| `"source_compilation_failed"` | Lex / parse / type-check / IR-generation error | Fix the source error (see ADOPTER_DIAGNOSTICS.md Fase 28 for the diagnostic shape). |
+| `"backend_lacks_stream"` | Reserved — for future adopter-provided custom backends that implement `Backend::complete()` but not `Backend::stream()` | Implement `Backend::stream()` for your custom backend, OR set `axon_runtime::set_tokenizer_fallback(true)` for BPE-tokenized fallback chunking. |
+
+The warning record also includes `flow_name` + `backend` +
+human-readable `message`. Audit-row mirror at
+`/v1/replay/<uuid>.runtime_warnings[*]` preserves the same
+shape (always present as JSON array, possibly `[]` — adopter
+dashboards depend on stable wire-field shape).
+
+### Per-step replay binding example (D6)
+
+For SSE routes whose axonendpoint declared `replay: true` (or
+POST without explicit `replay:`, which defaults to enabled per
+Fase 32.h D9), the v1.25.0+ server records a per-step audit
+trail. Auditors retrieve it via `GET /v1/replay/<trace_id>` and
+see:
+
+```json
+{
+  "trace_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "endpoint_name": "ClinicalDecisionSupport",
+  "flow_name": "CDSAssessment",
+  "method": "POST",
+  "path": "/cds/decision",
+  "client_id": "tenant-X",
+  "capabilities_used": ["clinician.assess"],
+  "response_status": 200,
+  "response_content_type": "text/event-stream",
+  "model_version": "axon.runtime.dynamic_route.sse.v1",
+  "deterministic": false,
+  "step_audit": [
+    {
+      "step_name": "TriageVitals",
+      "step_index": 0,
+      "success": true,
+      "tokens_emitted": 47,
+      "output_hash_hex": "9a1f2c3d4e5b6a7f...",
+      "effect_policy_applied": null,
+      "chunks_dropped": 0,
+      "chunks_degraded": 0,
+      "timestamp_ms": 1715517600123
+    },
+    {
+      "step_name": "DifferentialReasoning",
+      "step_index": 1,
+      "success": true,
+      "tokens_emitted": 134,
+      "output_hash_hex": "0b1c2d3e4f5a6b7c...",
+      "effect_policy_applied": "drop_oldest",
+      "chunks_dropped": 0,
+      "chunks_degraded": 0,
+      "timestamp_ms": 1715517605456
+    }
+  ],
+  "runtime_warnings": []
+}
+```
+
+**Why this matters for regulated verticals**:
+
+- **Banking** (PCI DSS Req 10) — auditors need per-step
+  `tokens_emitted` + `output_hash_hex` so each LLM call in a
+  multi-step risk-assessment flow is independently auditable.
+- **Government** (FedRAMP AU-2) — FOIA retrieval gets the
+  per-step reasoning chain, not just the final response.
+- **Legal** (FRE 502 waiver-doctrine) — appellate review traces
+  the per-step privilege-assessment.
+- **Medicine** (21 CFR Part 11 §11.10) — CDS audit retains
+  per-step recommendation provenance with `output_hash_hex` as
+  the content-addressable anchor.
+
+**Per-token chain signature is NOT in this scope** — each
+`axon.token` event is NOT individually cryptographically chained
+(would require Fase 11.c primitive extension; ships as Fase 34
+if/when regulated adopters need byte-exact stream replay-as-
+original). The `step_audit` records here are the **per-step**
+granularity that satisfies the regulated-vertical audit
+requirements as of v1.25.0.
+
+### Real-provider E2E recipe (33.x.j opt-in lane)
+
+The dedicated CI workflow
+`.github/workflows/fase_33x_real_provider.yml` runs 7 lanes
+against real upstream providers when adopter forks opt in.
+Default OSS CI **does NOT** consume token quota or risk
+network-jitter-induced flake.
+
+**One-time setup for your fork:**
+
+```bash
+# 1. Set the repository variable (Settings → Variables → Actions):
+AXON_RUN_REAL_PROVIDER_TEST=1
+
+# 2. Set the per-provider key secrets you want to validate
+#    (Settings → Secrets → Actions):
+ANTHROPIC_API_KEY=sk-ant-...   # optional but recommended
+OPENAI_API_KEY=sk-...           # optional
+GEMINI_API_KEY=AIza...          # optional
+```
+
+**Trigger:**
+
+```bash
+# In your fork on GitHub: Actions → "Fase 33.x.j — Real-provider
+# E2E (gated)" → Run workflow. Or via gh CLI:
+gh workflow run fase_33x_real_provider.yml
+```
+
+**What runs:**
+
+| Lane | Asserts |
+|---|---|
+| `anthropic` | Stream from Claude opens + ≥5 chunks + **p95 inter-chunk arrival ≤ 100ms** wall-clock |
+| `openai` | Same against GPT |
+| `gemini` | Same against Gemini |
+| `vertical-banking` | PCI DSS Req 10 prompt: loan-decision multi-chunk stream |
+| `vertical-government` | FedRAMP AU-2 prompt: benefits-eligibility stream |
+| `vertical-legal` | FRE 502 prompt: privilege-assessment stream |
+| `vertical-medicine` | 21 CFR Part 11 prompt: CDS recommendation stream |
+
+Lanes for unset keys skip cleanly with an `eprintln!` in the CI
+log — a fork with only `ANTHROPIC_API_KEY` still validates
+Anthropic + all 4 vertical lanes (which use Anthropic by
+default), while OpenAI/Gemini lanes skip without failing.
+
+**Local invocation:**
+
+```bash
+# Set keys + run the lane locally:
+export ANTHROPIC_API_KEY=sk-ant-...
+cargo test --manifest-path axon-rs/Cargo.toml \
+  --test fase33x_j_real_provider -- --ignored --nocapture
+```
+
+### v1.24.0 → v1.25.0 upgrade in one command
+
+For adopters running the OSS stack on a single deploy host:
+
+```bash
+# Bump the dep pin in your adopter project's Cargo.toml or
+# pyproject.toml from 1.24.0 → 1.25.0, then:
+cargo build --release            # or pip install -U axon-lang
+systemctl restart axon-server    # or your equivalent
+```
+
+That's the entire migration for the happy path. The wire body
+your EventSource clients consume is byte-identical for stub-
+backed flows + the canonical `Stream<T>` shape. For full
+scenario-driven recipes (per-step replay indexing, tokenizer
+fallback opt-in, cancel-budget validation), see
+[MIGRATION_v1.25.md](MIGRATION_v1.25.md).
+
+---
+
 ## Where to file bugs
 
 | Symptom | Where |
