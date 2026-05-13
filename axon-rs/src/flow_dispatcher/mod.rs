@@ -81,6 +81,27 @@ pub mod pure_shape;
 /// `branch_path` segments threading the orchestration tree.
 pub mod orchestration;
 
+/// §Fase 33.y.e — Parallel variant handler (`Par`) + public helper
+/// [`parallel::run_branches_concurrently`] for concurrent dispatch
+/// via `futures::future::join_all` with per-branch DispatchCtx
+/// clones + post-join step_counter merge + Return-sentinel
+/// propagation. `IRParallelBlock` is payload-free in v1.25.0; the
+/// handler emits the `step_type: "par"` wire shape with zero
+/// token events. Future IR extensions wire branches into the
+/// public helper.
+pub mod parallel;
+
+/// §Fase 33.y.e — Stream variant handler (`Stream`) + public bridge
+/// [`effects_bridge::bridge_effect_stream_yield`] integrating the
+/// Fase 23 algebraic-effects runtime: scans the instruction block
+/// for `perform Stream.Yield x` (statically + via trace), runs the
+/// `EffectRuntime`, and emits one `axon.token` per Yield with the
+/// resolved value. `IRStreamBlock` is payload-free in v1.25.0; the
+/// handler emits the `step_type: "stream"` wire shape with zero
+/// token events. Future IR extensions wire instruction blocks into
+/// the public bridge.
+pub mod effects_bridge;
+
 // ────────────────────────────────────────────────────────────────────
 //  DispatchCtx — shared per-flow async surface
 // ────────────────────────────────────────────────────────────────────
@@ -112,6 +133,7 @@ pub mod orchestration;
 /// Monotonic per-flow counter. Each Step (or pure-shape variant
 /// promoted to Step) increments. Surface fed into `step_audit` so
 /// the row index is correct under nested orchestration.
+#[derive(Clone)]
 pub struct DispatchCtx {
     pub flow_name: String,
     pub backend_name: String,
@@ -584,7 +606,11 @@ pub async fn dispatch_node(
         IRFlowNode::Break(brk) => orchestration::run_break(brk, ctx).await,
         IRFlowNode::Continue(cont) => orchestration::run_continue(cont, ctx).await,
         IRFlowNode::LambdaDataApply(_) => legacy_shim(ShimReason::LambdaDataApply, ctx).await,
-        IRFlowNode::Par(_) => legacy_shim(ShimReason::Par, ctx).await,
+        // §Fase 33.y.e — Par graduated to real async handler. The
+        // payload-free `IRParallelBlock` emits the canonical
+        // `step_type: "par"` wire shape; future IR extensions
+        // delegate to `parallel::run_branches_concurrently`.
+        IRFlowNode::Par(par) => parallel::run_par(par, ctx).await,
         IRFlowNode::Hibernate(_) => legacy_shim(ShimReason::Hibernate, ctx).await,
         IRFlowNode::Deliberate(_) => legacy_shim(ShimReason::Deliberate, ctx).await,
         IRFlowNode::Consensus(_) => legacy_shim(ShimReason::Consensus, ctx).await,
@@ -595,7 +621,11 @@ pub async fn dispatch_node(
         IRFlowNode::Explore(_) => legacy_shim(ShimReason::Explore, ctx).await,
         IRFlowNode::Ingest(_) => legacy_shim(ShimReason::Ingest, ctx).await,
         IRFlowNode::ShieldApply(_) => legacy_shim(ShimReason::ShieldApply, ctx).await,
-        IRFlowNode::Stream(_) => legacy_shim(ShimReason::Stream, ctx).await,
+        // §Fase 33.y.e — Stream graduated to real async handler.
+        // The payload-free `IRStreamBlock` emits the canonical
+        // `step_type: "stream"` wire shape; future IR extensions
+        // delegate to `effects_bridge::bridge_effect_stream_yield`.
+        IRFlowNode::Stream(stream) => effects_bridge::run_stream(stream, ctx).await,
         IRFlowNode::Navigate(_) => legacy_shim(ShimReason::Navigate, ctx).await,
         IRFlowNode::Drill(_) => legacy_shim(ShimReason::Drill, ctx).await,
         IRFlowNode::Trail(_) => legacy_shim(ShimReason::Trail, ctx).await,
