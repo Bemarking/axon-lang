@@ -97,6 +97,23 @@ pub enum FlowExecutionEvent {
         tokens_output: u64,
         timestamp_ms: u64,
     },
+    /// §Fase 33.y.k — Tool invocation chunk. Emitted by per-step
+    /// handlers when the upstream backend's chunk stream signals
+    /// `FinishReason::ToolUse` (provider invoked a tool mid-stream).
+    /// Closed-catalog event variant; D4 byte-compat preserves
+    /// adopter parsers — flows without declared `apply: <tool>`
+    /// never emit this event.
+    ///
+    /// `content` carries the tool-call's structured payload as a
+    /// canonical wire-stable string (provider-specific shape today;
+    /// future Fase 33.y.k.2 standardizes per-provider extraction
+    /// into a unified `tool_call_id + arguments` schema).
+    ToolCall {
+        step_name: String,
+        tool_name: String,
+        content: String,
+        timestamp_ms: u64,
+    },
     /// Terminator — success path. Receiver MUST close the stream.
     FlowComplete {
         flow_name: String,
@@ -135,6 +152,7 @@ impl FlowExecutionEvent {
             FlowExecutionEvent::StepStart { .. }
                 | FlowExecutionEvent::StepToken { .. }
                 | FlowExecutionEvent::StepComplete { .. }
+                | FlowExecutionEvent::ToolCall { .. }
         )
     }
 
@@ -146,6 +164,7 @@ impl FlowExecutionEvent {
             FlowExecutionEvent::StepStart { .. } => "step_start",
             FlowExecutionEvent::StepToken { .. } => "step_token",
             FlowExecutionEvent::StepComplete { .. } => "step_complete",
+            FlowExecutionEvent::ToolCall { .. } => "tool_call",
             FlowExecutionEvent::FlowComplete { .. } => "flow_complete",
             FlowExecutionEvent::FlowError { .. } => "flow_error",
         }

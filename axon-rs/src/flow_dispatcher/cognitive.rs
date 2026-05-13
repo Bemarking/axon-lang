@@ -323,6 +323,7 @@ pub async fn run_focus(
             "You are focusing your attention. Narrow scope to the target; surface what matters most.".into(),
         ),
         kind_slug: "focus",
+        tools: Vec::new(),
     };
     run_pure_shape(shape, ctx).await
 }
@@ -351,6 +352,7 @@ pub async fn run_associate(
             "You are associating. Find the meaningful relationship; return a structured link.".into(),
         ),
         kind_slug: "associate",
+        tools: Vec::new(),
     };
     run_pure_shape(shape, ctx).await
 }
@@ -385,6 +387,7 @@ pub async fn run_aggregate(
             "You are aggregating. Group + summarize over the declared dimensions; surface the structure.".into(),
         ),
         kind_slug: "aggregate",
+        tools: Vec::new(),
     };
     run_pure_shape(shape, ctx).await
 }
@@ -410,6 +413,7 @@ pub async fn run_explore(
             "You are exploring. Sample broadly; surface the most-relevant directions.".into(),
         ),
         kind_slug: "explore",
+        tools: Vec::new(),
     };
     run_pure_shape(shape, ctx).await
 }
@@ -431,6 +435,7 @@ pub async fn run_ingest(
             "You are ingesting. Map the source's structure into the target; preserve fidelity.".into(),
         ),
         kind_slug: "ingest",
+        tools: Vec::new(),
     };
     run_pure_shape(shape, ctx).await
 }
@@ -458,6 +463,7 @@ pub async fn run_navigate(
             "You are navigating a PIX (paper §6 hidden state). Trace your reasoning path; surface the corpus regions you crossed.".into(),
         ),
         kind_slug: "navigate",
+        tools: Vec::new(),
     };
     run_pure_shape(shape, ctx).await
 }
@@ -479,6 +485,7 @@ pub async fn run_corroborate(
             "You are corroborating. Cross-validate independently; surface agreement strength + disagreements.".into(),
         ),
         kind_slug: "corroborate",
+        tools: Vec::new(),
     };
     run_pure_shape(shape, ctx).await
 }
