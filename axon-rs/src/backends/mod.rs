@@ -466,6 +466,72 @@ pub const STREAMING_BACKEND_NAMES: &[&str] = &[
     "stub",
 ];
 
+/// §Fase 33.x.i — Canonical 7-provider set surfaced to adopters.
+///
+/// Identical to [`STREAMING_BACKEND_NAMES`] minus `"stub"` (which is
+/// a test/internal backend, not an adopter-facing provider). This is
+/// the SINGLE SOURCE OF TRUTH for "which providers does axon
+/// support natively"; the legacy
+/// [`crate::backend::SUPPORTED_BACKENDS`] mono-file constant is now
+/// a `pub use` re-export of this.
+///
+/// Drift-gated by `resolver_tests::canonical_providers_equals_legacy_supported`
+/// (asserts byte-equality with the legacy constant) and
+/// `tests/fase33x_i_mono_file_retirement.rs` (asserts the same plus
+/// the count + canonical-vs-stub-removed invariant).
+pub const CANONICAL_PROVIDERS: &[&str] = &[
+    "anthropic",
+    "gemini",
+    "glm",
+    "kimi",
+    "ollama",
+    "openai",
+    "openrouter",
+];
+
+/// §Fase 33.x.i — Canonical API-key env-var resolution.
+///
+/// Same semantics as the legacy `crate::backend::get_api_key`:
+///   - For known providers, reads `<PROVIDER>_API_KEY` from the
+///     environment.
+///   - For `"ollama"`, missing key is permitted (local daemon).
+///   - For all other providers, returns an error with adopter-
+///     actionable hint when the env var is unset.
+///   - For unknown provider names, returns an error listing
+///     [`CANONICAL_PROVIDERS`].
+///
+/// This is the SINGLE SOURCE OF TRUTH for the legacy
+/// `crate::backend::get_api_key` shim. The legacy shim wraps this
+/// with the legacy `crate::backend::BackendError` struct shape;
+/// callers using the trait `Backend` surface read keys via their
+/// per-provider `from_env` factory instead.
+pub fn get_api_key(provider: &str) -> Result<String, String> {
+    let env_var = match provider {
+        "anthropic" => "ANTHROPIC_API_KEY",
+        "openai" => "OPENAI_API_KEY",
+        "gemini" => "GEMINI_API_KEY",
+        "kimi" => "KIMI_API_KEY",
+        "glm" => "GLM_API_KEY",
+        "openrouter" => "OPENROUTER_API_KEY",
+        "ollama" => "OLLAMA_API_KEY", // local: missing key permitted
+        _ => {
+            return Err(format!(
+                "Unknown backend '{provider}'. Supported: {}",
+                CANONICAL_PROVIDERS.join(", ")
+            ));
+        }
+    };
+    if provider == "ollama" {
+        return Ok(std::env::var(env_var).unwrap_or_default());
+    }
+    std::env::var(env_var).map_err(|_| {
+        format!(
+            "{env_var} not set. Required for backend '{provider}'.\n\
+             hint: export {env_var}=<your-api-key>"
+        )
+    })
+}
+
 #[cfg(test)]
 mod resolver_tests {
     use super::*;
@@ -516,6 +582,63 @@ mod resolver_tests {
         let mut sorted = STREAMING_BACKEND_NAMES.to_vec();
         sorted.sort();
         assert_eq!(sorted.as_slice(), STREAMING_BACKEND_NAMES);
+    }
+
+    #[test]
+    fn canonical_providers_equals_legacy_supported_backends() {
+        // §Fase 33.x.i drift gate: the new
+        // `crate::backends::CANONICAL_PROVIDERS` (consolidated
+        // single source of truth) MUST equal the legacy
+        // `crate::backend::SUPPORTED_BACKENDS` byte-for-byte. The
+        // legacy constant is now a `pub use` re-export of the new
+        // one, so byte-equality is by-construction; this test pins
+        // the invariant + catches accidental drift if someone
+        // re-introduces a separate const.
+        assert_eq!(
+            CANONICAL_PROVIDERS,
+            crate::backend::SUPPORTED_BACKENDS,
+            "33.x.i drift: canonical providers must equal legacy SUPPORTED_BACKENDS"
+        );
+    }
+
+    #[test]
+    fn canonical_providers_is_streaming_minus_stub() {
+        // §Fase 33.x.i invariant: the canonical 7-provider set
+        // equals the 8-entry streaming dispatch set with `stub`
+        // removed. Drift here surfaces if a new provider is added
+        // to one set but not the other.
+        let mut canonical_sorted: Vec<&str> = CANONICAL_PROVIDERS.to_vec();
+        canonical_sorted.sort();
+        let streaming_without_stub: Vec<&str> = STREAMING_BACKEND_NAMES
+            .iter()
+            .copied()
+            .filter(|n| *n != "stub")
+            .collect();
+        assert_eq!(canonical_sorted, streaming_without_stub);
+    }
+
+    #[test]
+    fn get_api_key_unknown_provider_returns_error() {
+        let err = get_api_key("does-not-exist").unwrap_err();
+        assert!(err.contains("Unknown backend"));
+        assert!(err.contains("Supported:"));
+    }
+
+    #[test]
+    fn get_api_key_ollama_permits_missing_key() {
+        // Ollama is a local daemon — missing key is allowed.
+        // Save+restore to avoid test-isolation issues.
+        let prev = std::env::var("OLLAMA_API_KEY").ok();
+        std::env::remove_var("OLLAMA_API_KEY");
+        let result = get_api_key("ollama");
+        assert!(
+            result.is_ok(),
+            "ollama MUST permit missing API key for local daemon"
+        );
+        assert_eq!(result.unwrap(), "");
+        if let Some(v) = prev {
+            std::env::set_var("OLLAMA_API_KEY", v);
+        }
     }
 
     #[tokio::test]

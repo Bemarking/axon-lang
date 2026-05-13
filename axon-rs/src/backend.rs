@@ -9,6 +9,34 @@
 //!   - OpenAI-compatible: OpenAI, Kimi, GLM, OpenRouter, Ollama (Bearer auth + chat/completions)
 //!
 //! API key sourced from environment: <PROVIDER>_API_KEY.
+//!
+//! # §Fase 33.x.i — Retirement-in-progress
+//!
+//! This module is the LEGACY synchronous LLM-call surface. The
+//! production async path uses [`crate::backends::Backend`] +
+//! [`crate::backends::Registry`] instead. As of v1.25.0 (33.x.i):
+//!
+//!   - [`SUPPORTED_BACKENDS`] is now a `pub use` re-export of the
+//!     consolidated [`crate::backends::CANONICAL_PROVIDERS`] —
+//!     single source of truth + drift-gated.
+//!   - [`get_api_key`] delegates to
+//!     [`crate::backends::get_api_key`] for the canonical env-var
+//!     resolution (kept here as a thin shim that wraps the result
+//!     in the legacy [`BackendError`] shape so existing callers
+//!     don't need to change types).
+//!   - The synchronous [`call`] / [`call_multi`] / [`call_stream`]
+//!     / [`call_multi_stream`] functions are marked
+//!     `#[deprecated]`. New code MUST use the async `Backend`
+//!     trait via the [`crate::backends::Registry`] surface.
+//!
+//! The 4 caller files (runner.rs, axon_server.rs,
+//! resilient_backend.rs, tenant_secrets.rs) carry a top-level
+//! `#![allow(deprecated)]` while the deeper async migration of
+//! the synchronous CLI/server paths progresses under a
+//! followup sub-fase (Fase 33.x.i.2 — sync→async migration of the
+//! 4 callers, separate from this consolidation cycle).
+
+#![allow(deprecated)]
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
@@ -79,10 +107,15 @@ fn provider_spec(name: &str) -> Option<ProviderSpec> {
     }
 }
 
-/// List of all supported backend names.
-pub const SUPPORTED_BACKENDS: &[&str] = &[
-    "anthropic", "gemini", "glm", "kimi", "ollama", "openai", "openrouter",
-];
+/// §Fase 33.x.i — Re-export the consolidated single source of truth.
+///
+/// The canonical 7-provider list lives in
+/// [`crate::backends::CANONICAL_PROVIDERS`]; this re-export keeps
+/// existing call sites compiling without churn while the deeper
+/// async migration (Fase 33.x.i.2) progresses. Drift-gated by
+/// `backends::resolver_tests::canonical_providers_equals_legacy_supported_backends`
+/// + `tests/fase33x_i_mono_file_retirement.rs`.
+pub use crate::backends::CANONICAL_PROVIDERS as SUPPORTED_BACKENDS;
 
 // ── Public types ────────────────────────────────────────────────────────────
 
@@ -110,31 +143,32 @@ impl std::fmt::Display for BackendError {
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-/// Get the API key for a given backend from environment.
+/// §Fase 33.x.i — Get the API key for a given backend from
+/// environment.
+///
+/// This is a thin shim around [`crate::backends::get_api_key`]
+/// (the consolidated source of truth) that wraps the result in
+/// the legacy [`BackendError`] shape so existing callers keep
+/// compiling without touching their error-handling code. New
+/// code should call [`crate::backends::get_api_key`] directly +
+/// use the trait-side error types.
 pub fn get_api_key(backend: &str) -> Result<String, BackendError> {
-    let spec = provider_spec(backend).ok_or_else(|| BackendError {
-        message: format!(
-            "Unknown backend '{backend}'. Supported: {}",
-            SUPPORTED_BACKENDS.join(", ")
-        ),
-    })?;
-
-    // Ollama is local — allow empty API key
-    if backend == "ollama" {
-        return Ok(std::env::var(spec.env_var).unwrap_or_default());
-    }
-
-    std::env::var(spec.env_var).map_err(|_| BackendError {
-        message: format!(
-            "{} not set. Required for backend '{backend}'.\n\
-             hint: export {}=<your-api-key>",
-            spec.env_var, spec.env_var
-        ),
-    })
+    crate::backends::get_api_key(backend).map_err(|message| BackendError { message })
 }
 
 /// Call the LLM API for the given backend (blocking).
 /// Dispatches to the correct API family based on provider spec.
+///
+/// §Fase 33.x.i — DEPRECATED. New code MUST use the async
+/// [`crate::backends::Backend`] trait via
+/// [`crate::backends::Registry`]. The 4 caller files of this
+/// function carry `#![allow(deprecated)]` while the deeper async
+/// migration progresses under Fase 33.x.i.2.
+#[deprecated(
+    since = "1.25.0",
+    note = "use crate::backends::Registry::get(name)?.complete() instead; \
+            33.x.i.2 closes the 4-caller sync→async migration"
+)]
 pub fn call(
     backend: &str,
     api_key: &str,
@@ -193,6 +227,13 @@ pub fn call(
 /// Call the LLM API with streaming — text chunks arrive via `on_chunk` callback.
 /// Returns the complete `ModelResponse` after the stream ends.
 /// Anchor checking and other post-processing run on the accumulated text.
+/// §Fase 33.x.i — DEPRECATED single-message streaming call.
+/// New code MUST use [`crate::backends::Backend::stream`] instead.
+#[deprecated(
+    since = "1.25.0",
+    note = "use crate::backends::Registry::get(name)?.stream() instead; \
+            33.x.i.2 closes the sync→async migration"
+)]
 pub fn call_stream<F>(
     backend: &str,
     api_key: &str,
@@ -254,6 +295,14 @@ where
 /// Call the LLM API with conversation history (blocking).
 /// The `messages` slice contains prior user/assistant turns. The current
 /// `user_prompt` is appended as the final user message.
+/// §Fase 33.x.i — DEPRECATED multi-turn synchronous call.
+/// New code MUST use [`crate::backends::Backend::complete`] with
+/// a populated `ChatRequest::messages` history.
+#[deprecated(
+    since = "1.25.0",
+    note = "use crate::backends::Registry::get(name)?.complete() with \
+            ChatRequest::messages history; 33.x.i.2 closes the migration"
+)]
 pub fn call_multi(
     backend: &str,
     api_key: &str,
@@ -315,6 +364,14 @@ pub fn call_multi(
 }
 
 /// Call the LLM API with conversation history and streaming.
+/// §Fase 33.x.i — DEPRECATED multi-turn streaming call.
+/// New code MUST use [`crate::backends::Backend::stream`] with a
+/// populated `ChatRequest::messages` history.
+#[deprecated(
+    since = "1.25.0",
+    note = "use crate::backends::Registry::get(name)?.stream() with \
+            ChatRequest::messages history; 33.x.i.2 closes the migration"
+)]
 pub fn call_multi_stream<F>(
     backend: &str,
     api_key: &str,
