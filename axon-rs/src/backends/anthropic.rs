@@ -405,7 +405,10 @@ impl Backend for AnthropicBackend {
                 }
             }
         });
-        Ok(Box::pin(chunks))
+        // Step 5 — §Fase 33.x.e. Cancel-aware wrap so `next()`
+        // returns `None` ≤100ms p95 after `request.cancel.cancel()`.
+        let inner: ChatStream = Box::pin(chunks);
+        Ok(super::sse_streaming::cancel_aware(inner, request.cancel.clone()))
     }
 
     fn count_tokens(&self, model: &str, text: &str) -> usize {
@@ -785,15 +788,8 @@ mod tests {
 
     fn req_with(messages: Vec<Message>) -> ChatRequest {
         ChatRequest {
-            model: String::new(),
             messages,
-            system: None,
-            max_tokens: None,
-            temperature: None,
-            top_p: None,
-            tools: vec![],
-            stream: false,
-            trace_id: None,
+            ..Default::default()
         }
     }
 

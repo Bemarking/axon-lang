@@ -18430,6 +18430,13 @@ async fn run_streaming_async_path(
             // internally when `model` is empty; system_prompt
             // lifts to top-level for Anthropic / inlines for
             // OpenAI compats per provider adapter.
+            //
+            // §Fase 33.x.e — Thread the cancellation flag through
+            // the request so each per-provider stream() impl wraps
+            // its returned chunk stream with `cancel_aware`. Client
+            // disconnect → CancelOnDrop fires → cancel.cancel() →
+            // wrapper returns None within ≤100ms p95 → reqwest body
+            // dropped → upstream HTTP request aborted.
             let request = ChatRequest {
                 model: String::new(),
                 messages: {
@@ -18448,6 +18455,7 @@ async fn run_streaming_async_path(
                 tools: Vec::new(),
                 stream: true,
                 trace_id: None,
+                cancel: cancel.clone(),
             };
 
             // Cancel check before issuing the upstream request.

@@ -190,6 +190,18 @@ pub struct ChatRequest {
     /// Trace ID propagated from the calling flow step. Surfaces in
     /// tracing spans so log lines correlate.
     pub trace_id: Option<String>,
+    /// §Fase 33.x.e — Cancellation flag observed INSIDE the reqwest
+    /// body. Each per-provider `Backend::stream()` impl wraps its
+    /// returned chunk stream with `sse_streaming::cancel_aware`
+    /// so the next-chunk poll races a `cancel.cancelled()` future
+    /// against the upstream HTTP body — when the flag fires the
+    /// stream returns `None` within ≤100ms p95 + the dropped
+    /// reqwest Response aborts the upstream HTTP request body.
+    ///
+    /// `Default` is an uncancelled flag; adopters that don't supply
+    /// one get pre-33.x.e semantics (the stream runs to completion).
+    /// Cloning is cheap (`Arc`-backed inside).
+    pub cancel: crate::cancel_token::CancellationFlag,
 }
 
 /// How the model decided to stop generating.

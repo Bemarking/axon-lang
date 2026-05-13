@@ -351,7 +351,9 @@ impl Backend for GeminiBackend {
                 }
             }
         });
-        Ok(Box::pin(chunks))
+        // §Fase 33.x.e — Cancel-aware wrap (≤100ms p95 abort).
+        let inner: ChatStream = Box::pin(chunks);
+        Ok(super::sse_streaming::cancel_aware(inner, request.cancel.clone()))
     }
 
     fn count_tokens(&self, model: &str, text: &str) -> usize {
@@ -746,15 +748,8 @@ mod tests {
 
     fn req_with(messages: Vec<Message>) -> ChatRequest {
         ChatRequest {
-            model: String::new(),
             messages,
-            system: None,
-            max_tokens: None,
-            temperature: None,
-            top_p: None,
-            tools: vec![],
-            stream: false,
-            trace_id: None,
+            ..Default::default()
         }
     }
 

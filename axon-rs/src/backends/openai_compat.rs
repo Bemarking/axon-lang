@@ -455,7 +455,13 @@ impl Backend for OpenAICompatibleBackend {
                 }
             }
         });
-        Ok(Box::pin(chunks))
+        // Step 5 — §Fase 33.x.e. Wrap with the cancel-aware adapter
+        // so the consumer's `next()` returns `None` within ≤100ms
+        // p95 after `request.cancel.cancel()` fires. The dropped
+        // wrapper releases the reqwest body, aborting the HTTP
+        // request mid-stream — no wasted token quota.
+        let inner: ChatStream = Box::pin(chunks);
+        Ok(super::sse_streaming::cancel_aware(inner, request.cancel.clone()))
     }
 
     fn count_tokens(&self, model: &str, text: &str) -> usize {
@@ -789,15 +795,8 @@ mod tests {
 
     fn req_with(messages: Vec<Message>) -> ChatRequest {
         ChatRequest {
-            model: String::new(),
             messages,
-            system: None,
-            max_tokens: None,
-            temperature: None,
-            top_p: None,
-            tools: vec![],
-            stream: false,
-            trace_id: None,
+            ..Default::default()
         }
     }
 

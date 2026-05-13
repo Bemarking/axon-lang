@@ -48,6 +48,77 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use super::error::BackendError;
+use crate::cancel_token::CancellationFlag;
+
+// ────────────────────────────────────────────────────────────────────
+//  §Fase 33.x.e — Cancel-aware stream adapter
+// ────────────────────────────────────────────────────────────────────
+
+/// Wrap any `Stream` so it terminates promptly when the supplied
+/// [`CancellationFlag`] fires.
+///
+/// The returned stream's `poll_next` races two futures:
+///   - `inner.next()` — the upstream body chunk.
+///   - `cancel.cancelled()` — a tokio Notify-backed future that
+///     resolves the moment any clone of the flag calls `cancel()`.
+///
+/// On cancel the stream yields `None` (clean end-of-stream from the
+/// consumer's perspective) WITHOUT first awaiting the next chunk.
+/// Dropping the returned stream then drops the wrapped `inner`,
+/// which for a `reqwest::Response::bytes_stream` aborts the
+/// underlying HTTP body — the TCP connection closes (or returns to
+/// the pool, depending on H1/H2) without consuming further bytes.
+///
+/// # Measurable invariant (D3)
+///
+/// p95 latency from `flag.cancel()` to consumer's next `None`
+/// observation MUST be ≤ 100ms under a local-loopback HTTP server
+/// emitting one SSE chunk every 1 second. Enforced by
+/// `axon-rs/tests/fase33x_e_cancel_inside_body.rs`.
+///
+/// # Pure async — no busy-poll
+///
+/// The select inside `poll_next` parks the task on a tokio Notify
+/// waker; no spinning, no timer polling. Cancel wakes the parked
+/// task atomically — the same Notify that powers
+/// `CancellationFlag::cancelled()`.
+///
+/// # Type
+///
+/// Returns `Pin<Box<dyn Stream<Item = T> + Send + Unpin>>` to
+/// match the per-provider [`super::ChatStream`] alias. Adopters
+/// that already hold a `Pin<Box<dyn Stream<...>>>` (the canonical
+/// `ChatStream` shape) can call this wrapper without re-typing.
+pub fn cancel_aware<S, T>(
+    stream: S,
+    cancel: CancellationFlag,
+) -> Pin<Box<dyn Stream<Item = T> + Send>>
+where
+    S: Stream<Item = T> + Send + Unpin + 'static,
+    T: Send + 'static,
+{
+    Box::pin(futures::stream::unfold(
+        (stream, cancel),
+        |(mut s, cancel)| async move {
+            // Fast path: already cancelled. Avoid a single poll on
+            // the inner stream which may still yield a buffered
+            // chunk; the contract is "no further deliveries after
+            // cancel fires".
+            if cancel.is_cancelled() {
+                return None;
+            }
+            // Race the next chunk against the cancel signal.
+            // `biased;` ensures we re-check cancel first on every
+            // tick — a fired cancel takes priority over a chunk
+            // already buffered in the inner stream.
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => None,
+                item = s.next() => item.map(|x| (x, (s, cancel))),
+            }
+        },
+    ))
+}
 
 // ────────────────────────────────────────────────────────────────────
 //  Line buffering

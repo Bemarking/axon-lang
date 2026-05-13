@@ -70,6 +70,18 @@ pub struct CancellationFlag {
     inner: Arc<Inner>,
 }
 
+impl std::fmt::Debug for CancellationFlag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // §Fase 33.x.e — Required so `ChatRequest` (which derives
+        // `Debug`) can carry a CancellationFlag field. We surface
+        // only the cancelled state, NOT the Notify internals (which
+        // don't impl Debug and aren't meaningful to log anyway).
+        f.debug_struct("CancellationFlag")
+            .field("cancelled", &self.is_cancelled())
+            .finish()
+    }
+}
+
 impl Default for CancellationFlag {
     fn default() -> Self {
         Self::new()
