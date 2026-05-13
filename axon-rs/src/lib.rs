@@ -100,6 +100,13 @@ pub mod flow_plan;
 /// 33.y.l retires the shim + the `LegacyShimHandled` outcome variant
 /// once every IR variant has its real handler.
 pub mod flow_dispatcher;
+/// §Fase 33.z.b — Streaming-via-dispatcher graft skeleton. Lifts
+/// `flow_dispatcher::dispatch_node` (Fase 33.y, 45/45 structurally
+/// complete) into the production SSE hot path behind the
+/// `AXON_STREAMING_VIA_DISPATCHER` runtime flag (default OFF;
+/// flip to ON for v1.27.0 stable in 33.z.c; legacy path retired
+/// in 33.z.e).
+pub mod streaming_via_dispatcher;
 pub mod flow_version;
 pub mod exec_context;
 pub mod graceful_shutdown;

@@ -95,6 +95,72 @@ impl Drop for TokenizerFallbackGuard {
 }
 
 // ────────────────────────────────────────────────────────────────────
+//  §Fase 33.z.b — Streaming-via-dispatcher graft skeleton flag
+// ────────────────────────────────────────────────────────────────────
+//
+// Process-wide flag that controls whether `server_execute_streaming`
+// dispatches non-canonical IRFlowNode variants through the structurally-
+// complete `flow_dispatcher::dispatch_node` (Fase 33.y) or falls back
+// to the v1.26.0 `run_streaming_legacy_path` synthetic-burst path.
+//
+// DEFAULTS TO OFF — v1.27.0-alpha ships the graft skeleton behind the
+// flag so adopters who DON'T opt in see byte-identical v1.26.0 wire
+// behavior (D4 safety net during the migration). Adopters who DO opt
+// in observe per-chunk live wire for the 8 architectural-group shapes
+// captured in 33.y / 33.z.a (Conditional / ForIn / Par / Remember /
+// ShieldApply / Emit / Hibernate / LambdaDataApply + 35 more variants
+// via the dispatcher's compiler-enforced 45-arm exhaustive match).
+//
+// Sub-fase 33.z.c flips this default from OFF to ON for v1.27.0
+// stable; sub-fase 33.z.e deletes the flag + the legacy path entirely.
+// Mirrors the proven 33.x.h opt-in BPE chunking pattern.
+
+static STREAMING_VIA_DISPATCHER: Mutex<bool> = Mutex::new(false);
+
+/// Read the current `AXON_STREAMING_VIA_DISPATCHER` flag value.
+/// Called once per `server_execute_streaming` invocation (per-flow,
+/// not per-chunk) so lock contention is negligible.
+pub fn streaming_via_dispatcher_enabled() -> bool {
+    *STREAMING_VIA_DISPATCHER
+        .lock()
+        .expect("streaming_via_dispatcher flag mutex poisoned")
+}
+
+/// Set the flag explicitly. Returns the previous value so callers
+/// can restore it (the [`StreamingViaDispatcherGuard`] RAII helper
+/// does this automatically).
+pub fn set_streaming_via_dispatcher(enabled: bool) -> bool {
+    let mut g = STREAMING_VIA_DISPATCHER
+        .lock()
+        .expect("streaming_via_dispatcher flag mutex poisoned");
+    let prev = *g;
+    *g = enabled;
+    prev
+}
+
+/// RAII guard that restores the flag to its previous value on drop.
+/// Use in tests to scope a flag mutation to a single `#[tokio::test]`
+/// body. Mirrors `TokenizerFallbackGuard` discipline.
+pub struct StreamingViaDispatcherGuard {
+    previous: bool,
+}
+
+impl StreamingViaDispatcherGuard {
+    /// Set the flag to `enabled` and capture the previous value for
+    /// restoration on drop.
+    pub fn set(enabled: bool) -> Self {
+        let previous = set_streaming_via_dispatcher(enabled);
+        Self { previous }
+    }
+}
+
+impl Drop for StreamingViaDispatcherGuard {
+    fn drop(&mut self) {
+        set_streaming_via_dispatcher(self.previous);
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
 //  Tokenizer-aware chunking helper
 // ────────────────────────────────────────────────────────────────────
 
