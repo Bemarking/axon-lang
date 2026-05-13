@@ -660,6 +660,10 @@ const GRADUATED_VARIANTS: &[ShimReason] = &[
     ShimReason::Transact,
     ShimReason::Deliberate,
     ShimReason::Consensus,
+    // 33.y.i — PIX variants (3)
+    ShimReason::Hibernate,
+    ShimReason::Drill,
+    ShimReason::Trail,
 ];
 
 /// Pure-shape graduated variants (33.y.c) — strict "(stub)" + 1 token.
@@ -752,6 +756,15 @@ const WIRE_INTEGRATIONS_GRADUATED: &[ShimReason] = &[
     ShimReason::Consensus,
 ];
 
+/// PIX graduated variants (33.y.i) — Hibernate / Drill / Trail.
+/// All emit canonical wire shape + bind placeholder/seeded value
+/// under variant-specific keys. Tokens=0 across the board.
+const PIX_GRADUATED: &[ShimReason] = &[
+    ShimReason::Hibernate,
+    ShimReason::Drill,
+    ShimReason::Trail,
+];
+
 #[tokio::test]
 async fn every_ir_flow_node_routes_to_its_labeled_handler() {
     let pairs = all_45_pairs();
@@ -766,7 +779,8 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
         let cognitive_pem = COGNITIVE_PEM_BOUND_GRADUATED.contains(&expected_reason);
         let cognitive_framing = COGNITIVE_FRAMING_GRADUATED.contains(&expected_reason);
         let algebraic_handler = ALGEBRAIC_HANDLERS_GRADUATED.contains(&expected_reason)
-            || WIRE_INTEGRATIONS_GRADUATED.contains(&expected_reason);
+            || WIRE_INTEGRATIONS_GRADUATED.contains(&expected_reason)
+            || PIX_GRADUATED.contains(&expected_reason);
 
         // Cognitive-framing handlers behave like pure-shape (1 token).
         let pure_shape_like = pure_shape || cognitive_framing;
@@ -901,16 +915,15 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
 /// `GRADUATED_VARIANTS.len() == 45` and `LegacyShimHandled` is
 /// deleted in lockstep.
 #[test]
-fn graduated_variants_set_size_pinned_for_33_y_h() {
+fn graduated_variants_set_size_pinned_for_33_y_i() {
     assert_eq!(
         GRADUATED_VARIANTS.len(),
-        40,
-        "33.y.h advances graduated count to 40: 6 pure-shape + 6 \
+        43,
+        "33.y.i advances graduated count to 43: 6 pure-shape + 6 \
          orchestration + 2 parallel/algebraic + 10 cognitive + 6 \
-         algebraic handlers + 10 wire integrations (Emit/Publish/\
-         Discover/Persist/Retrieve/Mutate/Purge/Transact/Deliberate/\
-         Consensus). 33.y.i will advance to 43 (PIX variants); 33.y.j \
-         to 45 (all)."
+         algebraic handlers + 10 wire integrations + 3 PIX \
+         (Hibernate/Drill/Trail). 33.y.j will advance to 45 (Lambda \
+         + UseTool)."
     );
     assert_eq!(PURE_SHAPE_GRADUATED.len(), 6);
     assert_eq!(ORCHESTRATION_GRADUATED.len(), 6);
@@ -919,6 +932,7 @@ fn graduated_variants_set_size_pinned_for_33_y_h() {
     assert_eq!(COGNITIVE_FRAMING_GRADUATED.len(), 7);
     assert_eq!(ALGEBRAIC_HANDLERS_GRADUATED.len(), 6);
     assert_eq!(WIRE_INTEGRATIONS_GRADUATED.len(), 10);
+    assert_eq!(PIX_GRADUATED.len(), 3);
 }
 
 // ────────────────────────────────────────────────────────────────────
