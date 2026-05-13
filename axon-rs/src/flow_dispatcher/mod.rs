@@ -148,6 +148,15 @@ pub mod wire_integrations;
 /// continuation-passing semantics + PIX state machines.
 pub mod pix;
 
+/// §Fase 33.y.j — Lambda + UseTool (the final 2 variants).
+/// **LambdaDataApply** — Fase 15 ΛD apply (the sync runner walks
+/// a CPS dispatcher mapping lambda data structures to expressions;
+/// 33.y.j ships the OSS wire shape + helper). **UseTool** —
+/// mid-step tool invocation (Fase 22 backend tools; the
+/// `ChatRequest.tools` cross-cutting plumb-through lands in
+/// 33.y.k D8). Completes the 45-variant total coverage.
+pub mod lambda_tools;
+
 // ────────────────────────────────────────────────────────────────────
 //  DispatchCtx — shared per-flow async surface
 // ────────────────────────────────────────────────────────────────────
@@ -683,7 +692,8 @@ pub async fn dispatch_node(
         IRFlowNode::Validate(validate) => pure_shape::run_validate(validate, ctx).await,
         IRFlowNode::Refine(refine) => pure_shape::run_refine(refine, ctx).await,
         IRFlowNode::Weave(weave) => pure_shape::run_weave(weave, ctx).await,
-        IRFlowNode::UseTool(_) => legacy_shim(ShimReason::UseTool, ctx).await,
+        // §Fase 33.y.j — UseTool graduated.
+        IRFlowNode::UseTool(node) => lambda_tools::run_use_tool(node, ctx).await,
         // §Fase 33.y.f — cognitive primitives PEM-bound.
         IRFlowNode::Remember(node) => cognitive::run_remember(node, ctx).await,
         IRFlowNode::Recall(node) => cognitive::run_recall(node, ctx).await,
@@ -697,7 +707,8 @@ pub async fn dispatch_node(
         IRFlowNode::Return(ret) => orchestration::run_return(ret, ctx).await,
         IRFlowNode::Break(brk) => orchestration::run_break(brk, ctx).await,
         IRFlowNode::Continue(cont) => orchestration::run_continue(cont, ctx).await,
-        IRFlowNode::LambdaDataApply(_) => legacy_shim(ShimReason::LambdaDataApply, ctx).await,
+        // §Fase 33.y.j — LambdaDataApply graduated.
+        IRFlowNode::LambdaDataApply(node) => lambda_tools::run_lambda_data_apply(node, ctx).await,
         // §Fase 33.y.e — Par graduated to real async handler. The
         // payload-free `IRParallelBlock` emits the canonical
         // `step_type: "par"` wire shape; future IR extensions

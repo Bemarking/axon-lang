@@ -664,6 +664,9 @@ const GRADUATED_VARIANTS: &[ShimReason] = &[
     ShimReason::Hibernate,
     ShimReason::Drill,
     ShimReason::Trail,
+    // 33.y.j — Lambda + UseTool (FINAL 2 — 45/45 graduated)
+    ShimReason::LambdaDataApply,
+    ShimReason::UseTool,
 ];
 
 /// Pure-shape graduated variants (33.y.c) — strict "(stub)" + 1 token.
@@ -765,6 +768,16 @@ const PIX_GRADUATED: &[ShimReason] = &[
     ShimReason::Trail,
 ];
 
+/// Lambda + UseTool graduated variants (33.y.j) — the FINAL 2.
+/// LambdaDataApply uses public helper `apply_lambda_data` (Fase 15
+/// CPS dispatcher); UseTool uses `invoke_tool` (Fase 22 tool
+/// registry). Both emit canonical wire shape + bind result under
+/// variant-specific key. Tokens=0.
+const LAMBDA_TOOLS_GRADUATED: &[ShimReason] = &[
+    ShimReason::LambdaDataApply,
+    ShimReason::UseTool,
+];
+
 #[tokio::test]
 async fn every_ir_flow_node_routes_to_its_labeled_handler() {
     let pairs = all_45_pairs();
@@ -780,7 +793,8 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
         let cognitive_framing = COGNITIVE_FRAMING_GRADUATED.contains(&expected_reason);
         let algebraic_handler = ALGEBRAIC_HANDLERS_GRADUATED.contains(&expected_reason)
             || WIRE_INTEGRATIONS_GRADUATED.contains(&expected_reason)
-            || PIX_GRADUATED.contains(&expected_reason);
+            || PIX_GRADUATED.contains(&expected_reason)
+            || LAMBDA_TOOLS_GRADUATED.contains(&expected_reason);
 
         // Cognitive-framing handlers behave like pure-shape (1 token).
         let pure_shape_like = pure_shape || cognitive_framing;
@@ -915,15 +929,20 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
 /// `GRADUATED_VARIANTS.len() == 45` and `LegacyShimHandled` is
 /// deleted in lockstep.
 #[test]
-fn graduated_variants_set_size_pinned_for_33_y_i() {
+fn graduated_variants_set_size_pinned_for_33_y_j_FINAL_45_OF_45() {
     assert_eq!(
         GRADUATED_VARIANTS.len(),
-        43,
-        "33.y.i advances graduated count to 43: 6 pure-shape + 6 \
-         orchestration + 2 parallel/algebraic + 10 cognitive + 6 \
-         algebraic handlers + 10 wire integrations + 3 PIX \
-         (Hibernate/Drill/Trail). 33.y.j will advance to 45 (Lambda \
-         + UseTool)."
+        45,
+        "🎉 33.y.j FINAL: graduated count reaches 45 / 45. All \
+         IRFlowNode variants have a NAMED async handler in \
+         dispatch_node; `legacy_shim` is no longer reachable from \
+         the dispatcher entry. 33.y.l will retire the shim + \
+         LegacyShimHandled outcome variant in lockstep cleanup. \
+         Composition: 6 pure-shape (33.y.c) + 6 orchestration \
+         (33.y.d) + 2 parallel/algebraic (33.y.e) + 10 cognitive \
+         (33.y.f) + 6 algebraic handlers (33.y.g) + 10 wire \
+         integrations (33.y.h) + 3 PIX (33.y.i) + 2 Lambda+UseTool \
+         (33.y.j) = 45 variants total."
     );
     assert_eq!(PURE_SHAPE_GRADUATED.len(), 6);
     assert_eq!(ORCHESTRATION_GRADUATED.len(), 6);
@@ -933,6 +952,23 @@ fn graduated_variants_set_size_pinned_for_33_y_i() {
     assert_eq!(ALGEBRAIC_HANDLERS_GRADUATED.len(), 6);
     assert_eq!(WIRE_INTEGRATIONS_GRADUATED.len(), 10);
     assert_eq!(PIX_GRADUATED.len(), 3);
+    assert_eq!(LAMBDA_TOOLS_GRADUATED.len(), 2);
+
+    // Sum check — the partition is exhaustive (no variant in
+    // multiple groups; no variant missing).
+    let total = PURE_SHAPE_GRADUATED.len()
+        + ORCHESTRATION_GRADUATED.len()
+        + PARALLEL_ALGEBRAIC_GRADUATED.len()
+        + COGNITIVE_PEM_BOUND_GRADUATED.len()
+        + COGNITIVE_FRAMING_GRADUATED.len()
+        + ALGEBRAIC_HANDLERS_GRADUATED.len()
+        + WIRE_INTEGRATIONS_GRADUATED.len()
+        + PIX_GRADUATED.len()
+        + LAMBDA_TOOLS_GRADUATED.len();
+    assert_eq!(
+        total, 45,
+        "partition sum check: all 9 sub-catalogs must cover exactly 45 variants"
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────
