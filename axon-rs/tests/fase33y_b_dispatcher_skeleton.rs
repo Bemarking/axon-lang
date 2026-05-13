@@ -642,6 +642,13 @@ const GRADUATED_VARIANTS: &[ShimReason] = &[
     ShimReason::Ingest,
     ShimReason::Navigate,
     ShimReason::Corroborate,
+    // 33.y.g — algebraic-effect handlers (6)
+    ShimReason::ShieldApply,
+    ShimReason::OtsApply,
+    ShimReason::MandateApply,
+    ShimReason::ComputeApply,
+    ShimReason::Listen,
+    ShimReason::DaemonStep,
 ];
 
 /// Pure-shape graduated variants (33.y.c) — strict "(stub)" + 1 token.
@@ -703,6 +710,20 @@ const COGNITIVE_FRAMING_GRADUATED: &[ShimReason] = &[
     ShimReason::Corroborate,
 ];
 
+/// Algebraic-effect handler graduated variants (33.y.g) — apply
+/// capability + invoke / listen / daemon. All emit wire shape +
+/// bind output under a variant-specific key in `let_bindings`.
+/// For zero-payload synthetic inputs in the drift gate, outputs
+/// are sensible defaults (empty/placeholder).
+const ALGEBRAIC_HANDLERS_GRADUATED: &[ShimReason] = &[
+    ShimReason::ShieldApply,
+    ShimReason::OtsApply,
+    ShimReason::MandateApply,
+    ShimReason::ComputeApply,
+    ShimReason::Listen,
+    ShimReason::DaemonStep,
+];
+
 #[tokio::test]
 async fn every_ir_flow_node_routes_to_its_labeled_handler() {
     let pairs = all_45_pairs();
@@ -716,16 +737,20 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
             PARALLEL_ALGEBRAIC_GRADUATED.contains(&expected_reason);
         let cognitive_pem = COGNITIVE_PEM_BOUND_GRADUATED.contains(&expected_reason);
         let cognitive_framing = COGNITIVE_FRAMING_GRADUATED.contains(&expected_reason);
+        let algebraic_handler = ALGEBRAIC_HANDLERS_GRADUATED.contains(&expected_reason);
 
         // Cognitive-framing handlers behave like pure-shape (1 token).
         let pure_shape_like = pure_shape || cognitive_framing;
-        // Parallel/algebraic + cognitive-PEM-bound all return
-        // Completed with 0 tokens.
-        let zero_token_completed = parallel_algebraic || cognitive_pem;
+        // Parallel/algebraic + cognitive-PEM-bound return Completed
+        // with output="" (truly payload-free). Algebraic handlers
+        // return Completed with placeholder output (compute:(...),
+        // (awaiting ...), daemon:...) so they need a separate arm
+        // that doesn't assert output equality.
+        let strict_empty_completed = parallel_algebraic || cognitive_pem;
 
-        match (outcome, pure_shape_like, orchestration, zero_token_completed) {
+        match (outcome, pure_shape_like, orchestration, strict_empty_completed, algebraic_handler) {
             // Pure-shape: stub-backend produces "(stub)" with 1 token.
-            (Ok(NodeOutcome::Completed { output, tokens_emitted, .. }), true, _, _) => {
+            (Ok(NodeOutcome::Completed { output, tokens_emitted, .. }), true, _, _, _) => {
                 assert_eq!(
                     output, "(stub)",
                     "pure-shape variant {:?} stub output should be '(stub)' (D4)",
@@ -741,17 +766,17 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
             // Let/Conditional/ForIn return Completed with payload-
             // dependent output (zero-payload synthetics → empty body
             // → empty output).
-            (Ok(NodeOutcome::Break), _, true, _) if expected_reason == ShimReason::Break => {}
-            (Ok(NodeOutcome::LoopContinue), _, true, _)
+            (Ok(NodeOutcome::Break), _, true, _, _) if expected_reason == ShimReason::Break => {}
+            (Ok(NodeOutcome::LoopContinue), _, true, _, _)
                 if expected_reason == ShimReason::Continue => {}
-            (Ok(NodeOutcome::Return { .. }), _, true, _)
+            (Ok(NodeOutcome::Return { .. }), _, true, _, _)
                 if expected_reason == ShimReason::Return => {}
-            (Ok(NodeOutcome::Completed { .. }), _, true, _)
+            (Ok(NodeOutcome::Completed { .. }), _, true, _, _)
                 if matches!(
                     expected_reason,
                     ShimReason::Let | ShimReason::Conditional | ShimReason::ForIn
                 ) => {}
-            // Parallel + algebraic: Par + Stream payload-free →
+            // Strict empty (Par + Stream + Remember + Recall + Forge):
             // Completed with output="", tokens=0.
             (
                 Ok(NodeOutcome::Completed {
@@ -762,20 +787,44 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
                 _,
                 _,
                 true,
+                _,
             ) => {
                 assert_eq!(
                     output, "",
-                    "33.y.e variant {:?} payload-free → empty output",
+                    "33.y.e/f strict-empty variant {:?} → empty output",
                     expected_reason
                 );
                 assert_eq!(
                     tokens_emitted, 0,
-                    "33.y.e variant {:?} payload-free → 0 tokens",
+                    "33.y.e/f strict-empty variant {:?} → 0 tokens",
+                    expected_reason
+                );
+            }
+            // 33.y.g algebraic handlers: Completed with placeholder
+            // outputs (compute:(...), (awaiting ...), daemon:..., or
+            // empty for Shield/Ots/Mandate with empty target).
+            // tokens_emitted=0 always.
+            (
+                Ok(NodeOutcome::Completed { tokens_emitted, .. }),
+                _,
+                _,
+                _,
+                true,
+            ) => {
+                assert_eq!(
+                    tokens_emitted, 0,
+                    "33.y.g algebraic handler variant {:?} → 0 tokens",
                     expected_reason
                 );
             }
             // Non-graduated: shim returns LegacyShimHandled.
-            (Ok(NodeOutcome::LegacyShimHandled { reason, node_kind }), false, false, false) => {
+            (
+                Ok(NodeOutcome::LegacyShimHandled { reason, node_kind }),
+                false,
+                false,
+                false,
+                false,
+            ) => {
                 assert_eq!(
                     reason, expected_reason,
                     "non-graduated dispatch_node routed {:?} to the wrong \
@@ -789,23 +838,27 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
                     expected_reason, node_kind, expected_kind
                 );
             }
-            (Ok(other), true, _, _) => panic!(
+            (Ok(other), true, _, _, _) => panic!(
                 "pure-shape variant {:?} expected Completed (stub), got {other:?}",
                 expected_reason
             ),
-            (Ok(other), _, true, _) => panic!(
+            (Ok(other), _, true, _, _) => panic!(
                 "orchestration variant {:?} unexpected outcome: {other:?}",
                 expected_reason
             ),
-            (Ok(other), _, _, true) => panic!(
-                "parallel/algebraic variant {:?} expected Completed (empty), got {other:?}",
+            (Ok(other), _, _, true, _) => panic!(
+                "strict-empty variant {:?} expected Completed (empty), got {other:?}",
                 expected_reason
             ),
-            (Ok(other), false, false, false) => panic!(
+            (Ok(other), _, _, _, true) => panic!(
+                "algebraic handler variant {:?} expected Completed, got {other:?}",
+                expected_reason
+            ),
+            (Ok(other), false, false, false, false) => panic!(
                 "non-graduated variant {:?} expected LegacyShimHandled, got {other:?}",
                 expected_reason
             ),
-            (Err(e), _, _, _) => panic!(
+            (Err(e), _, _, _, _) => panic!(
                 "dispatch_node returned Err for {:?}: {e:?}",
                 expected_reason
             ),
@@ -818,20 +871,22 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
 /// `GRADUATED_VARIANTS.len() == 45` and `LegacyShimHandled` is
 /// deleted in lockstep.
 #[test]
-fn graduated_variants_set_size_pinned_for_33_y_f() {
+fn graduated_variants_set_size_pinned_for_33_y_g() {
     assert_eq!(
         GRADUATED_VARIANTS.len(),
-        24,
-        "33.y.f advances graduated count to 24: 6 pure-shape + 6 \
-         orchestration + 2 parallel/algebraic + 10 cognitive. \
-         33.y.g will advance to 30 (algebraic-effect handlers); …; \
-         33.y.l to 45 (all)."
+        30,
+        "33.y.g advances graduated count to 30: 6 pure-shape + 6 \
+         orchestration + 2 parallel/algebraic + 10 cognitive + 6 \
+         algebraic handlers (ShieldApply/OtsApply/MandateApply/\
+         ComputeApply/Listen/DaemonStep). 33.y.h will advance to 40 \
+         (wire integrations); …; 33.y.l to 45 (all)."
     );
     assert_eq!(PURE_SHAPE_GRADUATED.len(), 6);
     assert_eq!(ORCHESTRATION_GRADUATED.len(), 6);
     assert_eq!(PARALLEL_ALGEBRAIC_GRADUATED.len(), 2);
     assert_eq!(COGNITIVE_PEM_BOUND_GRADUATED.len(), 3);
     assert_eq!(COGNITIVE_FRAMING_GRADUATED.len(), 7);
+    assert_eq!(ALGEBRAIC_HANDLERS_GRADUATED.len(), 6);
 }
 
 // ────────────────────────────────────────────────────────────────────

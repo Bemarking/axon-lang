@@ -113,6 +113,19 @@ pub mod effects_bridge;
 /// system prompt.
 pub mod cognitive;
 
+/// §Fase 33.y.g — Algebraic-effect handler nodes.
+/// 6 variants: `ShieldApply` / `OtsApply` / `MandateApply` — apply
+/// a named capability to a target with structured output binding;
+/// `ComputeApply` — invoke a compute capability with positional
+/// arguments; `Listen` — wait on a Fase 13 typed channel for an
+/// event; `DaemonStep` — invoke a Fase 16 daemon supervisor by
+/// reference. Each handler emits wire shape with the canonical
+/// `step_type` slug + public `apply_*` helpers that enterprise
+/// integrations override (per the OSS/ENTERPRISE/SPLIT charter
+/// — the shield/OTS/mandate scanner registries live in
+/// `axon_enterprise.shield`).
+pub mod algebraic_handlers;
+
 // ────────────────────────────────────────────────────────────────────
 //  DispatchCtx — shared per-flow async surface
 // ────────────────────────────────────────────────────────────────────
@@ -679,7 +692,8 @@ pub async fn dispatch_node(
         IRFlowNode::Aggregate(node) => cognitive::run_aggregate(node, ctx).await,
         IRFlowNode::Explore(node) => cognitive::run_explore(node, ctx).await,
         IRFlowNode::Ingest(node) => cognitive::run_ingest(node, ctx).await,
-        IRFlowNode::ShieldApply(_) => legacy_shim(ShimReason::ShieldApply, ctx).await,
+        // §Fase 33.y.g — algebraic-effect handler nodes graduated.
+        IRFlowNode::ShieldApply(node) => algebraic_handlers::run_shield_apply(node, ctx).await,
         // §Fase 33.y.e — Stream graduated to real async handler.
         // The payload-free `IRStreamBlock` emits the canonical
         // `step_type: "stream"` wire shape; future IR extensions
@@ -689,11 +703,11 @@ pub async fn dispatch_node(
         IRFlowNode::Drill(_) => legacy_shim(ShimReason::Drill, ctx).await,
         IRFlowNode::Trail(_) => legacy_shim(ShimReason::Trail, ctx).await,
         IRFlowNode::Corroborate(node) => cognitive::run_corroborate(node, ctx).await,
-        IRFlowNode::OtsApply(_) => legacy_shim(ShimReason::OtsApply, ctx).await,
-        IRFlowNode::MandateApply(_) => legacy_shim(ShimReason::MandateApply, ctx).await,
-        IRFlowNode::ComputeApply(_) => legacy_shim(ShimReason::ComputeApply, ctx).await,
-        IRFlowNode::Listen(_) => legacy_shim(ShimReason::Listen, ctx).await,
-        IRFlowNode::DaemonStep(_) => legacy_shim(ShimReason::DaemonStep, ctx).await,
+        IRFlowNode::OtsApply(node) => algebraic_handlers::run_ots_apply(node, ctx).await,
+        IRFlowNode::MandateApply(node) => algebraic_handlers::run_mandate_apply(node, ctx).await,
+        IRFlowNode::ComputeApply(node) => algebraic_handlers::run_compute_apply(node, ctx).await,
+        IRFlowNode::Listen(node) => algebraic_handlers::run_listen(node, ctx).await,
+        IRFlowNode::DaemonStep(node) => algebraic_handlers::run_daemon_step(node, ctx).await,
         IRFlowNode::Emit(_) => legacy_shim(ShimReason::Emit, ctx).await,
         IRFlowNode::Publish(_) => legacy_shim(ShimReason::Publish, ctx).await,
         IRFlowNode::Discover(_) => legacy_shim(ShimReason::Discover, ctx).await,
