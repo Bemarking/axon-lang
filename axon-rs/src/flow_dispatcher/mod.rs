@@ -312,6 +312,46 @@ impl DispatchCtx {
         self
     }
 
+    /// §Fase 33.z.c — Builder: inject external Arc-backed side-channels
+    /// so the dispatcher's per-variant handlers populate the SAME
+    /// Mutexes that `server_execute_streaming` reads from for the SSE
+    /// wire's `enforcement_summary`, `step_audit`, and `runtime_warnings`
+    /// fields.
+    ///
+    /// Without this builder, `DispatchCtx::new` creates FRESH Arcs that
+    /// the dispatcher populates but the production hot path can't read.
+    /// That gap broke `axon.complete.enforcement_summary` wire emission
+    /// on the canonical Step shape when the dispatcher graft (33.z.b)
+    /// activated — the 33.x.d production-path tests detected the
+    /// regression at the `assert_eq!(generate_summary["chunks_pushed"], 1)`
+    /// line because the side-channel the wire reads from stayed empty
+    /// while the dispatcher's fresh Arc carried the counters.
+    ///
+    /// Used exclusively by `streaming_via_dispatcher::run_streaming_via_dispatcher`
+    /// to thread the side-channels the SSE handler constructs into the
+    /// dispatcher. Downstream-crate consumers driving `dispatch_node`
+    /// directly continue to use `DispatchCtx::new` + the fresh internal
+    /// Arcs.
+    pub fn with_external_side_channels(
+        mut self,
+        enforcement_summaries: std::sync::Arc<
+            tokio::sync::Mutex<
+                std::collections::HashMap<String, crate::axon_server::EnforcementSummaryWire>,
+            >,
+        >,
+        step_audit_records: std::sync::Arc<
+            tokio::sync::Mutex<Vec<crate::axonendpoint_replay::StepAuditRecord>>,
+        >,
+        runtime_warnings: std::sync::Arc<
+            tokio::sync::Mutex<Vec<crate::runtime_warnings::RuntimeWarning>>,
+        >,
+    ) -> Self {
+        self.enforcement_summaries = enforcement_summaries;
+        self.step_audit_records = step_audit_records;
+        self.runtime_warnings = runtime_warnings;
+        self
+    }
+
     /// Read + clear the pending effect policy. Returns `None` when no
     /// policy was set by the caller. The take-semantics (vs. peek)
     /// prevents a stale policy from a previous node leaking into the

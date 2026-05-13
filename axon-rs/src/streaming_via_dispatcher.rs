@@ -122,6 +122,28 @@ pub async fn run_streaming_via_dispatcher(
     backend: String,
     cancel: CancellationFlag,
     tx: UnboundedSender<FlowExecutionEvent>,
+    // §Fase 33.z.c — External side-channels threaded from
+    // `server_execute_streaming` so the dispatcher's per-variant
+    // handlers populate the SAME Mutexes the SSE wire's
+    // `enforcement_summary`, `step_audit`, and `runtime_warnings`
+    // fields read from. Without these, the dispatcher's fresh internal
+    // Arcs (created by `DispatchCtx::new`) would carry the counters
+    // but never reach the wire — adopter loses D4 byte-compat with
+    // the v1.25.0 33.x.d/f production-path surface.
+    enforcement_summaries: std::sync::Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<
+                String,
+                crate::axon_server::EnforcementSummaryWire,
+            >,
+        >,
+    >,
+    step_audit_records: std::sync::Arc<
+        tokio::sync::Mutex<Vec<crate::axonendpoint_replay::StepAuditRecord>>,
+    >,
+    runtime_warnings: std::sync::Arc<
+        tokio::sync::Mutex<Vec<crate::runtime_warnings::RuntimeWarning>>,
+    >,
 ) {
     // Cancel-safety helper — mirrors the legacy path's `emit` closure.
     // Returns `Err(())` when the producer should exit early (cancel
@@ -216,6 +238,11 @@ pub async fn run_streaming_via_dispatcher(
         system_prompt,
         cancel.clone(),
         tx.clone(),
+    )
+    .with_external_side_channels(
+        enforcement_summaries,
+        step_audit_records,
+        runtime_warnings,
     );
 
     // §6 — Walk the flow body. For each top-level IRFlowNode, call
@@ -241,9 +268,44 @@ pub async fn run_streaming_via_dispatcher(
     let mut steps_executed: usize = 0;
     let mut flow_success = true;
 
+    // §Fase 33.z.c — Look up the AST flow that corresponds to the
+    // IR flow. The AST is needed by `resolve_stream_effect_for_step`
+    // to walk the tool-effects table. For canonical Step shapes
+    // declaring `<stream:<policy>>` effects on a tool referenced via
+    // `apply: tool_name`, this is the same resolution the v1.25.0
+    // 33.x.d production path does in `build_streaming_plan`.
+    //
+    // Resolution happens at the TOP LEVEL only. Nested-step policies
+    // (steps inside Conditional / ForIn / Par bodies) inherit `None`
+    // — a deeper resolution that walks AST through orchestration is
+    // 33.z.d scope (50-flow parity corpus). For the canonical Step
+    // shape that the d2_post_33_x_d test exercises, top-level
+    // resolution is sufficient.
+    let ast_flow = ast_program
+        .declarations
+        .iter()
+        .find_map(|d| match d {
+            crate::ast::Declaration::Flow(f) if f.name == flow_name => Some(f),
+            _ => None,
+        });
+
     for node in &flow.steps {
         if cancel.is_cancelled() {
             break;
+        }
+        // §Fase 33.z.c — Per-step effect-policy resolution. Set
+        // `ctx.pending_effect_policy` before dispatch; the pure_shape
+        // handler reads + clears via `take_pending_effect_policy()` +
+        // wraps the chunk stream with `StreamPolicyEnforcer`.
+        if let (Some(ast_f), crate::ir_nodes::IRFlowNode::Step(ir_step)) = (ast_flow, node) {
+            if !ir_step.name.is_empty() {
+                ctx.pending_effect_policy =
+                    crate::stream_effect_dispatcher::resolve_stream_effect_for_step(
+                        &ir_step.name,
+                        ast_f,
+                        &ast_program,
+                    );
+            }
         }
         let outcome = dispatch_node(node, &mut ctx).await;
         match outcome {
@@ -301,11 +363,6 @@ pub async fn run_streaming_via_dispatcher(
     // returns None when this producer task completes — the original
     // tx in the caller is dropped separately by the spawn site.
     drop(ctx);
-    // Suppress unused-binding warnings on `ast_program` (the AST
-    // surface may be needed by future 33.z sub-fases — e.g., 33.z.c
-    // for `axon.tool_call` wire emission with per-step `apply_ref`
-    // resolution).
-    let _ = ast_program;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -328,6 +385,11 @@ mod tests {
                    axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse }";
         let (tx, mut rx) = mpsc::unbounded_channel();
         let cancel = CancellationFlag::new();
+        let enforcement = std::sync::Arc::new(tokio::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        ));
+        let audit = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let warnings = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
         run_streaming_via_dispatcher(
             src.to_string(),
             "test.axon".to_string(),
@@ -335,6 +397,9 @@ mod tests {
             "stub".to_string(),
             cancel,
             tx,
+            enforcement,
+            audit,
+            warnings,
         )
         .await;
 
@@ -367,6 +432,11 @@ mod tests {
         let src = "not valid axon source ::: <<< broken";
         let (tx, mut rx) = mpsc::unbounded_channel();
         let cancel = CancellationFlag::new();
+        let enforcement = std::sync::Arc::new(tokio::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        ));
+        let audit = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let warnings = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
         run_streaming_via_dispatcher(
             src.to_string(),
             "broken.axon".to_string(),
@@ -374,6 +444,9 @@ mod tests {
             "stub".to_string(),
             cancel,
             tx,
+            enforcement,
+            audit,
+            warnings,
         )
         .await;
 
@@ -411,6 +484,11 @@ mod tests {
                    axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse }";
         let (tx, mut rx) = mpsc::unbounded_channel();
         let cancel = CancellationFlag::new();
+        let enforcement = std::sync::Arc::new(tokio::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        ));
+        let audit = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let warnings = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
         run_streaming_via_dispatcher(
             src.to_string(),
             "test.axon".to_string(),
@@ -418,6 +496,9 @@ mod tests {
             "stub".to_string(),
             cancel,
             tx,
+            enforcement,
+            audit,
+            warnings,
         )
         .await;
 
@@ -442,6 +523,11 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let cancel = CancellationFlag::new();
         cancel.cancel(); // pre-cancel
+        let enforcement = std::sync::Arc::new(tokio::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        ));
+        let audit = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let warnings = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
         run_streaming_via_dispatcher(
             src.to_string(),
             "test.axon".to_string(),
@@ -449,6 +535,9 @@ mod tests {
             "stub".to_string(),
             cancel,
             tx,
+            enforcement,
+            audit,
+            warnings,
         )
         .await;
 

@@ -18204,6 +18204,56 @@ fn build_complete_event(event_id: u64, exec: &ServerExecutionResult) -> Event {
         .data(serde_json::to_string(&data).unwrap_or_default())
 }
 
+/// §Fase 33.z.c — Build the `axon.tool_call` SSE event carrying the
+/// upstream-signalled tool-call request. Emitted when the dispatcher's
+/// `pure_shape::run_step` observes `FinishReason::ToolUse` from the
+/// upstream backend (Fase 33.y.k D8 milestone produced the
+/// `FlowExecutionEvent::ToolCall` variant; this is its wire-side
+/// graduation).
+///
+/// The event ARRIVES BEFORE the text `axon.token` events for the
+/// step's response delta (preserves arrival order — the consumer's
+/// EventSource sees the tool-call request first, then any
+/// accompanying reasoning text). Closed-catalog event type — adopter
+/// clients that pattern-match on `event:` discriminate cleanly.
+///
+/// # Wire shape
+///
+/// ```text
+/// event: axon.tool_call
+/// id: <event_id>
+/// data: {"step": "...", "trace_id": N, "tool_name": "...", "content": "...", "timestamp_ms": N}
+///
+/// ```
+///
+/// # D-letter anchor
+///
+/// - **D5** — `axon.tool_call` graduates from silent consume (33.y.k
+///   baseline → 33.z.b graft) to wire emission. The event ID counter
+///   continues monotonically with the rest of the event stream so
+///   adopters consuming via EventSource see strictly-ordered IDs
+///   regardless of event mix.
+fn build_tool_call_event(
+    event_id: u64,
+    trace_id: u64,
+    step_name: &str,
+    tool_name: &str,
+    content: &str,
+    timestamp_ms: u64,
+) -> Event {
+    let data = serde_json::json!({
+        "step": step_name,
+        "trace_id": trace_id,
+        "tool_name": tool_name,
+        "content": content,
+        "timestamp_ms": timestamp_ms,
+    });
+    Event::default()
+        .event("axon.tool_call")
+        .id(event_id.to_string())
+        .data(serde_json::to_string(&data).unwrap_or_default())
+}
+
 /// Build an `axon.error` SSE event for mid-stream failures. After this
 /// event the server closes; client EventSource sees the disconnect +
 /// (per default W3C SSE behavior) attempts reconnection after the
@@ -19079,6 +19129,15 @@ fn server_execute_streaming(
         let tx_for_dispatcher = tx.clone();
         let exited_for_dispatcher = exited_for_task.clone();
         let cancel_for_dispatcher = cancel.clone();
+        // §Fase 33.z.c — Thread the side-channels through so the
+        // dispatcher's per-variant handlers populate the SAME Arcs
+        // the SSE wire reads from. The handler-side modifications
+        // through `ctx.enforcement_summaries.lock()` /
+        // `ctx.step_audit_records.lock()` become observable by
+        // `build_complete_event` + the replay-audit writer.
+        let enforcement_for_dispatcher = enforcement_summaries.clone();
+        let audit_for_dispatcher = step_audit_records.clone();
+        let warnings_for_dispatcher = runtime_warnings.clone();
         tokio::spawn(async move {
             crate::streaming_via_dispatcher::run_streaming_via_dispatcher(
                 source,
@@ -19087,6 +19146,9 @@ fn server_execute_streaming(
                 effective_backend,
                 cancel_for_dispatcher,
                 tx_for_dispatcher,
+                enforcement_for_dispatcher,
+                audit_for_dispatcher,
+                warnings_for_dispatcher,
             )
             .await;
             exited_for_dispatcher.notify_waiters();
@@ -19801,18 +19863,44 @@ async fn execute_sse_handler_inner(
                                 .send(Ok(build_error_event(event_id, trace_id, &error)))
                                 .await;
                         }
-                        // §Fase 33.y.k — ToolCall events are emitted by
-                        // the dispatcher's pure_shape handler when an
-                        // upstream backend signals FinishReason::ToolUse.
-                        // The production SSE handler today does NOT
-                        // forward ToolCall to the wire (the dispatcher
-                        // isn't wired into production until 33.y.l).
-                        // Silent consumption preserves D4 byte-compat
-                        // for the existing pre-33.y.k wire shape; when
-                        // 33.y.l wires the dispatcher into this
-                        // consumer loop, the ToolCall arm will build a
-                        // `axon.tool_call` SSE event in lockstep.
-                        FlowExecutionEvent::ToolCall { .. } => {}
+                        // §Fase 33.z.c — D5 milestone. ToolCall events
+                        // are emitted by the dispatcher's pure_shape
+                        // handler when an upstream backend signals
+                        // FinishReason::ToolUse (Fase 33.y.k D8 surface).
+                        // 33.z.c GRADUATES the consumer from silent
+                        // consume (33.y.k → 33.z.b graft baseline) to
+                        // active wire emission as a closed-catalog
+                        // `axon.tool_call` SSE event. Adopter clients
+                        // pattern-matching on `event:` distinguish
+                        // tool-call requests from text token deltas
+                        // cleanly. Event ID counter continues
+                        // monotonically.
+                        //
+                        // The event ARRIVES BEFORE the step's text
+                        // `axon.token` events (the dispatcher emits
+                        // ToolCall before StepToken when ToolUse
+                        // signals — preserves arrival order).
+                        // Stub backend signals FinishReason::Stop +
+                        // never emits ToolCall → D4 byte-compat
+                        // preserved for adopters running on stub.
+                        FlowExecutionEvent::ToolCall {
+                            step_name,
+                            tool_name,
+                            content,
+                            timestamp_ms,
+                        } => {
+                            event_id += 1;
+                            let _ = tx
+                                .send(Ok(build_tool_call_event(
+                                    event_id,
+                                    trace_id,
+                                    &step_name,
+                                    &tool_name,
+                                    &content,
+                                    timestamp_ms,
+                                )))
+                                .await;
+                        }
                     }
                 }
 
