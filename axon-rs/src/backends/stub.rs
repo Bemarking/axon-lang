@@ -118,19 +118,26 @@ impl Backend for StubBackend {
         })
     }
 
-    async fn stream(&self, _request: ChatRequest) -> Result<ChatStream, BackendError> {
+    async fn stream(&self, request: ChatRequest) -> Result<ChatStream, BackendError> {
         // One-chunk stream with the chunk content as delta + a
         // terminal envelope carrying FinishReason::Stop and a zero
         // Usage so the downstream `axon.complete` event reports
         // `tokens_output: 0` byte-identically with v1.24.0.
+        //
+        // §Fase 33.x.e — Even though stub emits a single chunk that
+        // would deliver fast, the cancel-aware wrap preserves the
+        // contract: if cancel fires before the chunk reaches the
+        // consumer (rare in stub, common in real backends) the
+        // stream terminates promptly. Uniform behavior across the
+        // 8-backend dispatch keeps downstream tests authoritative.
         let chunk = ChatChunk {
             delta: self.effective_chunk().to_string(),
             finish_reason: Some(FinishReason::Stop),
             usage: Some(Usage::default()),
         };
-        let s: Pin<Box<dyn Stream<Item = Result<ChatChunk, BackendError>> + Send>> =
+        let inner: Pin<Box<dyn Stream<Item = Result<ChatChunk, BackendError>> + Send>> =
             Box::pin(futures::stream::iter(vec![Ok(chunk)]));
-        Ok(s)
+        Ok(super::sse_streaming::cancel_aware(inner, request.cancel.clone()))
     }
 
     fn supports(&self, capability: Capability, _model: &str) -> bool {
