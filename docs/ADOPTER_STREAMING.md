@@ -37,7 +37,9 @@
 15. [CI integration recipe](#ci-integration-recipe)
 16. [Cross-stack contract: Python ↔ Rust](#cross-stack-contract-python--rust)
 17. [Real-time streaming (Fase 33, v1.24.0+)](#real-time-streaming-fase-33-v1240)
-18. [Where to file bugs](#where-to-file-bugs)
+18. [Production-path activation (Fase 33.x, v1.25.0+)](#production-path-activation-fase-33x-v1250)
+19. [Universal algebraic streaming (Fase 33.y, v1.26.0+)](#universal-algebraic-streaming-fase-33y-v1260)
+20. [Where to file bugs](#where-to-file-bugs)
 
 ---
 
@@ -1706,6 +1708,295 @@ backed flows + the canonical `Stream<T>` shape. For full
 scenario-driven recipes (per-step replay indexing, tokenizer
 fallback opt-in, cancel-budget validation), see
 [MIGRATION_v1.25.md](MIGRATION_v1.25.md).
+
+---
+
+## Universal algebraic streaming (Fase 33.y, v1.26.0+)
+
+**D4 wire byte-compat ratified end-to-end**: every adopter on
+v1.25.0 can upgrade to v1.26.0 **without changing a single line
+of `.axon` source**. The wire shape adopters consume is byte-
+identical for stub-backed flows + the canonical happy path; new
+surfaces (`flow_dispatcher::dispatch_node` public API + the
+`FlowExecutionEvent::ToolCall` closed-catalog variant + the D7
+parity gate + the deprecation signals on legacy routing
+primitives) are opt-in for downstream-crate authors and don't
+mutate the production SSE wire body in v1.26.0.
+
+Fase 33.y **structurally closes** the per-IRFlowNode dispatch
+contract: every one of the 45 IRFlowNode variants (Step / Probe /
+Reason / Validate / Refine / Weave / UseTool / Remember / Recall /
+Conditional / ForIn / Let / Return / Break / Continue /
+LambdaDataApply / Par / Hibernate / Deliberate / Consensus /
+Forge / Focus / Associate / Aggregate / Explore / Ingest /
+ShieldApply / Stream / Navigate / Drill / Trail / Corroborate /
+OtsApply / MandateApply / ComputeApply / Listen / DaemonStep /
+Emit / Publish / Discover / Persist / Retrieve / Mutate / Purge /
+Transact) has a NAMED async handler in `flow_dispatcher::
+dispatch_node` with compiler-enforced exhaustive matching. The
+dispatcher is **structurally complete** in v1.26.0; **production-
+side wiring** into `server_execute_streaming` graduates in v1.27.x
+(Fase 33.z) — at which point every adopter shape becomes per-
+chunk-streaming-eligible on the wire without any source change.
+
+### Adopter checklist — what changes, what doesn't
+
+| Concern | v1.25.0 | v1.26.0 |
+|---|---|---|
+| `.axon` source needed? | — | NONE for the happy path; downstream crates that consume `flow_dispatcher::*` opt in |
+| Wire body for stub + canonical `Stream<T>` | 1 axon.token "(stub)" + 1 axon.complete | **Identical** (D4 byte-compat preserved end-to-end) |
+| Wire body for canonical Step + real backend (Anthropic / OpenAI / Gemini) | Per upstream provider chunk via `Backend::stream()` | **Identical** (33.x.b production async path unchanged) |
+| Wire body for orchestration / PIX / algebraic / wire-integration / multi-agent / lambda shapes | Legacy fallback synthetic-burst + `axon-W002 streaming-not-supported` warning | **Identical** (legacy fallback still operational; 33.z grafts the new dispatcher) |
+| Public crate surface for IRFlowNode async execution | (none — `flow_dispatcher` did not exist) | **New** — `pub async fn dispatch_node` + `DispatchCtx` + `NodeOutcome` (`#[non_exhaustive]`) + `DispatchError` (`#[non_exhaustive]`) |
+| `FlowExecutionEvent` closed catalog | 6 variants | **+1 = 7** — new `ToolCall { step_name, tool_name, content, timestamp_ms }` variant; cross-stack parity (Rust + Python) |
+| `ChatRequest.tools` plumbing on `pure_shape` handlers | `Vec::new()` baseline | **Synthesized from `step.apply_ref`** when non-empty; empty → empty (D4) |
+| Production SSE consumer behavior for `ToolCall` events | (variant did not exist) | Silently consumed; 33.z grafts the `axon.tool_call` SSE event family |
+| Legacy shim infrastructure (`legacy_shim` / `ShimReason` / `NodeOutcome::LegacyShimHandled` / `DispatchError::LegacyShimFailed`) | Existed as 33.y.b–j transitional plumbing | **Retired** (compile-time gone; D7 grep gate enforces) |
+| `PlanError::LegacyOrchestrationRequired` + `flow_plan::unsupported_feature_reason` + `axon_server::run_streaming_legacy_path` | Internal routing primitives | `#[deprecated(since = "1.26.0")]` pointing toward `flow_dispatcher::dispatch_node`; 33.z grafts + deletes |
+
+### D-letters mapped to adopter-observable behavior
+
+The 33.y cycle's D-letters compose into a layered contract.
+Adopters observe each D-letter through a specific surface:
+
+| D-letter | What it guarantees | How adopters observe it |
+|---|---|---|
+| **D1 — totality** | Every one of the 45 IRFlowNode variants dispatches through a NAMED async handler; no `_ =>` catch-all in `dispatch_node`; compile-time exhaustive match | A future axon-lang minor that adds a 46th IRFlowNode variant fails the upstream compile + your downstream code's pattern matches on `NodeOutcome` / `DispatchError` (both `#[non_exhaustive]`) cleanly retain the catch-all arm without behavior change |
+| **D2 — 4-policy enforcer** | The `StreamPolicyEnforcer` activates per-node when a step declares an effect policy; closed catalog of 4 backpressure policies (DropOldest / DropNewest / FailOnOverflow / DegradeQuality); per-policy counters surface on the audit row | `axon.complete.enforcement_summary` continues to emit per-step `chunks_dropped` / `chunks_degraded` counters (33.x.d unchanged); downstream crates using `dispatch_node` directly observe the same counters via `ctx.enforcement_summaries` Arc-backed side-channel |
+| **D3 — cancel propagation** | Every handler entry calls `ctx.cancel.is_cancelled()` first; cancel walks all 45 variants; `p95 cancel→None ≤ 100ms wall-clock` invariant preserved from 33.x.e | Set `ctx.cancel.cancel()` from any thread; the in-flight handler returns `Err(DispatchError::UpstreamCancelled)` at the next checkpoint. Validated by `dispatch_node_honors_cancel_flag_at_entry` drift gate test walking all 45 variants |
+| **D4 — wire byte-compat** | The production SSE wire body for canonical Step + stub backend + canonical Step + real backend is byte-identical with v1.25.0. New `ToolCall` event variant is elided from the production wire in v1.26.0 (silently consumed by the SSE handler) | POST any canonical-shape route deployed with stub or real backend; capture body; diff against v1.25.0 capture. Adopters observe zero difference |
+| **D6 — per-step audit** | Per-step `step_audit` records on `/v1/replay/<trace_id>` continue to populate as established in 33.x.f; the dispatcher's StepAuditRecord shape is identical | Adopters that index per-step replay rows for compliance audit see byte-identical `step_audit` array shape (33.x.f Scenario B in MIGRATION_v1.25.md) |
+| **D7 — no markers** | Zero `unimplemented!()` / `todo!()` / `panic!()` (outside `#[cfg(test)]`) / `legacy_shim` / `ShimReason` / `LegacyShimHandled` / `LegacyShimFailed` references in `src/flow_dispatcher/*.rs`. Enforced by `tests/fase33y_l_parity_gate.rs` (7-test grep gate) at every `cargo test` invocation | Downstream forks that re-introduce any of these markers via merge fail the parity gate at PR time with `<file>:<line>` location precision (Scenario E in MIGRATION_v1.26.md) |
+| **D8 — tools first-class** | A canonical Step's declared `apply: <tool>` plumbs through `ChatRequest.tools`; upstream `FinishReason::ToolUse` triggers a `FlowExecutionEvent::ToolCall { step_name, tool_name, content, timestamp_ms }` emission BEFORE the text `StepToken` (preserves arrival ordering); serde-tagged `kind: "tool_call"`; cross-stack parity (Rust + Python) | Downstream crates that consume `FlowExecutionEvent` directly observe `ToolCall` events in arrival order; production SSE consumer surfaces them as `axon.tool_call` events in 33.z |
+| **D9 — algebraic** | `perform Stream.Yield x` inside a Fase 23 algebraic-effect handler frame bridges to wire `axon.token` events via `effects_bridge::bridge_effect_stream_yield` static-scan over the instruction tree; closed-catalog projection over all 8 `Value` variants | Downstream crates wiring `IRStreamBlock` through the dispatcher see one `axon.token` per static Yield with `token_index` monotonic from 1; production wire activates this surface end-to-end in 33.z |
+| **D10 — sync-runner parity** | The dispatcher's outcome semantics are byte-equal with the sync runner's for the canonical Step shape; the 50-flow sync↔async parity corpus deferred to 33.z confirms parity for all other shapes pre-production-graduation | Adopters that run the same flow through CLI (`runner::execute_full`) and through the dispatcher observe semantically equivalent outcomes (currently the streaming surface uses the v1.25.0 path; 33.z lights up dispatcher parity end-to-end) |
+| **D11 — cross-stack** | `FlowExecutionEvent::ToolCall` ships with Python parity in `axon.runtime.flow_execution_event`; closed-catalog drift gate enforces 1-to-1 mapping between Rust and Python event variants | Python downstream consumers observe the same field shape + serde tag as Rust; a future variant addition that breaks parity fails the cross-stack drift gate |
+| **D12 — fuzz + CI** | ~3000+ deterministic LCG iterations across handler-totality + cancel propagation + orchestration composition + algebraic-semantics parity + tool-call interleaving (33.y.n consolidates the per-sub-fase fuzz packs); dedicated 10-job CI workflow `.github/workflows/fase_33y_dispatcher.yml` (33.y.n) | Downstream forks running `cargo test` exercise all fuzz packs (each sub-fase 33.y.c–k ships its own deterministic LCG seed); CI workflow runs the full 33.y matrix on every PR |
+
+### The public dispatcher surface
+
+```rust
+// New in v1.26.0 — the structurally-closed per-IRFlowNode dispatcher.
+//
+// dispatch_node is the canonical entry point. Pass an IRFlowNode +
+// a DispatchCtx; the dispatcher matches exhaustively over all 45
+// variants + dispatches to the per-variant async handler. Cancel
+// is checked at entry of every handler (D3); events surface via
+// the ctx.tx mpsc channel; per-step audit rows accumulate in
+// ctx.step_audit_records Arc-backed side-channel.
+pub async fn dispatch_node(
+    node: &IRFlowNode,
+    ctx: &mut DispatchCtx,
+) -> Result<NodeOutcome, DispatchError>;
+
+#[derive(Clone)]
+pub struct DispatchCtx {
+    pub flow_name: String,
+    pub backend_name: String,
+    pub system_prompt: String,
+    pub cancel: CancellationFlag,
+    pub tx: mpsc::UnboundedSender<FlowExecutionEvent>,
+    pub enforcement_summaries: Arc<Mutex<HashMap<String, EnforcementSummaryWire>>>,
+    pub step_audit_records: Arc<Mutex<Vec<StepAuditRecord>>>,
+    pub runtime_warnings: Arc<Mutex<Vec<RuntimeWarning>>>,
+    pub branch_path: Vec<String>,
+    pub step_counter: usize,
+    pub let_bindings: HashMap<String, String>,
+    pub pem_backend: Option<Arc<dyn PersistenceBackend>>,
+    pub session_id: String,
+    pub tenant_id: String,
+    pub pending_effect_policy: Option<BackpressurePolicy>,
+}
+
+impl DispatchCtx {
+    pub fn new(
+        flow_name: &str,
+        backend_name: &str,
+        system_prompt: &str,
+        cancel: CancellationFlag,
+        tx: mpsc::UnboundedSender<FlowExecutionEvent>,
+    ) -> Self;
+
+    pub fn with_pem(self, backend: Arc<dyn PersistenceBackend>) -> Self;
+    pub fn with_session_id(self, id: impl Into<String>) -> Self;
+    pub fn with_tenant_id(self, id: impl Into<String>) -> Self;
+    pub fn branch_path_string(&self) -> String;
+    pub fn take_pending_effect_policy(&mut self) -> Option<BackpressurePolicy>;
+}
+
+#[non_exhaustive]
+pub enum NodeOutcome {
+    Completed { output: String, tokens_emitted: u64, step_index: usize },
+    Break,
+    LoopContinue,
+    Return { value: String },
+}
+
+#[non_exhaustive]
+pub enum DispatchError {
+    BackendError { name: String, message: String },
+    UpstreamCancelled,
+    MissingDependency { name: &'static str },
+    ChannelClosed,
+}
+```
+
+### The new `ToolCall` event variant
+
+```rust
+// New in v1.26.0 — closed-catalog variant for upstream tool-call
+// signals. Cross-stack parity with Python axon.runtime.flow_execution_event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum FlowExecutionEvent {
+    // ... 6 existing variants ...
+
+    #[serde(rename = "tool_call")]
+    ToolCall {
+        step_name: String,
+        tool_name: String,
+        content: String,
+        timestamp_ms: u64,
+    },
+}
+
+impl FlowExecutionEvent {
+    /// "tool_call" — the wire-stable kind slug.
+    pub fn kind(&self) -> &'static str;
+
+    /// true for ToolCall — the event scopes to a step (not the flow).
+    pub fn is_step_scoped(&self) -> bool;
+
+    /// false for ToolCall — ToolCall is observational, not terminal.
+    pub fn is_terminator(&self) -> bool;
+}
+```
+
+### Architectural groups inside the dispatcher
+
+The dispatcher organizes the 45 variants into **9 architectural
+groups** (one module per group; the 10th module is `mod.rs` which
+hosts the exhaustive `dispatch_node` match). Each group has its
+own discipline + per-group public helpers that enterprise
+integrations override:
+
+| Group | Module | Variants (count) | Output discipline | Public helpers (enterprise overrides) |
+|---|---|---|---|---|
+| Pure-shape | `pure_shape.rs` | Step / Probe / Reason / Validate / Refine / Weave (**6**) | Stub backend emits `"(stub)"` + 1 token; real backend emits per-chunk via `Backend::stream()` (D4 byte-compat) | `run_pure_shape` shared async core; `synthesize_tools_from_step` (D8) |
+| Orchestration | `orchestration.rs` | Let / Conditional / ForIn / Break / Continue / Return (**6**) | Sentinel + Completed mix; 0 tokens (orchestration is control-flow, not LLM-call) | `dispatch_body` recursive walker (via `Box::pin`); `eval_triple` 8-operator closed-catalog predicate |
+| Parallel + algebraic | `parallel.rs` + `effects_bridge.rs` | Par / Stream (**2**) | Concurrent dispatch via `join_all` over per-branch DispatchCtx clones; algebraic-effect ↔ wire bridge via `bridge_effect_stream_yield` static-scan | `run_branches_concurrently` (Par); `bridge_effect_stream_yield` (Stream — D9 milestone) |
+| Cognitive primitives | `cognitive.rs` | Remember / Recall / Forge + Focus / Associate / Aggregate / Explore / Ingest / Navigate / Corroborate (**10**) | PEM-bound (Remember/Recall/Forge — 0 tokens) + cognitive-framing (Focus..Corroborate — 1 token via pure_shape) | `Arc<dyn PersistenceBackend>` integration; cognitive-framing addendum per variant |
+| Algebraic-effect handlers | `algebraic_handlers.rs` | ShieldApply / OtsApply / MandateApply / ComputeApply / Listen / DaemonStep (**6**) | Identity-passthrough (OSS) / placeholder (`compute:<name>(...)` / `(awaiting <channel>)` / `daemon:<ref>`); 0 tokens | `apply_shield` / `apply_ots` / `apply_mandate` / `invoke_compute` / `listen_on_channel` / `invoke_daemon` (enterprise overrides) |
+| Wire integrations | `wire_integrations.rs` | Emit / Publish / Discover / Persist / Retrieve / Mutate / Purge / Transact / Deliberate / Consensus (**10**) | In-memory `__channel_<ref>` / `__store_<name>_<entry>` namespaced let_bindings; canonical placeholders for multi-agent variants; 0 tokens | `emit_to_channel` / `publish_capability` / `discover_capability` / `persist_to_store` / `retrieve_from_store` / `mutate_store` / `purge_from_store` (enterprise overrides) |
+| PIX | `pix.rs` | Hibernate / Drill / Trail (**3**) | Canonical placeholder (`(hibernating <event> timeout=<t>)` / `(drilled <pix_ref> path=<p> query=<q>)` / `(trail of <ref>)`); 0 tokens; CPS suspend/resume in enterprise R&D | `await_event_with_timeout` (Hibernate); `drill_pix_subtree` (Drill); `trail_navigation` (Trail) |
+| Lambda + tools | `lambda_tools.rs` | LambdaDataApply / UseTool (**2** — FINAL) | Canonical placeholder (`lambda:<name>(<resolved>)` / `tool:<name>(<resolved>)`); 0 tokens | `apply_lambda_data` (Fase 15 CPS dispatcher); `invoke_tool` (Fase 22 tool registry) |
+
+**Total: 9 groups × 45 variants = compiler-enforced exhaustive coverage.**
+
+### Quick recipes
+
+**Drive an IRFlowNode through your own event sink:**
+
+```rust
+use axon::flow_dispatcher::{dispatch_node, DispatchCtx, NodeOutcome};
+use axon::flow_execution_event::FlowExecutionEvent;
+use axon::cancel_token::CancellationFlag;
+use axon::ir_nodes::IRFlowNode;
+use tokio::sync::mpsc;
+
+async fn drive(node: &IRFlowNode, backend: &str) -> anyhow::Result<NodeOutcome> {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut ctx = DispatchCtx::new(
+        "MyFlow",
+        backend,
+        "system prompt",
+        CancellationFlag::new(),
+        tx,
+    );
+
+    // Spawn a sink forwarder.
+    let sink = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                FlowExecutionEvent::ToolCall { step_name, tool_name, content, timestamp_ms } => {
+                    eprintln!("[tool_call] {step_name}.{tool_name} @ {timestamp_ms}ms: {content}");
+                }
+                FlowExecutionEvent::StepToken { token, .. } => {
+                    print!("{token}");
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let outcome = dispatch_node(node, &mut ctx).await?;
+    drop(ctx);
+    sink.await.ok();
+    Ok(outcome)
+}
+```
+
+**Cancel an in-flight dispatch with p95 ≤100ms latency:**
+
+```rust
+let cancel = CancellationFlag::new();
+let mut ctx = DispatchCtx::new("F", "anthropic", "", cancel.clone(), tx);
+
+// Spawn the dispatch on a separate task so we can cancel from the
+// main task.
+let handle = tokio::spawn(async move {
+    dispatch_node(&node, &mut ctx).await
+});
+
+// After 500ms of work, cancel.
+tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+cancel.cancel();
+
+// The handler returns Err(DispatchError::UpstreamCancelled) at the
+// next cancel checkpoint — p95 ≤100ms wall-clock (D3 invariant
+// from 33.x.e preserved end-to-end through the dispatcher).
+match handle.await? {
+    Err(DispatchError::UpstreamCancelled) => {
+        eprintln!("dispatch cancelled cleanly");
+    }
+    Ok(outcome) => {
+        eprintln!("dispatch completed before cancel: {outcome:?}");
+    }
+    Err(e) => return Err(e.into()),
+}
+```
+
+**Enforce the D7 invariant in your downstream module:**
+
+See [MIGRATION_v1.26.md Scenario E](MIGRATION_v1.26.md#scenario-e--you-run-the-d7-parity-gate-in-your-own-ci)
+for the 7-test grep gate template you can copy + adapt.
+
+### What 33.z (axon-lang v1.27.x) graduates
+
+When `flow_dispatcher::dispatch_node` gets grafted into
+`server_execute_streaming` (the production-side wiring deferred
+from 33.y.l to 33.z):
+
+- Orchestration / PIX / algebraic / wire-integration / multi-agent / lambda flows become **per-chunk-streaming-eligible on the wire** (currently they fall back to the legacy synthetic-burst path with `axon-W002 streaming-not-supported`).
+- The `axon.tool_call` SSE event family lights up — production SSE consumers observe `data: {"kind": "tool_call", "step_name": "...", ...}` interleaved with `axon.token` events in arrival order.
+- The deprecated routing primitives (`PlanError::LegacyOrchestrationRequired` + `flow_plan::unsupported_feature_reason` + `axon_server::run_streaming_legacy_path`) are deleted; downstream code that ignored the deprecation warnings hits compile errors at the 33.z upgrade.
+- 50-flow sync↔async parity corpus lands as the regression-gating contract — covers 10 banking + 10 government + 10 legal + 10 medicine + 10 cross-vertical flow shapes; each flow exercises ≥3 IRFlowNode variants.
+
+Adopters upgrading v1.25.0 → v1.26.0 → v1.27.x in sequence see
+**zero behavioral change at each hop for the canonical happy
+path**; v1.27.x activates the dispatcher's universal coverage on
+the production wire so non-canonical shapes also stream per-chunk.
+Adopters that jump v1.25.0 → v1.27.x get both transitions at once
+(the v1.26.0 surface deltas are strictly additive so the
+intermediate hop is safe but not required).
+
+### Migration scenarios
+
+For the 5 worked recipes (server-only upgrade / consuming
+ToolCall from a downstream crate / authoring a dispatcher-based
+downstream crate / migrating off the deprecated routing
+primitives / running the D7 parity gate in your own CI), see
+[MIGRATION_v1.26.md](MIGRATION_v1.26.md).
 
 ---
 
