@@ -614,6 +614,24 @@ fn shim_reason_all_const_has_exactly_45_entries() {
 /// variants, this set GROWS until 33.y.l where `LegacyShimHandled` is
 /// deleted (all 45 graduated).
 const GRADUATED_VARIANTS: &[ShimReason] = &[
+    // 33.y.c — pure-shape (6)
+    ShimReason::Step,
+    ShimReason::Probe,
+    ShimReason::Reason,
+    ShimReason::Validate,
+    ShimReason::Refine,
+    ShimReason::Weave,
+    // 33.y.d — orchestration (6)
+    ShimReason::Let,
+    ShimReason::Conditional,
+    ShimReason::ForIn,
+    ShimReason::Break,
+    ShimReason::Continue,
+    ShimReason::Return,
+];
+
+/// Pure-shape graduated variants (33.y.c) — strict "(stub)" + 1 token.
+const PURE_SHAPE_GRADUATED: &[ShimReason] = &[
     ShimReason::Step,
     ShimReason::Probe,
     ShimReason::Reason,
@@ -622,33 +640,57 @@ const GRADUATED_VARIANTS: &[ShimReason] = &[
     ShimReason::Weave,
 ];
 
+/// Orchestration graduated variants (33.y.d) — return varied outcome
+/// shapes depending on the synthetic IR payload: Let → Completed
+/// with the bound value; Conditional/ForIn → Completed (empty body
+/// in the synthetic factory); Break → Break sentinel; Continue →
+/// LoopContinue sentinel; Return → Return sentinel.
+const ORCHESTRATION_GRADUATED: &[ShimReason] = &[
+    ShimReason::Let,
+    ShimReason::Conditional,
+    ShimReason::ForIn,
+    ShimReason::Break,
+    ShimReason::Continue,
+    ShimReason::Return,
+];
+
 #[tokio::test]
 async fn every_ir_flow_node_routes_to_its_labeled_handler() {
     let pairs = all_45_pairs();
     for (node, expected_reason, expected_kind) in pairs {
         let (mut ctx, _rx) = fresh_ctx();
         let outcome = dispatch_node(&node, &mut ctx).await;
-        let graduated = GRADUATED_VARIANTS.contains(&expected_reason);
+        let pure_shape = PURE_SHAPE_GRADUATED.contains(&expected_reason);
+        let orchestration = ORCHESTRATION_GRADUATED.contains(&expected_reason);
 
-        match (outcome, graduated) {
-            (Ok(NodeOutcome::Completed { output, tokens_emitted, .. }), true) => {
-                // For graduated variants, stub backend produces 1
-                // chunk of "(stub)". The shape contract is byte-equal
-                // with the canonical Step behavior so adopter
-                // EventSource clients see uniform "(stub)" content
-                // regardless of cognitive variant on stub.
+        match (outcome, pure_shape, orchestration) {
+            // Pure-shape: stub-backend produces "(stub)" with 1 token.
+            (Ok(NodeOutcome::Completed { output, tokens_emitted, .. }), true, _) => {
                 assert_eq!(
                     output, "(stub)",
-                    "graduated variant {:?} stub output should be '(stub)' (D4)",
+                    "pure-shape variant {:?} stub output should be '(stub)' (D4)",
                     expected_reason
                 );
                 assert_eq!(
                     tokens_emitted, 1,
-                    "graduated variant {:?} stub emits 1 token (D4 byte-compat)",
+                    "pure-shape variant {:?} stub emits 1 token (D4 byte-compat)",
                     expected_reason
                 );
             }
-            (Ok(NodeOutcome::LegacyShimHandled { reason, node_kind }), false) => {
+            // Orchestration: Break/Continue/Return are sentinel-only;
+            // Let/Conditional/ForIn return Completed with payload-
+            // dependent output (zero-payload synthetics → empty body
+            // → empty output).
+            (Ok(NodeOutcome::Break), _, true) if expected_reason == ShimReason::Break => {}
+            (Ok(NodeOutcome::LoopContinue), _, true) if expected_reason == ShimReason::Continue => {}
+            (Ok(NodeOutcome::Return { .. }), _, true) if expected_reason == ShimReason::Return => {}
+            (Ok(NodeOutcome::Completed { .. }), _, true)
+                if matches!(
+                    expected_reason,
+                    ShimReason::Let | ShimReason::Conditional | ShimReason::ForIn
+                ) => {}
+            // Non-graduated: shim returns LegacyShimHandled.
+            (Ok(NodeOutcome::LegacyShimHandled { reason, node_kind }), false, false) => {
                 assert_eq!(
                     reason, expected_reason,
                     "non-graduated dispatch_node routed {:?} to the wrong \
@@ -662,15 +704,19 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
                     expected_reason, node_kind, expected_kind
                 );
             }
-            (Ok(other), true) => panic!(
-                "graduated variant {:?} expected Completed, got {other:?}",
+            (Ok(other), true, _) => panic!(
+                "pure-shape variant {:?} expected Completed (stub), got {other:?}",
                 expected_reason
             ),
-            (Ok(other), false) => panic!(
+            (Ok(other), _, true) => panic!(
+                "orchestration variant {:?} unexpected outcome: {other:?}",
+                expected_reason
+            ),
+            (Ok(other), false, false) => panic!(
                 "non-graduated variant {:?} expected LegacyShimHandled, got {other:?}",
                 expected_reason
             ),
-            (Err(e), _) => panic!(
+            (Err(e), _, _) => panic!(
                 "dispatch_node returned Err for {:?}: {e:?}",
                 expected_reason
             ),
@@ -683,14 +729,25 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
 /// `GRADUATED_VARIANTS.len() == 45` and `LegacyShimHandled` is
 /// deleted in lockstep.
 #[test]
-fn graduated_variants_set_size_pinned_for_33_y_c() {
+fn graduated_variants_set_size_pinned_for_33_y_d() {
     assert_eq!(
         GRADUATED_VARIANTS.len(),
+        12,
+        "33.y.d advances graduated count to 12: 6 pure-shape \
+         (33.y.c: Step/Probe/Reason/Validate/Refine/Weave) + 6 \
+         orchestration (33.y.d: Let/Conditional/ForIn/Break/Continue/\
+         Return). 33.y.e will advance to 14 (Par/Stream); …; 33.y.l \
+         to 45 (all)."
+    );
+    assert_eq!(
+        PURE_SHAPE_GRADUATED.len(),
         6,
-        "33.y.c graduates exactly 6 pure-shape variants. \
-         When 33.y.d ships orchestration handlers (Let/Conditional/\
-         ForIn/Break/Continue/Return) this pin advances to 12; \
-         33.y.e to 14 (Par/Stream); …; 33.y.l to 45 (all)."
+        "pure-shape subset stays at 6"
+    );
+    assert_eq!(
+        ORCHESTRATION_GRADUATED.len(),
+        6,
+        "orchestration subset is exactly 6"
     );
 }
 

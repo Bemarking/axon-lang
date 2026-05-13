@@ -74,6 +74,13 @@ use tokio::sync::{mpsc, Mutex};
 /// per-variant entry points that build the variant's framing.
 pub mod pure_shape;
 
+/// §Fase 33.y.d — Orchestration variant handlers (Let / Conditional /
+/// ForIn / Break / Continue / Return). 6 variants — control-flow
+/// constructs that compose child handlers via recursive
+/// `dispatch_node` calls + sentinel-driven loop semantics +
+/// `branch_path` segments threading the orchestration tree.
+pub mod orchestration;
+
 // ────────────────────────────────────────────────────────────────────
 //  DispatchCtx — shared per-flow async surface
 // ────────────────────────────────────────────────────────────────────
@@ -122,6 +129,16 @@ pub struct DispatchCtx {
     >,
     pub branch_path: Vec<String>,
     pub step_counter: usize,
+    /// §Fase 33.y.d — Let-binding scope. Map from binding name to its
+    /// resolved value. `run_let` inserts; `run_conditional` reads to
+    /// evaluate the condition; `run_for_in` inserts the iteration
+    /// variable per iter. Bindings persist through the flow's
+    /// lifetime — sub-scoping is NOT introduced in 33.y.d (the
+    /// sync runner's let semantics are flow-scoped + monotonic,
+    /// matching this discipline for D10 parity). The `HashMap` is
+    /// cheap to clone for branch isolation when sub-fases 33.y.e
+    /// introduce parallel branches with private scopes (Par block).
+    pub let_bindings: std::collections::HashMap<String, String>,
     /// §Fase 33.y.c — Per-node declared `<stream:<policy>>` resolved
     /// by the caller BEFORE invoking `dispatch_node`. The pure-shape
     /// handlers read + consume this field (set back to `None` on
@@ -159,6 +176,7 @@ impl DispatchCtx {
             runtime_warnings: Arc::new(Mutex::new(Vec::new())),
             branch_path: Vec::new(),
             step_counter: 0,
+            let_bindings: std::collections::HashMap::new(),
             pending_effect_policy: None,
         }
     }
@@ -242,6 +260,23 @@ pub enum NodeOutcome {
         tokens_emitted: u64,
         step_index: usize,
     },
+    /// §Fase 33.y.d sentinel — emitted by the `Break` handler. The
+    /// enclosing `ForIn` handler observes this outcome from its
+    /// child dispatch + terminates the loop (skips remaining
+    /// iterations). Parser scope check guarantees `Break` only
+    /// appears inside a `ForIn` body, so non-loop ancestors that
+    /// observe this outcome MUST propagate it upward unchanged.
+    Break,
+    /// §Fase 33.y.d sentinel — emitted by the `Continue` handler.
+    /// The enclosing `ForIn` handler observes this + skips to the
+    /// next iteration. Same propagation discipline as
+    /// [`NodeOutcome::Break`].
+    LoopContinue,
+    /// §Fase 33.y.d sentinel — emitted by the `Return` handler.
+    /// Terminates the flow loop with the carried `value` as the
+    /// final flow output. Parents propagate unchanged until the
+    /// flow-loop level observes it.
+    Return { value: String },
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -538,12 +573,16 @@ pub async fn dispatch_node(
         IRFlowNode::UseTool(_) => legacy_shim(ShimReason::UseTool, ctx).await,
         IRFlowNode::Remember(_) => legacy_shim(ShimReason::Remember, ctx).await,
         IRFlowNode::Recall(_) => legacy_shim(ShimReason::Recall, ctx).await,
-        IRFlowNode::Conditional(_) => legacy_shim(ShimReason::Conditional, ctx).await,
-        IRFlowNode::ForIn(_) => legacy_shim(ShimReason::ForIn, ctx).await,
-        IRFlowNode::Let(_) => legacy_shim(ShimReason::Let, ctx).await,
-        IRFlowNode::Return(_) => legacy_shim(ShimReason::Return, ctx).await,
-        IRFlowNode::Break(_) => legacy_shim(ShimReason::Break, ctx).await,
-        IRFlowNode::Continue(_) => legacy_shim(ShimReason::Continue, ctx).await,
+        // §Fase 33.y.d — orchestration variants graduated to real
+        // async handlers. Each composes child handlers via recursive
+        // `dispatch_node` calls + threads sentinel outcomes (Break /
+        // LoopContinue / Return) up through orchestration parents.
+        IRFlowNode::Conditional(cond) => orchestration::run_conditional(cond, ctx).await,
+        IRFlowNode::ForIn(for_in) => orchestration::run_for_in(for_in, ctx).await,
+        IRFlowNode::Let(let_bind) => orchestration::run_let(let_bind, ctx).await,
+        IRFlowNode::Return(ret) => orchestration::run_return(ret, ctx).await,
+        IRFlowNode::Break(brk) => orchestration::run_break(brk, ctx).await,
+        IRFlowNode::Continue(cont) => orchestration::run_continue(cont, ctx).await,
         IRFlowNode::LambdaDataApply(_) => legacy_shim(ShimReason::LambdaDataApply, ctx).await,
         IRFlowNode::Par(_) => legacy_shim(ShimReason::Par, ctx).await,
         IRFlowNode::Hibernate(_) => legacy_shim(ShimReason::Hibernate, ctx).await,
