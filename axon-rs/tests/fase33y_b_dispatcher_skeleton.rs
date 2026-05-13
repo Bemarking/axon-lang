@@ -560,9 +560,19 @@ fn all_45_pairs() -> Vec<(IRFlowNode, ShimReason, &'static str)> {
     ]
 }
 
-fn fresh_ctx() -> DispatchCtx {
-    let (tx, _rx) = mpsc::unbounded_channel();
-    DispatchCtx::new("TestFlow", "stub", "system prompt", CancellationFlag::new(), tx)
+/// Construct a fresh DispatchCtx + return the receiver so callers
+/// keep it alive (graduated handlers in 33.y.c+ send events to tx;
+/// a dropped receiver returns DispatchError::ChannelClosed).
+fn fresh_ctx() -> (DispatchCtx, mpsc::UnboundedReceiver<axon::flow_execution_event::FlowExecutionEvent>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let ctx = DispatchCtx::new(
+        "TestFlow",
+        "stub",
+        "system prompt",
+        CancellationFlag::new(),
+        tx,
+    );
+    (ctx, rx)
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -595,32 +605,93 @@ fn shim_reason_all_const_has_exactly_45_entries() {
 //  §2 — Every variant routes to its labeled ShimReason
 // ────────────────────────────────────────────────────────────────────
 
+/// 33.y.b drift gate amended in 33.y.c: 6 variants (Step / Probe /
+/// Reason / Validate / Refine / Weave) have GRADUATED from
+/// `LegacyShimHandled` to a real `pure_shape` async handler returning
+/// `NodeOutcome::Completed { output, tokens_emitted, step_index }`.
+/// The remaining 39 variants still route through `legacy_shim`. As
+/// each subsequent sub-fase 33.y.d–j ships handlers for additional
+/// variants, this set GROWS until 33.y.l where `LegacyShimHandled` is
+/// deleted (all 45 graduated).
+const GRADUATED_VARIANTS: &[ShimReason] = &[
+    ShimReason::Step,
+    ShimReason::Probe,
+    ShimReason::Reason,
+    ShimReason::Validate,
+    ShimReason::Refine,
+    ShimReason::Weave,
+];
+
 #[tokio::test]
-async fn every_ir_flow_node_routes_to_its_labeled_shim_reason() {
+async fn every_ir_flow_node_routes_to_its_labeled_handler() {
     let pairs = all_45_pairs();
     for (node, expected_reason, expected_kind) in pairs {
-        let mut ctx = fresh_ctx();
+        let (mut ctx, _rx) = fresh_ctx();
         let outcome = dispatch_node(&node, &mut ctx).await;
-        match outcome {
-            Ok(NodeOutcome::LegacyShimHandled { reason, node_kind }) => {
+        let graduated = GRADUATED_VARIANTS.contains(&expected_reason);
+
+        match (outcome, graduated) {
+            (Ok(NodeOutcome::Completed { output, tokens_emitted, .. }), true) => {
+                // For graduated variants, stub backend produces 1
+                // chunk of "(stub)". The shape contract is byte-equal
+                // with the canonical Step behavior so adopter
+                // EventSource clients see uniform "(stub)" content
+                // regardless of cognitive variant on stub.
+                assert_eq!(
+                    output, "(stub)",
+                    "graduated variant {:?} stub output should be '(stub)' (D4)",
+                    expected_reason
+                );
+                assert_eq!(
+                    tokens_emitted, 1,
+                    "graduated variant {:?} stub emits 1 token (D4 byte-compat)",
+                    expected_reason
+                );
+            }
+            (Ok(NodeOutcome::LegacyShimHandled { reason, node_kind }), false) => {
                 assert_eq!(
                     reason, expected_reason,
-                    "dispatch_node routed {:?} to the wrong ShimReason: \
-                     got {:?}, expected {:?}",
+                    "non-graduated dispatch_node routed {:?} to the wrong \
+                     ShimReason: got {:?}, expected {:?}",
                     expected_kind, reason, expected_reason
                 );
                 assert_eq!(
                     node_kind, expected_kind,
-                    "dispatch_node returned the wrong node_kind slug for \
-                     {:?}: got {:?}, expected {:?}",
+                    "non-graduated dispatch_node returned the wrong node_kind \
+                     slug for {:?}: got {:?}, expected {:?}",
                     expected_reason, node_kind, expected_kind
                 );
             }
-            other => panic!(
-                "expected LegacyShimHandled for {expected_kind}, got {other:?}"
+            (Ok(other), true) => panic!(
+                "graduated variant {:?} expected Completed, got {other:?}",
+                expected_reason
+            ),
+            (Ok(other), false) => panic!(
+                "non-graduated variant {:?} expected LegacyShimHandled, got {other:?}",
+                expected_reason
+            ),
+            (Err(e), _) => panic!(
+                "dispatch_node returned Err for {:?}: {e:?}",
+                expected_reason
             ),
         }
     }
+}
+
+/// Pin the size of the graduated-variants set. Across 33.y.c–j this
+/// set GROWS variant-by-variant. At 33.y.l this assertion becomes
+/// `GRADUATED_VARIANTS.len() == 45` and `LegacyShimHandled` is
+/// deleted in lockstep.
+#[test]
+fn graduated_variants_set_size_pinned_for_33_y_c() {
+    assert_eq!(
+        GRADUATED_VARIANTS.len(),
+        6,
+        "33.y.c graduates exactly 6 pure-shape variants. \
+         When 33.y.d ships orchestration handlers (Let/Conditional/\
+         ForIn/Break/Continue/Return) this pin advances to 12; \
+         33.y.e to 14 (Par/Stream); …; 33.y.l to 45 (all)."
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -677,7 +748,7 @@ fn shim_reason_slug_matches_flow_plan_kind_for_all_45_variants() {
 
 #[test]
 fn dispatch_ctx_branch_path_round_trip() {
-    let mut ctx = fresh_ctx();
+    let (mut ctx, _rx) = fresh_ctx();
     assert_eq!(ctx.branch_path_string(), "");
     ctx.branch_path.push("par[0]".to_string());
     assert_eq!(ctx.branch_path_string(), "par[0]");
@@ -689,7 +760,7 @@ fn dispatch_ctx_branch_path_round_trip() {
 
 #[test]
 fn dispatch_ctx_step_counter_writable() {
-    let mut ctx = fresh_ctx();
+    let (mut ctx, _rx) = fresh_ctx();
     assert_eq!(ctx.step_counter, 0);
     ctx.step_counter += 1;
     assert_eq!(ctx.step_counter, 1);
@@ -728,7 +799,7 @@ fn dispatch_error_variants_constructible_from_public_surface() {
 async fn dispatch_node_does_not_panic_for_any_variant() {
     let pairs = all_45_pairs();
     for (node, reason, kind) in pairs {
-        let mut ctx = fresh_ctx();
+        let (mut ctx, _rx) = fresh_ctx();
         // If this `await` panics for any variant we've shipped a
         // `unimplemented!()` / `todo!()` / `panic!()` into an arm.
         // The D7 mandate forbids this.

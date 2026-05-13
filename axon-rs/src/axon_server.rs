@@ -1816,7 +1816,7 @@ struct ServerExecutionResult {
 /// don't risk overflow. `failed` is set only when the enforcer's
 /// internal stream surfaced `BackpressurePolicy::Fail` overflow.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
-pub(crate) struct EnforcementSummaryWire {
+pub struct EnforcementSummaryWire {
     pub policy_slug: String,
     pub chunks_pushed: u64,
     pub chunks_delivered: u64,
@@ -1830,7 +1830,7 @@ pub(crate) struct EnforcementSummaryWire {
 impl EnforcementSummaryWire {
     /// Project from the rich internal `EnforcementSummary` (which has
     /// `policy: Option<&'static str>`) into the wire-stable shape.
-    pub(crate) fn from_summary(
+    pub fn from_summary(
         s: &crate::stream_effect_dispatcher::EnforcementSummary,
     ) -> Self {
         Self {
