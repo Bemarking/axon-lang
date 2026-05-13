@@ -62,9 +62,17 @@
 use crate::cancel_token::CancellationFlag;
 use crate::flow_execution_event::FlowExecutionEvent;
 use crate::ir_nodes::IRFlowNode;
+use crate::stream_effect::BackpressurePolicy;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
+
+/// §Fase 33.y.c — Pure-shape variant handlers (Step / Probe / Reason /
+/// Validate / Refine / Weave). All 6 variants reduce to "produce a
+/// single LLM response from a prompt + cognitive framing"; the module
+/// houses the shared async core (`run_pure_shape`) + 6 thin
+/// per-variant entry points that build the variant's framing.
+pub mod pure_shape;
 
 // ────────────────────────────────────────────────────────────────────
 //  DispatchCtx — shared per-flow async surface
@@ -114,6 +122,18 @@ pub struct DispatchCtx {
     >,
     pub branch_path: Vec<String>,
     pub step_counter: usize,
+    /// §Fase 33.y.c — Per-node declared `<stream:<policy>>` resolved
+    /// by the caller BEFORE invoking `dispatch_node`. The pure-shape
+    /// handlers read + consume this field (set back to `None` on
+    /// entry) so each handler observes the policy intended for ITS
+    /// node, never the previous node's residue. When `None`, the
+    /// handler skips `StreamPolicyEnforcer` wrapping + emits chunks
+    /// directly to the wire.
+    ///
+    /// Subsequent sub-fases 33.y.d-l adopt the same pattern for
+    /// orchestration handlers (`Par` / `ForIn`) when child nodes
+    /// declare effects.
+    pub pending_effect_policy: Option<BackpressurePolicy>,
 }
 
 impl DispatchCtx {
@@ -139,7 +159,25 @@ impl DispatchCtx {
             runtime_warnings: Arc::new(Mutex::new(Vec::new())),
             branch_path: Vec::new(),
             step_counter: 0,
+            pending_effect_policy: None,
         }
+    }
+
+    /// Builder-style setter for the pending effect policy. Returns
+    /// `self` so callers can chain `ctx.with_effect_policy(policy)`
+    /// before invoking `dispatch_node`. Handlers read + clear the
+    /// field via [`Self::take_pending_effect_policy`].
+    pub fn with_effect_policy(mut self, policy: BackpressurePolicy) -> Self {
+        self.pending_effect_policy = Some(policy);
+        self
+    }
+
+    /// Read + clear the pending effect policy. Returns `None` when no
+    /// policy was set by the caller. The take-semantics (vs. peek)
+    /// prevents a stale policy from a previous node leaking into the
+    /// next handler's invocation if the caller forgets to clear.
+    pub fn take_pending_effect_policy(&mut self) -> Option<BackpressurePolicy> {
+        self.pending_effect_policy.take()
     }
 
     /// Render the current `branch_path` as a wire-stable string. Empty
@@ -189,6 +227,20 @@ pub enum NodeOutcome {
     LegacyShimHandled {
         reason: ShimReason,
         node_kind: &'static str,
+    },
+    /// §Fase 33.y.c+ — Handler ran to completion. `output` is the
+    /// concatenated chunk content captured during streaming;
+    /// `tokens_emitted` is the count of non-empty `StepToken` events
+    /// fanned to the wire (post-policy enforcement for steps with a
+    /// declared `<stream:<policy>>`). The `step_index` is the value
+    /// of `ctx.step_counter` at the moment the handler started (i.e.
+    /// the index the handler reserved for itself before
+    /// incrementing); orchestration handlers in 33.y.d–e use this
+    /// to surface per-branch index trails on `branch_path`.
+    Completed {
+        output: String,
+        tokens_emitted: u64,
+        step_index: usize,
     },
 }
 
@@ -470,12 +522,19 @@ pub async fn dispatch_node(
     // named arm. Adding a 46th IRFlowNode variant fails the build
     // here until the new arm is added. ZERO `_ =>` catch-all.
     match node {
-        IRFlowNode::Step(_) => legacy_shim(ShimReason::Step, ctx).await,
-        IRFlowNode::Probe(_) => legacy_shim(ShimReason::Probe, ctx).await,
-        IRFlowNode::Reason(_) => legacy_shim(ShimReason::Reason, ctx).await,
-        IRFlowNode::Validate(_) => legacy_shim(ShimReason::Validate, ctx).await,
-        IRFlowNode::Refine(_) => legacy_shim(ShimReason::Refine, ctx).await,
-        IRFlowNode::Weave(_) => legacy_shim(ShimReason::Weave, ctx).await,
+        // §Fase 33.y.c — pure-shape variants graduated to real
+        // async handlers. Each delegates to its labeled
+        // `pure_shape::run_*` entry which wraps the shared
+        // `pure_shape::run_pure_shape` async core. The shim is
+        // retired for these 6 variants; subsequent sub-fases retire
+        // it for the remaining 39 variants per the topological
+        // schedule in `docs/fase_33y_algebraic_streaming_dispatcher.md`.
+        IRFlowNode::Step(step) => pure_shape::run_step(step, ctx).await,
+        IRFlowNode::Probe(probe) => pure_shape::run_probe(probe, ctx).await,
+        IRFlowNode::Reason(reason) => pure_shape::run_reason(reason, ctx).await,
+        IRFlowNode::Validate(validate) => pure_shape::run_validate(validate, ctx).await,
+        IRFlowNode::Refine(refine) => pure_shape::run_refine(refine, ctx).await,
+        IRFlowNode::Weave(weave) => pure_shape::run_weave(weave, ctx).await,
         IRFlowNode::UseTool(_) => legacy_shim(ShimReason::UseTool, ctx).await,
         IRFlowNode::Remember(_) => legacy_shim(ShimReason::Remember, ctx).await,
         IRFlowNode::Recall(_) => legacy_shim(ShimReason::Recall, ctx).await,
@@ -759,11 +818,12 @@ mod tests {
         }
     }
 
-    /// 33.y.b smoke: dispatch_node dispatches Step correctly through
-    /// the exhaustive match (proves the entry-point arm wiring
-    /// without coupling to handler internals).
+    /// 33.y.c smoke: dispatch_node dispatches Step through the
+    /// graduated pure-shape handler (not the shim) and returns
+    /// `NodeOutcome::Completed` with the stub backend's canonical
+    /// "(stub)" 1-token output.
     #[tokio::test]
-    async fn dispatch_node_step_routes_to_legacy_shim() {
+    async fn dispatch_node_step_routes_to_pure_shape_handler() {
         use crate::ir_nodes::*;
 
         let step = IRStep {
@@ -797,10 +857,16 @@ mod tests {
 
         let outcome = dispatch_node(&node, &mut ctx).await.unwrap();
         match outcome {
-            NodeOutcome::LegacyShimHandled { reason, node_kind } => {
-                assert_eq!(reason, ShimReason::Step);
-                assert_eq!(node_kind, "step");
+            NodeOutcome::Completed {
+                output,
+                tokens_emitted,
+                step_index,
+            } => {
+                assert_eq!(output, "(stub)");
+                assert_eq!(tokens_emitted, 1);
+                assert_eq!(step_index, 0);
             }
+            other => panic!("post-33.y.c: Step routes to pure_shape handler returning Completed; got {other:?}"),
         }
     }
 }
