@@ -55,6 +55,63 @@ use sha2::{Digest, Sha256};
 /// persistence backend for longer retention.
 pub const DEFAULT_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
+/// §Fase 33.x.f — One per-step audit record captured during a
+/// streaming flow's execution. Multiple records per replay entry
+/// (one per step that executed). Surfaced to auditors via
+/// `GET /v1/replay/<trace_id>` so regulators see the per-step
+/// sequence rather than just the final response. Per-token chain
+/// signature (each `axon.token` cryptographically chained) stays
+/// deferred to Fase 34.
+///
+/// # Required for regulated verticals
+///
+/// - **Banking** (PCI DSS Req 10) — auditors need the per-step
+///   tokens_emitted + output_hash so each LLM call in a multi-step
+///   decision flow is independently auditable.
+/// - **Government** (FedRAMP AU-2) — FOIA requests retrieve the
+///   per-step reasoning chain; final-response replay is insufficient.
+/// - **Legal** (FRE 502 waiver-doctrine) — appellate review traces
+///   the per-step privilege-assessment reasoning, not just the
+///   conclusion.
+/// - **Medicine** (21 CFR Part 11 §11.10) — CDS clinician trails
+///   require per-step recommendation provenance.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StepAuditRecord {
+    /// Step name as declared in the source (matches
+    /// `IRStep.name`). Stable across versions of the flow.
+    pub step_name: String,
+    /// Index of the step in flow-execution order (0-based).
+    pub step_index: usize,
+    /// `true` iff the step's LLM dispatch + chunk drain completed
+    /// without surfacing a `BackendError` or cancellation.
+    pub success: bool,
+    /// Number of non-empty `StepToken` events emitted to the wire
+    /// for this step. Equals the count of chunks the consumer drained
+    /// from the per-step backend stream after policy enforcement.
+    pub tokens_emitted: u64,
+    /// SHA-256 hex of the concatenated step output text (i.e. all
+    /// `chunk.delta` strings joined). Stable + content-addressable;
+    /// auditors detect drift between re-executions by hash comparison.
+    pub output_hash_hex: String,
+    /// Closed-catalog policy slug — `Some("drop_oldest")`,
+    /// `Some("degrade_quality")`, `Some("pause_upstream")`,
+    /// `Some("fail")` — for steps whose tool declared
+    /// `effects: <stream:<policy>>`. `None` when the step's tool
+    /// declared no stream effect.
+    pub effect_policy_applied: Option<String>,
+    /// Number of chunks the enforcer dropped under `DropOldest`
+    /// policy. Always `0` for non-`DropOldest` policies + for
+    /// steps without an enforcer.
+    pub chunks_dropped: u64,
+    /// Number of chunks the enforcer degraded under
+    /// `DegradeQuality` policy. Always `0` for other policies + for
+    /// steps without an enforcer.
+    pub chunks_degraded: u64,
+    /// Unix-millis timestamp when the step completed. Monotonic
+    /// within a single flow execution.
+    pub timestamp_ms: u64,
+}
+
 /// One replay binding entry. Immutable once minted.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AxonendpointReplayEntry {
@@ -97,6 +154,13 @@ pub struct AxonendpointReplayEntry {
     /// + locked-model backends; `false` for temperature>0 LLM calls.
     /// Surfaces in the `Replay-Status` HTTP header.
     pub deterministic: bool,
+    /// §Fase 33.x.f — Per-step audit records. Populated for SSE
+    /// routes whose `replay: true` declaration fired the streaming
+    /// path's per-step recording. Empty for legacy JSON 2xx
+    /// replay entries (Fase 32.h shape; D4 byte-compat preserved
+    /// because the field is elided when empty via `skip_serializing_if`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub step_audit: Vec<StepAuditRecord>,
 }
 
 /// In-memory replay log. Indexed by `trace_id` for O(1) GET. Bounded
@@ -288,6 +352,7 @@ mod tests {
             response_body: b"ok".to_vec(),
             model_version: "axon.runtime.dynamic_route.v1".to_string(),
             deterministic: true,
+            step_audit: Vec::new(),
         }
     }
 
