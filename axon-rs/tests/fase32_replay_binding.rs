@@ -528,10 +528,21 @@ async fn v1_execute_legacy_path_does_not_write_replay_entries() {
     assert!(resp.headers().get("x-axon-trace-id").is_none());
 }
 
-// ─── D6 composition: SSE response skips replay binding ─────────────
+// ─── D6 composition: SSE response binds replay with per-step audit ─
+//
+// §Fase 33.x.f rewrites this anchor. Pre-33.x.f the SSE branch
+// fell through the post-dispatch body capture (only application/
+// json 2xx captured), so SSE routes with `replay: true` (or POST
+// default-on) wrote NO replay entry — the test asserted 404.
+//
+// Post-33.x.f, the SSE handler records an entry with the
+// per-step `step_audit` records populated. Response body bytes
+// stay empty (per-event token chain is Fase 34 scope). The
+// `response_content_type` is `text/event-stream` so adopters
+// can distinguish SSE-mode replay entries from JSON-mode ones.
 
 #[tokio::test]
-async fn sse_response_bypasses_replay_binding() {
+async fn sse_response_records_replay_with_step_audit_post_33_x_f() {
     let src = "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
                flow Chat() -> Unit { step S { ask: \"x\" apply: t } }\n\
                axonendpoint ChatSse { method: POST path: \"/chat-sse\" \
@@ -547,28 +558,43 @@ async fn sse_response_bypasses_replay_binding() {
         .headers()
         .get("x-axon-trace-id")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+        .map(|s| s.to_string())
+        .expect("33.x.f lifts X-Axon-Trace-Id generation BEFORE dispatch, so the header is set even on SSE responses");
     let _ = resp.into_body().collect().await.unwrap().to_bytes();
 
-    // SSE responses bypass per-event capture at the wire layer;
-    // depending on whether the SSE response carried the trace header
-    // through, the GET /v1/replay might 404. Either way, no SSE-body
-    // entry is recorded; per-event token chain is a future fase.
-    if let Some(tid) = trace_id {
-        let replay_resp = app
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/v1/replay/{tid}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            replay_resp.status(),
-            StatusCode::NOT_FOUND,
-            "SSE response must not write a replay entry"
-        );
-    }
+    // POST + replay omitted → 32.h default = enabled → 33.x.f
+    // records an entry with step_audit.
+    let replay_resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/replay/{trace_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        replay_resp.status(),
+        StatusCode::OK,
+        "POST-33.x.f: SSE response with replay_enabled MUST record entry"
+    );
+    let bytes = replay_resp.into_body().collect().await.unwrap().to_bytes();
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("replay GET returns JSON");
+    // Per-event token chain stays deferred to Fase 34: response
+    // body stays empty.
+    assert_eq!(parsed["response_content_type"], "text/event-stream");
+    assert_eq!(
+        parsed["response_body_base64"],
+        "",
+        "33.x.f records step_audit, NOT per-event body bytes (Fase 34 scope)"
+    );
+    // Per-step audit MUST be populated.
+    let step_audit = parsed["step_audit"]
+        .as_array()
+        .expect("step_audit MUST be a JSON array post-33.x.f");
+    assert_eq!(step_audit.len(), 1, "1-step flow → 1 step_audit entry");
+    assert_eq!(step_audit[0]["step_name"], "S");
+    assert_eq!(step_audit[0]["effect_policy_applied"], "drop_oldest");
 }

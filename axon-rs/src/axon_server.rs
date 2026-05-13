@@ -9243,6 +9243,18 @@ async fn replay_get_handler(
 
     use base64::engine::general_purpose::STANDARD as B64;
     use base64::Engine;
+    // §Fase 33.x.f — `step_audit` field surfaces the per-step
+    // sequence (D6). Empty for legacy JSON 2xx capture entries
+    // (Fase 32.h shape); populated for SSE routes whose
+    // `replay: true` declaration fired the streaming per-step
+    // recording. The wire field is elided when empty per the
+    // serde `skip_serializing_if` on the entry struct, but here
+    // we always include it (possibly as `[]`) for adopter
+    // diagnostic clarity — adopters expect a stable wire field
+    // shape from the replay-GET surface.
+    let step_audit_json = serde_json::to_value(&entry.step_audit).unwrap_or_else(|_| {
+        serde_json::Value::Array(Vec::new())
+    });
     let payload = serde_json::json!({
         "trace_id": entry.trace_id,
         "timestamp_ms": entry.timestamp_ms,
@@ -9260,6 +9272,7 @@ async fn replay_get_handler(
         "response_content_type": entry.response_content_type,
         "model_version": entry.model_version,
         "deterministic": entry.deterministic,
+        "step_audit": step_audit_json,
     });
     let replay_status = if entry.deterministic {
         "deterministic"
@@ -18283,6 +18296,30 @@ pub(crate) struct StreamingExecution {
             std::collections::HashMap<String, EnforcementSummaryWire>,
         >,
     >,
+    /// §Fase 33.x.f — Per-step audit record side-channel.
+    ///
+    /// Populated by the async streaming producer
+    /// (`run_streaming_async_path`) after each step finishes
+    /// draining: one
+    /// [`crate::axonendpoint_replay::StepAuditRecord`] per
+    /// `IRFlowNode::Step` that executed. Read by the SSE handler
+    /// when emitting `axon.complete` if a `ReplayContext` is
+    /// provided (route has `replay: true` declared) — the records
+    /// land in the
+    /// [`crate::axonendpoint_replay::AxonendpointReplayEntry::step_audit`]
+    /// field so `GET /v1/replay/<trace_id>` returns the per-step
+    /// sequence to regulators / auditors.
+    ///
+    /// Empty for:
+    ///   - The legacy synchronous fallback path
+    ///     (`run_streaming_legacy_path`) — preserves v1.24.0 wire +
+    ///     replay byte-compat.
+    ///   - SSE routes WITHOUT `replay: true` — recording the
+    ///     side-channel costs ~one Mutex push per step regardless
+    ///     of replay binding (cheap), but the entry is never written.
+    pub step_audit_records: std::sync::Arc<
+        tokio::sync::Mutex<Vec<crate::axonendpoint_replay::StepAuditRecord>>,
+    >,
 }
 
 /// §Fase 33.x.b — Production async streaming path.
@@ -18354,7 +18391,11 @@ async fn run_streaming_async_path(
     enforcement_summaries: std::sync::Arc<
         tokio::sync::Mutex<std::collections::HashMap<String, EnforcementSummaryWire>>,
     >,
+    step_audit_records: std::sync::Arc<
+        tokio::sync::Mutex<Vec<crate::axonendpoint_replay::StepAuditRecord>>,
+    >,
 ) {
+    use crate::axonendpoint_replay::{AxonendpointReplayLog, StepAuditRecord};
     use crate::backends::{ChatRequest, Message};
     use crate::flow_execution_event::{now_ms, FlowExecutionEvent};
     use futures::StreamExt;
@@ -18699,9 +18740,37 @@ async fn run_streaming_async_path(
             // StepComplete so the consumer at execute_sse_handler
             // sees the map populated when it builds the
             // axon.complete wire JSON.
+            //
+            // §Fase 33.x.f — Also build the step audit record
+            // (D6). The output_hash + chunks_dropped /
+            // chunks_degraded counters land on the replay log so
+            // `GET /v1/replay/<trace_id>` for SSE routes returns
+            // the per-step sequence regulators / auditors need.
+            let chunks_dropped =
+                step_enforcement_summary.as_ref().map(|s| s.drop_oldest_hits).unwrap_or(0);
+            let chunks_degraded =
+                step_enforcement_summary.as_ref().map(|s| s.degrade_quality_hits).unwrap_or(0);
+            let effect_policy_applied =
+                step_enforcement_summary.as_ref().map(|s| s.policy_slug.clone());
             if let Some(s) = step_enforcement_summary {
                 let mut map = enforcement_summaries.lock().await;
                 map.insert(plan_step.step_name.clone(), s);
+            }
+            let output_hash_hex = AxonendpointReplayLog::hash_body_hex(accumulated.as_bytes());
+            let step_record = StepAuditRecord {
+                step_name: plan_step.step_name.clone(),
+                step_index,
+                success: step_success,
+                tokens_emitted: token_index,
+                output_hash_hex,
+                effect_policy_applied,
+                chunks_dropped,
+                chunks_degraded,
+                timestamp_ms: now_ms(),
+            };
+            {
+                let mut records = step_audit_records.lock().await;
+                records.push(step_record);
             }
 
             // Multi-step flows feed step N's output back as
@@ -18771,6 +18840,16 @@ fn server_execute_streaming(
         tokio::sync::Mutex<std::collections::HashMap<String, EnforcementSummaryWire>>,
     > = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
+    // §Fase 33.x.f — Shared per-step audit record side-channel.
+    // The async producer writes one record per step that executes;
+    // the SSE handler reads them at FlowComplete and lands them in
+    // the AxonendpointReplayEntry when the route declares
+    // `replay: true`. Empty Vec on the legacy path + on /v1/execute/sse
+    // direct hits (no ReplayContext supplied).
+    let step_audit_records: std::sync::Arc<
+        tokio::sync::Mutex<Vec<crate::axonendpoint_replay::StepAuditRecord>>,
+    > = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+
     // §Fase 33.x.b + 33.x.d — Resolve `auto` to a concrete backend
     // BEFORE the routing decision. The dynamic-route dispatch path
     // (`dispatch_dynamic_route_handler`) passes `backend: "auto"`
@@ -18819,6 +18898,7 @@ fn server_execute_streaming(
             let cancel_for_async = cancel.clone();
             let backend_for_async = effective_backend.clone();
             let summaries_for_async = enforcement_summaries.clone();
+            let step_audit_for_async = step_audit_records.clone();
             tokio::spawn(async move {
                 run_streaming_async_path(
                     plan,
@@ -18826,6 +18906,7 @@ fn server_execute_streaming(
                     cancel_for_async,
                     tx_for_task,
                     summaries_for_async,
+                    step_audit_for_async,
                 )
                 .await;
                 exited_for_async.notify_waiters();
@@ -18838,6 +18919,7 @@ fn server_execute_streaming(
                 events: rx,
                 exited,
                 enforcement_summaries,
+                step_audit_records,
             };
         }
         _ => {
@@ -18878,6 +18960,7 @@ fn server_execute_streaming(
         events: rx,
         exited,
         enforcement_summaries,
+        step_audit_records,
     }
 }
 
@@ -19085,10 +19168,54 @@ fn run_streaming_legacy_path(
 /// `axon.complete`. The trace entry is recorded with that id once the
 /// `FlowExecutionEvent` channel closes, so the `/v1/replay/<trace_id>`
 /// surface stays valid (D9 + Fase 30.f audit parity).
+/// §Fase 33.x.f — Replay context for dynamic-route SSE responses.
+///
+/// Supplied by `dispatch_dynamic_route_handler` when the route has
+/// `replay: true` declared. Carries the UUID trace_id (correlation
+/// anchor matching `X-Axon-Trace-Id` header), endpoint metadata,
+/// client auth context, and the request body bytes — everything
+/// needed to build an `AxonendpointReplayEntry` at FlowComplete.
+///
+/// `None` for direct hits to `POST /v1/execute/sse` (the legacy
+/// SSE path which has no axonendpoint declaration → no replay
+/// binding semantics).
+#[derive(Debug, Clone)]
+pub(crate) struct SseReplayContext {
+    pub trace_id_uuid: String,
+    pub endpoint_name: String,
+    pub method: String,
+    pub path: String,
+    pub client_id: String,
+    pub capabilities_used: Vec<String>,
+    pub request_body: Vec<u8>,
+}
+
+/// Axum handler for `POST /v1/execute/sse`. Direct hits to this
+/// route have no axonendpoint replay binding so we call the inner
+/// fn with `replay_ctx: None`.
 async fn execute_sse_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Json(payload): Json<StreamExecuteRequest>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    execute_sse_handler_inner(state, headers, payload, None).await
+}
+
+/// §Fase 33.x.f — Internal SSE handler with optional replay context.
+///
+/// Same SSE response shape as `execute_sse_handler` for both
+/// `replay_ctx = None` (direct `/v1/execute/sse` hits) and
+/// `replay_ctx = Some(...)` (dynamic-route SSE with replay binding).
+/// When `replay_ctx` is `Some`, the consumer task additionally
+/// writes an `AxonendpointReplayEntry` to the replay log at
+/// FlowComplete time, populated with the per-step `step_audit`
+/// records from the producer side-channel — so `GET /v1/replay/<uuid>`
+/// returns the per-step sequence regulators need.
+async fn execute_sse_handler_inner(
+    state: SharedState,
+    headers: HeaderMap,
+    payload: StreamExecuteRequest,
+    replay_ctx: Option<SseReplayContext>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     use crate::flow_execution_event::FlowExecutionEvent;
     use futures::SinkExt;
@@ -19188,6 +19315,7 @@ async fn execute_sse_handler(
                     events: mut event_rx,
                     exited: _producer_exited,
                     enforcement_summaries: enforcement_summaries_for_consumer,
+                    step_audit_records: step_audit_records_for_consumer,
                 } = server_execute_streaming(
                     state_for_task.clone(),
                     source.clone(),
@@ -19314,6 +19442,64 @@ async fn execute_sse_handler(
                                 effect_policies: effect_policies.clone(),
                                 enforcement_summaries: summaries_vec,
                             };
+
+                            // §Fase 33.x.f — Write the SSE replay
+                            // entry IF the route declared `replay: true`.
+                            // Reads the producer's per-step audit
+                            // records from the side-channel, builds the
+                            // `AxonendpointReplayEntry`, appends to
+                            // the replay log keyed by the UUID
+                            // trace_id. Pre-condition: replay_ctx is
+                            // Some (dispatcher set it when
+                            // route.replay_enabled). The wire body the
+                            // adopter sees is unchanged — this is a
+                            // server-side write that surfaces only
+                            // via `GET /v1/replay/<uuid>`.
+                            if let Some(ref rctx) = replay_ctx {
+                                let step_records: Vec<crate::axonendpoint_replay::StepAuditRecord> = {
+                                    let guard = step_audit_records_for_consumer.lock().await;
+                                    guard.clone()
+                                };
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0);
+                                let request_body_hash_hex =
+                                    crate::axonendpoint_replay::AxonendpointReplayLog::hash_body_hex(
+                                        &rctx.request_body,
+                                    );
+                                let replay_entry =
+                                    crate::axonendpoint_replay::AxonendpointReplayEntry {
+                                        trace_id: rctx.trace_id_uuid.clone(),
+                                        timestamp_ms: now_ms,
+                                        endpoint_name: rctx.endpoint_name.clone(),
+                                        flow_name: flow_name.clone(),
+                                        method: rctx.method.clone(),
+                                        path: rctx.path.clone(),
+                                        client_id: rctx.client_id.clone(),
+                                        capabilities_used: rctx.capabilities_used.clone(),
+                                        request_body_hash_hex,
+                                        request_body: rctx.request_body.clone(),
+                                        response_status: 200,
+                                        // SSE bodies aren't captured
+                                        // server-side (per-event token
+                                        // chain is Fase 34 scope); the
+                                        // step_audit records are the
+                                        // per-step audit trail.
+                                        response_body_hash_hex: String::new(),
+                                        response_content_type: "text/event-stream".to_string(),
+                                        response_body: Vec::new(),
+                                        model_version:
+                                            "axon.runtime.dynamic_route.sse.v1".to_string(),
+                                        deterministic:
+                                            crate::axonendpoint_replay::is_backend_deterministic(
+                                                &backend,
+                                            ),
+                                        step_audit: step_records,
+                                    };
+                                let mut s = state_for_task.lock().unwrap();
+                                s.axonendpoint_replay.append(replay_entry);
+                            }
 
                             event_id += 1;
                             let _ = tx
@@ -20385,15 +20571,53 @@ async fn dynamic_endpoint_handler(
     let replay_capabilities_used =
         crate::auth_scope::extract_capabilities_from_bearer(&headers);
 
+    // §Fase 32.h (lifted up in 33.x.f) — trace_id generated BEFORE
+    // dispatch so the SSE branch can pass it into
+    // `execute_sse_handler_inner`'s ReplayContext. The same UUID
+    // surfaces as `X-Axon-Trace-Id` on the response + as the lookup
+    // key for `GET /v1/replay/<uuid>`. Cheap to generate
+    // unconditionally (16 random bytes + hex encode).
+    let trace_id = uuid::Uuid::new_v4().to_string();
+    let trace_hdr =
+        axum::http::HeaderValue::from_str(&trace_id).unwrap_or_else(|_| {
+            // Uuid::to_string() produces only ASCII hex — this
+            // path is unreachable, but defensive.
+            axum::http::HeaderValue::from_static("unknown")
+        });
+
     let response = match route_wire {
         DynamicRouteWire::Sse => {
             let stream_req = StreamExecuteRequest {
                 flow_name: route.flow_name.clone(),
                 backend: "auto".to_string(),
             };
-            execute_sse_handler(State(state.clone()), headers, Json(stream_req))
-                .await
-                .into_response()
+            // §Fase 33.x.f — Build the replay context when the
+            // route declares `replay: true`. The inner handler
+            // writes the AxonendpointReplayEntry at FlowComplete
+            // time, populated with the per-step audit records.
+            let replay_ctx = if route.replay_enabled {
+                Some(SseReplayContext {
+                    trace_id_uuid: trace_id.clone(),
+                    endpoint_name: route.endpoint_name.clone(),
+                    method: method_str.to_string(),
+                    path: path_str.to_string(),
+                    client_id: replay_client_id.clone(),
+                    capabilities_used: replay_capabilities_used.clone(),
+                    request_body: body.to_vec(),
+                })
+            } else {
+                None
+            };
+            let sse_response =
+                execute_sse_handler_inner(state.clone(), headers, stream_req, replay_ctx)
+                    .await
+                    .into_response();
+            // Attach the X-Axon-Trace-Id header so adopters can
+            // correlate the SSE stream with `/v1/replay/<uuid>`
+            // (matches the JSON 2xx capture path's header).
+            let mut sse_response = sse_response;
+            sse_response.headers_mut().insert("x-axon-trace-id", trace_hdr.clone());
+            sse_response
         }
         DynamicRouteWire::Json => {
             let exec_req = ExecuteRequest {
@@ -20463,13 +20687,12 @@ async fn dynamic_endpoint_handler(
     // skip BOTH caches because the response is not the flow's typed
     // output — replaying a 422 schema violation would be a category
     // error.
-    let trace_id = uuid::Uuid::new_v4().to_string();
-    let trace_hdr =
-        axum::http::HeaderValue::from_str(&trace_id).unwrap_or_else(|_| {
-            // The Uuid::to_string() produces only ASCII hex — this
-            // path is unreachable, but be defensive.
-            axum::http::HeaderValue::from_static("unknown")
-        });
+    //
+    // §Fase 33.x.f — `trace_id` + `trace_hdr` were lifted above the
+    // route_wire match so both SSE and JSON branches share the same
+    // UUID. The SSE branch passes it into `execute_sse_handler_inner`
+    // via the ReplayContext; the JSON branch uses it for the body-
+    // capture replay-binding write + the X-Axon-Trace-Id header.
 
     let should_capture_body = idempotency_cache_marker.is_some()
         || route.replay_enabled;
@@ -20547,6 +20770,11 @@ async fn dynamic_endpoint_handler(
                     // surfaces layered on top by enterprise).
                     deterministic:
                         crate::axonendpoint_replay::is_backend_deterministic("stub"),
+                    // §Fase 33.x.f — Per-step audit. Empty on the
+                    // JSON 2xx capture path (this branch); SSE path
+                    // populates this via the producer side-channel
+                    // when route.replay_enabled.
+                    step_audit: Vec::new(),
                 };
                 let mut s = state.lock().unwrap();
                 s.axonendpoint_replay.append(entry);

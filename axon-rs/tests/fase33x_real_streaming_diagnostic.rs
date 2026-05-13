@@ -451,62 +451,77 @@ async fn d5_v1_24_0_no_warning_surface_when_stub_serves_stream_type() {
 // step_name + tokens_emitted + output_hash + effect_policy_applied +
 // enforcement_summary slice (matches §2's `enforcement_summary`).
 
+/// §Fase 33.x.f — Replay-bound SSE source. Adds `replay: true` to
+/// the canonical disjunct (b) shape so the dynamic-route dispatcher
+/// records an `AxonendpointReplayEntry` with per-step audit records.
+const ADOPTER_STREAM_DROP_OLDEST_WITH_REPLAY: &str =
+    "tool chat_token_stream { description: \"stream\" effects: <stream:drop_oldest> }\n\
+     flow Chat() -> Unit {\n\
+        step Generate { ask: \"hi\" apply: chat_token_stream }\n\
+     }\n\
+     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse replay: true }";
+
 #[tokio::test]
-async fn d6_v1_24_0_replay_returns_single_row_for_sse_flow() {
+async fn d6_post_33_x_f_replay_returns_step_audit_for_sse_flow() {
     let app = build_router(server_cfg(false));
-    deploy(app.clone(), ADOPTER_STREAM_DROP_OLDEST).await;
-    let (_status, _ct, body) = fetch_sse_body(app.clone(), "/chat", "{}").await;
-    let events = parse_sse_body(&body);
-    let complete = events.completes.first().expect("axon.complete required");
+    deploy(app.clone(), ADOPTER_STREAM_DROP_OLDEST_WITH_REPLAY).await;
 
-    // trace_id arrives as JSON Number on the legacy in-memory store
-    // and as String once persistent stores stamp UUIDs (Fase 32.h
-    // tolerates both). Normalize to string-rep for the path param.
-    let trace_id_value = complete
-        .get("trace_id")
-        .or_else(|| complete.get("flow_trace_id"))
-        .expect("complete event MUST carry trace_id for replay binding (Fase 32.h)");
-    let trace_id = match trace_id_value {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Number(n) => n.to_string(),
-        other => panic!("trace_id must be String or Number, got {other:?}"),
-    };
+    // POST the dynamic route + capture the X-Axon-Trace-Id header.
+    // 33.x.f lifts the UUID generation BEFORE dispatch so the
+    // header is set even on SSE responses (where the body capture
+    // path doesn't fire).
+    let req = Request::builder()
+        .method("POST")
+        .uri("/chat")
+        .header("content-type", "application/json")
+        .body(Body::from("{}".to_string()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let trace_uuid = resp
+        .headers()
+        .get("x-axon-trace-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .expect("X-Axon-Trace-Id header MUST be present on dynamic-route SSE responses (33.x.f)");
+    // Drain the SSE body so the producer's FlowComplete fires +
+    // the replay entry gets written.
+    let _ = resp.into_body().collect().await.unwrap().to_bytes();
 
-    // GET /v1/replay/<trace_id> — Fase 32.h surface. Today returns
-    // one entry for the whole flow. Post-33.x.f returns one entry per
-    // step with the step-level diagnostic shape from §2.
+    // GET /v1/replay/<uuid> — post-33.x.f shape: payload's
+    // `step_audit` field is a non-empty array with per-step records.
     let req = Request::builder()
         .method("GET")
-        .uri(format!("/v1/replay/{trace_id}"))
+        .uri(format!("/v1/replay/{trace_uuid}"))
         .body(Body::empty())
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
-    let status = resp.status();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "POST-33.x.f: SSE route with `replay: true` MUST record a replay entry"
+    );
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let body = String::from_utf8_lossy(&bytes).to_string();
-    eprintln!("D6 anchor replay body: {body}");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("replay GET returns JSON");
 
-    // 404 here means the replay was not bound (POST without `replay:
-    // true` declared — which our test source does not declare). That
-    // is fine for the anchor: 33.x.f's contract is that WHEN replay
-    // binds, the row count is per-step. The anchor pins the count to
-    // exactly 1 today; flip to N post-33.x.f.
-    if status == StatusCode::OK {
-        let parsed: serde_json::Value =
-            serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
-        // PRE-33.x.f: replay payload has `entry_count: 1` (or similar
-        // single-row shape).
-        // POST-33.x.f: `entry_count` matches step count + each entry
-        // carries step-level fields.
-        if let Some(entries) = parsed.get("entries").and_then(|v| v.as_array()) {
-            assert!(
-                !entries.is_empty(),
-                "Replay payload MUST have at least one entry when binding succeeded"
-            );
-            // 33.x.f rewrites this assertion to step-count == flow's
-            // step count for SSE routes.
-        }
-    }
+    let step_audit = parsed["step_audit"]
+        .as_array()
+        .expect("POST-33.x.f: step_audit MUST be a JSON array");
+    // 1-step flow → exactly 1 audit record. **D6 anchor flips
+    // from `≤1 (often 0)` pre-33.x.f to `== step_count` post-
+    // 33.x.f**: the cycle's closure-proof diff is now observable.
+    assert_eq!(step_audit.len(), 1, "1-step flow → 1 step_audit entry");
+    let entry = &step_audit[0];
+    assert_eq!(entry["step_name"], "Generate");
+    assert_eq!(entry["step_index"].as_u64(), Some(0));
+    assert_eq!(entry["tokens_emitted"].as_u64(), Some(1));
+    // The declared `<stream:drop_oldest>` effect surfaces in the
+    // audit record's `effect_policy_applied` field.
+    assert_eq!(entry["effect_policy_applied"], "drop_oldest");
+    // For stub backend, no chunks dropped/degraded.
+    assert_eq!(entry["chunks_dropped"].as_u64(), Some(0));
+    assert_eq!(entry["chunks_degraded"].as_u64(), Some(0));
 }
 
 // ─── §6 — D3 anchor: cancel observed between emissions, not in-body ──
