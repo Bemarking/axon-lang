@@ -628,6 +628,9 @@ const GRADUATED_VARIANTS: &[ShimReason] = &[
     ShimReason::Break,
     ShimReason::Continue,
     ShimReason::Return,
+    // 33.y.e — parallel + algebraic (2)
+    ShimReason::Par,
+    ShimReason::Stream,
 ];
 
 /// Pure-shape graduated variants (33.y.c) — strict "(stub)" + 1 token.
@@ -654,6 +657,16 @@ const ORCHESTRATION_GRADUATED: &[ShimReason] = &[
     ShimReason::Return,
 ];
 
+/// Parallel + algebraic graduated variants (33.y.e) — both
+/// `IRParallelBlock` and `IRStreamBlock` are payload-free in
+/// v1.25.0; handlers emit canonical wire shape (StepStart +
+/// StepComplete with the corresponding step_type slug) +
+/// return Completed { output: "", tokens_emitted: 0 }.
+const PARALLEL_ALGEBRAIC_GRADUATED: &[ShimReason] = &[
+    ShimReason::Par,
+    ShimReason::Stream,
+];
+
 #[tokio::test]
 async fn every_ir_flow_node_routes_to_its_labeled_handler() {
     let pairs = all_45_pairs();
@@ -663,9 +676,12 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
         let pure_shape = PURE_SHAPE_GRADUATED.contains(&expected_reason);
         let orchestration = ORCHESTRATION_GRADUATED.contains(&expected_reason);
 
-        match (outcome, pure_shape, orchestration) {
+        let parallel_algebraic =
+            PARALLEL_ALGEBRAIC_GRADUATED.contains(&expected_reason);
+
+        match (outcome, pure_shape, orchestration, parallel_algebraic) {
             // Pure-shape: stub-backend produces "(stub)" with 1 token.
-            (Ok(NodeOutcome::Completed { output, tokens_emitted, .. }), true, _) => {
+            (Ok(NodeOutcome::Completed { output, tokens_emitted, .. }), true, _, _) => {
                 assert_eq!(
                     output, "(stub)",
                     "pure-shape variant {:?} stub output should be '(stub)' (D4)",
@@ -681,16 +697,41 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
             // Let/Conditional/ForIn return Completed with payload-
             // dependent output (zero-payload synthetics → empty body
             // → empty output).
-            (Ok(NodeOutcome::Break), _, true) if expected_reason == ShimReason::Break => {}
-            (Ok(NodeOutcome::LoopContinue), _, true) if expected_reason == ShimReason::Continue => {}
-            (Ok(NodeOutcome::Return { .. }), _, true) if expected_reason == ShimReason::Return => {}
-            (Ok(NodeOutcome::Completed { .. }), _, true)
+            (Ok(NodeOutcome::Break), _, true, _) if expected_reason == ShimReason::Break => {}
+            (Ok(NodeOutcome::LoopContinue), _, true, _)
+                if expected_reason == ShimReason::Continue => {}
+            (Ok(NodeOutcome::Return { .. }), _, true, _)
+                if expected_reason == ShimReason::Return => {}
+            (Ok(NodeOutcome::Completed { .. }), _, true, _)
                 if matches!(
                     expected_reason,
                     ShimReason::Let | ShimReason::Conditional | ShimReason::ForIn
                 ) => {}
+            // Parallel + algebraic: Par + Stream payload-free →
+            // Completed with output="", tokens=0.
+            (
+                Ok(NodeOutcome::Completed {
+                    output,
+                    tokens_emitted,
+                    ..
+                }),
+                _,
+                _,
+                true,
+            ) => {
+                assert_eq!(
+                    output, "",
+                    "33.y.e variant {:?} payload-free → empty output",
+                    expected_reason
+                );
+                assert_eq!(
+                    tokens_emitted, 0,
+                    "33.y.e variant {:?} payload-free → 0 tokens",
+                    expected_reason
+                );
+            }
             // Non-graduated: shim returns LegacyShimHandled.
-            (Ok(NodeOutcome::LegacyShimHandled { reason, node_kind }), false, false) => {
+            (Ok(NodeOutcome::LegacyShimHandled { reason, node_kind }), false, false, false) => {
                 assert_eq!(
                     reason, expected_reason,
                     "non-graduated dispatch_node routed {:?} to the wrong \
@@ -704,19 +745,23 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
                     expected_reason, node_kind, expected_kind
                 );
             }
-            (Ok(other), true, _) => panic!(
+            (Ok(other), true, _, _) => panic!(
                 "pure-shape variant {:?} expected Completed (stub), got {other:?}",
                 expected_reason
             ),
-            (Ok(other), _, true) => panic!(
+            (Ok(other), _, true, _) => panic!(
                 "orchestration variant {:?} unexpected outcome: {other:?}",
                 expected_reason
             ),
-            (Ok(other), false, false) => panic!(
+            (Ok(other), _, _, true) => panic!(
+                "parallel/algebraic variant {:?} expected Completed (empty), got {other:?}",
+                expected_reason
+            ),
+            (Ok(other), false, false, false) => panic!(
                 "non-graduated variant {:?} expected LegacyShimHandled, got {other:?}",
                 expected_reason
             ),
-            (Err(e), _, _) => panic!(
+            (Err(e), _, _, _) => panic!(
                 "dispatch_node returned Err for {:?}: {e:?}",
                 expected_reason
             ),
@@ -729,15 +774,14 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
 /// `GRADUATED_VARIANTS.len() == 45` and `LegacyShimHandled` is
 /// deleted in lockstep.
 #[test]
-fn graduated_variants_set_size_pinned_for_33_y_d() {
+fn graduated_variants_set_size_pinned_for_33_y_e() {
     assert_eq!(
         GRADUATED_VARIANTS.len(),
-        12,
-        "33.y.d advances graduated count to 12: 6 pure-shape \
-         (33.y.c: Step/Probe/Reason/Validate/Refine/Weave) + 6 \
-         orchestration (33.y.d: Let/Conditional/ForIn/Break/Continue/\
-         Return). 33.y.e will advance to 14 (Par/Stream); …; 33.y.l \
-         to 45 (all)."
+        14,
+        "33.y.e advances graduated count to 14: 6 pure-shape + 6 \
+         orchestration + 2 parallel/algebraic (Par/Stream). 33.y.f \
+         will advance to 24 (cognitive primitives); …; 33.y.l to \
+         45 (all)."
     );
     assert_eq!(
         PURE_SHAPE_GRADUATED.len(),
@@ -747,7 +791,12 @@ fn graduated_variants_set_size_pinned_for_33_y_d() {
     assert_eq!(
         ORCHESTRATION_GRADUATED.len(),
         6,
-        "orchestration subset is exactly 6"
+        "orchestration subset stays at 6"
+    );
+    assert_eq!(
+        PARALLEL_ALGEBRAIC_GRADUATED.len(),
+        2,
+        "parallel/algebraic subset is exactly 2 (Par + Stream)"
     );
 }
 
