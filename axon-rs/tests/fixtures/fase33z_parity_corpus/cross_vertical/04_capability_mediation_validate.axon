@@ -1,0 +1,15 @@
+// META: flow_name=CapabilityMediationValidate, mode=count_only
+
+flow CapabilityMediationValidate() -> Unit {
+    step ExtractToken { ask: "Extract bearer-token capability set" output: Stream<Token> }
+    let requested_scope = "reports.read"
+    validate requested_scope
+    step IssueDecision { ask: "Issue authorization decision" output: Stream<Token> }
+}
+
+axonendpoint CapabilityMediationValidateEndpoint {
+    method: POST
+    path: "/cross/capability-mediation-validate"
+    execute: CapabilityMediationValidate
+    transport: sse
+}

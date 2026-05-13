@@ -1,0 +1,17 @@
+// META: flow_name=ClinicalReasoningBranch, mode=count_only
+
+flow ClinicalReasoningBranch() -> Unit {
+    step IngestVitals { ask: "Ingest patient vitals" output: Stream<Token> }
+    let acuity = "high"
+    if acuity == "high" {
+        step EscalateWorkup { ask: "Escalate diagnostic workup" output: Stream<Token> }
+    }
+    step DocumentPlan { ask: "Document clinical plan" output: Stream<Token> }
+}
+
+axonendpoint ClinicalReasoningBranchEndpoint {
+    method: POST
+    path: "/medicine/clinical-reasoning-branch"
+    execute: ClinicalReasoningBranch
+    transport: sse
+}

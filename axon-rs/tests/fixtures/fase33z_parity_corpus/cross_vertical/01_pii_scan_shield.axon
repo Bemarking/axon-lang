@@ -1,0 +1,16 @@
+// META: flow_name=PiiScanShield, mode=count_only
+
+shield PiiShield { scan: [pii_leak] on_breach: quarantine severity: high compliance: [HIPAA] }
+
+flow PiiScanShield() -> Unit {
+    step ComposePayload { ask: "Compose tenant-bound response payload" output: Stream<Token> }
+    shield PiiShield on response -> SanitizedResponse
+    step DeliverSafe { ask: "Deliver sanitized payload" output: Stream<Token> }
+}
+
+axonendpoint PiiScanShieldEndpoint {
+    method: POST
+    path: "/cross/pii-scan-shield"
+    execute: PiiScanShield
+    transport: sse
+}

@@ -1,0 +1,20 @@
+// META: flow_name=CreditScoreReasoning, mode=count_only
+//
+// Credit score reasoning emitting structured score events to a downstream channel.
+
+channel CreditScoreChannel { message: String }
+
+flow CreditScoreReasoning() -> Unit {
+    step GatherBureau { ask: "Gather tri-bureau credit data" output: Stream<Token> }
+    step ScoreModel { ask: "Run scoring model with explainability" output: Stream<Token> }
+    let score = "742"
+    emit CreditScoreChannel(score)
+    step PublishOutcome { ask: "Publish scoring outcome to applicant record" output: Stream<Token> }
+}
+
+axonendpoint CreditScoreReasoningEndpoint {
+    method: POST
+    path: "/banking/credit-score-reasoning"
+    execute: CreditScoreReasoning
+    transport: sse
+}

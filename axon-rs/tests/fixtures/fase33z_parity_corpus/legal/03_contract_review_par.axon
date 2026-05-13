@@ -1,0 +1,18 @@
+// META: flow_name=ContractReviewPar, mode=count_only
+
+flow ContractReviewPar() -> Unit {
+    step IngestContract { ask: "Ingest contract document" output: Stream<Token> }
+    par {
+        step ReviewIndemnity { ask: "Review indemnification clauses" output: Stream<Token> }
+        step ReviewIp { ask: "Review IP-assignment clauses" output: Stream<Token> }
+        step ReviewTermination { ask: "Review termination clauses" output: Stream<Token> }
+    }
+    step DraftMemo { ask: "Draft review memo" output: Stream<Token> }
+}
+
+axonendpoint ContractReviewParEndpoint {
+    method: POST
+    path: "/legal/contract-review-par"
+    execute: ContractReviewPar
+    transport: sse
+}

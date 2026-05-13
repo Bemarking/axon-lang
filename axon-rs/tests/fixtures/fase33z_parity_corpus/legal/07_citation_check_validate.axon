@@ -1,0 +1,15 @@
+// META: flow_name=CitationCheckValidate, mode=count_only
+
+flow CitationCheckValidate() -> Unit {
+    step ParseBrief { ask: "Parse brief for cited authorities" output: Stream<Token> }
+    let citation = "410_US_113"
+    validate citation
+    step EmitReport { ask: "Emit citation-check report" output: Stream<Token> }
+}
+
+axonendpoint CitationCheckValidateEndpoint {
+    method: POST
+    path: "/legal/citation-check-validate"
+    execute: CitationCheckValidate
+    transport: sse
+}

@@ -1,0 +1,17 @@
+// META: flow_name=TrialMatchingMemory, mode=count_only
+
+flow TrialMatchingMemory() -> Unit {
+    step IngestProfile { ask: "Ingest patient eligibility profile" output: Stream<Token> }
+    let eligibility_key = "ECOG_1_stage_IIIB"
+    remember eligibility_key in trial_match_case
+    step QueryRegistry { ask: "Query trial registry for matches" output: Stream<Token> }
+    recall eligibility_key from trial_match_case
+    step RankTrials { ask: "Rank matched trials by fit" output: Stream<Token> }
+}
+
+axonendpoint TrialMatchingMemoryEndpoint {
+    method: POST
+    path: "/medicine/trial-matching-memory"
+    execute: TrialMatchingMemory
+    transport: sse
+}

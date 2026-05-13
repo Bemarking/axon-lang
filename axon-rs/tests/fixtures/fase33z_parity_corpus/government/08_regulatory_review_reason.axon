@@ -1,0 +1,14 @@
+// META: flow_name=RegulatoryReviewReason, mode=count_only
+
+flow RegulatoryReviewReason() -> Unit {
+    step IngestRule { ask: "Ingest proposed regulation text" output: Stream<Token> }
+    reason about_impact { target: "stakeholder_burden" }
+    step DraftRecommendation { ask: "Draft review recommendation" output: Stream<Token> }
+}
+
+axonendpoint RegulatoryReviewReasonEndpoint {
+    method: POST
+    path: "/government/regulatory-review-reason"
+    execute: RegulatoryReviewReason
+    transport: sse
+}

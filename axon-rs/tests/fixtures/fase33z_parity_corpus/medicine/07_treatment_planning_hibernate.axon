@@ -1,0 +1,14 @@
+// META: flow_name=TreatmentPlanningHibernate, mode=count_only
+
+flow TreatmentPlanningHibernate() -> Unit {
+    step DraftPlan { ask: "Draft initial treatment plan" output: Stream<Token> }
+    hibernate tumor_board_review 30m
+    step FinalizePlan { ask: "Finalize treatment plan" output: Stream<Token> }
+}
+
+axonendpoint TreatmentPlanningHibernateEndpoint {
+    method: POST
+    path: "/medicine/treatment-planning-hibernate"
+    execute: TreatmentPlanningHibernate
+    transport: sse
+}

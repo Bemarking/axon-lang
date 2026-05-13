@@ -1,0 +1,24 @@
+// META: flow_name=CreditDecision, mode=count_only
+//
+// Banking conditional pattern — credit decision branches on
+// applicant tier. Exercises `IRFlowNode::Conditional` end-to-end
+// through both paths.
+//
+// **CountOnly mode** — the sync runner's stub treats Conditional
+// as a structural marker (records the trace event + skips the
+// body — see [runner.rs:669](../axon-rs/src/runner.rs#L669)). The
+// async dispatcher recursively walks the chosen branch body. Same
+// SUCCESS flag, different step_count + step_results by design.
+
+flow CreditDecision() -> Unit {
+    if tier == "premium" {
+        step PremiumReview { ask: "Premium tier review" output: Stream<Token> }
+    }
+}
+
+axonendpoint CreditEndpoint {
+    method: POST
+    path: "/credit/decide"
+    execute: CreditDecision
+    transport: sse
+}

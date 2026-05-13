@@ -1,0 +1,16 @@
+// META: flow_name=DisputeResolutionPix, mode=count_only
+//
+// Chargeback dispute resolution with PIX hibernate awaiting issuer response.
+
+flow DisputeResolutionPix() -> Unit {
+    step CaptureDispute { ask: "Capture cardholder dispute narrative" output: Stream<Token> }
+    hibernate issuer_response 5m
+    step AdjudicateDispute { ask: "Adjudicate dispute on issuer reply" output: Stream<Token> }
+}
+
+axonendpoint DisputeResolutionPixEndpoint {
+    method: POST
+    path: "/banking/dispute-resolution-pix"
+    execute: DisputeResolutionPix
+    transport: sse
+}

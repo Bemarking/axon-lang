@@ -1,0 +1,18 @@
+// META: flow_name=WitnessPrepEmit, mode=count_only
+
+channel WitnessPrepChannel { message: String }
+
+flow WitnessPrepEmit() -> Unit {
+    step ReviewStatement { ask: "Review prior witness statements" output: Stream<Token> }
+    step ConductMock { ask: "Conduct mock examination" output: Stream<Token> }
+    let prep_status = "complete"
+    emit WitnessPrepChannel(prep_status)
+    step ArchivePacket { ask: "Archive witness prep packet" output: Stream<Token> }
+}
+
+axonendpoint WitnessPrepEmitEndpoint {
+    method: POST
+    path: "/legal/witness-prep-emit"
+    execute: WitnessPrepEmit
+    transport: sse
+}

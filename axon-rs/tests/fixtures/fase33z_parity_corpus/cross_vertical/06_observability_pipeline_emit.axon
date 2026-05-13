@@ -1,0 +1,18 @@
+// META: flow_name=ObservabilityPipelineEmit, mode=count_only
+
+channel TelemetryChannel { message: String }
+
+flow ObservabilityPipelineEmit() -> Unit {
+    step CollectMetrics { ask: "Collect runtime metrics" output: Stream<Token> }
+    step ShapeEnvelope { ask: "Shape telemetry envelope" output: Stream<Token> }
+    let envelope = "otel_v1_payload"
+    emit TelemetryChannel(envelope)
+    step AckExport { ask: "Acknowledge exporter handoff" output: Stream<Token> }
+}
+
+axonendpoint ObservabilityPipelineEmitEndpoint {
+    method: POST
+    path: "/cross/observability-pipeline-emit"
+    execute: ObservabilityPipelineEmit
+    transport: sse
+}

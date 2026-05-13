@@ -1,0 +1,14 @@
+// META: flow_name=PrescriptionAuditCanonical, mode=strict
+//
+// Canonical prescription-audit single-step streaming — no orchestration.
+
+flow PrescriptionAuditCanonical() -> Unit {
+    step Audit { ask: "Audit prescription against patient context" output: Stream<Token> }
+}
+
+axonendpoint PrescriptionAuditCanonicalEndpoint {
+    method: POST
+    path: "/medicine/prescription-audit-canonical"
+    execute: PrescriptionAuditCanonical
+    transport: sse
+}

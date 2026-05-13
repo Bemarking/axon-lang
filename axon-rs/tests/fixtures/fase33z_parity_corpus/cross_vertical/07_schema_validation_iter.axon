@@ -1,0 +1,17 @@
+// META: flow_name=SchemaValidationIter, mode=count_only
+
+flow SchemaValidationIter() -> Unit {
+    step ParsePayload { ask: "Parse incoming request payload" output: Stream<Token> }
+    let field_groups = "identity,session,resource,scope"
+    for fg in field_groups {
+        step ValidateGroup { ask: "Validate field group against schema" output: Stream<Token> }
+    }
+    step EmitVerdict { ask: "Emit aggregate validation verdict" output: Stream<Token> }
+}
+
+axonendpoint SchemaValidationIterEndpoint {
+    method: POST
+    path: "/cross/schema-validation-iter"
+    execute: SchemaValidationIter
+    transport: sse
+}

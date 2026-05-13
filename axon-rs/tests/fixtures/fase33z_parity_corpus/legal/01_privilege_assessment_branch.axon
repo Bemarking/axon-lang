@@ -1,0 +1,17 @@
+// META: flow_name=PrivilegeAssessmentBranch, mode=count_only
+
+flow PrivilegeAssessmentBranch() -> Unit {
+    step IngestCommunication { ask: "Ingest communication for privilege review" output: Stream<Token> }
+    let context = "corporate"
+    if context == "corporate" {
+        step ApplyUpjohn { ask: "Apply Upjohn corporate-client analysis" output: Stream<Token> }
+    }
+    step IssueDetermination { ask: "Issue privilege determination" output: Stream<Token> }
+}
+
+axonendpoint PrivilegeAssessmentBranchEndpoint {
+    method: POST
+    path: "/legal/privilege-assessment-branch"
+    execute: PrivilegeAssessmentBranch
+    transport: sse
+}

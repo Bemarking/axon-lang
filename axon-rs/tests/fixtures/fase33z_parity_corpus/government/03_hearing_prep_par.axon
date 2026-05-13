@@ -1,0 +1,17 @@
+// META: flow_name=HearingPrepPar, mode=count_only
+
+flow HearingPrepPar() -> Unit {
+    step ReadDocket { ask: "Read administrative docket" output: Stream<Token> }
+    par {
+        step AssembleExhibits { ask: "Assemble exhibit binder" output: Stream<Token> }
+        step DraftFindings { ask: "Draft proposed findings of fact" output: Stream<Token> }
+    }
+    step FinalizeBrief { ask: "Finalize hearing brief" output: Stream<Token> }
+}
+
+axonendpoint HearingPrepParEndpoint {
+    method: POST
+    path: "/government/hearing-prep-par"
+    execute: HearingPrepPar
+    transport: sse
+}

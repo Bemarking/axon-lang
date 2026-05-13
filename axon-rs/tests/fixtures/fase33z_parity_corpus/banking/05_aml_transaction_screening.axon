@@ -1,0 +1,20 @@
+// META: flow_name=AmlTransactionScreening, mode=count_only
+//
+// AML transaction screening with conditional escalation under PCI DSS Req 10.
+// Branches on risk tier; high-risk path triggers enhanced due diligence step.
+
+flow AmlTransactionScreening() -> Unit {
+    step ExtractFeatures { ask: "Extract counterparty and amount features" output: Stream<Token> }
+    let tier = "high"
+    if tier == "high" {
+        step EnhancedDueDiligence { ask: "Run EDD checks on counterparty" output: Stream<Token> }
+    }
+    step EmitVerdict { ask: "Emit final AML verdict" output: Stream<Token> }
+}
+
+axonendpoint AmlTransactionScreeningEndpoint {
+    method: POST
+    path: "/banking/aml-transaction-screening"
+    execute: AmlTransactionScreening
+    transport: sse
+}

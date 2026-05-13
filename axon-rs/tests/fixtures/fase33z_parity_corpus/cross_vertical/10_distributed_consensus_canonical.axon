@@ -1,0 +1,14 @@
+// META: flow_name=DistributedConsensusCanonical, mode=strict
+//
+// Canonical distributed-consensus single-step streaming — no orchestration.
+
+flow DistributedConsensusCanonical() -> Unit {
+    step Deliberate { ask: "Deliberate on quorum proposal" output: Stream<Token> }
+}
+
+axonendpoint DistributedConsensusCanonicalEndpoint {
+    method: POST
+    path: "/cross/distributed-consensus-canonical"
+    execute: DistributedConsensusCanonical
+    transport: sse
+}

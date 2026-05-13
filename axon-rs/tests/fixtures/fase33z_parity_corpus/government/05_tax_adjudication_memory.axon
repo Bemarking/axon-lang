@@ -1,0 +1,17 @@
+// META: flow_name=TaxAdjudicationMemory, mode=count_only
+
+flow TaxAdjudicationMemory() -> Unit {
+    step IngestReturn { ask: "Ingest tax return submission" output: Stream<Token> }
+    let prior_balance = "-1247.50"
+    remember prior_balance in taxpayer_case
+    step ReconcileLedger { ask: "Reconcile against taxpayer ledger" output: Stream<Token> }
+    recall prior_balance from taxpayer_case
+    step IssueAssessment { ask: "Issue adjudication notice" output: Stream<Token> }
+}
+
+axonendpoint TaxAdjudicationMemoryEndpoint {
+    method: POST
+    path: "/government/tax-adjudication-memory"
+    execute: TaxAdjudicationMemory
+    transport: sse
+}

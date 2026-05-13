@@ -1,0 +1,14 @@
+// META: flow_name=BriefDraftingCanonical, mode=strict
+//
+// Canonical brief-drafting single-step streaming — no orchestration.
+
+flow BriefDraftingCanonical() -> Unit {
+    step Draft { ask: "Draft appellate brief argument section" output: Stream<Token> }
+}
+
+axonendpoint BriefDraftingCanonicalEndpoint {
+    method: POST
+    path: "/legal/brief-drafting-canonical"
+    execute: BriefDraftingCanonical
+    transport: sse
+}

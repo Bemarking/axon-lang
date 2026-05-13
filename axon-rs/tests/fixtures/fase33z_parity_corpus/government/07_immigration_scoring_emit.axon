@@ -1,0 +1,18 @@
+// META: flow_name=ImmigrationScoringEmit, mode=count_only
+
+channel ImmigrationScoreChannel { message: String }
+
+flow ImmigrationScoringEmit() -> Unit {
+    step GatherAttributes { ask: "Gather education and language attributes" output: Stream<Token> }
+    step ComputeScore { ask: "Compute points-based score" output: Stream<Token> }
+    let score = "68"
+    emit ImmigrationScoreChannel(score)
+    step NotifyApplicant { ask: "Notify applicant of scoring outcome" output: Stream<Token> }
+}
+
+axonendpoint ImmigrationScoringEmitEndpoint {
+    method: POST
+    path: "/government/immigration-scoring-emit"
+    execute: ImmigrationScoringEmit
+    transport: sse
+}

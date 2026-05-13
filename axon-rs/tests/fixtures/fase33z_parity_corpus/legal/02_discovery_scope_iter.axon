@@ -1,0 +1,17 @@
+// META: flow_name=DiscoveryScopeIter, mode=count_only
+
+flow DiscoveryScopeIter() -> Unit {
+    step ReadComplaint { ask: "Read complaint for issue framing" output: Stream<Token> }
+    let factors = "importance,amount,access,resources,burden,benefit"
+    for f in factors {
+        step WeighFactor { ask: "Weigh proportionality factor" output: Stream<Token> }
+    }
+    step IssueScope { ask: "Issue discovery-scope opinion" output: Stream<Token> }
+}
+
+axonendpoint DiscoveryScopeIterEndpoint {
+    method: POST
+    path: "/legal/discovery-scope-iter"
+    execute: DiscoveryScopeIter
+    transport: sse
+}

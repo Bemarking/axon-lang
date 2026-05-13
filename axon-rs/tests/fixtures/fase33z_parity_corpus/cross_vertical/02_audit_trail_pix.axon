@@ -1,0 +1,17 @@
+// META: flow_name=AuditTrailPix, mode=count_only
+
+flow AuditTrailPix() -> Unit {
+    step CaptureContext { ask: "Capture tenant request context" output: Stream<Token> }
+    let trace_anchor = "trace_001"
+    remember trace_anchor in audit_session
+    hibernate downstream_ack 20s
+    recall trace_anchor from audit_session
+    step EmitTrail { ask: "Emit reconstructed audit trail" output: Stream<Token> }
+}
+
+axonendpoint AuditTrailPixEndpoint {
+    method: POST
+    path: "/cross/audit-trail-pix"
+    execute: AuditTrailPix
+    transport: sse
+}
