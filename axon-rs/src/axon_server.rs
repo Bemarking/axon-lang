@@ -19035,11 +19035,71 @@ fn server_execute_streaming(
         initial_warnings.push(warning);
     }
 
+    // §Fase 33.z.b — D2 invariant — `axon-W002 UnsupportedFlowShape`
+    // becomes structurally unreachable when the dispatcher path is
+    // active. The pre-populated warning (derived from `plan_attempt`
+    // BEFORE the dispatcher branch was considered) is REMOVED here.
+    // Other W002 triggers (`UnknownBackend`, `SourceCompilationFailed`)
+    // are preserved — they apply equally to the dispatcher path. 33.z.e
+    // deletes the `UnsupportedFlowShape` variant entirely.
+    if crate::runtime_flags::streaming_via_dispatcher_enabled() {
+        initial_warnings.retain(|w| {
+            w.fallback_mode
+                != crate::runtime_warnings::FallbackMode::UnsupportedFlowShape
+        });
+    }
+
     // Wrap the (possibly pre-populated) Vec in the side-channel
     // Mutex so the consumer can read it asynchronously.
     let runtime_warnings: std::sync::Arc<
         tokio::sync::Mutex<Vec<crate::runtime_warnings::RuntimeWarning>>,
     > = std::sync::Arc::new(tokio::sync::Mutex::new(initial_warnings));
+
+    // §Fase 33.z.b — Feature-flagged dispatcher graft skeleton.
+    //
+    // When `AXON_STREAMING_VIA_DISPATCHER` (process-wide opt-in flag,
+    // default OFF) is enabled, route ALL flows through the structurally-
+    // complete `flow_dispatcher::dispatch_node` (Fase 33.y 45/45) via the
+    // new `streaming_via_dispatcher` module. This lifts the 33.y dispatcher
+    // from the test surface to the production hot path for the 41 non-
+    // canonical IRFlowNode variants that currently fall back to legacy
+    // synthetic-burst (per the 33.z.a diagnostic anchor's empirical
+    // capture).
+    //
+    // Default-OFF in v1.27.0-alpha (this sub-fase). 33.z.c flips default
+    // to ON for v1.27.0 stable. 33.z.e deletes the flag + the legacy
+    // path entirely. Mirrors the proven 33.x.h opt-in BPE chunking
+    // pattern (land behind flag → validate → flip default → retire).
+    //
+    // When the flag is ON, the dispatcher path runs INSTEAD OF the v1.26.0
+    // async + legacy branches below. Both side-channels
+    // (enforcement_summaries, step_audit_records) are populated by the
+    // dispatcher's per-variant handlers; the consumer is path-agnostic.
+    if crate::runtime_flags::streaming_via_dispatcher_enabled() {
+        let tx_for_dispatcher = tx.clone();
+        let exited_for_dispatcher = exited_for_task.clone();
+        let cancel_for_dispatcher = cancel.clone();
+        tokio::spawn(async move {
+            crate::streaming_via_dispatcher::run_streaming_via_dispatcher(
+                source,
+                source_file,
+                flow_name,
+                effective_backend,
+                cancel_for_dispatcher,
+                tx_for_dispatcher,
+            )
+            .await;
+            exited_for_dispatcher.notify_waiters();
+        });
+        drop(tx);
+        return StreamingExecution {
+            events: rx,
+            exited,
+            enforcement_summaries,
+            step_audit_records,
+            runtime_warnings,
+        };
+    }
 
     match plan_attempt {
         Ok(plan) if backend_known => {

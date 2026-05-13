@@ -330,9 +330,15 @@ const CONDITIONAL_FLOW: &str =
 /// Post-33.z.c: `orchestration::run_for_in` dispatches per-iteration
 /// step body with per-chunk live wire + iteration counter + per-iter
 /// `branch_path: "for_in[<idx>].step[<j>]"` in audit row.
+///
+/// Note: Rust parser grammar (axon-frontend `parse_for_in`) accepts
+/// `for <ident> in <dotted_identifier>` ONLY — NOT array literals.
+/// The iterable resolves at runtime through `let_bindings`; a
+/// preceding `let regions = "us,eu"` binds the comma-split source.
 const FOR_IN_FLOW: &str =
     "flow Chat() -> Unit {\n\
-        for region in [\"us\", \"eu\"] {\n\
+        let regions = \"us,eu\"\n\
+        for region in regions {\n\
           step Generate { ask: \"hi\" output: Stream<Token> }\n\
         }\n\
      }\n\
@@ -354,26 +360,37 @@ const PAR_FLOW: &str =
      }\n\
      axonendpoint ChatEndpoint { method: POST path: \"/par\" execute: Chat transport: sse }";
 
-/// **(cognitive)** `Remember` — `remember session.region as "us"`.
+/// **(cognitive)** `Remember` — `remember region in session_memory`.
 /// Pre-33.z: `IRFlowNode::Remember` triggers
 /// `PlanFallback::UnsupportedNode { kind: "remember" }` → legacy.
 /// Post-33.z.c: `cognitive::run_remember` binds the key into
 /// `DispatchCtx::pem_backend` (when wired) or `let_bindings` (OSS
 /// default); zero-token completion (Remember is not LLM-call).
+///
+/// Note: Rust parser grammar (axon-frontend `parse_remember_step`)
+/// accepts `remember <ident> [in <mem_target>]` — single identifier
+/// (no dot-notation, no `as` keyword). The `in <mem_target>` clause
+/// is optional.
 const REMEMBER_FLOW: &str =
     "flow Chat() -> Unit {\n\
-        remember session.region as \"us\"\n\
+        let region = \"us\"\n\
+        remember region in session_memory\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
      axonendpoint ChatEndpoint { method: POST path: \"/remember\" execute: Chat transport: sse }";
 
-/// **(algebraic handler)** `ShieldApply` — `apply shield PHIShield on response as Sanitized`.
+/// **(algebraic handler)** `ShieldApply` — `shield PHIShield on response -> SanitizedResponse`.
 /// Pre-33.z: `IRFlowNode::ShieldApply` triggers
 /// `PlanFallback::UnsupportedNode { kind: "shield_apply" }` → legacy.
 /// Post-33.z.c: `algebraic_handlers::run_shield_apply` invokes the
 /// OSS identity-passthrough helper (enterprise overrides ship in
 /// axon-enterprise vertical R&D); audit row carries
 /// `branch_path: step[<idx>].shield_apply`.
+///
+/// Note: Rust parser grammar (axon-frontend `parse_apply_step` via
+/// `TokenType::Shield`) accepts `shield <name> [on <target>] [-> <output_type>]`
+/// — NOT `apply shield ... as ...`. The `apply` keyword is reserved
+/// for the step-body `apply: tool_name` syntax (Fase 33.y.k D8).
 const SHIELD_APPLY_FLOW: &str =
     "shield PHIShield {\n\
         scan: [pii_leak]\n\
@@ -383,7 +400,7 @@ const SHIELD_APPLY_FLOW: &str =
      }\n\
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
-        apply shield PHIShield on response as SanitizedResponse\n\
+        shield PHIShield on response -> SanitizedResponse\n\
      }\n\
      axonendpoint ChatEndpoint { method: POST path: \"/shield\" execute: Chat transport: sse }";
 
@@ -396,8 +413,13 @@ const SHIELD_APPLY_FLOW: &str =
 /// channel buffer into `let_bindings["__channel_<ref>"]`;
 /// enterprise overrides wire the real π-calc typed-channel
 /// runtime (Fase 13).
+///
+/// Note: Rust parser grammar (axon-frontend `parse_channel`) accepts
+/// `channel <Name> { message: <type>, qos: <slug>, ... }` — NOT the
+/// `channel X of T` shape. Top-level channel decl is mandatory before
+/// any flow-body `emit` references it.
 const EMIT_FLOW: &str =
-    "channel OrdersCreated of String\n\
+    "channel OrdersCreated { message: String }\n\
      flow Chat() -> Unit {\n\
         let payload = \"x\"\n\
         emit OrdersCreated(payload)\n\
@@ -405,31 +427,45 @@ const EMIT_FLOW: &str =
      }\n\
      axonendpoint ChatEndpoint { method: POST path: \"/emit\" execute: Chat transport: sse }";
 
-/// **(PIX)** `Hibernate` — `hibernate event_name timeout "30s"`.
+/// **(PIX)** `Hibernate` — `hibernate event_name 30s`.
 /// Pre-33.z: `IRFlowNode::Hibernate` triggers
 /// `PlanFallback::HibernatePresent` → legacy.
 /// Post-33.z.c: `pix::run_hibernate` binds the canonical
 /// `__hibernating_<event>` marker via OSS helper; enterprise
 /// overrides wire the supervisor's event dispatcher (Fase 16).
+///
+/// Note: Rust parser grammar (axon-frontend `parse_hibernate_step`)
+/// accepts `hibernate <event_name> [<duration_literal>]` — the
+/// duration is a `TokenType::Duration` literal (e.g., `30s`, `5m`)
+/// NOT a `timeout` keyword + string literal.
 const HIBERNATE_FLOW: &str =
     "flow Chat() -> Unit {\n\
-        hibernate user_response timeout \"30s\"\n\
+        hibernate user_response 30s\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
      axonendpoint ChatEndpoint { method: POST path: \"/hibernate\" execute: Chat transport: sse }";
 
-/// **(lambda + tools)** `LambdaDataApply` — `apply lambda doubler on x -> Int`.
+/// **(lambda + tools)** `LambdaDataApply` — `lambda doubler on x -> Int`.
 /// Pre-33.z: `IRFlowNode::LambdaDataApply` triggers
 /// `PlanFallback::LambdaApplyPresent` → legacy.
 /// Post-33.z.c: `lambda_tools::run_lambda_data_apply` invokes
 /// the Fase 15 CPS dispatcher via `apply_lambda_data` helper
 /// (OSS reference returns canonical `"lambda:<name>(<resolved>)"`
 /// placeholder); audit row carries the canonical key.
+///
+/// Note: Rust parser grammar (axon-frontend `parse_lambda_data` for
+/// top-level + `parse_lambda_data_apply` for flow-body) accepts:
+/// - Top-level decl: `lambda <name> { ontology: ..., certainty: ..., ... }`
+/// - Flow body usage: `lambda <name> on <target> [-> <output_type>]`
+/// NOT the C-style `lambda name : T -> T = (n) => ...` shape.
 const LAMBDA_DATA_APPLY_FLOW: &str =
-    "lambda doubler : Int -> Int = (n) => n + n\n\
+    "lambda doubler {\n\
+        ontology: \"math\"\n\
+        certainty: 1.0\n\
+     }\n\
      flow Chat() -> Unit {\n\
         let x = \"5\"\n\
-        apply lambda doubler on x -> Int\n\
+        lambda doubler on x -> LambdaResult\n\
         step Generate { ask: \"hi\" output: Stream<Token> }\n\
      }\n\
      axonendpoint ChatEndpoint { method: POST path: \"/lambda\" execute: Chat transport: sse }";
