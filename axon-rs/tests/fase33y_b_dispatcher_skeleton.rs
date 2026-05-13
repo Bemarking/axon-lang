@@ -649,6 +649,17 @@ const GRADUATED_VARIANTS: &[ShimReason] = &[
     ShimReason::ComputeApply,
     ShimReason::Listen,
     ShimReason::DaemonStep,
+    // 33.y.h — wire integrations (10)
+    ShimReason::Emit,
+    ShimReason::Publish,
+    ShimReason::Discover,
+    ShimReason::Persist,
+    ShimReason::Retrieve,
+    ShimReason::Mutate,
+    ShimReason::Purge,
+    ShimReason::Transact,
+    ShimReason::Deliberate,
+    ShimReason::Consensus,
 ];
 
 /// Pure-shape graduated variants (33.y.c) — strict "(stub)" + 1 token.
@@ -724,6 +735,23 @@ const ALGEBRAIC_HANDLERS_GRADUATED: &[ShimReason] = &[
     ShimReason::DaemonStep,
 ];
 
+/// Wire-integration graduated variants (33.y.h) — π-calc typed
+/// channels + persistence primitives + multi-agent deliberation.
+/// All emit wire shape + various placeholder/persisted outputs;
+/// tokens_emitted=0 across the board (no LLM dispatch).
+const WIRE_INTEGRATIONS_GRADUATED: &[ShimReason] = &[
+    ShimReason::Emit,
+    ShimReason::Publish,
+    ShimReason::Discover,
+    ShimReason::Persist,
+    ShimReason::Retrieve,
+    ShimReason::Mutate,
+    ShimReason::Purge,
+    ShimReason::Transact,
+    ShimReason::Deliberate,
+    ShimReason::Consensus,
+];
+
 #[tokio::test]
 async fn every_ir_flow_node_routes_to_its_labeled_handler() {
     let pairs = all_45_pairs();
@@ -737,15 +765,17 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
             PARALLEL_ALGEBRAIC_GRADUATED.contains(&expected_reason);
         let cognitive_pem = COGNITIVE_PEM_BOUND_GRADUATED.contains(&expected_reason);
         let cognitive_framing = COGNITIVE_FRAMING_GRADUATED.contains(&expected_reason);
-        let algebraic_handler = ALGEBRAIC_HANDLERS_GRADUATED.contains(&expected_reason);
+        let algebraic_handler = ALGEBRAIC_HANDLERS_GRADUATED.contains(&expected_reason)
+            || WIRE_INTEGRATIONS_GRADUATED.contains(&expected_reason);
 
         // Cognitive-framing handlers behave like pure-shape (1 token).
         let pure_shape_like = pure_shape || cognitive_framing;
         // Parallel/algebraic + cognitive-PEM-bound return Completed
-        // with output="" (truly payload-free). Algebraic handlers
-        // return Completed with placeholder output (compute:(...),
-        // (awaiting ...), daemon:...) so they need a separate arm
-        // that doesn't assert output equality.
+        // with output="" (truly payload-free). Algebraic handlers +
+        // wire integrations return Completed with placeholder output
+        // (compute:(...), (awaiting ...), daemon:..., "persisted N
+        // entries to `s`", etc.) so they need a separate arm that
+        // doesn't assert output equality.
         let strict_empty_completed = parallel_algebraic || cognitive_pem;
 
         match (outcome, pure_shape_like, orchestration, strict_empty_completed, algebraic_handler) {
@@ -871,15 +901,16 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
 /// `GRADUATED_VARIANTS.len() == 45` and `LegacyShimHandled` is
 /// deleted in lockstep.
 #[test]
-fn graduated_variants_set_size_pinned_for_33_y_g() {
+fn graduated_variants_set_size_pinned_for_33_y_h() {
     assert_eq!(
         GRADUATED_VARIANTS.len(),
-        30,
-        "33.y.g advances graduated count to 30: 6 pure-shape + 6 \
+        40,
+        "33.y.h advances graduated count to 40: 6 pure-shape + 6 \
          orchestration + 2 parallel/algebraic + 10 cognitive + 6 \
-         algebraic handlers (ShieldApply/OtsApply/MandateApply/\
-         ComputeApply/Listen/DaemonStep). 33.y.h will advance to 40 \
-         (wire integrations); …; 33.y.l to 45 (all)."
+         algebraic handlers + 10 wire integrations (Emit/Publish/\
+         Discover/Persist/Retrieve/Mutate/Purge/Transact/Deliberate/\
+         Consensus). 33.y.i will advance to 43 (PIX variants); 33.y.j \
+         to 45 (all)."
     );
     assert_eq!(PURE_SHAPE_GRADUATED.len(), 6);
     assert_eq!(ORCHESTRATION_GRADUATED.len(), 6);
@@ -887,6 +918,7 @@ fn graduated_variants_set_size_pinned_for_33_y_g() {
     assert_eq!(COGNITIVE_PEM_BOUND_GRADUATED.len(), 3);
     assert_eq!(COGNITIVE_FRAMING_GRADUATED.len(), 7);
     assert_eq!(ALGEBRAIC_HANDLERS_GRADUATED.len(), 6);
+    assert_eq!(WIRE_INTEGRATIONS_GRADUATED.len(), 10);
 }
 
 // ────────────────────────────────────────────────────────────────────
