@@ -93,6 +93,13 @@ pub mod runtime_flags;
 /// use_tool / hibernate / pix) with a closed-catalog `PlanFallback`
 /// so the SSE handler can route them to the legacy synchronous path.
 pub mod flow_plan;
+/// §Fase 33.y.b — Per-IRFlowNode async dispatcher skeleton. Closed-
+/// catalog, compiler-enforced exhaustive match over the 45-variant
+/// `IRFlowNode` enum. Subsequent sub-fases 33.y.c–j replace the
+/// transitional legacy shim with real per-variant async handlers.
+/// 33.y.l retires the shim + the `LegacyShimHandled` outcome variant
+/// once every IR variant has its real handler.
+pub mod flow_dispatcher;
 pub mod flow_version;
 pub mod exec_context;
 pub mod graceful_shutdown;
