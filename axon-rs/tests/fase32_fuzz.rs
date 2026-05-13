@@ -328,6 +328,7 @@ fn fuzz_replay_log_round_trip_never_panics() {
                 model_version: "fuzz".to_string(),
                 deterministic: rng.bool(),
                 step_audit: Vec::new(),
+                runtime_warnings: Vec::new(),
             };
             log.append(entry);
             assert!(

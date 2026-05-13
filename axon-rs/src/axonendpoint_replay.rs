@@ -161,6 +161,17 @@ pub struct AxonendpointReplayEntry {
     /// because the field is elided when empty via `skip_serializing_if`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub step_audit: Vec<StepAuditRecord>,
+
+    /// §Fase 33.x.g — Closed-catalog runtime warnings. Mirrors
+    /// the `axon.complete.warnings` wire field so auditors who
+    /// retrieve the replay entry post-hoc see the same diagnostic
+    /// as the live SSE consumer. Populated when the SSE handler's
+    /// `server_execute_streaming` fell back to the legacy
+    /// synchronous path; empty on the happy async-streaming path.
+    /// D4 byte-compat preserved (field elided when empty via
+    /// `skip_serializing_if`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_warnings: Vec<crate::runtime_warnings::RuntimeWarning>,
 }
 
 /// In-memory replay log. Indexed by `trace_id` for O(1) GET. Bounded
@@ -353,6 +364,7 @@ mod tests {
             model_version: "axon.runtime.dynamic_route.v1".to_string(),
             deterministic: true,
             step_audit: Vec::new(),
+            runtime_warnings: Vec::new(),
         }
     }
 

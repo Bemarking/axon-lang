@@ -1775,6 +1775,16 @@ struct ServerExecutionResult {
     /// sustained load is a configuration smell).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     enforcement_summaries: Vec<(String, EnforcementSummaryWire)>,
+
+    /// §Fase 33.x.g — Closed-catalog runtime warnings. Populated
+    /// only when `server_execute_streaming` falls back to the
+    /// legacy synchronous path; carries one `axon-W002
+    /// streaming-not-supported` warning with the specific
+    /// `FallbackMode` tag identifying WHY. Empty on the happy
+    /// (async-streaming-active) path = D4 byte-compat preserved
+    /// (wire field elided when empty).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    runtime_warnings: Vec<crate::runtime_warnings::RuntimeWarning>,
 }
 
 /// §Fase 33.x.d — Wire-serializable mirror of
@@ -1879,6 +1889,7 @@ fn server_execute(
         trace_id: 0, // set after recording
         effect_policies: Vec::new(), // populated by server_execute_streaming
         enforcement_summaries: Vec::new(), // populated by 33.x.d async path
+        runtime_warnings: Vec::new(), // populated by 33.x.g when LEGACY path chosen
     })
 }
 
@@ -9255,6 +9266,14 @@ async fn replay_get_handler(
     let step_audit_json = serde_json::to_value(&entry.step_audit).unwrap_or_else(|_| {
         serde_json::Value::Array(Vec::new())
     });
+    // §Fase 33.x.g — Always include `runtime_warnings` on the GET
+    // payload (possibly `[]`) so adopter dashboards have a stable
+    // wire field shape even for legacy JSON-mode entries that
+    // never carry warnings.
+    let runtime_warnings_json =
+        serde_json::to_value(&entry.runtime_warnings).unwrap_or_else(|_| {
+            serde_json::Value::Array(Vec::new())
+        });
     let payload = serde_json::json!({
         "trace_id": entry.trace_id,
         "timestamp_ms": entry.timestamp_ms,
@@ -9273,6 +9292,7 @@ async fn replay_get_handler(
         "model_version": entry.model_version,
         "deterministic": entry.deterministic,
         "step_audit": step_audit_json,
+        "runtime_warnings": runtime_warnings_json,
     });
     let replay_status = if entry.deterministic {
         "deterministic"
@@ -18151,6 +18171,21 @@ fn build_complete_event(event_id: u64, exec: &ServerExecutionResult) -> Event {
                 serde_json::Value::Object(obj),
             );
     }
+    // §Fase 33.x.g — Runtime warnings (closed-catalog W002, etc.).
+    // Emitted ONLY when at least one warning fired (legacy
+    // fallback path); the happy async-streaming path leaves
+    // `runtime_warnings` empty + the field is elided so adopter
+    // parsers see no observable change (D4 byte-compat).
+    if !exec.runtime_warnings.is_empty() {
+        let arr = exec
+            .runtime_warnings
+            .iter()
+            .map(|w| serde_json::to_value(w).unwrap_or(serde_json::Value::Null))
+            .collect::<Vec<_>>();
+        data.as_object_mut()
+            .expect("json object")
+            .insert("warnings".to_string(), serde_json::Value::Array(arr));
+    }
     Event::default()
         .event("axon.complete")
         .id(event_id.to_string())
@@ -18319,6 +18354,26 @@ pub(crate) struct StreamingExecution {
     ///     of replay binding (cheap), but the entry is never written.
     pub step_audit_records: std::sync::Arc<
         tokio::sync::Mutex<Vec<crate::axonendpoint_replay::StepAuditRecord>>,
+    >,
+    /// §Fase 33.x.g — Runtime warning side-channel.
+    ///
+    /// Populated synchronously by `server_execute_streaming` BEFORE
+    /// spawning the producer when the dispatch falls back to the
+    /// legacy synchronous path. The W002 warning is recorded with
+    /// the specific [`crate::runtime_warnings::FallbackMode`] tag
+    /// identifying WHY streaming did not activate (unsupported
+    /// flow shape / unknown backend / source compilation failed /
+    /// backend lacks stream()).
+    ///
+    /// Read by the SSE consumer at FlowComplete time + projected
+    /// onto `axon.complete.warnings` (wire). Also lands on
+    /// `AxonendpointReplayEntry.runtime_warnings` (audit) when the
+    /// route declares `replay: true`.
+    ///
+    /// D5 contract: NO silent degradation. Empty Vec on the happy
+    /// path (the async streaming path activated correctly).
+    pub runtime_warnings: std::sync::Arc<
+        tokio::sync::Mutex<Vec<crate::runtime_warnings::RuntimeWarning>>,
     >,
 }
 
@@ -18850,6 +18905,14 @@ fn server_execute_streaming(
         tokio::sync::Mutex<Vec<crate::axonendpoint_replay::StepAuditRecord>>,
     > = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
+    // §Fase 33.x.g — Closed-catalog runtime warnings side-channel.
+    // The initial Vec is built synchronously below (BEFORE we wrap
+    // in Arc<tokio::sync::Mutex>) so we don't need to lock in this
+    // sync function context (`tokio::sync::Mutex::blocking_lock`
+    // panics inside an async runtime). The async path leaves the
+    // Vec empty (no warning — streaming activated correctly).
+    let mut initial_warnings: Vec<crate::runtime_warnings::RuntimeWarning> = Vec::new();
+
     // §Fase 33.x.b + 33.x.d — Resolve `auto` to a concrete backend
     // BEFORE the routing decision. The dynamic-route dispatch path
     // (`dispatch_dynamic_route_handler`) passes `backend: "auto"`
@@ -18888,6 +18951,76 @@ fn server_execute_streaming(
     let backend_known =
         crate::backends::resolve_streaming_backend(&effective_backend).is_some();
 
+    // §Fase 33.x.g — Classify the dispatch decision. The match
+    // arm chosen below is mirrored by a closed-catalog
+    // `FallbackMode` tag when the legacy path is taken. NO silent
+    // degradation: if the adopter declared `Stream<T>` but we
+    // can't activate the async path, the wire body + audit row
+    // both surface the W002 warning with the specific reason.
+    let fallback_mode: Option<crate::runtime_warnings::FallbackMode> = match (
+        &plan_attempt,
+        backend_known,
+    ) {
+        (Ok(_), true) => None, // Async path activates — no warning.
+        (Ok(_), false) => Some(crate::runtime_warnings::FallbackMode::UnknownBackend),
+        (
+            Err(crate::flow_plan::PlanError::LegacyOrchestrationRequired { .. }),
+            _,
+        ) => Some(crate::runtime_warnings::FallbackMode::UnsupportedFlowShape),
+        (Err(crate::flow_plan::PlanError::FlowNotFound { .. }), _) => {
+            Some(crate::runtime_warnings::FallbackMode::SourceCompilationFailed)
+        }
+        (Err(crate::flow_plan::PlanError::Parse(_)), _) => {
+            Some(crate::runtime_warnings::FallbackMode::SourceCompilationFailed)
+        }
+        (Err(crate::flow_plan::PlanError::TypeCheck(_)), _) => {
+            Some(crate::runtime_warnings::FallbackMode::SourceCompilationFailed)
+        }
+        (Err(crate::flow_plan::PlanError::IrGeneration(_)), _) => {
+            Some(crate::runtime_warnings::FallbackMode::SourceCompilationFailed)
+        }
+    };
+
+    // Pre-populate the warnings side-channel synchronously so the
+    // consumer at FlowComplete + the audit-write path see it even
+    // if the legacy producer terminates fast (e.g. axon.error
+    // immediate on parse failure).
+    if let Some(mode) = fallback_mode {
+        let detail = match (&plan_attempt, mode) {
+            (
+                Err(crate::flow_plan::PlanError::LegacyOrchestrationRequired { reason, .. }),
+                _,
+            ) => format!("flow uses {}", reason.slug()),
+            (_, crate::runtime_warnings::FallbackMode::UnknownBackend) => {
+                format!("backend '{effective_backend}' not in streaming registry")
+            }
+            (Err(crate::flow_plan::PlanError::Parse(msg)), _) => format!("parse: {msg}"),
+            (Err(crate::flow_plan::PlanError::TypeCheck(msgs)), _) => {
+                format!("type-check: {} errors", msgs.len())
+            }
+            (Err(crate::flow_plan::PlanError::IrGeneration(msg)), _) => {
+                format!("ir-generation: {msg}")
+            }
+            (Err(crate::flow_plan::PlanError::FlowNotFound { available, .. }), _) => {
+                format!("flow not found; available: {available:?}")
+            }
+            _ => String::new(),
+        };
+        let warning = crate::runtime_warnings::RuntimeWarning::streaming_not_supported(
+            flow_name.clone(),
+            effective_backend.clone(),
+            mode,
+            detail,
+        );
+        initial_warnings.push(warning);
+    }
+
+    // Wrap the (possibly pre-populated) Vec in the side-channel
+    // Mutex so the consumer can read it asynchronously.
+    let runtime_warnings: std::sync::Arc<
+        tokio::sync::Mutex<Vec<crate::runtime_warnings::RuntimeWarning>>,
+    > = std::sync::Arc::new(tokio::sync::Mutex::new(initial_warnings));
+
     match plan_attempt {
         Ok(plan) if backend_known => {
             // §Fase 33.x.b ASYNC PATH — Backend::stream() per step.
@@ -18920,6 +19053,7 @@ fn server_execute_streaming(
                 exited,
                 enforcement_summaries,
                 step_audit_records,
+                runtime_warnings,
             };
         }
         _ => {
@@ -18961,6 +19095,7 @@ fn server_execute_streaming(
         exited,
         enforcement_summaries,
         step_audit_records,
+        runtime_warnings,
     }
 }
 
@@ -19316,6 +19451,7 @@ async fn execute_sse_handler_inner(
                     exited: _producer_exited,
                     enforcement_summaries: enforcement_summaries_for_consumer,
                     step_audit_records: step_audit_records_for_consumer,
+                    runtime_warnings: runtime_warnings_for_consumer,
                 } = server_execute_streaming(
                     state_for_task.clone(),
                     source.clone(),
@@ -19424,6 +19560,15 @@ async fn execute_sse_handler_inner(
                                 ordered.sort_by(|a, b| a.0.cmp(&b.0));
                                 ordered
                             };
+                            // §Fase 33.x.g — Read the runtime
+                            // warnings side-channel. Empty on the
+                            // happy async-streaming path; carries
+                            // one W002 entry when the legacy path
+                            // was chosen.
+                            let warnings_vec: Vec<crate::runtime_warnings::RuntimeWarning> = {
+                                let guard = runtime_warnings_for_consumer.lock().await;
+                                guard.clone()
+                            };
                             let er = ServerExecutionResult {
                                 success,
                                 flow_name: flow_name.clone(),
@@ -19441,6 +19586,7 @@ async fn execute_sse_handler_inner(
                                 trace_id,
                                 effect_policies: effect_policies.clone(),
                                 enforcement_summaries: summaries_vec,
+                                runtime_warnings: warnings_vec.clone(),
                             };
 
                             // §Fase 33.x.f — Write the SSE replay
@@ -19459,6 +19605,20 @@ async fn execute_sse_handler_inner(
                                 let step_records: Vec<crate::axonendpoint_replay::StepAuditRecord> = {
                                     let guard = step_audit_records_for_consumer.lock().await;
                                     guard.clone()
+                                };
+                                // §Fase 33.x.g — Read the warnings
+                                // side-channel + mirror onto the
+                                // replay entry. Adopter retrieves
+                                // them via GET /v1/replay/<uuid>
+                                // long after the SSE wire has closed.
+                                let replay_warnings: Vec<crate::runtime_warnings::RuntimeWarning> = {
+                                    // Reuse the already-cloned
+                                    // `warnings_vec` from the wire
+                                    // assembly above instead of
+                                    // re-acquiring the lock — same
+                                    // contents, one less Mutex
+                                    // round-trip.
+                                    warnings_vec.clone()
                                 };
                                 let now_ms = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
@@ -19496,6 +19656,7 @@ async fn execute_sse_handler_inner(
                                                 &backend,
                                             ),
                                         step_audit: step_records,
+                                        runtime_warnings: replay_warnings,
                                     };
                                 let mut s = state_for_task.lock().unwrap();
                                 s.axonendpoint_replay.append(replay_entry);
@@ -20775,6 +20936,12 @@ async fn dynamic_endpoint_handler(
                     // populates this via the producer side-channel
                     // when route.replay_enabled.
                     step_audit: Vec::new(),
+                    // §Fase 33.x.g — Runtime warnings mirror the
+                    // wire `axon.complete.warnings` field. The
+                    // JSON 2xx path doesn't traverse
+                    // server_execute_streaming so no warnings are
+                    // generated.
+                    runtime_warnings: Vec::new(),
                 };
                 let mut s = state.lock().unwrap();
                 s.axonendpoint_replay.append(entry);
