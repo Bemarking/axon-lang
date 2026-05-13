@@ -73,6 +73,11 @@ pub mod esk;
 /// CLI handlers for the ESK audit commands (dossier, sbom, audit, evidence-package).
 pub mod audit_cli;
 pub mod flow_inspect;
+/// §Fase 33.x.g — Closed-catalog runtime warnings for the SSE
+/// production path. Surfaces `axon-W002 streaming-not-supported`
+/// when the async streaming path falls back to legacy synchronous
+/// delivery (D5 — no silent degradation).
+pub mod runtime_warnings;
 /// §Fase 33.x.b — Streaming-shaped execution plan extractor. Builds
 /// `StreamingExecutionPlan` from `.axon` source for the production
 /// async SSE path; pre-resolves per-step `BackpressurePolicy` via

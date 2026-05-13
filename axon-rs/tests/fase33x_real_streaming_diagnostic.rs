@@ -404,42 +404,48 @@ async fn d2_no_declared_effect_omits_stream_policies() {
     );
 }
 
-// ─── §4 — D5 anchor: axon-W002 absent today, present post-33.x.g ─────
+// ─── §4 — D5 anchor: axon-W002 surface ────────────────────────────
 //
-// Pre-33.x.g: the `warnings` field on FlowStart does not exist; even
-// when stub backend serves `Stream<T>` (which it cannot natively
-// stream) no warning fires. Adopter has no signal that the streaming
-// is synthetic.
+// POST-33.x.g: closed-catalog warning code `axon-W002
+// streaming-not-supported` surfaces on `axon.complete.warnings[*]`
+// when the streaming async path falls back to legacy synchronous
+// delivery. The wire field is OPTIONAL — elided on the happy
+// async-streaming path (D4 byte-compat preserved with v1.24.0 +
+// pre-33.x.g adopter parsers).
 //
-// Post-33.x.g: FlowStart carries `warnings: [{code: "axon-W002",
-// flow, step, backend, declared_output, fallback_mode}]` for every
-// step whose backend lacks `stream()`. Audit row mirrors. D5 contract
-// — NO silent degradation.
+// The 33.x.g implementation chose `axon.complete.warnings` (not a
+// separate `axon.flow_start` event or a per-token warning field)
+// because:
+//   - It keeps the wire event catalog closed (no new event type)
+//   - Adopters already parse `axon.complete` for `success` /
+//     `stream_policies` / `enforcement_summary` — adding a
+//     `warnings` field on the same event reuses the existing
+//     parsing infrastructure.
 
 #[tokio::test]
-async fn d5_v1_24_0_no_warning_surface_when_stub_serves_stream_type() {
+async fn d5_post_33_x_g_happy_path_elides_warnings_field() {
     let app = build_router(server_cfg(false));
     deploy(app.clone(), ADOPTER_STREAM_NO_EFFECT).await;
     let (_status, _ct, body) = fetch_sse_body(app, "/chat", "{}").await;
 
-    // PRE-33.x.g: the `axon.flow_start` SSE event does not exist as a
-    // distinct wire event (FlowStart maps to silent state-priming on
-    // Fase 33.c). When 33.x.g lands it gains adopter-visible surface
-    // OR FlowStart is reflected into the wire as `axon.flow_start`.
-    //
-    // For now we assert the ABSENCE of any axon-W002 surface — that's
-    // the D5 anchor that flips to PRESENCE in 33.x.g.
+    let events = parse_sse_body(&body);
+    let complete = events
+        .completes
+        .first()
+        .expect("axon.complete must be present");
+    // The async streaming path activated (stub backend, simple
+    // step) → no W002 warning → wire field elided.
+    assert!(
+        complete.get("warnings").is_none(),
+        "POST-33.x.g: happy async-streaming path MUST elide the \
+         `warnings` field (D4 byte-compat preserved). Got: {complete:?}"
+    );
+    // axon-W002 string MUST be absent from the wire body when the
+    // happy path activates.
     assert!(
         !body.contains("axon-W002"),
-        "PRE-33.x.g: no axon-W002 warning is emitted. When 33.x.g \
-         lands, this assertion inverts to `assert!(body.contains(\
-         \"axon-W002\"))`."
+        "axon-W002 slug must NOT appear on the happy async path"
     );
-
-    // Forward-compat: when the warnings surface lands it MUST come
-    // through `axon.flow_start` (new event type per 33.x.g) OR via a
-    // `warnings` field on the first `axon.token` event. The 33.x.g
-    // implementation chooses; this anchor pins observability surface.
 }
 
 // ─── §5 — D6 anchor: per-step replay binding ────────────────────────
