@@ -102,6 +102,20 @@ pub struct PureShapeStep {
     /// `flow_plan::ir_flow_node_kind` for the corresponding IR
     /// variant.
     pub kind_slug: &'static str,
+    /// §Fase 33.y.k — Tools plumbed into `ChatRequest.tools`. The
+    /// per-variant entry function builds this from the step's
+    /// declared `apply: <tool>` (canonical Step shape) or
+    /// `use_tool: [...]` (multi-tool form). For OSS reference: each
+    /// declared tool synthesizes a minimal [`ToolSpec`] with name +
+    /// canonical description + empty `{}` parameter schema.
+    /// Enterprise integrations resolve real `IRToolSpec` entries
+    /// from the IRProgram (a future Fase 33.y.k.2 follow-up
+    /// extends `DispatchCtx` with an `Option<&IRProgram>` ref for
+    /// full per-provider parameter-schema resolution).
+    ///
+    /// Empty `Vec` (default) → backend gets no tools → wire shape
+    /// stays D4 byte-compat with pre-33.y.k.
+    pub tools: Vec<crate::backends::ToolSpec>,
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -111,10 +125,19 @@ pub struct PureShapeStep {
 /// Step entry — neutral cognitive framing. The user prompt is the
 /// `ask:` field verbatim; no addendum (the flow-level system prompt
 /// fully establishes intent).
+///
+/// §Fase 33.y.k — when `step.apply_ref` is non-empty, synthesizes
+/// a [`ToolSpec`](crate::backends::ToolSpec) and plumbs it into
+/// `ChatRequest.tools` via the shared async core. Adopter flows
+/// declaring `step S { apply: <tool> }` activate real upstream
+/// tool-calling on the SSE wire (Anthropic `tool_use` / OpenAI
+/// `tool_calls` / etc.). When `apply_ref` is empty, tools stays
+/// `Vec::new()` → wire shape byte-compat with pre-33.y.k.
 pub async fn run_step(
     step: &IRStep,
     ctx: &mut DispatchCtx,
 ) -> Result<NodeOutcome, DispatchError> {
+    let tools = synthesize_tools_from_step(step);
     let shape = PureShapeStep {
         name: if step.name.is_empty() {
             "Step".to_string()
@@ -124,8 +147,26 @@ pub async fn run_step(
         user_prompt: step.ask.clone(),
         framing_addendum: None,
         kind_slug: "step",
+        tools,
     };
     run_pure_shape(shape, ctx).await
+}
+
+/// §Fase 33.y.k — Resolve `step.apply_ref` into a `Vec<ToolSpec>`.
+/// OSS reference: when `apply_ref` is non-empty, synthesizes a
+/// minimal `ToolSpec { name, description, parameters_json: "{}" }`.
+/// When the IRProgram tool registry surface lands (future Fase
+/// 33.y.k.2), this helper resolves the real `IRToolSpec` with
+/// `parameters_json` from `input_schema`.
+fn synthesize_tools_from_step(step: &IRStep) -> Vec<crate::backends::ToolSpec> {
+    if step.apply_ref.is_empty() {
+        return Vec::new();
+    }
+    vec![crate::backends::ToolSpec {
+        name: step.apply_ref.clone(),
+        description: format!("Tool reference: {}", step.apply_ref),
+        parameters_json: "{}".to_string(),
+    }]
 }
 
 /// Probe entry — investigative framing. The target is investigated
@@ -145,6 +186,7 @@ pub async fn run_probe(
             "You are probing the target. Investigate deeply, surface what's hidden, return concisely.".into(),
         ),
         kind_slug: "probe",
+        tools: Vec::new(),
     };
     run_pure_shape(shape, ctx).await
 }
@@ -171,6 +213,7 @@ pub async fn run_reason(
             "You are reasoning deliberately. Show the steps of your reasoning where they bear on the answer.".into(),
         ),
         kind_slug: "reason",
+        tools: Vec::new(),
     };
     run_pure_shape(shape, ctx).await
 }
@@ -198,6 +241,7 @@ pub async fn run_validate(
             "You are validating. Return a structured verdict (pass/fail) with the reasoning that supports it.".into(),
         ),
         kind_slug: "validate",
+        tools: Vec::new(),
     };
     run_pure_shape(shape, ctx).await
 }
@@ -225,6 +269,7 @@ pub async fn run_refine(
             "You are refining. Treat the target as draft input; improve it along the declared strategy without losing fidelity to its intent.".into(),
         ),
         kind_slug: "refine",
+        tools: Vec::new(),
     };
     run_pure_shape(shape, ctx).await
 }
@@ -270,6 +315,7 @@ pub async fn run_weave(
             "You are weaving. Stitch the sources into the target output. Honor the declared priority + format + style.".into(),
         ),
         kind_slug: "weave",
+        tools: Vec::new(),
     };
     run_pure_shape(shape, ctx).await
 }
@@ -360,9 +406,11 @@ pub async fn run_pure_shape(
         None => ctx.system_prompt.clone(),
     };
 
-    // 7. Build ChatRequest. Tools stay empty pending Fase 33.y.k's
-    //    D8 cross-cutting fix that plumbs declared `apply: TOOL`
-    //    through to ChatRequest.tools.
+    // 7. Build ChatRequest. §Fase 33.y.k D8 — tools plumb-through.
+    //    `shape.tools` is populated by `run_step` from `step.apply_ref`
+    //    (canonical Step shape); empty for cognitive-framing handlers
+    //    (Probe/Reason/Validate/Refine/Weave/Focus/Associate/etc.)
+    //    whose IR shapes don't carry tool references today.
     let request = ChatRequest {
         model: String::new(),
         messages: vec![Message::user(shape.user_prompt.clone())],
@@ -370,7 +418,7 @@ pub async fn run_pure_shape(
         max_tokens: None,
         temperature: None,
         top_p: None,
-        tools: Vec::new(),
+        tools: shape.tools.clone(),
         stream: true,
         trace_id: None,
         cancel: ctx.cancel.clone(),
@@ -456,6 +504,7 @@ async fn drain_direct(
     ctx: &mut DispatchCtx,
     _step_index: usize,
 ) -> Result<(String, u64, u64, u64), DispatchError> {
+    use crate::backends::FinishReason;
     let mut accumulated = String::new();
     let mut tokens_emitted: u64 = 0;
     let mut stream = chunk_stream;
@@ -466,6 +515,31 @@ async fn drain_direct(
         }
         match chunk_result {
             Ok(chunk) => {
+                // §Fase 33.y.k D8 — emit ToolCall event when the
+                // backend signals FinishReason::ToolUse. Carries
+                // the FIRST declared tool name from
+                // `shape.tools[0].name` so adopters correlate the
+                // tool-call event with their declared `apply: <tool>`.
+                // When `shape.tools` is empty (no declared tool)
+                // the tool_name is `"<unknown>"` — the upstream
+                // signaled a tool-use but the step didn't declare
+                // one, so the adopter sees the divergence on the
+                // wire (closed-catalog tag, not silent).
+                if let Some(FinishReason::ToolUse) = &chunk.finish_reason {
+                    let tool_name = shape
+                        .tools
+                        .first()
+                        .map(|t| t.name.clone())
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    ctx.tx
+                        .send(FlowExecutionEvent::ToolCall {
+                            step_name: shape.name.clone(),
+                            tool_name,
+                            content: chunk.delta.clone(),
+                            timestamp_ms: now_ms(),
+                        })
+                        .map_err(|_| DispatchError::ChannelClosed)?;
+                }
                 if !chunk.delta.is_empty() {
                     tokens_emitted += 1;
                     accumulated.push_str(&chunk.delta);
@@ -536,6 +610,27 @@ async fn drain_through_enforcer(
     while let Some(chunk) = enforcer.pop_chunk().await {
         if ctx.cancel.is_cancelled() {
             return Err(DispatchError::UpstreamCancelled);
+        }
+        // §Fase 33.y.k D8 — same ToolCall emission as `drain_direct`.
+        // When the backend signals FinishReason::ToolUse on a chunk
+        // pulled through the enforcer, surface the tool-call to the
+        // wire BEFORE forwarding any text delta (the enforcer's
+        // chunk ordering preserves arrival sequence; the ToolCall
+        // event always precedes the StepToken from the same chunk).
+        if let Some(crate::backends::FinishReason::ToolUse) = &chunk.finish_reason {
+            let tool_name = shape
+                .tools
+                .first()
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            ctx.tx
+                .send(FlowExecutionEvent::ToolCall {
+                    step_name: shape.name.clone(),
+                    tool_name,
+                    content: chunk.delta.clone(),
+                    timestamp_ms: now_ms(),
+                })
+                .map_err(|_| DispatchError::ChannelClosed)?;
         }
         if !chunk.delta.is_empty() {
             tokens_emitted += 1;

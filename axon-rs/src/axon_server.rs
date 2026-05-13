@@ -19718,6 +19718,18 @@ async fn execute_sse_handler_inner(
                                 .send(Ok(build_error_event(event_id, trace_id, &error)))
                                 .await;
                         }
+                        // §Fase 33.y.k — ToolCall events are emitted by
+                        // the dispatcher's pure_shape handler when an
+                        // upstream backend signals FinishReason::ToolUse.
+                        // The production SSE handler today does NOT
+                        // forward ToolCall to the wire (the dispatcher
+                        // isn't wired into production until 33.y.l).
+                        // Silent consumption preserves D4 byte-compat
+                        // for the existing pre-33.y.k wire shape; when
+                        // 33.y.l wires the dispatcher into this
+                        // consumer loop, the ToolCall arm will build a
+                        // `axon.tool_call` SSE event in lockstep.
+                        FlowExecutionEvent::ToolCall { .. } => {}
                     }
                 }
 
