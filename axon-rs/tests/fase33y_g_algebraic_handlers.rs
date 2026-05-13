@@ -1,0 +1,437 @@
+//! §Fase 33.y.g integration tests — algebraic-effect handler nodes.
+//!
+//! Exercises the 6 graduated handlers + their public `apply_*` /
+//! `invoke_*` helpers through `dispatch_node`:
+//!
+//! - ShieldApply / OtsApply / MandateApply (same shape: name, target, output_type)
+//! - ComputeApply (compute_name, arguments, output_name)
+//! - Listen (channel, channel_is_ref, event_alias)
+//! - DaemonStep (daemon_ref)
+//!
+//! D-letter coverage:
+//! - D1 — 30 of 45 variants graduated (cumulative).
+//! - D3 — cancel propagation across each handler.
+//! - D7 — every error case routes through DispatchError; OSS
+//!   helpers are identity passthrough / placeholder so they
+//!   cannot fail; enterprise overrides will surface BackendError.
+//! - D10 — sync-runner parity: OSS-default helpers are identity
+//!   passthrough; capability application is semantically a no-op
+//!   in OSS (consistent with the sync runner's reference
+//!   implementation).
+
+use axon::cancel_token::CancellationFlag;
+use axon::flow_dispatcher::algebraic_handlers::{
+    apply_mandate_to_target, apply_ots_to_target, apply_shield_to_target,
+    invoke_compute_capability, invoke_daemon, listen_on_channel,
+};
+use axon::flow_dispatcher::{dispatch_node, DispatchCtx, DispatchError, NodeOutcome};
+use axon::flow_execution_event::FlowExecutionEvent;
+use axon::ir_nodes::*;
+use tokio::sync::mpsc;
+
+fn fresh_ctx() -> (
+    DispatchCtx,
+    mpsc::UnboundedReceiver<FlowExecutionEvent>,
+) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let ctx = DispatchCtx::new(
+        "TestFlow",
+        "stub",
+        "",
+        CancellationFlag::new(),
+        tx,
+    );
+    (ctx, rx)
+}
+
+fn shield_apply(shield_name: &str, target: &str, output_type: &str) -> IRFlowNode {
+    IRFlowNode::ShieldApply(IRShieldApplyStep {
+        node_type: "shield_apply",
+        source_line: 0,
+        source_column: 0,
+        shield_name: shield_name.into(),
+        target: target.into(),
+        output_type: output_type.into(),
+    })
+}
+
+fn ots_apply(ots_name: &str, target: &str, output_type: &str) -> IRFlowNode {
+    IRFlowNode::OtsApply(IROtsApplyStep {
+        node_type: "ots_apply",
+        source_line: 0,
+        source_column: 0,
+        ots_name: ots_name.into(),
+        target: target.into(),
+        output_type: output_type.into(),
+    })
+}
+
+fn mandate_apply(mandate_name: &str, target: &str, output_type: &str) -> IRFlowNode {
+    IRFlowNode::MandateApply(IRMandateApplyStep {
+        node_type: "mandate_apply",
+        source_line: 0,
+        source_column: 0,
+        mandate_name: mandate_name.into(),
+        target: target.into(),
+        output_type: output_type.into(),
+    })
+}
+
+fn compute_apply(compute_name: &str, args: Vec<&str>, output_name: &str) -> IRFlowNode {
+    IRFlowNode::ComputeApply(IRComputeApplyStep {
+        node_type: "compute_apply",
+        source_line: 0,
+        source_column: 0,
+        compute_name: compute_name.into(),
+        arguments: args.into_iter().map(String::from).collect(),
+        output_name: output_name.into(),
+    })
+}
+
+fn listen(channel: &str, event_alias: &str) -> IRFlowNode {
+    IRFlowNode::Listen(IRListenStep {
+        node_type: "listen",
+        source_line: 0,
+        source_column: 0,
+        channel: channel.into(),
+        channel_is_ref: true,
+        event_alias: event_alias.into(),
+    })
+}
+
+fn daemon_step(daemon_ref: &str) -> IRFlowNode {
+    IRFlowNode::DaemonStep(IRDaemonStepNode {
+        node_type: "daemon_step",
+        source_line: 0,
+        source_column: 0,
+        daemon_ref: daemon_ref.into(),
+    })
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  §1 — Public apply_* helpers (OSS identity)
+// ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn apply_shield_oss_passthrough() {
+    let (ctx, _rx) = fresh_ctx();
+    assert_eq!(apply_shield_to_target("hipaa", "PII text", &ctx), "PII text");
+}
+
+#[test]
+fn apply_ots_oss_passthrough() {
+    let (ctx, _rx) = fresh_ctx();
+    assert_eq!(apply_ots_to_target("g711", "audio", &ctx), "audio");
+}
+
+#[test]
+fn apply_mandate_oss_passthrough() {
+    let (ctx, _rx) = fresh_ctx();
+    assert_eq!(
+        apply_mandate_to_target("gdpr_erasure", "record", &ctx),
+        "record"
+    );
+}
+
+#[test]
+fn invoke_compute_resolves_let_bindings_arguments() {
+    let (mut ctx, _rx) = fresh_ctx();
+    ctx.let_bindings.insert("a".into(), "1".into());
+    ctx.let_bindings.insert("b".into(), "2".into());
+    assert_eq!(
+        invoke_compute_capability("add", &["a".into(), "b".into()], &ctx),
+        "compute:add(1, 2)"
+    );
+}
+
+#[test]
+fn invoke_compute_with_literal_args() {
+    let (ctx, _rx) = fresh_ctx();
+    assert_eq!(
+        invoke_compute_capability(
+            "compute_id",
+            &["literal".into(), "value".into()],
+            &ctx
+        ),
+        "compute:compute_id(literal, value)"
+    );
+}
+
+#[test]
+fn listen_returns_awaiting_placeholder() {
+    let (ctx, _rx) = fresh_ctx();
+    assert_eq!(listen_on_channel("user.events", true, &ctx), "(awaiting user.events)");
+}
+
+#[test]
+fn invoke_daemon_returns_invocation_placeholder() {
+    let (ctx, _rx) = fresh_ctx();
+    assert_eq!(invoke_daemon("scheduler", &ctx), "daemon:scheduler");
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  §2 — ShieldApply through dispatch_node
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn dispatch_node_routes_shield_apply_with_explicit_output_type() {
+    let (mut ctx, mut rx) = fresh_ctx();
+    ctx.let_bindings.insert("input".into(), "raw-data".into());
+    let outcome = dispatch_node(&shield_apply("hipaa", "input", "scrubbed"), &mut ctx)
+        .await
+        .unwrap();
+    match outcome {
+        NodeOutcome::Completed { output, tokens_emitted, .. } => {
+            assert_eq!(output, "raw-data");
+            assert_eq!(tokens_emitted, 0);
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+    assert_eq!(ctx.let_bindings.get("scrubbed").unwrap(), "raw-data");
+    let first = rx.try_recv().unwrap();
+    match first {
+        FlowExecutionEvent::StepStart { step_type, .. } => {
+            assert_eq!(step_type, "shield_apply");
+        }
+        e => panic!("expected StepStart, got {e:?}"),
+    }
+}
+
+#[tokio::test]
+async fn shield_apply_canonical_fallback_when_output_type_empty() {
+    let (mut ctx, _rx) = fresh_ctx();
+    ctx.let_bindings.insert("doc".into(), "content".into());
+    dispatch_node(&shield_apply("hipaa", "doc", ""), &mut ctx).await.unwrap();
+    // Falls back to <target>_shielded.
+    assert_eq!(ctx.let_bindings.get("doc_shielded").unwrap(), "content");
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  §3 — OtsApply through dispatch_node
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn dispatch_node_routes_ots_apply() {
+    let (mut ctx, mut rx) = fresh_ctx();
+    ctx.let_bindings.insert("audio_raw".into(), "samples".into());
+    dispatch_node(&ots_apply("resample", "audio_raw", "pcm"), &mut ctx)
+        .await
+        .unwrap();
+    assert_eq!(ctx.let_bindings.get("pcm").unwrap(), "samples");
+    let first = rx.try_recv().unwrap();
+    match first {
+        FlowExecutionEvent::StepStart { step_type, .. } => {
+            assert_eq!(step_type, "ots_apply");
+        }
+        e => panic!("expected StepStart, got {e:?}"),
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  §4 — MandateApply through dispatch_node
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn dispatch_node_routes_mandate_apply() {
+    let (mut ctx, mut rx) = fresh_ctx();
+    dispatch_node(&mandate_apply("retention_30d", "log_entry", "retained"), &mut ctx)
+        .await
+        .unwrap();
+    assert_eq!(ctx.let_bindings.get("retained").unwrap(), "log_entry");
+    let first = rx.try_recv().unwrap();
+    match first {
+        FlowExecutionEvent::StepStart { step_type, .. } => {
+            assert_eq!(step_type, "mandate_apply");
+        }
+        e => panic!("expected StepStart, got {e:?}"),
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  §5 — ComputeApply through dispatch_node
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn dispatch_node_routes_compute_apply() {
+    let (mut ctx, mut rx) = fresh_ctx();
+    ctx.let_bindings.insert("x".into(), "100".into());
+    ctx.let_bindings.insert("y".into(), "200".into());
+    dispatch_node(&compute_apply("sum", vec!["x", "y"], "total"), &mut ctx)
+        .await
+        .unwrap();
+    assert_eq!(ctx.let_bindings.get("total").unwrap(), "compute:sum(100, 200)");
+    let first = rx.try_recv().unwrap();
+    match first {
+        FlowExecutionEvent::StepStart { step_type, .. } => {
+            assert_eq!(step_type, "compute_apply");
+        }
+        e => panic!("expected StepStart, got {e:?}"),
+    }
+}
+
+#[tokio::test]
+async fn compute_apply_with_no_arguments() {
+    let (mut ctx, _rx) = fresh_ctx();
+    dispatch_node(&compute_apply("ping", vec![], "result"), &mut ctx)
+        .await
+        .unwrap();
+    assert_eq!(ctx.let_bindings.get("result").unwrap(), "compute:ping()");
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  §6 — Listen through dispatch_node
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn dispatch_node_routes_listen() {
+    let (mut ctx, mut rx) = fresh_ctx();
+    dispatch_node(&listen("inbox_chan", "msg"), &mut ctx).await.unwrap();
+    assert_eq!(ctx.let_bindings.get("msg").unwrap(), "(awaiting inbox_chan)");
+    let first = rx.try_recv().unwrap();
+    match first {
+        FlowExecutionEvent::StepStart { step_type, .. } => {
+            assert_eq!(step_type, "listen");
+        }
+        e => panic!("expected StepStart, got {e:?}"),
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  §7 — DaemonStep through dispatch_node
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn dispatch_node_routes_daemon_step() {
+    let (mut ctx, mut rx) = fresh_ctx();
+    dispatch_node(&daemon_step("supervisor"), &mut ctx).await.unwrap();
+    assert_eq!(
+        ctx.let_bindings.get("supervisor_invoked").unwrap(),
+        "daemon:supervisor"
+    );
+    let first = rx.try_recv().unwrap();
+    match first {
+        FlowExecutionEvent::StepStart { step_type, .. } => {
+            assert_eq!(step_type, "daemon_step");
+        }
+        e => panic!("expected StepStart, got {e:?}"),
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  §8 — Cancel propagation
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn cancel_propagates_into_every_algebraic_handler() {
+    let nodes: Vec<IRFlowNode> = vec![
+        shield_apply("s", "t", "o"),
+        ots_apply("s", "t", "o"),
+        mandate_apply("s", "t", "o"),
+        compute_apply("s", vec!["a"], "o"),
+        listen("c", "e"),
+        daemon_step("d"),
+    ];
+
+    for node in nodes {
+        let cancel = CancellationFlag::new();
+        cancel.cancel();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut ctx = DispatchCtx::new("F", "stub", "", cancel, tx);
+        let outcome = dispatch_node(&node, &mut ctx).await;
+        assert!(
+            matches!(outcome, Err(DispatchError::UpstreamCancelled)),
+            "expected UpstreamCancelled for {node:?}, got {outcome:?}"
+        );
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  §9 — Composition with cognitive + orchestration
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn shield_apply_inside_for_in_per_iter() {
+    let (mut ctx, _rx) = fresh_ctx();
+    ctx.let_bindings.insert("docs".into(), "doc1,doc2,doc3".into());
+    let for_in = IRFlowNode::ForIn(IRForIn {
+        node_type: "for_in",
+        source_line: 0,
+        source_column: 0,
+        variable: "current_doc".into(),
+        iterable: "docs".into(),
+        body: vec![shield_apply("hipaa", "current_doc", "current_doc_safe")],
+    });
+    dispatch_node(&for_in, &mut ctx).await.unwrap();
+    // After last iter, current_doc_safe holds the last shielded value.
+    assert_eq!(ctx.let_bindings.get("current_doc_safe").unwrap(), "doc3");
+}
+
+#[tokio::test]
+async fn compute_apply_chained_with_remember() {
+    let (mut ctx, _rx) = fresh_ctx();
+    ctx.let_bindings.insert("base".into(), "value-A".into());
+    dispatch_node(
+        &compute_apply("transform", vec!["base"], "computed"),
+        &mut ctx,
+    )
+    .await
+    .unwrap();
+
+    // Now Remember the result under a stable key.
+    dispatch_node(
+        &IRFlowNode::Remember(IRRememberStep {
+            node_type: "remember",
+            source_line: 0,
+            source_column: 0,
+            expression: "computed".into(),
+            memory_target: "checkpoint".into(),
+        }),
+        &mut ctx,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        ctx.let_bindings.get("checkpoint").unwrap(),
+        "compute:transform(value-A)"
+    );
+}
+
+#[tokio::test]
+async fn shield_chain_idempotent_across_two_invocations() {
+    let (mut ctx, _rx) = fresh_ctx();
+    ctx.let_bindings.insert("phi_doc".into(), "patient John".into());
+
+    dispatch_node(&shield_apply("hipaa", "phi_doc", "round1"), &mut ctx)
+        .await
+        .unwrap();
+    dispatch_node(&shield_apply("hipaa", "round1", "round2"), &mut ctx)
+        .await
+        .unwrap();
+
+    // OSS identity passthrough — both rounds preserve content.
+    assert_eq!(ctx.let_bindings.get("round1").unwrap(), "patient John");
+    assert_eq!(ctx.let_bindings.get("round2").unwrap(), "patient John");
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  §10 — Step counter discipline
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn algebraic_handlers_advance_step_counter() {
+    let (mut ctx, _rx) = fresh_ctx();
+    assert_eq!(ctx.step_counter, 0);
+    dispatch_node(&shield_apply("s", "t", "o"), &mut ctx).await.unwrap();
+    assert_eq!(ctx.step_counter, 1);
+    dispatch_node(&ots_apply("s", "t", "o"), &mut ctx).await.unwrap();
+    assert_eq!(ctx.step_counter, 2);
+    dispatch_node(&mandate_apply("s", "t", "o"), &mut ctx).await.unwrap();
+    assert_eq!(ctx.step_counter, 3);
+    dispatch_node(&compute_apply("c", vec![], "o"), &mut ctx).await.unwrap();
+    assert_eq!(ctx.step_counter, 4);
+    dispatch_node(&listen("c", "e"), &mut ctx).await.unwrap();
+    assert_eq!(ctx.step_counter, 5);
+    dispatch_node(&daemon_step("d"), &mut ctx).await.unwrap();
+    assert_eq!(ctx.step_counter, 6);
+}
