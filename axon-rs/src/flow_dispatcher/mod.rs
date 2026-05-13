@@ -126,6 +126,18 @@ pub mod cognitive;
 /// `axon_enterprise.shield`).
 pub mod algebraic_handlers;
 
+/// §Fase 33.y.h — Wire-integration handler nodes (π-calc +
+/// persistence + multi-agent deliberation). 10 variants:
+/// **Emit / Publish / Discover** (Fase 13 typed channels — π-calc
+/// output prefix + capability extrusion + dual discovery);
+/// **Persist / Retrieve / Mutate / Purge / Transact** (persistence
+/// primitives — snapshot / load / update / delete / transactional
+/// block); **Deliberate / Consensus** (multi-agent payload-free
+/// blocks). Each ships wire shape + public helper that enterprise
+/// integrations (Postgres / Redis / MQ / typed-channel runtime)
+/// override.
+pub mod wire_integrations;
+
 // ────────────────────────────────────────────────────────────────────
 //  DispatchCtx — shared per-flow async surface
 // ────────────────────────────────────────────────────────────────────
@@ -682,8 +694,9 @@ pub async fn dispatch_node(
         // delegate to `parallel::run_branches_concurrently`.
         IRFlowNode::Par(par) => parallel::run_par(par, ctx).await,
         IRFlowNode::Hibernate(_) => legacy_shim(ShimReason::Hibernate, ctx).await,
-        IRFlowNode::Deliberate(_) => legacy_shim(ShimReason::Deliberate, ctx).await,
-        IRFlowNode::Consensus(_) => legacy_shim(ShimReason::Consensus, ctx).await,
+        // §Fase 33.y.h — multi-agent deliberation blocks.
+        IRFlowNode::Deliberate(node) => wire_integrations::run_deliberate(node, ctx).await,
+        IRFlowNode::Consensus(node) => wire_integrations::run_consensus(node, ctx).await,
         // §Fase 33.y.f — Forge payload-free wire shape.
         IRFlowNode::Forge(node) => cognitive::run_forge(node, ctx).await,
         // §Fase 33.y.f — cognitive framing handlers reuse pure_shape.
@@ -708,14 +721,16 @@ pub async fn dispatch_node(
         IRFlowNode::ComputeApply(node) => algebraic_handlers::run_compute_apply(node, ctx).await,
         IRFlowNode::Listen(node) => algebraic_handlers::run_listen(node, ctx).await,
         IRFlowNode::DaemonStep(node) => algebraic_handlers::run_daemon_step(node, ctx).await,
-        IRFlowNode::Emit(_) => legacy_shim(ShimReason::Emit, ctx).await,
-        IRFlowNode::Publish(_) => legacy_shim(ShimReason::Publish, ctx).await,
-        IRFlowNode::Discover(_) => legacy_shim(ShimReason::Discover, ctx).await,
-        IRFlowNode::Persist(_) => legacy_shim(ShimReason::Persist, ctx).await,
-        IRFlowNode::Retrieve(_) => legacy_shim(ShimReason::Retrieve, ctx).await,
-        IRFlowNode::Mutate(_) => legacy_shim(ShimReason::Mutate, ctx).await,
-        IRFlowNode::Purge(_) => legacy_shim(ShimReason::Purge, ctx).await,
-        IRFlowNode::Transact(_) => legacy_shim(ShimReason::Transact, ctx).await,
+        // §Fase 33.y.h — π-calc typed channels (Fase 13).
+        IRFlowNode::Emit(node) => wire_integrations::run_emit(node, ctx).await,
+        IRFlowNode::Publish(node) => wire_integrations::run_publish(node, ctx).await,
+        IRFlowNode::Discover(node) => wire_integrations::run_discover(node, ctx).await,
+        // §Fase 33.y.h — persistence primitives.
+        IRFlowNode::Persist(node) => wire_integrations::run_persist(node, ctx).await,
+        IRFlowNode::Retrieve(node) => wire_integrations::run_retrieve(node, ctx).await,
+        IRFlowNode::Mutate(node) => wire_integrations::run_mutate(node, ctx).await,
+        IRFlowNode::Purge(node) => wire_integrations::run_purge(node, ctx).await,
+        IRFlowNode::Transact(node) => wire_integrations::run_transact(node, ctx).await,
     }
 }
 
