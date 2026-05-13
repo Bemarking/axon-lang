@@ -18884,6 +18884,14 @@ async fn run_streaming_async_path(
     // None → execute_sse_handler closes the SSE response cleanly.
 }
 
+// §Fase 33.y.l — this entry point still routes flows the 33.x.b
+// streaming path defers (anchors, lambda apply, let bindings, etc.)
+// to `run_streaming_legacy_path` — both marked `#[deprecated]` in
+// 33.y.l now that the per-IRFlowNode async dispatcher (33.y) covers
+// all 45 IRFlowNode variants. The `#[allow(deprecated)]` here keeps
+// the existing routing operational while 33.z grafts the dispatcher
+// directly into the streaming surface.
+#[allow(deprecated)]
 fn server_execute_streaming(
     state: SharedState,
     source: String,
@@ -19122,6 +19130,21 @@ fn server_execute_streaming(
 /// unknown backend / source that fails to parse on the streaming
 /// path. Adopter wire is byte-identical with v1.24.0 for these
 /// shapes (D4 + D8 byte-compat).
+///
+/// # §Fase 33.y.l — deprecated
+///
+/// 33.y graduated all 45 IRFlowNode variants to a named async
+/// handler in `flow_dispatcher::dispatch_node`. The streaming path
+/// will graduate to dispatch-through-dispatcher end-to-end in 33.z,
+/// at which point this synthetic-token fallback becomes
+/// unreachable and is removed entirely.
+#[deprecated(
+    since = "1.26.0",
+    note = "Use the per-IRFlowNode async dispatcher \
+            (`flow_dispatcher::dispatch_node`) — 33.y graduates all 45 \
+            IRFlowNode variants. This legacy synthetic-token fallback \
+            path is on a retirement schedule for 33.z."
+)]
 fn run_streaming_legacy_path(
     state: SharedState,
     source: String,

@@ -329,6 +329,22 @@ pub enum PlanError {
     /// optional `apply: tool`). Anchors, lambda apply, let bindings
     /// and mid-stream tool calls live on the legacy path until
     /// their respective follow-ups.
+    ///
+    /// # §Fase 33.y.l — deprecated
+    ///
+    /// The 33.y cycle (per-IRFlowNode async dispatcher) closes the
+    /// algebraic-streaming contract structurally for all 45
+    /// IRFlowNode variants. Once `server_execute_streaming` graduates
+    /// to use `flow_dispatcher::dispatch_node` end-to-end (33.z),
+    /// the legacy synchronous fallback becomes unreachable and this
+    /// variant retires entirely.
+    #[deprecated(
+        since = "1.26.0",
+        note = "Use the per-IRFlowNode async dispatcher \
+                (`flow_dispatcher::dispatch_node`) — 33.y graduates all 45 \
+                IRFlowNode variants. This legacy fallback variant is on a \
+                retirement path; 33.z will remove it."
+    )]
     LegacyOrchestrationRequired { reason: PlanFallback, flow_name: String },
 }
 
@@ -420,6 +436,15 @@ pub fn build_streaming_plan(
 
 /// Build a plan from an already-typed IR. Useful for tests that
 /// drive the planner with hand-constructed IR (no source parse).
+// §Fase 33.y.l — the streaming-vs-legacy routing decision below uses
+// the `PlanError::LegacyOrchestrationRequired` variant + the
+// `unsupported_feature_reason` helper, both marked `#[deprecated]`
+// in 33.y.l. The allow keeps the legacy fallback path functional
+// while 33.z drives the per-IRFlowNode dispatcher into the streaming
+// surface end-to-end. The deprecation signal surfaces to ANY new
+// in-crate or out-of-crate caller, but the existing routing code
+// stays clean.
+#[allow(deprecated)]
 pub fn build_plan_from_ir(
     ir: &IRProgram,
     program: &crate::ast::Program,
@@ -498,6 +523,20 @@ pub fn build_plan_from_ir(
 /// step uses a feature 33.x.b defers. Closed-catalog — adding a new
 /// reason requires updating this function + the `PlanFallback`
 /// enum (compiler enforces exhaustiveness in the slug match).
+///
+/// # §Fase 33.y.l — deprecated
+///
+/// The 33.y per-IRFlowNode async dispatcher covers all 45
+/// IRFlowNode variants natively; the streaming-vs-legacy routing
+/// decision this function gates is obsolete once
+/// `server_execute_streaming` graduates to dispatch through
+/// `flow_dispatcher::dispatch_node` end-to-end (33.z).
+#[deprecated(
+    since = "1.26.0",
+    note = "Use the per-IRFlowNode async dispatcher \
+            (`flow_dispatcher::dispatch_node`). This function gates the \
+            legacy streaming-vs-sync fallback path which 33.z will retire."
+)]
 fn unsupported_feature_reason(
     flow: &crate::ir_nodes::IRFlow,
     ir: &IRProgram,

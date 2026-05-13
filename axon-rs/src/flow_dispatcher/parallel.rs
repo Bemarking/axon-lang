@@ -272,9 +272,6 @@ pub async fn run_branches_concurrently(
                     return_value = Some(value);
                 }
             }
-            Ok(NodeOutcome::LegacyShimHandled { .. }) => {
-                // Non-graduated child — no output captured.
-            }
             Err(e) => return Err(e),
         }
     }
@@ -329,7 +326,6 @@ async fn dispatch_branch_body(
             NodeOutcome::Return { value } => {
                 return Ok(NodeOutcome::Return { value });
             }
-            NodeOutcome::LegacyShimHandled { .. } => {}
         }
     }
 

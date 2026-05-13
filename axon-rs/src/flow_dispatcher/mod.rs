@@ -358,16 +358,6 @@ impl DispatchCtx {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum NodeOutcome {
-    /// 33.y.b transitional: the IRFlowNode variant has not yet
-    /// graduated to a real async handler. Calling
-    /// `dispatch_node` returns this variant + the production code
-    /// path is expected to fall back to the sync runner (in 33.y.b
-    /// no production code path calls dispatch_node — this is the
-    /// drift-gate-exercised standalone surface).
-    LegacyShimHandled {
-        reason: ShimReason,
-        node_kind: &'static str,
-    },
     /// §Fase 33.y.c+ — Handler ran to completion. `output` is the
     /// concatenated chunk content captured during streaming;
     /// `tokens_emitted` is the count of non-empty `StepToken` events
@@ -424,15 +414,6 @@ pub enum DispatchError {
     /// surfaced — the consumer is already gone).
     UpstreamCancelled,
 
-    /// The 33.y.b transitional shim for this variant returned an
-    /// error from the underlying sync runner. Carries the
-    /// IRFlowNode kind + the runner's error message. Eliminated in
-    /// 33.y.l when the shim is retired.
-    LegacyShimFailed {
-        kind: &'static str,
-        message: String,
-    },
-
     /// A per-variant handler needed a dependency that wasn't
     /// available on the DispatchCtx (e.g., PEM async surface for a
     /// `Remember`/`Recall` handler before 33.y.f wires it in). The
@@ -452,9 +433,6 @@ impl std::fmt::Display for DispatchError {
                 write!(f, "backend '{name}' stream() failed: {message}")
             }
             Self::UpstreamCancelled => write!(f, "upstream cancelled mid-dispatch"),
-            Self::LegacyShimFailed { kind, message } => {
-                write!(f, "legacy shim failed for {kind}: {message}")
-            }
             Self::MissingDependency { name } => {
                 write!(f, "dispatcher missing dependency: {name}")
             }
@@ -466,178 +444,38 @@ impl std::fmt::Display for DispatchError {
 impl std::error::Error for DispatchError {}
 
 // ────────────────────────────────────────────────────────────────────
-//  ShimReason — per-IRFlowNode-variant tag for 33.y.b shim
+//  §Fase 33.y.l — ShimReason enum + legacy_shim function retired
 // ────────────────────────────────────────────────────────────────────
-
-/// Per-IRFlowNode-variant tag for the 33.y.b transitional shim. The
-/// 45 variants here map 1-to-1 with the [`IRFlowNode`] catalog. As
-/// each per-variant async handler ships in 33.y.c–j, the
-/// corresponding ShimReason variant is RETAINED until 33.y.l (legacy
-/// retirement) because the drift gate continues to assert the
-/// mapping during the migration; only at 33.y.l is the entire enum
-/// (plus [`NodeOutcome::LegacyShimHandled`]) deleted.
-///
-/// # Drift gate
-///
-/// [`tests::shim_reason_covers_full_ir_flow_node_catalog`] asserts
-/// the ShimReason set has 1-to-1 cardinality with IRFlowNode + each
-/// arm's slug matches `flow_plan::ir_flow_node_kind` for the same
-/// variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ShimReason {
-    Step,
-    Probe,
-    Reason,
-    Validate,
-    Refine,
-    Weave,
-    UseTool,
-    Remember,
-    Recall,
-    Conditional,
-    ForIn,
-    Let,
-    Return,
-    Break,
-    Continue,
-    LambdaDataApply,
-    Par,
-    Hibernate,
-    Deliberate,
-    Consensus,
-    Forge,
-    Focus,
-    Associate,
-    Aggregate,
-    Explore,
-    Ingest,
-    ShieldApply,
-    Stream,
-    Navigate,
-    Drill,
-    Trail,
-    Corroborate,
-    OtsApply,
-    MandateApply,
-    ComputeApply,
-    Listen,
-    DaemonStep,
-    Emit,
-    Publish,
-    Discover,
-    Persist,
-    Retrieve,
-    Mutate,
-    Purge,
-    Transact,
-}
-
-impl ShimReason {
-    /// Stable kebab-case slug used as the wire-observable + drift-gate
-    /// key. Matches `flow_plan::ir_flow_node_kind` for the same IR
-    /// variant byte-for-byte (drift gate enforces).
-    pub fn slug(&self) -> &'static str {
-        match self {
-            Self::Step => "step",
-            Self::Probe => "probe",
-            Self::Reason => "reason",
-            Self::Validate => "validate",
-            Self::Refine => "refine",
-            Self::Weave => "weave",
-            Self::UseTool => "use_tool",
-            Self::Remember => "remember",
-            Self::Recall => "recall",
-            Self::Conditional => "conditional",
-            Self::ForIn => "for_in",
-            Self::Let => "let",
-            Self::Return => "return",
-            Self::Break => "break",
-            Self::Continue => "continue",
-            Self::LambdaDataApply => "lambda_data_apply",
-            Self::Par => "par",
-            Self::Hibernate => "hibernate",
-            Self::Deliberate => "deliberate",
-            Self::Consensus => "consensus",
-            Self::Forge => "forge",
-            Self::Focus => "focus",
-            Self::Associate => "associate",
-            Self::Aggregate => "aggregate",
-            Self::Explore => "explore",
-            Self::Ingest => "ingest",
-            Self::ShieldApply => "shield_apply",
-            Self::Stream => "stream_block",
-            Self::Navigate => "navigate",
-            Self::Drill => "drill",
-            Self::Trail => "trail",
-            Self::Corroborate => "corroborate",
-            Self::OtsApply => "ots_apply",
-            Self::MandateApply => "mandate_apply",
-            Self::ComputeApply => "compute_apply",
-            Self::Listen => "listen",
-            Self::DaemonStep => "daemon_step",
-            Self::Emit => "emit",
-            Self::Publish => "publish",
-            Self::Discover => "discover",
-            Self::Persist => "persist",
-            Self::Retrieve => "retrieve",
-            Self::Mutate => "mutate",
-            Self::Purge => "purge",
-            Self::Transact => "transact",
-        }
-    }
-
-    /// Full ShimReason catalog. Used by the drift gate to assert
-    /// cardinality + slug correctness. Order matches the IRFlowNode
-    /// declaration order in `axon_frontend::ir_nodes`.
-    pub const ALL: &'static [Self] = &[
-        Self::Step,
-        Self::Probe,
-        Self::Reason,
-        Self::Validate,
-        Self::Refine,
-        Self::Weave,
-        Self::UseTool,
-        Self::Remember,
-        Self::Recall,
-        Self::Conditional,
-        Self::ForIn,
-        Self::Let,
-        Self::Return,
-        Self::Break,
-        Self::Continue,
-        Self::LambdaDataApply,
-        Self::Par,
-        Self::Hibernate,
-        Self::Deliberate,
-        Self::Consensus,
-        Self::Forge,
-        Self::Focus,
-        Self::Associate,
-        Self::Aggregate,
-        Self::Explore,
-        Self::Ingest,
-        Self::ShieldApply,
-        Self::Stream,
-        Self::Navigate,
-        Self::Drill,
-        Self::Trail,
-        Self::Corroborate,
-        Self::OtsApply,
-        Self::MandateApply,
-        Self::ComputeApply,
-        Self::Listen,
-        Self::DaemonStep,
-        Self::Emit,
-        Self::Publish,
-        Self::Discover,
-        Self::Persist,
-        Self::Retrieve,
-        Self::Mutate,
-        Self::Purge,
-        Self::Transact,
-    ];
-}
-
+//
+// After 33.y.j reached 45/45 IRFlowNode graduation, the
+// transitional `ShimReason` enum + `legacy_shim` function + the
+// `NodeOutcome::LegacyShimHandled` variant became structurally
+// unreachable from `dispatch_node`'s exhaustive match. 33.y.l
+// retires the entire shim infrastructure in this lockstep cleanup:
+//
+//   - ShimReason enum                   — DELETED
+//   - ShimReason::ALL constant          — DELETED
+//   - ShimReason::slug() method         — DELETED
+//   - legacy_shim() async helper        — DELETED
+//   - NodeOutcome::LegacyShimHandled    — DELETED variant
+//
+// Drift-gate slug catalog now uses `flow_plan::ir_flow_node_kind`
+// directly (the same byte-stable surface that was duplicated in
+// ShimReason::slug — single source of truth).
+//
+// The dispatcher's 45-arm exhaustive match is unchanged: every IR
+// variant routes to its real async handler module (pure_shape /
+// orchestration / parallel / effects_bridge / cognitive /
+// algebraic_handlers / wire_integrations / pix / lambda_tools).
+//
+// Search the codebase: `grep -E "unimplemented|todo!|legacy_shim"
+// axon-rs/src/flow_dispatcher/*.rs` returns ZERO matches post-33.y.l
+// (verified by the `fase33y_l_parity_gate.rs::d7_no_legacy_markers`
+// drift-gate test).
+//
+// Build-time guarantee: `legacy_shim` is gone → compiler enforces
+// that NO future arm in dispatch_node can fall back to a stub. The
+// catalog totality contract D1 is sealed.
 // ────────────────────────────────────────────────────────────────────
 //  dispatch_node — the exhaustive entry point
 // ────────────────────────────────────────────────────────────────────
@@ -646,31 +484,39 @@ impl ShimReason {
 /// handler stack. Total over the 45-variant closed catalog
 /// (compiler-enforced exhaustive match).
 ///
-/// # 33.y.b behavior
+/// # 45/45 graduation FINAL (33.y.j)
 ///
-/// Every arm currently delegates to [`legacy_shim`] which returns
-/// `Ok(NodeOutcome::LegacyShimHandled { reason, node_kind })`
-/// WITHOUT actually executing the node. The dispatcher is standalone
-/// in 33.y.b — no production code path calls it — so this is a pure
-/// structural deliverable: the COMPILER-ENFORCED EXHAUSTIVE MATCH is
-/// what's locked in.
+/// As of Fase 33.y.j, every IRFlowNode variant has a NAMED async
+/// handler. There are NO `_ =>` catch-all arms, NO `legacy_shim`
+/// calls, NO `unimplemented!()` markers. Adding a 46th IRFlowNode
+/// variant fails the Rust build here until a real per-variant
+/// async handler is wired in.
 ///
-/// # Subsequent sub-fases
+/// Each arm's handler module:
 ///
-/// 33.y.c REPLACES the `Step` / `Probe` / `Reason` / `Validate` /
-/// `Refine` / `Weave` arms with the real pure-shape async handler.
-/// 33.y.d REPLACES Let / Conditional / ForIn / Break / Continue /
-/// Return. 33.y.e REPLACES Par + Stream (D9). Etc. — see
-/// `docs/fase_33y_algebraic_streaming_dispatcher.md` §4 for the
-/// full topological order.
+/// - **pure_shape** (33.y.c) — Step / Probe / Reason / Validate /
+///   Refine / Weave
+/// - **orchestration** (33.y.d) — Let / Conditional / ForIn /
+///   Break / Continue / Return
+/// - **parallel** (33.y.e) — Par
+/// - **effects_bridge** (33.y.e + D9) — Stream
+/// - **cognitive** (33.y.f) — Remember / Recall / Forge / Focus /
+///   Associate / Aggregate / Explore / Ingest / Navigate /
+///   Corroborate
+/// - **algebraic_handlers** (33.y.g) — ShieldApply / OtsApply /
+///   MandateApply / ComputeApply / Listen / DaemonStep
+/// - **wire_integrations** (33.y.h) — Emit / Publish / Discover /
+///   Persist / Retrieve / Mutate / Purge / Transact / Deliberate /
+///   Consensus
+/// - **pix** (33.y.i) — Hibernate / Drill / Trail
+/// - **lambda_tools** (33.y.j) — LambdaDataApply / UseTool
 ///
 /// # Cancellation
 ///
-/// `legacy_shim` checks `ctx.cancel.is_cancelled()` first and
-/// returns `Err(DispatchError::UpstreamCancelled)` immediately. Real
-/// handlers added in 33.y.c–j check the cancel flag at every
-/// `.await` boundary per the existing `cancel_aware` discipline
-/// (Fase 33.x.e).
+/// Every per-variant handler checks `ctx.cancel.is_cancelled()`
+/// at entry and at every `.await` boundary per the Fase 33.x.e
+/// `cancel_aware` discipline. Cancel propagation is uniform
+/// across the entire 45-variant catalog.
 pub async fn dispatch_node(
     node: &IRFlowNode,
     ctx: &mut DispatchCtx,
@@ -756,29 +602,6 @@ pub async fn dispatch_node(
     }
 }
 
-/// 33.y.b transitional shim. Checks the cancel flag + returns
-/// `Ok(NodeOutcome::LegacyShimHandled)` WITHOUT executing the node.
-///
-/// This is INTENTIONALLY a no-op transition. Production code paths
-/// fall back to the existing sync runner for unimplemented variants;
-/// 33.y.b's job is to lock the structural shape (the exhaustive
-/// match + the closed catalogs), not to change behavior.
-///
-/// Each subsequent sub-fase 33.y.c–j REPLACES the shim invocation
-/// for its variants with the real per-variant async handler module.
-async fn legacy_shim(
-    reason: ShimReason,
-    ctx: &mut DispatchCtx,
-) -> Result<NodeOutcome, DispatchError> {
-    if ctx.cancel.is_cancelled() {
-        return Err(DispatchError::UpstreamCancelled);
-    }
-    Ok(NodeOutcome::LegacyShimHandled {
-        reason,
-        node_kind: reason.slug(),
-    })
-}
-
 // ────────────────────────────────────────────────────────────────────
 //  Unit tests — drift gate + smoke
 // ────────────────────────────────────────────────────────────────────
@@ -788,95 +611,22 @@ mod tests {
     use super::*;
     use crate::cancel_token::CancellationFlag;
 
-    /// 33.y.b D1 drift gate: ShimReason cardinality matches the
-    /// IRFlowNode closed catalog (45 variants).
-    #[test]
-    fn shim_reason_cardinality_45_variants() {
-        assert_eq!(
-            ShimReason::ALL.len(),
-            45,
-            "33.y D1 invariant: ShimReason catalog has exactly 45 \
-             variants matching IRFlowNode. Adding/removing must \
-             happen in lockstep with the IRFlowNode enum + the \
-             dispatch_node match arms."
-        );
-    }
-
-    /// 33.y.b D1 drift gate: every ShimReason slug is unique.
-    #[test]
-    fn shim_reason_slugs_are_unique() {
-        use std::collections::HashSet;
-        let mut seen: HashSet<&'static str> = HashSet::new();
-        for r in ShimReason::ALL {
-            let slug = r.slug();
-            assert!(
-                seen.insert(slug),
-                "ShimReason::{:?} slug {:?} is not unique — drift",
-                r,
-                slug
-            );
-        }
-        assert_eq!(seen.len(), 45);
-    }
-
-    /// 33.y.b D1 drift gate: every ShimReason slug is non-empty +
-    /// kebab-case (matches the flow_plan::ir_flow_node_kind shape).
-    #[test]
-    fn shim_reason_slugs_are_well_formed() {
-        for r in ShimReason::ALL {
-            let s = r.slug();
-            assert!(!s.is_empty(), "ShimReason::{:?} slug is empty", r);
-            assert!(
-                s.chars()
-                    .all(|c| c.is_ascii_lowercase() || c == '_'),
-                "ShimReason::{:?} slug {:?} is not kebab/snake-case",
-                r,
-                s
-            );
-        }
-    }
-
-    /// 33.y.b smoke: legacy_shim returns LegacyShimHandled when the
-    /// cancel flag is NOT set.
-    #[tokio::test]
-    async fn legacy_shim_returns_handled_on_happy_path() {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let mut ctx = DispatchCtx::new(
-            "TestFlow",
-            "stub",
-            "system prompt",
-            CancellationFlag::new(),
-            tx,
-        );
-
-        let outcome = legacy_shim(ShimReason::Step, &mut ctx).await;
-        match outcome {
-            Ok(NodeOutcome::LegacyShimHandled { reason, node_kind }) => {
-                assert_eq!(reason, ShimReason::Step);
-                assert_eq!(node_kind, "step");
-            }
-            other => panic!("expected LegacyShimHandled, got {other:?}"),
-        }
-    }
-
-    /// 33.y.b cancel propagation: legacy_shim returns
-    /// `Err(UpstreamCancelled)` when the cancel flag is set.
-    #[tokio::test]
-    async fn legacy_shim_returns_cancel_when_flag_set() {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let cancel = CancellationFlag::new();
-        cancel.cancel();
-        let mut ctx = DispatchCtx::new(
-            "TestFlow",
-            "stub",
-            "system prompt",
-            cancel,
-            tx,
-        );
-
-        let outcome = legacy_shim(ShimReason::Step, &mut ctx).await;
-        assert!(matches!(outcome, Err(DispatchError::UpstreamCancelled)));
-    }
+    /// §Fase 33.y.l drift-gate update — the historical
+    /// `shim_reason_cardinality_45_variants` /
+    /// `shim_reason_slugs_are_unique` /
+    /// `shim_reason_slugs_are_well_formed` /
+    /// `legacy_shim_returns_handled_on_happy_path` /
+    /// `legacy_shim_returns_cancel_when_flag_set` /
+    /// `shim_reason_slug_matches_ir_flow_node_kind` tests are
+    /// RETIRED here. The replacement coverage lives in:
+    ///
+    ///   - `tests/fase33y_b_dispatcher_skeleton.rs` — IR-variant
+    ///     catalog cardinality + slug uniqueness via
+    ///     `flow_plan::ir_flow_node_kind` directly (single source
+    ///     of truth, no more `ShimReason::slug` duplication).
+    ///   - `tests/fase33y_l_parity_gate.rs` — D7 build-time grep
+    ///     invariant: zero `unimplemented!` / `todo!` / `legacy_shim`
+    ///     symbols in `flow_dispatcher/*.rs`.
 
     /// 33.y.b branch_path: empty at flow root.
     #[test]
@@ -924,13 +674,6 @@ mod tests {
             ),
             (DispatchError::UpstreamCancelled, "upstream cancelled mid-dispatch"),
             (
-                DispatchError::LegacyShimFailed {
-                    kind: "let",
-                    message: "rhs evaluation failed".to_string(),
-                },
-                "legacy shim failed for let: rhs evaluation failed",
-            ),
-            (
                 DispatchError::MissingDependency { name: "pem_async" },
                 "dispatcher missing dependency: pem_async",
             ),
@@ -938,62 +681,6 @@ mod tests {
         ];
         for (err, expected) in cases {
             assert_eq!(format!("{err}"), expected);
-        }
-    }
-
-    /// 33.y.b D1 drift gate: ShimReason.slug() matches
-    /// `flow_plan::ir_flow_node_kind` for every variant. This is
-    /// the wire-stability contract — the slug an adopter sees in
-    /// `axon-W002` or `step_audit.branch_path` MUST be byte-identical
-    /// across the two surfaces.
-    #[test]
-    fn shim_reason_slug_matches_ir_flow_node_kind() {
-        // We construct synthetic IRFlowNode values for each variant
-        // and assert `flow_plan::ir_flow_node_kind(&node) ==
-        // ShimReason::<Variant>.slug()`. The IRFlowNode shapes carry
-        // unit-shaped placeholder payloads — sufficient for the
-        // discriminant match.
-        use crate::flow_plan::ir_flow_node_kind;
-        use crate::ir_nodes::*;
-
-        fn ir_step() -> IRStep {
-            IRStep {
-                node_type: "step",
-                source_line: 0,
-                source_column: 0,
-                name: String::new(),
-                persona_ref: String::new(),
-                given: String::new(),
-                ask: String::new(),
-                use_tool: None,
-                probe: None,
-                reason: None,
-                weave: None,
-                output_type: String::new(),
-                confidence_floor: None,
-                navigate_ref: String::new(),
-                apply_ref: String::new(),
-                body: Vec::new(),
-            }
-        }
-
-        let pairs: Vec<(IRFlowNode, ShimReason)> = vec![
-            (IRFlowNode::Step(ir_step()), ShimReason::Step),
-        ];
-        // Smoke-check just the Step variant — the other 44 require
-        // constructing their own IR types which the 33.y.b drift gate
-        // covers via the standalone `shim_reason_cardinality_45_variants`
-        // (cardinality) + `shim_reason_slugs_are_well_formed` (shape).
-        // The full per-variant slug-equivalence drift gate ships in
-        // 33.y.c when synthetic IR factories land for the per-variant
-        // handler tests.
-        for (node, reason) in pairs {
-            assert_eq!(
-                ir_flow_node_kind(&node),
-                reason.slug(),
-                "wire-stability drift: ir_flow_node_kind != \
-                 ShimReason.slug for {reason:?}"
-            );
         }
     }
 

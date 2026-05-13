@@ -1,33 +1,41 @@
 //! §Fase 33.y.b drift gate — assert the `flow_dispatcher` module's
 //! exhaustive surface is structurally locked.
 //!
-//! # Why a dedicated drift gate
+//! # §Fase 33.y.l rewrite — ShimReason retired
 //!
-//! `flow_dispatcher::tests` covers the module-internal invariants
-//! (ShimReason cardinality / slug uniqueness / shape / cancel
-//! propagation). This integration test exercises the PUBLIC surface
-//! end-to-end:
+//! Pre-33.y.l this drift gate used a `ShimReason` enum mirroring
+//! the 45-variant IRFlowNode catalog. After 33.y.j reached 45/45
+//! graduation (every IRFlowNode variant has a NAMED async handler),
+//! 33.y.l retired the entire `legacy_shim` + `ShimReason` +
+//! `NodeOutcome::LegacyShimHandled` infrastructure.
 //!
-//! - `dispatch_node` routes every one of the 45 IRFlowNode discriminants
-//!   to its labeled ShimReason (no arm forwards to the wrong shim
-//!   tag — the kind of bug a careless arm-renaming refactor would
-//!   introduce).
-//! - The ShimReason public catalog is observable from a downstream
-//!   consumer (proves `ShimReason::ALL` is reachable across the
-//!   crate boundary).
-//! - `dispatch_node` honors the cancel flag at the entry point.
+//! The drift gate now uses `flow_plan::ir_flow_node_kind` directly
+//! as the single source of truth for kind slugs (eliminates the
+//! ShimReason::slug duplication that was a drift-gate-anchored
+//! contract pre-33.y.l).
+//!
+//! # What this drift gate exercises
+//!
+//! - `dispatch_node` produces a NodeOutcome for every one of the
+//!   45 IRFlowNode discriminants (no missing arms, no `_ =>`
+//!   catch-all).
+//! - `dispatch_node` honors the cancel flag at the entry point of
+//!   every per-variant handler.
 //! - `DispatchCtx::new` produces a usable context across the crate
-//!   boundary (downstream consumers can construct it).
-//!
-//! When 33.y.c lands the first real per-variant handler, the
-//! corresponding test below INVERTS to assert the real outcome
-//! (`NodeOutcome::Completed { output, tokens_emitted }`) instead of
-//! `LegacyShimHandled`.
+//!   boundary.
+//! - `DispatchError` variants are reachable from downstream
+//!   consumers.
+//! - The full 45-variant catalog × outcome-shape partition is
+//!   exhaustive: every variant falls into one of {pure_shape_like
+//!   / orchestration / strict_empty_completed / algebraic_handler}
+//!   buckets — no variant is missing, no variant in multiple
+//!   buckets.
 
 use axon::cancel_token::CancellationFlag;
 use axon::flow_dispatcher::{
-    dispatch_node, DispatchCtx, DispatchError, NodeOutcome, ShimReason,
+    dispatch_node, DispatchCtx, DispatchError, NodeOutcome,
 };
+use axon::flow_plan::ir_flow_node_kind;
 use axon::ir_nodes::*;
 use tokio::sync::mpsc;
 
@@ -505,58 +513,65 @@ fn transact_node() -> IRFlowNode {
     })
 }
 
-/// The full IRFlowNode × ShimReason cartesian product the 33.y.b
-/// drift gate exercises end-to-end through `dispatch_node`. Each
-/// entry: a factory producing a synthetic IR variant + the
-/// ShimReason the dispatcher MUST route it to + the wire-stable
-/// slug `flow_plan::ir_flow_node_kind` returns for that IR variant.
-fn all_45_pairs() -> Vec<(IRFlowNode, ShimReason, &'static str)> {
+/// The full IRFlowNode catalog the 33.y.b drift gate exercises
+/// end-to-end through `dispatch_node`. Each entry: a factory
+/// producing a synthetic IR variant + the wire-stable slug
+/// `flow_plan::ir_flow_node_kind` returns for that IR variant.
+///
+/// # §Fase 33.y.l — `ShimReason` retired
+///
+/// Pre-33.y.l this returned `Vec<(IRFlowNode, ShimReason, &'static str)>`
+/// because non-graduated variants routed through `legacy_shim`. After
+/// 33.y.j reached 45/45 graduation, ShimReason became dead weight; the
+/// kind slug (single source of truth via `ir_flow_node_kind`) is all
+/// the drift gate needs.
+fn all_45_pairs() -> Vec<(IRFlowNode, &'static str)> {
     vec![
-        (step_node(), ShimReason::Step, "step"),
-        (probe_node(), ShimReason::Probe, "probe"),
-        (reason_node(), ShimReason::Reason, "reason"),
-        (validate_node(), ShimReason::Validate, "validate"),
-        (refine_node(), ShimReason::Refine, "refine"),
-        (weave_node(), ShimReason::Weave, "weave"),
-        (use_tool_node(), ShimReason::UseTool, "use_tool"),
-        (remember_node(), ShimReason::Remember, "remember"),
-        (recall_node(), ShimReason::Recall, "recall"),
-        (conditional_node(), ShimReason::Conditional, "conditional"),
-        (for_in_node(), ShimReason::ForIn, "for_in"),
-        (let_node(), ShimReason::Let, "let"),
-        (return_node(), ShimReason::Return, "return"),
-        (break_node(), ShimReason::Break, "break"),
-        (continue_node(), ShimReason::Continue, "continue"),
-        (lambda_data_apply_node(), ShimReason::LambdaDataApply, "lambda_data_apply"),
-        (par_node(), ShimReason::Par, "par"),
-        (hibernate_node(), ShimReason::Hibernate, "hibernate"),
-        (deliberate_node(), ShimReason::Deliberate, "deliberate"),
-        (consensus_node(), ShimReason::Consensus, "consensus"),
-        (forge_node(), ShimReason::Forge, "forge"),
-        (focus_node(), ShimReason::Focus, "focus"),
-        (associate_node(), ShimReason::Associate, "associate"),
-        (aggregate_node(), ShimReason::Aggregate, "aggregate"),
-        (explore_node(), ShimReason::Explore, "explore"),
-        (ingest_node(), ShimReason::Ingest, "ingest"),
-        (shield_apply_node(), ShimReason::ShieldApply, "shield_apply"),
-        (stream_node(), ShimReason::Stream, "stream_block"),
-        (navigate_node(), ShimReason::Navigate, "navigate"),
-        (drill_node(), ShimReason::Drill, "drill"),
-        (trail_node(), ShimReason::Trail, "trail"),
-        (corroborate_node(), ShimReason::Corroborate, "corroborate"),
-        (ots_apply_node(), ShimReason::OtsApply, "ots_apply"),
-        (mandate_apply_node(), ShimReason::MandateApply, "mandate_apply"),
-        (compute_apply_node(), ShimReason::ComputeApply, "compute_apply"),
-        (listen_node(), ShimReason::Listen, "listen"),
-        (daemon_step_node(), ShimReason::DaemonStep, "daemon_step"),
-        (emit_node(), ShimReason::Emit, "emit"),
-        (publish_node(), ShimReason::Publish, "publish"),
-        (discover_node(), ShimReason::Discover, "discover"),
-        (persist_node(), ShimReason::Persist, "persist"),
-        (retrieve_node(), ShimReason::Retrieve, "retrieve"),
-        (mutate_node(), ShimReason::Mutate, "mutate"),
-        (purge_node(), ShimReason::Purge, "purge"),
-        (transact_node(), ShimReason::Transact, "transact"),
+        (step_node(), "step"),
+        (probe_node(), "probe"),
+        (reason_node(), "reason"),
+        (validate_node(), "validate"),
+        (refine_node(), "refine"),
+        (weave_node(), "weave"),
+        (use_tool_node(), "use_tool"),
+        (remember_node(), "remember"),
+        (recall_node(), "recall"),
+        (conditional_node(), "conditional"),
+        (for_in_node(), "for_in"),
+        (let_node(), "let"),
+        (return_node(), "return"),
+        (break_node(), "break"),
+        (continue_node(), "continue"),
+        (lambda_data_apply_node(), "lambda_data_apply"),
+        (par_node(), "par"),
+        (hibernate_node(), "hibernate"),
+        (deliberate_node(), "deliberate"),
+        (consensus_node(), "consensus"),
+        (forge_node(), "forge"),
+        (focus_node(), "focus"),
+        (associate_node(), "associate"),
+        (aggregate_node(), "aggregate"),
+        (explore_node(), "explore"),
+        (ingest_node(), "ingest"),
+        (shield_apply_node(), "shield_apply"),
+        (stream_node(), "stream_block"),
+        (navigate_node(), "navigate"),
+        (drill_node(), "drill"),
+        (trail_node(), "trail"),
+        (corroborate_node(), "corroborate"),
+        (ots_apply_node(), "ots_apply"),
+        (mandate_apply_node(), "mandate_apply"),
+        (compute_apply_node(), "compute_apply"),
+        (listen_node(), "listen"),
+        (daemon_step_node(), "daemon_step"),
+        (emit_node(), "emit"),
+        (publish_node(), "publish"),
+        (discover_node(), "discover"),
+        (persist_node(), "persist"),
+        (retrieve_node(), "retrieve"),
+        (mutate_node(), "mutate"),
+        (purge_node(), "purge"),
+        (transact_node(), "transact"),
     ]
 }
 
@@ -584,124 +599,66 @@ fn cartesian_product_has_exactly_45_entries() {
     assert_eq!(
         all_45_pairs().len(),
         45,
-        "33.y.b drift gate: the IRFlowNode × ShimReason cartesian \
-         product must cover all 45 variants. Adding a 46th IRFlowNode \
-         variant fails the dispatch_node compile (forcing a new arm) \
-         AND requires updating this drift gate factory + pair list."
-    );
-}
-
-#[test]
-fn shim_reason_all_const_has_exactly_45_entries() {
-    assert_eq!(
-        ShimReason::ALL.len(),
-        45,
-        "33.y.b drift gate: ShimReason::ALL covers all 45 variants \
-         (1-to-1 with IRFlowNode + the dispatch_node match arms)."
+        "33.y.b drift gate: the IRFlowNode catalog must cover all 45 \
+         variants. Adding a 46th IRFlowNode variant fails the \
+         dispatch_node compile (forcing a new arm) AND requires \
+         updating this drift gate factory + pair list."
     );
 }
 
 // ────────────────────────────────────────────────────────────────────
-//  §2 — Every variant routes to its labeled ShimReason
+//  §2 — Every variant routes to its labeled handler
 // ────────────────────────────────────────────────────────────────────
 
-/// 33.y.b drift gate amended in 33.y.c: 6 variants (Step / Probe /
-/// Reason / Validate / Refine / Weave) have GRADUATED from
-/// `LegacyShimHandled` to a real `pure_shape` async handler returning
-/// `NodeOutcome::Completed { output, tokens_emitted, step_index }`.
-/// The remaining 39 variants still route through `legacy_shim`. As
-/// each subsequent sub-fase 33.y.d–j ships handlers for additional
-/// variants, this set GROWS until 33.y.l where `LegacyShimHandled` is
-/// deleted (all 45 graduated).
-const GRADUATED_VARIANTS: &[ShimReason] = &[
+/// 33.y.l: All 45 IRFlowNode variants have a NAMED async handler in
+/// `dispatch_node`. The `legacy_shim` + `ShimReason` +
+/// `NodeOutcome::LegacyShimHandled` infrastructure is retired.
+///
+/// Sub-catalogs below partition the 45 variants by the outcome shape
+/// they produce in this drift gate's synthetic-payload tests.
+/// Slug strings (wire-stable, single source of truth via
+/// `flow_plan::ir_flow_node_kind`) replace the retired ShimReason
+/// labels.
+const GRADUATED_VARIANTS: &[&str] = &[
     // 33.y.c — pure-shape (6)
-    ShimReason::Step,
-    ShimReason::Probe,
-    ShimReason::Reason,
-    ShimReason::Validate,
-    ShimReason::Refine,
-    ShimReason::Weave,
+    "step", "probe", "reason", "validate", "refine", "weave",
     // 33.y.d — orchestration (6)
-    ShimReason::Let,
-    ShimReason::Conditional,
-    ShimReason::ForIn,
-    ShimReason::Break,
-    ShimReason::Continue,
-    ShimReason::Return,
+    "let", "conditional", "for_in", "break", "continue", "return",
     // 33.y.e — parallel + algebraic (2)
-    ShimReason::Par,
-    ShimReason::Stream,
+    "par", "stream_block",
     // 33.y.f — cognitive primitives (10)
-    ShimReason::Remember,
-    ShimReason::Recall,
-    ShimReason::Forge,
-    ShimReason::Focus,
-    ShimReason::Associate,
-    ShimReason::Aggregate,
-    ShimReason::Explore,
-    ShimReason::Ingest,
-    ShimReason::Navigate,
-    ShimReason::Corroborate,
+    "remember", "recall", "forge", "focus", "associate", "aggregate",
+    "explore", "ingest", "navigate", "corroborate",
     // 33.y.g — algebraic-effect handlers (6)
-    ShimReason::ShieldApply,
-    ShimReason::OtsApply,
-    ShimReason::MandateApply,
-    ShimReason::ComputeApply,
-    ShimReason::Listen,
-    ShimReason::DaemonStep,
+    "shield_apply", "ots_apply", "mandate_apply", "compute_apply",
+    "listen", "daemon_step",
     // 33.y.h — wire integrations (10)
-    ShimReason::Emit,
-    ShimReason::Publish,
-    ShimReason::Discover,
-    ShimReason::Persist,
-    ShimReason::Retrieve,
-    ShimReason::Mutate,
-    ShimReason::Purge,
-    ShimReason::Transact,
-    ShimReason::Deliberate,
-    ShimReason::Consensus,
+    "emit", "publish", "discover", "persist", "retrieve", "mutate",
+    "purge", "transact", "deliberate", "consensus",
     // 33.y.i — PIX variants (3)
-    ShimReason::Hibernate,
-    ShimReason::Drill,
-    ShimReason::Trail,
+    "hibernate", "drill", "trail",
     // 33.y.j — Lambda + UseTool (FINAL 2 — 45/45 graduated)
-    ShimReason::LambdaDataApply,
-    ShimReason::UseTool,
+    "lambda_data_apply", "use_tool",
 ];
 
 /// Pure-shape graduated variants (33.y.c) — strict "(stub)" + 1 token.
-const PURE_SHAPE_GRADUATED: &[ShimReason] = &[
-    ShimReason::Step,
-    ShimReason::Probe,
-    ShimReason::Reason,
-    ShimReason::Validate,
-    ShimReason::Refine,
-    ShimReason::Weave,
-];
+const PURE_SHAPE_GRADUATED: &[&str] =
+    &["step", "probe", "reason", "validate", "refine", "weave"];
 
 /// Orchestration graduated variants (33.y.d) — return varied outcome
 /// shapes depending on the synthetic IR payload: Let → Completed
 /// with the bound value; Conditional/ForIn → Completed (empty body
 /// in the synthetic factory); Break → Break sentinel; Continue →
 /// LoopContinue sentinel; Return → Return sentinel.
-const ORCHESTRATION_GRADUATED: &[ShimReason] = &[
-    ShimReason::Let,
-    ShimReason::Conditional,
-    ShimReason::ForIn,
-    ShimReason::Break,
-    ShimReason::Continue,
-    ShimReason::Return,
-];
+const ORCHESTRATION_GRADUATED: &[&str] =
+    &["let", "conditional", "for_in", "break", "continue", "return"];
 
 /// Parallel + algebraic graduated variants (33.y.e) — both
 /// `IRParallelBlock` and `IRStreamBlock` are payload-free in
 /// v1.25.0; handlers emit canonical wire shape (StepStart +
 /// StepComplete with the corresponding step_type slug) +
 /// return Completed { output: "", tokens_emitted: 0 }.
-const PARALLEL_ALGEBRAIC_GRADUATED: &[ShimReason] = &[
-    ShimReason::Par,
-    ShimReason::Stream,
-];
+const PARALLEL_ALGEBRAIC_GRADUATED: &[&str] = &["par", "stream_block"];
 
 /// Cognitive primitive graduated variants (33.y.f).
 ///
@@ -712,20 +669,11 @@ const PARALLEL_ALGEBRAIC_GRADUATED: &[ShimReason] = &[
 /// - **Focus/Associate/Aggregate/Explore/Ingest/Navigate/Corroborate**:
 ///   route through `pure_shape::run_pure_shape` which calls the
 ///   stub backend → 1 chunk of "(stub)" → 1 token.
-const COGNITIVE_PEM_BOUND_GRADUATED: &[ShimReason] = &[
-    ShimReason::Remember,
-    ShimReason::Recall,
-    ShimReason::Forge,
-];
+const COGNITIVE_PEM_BOUND_GRADUATED: &[&str] = &["remember", "recall", "forge"];
 
-const COGNITIVE_FRAMING_GRADUATED: &[ShimReason] = &[
-    ShimReason::Focus,
-    ShimReason::Associate,
-    ShimReason::Aggregate,
-    ShimReason::Explore,
-    ShimReason::Ingest,
-    ShimReason::Navigate,
-    ShimReason::Corroborate,
+const COGNITIVE_FRAMING_GRADUATED: &[&str] = &[
+    "focus", "associate", "aggregate", "explore", "ingest", "navigate",
+    "corroborate",
 ];
 
 /// Algebraic-effect handler graduated variants (33.y.g) — apply
@@ -733,68 +681,59 @@ const COGNITIVE_FRAMING_GRADUATED: &[ShimReason] = &[
 /// bind output under a variant-specific key in `let_bindings`.
 /// For zero-payload synthetic inputs in the drift gate, outputs
 /// are sensible defaults (empty/placeholder).
-const ALGEBRAIC_HANDLERS_GRADUATED: &[ShimReason] = &[
-    ShimReason::ShieldApply,
-    ShimReason::OtsApply,
-    ShimReason::MandateApply,
-    ShimReason::ComputeApply,
-    ShimReason::Listen,
-    ShimReason::DaemonStep,
+const ALGEBRAIC_HANDLERS_GRADUATED: &[&str] = &[
+    "shield_apply", "ots_apply", "mandate_apply", "compute_apply", "listen",
+    "daemon_step",
 ];
 
 /// Wire-integration graduated variants (33.y.h) — π-calc typed
 /// channels + persistence primitives + multi-agent deliberation.
 /// All emit wire shape + various placeholder/persisted outputs;
 /// tokens_emitted=0 across the board (no LLM dispatch).
-const WIRE_INTEGRATIONS_GRADUATED: &[ShimReason] = &[
-    ShimReason::Emit,
-    ShimReason::Publish,
-    ShimReason::Discover,
-    ShimReason::Persist,
-    ShimReason::Retrieve,
-    ShimReason::Mutate,
-    ShimReason::Purge,
-    ShimReason::Transact,
-    ShimReason::Deliberate,
-    ShimReason::Consensus,
+const WIRE_INTEGRATIONS_GRADUATED: &[&str] = &[
+    "emit", "publish", "discover", "persist", "retrieve", "mutate", "purge",
+    "transact", "deliberate", "consensus",
 ];
 
 /// PIX graduated variants (33.y.i) — Hibernate / Drill / Trail.
 /// All emit canonical wire shape + bind placeholder/seeded value
 /// under variant-specific keys. Tokens=0 across the board.
-const PIX_GRADUATED: &[ShimReason] = &[
-    ShimReason::Hibernate,
-    ShimReason::Drill,
-    ShimReason::Trail,
-];
+const PIX_GRADUATED: &[&str] = &["hibernate", "drill", "trail"];
 
 /// Lambda + UseTool graduated variants (33.y.j) — the FINAL 2.
 /// LambdaDataApply uses public helper `apply_lambda_data` (Fase 15
 /// CPS dispatcher); UseTool uses `invoke_tool` (Fase 22 tool
 /// registry). Both emit canonical wire shape + bind result under
 /// variant-specific key. Tokens=0.
-const LAMBDA_TOOLS_GRADUATED: &[ShimReason] = &[
-    ShimReason::LambdaDataApply,
-    ShimReason::UseTool,
-];
+const LAMBDA_TOOLS_GRADUATED: &[&str] = &["lambda_data_apply", "use_tool"];
 
 #[tokio::test]
 async fn every_ir_flow_node_routes_to_its_labeled_handler() {
     let pairs = all_45_pairs();
-    for (node, expected_reason, expected_kind) in pairs {
+    for (node, expected_kind) in pairs {
+        // The kind slug from `ir_flow_node_kind` is the single source
+        // of truth (eliminates the ShimReason::slug duplication that
+        // existed pre-33.y.l). Drift gate pair list ↔ flow_plan slug
+        // are byte-equal by construction.
+        let actual_kind = ir_flow_node_kind(&node);
+        assert_eq!(
+            actual_kind, expected_kind,
+            "drift gate pair list disagrees with flow_plan::ir_flow_node_kind",
+        );
+
         let (mut ctx, _rx) = fresh_ctx();
         let outcome = dispatch_node(&node, &mut ctx).await;
-        let pure_shape = PURE_SHAPE_GRADUATED.contains(&expected_reason);
-        let orchestration = ORCHESTRATION_GRADUATED.contains(&expected_reason);
 
+        let pure_shape = PURE_SHAPE_GRADUATED.contains(&expected_kind);
+        let orchestration = ORCHESTRATION_GRADUATED.contains(&expected_kind);
         let parallel_algebraic =
-            PARALLEL_ALGEBRAIC_GRADUATED.contains(&expected_reason);
-        let cognitive_pem = COGNITIVE_PEM_BOUND_GRADUATED.contains(&expected_reason);
-        let cognitive_framing = COGNITIVE_FRAMING_GRADUATED.contains(&expected_reason);
-        let algebraic_handler = ALGEBRAIC_HANDLERS_GRADUATED.contains(&expected_reason)
-            || WIRE_INTEGRATIONS_GRADUATED.contains(&expected_reason)
-            || PIX_GRADUATED.contains(&expected_reason)
-            || LAMBDA_TOOLS_GRADUATED.contains(&expected_reason);
+            PARALLEL_ALGEBRAIC_GRADUATED.contains(&expected_kind);
+        let cognitive_pem = COGNITIVE_PEM_BOUND_GRADUATED.contains(&expected_kind);
+        let cognitive_framing = COGNITIVE_FRAMING_GRADUATED.contains(&expected_kind);
+        let algebraic_handler = ALGEBRAIC_HANDLERS_GRADUATED.contains(&expected_kind)
+            || WIRE_INTEGRATIONS_GRADUATED.contains(&expected_kind)
+            || PIX_GRADUATED.contains(&expected_kind)
+            || LAMBDA_TOOLS_GRADUATED.contains(&expected_kind);
 
         // Cognitive-framing handlers behave like pure-shape (1 token).
         let pure_shape_like = pure_shape || cognitive_framing;
@@ -811,29 +750,24 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
             (Ok(NodeOutcome::Completed { output, tokens_emitted, .. }), true, _, _, _) => {
                 assert_eq!(
                     output, "(stub)",
-                    "pure-shape variant {:?} stub output should be '(stub)' (D4)",
-                    expected_reason
+                    "pure-shape variant {expected_kind:?} stub output should be '(stub)' (D4)",
                 );
                 assert_eq!(
                     tokens_emitted, 1,
-                    "pure-shape variant {:?} stub emits 1 token (D4 byte-compat)",
-                    expected_reason
+                    "pure-shape variant {expected_kind:?} stub emits 1 token (D4 byte-compat)",
                 );
             }
             // Orchestration: Break/Continue/Return are sentinel-only;
             // Let/Conditional/ForIn return Completed with payload-
             // dependent output (zero-payload synthetics → empty body
             // → empty output).
-            (Ok(NodeOutcome::Break), _, true, _, _) if expected_reason == ShimReason::Break => {}
+            (Ok(NodeOutcome::Break), _, true, _, _) if expected_kind == "break" => {}
             (Ok(NodeOutcome::LoopContinue), _, true, _, _)
-                if expected_reason == ShimReason::Continue => {}
+                if expected_kind == "continue" => {}
             (Ok(NodeOutcome::Return { .. }), _, true, _, _)
-                if expected_reason == ShimReason::Return => {}
+                if expected_kind == "return" => {}
             (Ok(NodeOutcome::Completed { .. }), _, true, _, _)
-                if matches!(
-                    expected_reason,
-                    ShimReason::Let | ShimReason::Conditional | ShimReason::ForIn
-                ) => {}
+                if matches!(expected_kind, "let" | "conditional" | "for_in") => {}
             // Strict empty (Par + Stream + Remember + Recall + Forge):
             // Completed with output="", tokens=0.
             (
@@ -849,19 +783,15 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
             ) => {
                 assert_eq!(
                     output, "",
-                    "33.y.e/f strict-empty variant {:?} → empty output",
-                    expected_reason
+                    "33.y.e/f strict-empty variant {expected_kind:?} → empty output",
                 );
                 assert_eq!(
                     tokens_emitted, 0,
-                    "33.y.e/f strict-empty variant {:?} → 0 tokens",
-                    expected_reason
+                    "33.y.e/f strict-empty variant {expected_kind:?} → 0 tokens",
                 );
             }
-            // 33.y.g algebraic handlers: Completed with placeholder
-            // outputs (compute:(...), (awaiting ...), daemon:..., or
-            // empty for Shield/Ots/Mandate with empty target).
-            // tokens_emitted=0 always.
+            // 33.y.g/h/i/j algebraic + wire + PIX + lambda/tool handlers:
+            // Completed with placeholder outputs. tokens_emitted=0 always.
             (
                 Ok(NodeOutcome::Completed { tokens_emitted, .. }),
                 _,
@@ -871,74 +801,47 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
             ) => {
                 assert_eq!(
                     tokens_emitted, 0,
-                    "33.y.g algebraic handler variant {:?} → 0 tokens",
-                    expected_reason
-                );
-            }
-            // Non-graduated: shim returns LegacyShimHandled.
-            (
-                Ok(NodeOutcome::LegacyShimHandled { reason, node_kind }),
-                false,
-                false,
-                false,
-                false,
-            ) => {
-                assert_eq!(
-                    reason, expected_reason,
-                    "non-graduated dispatch_node routed {:?} to the wrong \
-                     ShimReason: got {:?}, expected {:?}",
-                    expected_kind, reason, expected_reason
-                );
-                assert_eq!(
-                    node_kind, expected_kind,
-                    "non-graduated dispatch_node returned the wrong node_kind \
-                     slug for {:?}: got {:?}, expected {:?}",
-                    expected_reason, node_kind, expected_kind
+                    "algebraic handler variant {expected_kind:?} → 0 tokens",
                 );
             }
             (Ok(other), true, _, _, _) => panic!(
-                "pure-shape variant {:?} expected Completed (stub), got {other:?}",
-                expected_reason
+                "pure-shape variant {expected_kind:?} expected Completed (stub), got {other:?}",
             ),
             (Ok(other), _, true, _, _) => panic!(
-                "orchestration variant {:?} unexpected outcome: {other:?}",
-                expected_reason
+                "orchestration variant {expected_kind:?} unexpected outcome: {other:?}",
             ),
             (Ok(other), _, _, true, _) => panic!(
-                "strict-empty variant {:?} expected Completed (empty), got {other:?}",
-                expected_reason
+                "strict-empty variant {expected_kind:?} expected Completed (empty), got {other:?}",
             ),
             (Ok(other), _, _, _, true) => panic!(
-                "algebraic handler variant {:?} expected Completed, got {other:?}",
-                expected_reason
+                "algebraic handler variant {expected_kind:?} expected Completed, got {other:?}",
             ),
             (Ok(other), false, false, false, false) => panic!(
-                "non-graduated variant {:?} expected LegacyShimHandled, got {other:?}",
-                expected_reason
+                "33.y.l invariant: variant {expected_kind:?} is in no graduated \
+                 sub-catalog — 45/45 graduation contract broken. Outcome: {other:?}",
             ),
             (Err(e), _, _, _, _) => panic!(
-                "dispatch_node returned Err for {:?}: {e:?}",
-                expected_reason
+                "dispatch_node returned Err for {expected_kind:?}: {e:?}",
             ),
         }
     }
 }
 
 /// Pin the size of the graduated-variants set. Across 33.y.c–j this
-/// set GROWS variant-by-variant. At 33.y.l this assertion becomes
-/// `GRADUATED_VARIANTS.len() == 45` and `LegacyShimHandled` is
-/// deleted in lockstep.
+/// set GREW variant-by-variant; 33.y.j sealed it at 45 / 45 and
+/// 33.y.l retired `legacy_shim` + `ShimReason` +
+/// `NodeOutcome::LegacyShimHandled` in lockstep. From 33.y.l onward
+/// the invariant is structural: any new IRFlowNode variant fails the
+/// `dispatch_node` compile (exhaustive match) AND requires growing
+/// this set + a new entry in one of the sub-catalogs below.
 #[test]
-fn graduated_variants_set_size_pinned_for_33_y_j_FINAL_45_OF_45() {
+fn graduated_variants_set_size_pinned_45_of_45() {
     assert_eq!(
         GRADUATED_VARIANTS.len(),
         45,
-        "🎉 33.y.j FINAL: graduated count reaches 45 / 45. All \
-         IRFlowNode variants have a NAMED async handler in \
-         dispatch_node; `legacy_shim` is no longer reachable from \
-         the dispatcher entry. 33.y.l will retire the shim + \
-         LegacyShimHandled outcome variant in lockstep cleanup. \
-         Composition: 6 pure-shape (33.y.c) + 6 orchestration \
+        "🎉 45 / 45 graduated. All IRFlowNode variants have a NAMED \
+         async handler in dispatch_node; `legacy_shim` retired in \
+         33.y.l. Composition: 6 pure-shape (33.y.c) + 6 orchestration \
          (33.y.d) + 2 parallel/algebraic (33.y.e) + 10 cognitive \
          (33.y.f) + 6 algebraic handlers (33.y.g) + 10 wire \
          integrations (33.y.h) + 3 PIX (33.y.i) + 2 Lambda+UseTool \
@@ -978,7 +881,7 @@ fn graduated_variants_set_size_pinned_for_33_y_j_FINAL_45_OF_45() {
 #[tokio::test]
 async fn dispatch_node_honors_cancel_flag_at_entry() {
     let pairs = all_45_pairs();
-    for (node, _reason, kind) in pairs {
+    for (node, kind) in pairs {
         let (tx, _rx) = mpsc::unbounded_channel();
         let cancel = CancellationFlag::new();
         cancel.cancel();
@@ -994,29 +897,39 @@ async fn dispatch_node_honors_cancel_flag_at_entry() {
 }
 
 // ────────────────────────────────────────────────────────────────────
-//  §4 — ShimReason::slug() is byte-equal with flow_plan::ir_flow_node_kind
+//  §4 — flow_plan::ir_flow_node_kind covers every variant
 // ────────────────────────────────────────────────────────────────────
+//
+// Pre-33.y.l this section asserted byte-equality between
+// `ShimReason::slug()` and `ir_flow_node_kind`. With ShimReason
+// retired, `ir_flow_node_kind` is the single source of truth — the
+// only invariant left is that it returns a non-empty slug for every
+// of the 45 variants. Drift between this drift gate's pair list and
+// `ir_flow_node_kind` is exercised inline by
+// `every_ir_flow_node_routes_to_its_labeled_handler`.
 
 #[test]
-fn shim_reason_slug_matches_flow_plan_kind_for_all_45_variants() {
-    use axon::flow_plan::ir_flow_node_kind;
+fn flow_plan_kind_returns_non_empty_slug_for_all_45_variants() {
     let pairs = all_45_pairs();
-    for (node, reason, expected_kind) in pairs {
-        let from_flow_plan = ir_flow_node_kind(&node);
-        let from_shim_reason = reason.slug();
-        assert_eq!(
-            from_flow_plan, from_shim_reason,
-            "wire-stability drift: flow_plan::ir_flow_node_kind \
-             returned {:?} but ShimReason::{:?}.slug() returned {:?} \
-             for the same IR variant",
-            from_flow_plan, reason, from_shim_reason
+    let mut seen = std::collections::HashSet::new();
+    for (node, expected_kind) in pairs {
+        let kind = ir_flow_node_kind(&node);
+        assert!(
+            !kind.is_empty(),
+            "flow_plan::ir_flow_node_kind returned empty slug for the IR \
+             variant expected as {expected_kind:?}",
         );
         assert_eq!(
-            from_flow_plan, expected_kind,
-            "drift gate pair list disagrees with flow_plan for {:?}",
-            reason
+            kind, expected_kind,
+            "drift gate pair list disagrees with flow_plan::ir_flow_node_kind",
+        );
+        assert!(
+            seen.insert(kind),
+            "duplicate slug {kind:?} — flow_plan::ir_flow_node_kind must \
+             be 1-to-1 with IRFlowNode variants",
         );
     }
+    assert_eq!(seen.len(), 45, "slugs cover all 45 variants exactly once");
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1054,10 +967,8 @@ fn dispatch_error_variants_constructible_from_public_surface() {
         message: "rate limited".to_string(),
     };
     let _uc = DispatchError::UpstreamCancelled;
-    let _lsf = DispatchError::LegacyShimFailed {
-        kind: "let",
-        message: "rhs eval failed".to_string(),
-    };
+    // 33.y.l: `DispatchError::LegacyShimFailed` retired along with
+    // `legacy_shim` + `ShimReason` + `NodeOutcome::LegacyShimHandled`.
     let _md = DispatchError::MissingDependency { name: "pem_async" };
     let _cc = DispatchError::ChannelClosed;
     // If this compiles, the variants are all reachable.
@@ -1075,7 +986,7 @@ fn dispatch_error_variants_constructible_from_public_surface() {
 #[tokio::test]
 async fn dispatch_node_does_not_panic_for_any_variant() {
     let pairs = all_45_pairs();
-    for (node, reason, kind) in pairs {
+    for (node, kind) in pairs {
         let (mut ctx, _rx) = fresh_ctx();
         // If this `await` panics for any variant we've shipped a
         // `unimplemented!()` / `todo!()` / `panic!()` into an arm.
@@ -1085,9 +996,8 @@ async fn dispatch_node_does_not_panic_for_any_variant() {
         // shape is exercised by §2 above.
         assert!(
             outcome.is_ok() || outcome.is_err(),
-            "outcome for {kind} ({reason:?}) is somehow neither Ok nor \
-             Err — impossible per Rust's type system but asserted \
-             for sanity"
+            "outcome for {kind} is somehow neither Ok nor Err — \
+             impossible per Rust's type system but asserted for sanity"
         );
     }
 }

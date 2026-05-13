@@ -175,13 +175,15 @@ fn assert_outcome_invariants(
                 "{label} stub emits exactly 1 token"
             );
         }
-        Ok(NodeOutcome::LegacyShimHandled { .. }) => {
-            panic!("{label}: graduated variant returned LegacyShimHandled — regression")
-        }
         Ok(other) => {
-            // NodeOutcome is #[non_exhaustive]; future variants
-            // (Break / LoopContinue / Return) MUST NOT surface from
-            // pure-shape handlers — those are orchestration sentinels.
+            // §Fase 33.y.l — `NodeOutcome::LegacyShimHandled` retired
+            // along with `legacy_shim` + `ShimReason`.
+            //
+            // NodeOutcome is #[non_exhaustive] from the perspective of
+            // downstream crates; future variants (Break / LoopContinue
+            // / Return are already in the closed catalog) MUST NOT
+            // surface from pure-shape handlers — those are
+            // orchestration sentinels.
             panic!("{label}: unexpected NodeOutcome variant: {other:?}");
         }
         Err(DispatchError::UpstreamCancelled) => {
