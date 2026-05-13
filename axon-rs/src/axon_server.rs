@@ -143,6 +143,18 @@
 //! Auth: role-based via ApiKeyManager (Admin/Operator/ReadOnly) with auth_middleware.
 //!
 //! This is the Rust-native replacement for the Python AxonServer (uvicorn).
+//!
+//! # §Fase 33.x.i — `crate::backend` deprecation
+//!
+//! This file uses the deprecated synchronous `crate::backend`
+//! surface (`call`, `SUPPORTED_BACKENDS`, `get_api_key`) on the
+//! legacy JSON-mode dispatch path + on backend-management
+//! endpoints. The `#![allow(deprecated)]` below silences the
+//! deprecation warnings while the deeper async migration progresses
+//! under followup sub-fase Fase 33.x.i.2 (sync→async migration
+//! of the 4 callers, separate cycle).
+
+#![allow(deprecated)]
 
 use axum::{
     Router,

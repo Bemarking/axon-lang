@@ -10,6 +10,17 @@
 //!   0 — success
 //!   1 — compilation or execution error
 //!   2 — I/O or configuration error
+//!
+//! # §Fase 33.x.i — `crate::backend` deprecation
+//!
+//! This file is one of four callers of the deprecated synchronous
+//! `crate::backend` mono-file (see `backend.rs` module docs).
+//! The `#![allow(deprecated)]` below silences the deprecation
+//! warnings on this file's call sites while the deeper async
+//! migration progresses under followup sub-fase Fase 33.x.i.2
+//! (sync→async migration of the 4 callers, separate cycle).
+
+#![allow(deprecated)]
 
 use std::io::{self, IsTerminal};
 use std::path::Path;

@@ -1,12 +1,23 @@
-/// Per-tenant API key resolution via AWS Secrets Manager (M3).
-///
-/// Resolution chain for every (tenant_id, provider) pair:
-///   1. In-memory cache (TTL 5 min) — sync-safe via std::sync::RwLock
-///   2. AWS Secrets Manager: `axon/tenants/{tenant_id}/{provider}_api_key`
-///   3. Global env-var fallback (same as single-tenant open-source behavior)
-///
-/// The cache uses `std::sync::RwLock` (not tokio's) so it can be read from
-/// synchronous call sites inside `resolve_backend_key` without any async overhead.
+//! Per-tenant API key resolution via AWS Secrets Manager (M3).
+//!
+//! Resolution chain for every (tenant_id, provider) pair:
+//!   1. In-memory cache (TTL 5 min) — sync-safe via std::sync::RwLock
+//!   2. AWS Secrets Manager: `axon/tenants/{tenant_id}/{provider}_api_key`
+//!   3. Global env-var fallback (same as single-tenant open-source behavior)
+//!
+//! The cache uses `std::sync::RwLock` (not tokio's) so it can be read from
+//! synchronous call sites inside `resolve_backend_key` without any async overhead.
+//!
+//! # §Fase 33.x.i — `crate::backend` deprecation
+//!
+//! This file's env-var-fallback step uses the deprecated
+//! `crate::backend::get_api_key` (now a thin shim around the
+//! consolidated `crate::backends::get_api_key`). The
+//! `#![allow(deprecated)]` silences the warning while the deeper
+//! migration progresses under Fase 33.x.i.2.
+
+#![allow(deprecated)]
+
 use std::{
     collections::HashMap,
     sync::RwLock,

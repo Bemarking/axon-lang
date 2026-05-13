@@ -11,6 +11,17 @@
 //!
 //! Designed for production SaaS workloads where LLM availability is critical.
 //! All state transitions and retry attempts are logged via `tracing`.
+//!
+//! # §Fase 33.x.i — `crate::backend` deprecation
+//!
+//! This file wraps the deprecated synchronous `crate::backend`
+//! surface with resilience patterns. The `#![allow(deprecated)]`
+//! below silences the deprecation warnings while the deeper async
+//! migration progresses under followup sub-fase Fase 33.x.i.2.
+//! The async equivalent (`backends::Backend::complete()` with
+//! retry/circuit-breaker layers) is the migration target.
+
+#![allow(deprecated)]
 
 use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
