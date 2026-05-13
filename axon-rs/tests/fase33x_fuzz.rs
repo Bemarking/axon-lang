@@ -47,6 +47,12 @@
 //! tuned so the full pack runs in well under 1 second.
 
 #![allow(clippy::needless_return)]
+// §Fase 33.y.l — `PlanError::LegacyOrchestrationRequired` is marked
+// `#[deprecated]` in 33.y.l (the 45/45 per-IRFlowNode dispatcher
+// makes it obsolete in 33.z). This fuzz pack legitimately drives the
+// still-functional legacy fallback gate; silence the deprecation
+// noise until 33.z deletes the variant.
+#![allow(deprecated)]
 
 // ── §0 — Deterministic PRNG (linear congruential) ────────────────────
 

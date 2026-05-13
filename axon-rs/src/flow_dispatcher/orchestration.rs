@@ -315,14 +315,6 @@ pub async fn run_for_in(
             Ok(NodeOutcome::Return { value }) => {
                 return Ok(NodeOutcome::Return { value });
             }
-            Ok(other) => {
-                // LegacyShimHandled — sub-graduate. Treat as "iter
-                // completed without producing output"; the
-                // production wire surface keeps working because the
-                // shimmed variant's wire emission (if any) already
-                // fired through its dispatch path.
-                let _ = other;
-            }
             Err(e) => return Err(e),
         }
     }
@@ -438,10 +430,6 @@ async fn dispatch_body(
             NodeOutcome::Break => return Ok(NodeOutcome::Break),
             NodeOutcome::LoopContinue => return Ok(NodeOutcome::LoopContinue),
             NodeOutcome::Return { value } => return Ok(NodeOutcome::Return { value }),
-            NodeOutcome::LegacyShimHandled { .. } => {
-                // Non-graduated child — no output captured. Future
-                // sub-fases retire the shim per variant.
-            }
         }
     }
 
