@@ -78,6 +78,11 @@ pub mod flow_inspect;
 /// when the async streaming path falls back to legacy synchronous
 /// delivery (D5 — no silent degradation).
 pub mod runtime_warnings;
+/// §Fase 33.x.h — Process-wide runtime opt-in flags. Today carries
+/// the `tokenizer_fallback` flag that gates BPE-tokenized chunking
+/// on the SSE LEGACY path (D9 — opt-in; defaults OFF for v1.24.0
+/// wire byte-compat).
+pub mod runtime_flags;
 /// §Fase 33.x.b — Streaming-shaped execution plan extractor. Builds
 /// `StreamingExecutionPlan` from `.axon` source for the production
 /// async SSE path; pre-resolves per-step `BackpressurePolicy` via

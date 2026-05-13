@@ -19182,8 +19182,38 @@ fn run_streaming_legacy_path(
                     // sentinel-content StepToken so the wire-emitted
                     // axon.token count stays equal to the step count
                     // (Fase 30+31+32 SSE tests depend on this).
+                    //
+                    // §Fase 33.x.h D9 — Adopters can opt INTO BPE-
+                    // tokenized chunking via
+                    // `crate::runtime_flags::set_tokenizer_fallback(true)`.
+                    // When the flag is ON + the legacy path
+                    // activates, we project the full output through
+                    // `axon_csys::tokens::cl100k_base()` and emit one
+                    // StepToken per BPE token instead of per 3-word
+                    // group. Defaults OFF — wire byte-compat with
+                    // v1.24.0 preserved for adopters who don't opt in.
+                    //
+                    // If the tokenizer fails to construct or encode
+                    // (rare; cl100k_base is embedded via c23-embed at
+                    // build time) we fall back to whitespace chunking
+                    // so the wire body is always well-formed.
                     let chunks: Vec<String> = if full_output.is_empty() {
                         Vec::new()
+                    } else if crate::runtime_flags::tokenizer_fallback_enabled() {
+                        let bpe = crate::runtime_flags::bpe_chunk_text(&full_output);
+                        if bpe.is_empty() {
+                            // Tokenizer failed — graceful degrade to
+                            // whitespace chunking so the wire body
+                            // stays well-formed.
+                            full_output
+                                .split_whitespace()
+                                .collect::<Vec<&str>>()
+                                .chunks(3)
+                                .map(|c| c.join(" "))
+                                .collect()
+                        } else {
+                            bpe
+                        }
                     } else {
                         full_output
                             .split_whitespace()
