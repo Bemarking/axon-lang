@@ -631,6 +631,17 @@ const GRADUATED_VARIANTS: &[ShimReason] = &[
     // 33.y.e — parallel + algebraic (2)
     ShimReason::Par,
     ShimReason::Stream,
+    // 33.y.f — cognitive primitives (10)
+    ShimReason::Remember,
+    ShimReason::Recall,
+    ShimReason::Forge,
+    ShimReason::Focus,
+    ShimReason::Associate,
+    ShimReason::Aggregate,
+    ShimReason::Explore,
+    ShimReason::Ingest,
+    ShimReason::Navigate,
+    ShimReason::Corroborate,
 ];
 
 /// Pure-shape graduated variants (33.y.c) — strict "(stub)" + 1 token.
@@ -667,6 +678,31 @@ const PARALLEL_ALGEBRAIC_GRADUATED: &[ShimReason] = &[
     ShimReason::Stream,
 ];
 
+/// Cognitive primitive graduated variants (33.y.f).
+///
+/// - **Remember/Recall/Forge**: emit wire shape; for the synthetic
+///   factory inputs in this drift gate, Remember binds the literal
+///   expression as output; Recall returns empty (no prior memory);
+///   Forge returns empty (payload-free). All 0 tokens.
+/// - **Focus/Associate/Aggregate/Explore/Ingest/Navigate/Corroborate**:
+///   route through `pure_shape::run_pure_shape` which calls the
+///   stub backend → 1 chunk of "(stub)" → 1 token.
+const COGNITIVE_PEM_BOUND_GRADUATED: &[ShimReason] = &[
+    ShimReason::Remember,
+    ShimReason::Recall,
+    ShimReason::Forge,
+];
+
+const COGNITIVE_FRAMING_GRADUATED: &[ShimReason] = &[
+    ShimReason::Focus,
+    ShimReason::Associate,
+    ShimReason::Aggregate,
+    ShimReason::Explore,
+    ShimReason::Ingest,
+    ShimReason::Navigate,
+    ShimReason::Corroborate,
+];
+
 #[tokio::test]
 async fn every_ir_flow_node_routes_to_its_labeled_handler() {
     let pairs = all_45_pairs();
@@ -678,8 +714,16 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
 
         let parallel_algebraic =
             PARALLEL_ALGEBRAIC_GRADUATED.contains(&expected_reason);
+        let cognitive_pem = COGNITIVE_PEM_BOUND_GRADUATED.contains(&expected_reason);
+        let cognitive_framing = COGNITIVE_FRAMING_GRADUATED.contains(&expected_reason);
 
-        match (outcome, pure_shape, orchestration, parallel_algebraic) {
+        // Cognitive-framing handlers behave like pure-shape (1 token).
+        let pure_shape_like = pure_shape || cognitive_framing;
+        // Parallel/algebraic + cognitive-PEM-bound all return
+        // Completed with 0 tokens.
+        let zero_token_completed = parallel_algebraic || cognitive_pem;
+
+        match (outcome, pure_shape_like, orchestration, zero_token_completed) {
             // Pure-shape: stub-backend produces "(stub)" with 1 token.
             (Ok(NodeOutcome::Completed { output, tokens_emitted, .. }), true, _, _) => {
                 assert_eq!(
@@ -774,30 +818,20 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
 /// `GRADUATED_VARIANTS.len() == 45` and `LegacyShimHandled` is
 /// deleted in lockstep.
 #[test]
-fn graduated_variants_set_size_pinned_for_33_y_e() {
+fn graduated_variants_set_size_pinned_for_33_y_f() {
     assert_eq!(
         GRADUATED_VARIANTS.len(),
-        14,
-        "33.y.e advances graduated count to 14: 6 pure-shape + 6 \
-         orchestration + 2 parallel/algebraic (Par/Stream). 33.y.f \
-         will advance to 24 (cognitive primitives); …; 33.y.l to \
-         45 (all)."
+        24,
+        "33.y.f advances graduated count to 24: 6 pure-shape + 6 \
+         orchestration + 2 parallel/algebraic + 10 cognitive. \
+         33.y.g will advance to 30 (algebraic-effect handlers); …; \
+         33.y.l to 45 (all)."
     );
-    assert_eq!(
-        PURE_SHAPE_GRADUATED.len(),
-        6,
-        "pure-shape subset stays at 6"
-    );
-    assert_eq!(
-        ORCHESTRATION_GRADUATED.len(),
-        6,
-        "orchestration subset stays at 6"
-    );
-    assert_eq!(
-        PARALLEL_ALGEBRAIC_GRADUATED.len(),
-        2,
-        "parallel/algebraic subset is exactly 2 (Par + Stream)"
-    );
+    assert_eq!(PURE_SHAPE_GRADUATED.len(), 6);
+    assert_eq!(ORCHESTRATION_GRADUATED.len(), 6);
+    assert_eq!(PARALLEL_ALGEBRAIC_GRADUATED.len(), 2);
+    assert_eq!(COGNITIVE_PEM_BOUND_GRADUATED.len(), 3);
+    assert_eq!(COGNITIVE_FRAMING_GRADUATED.len(), 7);
 }
 
 // ────────────────────────────────────────────────────────────────────

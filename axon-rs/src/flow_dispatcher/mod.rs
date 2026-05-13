@@ -102,6 +102,17 @@ pub mod parallel;
 /// the public bridge.
 pub mod effects_bridge;
 
+/// §Fase 33.y.f — Cognitive primitives (Fase 11 neuro-symbolic).
+/// 10 variants: `Remember` / `Recall` are PEM-bound (write-through
+/// + read-back via the optional [`DispatchCtx::pem_backend`]);
+/// `Forge` is payload-free wire shape (canonical
+/// `step_type: "forge"`); `Focus` / `Associate` / `Aggregate` /
+/// `Explore` / `Ingest` / `Navigate` / `Corroborate` reuse the
+/// pure-shape async core ([`pure_shape::run_pure_shape`]) with
+/// each variant's cognitive framing addendum reflected in the
+/// system prompt.
+pub mod cognitive;
+
 // ────────────────────────────────────────────────────────────────────
 //  DispatchCtx — shared per-flow async surface
 // ────────────────────────────────────────────────────────────────────
@@ -151,6 +162,24 @@ pub struct DispatchCtx {
     >,
     pub branch_path: Vec<String>,
     pub step_counter: usize,
+    /// §Fase 33.y.f — Optional PEM async surface for cognitive
+    /// primitives (Remember / Recall etc.). When `Some(backend)`,
+    /// `run_remember` write-through persists to PEM and `run_recall`
+    /// restores from PEM as a write-back cache layered over
+    /// `let_bindings`. When `None`, both handlers degrade to
+    /// `let_bindings`-only (in-memory) — the canonical adopter
+    /// path for tests + adopters that don't opt into persistent
+    /// cognitive state. Arc-cloned per branch for concurrent
+    /// dispatch (Fase 33.y.e parity).
+    pub pem_backend: Option<std::sync::Arc<dyn crate::pem::PersistenceBackend>>,
+    /// §Fase 33.y.f — Session anchor for PEM persistence. Defaults
+    /// to `flow_name` in [`DispatchCtx::new`]; adopters override
+    /// for multi-session flows.
+    pub session_id: String,
+    /// §Fase 33.y.f — Tenant routing tag for PEM persistence.
+    /// Defaults to empty in [`DispatchCtx::new`]; multi-tenant
+    /// adopters set this before dispatch.
+    pub tenant_id: String,
     /// §Fase 33.y.d — Let-binding scope. Map from binding name to its
     /// resolved value. `run_let` inserts; `run_conditional` reads to
     /// evaluate the condition; `run_for_in` inserts the iteration
@@ -187,8 +216,10 @@ impl DispatchCtx {
         cancel: CancellationFlag,
         tx: mpsc::UnboundedSender<FlowExecutionEvent>,
     ) -> Self {
+        let flow_name = flow_name.into();
+        let session_id = flow_name.clone();
         Self {
-            flow_name: flow_name.into(),
+            flow_name,
             backend_name: backend_name.into(),
             system_prompt: system_prompt.into(),
             cancel,
@@ -198,9 +229,34 @@ impl DispatchCtx {
             runtime_warnings: Arc::new(Mutex::new(Vec::new())),
             branch_path: Vec::new(),
             step_counter: 0,
+            pem_backend: None,
+            session_id,
+            tenant_id: String::new(),
             let_bindings: std::collections::HashMap::new(),
             pending_effect_policy: None,
         }
+    }
+
+    /// Builder: attach a PEM persistence backend. Returns `self` so
+    /// callers can chain `DispatchCtx::new(...).with_pem(backend)`.
+    pub fn with_pem(
+        mut self,
+        backend: std::sync::Arc<dyn crate::pem::PersistenceBackend>,
+    ) -> Self {
+        self.pem_backend = Some(backend);
+        self
+    }
+
+    /// Builder: set the session id (defaults to flow_name).
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = session_id.into();
+        self
+    }
+
+    /// Builder: set the tenant id (defaults to empty).
+    pub fn with_tenant_id(mut self, tenant_id: impl Into<String>) -> Self {
+        self.tenant_id = tenant_id.into();
+        self
     }
 
     /// Builder-style setter for the pending effect policy. Returns
@@ -593,8 +649,9 @@ pub async fn dispatch_node(
         IRFlowNode::Refine(refine) => pure_shape::run_refine(refine, ctx).await,
         IRFlowNode::Weave(weave) => pure_shape::run_weave(weave, ctx).await,
         IRFlowNode::UseTool(_) => legacy_shim(ShimReason::UseTool, ctx).await,
-        IRFlowNode::Remember(_) => legacy_shim(ShimReason::Remember, ctx).await,
-        IRFlowNode::Recall(_) => legacy_shim(ShimReason::Recall, ctx).await,
+        // §Fase 33.y.f — cognitive primitives PEM-bound.
+        IRFlowNode::Remember(node) => cognitive::run_remember(node, ctx).await,
+        IRFlowNode::Recall(node) => cognitive::run_recall(node, ctx).await,
         // §Fase 33.y.d — orchestration variants graduated to real
         // async handlers. Each composes child handlers via recursive
         // `dispatch_node` calls + threads sentinel outcomes (Break /
@@ -614,22 +671,24 @@ pub async fn dispatch_node(
         IRFlowNode::Hibernate(_) => legacy_shim(ShimReason::Hibernate, ctx).await,
         IRFlowNode::Deliberate(_) => legacy_shim(ShimReason::Deliberate, ctx).await,
         IRFlowNode::Consensus(_) => legacy_shim(ShimReason::Consensus, ctx).await,
-        IRFlowNode::Forge(_) => legacy_shim(ShimReason::Forge, ctx).await,
-        IRFlowNode::Focus(_) => legacy_shim(ShimReason::Focus, ctx).await,
-        IRFlowNode::Associate(_) => legacy_shim(ShimReason::Associate, ctx).await,
-        IRFlowNode::Aggregate(_) => legacy_shim(ShimReason::Aggregate, ctx).await,
-        IRFlowNode::Explore(_) => legacy_shim(ShimReason::Explore, ctx).await,
-        IRFlowNode::Ingest(_) => legacy_shim(ShimReason::Ingest, ctx).await,
+        // §Fase 33.y.f — Forge payload-free wire shape.
+        IRFlowNode::Forge(node) => cognitive::run_forge(node, ctx).await,
+        // §Fase 33.y.f — cognitive framing handlers reuse pure_shape.
+        IRFlowNode::Focus(node) => cognitive::run_focus(node, ctx).await,
+        IRFlowNode::Associate(node) => cognitive::run_associate(node, ctx).await,
+        IRFlowNode::Aggregate(node) => cognitive::run_aggregate(node, ctx).await,
+        IRFlowNode::Explore(node) => cognitive::run_explore(node, ctx).await,
+        IRFlowNode::Ingest(node) => cognitive::run_ingest(node, ctx).await,
         IRFlowNode::ShieldApply(_) => legacy_shim(ShimReason::ShieldApply, ctx).await,
         // §Fase 33.y.e — Stream graduated to real async handler.
         // The payload-free `IRStreamBlock` emits the canonical
         // `step_type: "stream"` wire shape; future IR extensions
         // delegate to `effects_bridge::bridge_effect_stream_yield`.
         IRFlowNode::Stream(stream) => effects_bridge::run_stream(stream, ctx).await,
-        IRFlowNode::Navigate(_) => legacy_shim(ShimReason::Navigate, ctx).await,
+        IRFlowNode::Navigate(node) => cognitive::run_navigate(node, ctx).await,
         IRFlowNode::Drill(_) => legacy_shim(ShimReason::Drill, ctx).await,
         IRFlowNode::Trail(_) => legacy_shim(ShimReason::Trail, ctx).await,
-        IRFlowNode::Corroborate(_) => legacy_shim(ShimReason::Corroborate, ctx).await,
+        IRFlowNode::Corroborate(node) => cognitive::run_corroborate(node, ctx).await,
         IRFlowNode::OtsApply(_) => legacy_shim(ShimReason::OtsApply, ctx).await,
         IRFlowNode::MandateApply(_) => legacy_shim(ShimReason::MandateApply, ctx).await,
         IRFlowNode::ComputeApply(_) => legacy_shim(ShimReason::ComputeApply, ctx).await,
