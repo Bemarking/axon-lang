@@ -1,0 +1,19 @@
+// META: flow_name=BenefitEligibilityBranches, mode=count_only
+//
+// Public-benefit eligibility with conditional branch on residency status.
+
+flow BenefitEligibilityBranches() -> Unit {
+    step IntakeForm { ask: "Intake applicant form fields" output: Stream<Token> }
+    let residency = "citizen"
+    if residency == "citizen" {
+        step CitizenPath { ask: "Run citizen eligibility checks" output: Stream<Token> }
+    }
+    step IssueDetermination { ask: "Issue eligibility determination" output: Stream<Token> }
+}
+
+axonendpoint BenefitEligibilityBranchesEndpoint {
+    method: POST
+    path: "/government/benefit-eligibility-branches"
+    execute: BenefitEligibilityBranches
+    transport: sse
+}

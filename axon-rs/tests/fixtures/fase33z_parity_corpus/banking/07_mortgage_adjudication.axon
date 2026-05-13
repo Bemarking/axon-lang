@@ -1,0 +1,19 @@
+// META: flow_name=MortgageAdjudication, mode=count_only
+//
+// Mortgage adjudication iterating across applicant documents under PCI DSS Req 10.
+
+flow MortgageAdjudication() -> Unit {
+    step IngestApplication { ask: "Ingest mortgage application package" output: Stream<Token> }
+    let docs = "income,asset,credit,title"
+    for d in docs {
+        step UnderwriteDoc { ask: "Underwrite individual document" output: Stream<Token> }
+    }
+    step IssueDecision { ask: "Issue final adjudication" output: Stream<Token> }
+}
+
+axonendpoint MortgageAdjudicationEndpoint {
+    method: POST
+    path: "/banking/mortgage-adjudication"
+    execute: MortgageAdjudication
+    transport: sse
+}

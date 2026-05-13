@@ -1,0 +1,17 @@
+// META: flow_name=PublicRecordsSearchIter, mode=count_only
+
+flow PublicRecordsSearchIter() -> Unit {
+    step ParseQuery { ask: "Parse public-records query" output: Stream<Token> }
+    let registries = "deeds,marriages,corp_filings,court_dockets"
+    for r in registries {
+        step ProbeRegistry { ask: "Probe registry for matching records" output: Stream<Token> }
+    }
+    step CompileResults { ask: "Compile cross-registry result set" output: Stream<Token> }
+}
+
+axonendpoint PublicRecordsSearchIterEndpoint {
+    method: POST
+    path: "/government/public-records-search-iter"
+    execute: PublicRecordsSearchIter
+    transport: sse
+}

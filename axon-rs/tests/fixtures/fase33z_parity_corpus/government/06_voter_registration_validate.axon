@@ -1,0 +1,15 @@
+// META: flow_name=VoterRegistrationValidate, mode=count_only
+
+flow VoterRegistrationValidate() -> Unit {
+    step CollectFields { ask: "Collect registration form fields" output: Stream<Token> }
+    let registrant = "applicant_001"
+    validate registrant
+    step FinalizeRecord { ask: "Finalize voter registration record" output: Stream<Token> }
+}
+
+axonendpoint VoterRegistrationValidateEndpoint {
+    method: POST
+    path: "/government/voter-registration-validate"
+    execute: VoterRegistrationValidate
+    transport: sse
+}

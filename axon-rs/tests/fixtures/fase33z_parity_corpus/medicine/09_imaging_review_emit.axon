@@ -1,0 +1,18 @@
+// META: flow_name=ImagingReviewEmit, mode=count_only
+
+channel ImagingFindingChannel { message: String }
+
+flow ImagingReviewEmit() -> Unit {
+    step LoadStudy { ask: "Load imaging study series" output: Stream<Token> }
+    step InterpretImages { ask: "Interpret imaging findings" output: Stream<Token> }
+    let finding = "BIRADS_4B"
+    emit ImagingFindingChannel(finding)
+    step DictateReport { ask: "Dictate structured radiology report" output: Stream<Token> }
+}
+
+axonendpoint ImagingReviewEmitEndpoint {
+    method: POST
+    path: "/medicine/imaging-review-emit"
+    execute: ImagingReviewEmit
+    transport: sse
+}

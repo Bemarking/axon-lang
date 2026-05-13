@@ -1,0 +1,14 @@
+// META: flow_name=ContentModerationReason, mode=count_only
+
+flow ContentModerationReason() -> Unit {
+    step IngestContent { ask: "Ingest user-submitted content" output: Stream<Token> }
+    reason about_policy { target: "category_severity" }
+    step IssueAction { ask: "Issue moderation action" output: Stream<Token> }
+}
+
+axonendpoint ContentModerationReasonEndpoint {
+    method: POST
+    path: "/cross/content-moderation-reason"
+    execute: ContentModerationReason
+    transport: sse
+}

@@ -1,0 +1,29 @@
+// META: flow_name=Onboarding, mode=count_only
+//
+// Banking concurrent pattern — KYC + sanctions + bureau lookups
+// fired in parallel.
+//
+// **CountOnly mode** — `IRParallelBlock` is payload-free in v1.26.0
+// (per 33.y.e plan vivo "Honest scope statement": the structural
+// helpers exist but Par branches aren't wired into the IR node yet;
+// the dispatch_node Par arm fires with an empty branch list).
+// Async dispatcher emits 1 StepStart for the par marker + 0 inner
+// step_results. Sync stub treats Par as a structural marker too,
+// but its IR-flattening lists the inner step. Both paths SUCCEED;
+// step counts diverge. The deeper fix (33.y.e.2 — wire branches
+// into IRParallelBlock + the dispatcher) lands as a follow-up cycle.
+
+flow Onboarding() -> Unit {
+    par {
+        step Kyc { ask: "KYC check" output: Stream<Token> }
+        step Sanctions { ask: "Sanctions screen" output: Stream<Token> }
+        step Bureau { ask: "Bureau lookup" output: Stream<Token> }
+    }
+}
+
+axonendpoint OnboardEndpoint {
+    method: POST
+    path: "/onboard"
+    execute: Onboarding
+    transport: sse
+}

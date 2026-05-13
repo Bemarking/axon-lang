@@ -1,0 +1,20 @@
+// META: flow_name=SanctionsListMatch, mode=count_only
+//
+// OFAC sanctions list matching across multiple jurisdictions with par fan-out.
+
+flow SanctionsListMatch() -> Unit {
+    step NormalizeName { ask: "Normalize subject identity for matching" output: Stream<Token> }
+    par {
+        step ProbeOfac { ask: "Probe OFAC SDN list" output: Stream<Token> }
+        step ProbeUn { ask: "Probe UN consolidated list" output: Stream<Token> }
+        step ProbeEu { ask: "Probe EU restrictive measures list" output: Stream<Token> }
+    }
+    step ReconcileMatches { ask: "Reconcile cross-list matches" output: Stream<Token> }
+}
+
+axonendpoint SanctionsListMatchEndpoint {
+    method: POST
+    path: "/banking/sanctions-list-match"
+    execute: SanctionsListMatch
+    transport: sse
+}

@@ -1,0 +1,17 @@
+// META: flow_name=ExhibitOrganizationIter, mode=count_only
+
+flow ExhibitOrganizationIter() -> Unit {
+    step IntakeBatch { ask: "Intake raw exhibit batch" output: Stream<Token> }
+    let batches = "A,B,C,D,E"
+    for b in batches {
+        step BatesStamp { ask: "Bates-stamp batch and log" output: Stream<Token> }
+    }
+    step FinalizeBinder { ask: "Finalize exhibit binder" output: Stream<Token> }
+}
+
+axonendpoint ExhibitOrganizationIterEndpoint {
+    method: POST
+    path: "/legal/exhibit-organization-iter"
+    execute: ExhibitOrganizationIter
+    transport: sse
+}

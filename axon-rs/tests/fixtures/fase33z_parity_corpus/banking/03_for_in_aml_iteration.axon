@@ -1,0 +1,22 @@
+// META: flow_name=AmlScreen, mode=count_only
+//
+// Banking iterative pattern — AML screening over a list of
+// transactions. Exercises `IRFlowNode::ForIn` end-to-end.
+//
+// **CountOnly mode** — same structural divergence as Conditional:
+// sync stub treats ForIn as a marker; async dispatcher iterates
+// the body per-element.
+
+flow AmlScreen() -> Unit {
+    let transactions = "tx1,tx2,tx3"
+    for tx in transactions {
+        step Screen { ask: "Screen transaction" output: Stream<Token> }
+    }
+}
+
+axonendpoint AmlEndpoint {
+    method: POST
+    path: "/aml/screen"
+    execute: AmlScreen
+    transport: sse
+}

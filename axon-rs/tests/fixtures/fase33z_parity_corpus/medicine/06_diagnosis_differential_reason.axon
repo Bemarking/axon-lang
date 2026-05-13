@@ -1,0 +1,14 @@
+// META: flow_name=DiagnosisDifferentialReason, mode=count_only
+
+flow DiagnosisDifferentialReason() -> Unit {
+    step CollectFindings { ask: "Collect clinical findings" output: Stream<Token> }
+    reason about_differential { target: "posterior_ranking" }
+    step EmitTopK { ask: "Emit top-K differential candidates" output: Stream<Token> }
+}
+
+axonendpoint DiagnosisDifferentialReasonEndpoint {
+    method: POST
+    path: "/medicine/diagnosis-differential-reason"
+    execute: DiagnosisDifferentialReason
+    transport: sse
+}

@@ -1,0 +1,19 @@
+// META: flow_name=CustomerDueDiligenceMemory, mode=count_only
+//
+// KYC customer due diligence with remember/recall on case memory.
+
+flow CustomerDueDiligenceMemory() -> Unit {
+    step CollectKyc { ask: "Collect KYC identity attributes" output: Stream<Token> }
+    let beneficial_owner = "Acme Holdings Ltd"
+    remember beneficial_owner in cdd_case
+    step RiskClassify { ask: "Risk-classify the relationship" output: Stream<Token> }
+    recall beneficial_owner from cdd_case
+    step FinalizeProfile { ask: "Finalize CDD profile" output: Stream<Token> }
+}
+
+axonendpoint CustomerDueDiligenceMemoryEndpoint {
+    method: POST
+    path: "/banking/customer-due-diligence-memory"
+    execute: CustomerDueDiligenceMemory
+    transport: sse
+}

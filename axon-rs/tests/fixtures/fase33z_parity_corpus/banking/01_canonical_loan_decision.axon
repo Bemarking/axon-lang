@@ -1,0 +1,18 @@
+// META: flow_name=LoanDecision, mode=strict
+//
+// Banking canonical pattern — single-Step loan decision. The
+// simplest fixture in the corpus; pins the byte-equal invariant
+// on the canonical shape that 33.x.b production async path
+// already activates. Sync runner + async dispatcher both emit
+// `step_result = "(stub)"` for the stub backend.
+
+flow LoanDecision() -> Unit {
+    step Adjudicate { ask: "Decide loan application" output: Stream<Token> }
+}
+
+axonendpoint LoanEndpoint {
+    method: POST
+    path: "/loan/decision"
+    execute: LoanDecision
+    transport: sse
+}

@@ -1,0 +1,15 @@
+// META: flow_name=LabInterpretationValidate, mode=count_only
+
+flow LabInterpretationValidate() -> Unit {
+    step IngestPanel { ask: "Ingest lab panel result set" output: Stream<Token> }
+    let result_set = "cmp_panel_001"
+    validate result_set
+    step EmitInterpretation { ask: "Emit interpretation summary" output: Stream<Token> }
+}
+
+axonendpoint LabInterpretationValidateEndpoint {
+    method: POST
+    path: "/medicine/lab-interpretation-validate"
+    execute: LabInterpretationValidate
+    transport: sse
+}

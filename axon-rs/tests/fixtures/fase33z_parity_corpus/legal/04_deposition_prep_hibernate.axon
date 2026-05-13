@@ -1,0 +1,14 @@
+// META: flow_name=DepositionPrepHibernate, mode=count_only
+
+flow DepositionPrepHibernate() -> Unit {
+    step DraftQuestions { ask: "Draft deposition question outline" output: Stream<Token> }
+    hibernate witness_confirmed 15m
+    step FinalizePrep { ask: "Finalize deposition prep packet" output: Stream<Token> }
+}
+
+axonendpoint DepositionPrepHibernateEndpoint {
+    method: POST
+    path: "/legal/deposition-prep-hibernate"
+    execute: DepositionPrepHibernate
+    transport: sse
+}

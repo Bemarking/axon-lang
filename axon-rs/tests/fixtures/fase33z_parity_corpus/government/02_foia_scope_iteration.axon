@@ -1,0 +1,19 @@
+// META: flow_name=FoiaScopeIteration, mode=count_only
+//
+// FOIA request scope iteration over named exemption categories.
+
+flow FoiaScopeIteration() -> Unit {
+    step IngestRequest { ask: "Ingest FOIA request narrative" output: Stream<Token> }
+    let exemptions = "b1,b3,b5,b6,b7"
+    for ex in exemptions {
+        step EvaluateExemption { ask: "Evaluate exemption applicability" output: Stream<Token> }
+    }
+    step DraftResponse { ask: "Draft FOIA response letter" output: Stream<Token> }
+}
+
+axonendpoint FoiaScopeIterationEndpoint {
+    method: POST
+    path: "/government/foia-scope-iteration"
+    execute: FoiaScopeIteration
+    transport: sse
+}

@@ -1,0 +1,18 @@
+// META: flow_name=CognitiveEnsemblePar, mode=count_only
+
+flow CognitiveEnsemblePar() -> Unit {
+    step IntakePrompt { ask: "Intake adopter prompt" output: Stream<Token> }
+    par {
+        step BranchAnthropic { ask: "Deliberate via Anthropic backend" output: Stream<Token> }
+        step BranchOpenai { ask: "Deliberate via OpenAI backend" output: Stream<Token> }
+        step BranchGemini { ask: "Deliberate via Gemini backend" output: Stream<Token> }
+    }
+    step Synthesize { ask: "Synthesize ensemble consensus" output: Stream<Token> }
+}
+
+axonendpoint CognitiveEnsembleParEndpoint {
+    method: POST
+    path: "/cross/cognitive-ensemble-par"
+    execute: CognitiveEnsemblePar
+    transport: sse
+}

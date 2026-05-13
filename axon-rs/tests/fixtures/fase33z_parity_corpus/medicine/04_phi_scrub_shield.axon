@@ -1,0 +1,16 @@
+// META: flow_name=PhiScrubShield, mode=count_only
+
+shield PhiShield { scan: [pii_leak] on_breach: quarantine severity: critical compliance: [HIPAA] }
+
+flow PhiScrubShield() -> Unit {
+    step ComposeNarrative { ask: "Compose clinical narrative" output: Stream<Token> }
+    shield PhiShield on response -> SanitizedResponse
+    step DeliverSanitized { ask: "Deliver sanitized response" output: Stream<Token> }
+}
+
+axonendpoint PhiScrubShieldEndpoint {
+    method: POST
+    path: "/medicine/phi-scrub-shield"
+    execute: PhiScrubShield
+    transport: sse
+}

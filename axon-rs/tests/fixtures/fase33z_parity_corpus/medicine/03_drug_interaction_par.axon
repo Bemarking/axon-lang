@@ -1,0 +1,18 @@
+// META: flow_name=DrugInteractionPar, mode=count_only
+
+flow DrugInteractionPar() -> Unit {
+    step LoadMedList { ask: "Load patient medication list" output: Stream<Token> }
+    par {
+        step ProbeDailymed { ask: "Probe DailyMed interaction graph" output: Stream<Token> }
+        step ProbeRxnorm { ask: "Probe RxNorm relationship map" output: Stream<Token> }
+        step ProbeMicromedex { ask: "Probe Micromedex severity matrix" output: Stream<Token> }
+    }
+    step ReconcileAlerts { ask: "Reconcile interaction alerts" output: Stream<Token> }
+}
+
+axonendpoint DrugInteractionParEndpoint {
+    method: POST
+    path: "/medicine/drug-interaction-par"
+    execute: DrugInteractionPar
+    transport: sse
+}

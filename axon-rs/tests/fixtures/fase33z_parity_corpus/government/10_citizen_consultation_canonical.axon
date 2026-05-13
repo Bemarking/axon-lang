@@ -1,0 +1,14 @@
+// META: flow_name=CitizenConsultationCanonical, mode=strict
+//
+// Canonical citizen-consultation single-Step streaming — no orchestration.
+
+flow CitizenConsultationCanonical() -> Unit {
+    step Consult { ask: "Answer constituent service inquiry" output: Stream<Token> }
+}
+
+axonendpoint CitizenConsultationCanonicalEndpoint {
+    method: POST
+    path: "/government/citizen-consultation-canonical"
+    execute: CitizenConsultationCanonical
+    transport: sse
+}

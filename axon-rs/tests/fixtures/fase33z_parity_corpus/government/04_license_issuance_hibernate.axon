@@ -1,0 +1,14 @@
+// META: flow_name=LicenseIssuanceHibernate, mode=count_only
+
+flow LicenseIssuanceHibernate() -> Unit {
+    step ReceiveApplication { ask: "Receive license application" output: Stream<Token> }
+    hibernate background_check 10m
+    step IssueOrDeny { ask: "Issue or deny based on background result" output: Stream<Token> }
+}
+
+axonendpoint LicenseIssuanceHibernateEndpoint {
+    method: POST
+    path: "/government/license-issuance-hibernate"
+    execute: LicenseIssuanceHibernate
+    transport: sse
+}

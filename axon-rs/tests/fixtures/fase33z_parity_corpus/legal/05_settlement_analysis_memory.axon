@@ -1,0 +1,17 @@
+// META: flow_name=SettlementAnalysisMemory, mode=count_only
+
+flow SettlementAnalysisMemory() -> Unit {
+    step IngestPosture { ask: "Ingest current settlement posture" output: Stream<Token> }
+    let prior_offer = "450000"
+    remember prior_offer in matter_case
+    step ModelOutcomes { ask: "Model litigation outcome distribution" output: Stream<Token> }
+    recall prior_offer from matter_case
+    step IssueRecommendation { ask: "Issue settlement recommendation" output: Stream<Token> }
+}
+
+axonendpoint SettlementAnalysisMemoryEndpoint {
+    method: POST
+    path: "/legal/settlement-analysis-memory"
+    execute: SettlementAnalysisMemory
+    transport: sse
+}

@@ -1,0 +1,16 @@
+// META: flow_name=RateLimitingLambda, mode=count_only
+
+lambda token_bucket { ontology: "rate_limit" certainty: 1.0 }
+
+flow RateLimitingLambda() -> Unit {
+    step CountRequest { ask: "Count tenant request" output: Stream<Token> }
+    lambda token_bucket on tenant_state -> BucketDecision
+    step EnforceDecision { ask: "Enforce rate-limit decision" output: Stream<Token> }
+}
+
+axonendpoint RateLimitingLambdaEndpoint {
+    method: POST
+    path: "/cross/rate-limiting-lambda"
+    execute: RateLimitingLambda
+    transport: sse
+}

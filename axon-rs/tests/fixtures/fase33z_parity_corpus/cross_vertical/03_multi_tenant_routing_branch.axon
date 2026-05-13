@@ -1,0 +1,17 @@
+// META: flow_name=MultiTenantRoutingBranch, mode=count_only
+
+flow MultiTenantRoutingBranch() -> Unit {
+    step ResolveTenant { ask: "Resolve tenant identity and tier" output: Stream<Token> }
+    let tier = "premium"
+    if tier == "premium" {
+        step RoutePremium { ask: "Route to premium-tier backend" output: Stream<Token> }
+    }
+    step CompleteRouting { ask: "Complete routing handoff" output: Stream<Token> }
+}
+
+axonendpoint MultiTenantRoutingBranchEndpoint {
+    method: POST
+    path: "/cross/multi-tenant-routing-branch"
+    execute: MultiTenantRoutingBranch
+    transport: sse
+}

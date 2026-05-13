@@ -1,0 +1,17 @@
+// META: flow_name=CdsRecommendationIter, mode=count_only
+
+flow CdsRecommendationIter() -> Unit {
+    step IngestEncounter { ask: "Ingest encounter context" output: Stream<Token> }
+    let guidelines = "acc_aha,uspstf,nccn,idsa"
+    for g in guidelines {
+        step EvaluateGuideline { ask: "Evaluate guideline applicability" output: Stream<Token> }
+    }
+    step SynthesizeRecommendation { ask: "Synthesize CDS recommendation" output: Stream<Token> }
+}
+
+axonendpoint CdsRecommendationIterEndpoint {
+    method: POST
+    path: "/medicine/cds-recommendation-iter"
+    execute: CdsRecommendationIter
+    transport: sse
+}
