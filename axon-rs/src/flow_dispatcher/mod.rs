@@ -138,6 +138,16 @@ pub mod algebraic_handlers;
 /// override.
 pub mod wire_integrations;
 
+/// §Fase 33.y.i — PIX variants (paper §6 hidden-state primitives).
+/// 3 variants: **Hibernate** (CPS-style event-await with timeout
+/// — Fase 11.e + Fase 16 supervisor); **Drill** (PIX subtree
+/// navigation); **Trail** (breadcrumb walk over a prior
+/// navigation). OSS reference impl uses `__pix_*` /
+/// `__hibernating_*` namespaced let_bindings keys; enterprise R&D
+/// (axon_enterprise.cognitive_states + .supervisor) wires real
+/// continuation-passing semantics + PIX state machines.
+pub mod pix;
+
 // ────────────────────────────────────────────────────────────────────
 //  DispatchCtx — shared per-flow async surface
 // ────────────────────────────────────────────────────────────────────
@@ -693,7 +703,8 @@ pub async fn dispatch_node(
         // `step_type: "par"` wire shape; future IR extensions
         // delegate to `parallel::run_branches_concurrently`.
         IRFlowNode::Par(par) => parallel::run_par(par, ctx).await,
-        IRFlowNode::Hibernate(_) => legacy_shim(ShimReason::Hibernate, ctx).await,
+        // §Fase 33.y.i — PIX variants graduated.
+        IRFlowNode::Hibernate(node) => pix::run_hibernate(node, ctx).await,
         // §Fase 33.y.h — multi-agent deliberation blocks.
         IRFlowNode::Deliberate(node) => wire_integrations::run_deliberate(node, ctx).await,
         IRFlowNode::Consensus(node) => wire_integrations::run_consensus(node, ctx).await,
@@ -713,8 +724,8 @@ pub async fn dispatch_node(
         // delegate to `effects_bridge::bridge_effect_stream_yield`.
         IRFlowNode::Stream(stream) => effects_bridge::run_stream(stream, ctx).await,
         IRFlowNode::Navigate(node) => cognitive::run_navigate(node, ctx).await,
-        IRFlowNode::Drill(_) => legacy_shim(ShimReason::Drill, ctx).await,
-        IRFlowNode::Trail(_) => legacy_shim(ShimReason::Trail, ctx).await,
+        IRFlowNode::Drill(node) => pix::run_drill(node, ctx).await,
+        IRFlowNode::Trail(node) => pix::run_trail(node, ctx).await,
         IRFlowNode::Corroborate(node) => cognitive::run_corroborate(node, ctx).await,
         IRFlowNode::OtsApply(node) => algebraic_handlers::run_ots_apply(node, ctx).await,
         IRFlowNode::MandateApply(node) => algebraic_handlers::run_mandate_apply(node, ctx).await,
