@@ -426,6 +426,42 @@ def _implicit_transport(
     return "json"
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  §Fase 33.z.k.c (v1.28.0) — Effective dialect resolver (Python mirror)
+# ═══════════════════════════════════════════════════════════════════
+#
+# Mirror of `axon_frontend::type_checker::resolve_effective_dialect`.
+# Byte-identical resolution rules (D7 cross-stack contract):
+#
+#   1. Explicit dialect (`transport_dialect != ""`) wins verbatim.
+#   2. Algebraic-effect signal (`has_algebraic_stream_effect == True`)
+#      → default openai per Q1 ratification.
+#   3. Type-annotation only → default axon per Q1 ratification.
+#
+# Precondition: caller already determined wire IS SSE. Calling on a
+# JSON-wire route is meaningless but never raises.
+
+
+def resolve_effective_dialect(
+    transport_dialect: str,
+    has_algebraic_stream_effect: bool,
+) -> str:
+    """Resolve the effective SSE dialect for a route.
+
+    Pure 2-input function over the closed dialect catalog. Returns
+    one of "axon", "openai", "anthropic". Never returns empty under
+    valid input.
+    """
+    # Rule 1 — explicit dialect wins (D3-style precedence).
+    if transport_dialect:
+        return transport_dialect
+    # Rule 2 — algebraic effect → openai (Q1 default).
+    if has_algebraic_stream_effect:
+        return "openai"
+    # Rule 3 — type-annotation only → axon (Q1 default).
+    return "axon"
+
+
 def _compute_implicit_transports(
     program: "Program",
     symbol_lookup: "callable[[str], object | None]",
