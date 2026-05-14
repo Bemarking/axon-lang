@@ -2128,6 +2128,441 @@ parity corpus (`axon-rs/tests/fixtures/fase33z_parity_corpus/`); the
 
 ---
 
+## Multi-dialect wire format (Fase 33.z.k, v1.28.0+)
+
+**Closed-catalog 5-dialect surface for SSE wire format**: Fase 33.z.k
+ships a parametrized transport grammar `transport: sse(<dialect>)`
+where `<dialect> ∈ {axon, openai, kimi, glm, anthropic}`. The closed
+catalog is the load-bearing closure decision of the entire cycle —
+adopter SDKs (litellm, langchain, vercel/ai, instructor, llama_index
+for OpenAI-compat; anthropic-sdk-typescript, python-anthropic,
+vercel/ai anthropic-provider for Anthropic) consume axon's streaming
+output **verbatim, with zero axon-specific awareness**.
+
+Per the founder principle: *"adopters never adapt to axon's wire
+format; axon adapts to adopter clients OR provides a declarative way
+to choose the wire format upstream of HTTP."* The 33.z.k cycle ships
+both halves — (1) the closed-catalog declarative surface; (2) an
+algebraic-effect-driven default so idiomatic axon source emits the
+LLM-ecosystem-default wire (openai) without any extra declaration.
+
+### Q1-Q7 ratifications mapped to adopter-visible behavior
+
+The 33.z.k cycle's seven design questions received founder bloque
+ratification 2026-05-13. Each ratification surfaces as a specific
+adopter-observable behavior:
+
+| Q | Decision | Adopter observation |
+|---|---|---|
+| **Q1** algebraic-effect-driven default | When `step S { apply: T }` references a tool T declaring `effects: <stream:<policy>>`, the SSE wire defaults to the **openai** dialect (LLM-streaming ecosystem expectation). When `step S` uses `output: Stream<T>` type annotation only (no algebraic effect), the wire defaults to the **axon** dialect (W3C-correct baseline). | Idiomatic algebraic-effect axon source emits OpenAI Chat Completions wire by default; type-annotation-only flows preserve byte-identical W3C wire from v1.27.0 (D6 backwards-compat indefinite) |
+| **Q2** parametrized grammar | `transport: sse(<dialect>)` replaces the bare `transport: sse` (the bare form still parses + resolves at runtime per the Q1 algebraic-effect predicate). The parametrized syntax is symmetrical with `<stream:policy>` parametrized effect declarations (Fase 33.e) | Adopters declare adopter-SDK intent in source verbatim: `transport: sse(openai)` for litellm/langchain consumers; `transport: sse(anthropic)` for anthropic-sdk; `transport: sse(kimi)` for Moonshot K2.x; `transport: sse(glm)` for Zhipu ChatGLM-4.x; `transport: sse(axon)` for W3C-named EventSource clients |
+| **Q3** vertical-grounded catalog | Closed 5-dialect set `{axon, openai, kimi, glm, anthropic}`. Q3 revision 2026-05-14 added `kimi` + `glm` as first-class catalog entries — Bemarking AI's primary adopter pipelines route through Moonshot Kimi K2.x + Zhipu ChatGLM-4.x; declaring the intent precisely lets observability + audit correlate adopter declaration against the underlying provider. Open-set pluggability (downstream crates registering custom dialects) is explicitly out of scope | Adding a 6th dialect requires a deliberate sub-fase + 9 downstream-site update + cross-stack drift gate alignment (enforced by `tests/fase33z_k_i_dialect_catalog_drift_gate.rs` Rust side + Python mirror). Adopters get closed-catalog clarity: 5 dialects, exhaustively documented, no surprise additions |
+| **Q4** per-dialect native terminators | Each dialect ships its native terminator: axon → `event: axon.complete` (in-line); openai → `data: [DONE]` literal sentinel; anthropic → `event: message_stop`. No unified terminator across dialects | Adopter SDKs that hard-code the per-provider terminator (every LLM-SDK does this) parse the wire correctly without any custom shim |
+| **Q5** axon dialect backwards-compat **INDEFINITE** | Explicit `transport: sse(axon)` is the **escape valve**: it always wins over the Q1 default, on every release, indefinitely. There is no deprecation timeline for the axon dialect | Adopters who built W3C-EventSource clients consuming `event: axon.token` continue to work unchanged. The W3C-correct dialect is a first-class option forever |
+| **Q6** per-dialect tool-call interleaving | Each dialect emits tool-call requests in its native shape: axon → separate `event: axon.tool_call` frame (closed-catalog discriminator); openai → inline `delta: {"tool_calls": [{...}]}` in the chunk frame; anthropic → 3-frame `tool_use` block triad (`content_block_start{type: tool_use}` + `content_block_delta{input_json_delta}` + `content_block_stop`); mid-text-block tool-use closes the open text block first (4-frame burst) | Adopter SDKs parse tool-call requests per their respective providers' specs without any axon-specific awareness. The D11 wire-byte verification (10 tests in `fase33z_k_g_3_tool_call_interleaving.rs`) pins this byte-exact |
+| **Q7** algebraic-policy preservation channel | The `enforcement_summary` + `runtime_warnings` + `step_audit` + `stream_policies` side-channels surface per dialect: axon → fields on the `axon.complete` final frame (D6 indefinite); openai → custom `data: {"axon_metadata": {...}}` frame emitted BEFORE `data: [DONE]`; anthropic → `event: axon.metadata` frame emitted BEFORE `event: message_stop` | Adopters on openai/anthropic wires satisfy PCI DSS Req 10 / FedRAMP AU-2 / FRE 502 / 21 CFR Part 11 §11.10 per-step provenance requirements via the new `axon_metadata` extension frame — same data they had on the axon dialect, surfaced via Q7's adopter-SDK-ignored-by-default extension surface |
+
+### Per-dialect wire shape reference
+
+Quick reference for each dialect's wire format. Every shape below is
+pinned by per-dialect unit tests (16 axon + 11 openai + 11 anthropic
+= 38 tests) + E2E HTTP POST tests (13 tests across 4 dialect packs).
+
+**axon dialect** (W3C named events, D6 backwards-compat indefinite):
+
+```
+retry: 5000
+
+event: axon.token
+id: 1
+data: {"step":"Generate","trace_id":12345,"token":"Hola","timestamp_ms":1715648400500}
+
+event: axon.complete
+id: 2
+data: {"trace_id":12345,"flow":"Chat","backend":"gpt-4o","success":true,"steps_executed":1,"tokens_input":0,"tokens_output":1,"latency_ms":42,"stream_policies":[{"step":"Generate","policy":"drop_oldest"}],"enforcement_summary":{"Generate":{"policy_slug":"drop_oldest","chunks_pushed":1,"chunks_delivered":1,"drop_oldest_hits":0,"degrade_quality_hits":0,"pause_upstream_blocks":0,"fail_overflows":0,"failed":false}}}
+
+```
+
+**openai dialect** (OpenAI Chat Completions streaming, per
+https://platform.openai.com/docs/api-reference/chat/streaming):
+
+```
+retry: 5000
+
+data: {"id":"chatcmpl-axon-1234abcd","object":"chat.completion.chunk","created":1715648400,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-axon-1234abcd","object":"chat.completion.chunk","created":1715648400,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Hola"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-axon-1234abcd","object":"chat.completion.chunk","created":1715648400,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"axon_metadata":{"trace_id":12345,"flow":"Chat","backend":"gpt-4o","success":true,"steps_executed":1,"tokens_input":0,"tokens_output":1,"latency_ms":42,"stream_policies":[{"step":"Generate","policy":"drop_oldest"}],"enforcement_summary":{...},"step_audit":[...],"terminal_reason":"stop"}}
+
+data: [DONE]
+
+```
+
+**anthropic dialect** (Anthropic Messages streaming, per
+https://docs.anthropic.com/en/api/messages-streaming):
+
+```
+retry: 5000
+
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_axon_1234abcd","type":"message","role":"assistant","content":[],"model":"claude-3-5-sonnet-20241022","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hola"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}
+
+event: axon.metadata
+data: {"type":"axon.metadata","axon_metadata":{"trace_id":12345,"flow":"Chat","backend":"claude-3-5-sonnet-20241022","success":true,"steps_executed":1,"tokens_input":0,"tokens_output":1,"latency_ms":42,"stream_policies":[...],"enforcement_summary":{...},"step_audit":[...],"terminal_reason":"stop"}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+```
+
+**kimi dialect** + **glm dialect** dispatch to `OpenAIDialectAdapter`
+byte-identically (Q3 revision 2026-05-14) — the wire bytes are
+canonical OpenAI Chat Completions verbatim. The distinct dialect
+declaration in source is for adopter-intent observability + audit
+correlation.
+
+### Decision tree — choosing a dialect
+
+```
+Are you targeting Anthropic Claude with anthropic-sdk-typescript /
+python-anthropic / vercel-ai anthropic-provider?
+  └── Yes → transport: sse(anthropic)
+
+Are you targeting Moonshot Kimi K2.x with Moonshot's SDK
+(openai-sdk-compatible)?
+  └── Yes → transport: sse(kimi)
+
+Are you targeting Zhipu ChatGLM-4.x with Zhipu's SDK
+(openai-sdk-compatible)?
+  └── Yes → transport: sse(glm)
+
+Are you targeting OpenAI / a litellm-routed multi-provider stack /
+langchain / vercel/ai openai-provider / instructor / llama_index?
+  └── Yes → transport: sse(openai)
+         (OR omit `transport:` + use `effects: <stream:<policy>>` on a
+          tool — Q1 default lands you on openai automatically)
+
+Are you targeting a W3C-EventSource client that parses
+`event: axon.token` named events directly (no LLM-SDK)?
+  └── Yes → transport: sse(axon)
+         (OR omit `transport:` + use `output: Stream<T>` type
+          annotation only — Q1 Rule 3 defaults to axon)
+
+Are you targeting JSON consumers that don't speak SSE?
+  └── transport: json     (D3 sacred — JSON wins over everything)
+```
+
+### Canonical adopter recipes per vertical
+
+The four high-profile regulated verticals use the dialect surface
+to satisfy adopter-SDK consumption + per-regulator audit
+requirements simultaneously:
+
+**Banking — AML transaction screening (PCI DSS Req 10):**
+
+```axon
+tool aml_check {
+    description: "AML scanner"
+    effects: <stream:drop_oldest>
+}
+
+flow LoanDecision() -> Unit {
+    if active == "yes" {
+        step Investigate { ask: "AML check" apply: aml_check }
+    }
+    step Adjudicate { ask: "Final decision" output: Stream<Token> }
+}
+
+axonendpoint Decision {
+    method: POST
+    path: "/loan"
+    execute: LoanDecision
+    transport: sse(openai)     // litellm / langchain consumer
+}
+```
+
+Banking analyst's real-time review pane consumes the openai-shape
+wire via litellm; the `axon_metadata.step_audit` array surfaces
+per-step provenance for the auditor's PCI DSS Req 10 evidence pack.
+
+**Government — Benefits eligibility (FedRAMP AU-2):**
+
+```axon
+tool benefits_reasoning {
+    description: "Eligibility reasoning"
+    effects: <stream:fail>
+}
+
+flow BenefitsEligibility() -> Unit {
+    if applicant_tier == "veteran" {
+        step VABenefits { ask: "VA review" apply: benefits_reasoning }
+    } else {
+        step StandardBenefits { ask: "Standard review" apply: benefits_reasoning }
+    }
+}
+
+axonendpoint Eligibility {
+    method: POST
+    path: "/eligibility"
+    execute: BenefitsEligibility
+    transport: sse(openai)
+    replay: true     // FOIA + appeal review uses `GET /v1/replay/<trace_id>`
+}
+```
+
+FOIA + appeal review retrieves the per-step `step_audit` from the
+`axon_metadata` frame on the wire OR from the replay log via the
+`X-Axon-Trace-Id` correlation header.
+
+**Legal — Privilege scanner (FRE 502 waiver-doctrine):**
+
+```axon
+tool privilege_reasoning {
+    description: "Privilege assessment"
+    effects: <stream:degrade_quality>
+}
+
+shield PrivilegeShield {
+    scan: [pii_leak]
+    on_breach: quarantine
+    severity: critical
+    compliance: [HIPAA]
+}
+
+flow DiscoveryPrivilege() -> Unit {
+    let docs = "doc1,doc2,doc3"
+    for doc in docs {
+        step Scan { ask: "privilege check" apply: privilege_reasoning }
+    }
+    shield PrivilegeShield on response -> SanitizedResponse
+}
+
+axonendpoint Privilege {
+    method: POST
+    path: "/privilege"
+    execute: DiscoveryPrivilege
+    transport: sse(anthropic)     // anthropic-sdk consumer
+}
+```
+
+Attorney review consumes the anthropic-shape wire via python-anthropic;
+the `axon.metadata` extension frame surfaces per-step privilege-
+assessment provenance — appellate review reconstructs the FULL
+reasoning chain from the `step_audit` array.
+
+**Medicine — Clinical Decision Support (HIPAA + 21 CFR Part 11
+§11.10):**
+
+```axon
+tool clinical_reasoning {
+    description: "Differential diagnosis"
+    effects: <stream:pause_upstream>
+}
+
+shield PHIShield {
+    scan: [pii_leak]
+    on_breach: quarantine
+    severity: critical
+    compliance: [HIPAA]
+}
+
+flow CDSEndpoint() -> Unit {
+    step Triage { ask: "vitals" output: Stream<Token> }
+    step Differential { ask: "diagnosis" apply: clinical_reasoning }
+    shield PHIShield on response -> SanitizedResponse
+}
+
+axonendpoint CDS {
+    method: POST
+    path: "/cds"
+    execute: CDSEndpoint
+    transport: sse(anthropic)     // anthropic-sdk consumer
+}
+```
+
+Clinician's review console consumes the anthropic-shape wire; the
+`axon.metadata` frame's `enforcement_summary` documents which HIPAA
+shield activations fired — 21 CFR Part 11 §11.10(e) clinician trail
+reconstructible from the per-step provenance.
+
+### Tool-call interleaving across dialects
+
+Tool-call request events surface in each dialect's native shape per
+the Q6 ratification. Wire-byte verification pinned by 10 tests in
+`fase33z_k_g_3_tool_call_interleaving.rs` (D11).
+
+Canonical agentic-AI shape:
+
+```
+[text: "Pensando..."]
+[tool_call: search({"query": "axon"})]
+[text: "Encontré "]
+[text: "resultados."]
+```
+
+**axon dialect** — separate `event: axon.tool_call` frame interleaved
+in arrival order:
+
+```
+event: axon.token        # "Pensando..."
+event: axon.tool_call    # search request
+event: axon.token        # "Encontré "
+event: axon.token        # "resultados."
+event: axon.complete
+```
+
+**openai dialect** — inline `delta: {"tool_calls": [...]}` in the
+chunk frame, interleaved with content deltas:
+
+```
+data: {"choices":[{"delta":{"role":"assistant"}}],...}                                    # role marker
+data: {"choices":[{"delta":{"content":"Pensando..."}}],...}                               # content
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_...","type":"function",   # tool_call
+                                          "function":{"name":"search","arguments":"..."}}]}}],...}
+data: {"choices":[{"delta":{"content":"Encontré "}}],...}                                 # content
+data: {"choices":[{"delta":{"content":"resultados."}}],...}                               # content
+data: {"choices":[{"delta":{},"finish_reason":"stop"}],...}                               # final
+data: {"axon_metadata":{...}}                                                             # Q7 frame
+data: [DONE]
+```
+
+OpenAI synthesizes stable tool_call IDs `call_<trace_hex>_<N>`
+monotonically per request (pinned by 200 LCG iters in
+`fase33z_k_j_dialect_fuzz.rs::s5_openai_tool_call_ids_monotonic_per_request`).
+
+**anthropic dialect** — 3-frame `tool_use` block triad; mid-text-block
+tool-use closes the open text block first (4-frame burst):
+
+```
+event: message_start
+event: content_block_start          # text block, index 0
+event: content_block_delta          # text_delta "Pensando..."
+event: content_block_stop           # close text block 0 (mid-stream)
+event: content_block_start          # tool_use block, index 1
+event: content_block_delta          # input_json_delta partial JSON
+event: content_block_stop           # close tool_use block 1
+event: content_block_start          # NEW text block, index 2
+event: content_block_delta          # text_delta "Encontré "
+event: content_block_delta          # text_delta "resultados."
+event: content_block_stop           # close text block 2
+event: message_delta
+event: axon.metadata                # Q7 frame
+event: message_stop
+```
+
+Anthropic content_block indices advance monotonically per spec (300
+fuzz iters pin this in
+`fase33z_k_j_dialect_fuzz.rs::s4_anthropic_block_lifecycle_is_well_formed`).
+
+### Closed-catalog mutex (D11 final invariant)
+
+No dialect's tool-call surface leaks into another dialect's wire:
+
+- axon dialect MUST NOT carry `tool_calls:[` (openai's signature) or
+  `type: tool_use` (anthropic's).
+- openai dialect MUST NOT carry `event: axon.tool_call` (axon's) or
+  `type: tool_use` (anthropic's).
+- anthropic dialect MUST NOT carry `event: axon.tool_call` (axon's)
+  or `tool_calls:[` (openai's).
+
+Pinned byte-exact by
+`fase33z_k_g_3_tool_call_interleaving.rs::s6_closed_catalog_mutex_no_cross_dialect_tool_call_leak`
++ verified across all 200 + 150 fuzz iters in
+`fase33z_k_j_dialect_fuzz.rs::s2_*_event_names_are_closed_vocabulary`.
+
+### D-letters mapped to adopter-observable behavior
+
+The 33.z.k cycle's D-letters compose into the production wire
+contract. The 33.z.k CI workflow
+(`.github/workflows/fase_33z_k_wire_format_adapter.yml`) locks every
+one on every push / PR:
+
+| D-letter | What it guarantees | How adopters observe it |
+|---|---|---|
+| **D1** closed-catalog wire formats | The set of dialects is closed `{axon, openai, kimi, glm, anthropic}`; adding a 6th requires a deliberate sub-fase | Adopter source declaring `transport: sse(unknown)` fails at parse time with a smart-suggest hint. Cross-stack pinned by `tests/fase33z_k_i_dialect_catalog_drift_gate.rs` + Python mirror |
+| **D2** declarative wire choice | Adopters select the wire format declaratively in source — not via HTTP headers, runtime flags, or environment variables. Single source of truth | The `.axon` file is the authoritative declaration; observability/audit/replay surfaces correlate against it |
+| **D3** semantic equivalence across dialects | Per-token content + step-name + arrival ordering are byte-identical across dialects modulo framing. Only the framing differs | Cross-dialect parity test §8 in `fase33z_k_h_metadata_population.rs` + arrival-order signature invariant in `fase33z_k_g_3_tool_call_interleaving.rs::s4` + stochastic 300-iter coverage in `fase33z_k_j_dialect_fuzz.rs::s3` |
+| **D4** algebraic-policy preservation | Enforcement summaries, runtime warnings, step audit records, stream policies surface on EVERY dialect (axon: `axon.complete`; openai: `axon_metadata` frame; anthropic: `event: axon.metadata` frame) | Adopters on every dialect retrieve the same audit data — vertical-regulator (PCI DSS / FedRAMP / FRE 502 / 21 CFR Part 11) requirements uniformly satisfiable. 12 tests including 3 E2E HTTP POST cross-dialect parity in `fase33z_k_h_metadata_population.rs` |
+| **D5** native terminators per dialect | Each dialect's terminator is the dialect's native form: axon: in-line `axon.complete`; openai: `data: [DONE]`; anthropic: `event: message_stop` | Adopter SDKs that hard-code their provider's terminator (every LLM-SDK does) parse the stream end correctly without any custom shim. Pinned by `fase33z_k_i_dialect_catalog_drift_gate.rs::s6_*_flush_terminator_emits_*_frames` |
+| **D6** axon dialect byte-compat **INDEFINITE** | Adopters who declare `transport: sse(axon)` explicitly observe byte-identical wire across every release indefinitely. There is NO deprecation timeline | Existing v1.27.0 EventSource clients keep working unchanged on `transport: sse(axon)` routes. Pinned by `fase33z_k_g_e2e_axon_byte_compat.rs` (3 tests including bare-sse-vs-explicit-sse(axon) byte-equivalence) |
+| **D7** cross-stack contract Python+Rust | Both stacks agree on dialect parsing + resolver + catalog membership. The runtime adapters live in axon-rs but the parser/resolver/catalog have Python mirrors | Cross-stack adopters (Python frontends authoring `.axon` source consumed by Rust runtime) observe the same dialect resolution. Pinned by 19 Python tests in `test_fase33z_k_i_dialect_catalog_drift_gate.py` mirroring the 19 Rust tests |
+| **D9** wire byte-compat for canonical Step | Canonical `step S { ask: "..." output: Stream<Token> }` + stub backend emits exactly 1 token frame + 1 terminator in the chosen dialect, byte-stable across releases | Adopters running smoke tests against stub backend observe identical byte counts across releases. Pinned by §1 of `fase33z_k_a_diagnostic_anchor.rs` + cross-checked by every per-dialect E2E |
+| **D10** four-pillar trace | MATH (adapter is a pure function from event sequence to wire frames) + LOGIC (closed catalog, total dispatch, exhaustive matching) + PHILOSOPHY (adopter chooses; language doesn't impose) + COMPUTING (per-dialect byte-byte-correct round-trip tests) | Every dialect's wire shape verified end-to-end via real HTTP POST against a deployed flow; cross-stack catalog cardinality + membership pinned identically in both stacks |
+| **D11** tool-call interleaving | Each dialect specifies how tool-call events surface: axon → separate `event: axon.tool_call`; openai → inline `delta: {"tool_calls": [...]}`; anthropic → `content_block_start{type: tool_use}` triad | Adopter SDKs parse tool-call requests per their providers' specs verbatim. Closed-catalog mutex pinned in `fase33z_k_g_3_tool_call_interleaving.rs::s6` |
+| **D12** production-grade fuzz | ~3 350 deterministic LCG iters across 18 tests / 9 invariant sections; runtime <0.5s; hand-rolled Knuth/MMIX LCG (no external dep); cardinality meta-pin catches drift | Downstream forks running `cargo test --test fase33z_k_j_dialect_fuzz` exercise all 9 invariant categories deterministically. CI workflow runs the fuzz lane on every push/PR |
+
+### Where to find the wire-format adapter API
+
+```rust
+// Public API: closed-catalog dispatcher + stateful adapter trait.
+pub trait WireFormatAdapter: Send {
+    fn dialect(&self) -> &'static str;
+    fn translate(&mut self, event: &FlowExecutionEvent) -> Vec<Event>;
+    fn build_complete_envelope_event(
+        &mut self,
+        envelope: &CompleteEnvelope,
+    ) -> Vec<Event>;
+    fn flush_terminator(&mut self) -> Vec<Event>;
+}
+
+pub fn select_adapter(
+    dialect: &str,
+    trace_id: u64,
+) -> Box<dyn WireFormatAdapter>;
+
+// CompleteEnvelope carries the full algebraic-policy data.
+pub struct CompleteEnvelope {
+    pub trace_id: u64,
+    pub flow_name: String,
+    pub backend: String,
+    pub success: bool,
+    pub steps_executed: usize,
+    pub tokens_input: u64,
+    pub tokens_output: u64,
+    pub latency_ms: u64,
+    pub effect_policies: Vec<(String, String)>,
+    pub enforcement_summaries: Vec<(String, EnforcementSummaryWire)>,
+    pub runtime_warnings: Vec<RuntimeWarning>,
+    pub step_audit_records: Vec<StepAuditRecord>,
+}
+```
+
+Downstream crates that ship custom SSE producers (e.g., emitting from
+a non-HTTP transport like WebSocket frames or gRPC streaming) reuse
+the adapter trait to honor the same 5-dialect surface. The closed
+catalog is enforced at the `select_adapter` dispatch layer — unknown
+dialect strings fall through to `AxonDialectAdapter` defensively
+(production parsers reject unknown strings at parse time before they
+reach the adapter, but the runtime layer is defensive).
+
+### Migration scenarios
+
+For the 6 worked recipes — (A) algebraic-effect flow wire flip + adopter
+SDK consumption; (B) preserving W3C-named axon dialect via `transport:
+sse(axon)`; (C) targeting Anthropic Claude via `sse(anthropic)`;
+(D) targeting Kimi/GLM via `sse(kimi)`/`sse(glm)`; (E) consuming the
+Q7 `axon_metadata` extension frame for vertical-regulator audit;
+(F) downstream-crate integration with the public
+`WireFormatAdapter` trait API — see
+[`MIGRATION_v1.28.md`](MIGRATION_v1.28.md).
+
+---
+
 ## Where to file bugs
 
 | Symptom | Where |
