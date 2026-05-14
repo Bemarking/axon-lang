@@ -194,6 +194,13 @@ pub mod stream_effect_dispatcher;
 // early instead of running the flow to completion against a dropped
 // channel.
 pub mod cancel_token;
+// §Fase 33.z.k (v1.28.0) — Wire-format adapter framework.
+// `wire_format` defines the WireFormatAdapter trait + per-dialect
+// adapters (axon / openai / anthropic). The SSE producer in
+// `axon_server::execute_sse_handler` uses `select_adapter(dialect)`
+// to translate internal FlowExecutionEvents into the dialect-
+// specific wire shape adopters' SDKs expect.
+pub mod wire_format;
 // §λ-L-E Fase 11.b — Zero-Copy Multimodal Buffers.
 // `buffer` defines ZeroCopyBuffer (Arc<[u8]>-backed) + BufferKind
 // (open registry) + BufferPool (slab allocator with per-tenant
