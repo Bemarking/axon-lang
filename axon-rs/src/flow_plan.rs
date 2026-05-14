@@ -323,29 +323,13 @@ pub enum PlanError {
     IrGeneration(String),
     /// The requested flow_name was not found in the IR's flow list.
     FlowNotFound { flow_name: String, available: Vec<String> },
-    /// The flow uses features the 33.x.b streaming path does not
-    /// yet support. The handler falls back to the legacy sync path.
-    /// 33.x.b ships the simplest shape (single `ask:` per step,
-    /// optional `apply: tool`). Anchors, lambda apply, let bindings
-    /// and mid-stream tool calls live on the legacy path until
-    /// their respective follow-ups.
-    ///
-    /// # §Fase 33.y.l — deprecated
-    ///
-    /// The 33.y cycle (per-IRFlowNode async dispatcher) closes the
-    /// algebraic-streaming contract structurally for all 45
-    /// IRFlowNode variants. Once `server_execute_streaming` graduates
-    /// to use `flow_dispatcher::dispatch_node` end-to-end (33.z),
-    /// the legacy synchronous fallback becomes unreachable and this
-    /// variant retires entirely.
-    #[deprecated(
-        since = "1.26.0",
-        note = "Use the per-IRFlowNode async dispatcher \
-                (`flow_dispatcher::dispatch_node`) — 33.y graduates all 45 \
-                IRFlowNode variants. This legacy fallback variant is on a \
-                retirement path; 33.z will remove it."
-    )]
-    LegacyOrchestrationRequired { reason: PlanFallback, flow_name: String },
+    // §Fase 33.z.e — `LegacyOrchestrationRequired` variant DELETED
+    // (the 33.y.l `#[deprecated]` retirement cycle completes here).
+    // The 33.y per-IRFlowNode async dispatcher (45/45 graduation)
+    // covers every IRFlowNode variant the planner used to reject.
+    // Any downstream crate that pattern-matched against this variant
+    // hits an explicit compile error — the intended failure shape
+    // for the deprecation cycle.
 }
 
 /// Closed catalog of reasons the streaming path falls back to the
@@ -415,11 +399,11 @@ impl PlanFallback {
 /// Pipeline: lex → parse → type-check → IR generation → walk the
 /// IR's runs for `flow_name` → emit one [`StreamingStep`] per step.
 ///
-/// Returns [`PlanError::LegacyOrchestrationRequired`] when the flow
-/// uses any feature 33.x.b's scope explicitly defers. The SSE
-/// handler treats this as a SOFT fallback — it routes the request
-/// to `server_execute_full` (the pre-33.x.b path) so adopters with
-/// these flow shapes continue working unchanged.
+/// §Fase 33.z.e — Returns `Err(PlanError::*)` only for hard compile
+/// failures (Parse / TypeCheck / IrGeneration / FlowNotFound). The
+/// 33.y.l `LegacyOrchestrationRequired` variant has been DELETED;
+/// every IRFlowNode variant the planner produces is dispatchable
+/// via `flow_dispatcher::dispatch_node`.
 pub fn build_streaming_plan(
     source: &str,
     source_file: &str,
@@ -436,15 +420,14 @@ pub fn build_streaming_plan(
 
 /// Build a plan from an already-typed IR. Useful for tests that
 /// drive the planner with hand-constructed IR (no source parse).
-// §Fase 33.y.l — the streaming-vs-legacy routing decision below uses
-// the `PlanError::LegacyOrchestrationRequired` variant + the
-// `unsupported_feature_reason` helper, both marked `#[deprecated]`
-// in 33.y.l. The allow keeps the legacy fallback path functional
-// while 33.z drives the per-IRFlowNode dispatcher into the streaming
-// surface end-to-end. The deprecation signal surfaces to ANY new
-// in-crate or out-of-crate caller, but the existing routing code
-// stays clean.
-#[allow(deprecated)]
+///
+/// §Fase 33.z.e — the `unsupported_feature_reason` rejection step
+/// has been DELETED in lockstep with `PlanError::LegacyOrchestrationRequired`
+/// + `run_streaming_legacy_path`. The per-IRFlowNode dispatcher
+/// (Fase 33.y 45/45) handles every IRFlowNode variant; the planner
+/// no longer needs to gate against a closed-deferred-catalog. Any
+/// shape the planner could compile pre-33.z.e is dispatchable
+/// post-33.z.e via `flow_dispatcher::dispatch_node`.
 pub fn build_plan_from_ir(
     ir: &IRProgram,
     program: &crate::ast::Program,
@@ -471,13 +454,15 @@ pub fn build_plan_from_ir(
             available: ir.flows.iter().map(|f| f.name.clone()).collect(),
         })?;
 
-    // 6. Reject unsupported features up front (closed catalog).
-    if let Some(reason) = unsupported_feature_reason(flow, ir) {
-        return Err(PlanError::LegacyOrchestrationRequired {
-            reason,
-            flow_name: flow_name.to_string(),
-        });
-    }
+    // §Fase 33.z.e — `unsupported_feature_reason` gate retired.
+    // The dispatcher path handles every IRFlowNode variant; no
+    // pre-flight rejection needed. The `StreamingExecutionPlan`
+    // produced below carries only canonical Step variants by
+    // design (other shapes route through the dispatcher's
+    // per-variant handlers directly via `flow.steps`); the plan
+    // structure stays as the legacy carrier for backend resolution
+    // + system-prompt composition + per-step effect policy
+    // resolution.
 
     // 7. System prompt — §33.x.c uses the public composer with
     //    `backend_tag: None`. The streaming wire's
@@ -486,9 +471,10 @@ pub fn build_plan_from_ir(
     //    (avoids hidden-context drift between sync + async).
     let system_prompt = compose_system_prompt_public(flow, ir, None);
 
-    // 8. Per-step plan. Only `IRFlowNode::Step` variants are
-    //    streaming-eligible; every other variant has been rejected
-    //    upstream by `unsupported_feature_reason`.
+    // 8. Per-step plan. Only `IRFlowNode::Step` variants surface in
+    //    `StreamingExecutionPlan.steps` (other variants are handled
+    //    by the dispatcher's per-variant handlers in
+    //    `streaming_via_dispatcher` directly via `flow.steps`).
     let mut steps = Vec::new();
     for node in &flow.steps {
         if let crate::ir_nodes::IRFlowNode::Step(ir_step) = node {
@@ -517,85 +503,6 @@ pub fn build_plan_from_ir(
         system_prompt,
         steps,
     })
-}
-
-/// Walk a flow's steps + IR and return `Some(PlanFallback)` iff any
-/// step uses a feature 33.x.b defers. Closed-catalog — adding a new
-/// reason requires updating this function + the `PlanFallback`
-/// enum (compiler enforces exhaustiveness in the slug match).
-///
-/// # §Fase 33.y.l — deprecated
-///
-/// The 33.y per-IRFlowNode async dispatcher covers all 45
-/// IRFlowNode variants natively; the streaming-vs-legacy routing
-/// decision this function gates is obsolete once
-/// `server_execute_streaming` graduates to dispatch through
-/// `flow_dispatcher::dispatch_node` end-to-end (33.z).
-#[deprecated(
-    since = "1.26.0",
-    note = "Use the per-IRFlowNode async dispatcher \
-            (`flow_dispatcher::dispatch_node`). This function gates the \
-            legacy streaming-vs-sync fallback path which 33.z will retire."
-)]
-fn unsupported_feature_reason(
-    flow: &crate::ir_nodes::IRFlow,
-    ir: &IRProgram,
-) -> Option<PlanFallback> {
-    use crate::ir_nodes::IRFlowNode;
-
-    // Anchors on the flow's `run` declaration — IR-level signal.
-    if ir.runs.iter().any(|r| {
-        r.flow_name == flow.name && !r.resolved_anchors.is_empty()
-    }) {
-        return Some(PlanFallback::AnchorConstraintsPresent);
-    }
-
-    for node in &flow.steps {
-        match node {
-            IRFlowNode::Step(_) => {
-                // The streaming-eligible node — `step S { ask:
-                // "..." }` (with or without `apply: tool`).
-            }
-            IRFlowNode::LambdaDataApply(_) => {
-                return Some(PlanFallback::LambdaApplyPresent);
-            }
-            IRFlowNode::Let(_) => {
-                return Some(PlanFallback::LetBindingPresent);
-            }
-            IRFlowNode::UseTool(_) => {
-                return Some(PlanFallback::UseToolPresent);
-            }
-            IRFlowNode::Hibernate(_) => {
-                return Some(PlanFallback::HibernatePresent);
-            }
-            IRFlowNode::Drill(_) | IRFlowNode::Trail(_) => {
-                return Some(PlanFallback::PixPresent);
-            }
-            // Every other IRFlowNode variant (Probe, Reason,
-            // Validate, Refine, Weave, Remember, Recall,
-            // Conditional, ForIn, Return, Break, Continue, Par,
-            // Deliberate, Consensus, Forge, Focus, Associate,
-            // Aggregate, Explore, Ingest, ShieldApply, Stream,
-            // Navigate, Corroborate, OtsApply, MandateApply,
-            // ComputeApply, Listen, DaemonStep, Emit, Publish,
-            // Discover, Persist, Retrieve, Mutate, Purge,
-            // Transact) is currently rejected as
-            // `LegacyOrchestrationRequired::UnsupportedNode` — the
-            // streaming path ships canonical
-            // `step S { ask: "..." [apply: tool] }` first.
-            // Subsequent 33.x followups extend coverage per
-            // founder-sequenced sub-fases. Default-deny is the
-            // safe posture: legacy synchronous path keeps working
-            // for these flows.
-            other => {
-                return Some(PlanFallback::UnsupportedNode {
-                    kind: ir_flow_node_kind(other),
-                });
-            }
-        }
-    }
-
-    None
 }
 
 // §33.x.c — The private `ir_flow_node_kind` was lifted to the

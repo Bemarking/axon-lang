@@ -506,8 +506,9 @@ fn corpus_size_pin_target_50() {
 
 #[tokio::test]
 async fn parity_drift_gate_full_corpus() {
-    let _guard =
-        axon::runtime_flags::StreamingViaDispatcherGuard::set(true);
+    // §Fase 33.z.e — `StreamingViaDispatcherGuard` retired (the
+    // dispatcher is the unconditional production path; no opt-out).
+    // No guard needed.
     let fixtures = discover_fixtures();
     assert!(
         !fixtures.is_empty(),
