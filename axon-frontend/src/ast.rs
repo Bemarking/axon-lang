@@ -796,6 +796,27 @@ pub struct AxonEndpointDefinition {
     /// trace_id; auditors retrieve it via GET /v1/replay/<trace_id>.
     pub replay_explicit: bool,
     pub replay: bool,
+    /// §Fase 33.z.k.1 (v1.27.1) — Algebraic-effect override predicate.
+    ///
+    /// `true` when `execute_flow` references a tool that declares
+    /// `effects: <stream:<policy>>` (Fase 30 algebraic-effect surface).
+    /// Mirrors `type_checker::flow_uses_streaming_tool(execute_flow, program)`.
+    ///
+    /// Used by the runtime classifier
+    /// (`axon_server::classify_dynamic_route_wire`) to OVERRIDE the
+    /// v1.22.0 D6 backwards-compat gate: a tool with a declared stream
+    /// effect is a LANGUAGE-LEVEL commitment to streaming, not a
+    /// client preference. When this field is `true` AND
+    /// `transport: json` is NOT explicitly declared (D3 opt-out remains
+    /// sacred), the route wire is unconditionally `Sse` — no
+    /// `Accept: text/event-stream` header required, no
+    /// `AXON_STRICT_TYPE_DRIVEN_TRANSPORT=1` runtime flag required.
+    ///
+    /// Computed in lockstep with `implicit_transport` by the
+    /// `compute_implicit_transports` pass. Default `false` before the
+    /// pass runs (matches AST construction defaults; D9 backwards-
+    /// compat preserved for older AST consumers).
+    pub has_algebraic_stream_effect: bool,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

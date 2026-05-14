@@ -1987,6 +1987,28 @@ class AxonEndpointDefinition(ASTNode):
     replay_explicit: bool = False
     replay: bool = False
 
+    # §Fase 33.z.k.1 (v1.27.1) — Algebraic-effect override predicate.
+    #
+    # True when `execute_flow` references a tool that declares
+    # `effects: <stream:<policy>>` (Fase 30 algebraic-effect surface).
+    # Mirrors `type_checker._flow_uses_streaming_tool(execute_flow, ...)`.
+    #
+    # Used by the runtime classifier
+    # (`axon_server.classify_dynamic_route_wire` on the Rust side;
+    # mirrored Python wire-classifier on the Python serve path) to
+    # OVERRIDE the v1.22.0 D6 backwards-compat gate. A tool with a
+    # declared stream effect is a LANGUAGE-LEVEL commitment to
+    # streaming (algebraic effect is part of the type), not a client
+    # preference. The runtime honors the commitment WITHOUT requiring
+    # `Accept: text/event-stream` (D4 negotiation) or the strict-mode
+    # runtime flag (D6). D3 explicit `transport: json` still wins.
+    #
+    # Computed in lockstep with `implicit_transport` by the
+    # `_compute_implicit_transports` pass. Default False before that
+    # pass runs (matches AST construction defaults; D9 backwards-
+    # compat preserved for older AST consumers).
+    has_algebraic_stream_effect: bool = False
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  AXONSTORE PRIMITIVE — HoTT Transactional Persistence (§AS)

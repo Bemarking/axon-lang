@@ -433,6 +433,17 @@ def _compute_implicit_transports(
     """Walk every `AxonEndpointDefinition` in the program and attach
     its computed `implicit_transport` per D1.
 
+    §Fase 33.z.k.1 (v1.27.1) — Also populates the new
+    `has_algebraic_stream_effect` field on the endpoint AST. This
+    boolean isolates disjunct (b) of `_flow_produces_stream`
+    (`_flow_uses_streaming_tool`) — the tool-effect signal — from
+    disjunct (a) (the type-annotation signal). The runtime
+    classifier (`axon_server::classify_dynamic_route_wire`) reads
+    this field to OVERRIDE the v1.22.0 D6 backwards-compat gate:
+    when a tool declares `effects: <stream:<policy>>`, the wire is
+    promoted to SSE unconditionally (D3 `transport: json` opt-out
+    still wins).
+
     Mutates the AST in place — same pattern as the rest of the
     type-checker pass. Returns nothing. Safe to call multiple times
     (idempotent for a given program + symbol_lookup pair).
@@ -449,6 +460,17 @@ def _compute_implicit_transports(
             decl.implicit_transport = _implicit_transport(
                 decl, flow, symbol_lookup,
             )
+            # §Fase 33.z.k.1 — compute the algebraic-effect predicate
+            # in lockstep. The field is independent of D6 strict_mode
+            # and D4 client_wants_sse; it captures "the language has
+            # committed to a stream effect via the type system".
+            try:
+                decl.has_algebraic_stream_effect = bool(
+                    flow is not None
+                    and _flow_uses_streaming_tool(flow, symbol_lookup)
+                )
+            except Exception:  # noqa: BLE001
+                decl.has_algebraic_stream_effect = False
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -3977,7 +3977,7 @@ fn use_tool_step_name(u: &UseToolStep) -> &str {
 /// to a tool — the latter is the Kivi-shape pattern (Fase 31.b
 /// extension of the Fase 30.c predicate; see Python mirror for
 /// the rationale).
-fn flow_uses_streaming_tool(flow: &FlowDefinition, program: &Program) -> bool {
+pub fn flow_uses_streaming_tool(flow: &FlowDefinition, program: &Program) -> bool {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for step in &flow.body {
         match step {
@@ -4230,7 +4230,16 @@ pub fn compute_implicit_transports(program: &mut Program) {
     // immutable + mutable borrow of the same Vec, we precompute the
     // (endpoint_index, inferred_transport) pairs first, then apply
     // them all in a second mutating loop.
-    let mut updates: Vec<(usize, String)> = Vec::new();
+    // §Fase 33.z.k.1 (v1.27.1) — compute BOTH `implicit_transport`
+    // (Fase 31 D1 inference) AND the new `has_algebraic_stream_effect`
+    // predicate (algebraic-effect override). Both are read by the
+    // runtime classifier; the algebraic-effect predicate carries
+    // strictly more information (it isolates disjunct (b) of
+    // `produces_stream` — the tool-effect signal — from disjunct (a)
+    // — the type-annotation signal). The runtime promotes the route
+    // to SSE unconditionally when the algebraic predicate is true
+    // (D3 `transport: json` opt-out still wins).
+    let mut updates: Vec<(usize, String, bool)> = Vec::new();
     for (i, decl) in program.declarations.iter().enumerate() {
         if let Declaration::AxonEndpoint(ae) = decl {
             let flow = flow_indices.get(&ae.execute_flow).and_then(|&fi| {
@@ -4240,13 +4249,18 @@ pub fn compute_implicit_transports(program: &mut Program) {
                     None
                 }
             });
-            let result = implicit_transport(ae, flow, program);
-            updates.push((i, result));
+            let transport_result = implicit_transport(ae, flow, program);
+            let algebraic_result = match flow {
+                Some(f) => flow_uses_streaming_tool(f, program),
+                None => false,
+            };
+            updates.push((i, transport_result, algebraic_result));
         }
     }
-    for (i, result) in updates {
+    for (i, transport_result, algebraic_result) in updates {
         if let Declaration::AxonEndpoint(ae) = &mut program.declarations[i] {
-            ae.implicit_transport = result;
+            ae.implicit_transport = transport_result;
+            ae.has_algebraic_stream_effect = algebraic_result;
         }
     }
 }

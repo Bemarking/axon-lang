@@ -4658,6 +4658,12 @@ impl Parser {
             // at deploy time using the method-default heuristic.
             replay_explicit: false,
             replay: false,
+            // §Fase 33.z.k.1 (v1.27.1) — Algebraic-effect override.
+            // Parser default false; populated by the type-checker's
+            // compute_implicit_transports pass once the full program
+            // is known (the predicate cross-references tool effects
+            // declared anywhere in the program).
+            has_algebraic_stream_effect: false,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
