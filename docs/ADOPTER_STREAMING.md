@@ -39,7 +39,8 @@
 17. [Real-time streaming (Fase 33, v1.24.0+)](#real-time-streaming-fase-33-v1240)
 18. [Production-path activation (Fase 33.x, v1.25.0+)](#production-path-activation-fase-33x-v1250)
 19. [Universal algebraic streaming (Fase 33.y, v1.26.0+)](#universal-algebraic-streaming-fase-33y-v1260)
-20. [Where to file bugs](#where-to-file-bugs)
+20. [Total production streaming (Fase 33.z, v1.27.0+)](#total-production-streaming-fase-33z-v1270)
+21. [Where to file bugs](#where-to-file-bugs)
 
 ---
 
@@ -1997,6 +1998,133 @@ ToolCall from a downstream crate / authoring a dispatcher-based
 downstream crate / migrating off the deprecated routing
 primitives / running the D7 parity gate in your own CI), see
 [MIGRATION_v1.26.md](MIGRATION_v1.26.md).
+
+---
+
+## Total production streaming (Fase 33.z, v1.27.0+)
+
+**Production wiring of the universal dispatcher**: Fase 33.z lifts
+the structurally-complete 33.y per-IRFlowNode dispatcher into the
+production SSE producer (`server_execute_streaming`). v1.27.0
+collapses the v1.25.0/v1.26.0 dual-path runtime
+(`run_streaming_async_path` for canonical Step + `run_streaming_legacy_path`
+for everything else) into a **single, unconditional** invocation of
+`run_streaming_via_dispatcher`. The dispatcher's 45 per-variant
+handlers now reach the wire end-to-end for every adopter shape;
+the `axon-W002 unsupported_flow_shape` warning is **structurally
+unreachable** (the variant was deleted from `FallbackMode`).
+
+This is the v1.21.0 SSE promise honored at full surface. Per the
+founder principle "*SSE es una primitiva cognitiva, eso en axon
+lo es todo y debe funcionar perfecto*", real-time streaming is
+now the universal wire shape for every shape adopters actually
+deploy — orchestration (`Conditional` / `ForIn` / `Par`), PIX
+(`Hibernate` / `Drill` / `Trail`), algebraic (`ShieldApply` /
+`OtsApply` / `MandateApply` / `ComputeApply`), wire-integration
+(`Emit` / `Publish` / `Discover` / `Persist` / `Retrieve` /
+`Mutate` / `Purge` / `Transact`), multi-agent (`Deliberate` /
+`Consensus` / `Forge`), cognitive (`Focus` / `Associate` /
+`Aggregate` / `Explore` / `Ingest`), and lambda + tool
+(`LambdaDataApply` / `UseTool`).
+
+### Adopter checklist — what changes, what doesn't
+
+| Concern | v1.26.0 | v1.27.0 |
+|---|---|---|
+| `.axon` source needed? | — | **NONE** — existing source compiles unchanged |
+| Wire body for stub + canonical `Stream<T>` | 1 axon.token "(stub)" + 1 axon.complete | **Byte-identical** (D4 anchor) |
+| Wire body for canonical Step + real backend (Anthropic / OpenAI / Gemini / Kimi / GLM / Ollama / OpenRouter) | Per upstream provider chunk via `Backend::stream()` (33.x.b) | **Byte-identical** (33.x.b absorbed into dispatcher's `pure_shape` handler unchanged) |
+| Wire body for orchestration / PIX / algebraic / wire-integration / multi-agent / lambda shapes | LEGACY synchronous fallback — synthetic 3-word burst + `axon-W002 streaming-not-supported` warning | **Per-chunk live streaming** via `flow_dispatcher::dispatch_node`; **NO `axon-W002` for shape mismatches** — variant deleted |
+| `FlowExecutionEvent::ToolCall` SSE wire surface | Silent consume (`=> {}` in production consumer) | **Live wire emission** — `event: axon.tool_call` with `{ step, trace_id, tool_name, content, timestamp_ms }` payload |
+| `axon.complete.enforcement_summary` / `step_audit` / `runtime_warnings` side-channels | Populated for canonical Step by `run_streaming_async_path` + for orchestration by `run_streaming_legacy_path` | **Populated uniformly by dispatcher's per-variant handlers** through `DispatchCtx::with_external_side_channels` (33.z.c side-channel threading) |
+| `StepAuditRecord.branch_path` on replay row | Available since 33.x.f for canonical Step | **Populated by every dispatched node** — orchestration handlers thread the branch path; ForIn iterations + Conditional branch selection + Par sibling index all recorded |
+| Opt-out feature flag for shape-by-shape rollback | Existed in v1.26.0-alpha as `AXON_STREAMING_VIA_DISPATCHER` / `set_streaming_via_dispatcher` / `StreamingViaDispatcherGuard` | **DELETED** — dispatcher is the unconditional production path; no opt-out (Scenario E of [MIGRATION_v1.27.md](MIGRATION_v1.27.md)) |
+| `FallbackMode` closed catalog | 4 variants | **3 variants** — `UnsupportedFlowShape` deleted |
+| `PlanError::LegacyOrchestrationRequired` + `flow_plan::unsupported_feature_reason` + `axon_server::run_streaming_legacy_path` + `axon_server::run_streaming_async_path` + `construct_enforcer_for_policy` | `#[deprecated(since = "1.26.0")]` shims | **DELETED** — compile error at any non-comment reference; enforced by `axon-rs/tests/fase33z_e_parity_gate.rs` grep parity gate |
+
+### D-letters mapped to adopter-observable behavior
+
+The 33.z cycle's D-letters compose into the production wire
+contract. Adopters observe each D-letter through a specific
+surface (which the 33.z CI workflow `.github/workflows/fase_33z_dispatcher_production.yml`
+verifies on every push/PR):
+
+| D-letter | What it guarantees | How adopters observe it |
+|---|---|---|
+| **D1 — single hot path** | `server_execute_streaming` invokes `run_streaming_via_dispatcher` unconditionally; no flag check, no fork between canonical-Step path + legacy fallback; the dispatcher is total (45/45 IRFlowNode variants) | Inspect `axon-rs/src/axon_server.rs` (the streaming producer arm): exactly one `axon::streaming_via_dispatcher::run_streaming_via_dispatcher(...).await` call. Confirmed by `tests/fase33z_e_parity_gate.rs::no_run_streaming_legacy_path_references` + `no_run_streaming_async_path_references` |
+| **D2 — `axon-W002 unsupported_flow_shape` unreachable** | `FallbackMode::UnsupportedFlowShape` variant was deleted from the runtime warnings catalog; no source path exists to emit the `unsupported_flow_shape` slug | Deploy any flow with orchestration / PIX / algebraic / wire-integration shapes; capture `axon.complete.warnings[*]` array on the wire body; observe ZERO entries with `fallback_mode: "unsupported_flow_shape"`. Pinned by `tests/fase33z_e_parity_gate.rs::fallback_mode_catalog_size_pinned_to_three_post_33_z_e` + `tests/fase33x_g_warning_catalog.rs::d2_unsupported_flow_shape_structurally_unreachable_post_33_z_e` |
+| **D3 — cancel propagation** | The dispatcher's per-variant handlers preserve the 33.y D3 cancel-check-at-entry invariant; nested orchestration (ForIn → Par → Conditional → Step depth 1-5) propagates cancel uniformly | Set the request's cancel token (HTTP client disconnect, explicit cancel signal) during a deeply-nested adopter flow; the server-side producer returns within bounded wall-clock (p95 ≤100ms across depth 1-5). Validated by `tests/fase33z_production_fuzz.rs::fuzz_s2_cancel_through_orchestration_depth` (100 LCG iters across depth × cancel timing) |
+| **D4 — wire byte-compat** | Canonical `step S { ask: "..." output: Stream<Token> }` + stub backend emits exactly 1 `axon.token "(stub)"` + 1 `axon.complete` — byte-identical with v1.25.0/v1.26.0; canonical Step + real backend per-upstream-chunk delivery byte-identical with v1.25.0 (the 33.x.b path is absorbed unchanged into the dispatcher's `pure_shape` handler) | POST any canonical-shape route deployed with stub or any real backend; capture body; diff against v1.25.0/v1.26.0 capture. Adopters observe zero difference. Pinned by `tests/fase33z_production_fuzz.rs::fuzz_s1_canonical_step_totality` (375 LCG iters confirming wire envelope shape) |
+| **D5 — `axon.tool_call` SSE wire emission** | Closed-catalog 5-field SSE event family `event: axon.tool_call` with `{ step, trace_id, tool_name, content, timestamp_ms }` payload; event ID counter monotonic with the rest of the SSE stream; arrival ordering preserved (tool_call before subsequent text token for the same step) | Subscribe an EventSource to a flow with `step S { ask: "..." apply: <tool> output: Stream<Token> }` + real backend signaling `FinishReason::ToolUse`; receive `axon.tool_call` events in arrival order. Stub backend never emits ToolCall (FinishReason::Stop) — `tools_call_count == 0` invariant validated by `tests/fase33z_production_fuzz.rs::fuzz_s3_tool_call_zero_emission_under_stub` (250 LCG iters) |
+| **D7 — sync↔async parity** | The dispatcher's execution outcomes are semantically equivalent with the sync runner's for every shape in the 50-fixture parity corpus (`tests/fixtures/fase33z_parity_corpus/`); per-fixture mode (Strict / Multiset / CountOnly) documents the relaxation level honestly | Adopters that run the same `.axon` source through CLI (`runner::execute_full`) and through the SSE producer observe semantically equivalent outcomes per the corpus mode declaration. Determinism is 5-repeat stable (`tests/fase33z_production_fuzz.rs::fuzz_s4_parity_determinism_stress`) |
+| **D8 — legacy retirement** | 9 deprecated symbols (`LegacyOrchestrationRequired` / `unsupported_feature_reason` / `run_streaming_legacy_path` / `run_streaming_async_path` / `construct_enforcer_for_policy` / `UnsupportedFlowShape` / `streaming_via_dispatcher_enabled` / `set_streaming_via_dispatcher` / `StreamingViaDispatcherGuard`) DELETED from `axon-rs/src/**/*.rs`; FallbackMode pinned to 3 variants | Downstream crates that referenced any of the 9 deleted symbols hit explicit compile errors at v1.26.0 → v1.27.0 upgrade — this is INTENDED + part of the 33.y.l → 33.z.e deprecation cycle (see [MIGRATION_v1.27.md](MIGRATION_v1.27.md) Scenarios D + E). Enforced by `tests/fase33z_e_parity_gate.rs` (10 grep tests) |
+| **D9 — wire byte-compat across the algebraic-effect bridge** | The `effects_bridge::bridge_effect_stream_yield` static-scan over the instruction tree continues to produce one `axon.token` per static Yield with `token_index` monotonic from 1; the dispatcher's `stream_block` handler preserves this invariant from 33.y.e | Adopters using `IRStreamBlock` algebraic-effect shapes observe identical wire byte sequences with v1.26.0 + v1.27.0 + v1.25.0 (the bridge is in the language-runtime layer, untouched by the production-wiring lift) |
+| **D10 — cross-stack Python↔Rust** | Python's IR catalog (`axon/compiler/ir_nodes.py`) and Rust's `flow_plan::ir_flow_node_kind` slug set agree at the 45-variant level modulo 3 documented Python-slug overrides (`let → let_binding` / `par → parallel_block` / `daemon_step → daemon`) + 1 Rust-only slug (`stream_block`); the 50-fixture corpus compiles cleanly in both stacks (modulo 13 documented Python-parser feature gaps Gap A/B/C) | Cross-stack adopters (Python frontends authoring `.axon` source consumed by Rust runtime) observe the same canonical Step semantic outcome through Python's `Executor` and Rust's dispatcher. Pinned by `tests/test_fase33z_f_cross_stack_dispatcher_parity.py` (10 tests in §1 catalog parity + §2 IR compilation parity + §3 canonical Step semantic parity) |
+| **D11 — closed-catalog discipline** | The 45 Rust slug catalog is exact-cardinality-pinned (no 46th can be added silently); the 3 Python override map is pairwise-disjoint from the 1 Rust-only catalog; the parser-feature-gap catalog is exact-cardinality pinned (4 + 5 + 4 = 13 fixtures pairwise disjoint) | A future axon-lang minor that adds a 46th IRFlowNode variant in Rust without updating the Python side fails the cross-stack drift gate at PR time. A future Python parser PR that closes one of the 3 gaps (e.g., adds `hibernate <ident> <duration>` bare-form support) fires the `unexpectedly_passing` assertion in 33.z.f, forcing the catalog to shrink (and the plan vivo close-out) |
+| **D12 — production-grade fuzz** | ~5 100 deterministic LCG iters across 16 fuzz tests (12 production-template clusters × 375 iters + 100 cancel-depth + 250 tool-call zero-emission + 50 × 5 parity determinism); ~0.30s runtime; hand-rolled Knuth/MMIX LCG with no external dep; cardinality pin (`fuzz_pack_cardinality_pinned`) catches drift | Downstream forks running `cargo test --test fase33z_production_fuzz` exercise all 4 invariant categories deterministically. The CI workflow `.github/workflows/fase_33z_dispatcher_production.yml` runs the fuzz lane on every push/PR; failures surface as `<lane-name>: <test-name>` GitHub Actions annotations |
+
+### The production-path entry surface
+
+```rust
+// New in v1.27.0 — the single unconditional production hot path.
+//
+// run_streaming_via_dispatcher is the producer that
+// server_execute_streaming invokes for every adopter request.
+// No flag check; no fork; the dispatcher is total.
+pub async fn run_streaming_via_dispatcher(
+    source: String,
+    source_file: String,
+    flow_name: String,
+    backend: String,
+    cancel: CancellationFlag,
+    tx: tokio::sync::mpsc::UnboundedSender<FlowExecutionEvent>,
+    // §Fase 33.z.c — external side-channels threaded from the SSE
+    // producer so the dispatcher's per-variant handlers populate
+    // the SAME Mutexes the wire's enforcement_summary / step_audit /
+    // runtime_warnings fields read from. Critical for D4 byte-compat
+    // with the v1.25.0/v1.26.0 33.x.d/f production-path surface.
+    enforcement_summaries: Arc<Mutex<HashMap<String, EnforcementSummaryWire>>>,
+    step_audit_records: Arc<Mutex<Vec<StepAuditRecord>>>,
+    runtime_warnings: Arc<Mutex<Vec<RuntimeWarning>>>,
+);
+```
+
+Downstream crates that drove the v1.26.0 `flow_dispatcher::dispatch_node`
+API directly continue to work unchanged — the 33.y public surface
+(`dispatch_node` / `DispatchCtx` / `NodeOutcome` / `DispatchError`)
+is preserved verbatim. v1.27.0 adds `run_streaming_via_dispatcher`
+as the production-side composer (which itself uses `dispatch_node`
+internally) for adopters who want to ship their own SSE producer
+without re-implementing the dispatcher loop.
+
+### Migration scenarios
+
+For the 5 worked recipes — (A) server-only upgrade observing
+per-chunk streaming on non-canonical shapes; (B) consuming the
+new `axon.tool_call` SSE event family; (C) reading
+`StepAuditRecord.branch_path` for regulated-vertical replay;
+(D) migrating downstream crates off the 5 deleted internal symbols
+(`PlanError::LegacyOrchestrationRequired` etc.); (E) handling
+compile errors from the deleted opt-out flag symbols
+(`set_streaming_via_dispatcher` etc.) — see [MIGRATION_v1.27.md](MIGRATION_v1.27.md).
+
+### Vertical-grounded adopter relevance
+
+The four high-profile regulated verticals (Banking PCI DSS Req 10 /
+Government FedRAMP AU-2 / Legal FRE 502 / Medicine HIPAA + 21 CFR
+Part 11 §11.10) observe **per-chunk granularity on every
+orchestration shape they actually deploy** in v1.27.0:
+
+| Vertical | Canonical adopter shape | What v1.27.0 enables |
+|---|---|---|
+| **Banking — AML transaction screening** | `for tx in transactions { par { step Sanctions {...} step Velocity {...} step Bureau {...} } }` | Per-iteration audit trail with `branch_path: ["ForIn:tx=tx_42[2]", "Par[1]", "Step:Velocity"]`; per-chunk live SSE for the analyst's real-time review pane; W002 elision means clean audit log (no spurious unsupported_flow_shape entries) |
+| **Government — Benefits eligibility** | `if applicant_tier == "veteran" { step VABenefits {...} step VABonus {...} } else { step StandardBenefits {...} }` | Selected branch recorded on every audit entry for FOIA + appeal review; per-chunk SSE for the caseworker's review console; replay row's `branch_path` includes the conditional outcome |
+| **Legal — Privilege scanner** | `for doc in corpus { shield Privilege on review -> ... step Adjudicate {...} }` | Per-document branch path so an external review can reconstruct which documents were flagged at which point; per-chunk SSE during attorney review; enforcement_summary counters surface on the per-document audit |
+| **Medicine — Clinical Decision Support** | `step Triage {...} shield Hipaa on response -> ... if severity == "critical" { step Escalate {...} } else { step Standard {...} }` | Per-step audit trail for 21 CFR Part 11 §11.10(e); HIPAA enforcement_summary counters per shield activation; selected escalation branch recorded; per-chunk SSE for the clinician's interface |
+
+These canonical adopter patterns map 1-to-1 to fixtures in the 33.z.d
+parity corpus (`axon-rs/tests/fixtures/fase33z_parity_corpus/`); the
+50-fixture corpus is the regression-gating contract.
 
 ---
 
