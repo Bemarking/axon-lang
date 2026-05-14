@@ -184,6 +184,10 @@ mod tests {
             output_schema: "JSON".to_string(),
             effect_row: vec!["network".to_string()],
             source: ToolSource::Program,
+            // §Fase 34.c — HTTP tools default to non-streaming; effect_row
+            // carries `network` but no `stream:` prefix. HTTP streaming
+            // (SSE-aware adapter consuming upstream SSE) lands in Fase 34.e.
+            is_streaming: false,
         }
     }
 

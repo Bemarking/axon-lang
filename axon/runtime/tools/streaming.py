@@ -41,7 +41,7 @@ import asyncio
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, ClassVar, Optional, Union
+from typing import Any, AsyncIterator, ClassVar, Optional, Sequence, Union
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -176,7 +176,12 @@ class ToolChunk:
         # ``data`` may be a structured payload (dict / list); we
         # str-coerce for the wire delta. Adopters who need richer
         # serialization override ``stream()`` directly.
-        delta = data if isinstance(data, str) else str(data) if data is not None else ""
+        if isinstance(data, str):
+            delta = data
+        elif data is None:
+            delta = ""
+        else:
+            delta = str(data)
 
         if success:
             finish_reason: ToolFinishReason = ToolFinishStop()
@@ -314,3 +319,36 @@ class Tool(ABC):
         override this to return ``True``.
         """
         return False
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  derive_is_streaming — canonical cross-stack derivation rule
+# ═══════════════════════════════════════════════════════════════════
+
+
+def derive_is_streaming(effect_row: Sequence[str]) -> bool:
+    """§Fase 34.c (v1.29.0) — Canonical derivation rule for the
+    Python mirror of axon-rs ``tool_registry::derive_is_streaming``.
+
+    A tool is a stream producer iff at least one entry in its
+    ``effect_row`` begins with the ``stream:`` slug prefix. This
+    is the AST-level structural signal the paper §3-§6 defines:
+    ``effects: <stream:<policy>>`` on a tool declaration means
+    "this tool is a stream producer with backpressure policy
+    ⟨policy⟩".
+
+    Cross-stack contract (D10): the Rust mirror lives in
+    ``axon-rs/src/tool_registry.rs``. Both stacks check the same
+    ``startswith("stream:")`` prefix predicate; the drift gate
+    ``tests/test_fase34_c_registry_drift_cross_stack.py`` pins
+    the 1-to-1 contract over a synthetic 30-tool corpus shared
+    with the Rust drift gate
+    ``axon-rs/tests/fase34_c_registry_drift.rs``.
+
+    The closed-catalog ``<stream:<policy>>`` payloads are
+    ``{drop_oldest, degrade_quality, pause_upstream, fail}`` per
+    Fase 33.e; new policies require a deliberate sub-fase. The
+    derivation rule itself is policy-agnostic — any ``stream:``
+    prefix flags the tool as a stream producer.
+    """
+    return any(e.startswith("stream:") for e in effect_row)

@@ -37,6 +37,46 @@ pub struct ToolEntry {
     pub output_schema: String,
     pub effect_row: Vec<String>,
     pub source: ToolSource,
+    /// §Fase 34.c (v1.29.0) — Whether this tool is a stream
+    /// producer. Auto-derived at registration time from
+    /// `effect_row` via [`derive_is_streaming`] when the tool comes
+    /// from the IR (`register_from_ir`). Adopters programmatically
+    /// registering tools via [`ToolRegistry::register`] set this
+    /// flag explicitly (or use [`derive_is_streaming`] for the
+    /// canonical rule).
+    ///
+    /// The dispatcher's `pure_shape::run_step` (Fase 34.d) reads
+    /// this flag to decide whether to route through the streaming
+    /// path (`tool.stream(args, ctx)`) or the synchronous path
+    /// (`tool.execute(args, ctx)`). Built-in tools default to
+    /// `false`; tools declaring `effects: <stream:<policy>>` in
+    /// their AST get `true` automatically.
+    pub is_streaming: bool,
+}
+
+/// §Fase 34.c (v1.29.0) — Canonical derivation rule for the
+/// [`ToolEntry::is_streaming`] field.
+///
+/// A tool is a stream producer iff at least one entry in its
+/// `effect_row` begins with the `stream:` slug prefix. This is the
+/// AST-level structural signal the paper §3-§6 defines:
+/// `effects: <stream:<policy>>` on a tool declaration means "this
+/// tool is a stream producer with backpressure policy ⟨policy⟩".
+///
+/// The closed-catalog `<stream:<policy>>` payloads are
+/// `{drop_oldest, degrade_quality, pause_upstream, fail}` per
+/// Fase 33.e; new policies require a deliberate sub-fase. The
+/// derivation rule itself is policy-agnostic — any `stream:` slug
+/// flags the tool as a stream producer.
+///
+/// # Cross-stack contract (D10)
+///
+/// The Python mirror lives in `axon.runtime.tools.streaming`
+/// (Fase 34.b). Both stacks check the same prefix predicate; the
+/// drift gate `tests/test_fase34_c_registry_drift_cross_stack.py`
+/// pins the 1-to-1 contract.
+pub fn derive_is_streaming(effect_row: &[String]) -> bool {
+    effect_row.iter().any(|e| e.starts_with("stream:"))
 }
 
 /// Where the tool was defined.
@@ -80,6 +120,9 @@ impl ToolRegistry {
                 output_schema: "number".to_string(),
                 effect_row: vec!["compute".to_string()],
                 source: ToolSource::Builtin,
+                // §Fase 34.c — Calculator declares `compute` effect only.
+                // No stream effect → is_streaming = false.
+                is_streaming: false,
             },
         );
         self.tools.insert(
@@ -94,13 +137,22 @@ impl ToolRegistry {
                 output_schema: String::new(),
                 effect_row: vec!["read".to_string()],
                 source: ToolSource::Builtin,
+                // §Fase 34.c — DateTimeTool declares `read` effect only.
+                is_streaming: false,
             },
         );
     }
 
     /// Register tools from the IR program's tool definitions.
+    ///
+    /// §Fase 34.c (v1.29.0) — `is_streaming` is auto-derived from
+    /// each spec's `effect_row` via [`derive_is_streaming`]. Tools
+    /// declaring `effects: <stream:<policy>>` automatically register
+    /// as stream producers; the dispatcher (Fase 34.d) routes them
+    /// through the streaming path.
     pub fn register_from_ir(&mut self, tool_specs: &[IRToolSpec]) {
         for spec in tool_specs {
+            let is_streaming = derive_is_streaming(&spec.effect_row);
             self.tools.insert(
                 spec.name.clone(),
                 ToolEntry {
@@ -113,6 +165,7 @@ impl ToolRegistry {
                     output_schema: spec.output_schema.clone(),
                     effect_row: spec.effect_row.clone(),
                     source: ToolSource::Program,
+                    is_streaming,
                 },
             );
         }
@@ -210,6 +263,109 @@ impl ToolRegistry {
 mod tests {
     use super::*;
 
+    // §Fase 34.c — derive_is_streaming canonical rule pin.
+    //
+    // This lib unit test pins the derivation predicate semantics
+    // at the language layer: a tool is a stream producer iff at
+    // least one entry in its effect_row begins with `stream:`.
+    // The drift gate `axon-rs/tests/fase34_c_registry_drift.rs`
+    // extends this pin across a 30-tool synthetic corpus.
+    #[test]
+    fn fase34_c_derive_is_streaming_canonical_rule() {
+        // Empty effect_row → not a stream producer.
+        assert!(!derive_is_streaming(&[]));
+        // Single non-stream effect → not a stream producer.
+        assert!(!derive_is_streaming(&["compute".to_string()]));
+        assert!(!derive_is_streaming(&["read".to_string()]));
+        assert!(!derive_is_streaming(&["network".to_string()]));
+        assert!(!derive_is_streaming(&["io".to_string()]));
+        assert!(!derive_is_streaming(&["epistemic:speculate".to_string()]));
+        // Multiple non-stream effects → not a stream producer.
+        assert!(!derive_is_streaming(&[
+            "compute".to_string(),
+            "read".to_string(),
+            "epistemic:speculate".to_string(),
+        ]));
+        // Any `stream:<policy>` prefix → stream producer.
+        assert!(derive_is_streaming(&["stream:drop_oldest".to_string()]));
+        assert!(derive_is_streaming(&["stream:degrade_quality".to_string()]));
+        assert!(derive_is_streaming(&["stream:pause_upstream".to_string()]));
+        assert!(derive_is_streaming(&["stream:fail".to_string()]));
+        // Mixed: stream effect among other effects still flags streaming.
+        assert!(derive_is_streaming(&[
+            "compute".to_string(),
+            "stream:drop_oldest".to_string(),
+            "network".to_string(),
+        ]));
+        // `stream` substring NOT at prefix → not a stream effect
+        // (the rule is `starts_with("stream:")`, not `contains`).
+        assert!(!derive_is_streaming(&["downstream".to_string()]));
+        assert!(!derive_is_streaming(&["upstream-flow".to_string()]));
+        // `stream:` with empty policy — still detected as streaming
+        // intent. The closed-catalog policy validation lives in the
+        // resolver (Fase 33.e); the derive_is_streaming rule is the
+        // CHEAPER predicate (used at registration time only).
+        assert!(derive_is_streaming(&["stream:".to_string()]));
+    }
+
+    #[test]
+    fn fase34_c_register_from_ir_auto_derives_is_streaming() {
+        let mut reg = ToolRegistry::new();
+        let specs = vec![
+            IRToolSpec {
+                node_type: "ToolDefinition",
+                source_line: 1,
+                source_column: 1,
+                name: "ChatStreamer".to_string(),
+                provider: "anthropic".to_string(),
+                max_results: None,
+                filter_expr: String::new(),
+                timeout: String::new(),
+                runtime: String::new(),
+                sandbox: None,
+                input_schema: Vec::new(),
+                output_schema: String::new(),
+                effect_row: vec!["stream:drop_oldest".to_string()],
+            },
+            IRToolSpec {
+                node_type: "ToolDefinition",
+                source_line: 5,
+                source_column: 1,
+                name: "PlainScanner".to_string(),
+                provider: "stub".to_string(),
+                max_results: None,
+                filter_expr: String::new(),
+                timeout: String::new(),
+                runtime: String::new(),
+                sandbox: None,
+                input_schema: Vec::new(),
+                output_schema: String::new(),
+                effect_row: vec!["compute".to_string()],
+            },
+        ];
+        reg.register_from_ir(&specs);
+        let chat_entry = reg.get("ChatStreamer").unwrap();
+        assert!(
+            chat_entry.is_streaming,
+            "34.c register_from_ir MUST auto-derive is_streaming=true \
+             for tools declaring effects: <stream:<policy>>"
+        );
+        let plain_entry = reg.get("PlainScanner").unwrap();
+        assert!(
+            !plain_entry.is_streaming,
+            "34.c register_from_ir MUST auto-derive is_streaming=false \
+             for tools without `stream:` in effect_row"
+        );
+    }
+
+    #[test]
+    fn fase34_c_builtins_are_not_streaming() {
+        let reg = ToolRegistry::new();
+        // Built-in Calculator + DateTimeTool have no stream effect.
+        assert!(!reg.get("Calculator").unwrap().is_streaming);
+        assert!(!reg.get("DateTimeTool").unwrap().is_streaming);
+    }
+
     #[test]
     fn new_registry_has_builtins() {
         let reg = ToolRegistry::new();
@@ -233,6 +389,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             source: ToolSource::Program,
+            is_streaming: false,
         });
 
         assert!(reg.contains("WebSearch"));
@@ -318,6 +475,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             source: ToolSource::Program,
+            is_streaming: false,
         });
 
         let result = reg.dispatch("TestTool", "hello world").unwrap();
@@ -338,6 +496,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             source: ToolSource::Program,
+            is_streaming: false,
         });
 
         // brave provider not handled locally → falls through to LLM
@@ -364,6 +523,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             source: ToolSource::Program,
+            is_streaming: false,
         });
 
         let entry = reg.get("Calculator").unwrap();
@@ -388,6 +548,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             source: ToolSource::Program,
+            is_streaming: false,
         });
         reg.register(ToolEntry {
             name: "AlphaTool".to_string(),
@@ -399,6 +560,7 @@ mod tests {
             output_schema: String::new(),
             effect_row: Vec::new(),
             source: ToolSource::Program,
+            is_streaming: false,
         });
 
         let names = reg.tool_names();

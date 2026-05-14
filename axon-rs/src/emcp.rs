@@ -550,6 +550,11 @@ mod tests {
             output_schema: "JSON".to_string(),
             effect_row: vec!["network".to_string(), "epistemic:speculate".to_string()],
             source: ToolSource::Program,
+            // §Fase 34.c — MCP tools default to non-streaming; effect_row
+            // carries `network` + `epistemic:speculate` but no `stream:`
+            // prefix. MCP streaming via partial-response notifications
+            // lands in Fase 34.f.
+            is_streaming: false,
         }
     }
 
