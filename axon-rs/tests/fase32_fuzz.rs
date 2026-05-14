@@ -231,10 +231,13 @@ fn fuzz_resolve_replay_enabled_total() {
     }
 }
 
-// ─── §5 — classify_dynamic_route_wire 5-input truth table ───────────
+// ─── §5 — classify_dynamic_route_wire 6-input truth table ───────────
+//
+// §Fase 33.z.k.1 (v1.27.1) — extended to 6 inputs with the
+// `has_algebraic_stream_effect` predicate.
 
 #[test]
-fn fuzz_classify_dynamic_route_wire_total_over_5_inputs() {
+fn fuzz_classify_dynamic_route_wire_total_over_6_inputs() {
     let transports = ["sse", "json", "ndjson", "", "bogus"];
     let implicits = ["sse", "json", ""];
     for seed in 0u64..100 {
@@ -243,10 +246,13 @@ fn fuzz_classify_dynamic_route_wire_total_over_5_inputs() {
             let transport = *rng.pick(&transports);
             let explicit = rng.bool();
             let implicit = *rng.pick(&implicits);
+            let algebraic = rng.bool();
             let accept_sse = rng.bool();
             let strict = rng.bool();
             // Must return one of two enum variants — never panic.
-            let wire = classify_dynamic_route_wire(transport, explicit, implicit, accept_sse, strict);
+            let wire = classify_dynamic_route_wire(
+                transport, explicit, implicit, algebraic, accept_sse, strict,
+            );
             match wire {
                 DynamicRouteWire::Sse | DynamicRouteWire::Json => {}
             }

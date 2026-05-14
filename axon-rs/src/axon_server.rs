@@ -19458,45 +19458,78 @@ pub enum DynamicRouteWire {
 }
 
 /// §Fase 32.e (D6) — Per-route negotiation classifier.
+/// §Fase 33.z.k.1 (v1.27.1) — Extended with algebraic-effect override.
 ///
 /// Total function over `(transport, transport_explicit,
-/// implicit_transport, client_wants_sse, strict_mode)`. The decision
-/// is single-valued (`DynamicRouteWire`) for every input combination.
+/// implicit_transport, has_algebraic_stream_effect, client_wants_sse,
+/// strict_mode)`. The decision is single-valued (`DynamicRouteWire`)
+/// for every input combination.
 ///
 /// The function is **pure** — same inputs always produce the same
 /// output. The drift gate at the test layer locks the truth table
 /// against accidental rewrites.
 ///
-/// Truth table (8 meaningful cells; the rest reduce to these via the
-/// `transport_explicit` gate):
+/// Truth table (post-33.z.k.1):
 ///
-/// | explicit | transport | implicit | strict | accept_sse | wire |
-/// |----------|-----------|----------|--------|------------|------|
-/// | true     | sse       | *        | *      | *          | SSE  |
-/// | true     | ndjson    | *        | *      | *          | SSE  |
-/// | true     | json      | *        | *      | *          | JSON | ← D3 sacred opt-out
-/// | false    | (n/a)     | sse      | true   | *          | SSE  | ← D1 inference fires
-/// | false    | (n/a)     | sse      | false  | true       | SSE  | ← D4 Accept-fallback
-/// | false    | (n/a)     | sse      | false  | false      | JSON | ← D9 backwards-compat
-/// | false    | (n/a)     | json     | *      | *          | JSON |
-/// | false    | (n/a)     | ""       | *      | *          | JSON | ← pre-31.b inference
+/// | explicit | transport | algebraic | implicit | strict | accept_sse | wire |
+/// |----------|-----------|-----------|----------|--------|------------|------|
+/// | true     | sse       | *         | *        | *      | *          | SSE  |
+/// | true     | ndjson    | *         | *        | *      | *          | SSE  |
+/// | true     | json      | *         | *        | *      | *          | JSON | ← D3 sacred opt-out
+/// | false    | (n/a)     | **true**  | *        | *      | *          | SSE  | ← D11 algebraic-effect override (v1.27.1)
+/// | false    | (n/a)     | false     | sse      | true   | *          | SSE  | ← D1 inference fires
+/// | false    | (n/a)     | false     | sse      | false  | true       | SSE  | ← D4 Accept-fallback
+/// | false    | (n/a)     | false     | sse      | false  | false      | JSON | ← D9 backwards-compat
+/// | false    | (n/a)     | false     | json     | *      | *          | JSON |
+/// | false    | (n/a)     | false     | ""       | *      | *          | JSON | ← pre-31.b inference
 ///
 /// (Last row catches AST that was consumed without running the
 /// `compute_implicit_transports` pass — defensive default to JSON.)
+///
+/// # §Fase 33.z.k.1 — Algebraic-effect override (v1.27.1)
+///
+/// When the `execute_flow` references a tool that declares
+/// `effects: <stream:<policy>>` (i.e.,
+/// `has_algebraic_stream_effect == true`), the route promotes to
+/// `Sse` UNCONDITIONALLY — no `Accept: text/event-stream` header
+/// required, no `AXON_STRICT_TYPE_DRIVEN_TRANSPORT=1` runtime flag
+/// required. The justification: an algebraic effect declaration on
+/// a tool is a LANGUAGE-LEVEL commitment (part of the type system),
+/// not a client preference. The wire MUST honor it.
+///
+/// D3 `transport: json` explicit opt-out STILL WINS above the
+/// override — adopters can deliberately suppress SSE by declaring
+/// `transport: json` on the endpoint even when the tool has a
+/// stream effect. This is the only escape valve.
+///
+/// The override is strictly additive over the pre-33.z.k.1 truth
+/// table: every cell where the algebraic predicate is `false`
+/// produces the same wire as before. Adopters who depended on
+/// `output: Stream<T>` (type-annotation-only stream) for D6
+/// backwards-compat still see JSON in legacy mode without `Accept:`.
 pub fn classify_dynamic_route_wire(
     transport: &str,
     transport_explicit: bool,
     implicit_transport: &str,
+    has_algebraic_stream_effect: bool,
     client_wants_sse: bool,
     strict_mode: bool,
 ) -> DynamicRouteWire {
     if transport_explicit {
         // Adopter declared explicitly — declaration wins regardless of
-        // strict mode or Accept header. D3 + D5 sacred.
+        // strict mode or Accept header. D3 + D5 sacred. Algebraic-effect
+        // predicate does NOT override an explicit `transport: json`.
         return match transport {
             "sse" | "ndjson" => DynamicRouteWire::Sse,
             _ => DynamicRouteWire::Json,
         };
+    }
+    // §Fase 33.z.k.1 — Algebraic-effect override fires BEFORE the
+    // D9 backwards-compat gate. A declared `effects: <stream:<policy>>`
+    // on a tool is part of the language's type system; the wire MUST
+    // honor it without client cooperation.
+    if has_algebraic_stream_effect {
+        return DynamicRouteWire::Sse;
     }
     // Implicit path — consult Fase 31.b's pre-computed `implicit_transport`.
     if implicit_transport == "sse" {
@@ -19515,13 +19548,20 @@ mod dynamic_route_wire_truth_table {
     fn s() -> DynamicRouteWire { DynamicRouteWire::Sse }
     fn j() -> DynamicRouteWire { DynamicRouteWire::Json }
 
+    // §Fase 33.z.k.1 (v1.27.1) — Every assertion below pins the
+    // 6-input signature. The algebraic-effect predicate defaults to
+    // `false` for the pre-33.z.k.1 truth-table cells (the algebraic
+    // override is exercised in the dedicated test block at the end).
+
     #[test]
     fn explicit_sse_always_promotes() {
         for strict in [false, true] {
             for accept in [false, true] {
-                assert_eq!(classify_dynamic_route_wire("sse", true, "", accept, strict), s());
-                assert_eq!(classify_dynamic_route_wire("sse", true, "sse", accept, strict), s());
-                assert_eq!(classify_dynamic_route_wire("sse", true, "json", accept, strict), s());
+                for algebraic in [false, true] {
+                    assert_eq!(classify_dynamic_route_wire("sse", true, "", algebraic, accept, strict), s());
+                    assert_eq!(classify_dynamic_route_wire("sse", true, "sse", algebraic, accept, strict), s());
+                    assert_eq!(classify_dynamic_route_wire("sse", true, "json", algebraic, accept, strict), s());
+                }
             }
         }
     }
@@ -19531,7 +19571,7 @@ mod dynamic_route_wire_truth_table {
         // ndjson currently maps onto the SSE handler per Fase 30 D2
         // (the wire format is still text/event-stream framing).
         assert_eq!(
-            classify_dynamic_route_wire("ndjson", true, "", false, false),
+            classify_dynamic_route_wire("ndjson", true, "", false, false, false),
             s()
         );
     }
@@ -19540,29 +19580,35 @@ mod dynamic_route_wire_truth_table {
     fn explicit_json_is_sacred_opt_out_d3() {
         for strict in [false, true] {
             for accept in [false, true] {
-                assert_eq!(
-                    classify_dynamic_route_wire("json", true, "sse", accept, strict),
-                    j(),
-                    "D3 opt-out must hold for (accept={accept}, strict={strict})"
-                );
+                for algebraic in [false, true] {
+                    // §Fase 33.z.k.1 — Even when the tool DECLARES a stream
+                    // effect (`algebraic = true`), an explicit
+                    // `transport: json` on the endpoint STILL wins. D3 is
+                    // the only escape valve from the algebraic override.
+                    assert_eq!(
+                        classify_dynamic_route_wire("json", true, "sse", algebraic, accept, strict),
+                        j(),
+                        "D3 opt-out must hold for (accept={accept}, strict={strict}, algebraic={algebraic})"
+                    );
+                }
             }
         }
     }
 
     #[test]
     fn implicit_sse_strict_mode_promotes_d1() {
-        assert_eq!(classify_dynamic_route_wire("", false, "sse", false, true), s());
-        assert_eq!(classify_dynamic_route_wire("", false, "sse", true, true), s());
+        assert_eq!(classify_dynamic_route_wire("", false, "sse", false, false, true), s());
+        assert_eq!(classify_dynamic_route_wire("", false, "sse", false, true, true), s());
     }
 
     #[test]
     fn implicit_sse_legacy_with_accept_promotes_d4() {
-        assert_eq!(classify_dynamic_route_wire("", false, "sse", true, false), s());
+        assert_eq!(classify_dynamic_route_wire("", false, "sse", false, true, false), s());
     }
 
     #[test]
     fn implicit_sse_legacy_no_accept_stays_json_d9() {
-        assert_eq!(classify_dynamic_route_wire("", false, "sse", false, false), j());
+        assert_eq!(classify_dynamic_route_wire("", false, "sse", false, false, false), j());
     }
 
     #[test]
@@ -19570,7 +19616,7 @@ mod dynamic_route_wire_truth_table {
         for strict in [false, true] {
             for accept in [false, true] {
                 assert_eq!(
-                    classify_dynamic_route_wire("", false, "json", accept, strict),
+                    classify_dynamic_route_wire("", false, "json", false, accept, strict),
                     j()
                 );
             }
@@ -19580,7 +19626,84 @@ mod dynamic_route_wire_truth_table {
     #[test]
     fn empty_implicit_defaults_to_json() {
         // Catches AST consumed without running compute_implicit_transports.
-        assert_eq!(classify_dynamic_route_wire("", false, "", true, true), j());
+        // Algebraic predicate also defaults to false in that scenario, so
+        // the route falls through to the JSON default cell.
+        assert_eq!(classify_dynamic_route_wire("", false, "", false, true, true), j());
+    }
+
+    // §Fase 33.z.k.1 — Algebraic-effect override truth-table.
+    //
+    // The override fires whenever the tool declares
+    // `effects: <stream:<policy>>` AND the endpoint does NOT
+    // explicitly opt out via `transport: json`. The wire is
+    // unconditionally `Sse` across every combination of `strict_mode`
+    // + `client_wants_sse` + `implicit_transport`.
+
+    #[test]
+    fn algebraic_override_fires_without_strict_or_accept_d11() {
+        // The canonical Kivi-shape adopter case: `step S { apply: T }`
+        // where tool T declares `effects: <stream:drop_oldest>`. Client
+        // sends POST without `Accept: text/event-stream`; server runs
+        // without `AXON_STRICT_TYPE_DRIVEN_TRANSPORT=1`. Pre-33.z.k.1
+        // this returned `Json` (D9 backwards-compat). Post-33.z.k.1
+        // the algebraic-effect override promotes to `Sse`.
+        assert_eq!(
+            classify_dynamic_route_wire("", false, "sse", true, false, false),
+            s(),
+            "33.z.k.1 D11 algebraic-effect override: tool's declared \
+             effects: <stream:...> MUST drive the wire to SSE \
+             unconditionally (D6 backwards-compat is structurally \
+             unobservable for tool-streaming flows)"
+        );
+    }
+
+    #[test]
+    fn algebraic_override_unaffected_by_strict_or_accept() {
+        // The override result is invariant under D6 strict_mode + D4
+        // accept_sse — they only matter when the algebraic predicate
+        // is false. With algebraic=true the wire is always Sse.
+        for strict in [false, true] {
+            for accept in [false, true] {
+                for implicit in ["", "sse", "json"] {
+                    assert_eq!(
+                        classify_dynamic_route_wire("", false, implicit, true, accept, strict),
+                        s(),
+                        "33.z.k.1: algebraic=true MUST promote to Sse \
+                         for (implicit={implicit:?}, accept={accept}, strict={strict})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn algebraic_override_does_not_fire_when_transport_json_explicit() {
+        // D3 sacred above all — even with algebraic-effect signal, an
+        // explicit `transport: json` declaration wins.
+        for strict in [false, true] {
+            for accept in [false, true] {
+                assert_eq!(
+                    classify_dynamic_route_wire("json", true, "sse", true, accept, strict),
+                    j(),
+                    "D3 dominates D11 algebraic override; explicit json \
+                     opt-out is the only escape valve"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn algebraic_override_fires_even_when_implicit_transport_empty() {
+        // Defensive: if compute_implicit_transports never ran but the
+        // algebraic predicate was set (e.g., manual route construction
+        // in adopter test harness), the override still fires. This
+        // matches the "algebraic effect is part of the type" principle —
+        // the language commitment doesn't depend on a separate
+        // transport-inference pass.
+        assert_eq!(
+            classify_dynamic_route_wire("", false, "", true, false, false),
+            s()
+        );
     }
 }
 
@@ -19657,6 +19780,22 @@ pub struct DynamicEndpointRoute {
     /// GET/DELETE → false); an explicit `replay: true | false`
     /// declaration overrides.
     pub replay_enabled: bool,
+    /// §Fase 33.z.k.1 (v1.27.1) — Algebraic-effect override predicate.
+    ///
+    /// `true` when `execute_flow` references a tool that declares
+    /// `effects: <stream:<policy>>`. Copied verbatim from
+    /// `AxonEndpointDefinition.has_algebraic_stream_effect` (computed
+    /// by `axon_frontend::type_checker::compute_implicit_transports`).
+    ///
+    /// Used by [`classify_dynamic_route_wire`] to OVERRIDE the v1.22.0
+    /// D6 backwards-compat gate. A tool with a declared stream effect
+    /// is a LANGUAGE-LEVEL commitment to streaming (algebraic effect
+    /// is part of the type), not a client preference. The runtime
+    /// honors the commitment without requiring an `Accept:
+    /// text/event-stream` header (D4 negotiation) or the strict-mode
+    /// runtime flag (D6). D3 explicit `transport: json` opt-out still
+    /// wins above this override.
+    pub has_algebraic_stream_effect: bool,
 }
 
 /// Walk the program's AxonEndpoint declarations and produce the
@@ -19726,6 +19865,12 @@ pub fn collect_axonendpoint_routes(
                     replay_enabled: crate::axonendpoint_replay::resolve_replay_enabled(
                         &method, ae.replay_explicit, ae.replay,
                     ),
+                    // §Fase 33.z.k.1 (v1.27.1) — algebraic-effect override
+                    // copied verbatim from the AST. The
+                    // compute_implicit_transports pass on the frontend
+                    // already cross-referenced the flow body against the
+                    // program's tool declarations.
+                    has_algebraic_stream_effect: ae.has_algebraic_stream_effect,
                 },
             );
         }
@@ -20096,6 +20241,7 @@ async fn dynamic_endpoint_handler(
         &route.transport,
         route.transport_explicit,
         &route.implicit_transport,
+        route.has_algebraic_stream_effect,
         client_wants_sse,
         strict_mode,
     );
