@@ -411,23 +411,23 @@ fn s5_produces_stream_disjunction_catalog_is_exactly_four() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn s6_tool_registry_pre_34_lacks_is_streaming_surface() {
-    // PRE-34 baseline: ToolEntry has effect_row but NO is_streaming
-    // field. The presence of `<stream:<policy>>` in effect_row is
-    // dead weight at runtime — only shapes the audit's
-    // axon.complete.stream_policies field.
+fn s6_tool_registry_is_streaming_field_present_post_34_c() {
+    // **Inverted post-34.c** — the pre-34 baseline ("ToolEntry has
+    // effect_row but NO is_streaming field") flipped at 34.c.
+    // ToolEntry now ships `is_streaming: bool` as a structural
+    // field auto-derived from effect_row at registration time via
+    // `derive_is_streaming(effect_row)`.
     //
-    // POST-34 (34.b/c): ToolEntry gains `is_streaming: bool`
-    // automatically derived from `effect_row.iter().any(|e|
-    // e.starts_with("stream:"))`. The drift gate `fase34_c_registry_drift`
-    // pins the 1-to-1 declaration → runtime contract.
-    use axon::tool_registry::ToolEntry;
+    // The 1-to-1 declaration → runtime contract is pinned by the
+    // drift gate `fase34_c_registry_drift.rs` over a synthetic
+    // 30-tool corpus.
+    use axon::tool_registry::{derive_is_streaming, ToolEntry};
 
-    // The current ToolEntry struct exists + has effect_row but lacks
-    // is_streaming. Constructing one with the current fields confirms
-    // the struct shape; 34.b/c will EXTEND this shape additively.
-    let entry = ToolEntry {
-        name: "test_tool".to_string(),
+    // Constructing a ToolEntry with a stream effect: is_streaming
+    // is set explicitly here (caller responsibility for direct
+    // register() path). The register_from_ir() path auto-derives.
+    let stream_entry = ToolEntry {
+        name: "test_stream_tool".to_string(),
         provider: "stub".to_string(),
         timeout: String::new(),
         runtime: String::new(),
@@ -436,19 +436,42 @@ fn s6_tool_registry_pre_34_lacks_is_streaming_surface() {
         output_schema: String::new(),
         effect_row: vec!["stream:drop_oldest".to_string()],
         source: axon::tool_registry::ToolSource::Program,
+        // §Fase 34.c — Caller sets explicitly OR uses derive helper.
+        is_streaming: derive_is_streaming(&["stream:drop_oldest".to_string()]),
     };
-    // Validate the effect_row carries the stream declaration even
-    // though it's runtime-inert today.
     assert!(
-        entry.effect_row.iter().any(|e| e.starts_with("stream:")),
-        "§6 pre-34: effect_row carries <stream:<policy>> declarations \
-         from IR but is runtime-inert at the tool dispatch layer. \
-         34.b/c lifts this into a structural is_streaming field."
+        stream_entry.is_streaming,
+        "§6 post-34.c: effect_row containing `stream:<policy>` MUST \
+         derive is_streaming = true"
     );
+
+    // Non-stream tool: is_streaming should be false.
+    let plain_entry = ToolEntry {
+        name: "test_plain_tool".to_string(),
+        provider: "stub".to_string(),
+        timeout: String::new(),
+        runtime: String::new(),
+        sandbox: None,
+        max_results: None,
+        output_schema: String::new(),
+        effect_row: vec!["compute".to_string(), "read".to_string()],
+        source: axon::tool_registry::ToolSource::Program,
+        is_streaming: derive_is_streaming(&[
+            "compute".to_string(),
+            "read".to_string(),
+        ]),
+    };
+    assert!(
+        !plain_entry.is_streaming,
+        "§6 post-34.c: effect_row WITHOUT any `stream:` prefix MUST \
+         derive is_streaming = false"
+    );
+
     eprintln!(
-        "§6 anchor: ToolEntry.effect_row carries stream declarations \
-         but has no is_streaming field. 34.b/c lifts the declaration \
-         into a structural field."
+        "§6 anchor (post-34.c): ToolEntry.is_streaming structural field \
+         auto-derived from effect_row.iter().any(|e| e.starts_with(\"stream:\")). \
+         The 1-to-1 declaration → runtime contract is the drift gate's \
+         load-bearing invariant."
     );
 }
 

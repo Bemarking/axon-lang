@@ -2728,6 +2728,7 @@ fn tool_registry_program_tool_stub() {
         output_schema: String::new(),
         effect_row: Vec::new(),
         source: ToolSource::Program,
+        is_streaming: false,
     });
 
     assert_eq!(reg.len(), 3);
@@ -3105,6 +3106,7 @@ fn http_tool_dispatch_via_registry() {
         output_schema: "JSON".to_string(),
         effect_row: vec!["network".to_string()],
         source: ToolSource::Program,
+        is_streaming: false,
     });
 
     // HTTP provider is now handled (returns Some, not None)
@@ -3131,6 +3133,7 @@ fn http_tool_empty_url_fails() {
         output_schema: String::new(),
         effect_row: vec![],
         source: ToolSource::Program,
+        is_streaming: false,
     };
 
     let result = dispatch_http(&entry, "arg");
@@ -3153,6 +3156,7 @@ fn http_tool_invalid_scheme_fails() {
         output_schema: String::new(),
         effect_row: vec![],
         source: ToolSource::Program,
+        is_streaming: false,
     };
 
     let result = dispatch_http(&entry, "arg");
@@ -3177,6 +3181,7 @@ fn http_tool_no_longer_falls_through() {
         output_schema: String::new(),
         effect_row: vec!["network".to_string()],
         source: ToolSource::Program,
+        is_streaming: false,
     });
 
     // dispatch returns Some (not None) — HTTP provider is handled
@@ -3295,6 +3300,7 @@ fn emcp_dispatch_via_registry() {
         output_schema: "JSON".to_string(),
         effect_row: vec!["network".to_string(), "epistemic:speculate".to_string()],
         source: ToolSource::Program,
+        is_streaming: false,
     });
 
     // MCP provider is handled (returns Some, not None)
@@ -3381,6 +3387,7 @@ fn emcp_mcp_no_longer_falls_through() {
         output_schema: "JSON".to_string(),
         effect_row: vec!["network".to_string(), "io".to_string(), "epistemic:speculate".to_string()],
         source: ToolSource::Program,
+        is_streaming: false,
     });
 
     let result = reg.dispatch("FhirAPI", r#"{"patient_id": "123"}"#);
