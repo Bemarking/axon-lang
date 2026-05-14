@@ -171,20 +171,30 @@ fn assert_json(ct: &str, ctx: &str) {
 }
 
 // ─── Source corpus — dynamic routes ─────────────────────────────────
+//
+// §Fase 33.z.k.1 (v1.27.1) — These fixtures use the TYPE-ANNOTATION
+// disjunct (`output: Stream<Token>` on a step) rather than the
+// ALGEBRAIC-EFFECT disjunct (`apply: tool` where the tool declares
+// `effects: <stream:<policy>>`). The two disjuncts now have DIFFERENT
+// gate behaviors post-33.z.k.1:
+//   - Type-annotation only → D6 backwards-compat (requires
+//     strict_mode OR Accept: text/event-stream)
+//   - Algebraic effect      → D11 override (unconditional SSE,
+//     D3 transport:json still wins)
+// The 8-cell matrix below pins the TYPE-ANNOTATION disjunct. The
+// algebraic-effect disjunct has its own dedicated test pack in
+// `tests/fase33z_k_1_algebraic_override.rs`.
 
 const STREAM_FLOW_NO_DECL: &str =
-    "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
-     flow F() -> Unit { step S { ask: \"x\" apply: t } }\n\
+    "flow F() -> Unit { step S { ask: \"x\" output: Stream<Token> } }\n\
      axonendpoint E { method: POST path: \"/dyn-stream\" execute: F }";
 
 const STREAM_FLOW_DECL_SSE: &str =
-    "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
-     flow F() -> Unit { step S { ask: \"x\" apply: t } }\n\
+    "flow F() -> Unit { step S { ask: \"x\" output: Stream<Token> } }\n\
      axonendpoint E { method: POST path: \"/dyn-sse\" execute: F transport: sse }";
 
 const STREAM_FLOW_DECL_JSON: &str =
-    "tool t { description: \"t\" effects: <stream:drop_oldest> }\n\
-     flow F() -> Unit { step S { ask: \"x\" apply: t } }\n\
+    "flow F() -> Unit { step S { ask: \"x\" output: Stream<Token> } }\n\
      axonendpoint E { method: POST path: \"/dyn-json\" execute: F transport: json }";
 
 const NON_STREAM_FLOW_NO_DECL: &str =
