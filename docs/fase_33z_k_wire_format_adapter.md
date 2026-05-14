@@ -1,7 +1,26 @@
-# §Fase 33.z.k — Wire-format adapter cycle (target v1.28.0)
+# §Fase 33.z.k — Wire-format adapter cycle (v1.28.0 SHIPPED)
 
-> **Status:** 🚀 IN PROGRESS — checkpoint 2026-05-14;
-> 14 sub-fases SHIPPED (a, b, c, d, e, f, g.1, g.2, g.3, h, i, j, k, l); 1 sub-fase pendiente (33.z.k.m release).
+> **Status:** ✅ **CLOSED 2026-05-14** — all 15 sub-fases shipped.
+> axon-lang v1.28.0 live cross-stack (crates.io + PyPI auto-publishing +
+> GitHub Release published). axon-frontend v0.12.0 live on crates.io.
+> The cycle's core promise delivered: algebraic-effect SSE is now
+> a market-surpassing language primitive that adopter SDKs (litellm,
+> langchain, vercel/ai, instructor, llama_index, anthropic-sdk,
+> Moonshot Kimi, Zhipu GLM client libraries) consume verbatim with
+> zero axon-specific awareness. Founder principle honored end-to-end:
+> *"los algebraics effects SSE deben funcionar perfectamente y cumplir
+> la promesa del paper... una primitiva cognitiva que supera lo que
+> hoy ofrece el mercado en ese sentido."*
+>
+> **Sub-fases (15):** a, b, c, d, e, f, g.1, g.2, g.3, h, i, j, k, l, m
+> **Test inventory:** 173 dedicated 33.z.k tests (135 Rust + 38 Python)
+> across 14 test files + dedicated CI workflow.
+> **D-letters:** D1-D12 ratificadas. **Q-letters:** Q1-Q7 ratificadas
+> bloque ("Si") 2026-05-13 + Q3 catalog revision 2026-05-14
+> (axon/openai/anthropic → axon/openai/kimi/glm/anthropic).
+>
+> **Follow-up:** axon-enterprise v1.19.0 catch-up release pending
+> (lean — dep pin bump `axon-lang>=1.27.0` → `>=1.28.0`).
 > **Cycle core promise delivered 2026-05-14 via 33.z.k.g.2** —
 > algebraic-effect flows now emit OpenAI Chat Completions streaming
 > bytes verbatim when POSTed against the dynamic-route handler. The
@@ -254,10 +273,13 @@ From the Q1-Q7 ratifications (founder bloque "Si" 2026-05-13):
    §dialects~~ ✅ SHIPPED 2026-05-14 (`MIGRATION_v1.28.md` 834 LOC
    + 6 scenarios A-F + `ADOPTER_STREAMING.md` +435 LOC new
    §Multi-dialect wire format section).
-8. **33.z.k.m**: Coordinated release v1.28.0 + axon-enterprise
-   v1.19.0 catch-up. ~1 hour.
+8. ~~**33.z.k.m**: Coordinated release v1.28.0 cross-stack~~ ✅ SHIPPED
+   2026-05-14 — axon-frontend 0.12.0 + axon-lang 1.28.0 live on
+   crates.io + GitHub Release published + PyPI auto-publish workflow
+   fired. axon-enterprise v1.19.0 catch-up tracked separately as a
+   lean follow-up.
 
-Total estimated remaining: ~10-12 hours over 2 fresh sessions.
+**Cycle CLOSED 2026-05-14.** All 15 sub-fases SHIPPED end-to-end.
 
 ### Commit reference (in order, all on origin/master)
 
@@ -277,7 +299,11 @@ Total estimated remaining: ~10-12 hours over 2 fresh sessions.
 | `c76ad34` | 33.z.k.i dialect catalog drift gate (Rust + Python cross-stack mirror) |
 | `2594d77` | 33.z.k.j D12 production-grade fuzz × dialects + anthropic defensive close |
 | `7dcd689` | 33.z.k.k dedicated CI workflow (7 parallel lanes + summary) |
-| _(this commit)_ | 33.z.k.l adopter docs MIGRATION_v1.28.md + ADOPTER_STREAMING §Multi-dialect wire format |
+| `baf9f30` | 33.z.k.l adopter docs MIGRATION_v1.28.md + ADOPTER_STREAMING §Multi-dialect wire format |
+| `b65edab` + `bde6e52` | 33.z.k.m axon-frontend v0.12.0 release (Cargo.toml + dep pin + Cargo.lock) |
+| `96e213a` | 33.z.k.m coordinated cross-stack bump v1.27.1 → v1.28.0 (bump-my-version minor) |
+| `488c786` | 33.z.k.m axon-rs/Cargo.lock refresh to 1.28.0 |
+| _(this commit)_ | 33.z.k.m close-out — plan vivo + memory snapshot |
 
 ### The single test that proves everything works end-to-end
 
@@ -637,7 +663,7 @@ before `[DONE]`, dropped entirely. Each has tradeoffs.
 | **33.z.k.j** | D12 production-grade fuzz × dialects | ~970 LOC | ✅ SHIPPED 2026-05-14 — stochastic coverage layer above the deterministic 33.z.k.{d,e,f,g.3,h,i} pin-tests. New `axon-rs/tests/fase33z_k_j_dialect_fuzz.rs` ships **~3 350 deterministic LCG iters across 18 tests in 9 sections**, hand-rolled LCG (Knuth/MMIX constants, mirror of `fase33z_production_fuzz.rs` idiom — zero external deps). Sections: §1 adapter totality across 3 dialects × 200 iters (random 1-30 length event streams; every frame parses as JSON OR is the `[DONE]` sentinel); §2 closed-catalog event-name vocabulary per dialect (axon: 4-entry `{axon.token, axon.complete, axon.tool_call, axon.error}`; openai: empty — all frames are `data:`-only; anthropic: 7-entry `{message_*, content_block_*, axon.metadata}`); §3 cross-dialect arrival-order signature invariant (300 iters of random T-X-T-X... sequences project byte-equivalently onto all 3 dialects modulo framing); §4 anthropic content_block lifecycle (300 iters — every start has matching stop, indices monotonic, no orphan blocks); §5 OpenAI tool_call_id monotonicity (200 iters — `call_<trace_hex>_<N>` IDs strictly increasing per request); §6 CompleteEnvelope round-trip projection (3 dialects × 300 iters = 900 iters — random envelopes with 4 independent algebraic-policy fields populated/empty round-trip byte-exact onto metadata frames with D4 elision); §7 determinism across repeats (3 dialects × 200 iters × 3 repeats — same input → same wire bytes modulo timestamps/created/message.id); §8 iter-count meta-pin (prevents accidental fuzz shrinkage); §9 anthropic flush_terminator defensive close on orphan text block. **Collateral hardening:** `AnthropicDialectAdapter::flush_terminator` now defensively closes any orphan text block before emitting the terminator — Anthropic spec requires every `content_block_start` balanced by `content_block_stop`; in production the producer guarantees a terminal event closes blocks, but library users driving the adapter directly (test harnesses, future producers, direct integrations) can't be assumed to respect that contract. The defensive close is a no-op on well-formed inputs (frame count stays exactly 2). **Generator honesty:** `gen_random_event_stream` always appends a terminal event when the random loop didn't emit one — matches the producer contract `server_execute_streaming` guarantees in production. Zero regressions across full Rust suite. |
 | **33.z.k.k** | dedicated CI workflow extension | ~260 LOC | ✅ SHIPPED 2026-05-14 — new `.github/workflows/fase_33z_k_wire_format_adapter.yml`. **8 jobs (7 parallel test lanes + 1 summary aggregator)** locking every sub-fase's contract at PR time so adopter-facing regressions surface BEFORE a release ever ships. Lane structure: (1) `anchors-and-overrides` — 33.z.k.a forensic anchor + 33.z.k.1 algebraic-effect override; (2) `cross-stack-rust` — 33.z.k.b grammar + 33.z.k.c resolver (axon-frontend workspace) + 33.z.k.i drift gate (axon-rs); (3) `cross-stack-python` — 33.z.k.b + 33.z.k.c + 33.z.k.i Python mirrors (pytest); (4) `dialect-adapters` — 33.z.k.{d,e,f} adapter unit tests (38 byte-exact translation tests); (5) `wire-e2e` — 33.z.k.g 4 dialect E2E packs + 33.z.k.g.3 tool-call interleaving (23 tests); (6) `metadata-population` — 33.z.k.h algebraic-policy surfacing (12 tests including 3 HTTP E2E cross-dialect parity); (7) `dialect-fuzz` — 33.z.k.j D12 ~3 350 LCG iters across 18 tests / 9 invariant sections; (8) `summary` — aggregates all lanes via `needs:` so the master CI status check is single-source-of-truth for the cycle's contract. **Test inventory locked**: 135 Rust + 38 Python = 173 dedicated 33.z.k tests across 14 test files + 1 CI workflow. Setup: `dtolnay/rust-toolchain@stable` + `Swatinem/rust-cache@v2` per Rust lane; `actions/setup-python@v5` with python 3.12 for Python lane. Triggers: `push: master` + `pull_request: master` + `workflow_dispatch`. `permissions: contents: read` (no write access — read-only CI). YAML syntax validated via `yaml.safe_load`. Every test path referenced in the workflow exists on disk (18/18 verified). Summary lane prints the full Q1-Q7 + D1-D12 contract honored + test inventory + founder principle verbatim. |
 | **33.z.k.l** | adopter docs — `MIGRATION_v1.28.md` + `ADOPTER_STREAMING.md` § dialects | ~1180 LOC | ✅ SHIPPED 2026-05-14 — **new `docs/MIGRATION_v1.28.md`** (834 LOC, 12 H2 sections): TL;DR explicit-about-wire-flip + "what changed" matrix (28 rows comparing v1.27.0 vs v1.28.0 across every surface) + architectural arc (founder principle verbatim + the open-set vs closed-catalog trade-off + Q5 escape valve rationale) + **6 worked scenarios A-F**: (A) algebraic-effect flow + adopter SDK consumption with litellm/vercel-ai/instructor recipes; (B) preserving W3C-named axon dialect via `transport: sse(axon)` Q5 escape valve; (C) Anthropic Claude target via `sse(anthropic)` with python-anthropic recipe + tool-call interleaving (3-frame triad); (D) Moonshot Kimi K2.x + Zhipu ChatGLM-4.x targets via `sse(kimi)`/`sse(glm)` with openai-sdk recipe; (E) consuming Q7 `axon_metadata` extension frame for vertical-regulator audit with Python `httpx` recipes for both openai + anthropic dialects + 4-vertical audit-unlock mapping; (F) downstream crate integration with the public `WireFormatAdapter` trait API including a minimal-SSE-producer example + 9-site-update checklist for adding a 6th dialect. Backwards compatibility matrix (12 surfaces). What this release does NOT change (10 surfaces). Where to file bugs per-symptom (8 routing entries). See-also pointers to ADOPTER_STREAMING + plan vivo + CI workflow. **Updated `docs/ADOPTER_STREAMING.md`** (+435 LOC, new `## Multi-dialect wire format (Fase 33.z.k, v1.28.0+)` section inserted before `## Where to file bugs`): Q1-Q7 ratification table mapped 1:1 to adopter-observable behavior; per-dialect wire shape reference (axon + openai + anthropic verbatim wire bodies with byte-exact illustrative examples); decision tree (which dialect for which adopter SDK target); 4 canonical adopter recipes per regulated vertical (Banking PCI DSS / Government FedRAMP / Legal FRE 502 / Medicine HIPAA + 21 CFR Part 11) with full `.axon` source + the corresponding `axon_metadata` audit hook explanation; tool-call interleaving across dialects (canonical T → X → T → T sequence shown verbatim in all 3 dialects' wire); closed-catalog mutex (D11 final invariant); D-letters mapped to adopter-observable behavior (D1-D12 table with test pack citations); public adapter API reference (`WireFormatAdapter` trait + `select_adapter` factory + `CompleteEnvelope` struct); migration scenarios pointer to MIGRATION_v1.28.md. Both docs cross-reference each other + the plan vivo + the CI workflow + the 173 dedicated 33.z.k tests. Honest about the wire-flip risk + 100% explicit about Q5 escape valve. |
-| **33.z.k.m** | release v1.28.0 + axon-enterprise v1.19.0 catch-up | release | ⏳ pending |
+| **33.z.k.m** | coordinated release v1.28.0 cross-stack | release | ✅ SHIPPED 2026-05-14 — **axon-lang v1.28.0 live end-to-end**: (1) axon-frontend 0.11.2 → **0.12.0** on crates.io (new public surface: `AXONENDPOINT_TRANSPORT_DIALECTS` const + `resolve_effective_dialect` function + `AxonEndpointDefinition.transport_dialect` AST field — commits `b65edab` + `bde6e52` + tag `axon-frontend-v0.12.0`); (2) axon-lang Python 1.27.1 → **1.28.0** via `bump-my-version bump minor` (cross-stack atomic update: pyproject.toml + axon/__init__.py + axon-rs/Cargo.toml + tests/test_cli_mvp_smoke.py + tests/test_frontend_contract_golden.py — commit `96e213a`); (3) axon-rs/Cargo.lock refreshed to 1.28.0 (commit `488c786`); (4) axon-lang dep pin `axon-frontend = "=0.11.2"` → `"=0.12.0"` lockstep with the frontend bump; (5) tags `v1.28.0` + `rust-v1.28.0` + `axon-frontend-v0.12.0` pushed to origin/master; (6) **cargo publish axon-frontend 0.12.0** on crates.io (Packaged 31 files, 828.6KiB compressed to 148.3KiB, Uploaded + Verified + Published); (7) **cargo publish axon-lang 1.28.0** on crates.io (Uploaded + Published); (8) **GitHub Release v1.28.0** published with content-first notes (~270-line release notes covering Q1-Q7 ratifications + per-dialect wire shape + adopter SDK consumption recipes + Q7 vertical-regulator audit unlock table + Q5 escape valve + cycle-status sub-fase table + honest scope statement); (9) **PyPI Publish workflow auto-fired** on `release:published` event (queued + completed without manual draft-toggle recovery this cycle). axon-enterprise v1.19.0 catch-up tracked separately (lean — `axon-lang>=1.27.0` → `>=1.28.0` dep pin bump on enterprise repo). |
 
 **Total target:** ~6 700 LOC + ~80 new tests + dialect-cross-
 product fuzz + dedicated CI lanes.
