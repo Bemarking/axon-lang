@@ -1,7 +1,9 @@
 # §Fase 33.z.k — Wire-format adapter cycle (target v1.28.0)
 
-> **Status:** ⏳ DRAFT 2026-05-13 — awaiting founder bloque
-> ratification of D-letter set + sub-fase sequencing.
+> **Status:** 🚀 IN PROGRESS 2026-05-13 — founder ratification
+> received ("Si"); auto-ratified Q1-Q7 design questions per the
+> Axon-for-Axon discipline (documented in §2 below); sub-fases
+> 33.z.k.a-m sequenced for v1.28.0.
 >
 > **Trigger:** adopter pain 2026-05-13 — after v1.27.1's
 > algebraic-effect override fired SSE wire correctly on the
@@ -66,7 +68,128 @@ adapters wired into the SSE producer.
 
 ---
 
-## ▶ 2. Open design questions (require founder ratification)
+## ▶ 2. Ratified design questions (2026-05-13)
+
+The 7 open questions below received founder bloque ratification
+("Si") under the autonomous-option discipline. Reasoning grounded
+in: (a) "Axon for Axon — every implementation is for the language
+itself"; (b) "el valor del paper debe entregarse"; (c) "axon ships
+language primitives, not adopter patches".
+
+### Q1 — Default dialect: **(b) algebraic-effect-driven default**
+
+When the flow declares an **algebraic effect** (the stronger
+semantic commitment — disjunct b of `produces_stream`), the
+default dialect is **openai**. When the flow uses **type-
+annotation only** (`output: Stream<T>` without a tool effect —
+disjunct a, the structural commitment), the default dialect is
+**axon** (W3C named events).
+
+**Reasoning:** the algebraic-effect declaration is the language's
+strongest commitment to streaming; defaulting to the dialect the
+LLM-streaming ecosystem expects honors the four-pillar paper's
+COMPUTING pillar (adopters get what they expect on the first
+request, no Accept-header gymnastics). The type-annotation-only
+case is more abstract (`Stream<T>` is structural, not tied to a
+specific LLM); keeping W3C named events preserves correctness +
+backwards-compat for any adopter consuming the existing axon
+wire shape.
+
+**D3 escape valve preserved:** explicit `transport: sse(axon)`
+forces the W3C-named dialect even on algebraic-effect flows;
+explicit `transport: sse(openai)` forces OpenAI-style even on
+type-annotation-only flows.
+
+### Q2 — Declaration grammar: **`transport: sse(<dialect>)` parametrized**
+
+The existing `transport:` field gains a parenthesized parameter
+selecting the dialect. The closed-catalog dialect set is
+`{axon, openai, anthropic}` (per Q3). Bare `transport: sse`
+remains valid and resolves to the Q1 default per the flow's
+algebraic-effect predicate.
+
+**Reasoning:** reuses the existing axonendpoint field (no new
+field surface); compact + symmetrical with the `<stream:policy>`
+parametrized syntax already used on tool effects; parser changes
+localize to the existing transport-value-parsing path. The
+`wire_format:` orthogonal-field alternative was rejected as
+unnecessary surface bloat — the dialect IS the wire's transport
+concern.
+
+### Q3 — Adapter set scope: **vertical-grounded — 3 dialects**
+
+`axon` (W3C named events, current) + `openai` (data:{chunk} +
+[DONE] sentinel) + `anthropic` (event: content_block_delta).
+
+**Reasoning:** the 4 high-profile regulated verticals consume
+LLM streams from providers whose adopter SDKs hard-code either
+OpenAI-compat (OpenAI / Kimi / GLM / Ollama / OpenRouter all
+use OpenAI-style SSE) or Anthropic SSE (HIPAA clinical reasoning
+uses Anthropic Claude for FDA-cleared reasoning models in many
+deployments). Three dialects cover ~95% of adopter expectations.
+Open-set pluggability (downstream crates registering custom
+dialects) is explicitly out of scope — closed catalog stays
+within the Axon-for-Axon discipline.
+
+### Q4 — Terminator semantics: **per-dialect native**
+
+Each dialect ships its native terminator:
+- **axon** → `event: axon.complete` + `data: {success, ...}`
+- **openai** → `data: [DONE]` (literal — non-JSON sentinel)
+- **anthropic** → `event: message_stop` + `data: {...}`
+
+**Reasoning:** terminators are part of the dialect's wire
+contract; adopter SDKs hard-code them. Forcing a unified
+terminator across dialects would break compatibility with the
+adopter SDKs that motivated the cycle.
+
+### Q5 — Backwards-compat window for axon dialect: **indefinite**
+
+The axon W3C-named dialect remains a first-class option
+indefinitely. `transport: sse(axon)` always works. The default
+for type-annotation-only flows stays axon (per Q1). No
+deprecation timeline.
+
+**Reasoning:** the axon dialect is the W3C-correct baseline; it
+satisfies the COMPUTING + LOGIC pillars from the four-pillar
+paper. Adopters who built EventSource clients parsing named
+events continue to work unchanged.
+
+### Q6 — Tool-call interleaving per dialect
+
+Per-dialect implementation detail; each adapter handles the
+mapping internally:
+- **axon** → separate `event: axon.tool_call` (shipped v1.27.0)
+- **openai** → inline `tool_calls: [{...}]` field inside the
+  `data: {chunk}` frame at the moment of the tool-call request
+- **anthropic** → `event: content_block_start` with
+  `data: {type: "tool_use", ...}`
+
+**Reasoning:** matches each dialect's adopter-SDK expectation
+exactly. No founder-level policy needed; the adapter's per-
+dialect tests pin the mapping.
+
+### Q7 — Algebraic-policy preservation channel
+
+The `enforcement_summary` + `runtime_warnings` + `step_audit`
+side-channels surface per dialect:
+- **axon** → fields on the `axon.complete` final frame (current)
+- **openai** → custom `data: {"axon_metadata": {enforcement_summary:..., runtime_warnings:..., step_audit:...}}` frame
+  EMITTED BEFORE `data: [DONE]`
+- **anthropic** → `event: axon.metadata` frame emitted BEFORE
+  `event: message_stop`
+
+**Reasoning:** D4 wire byte-compat for the axon dialect is
+preserved (no field movement). The other two dialects gain a
+named extension surface that adopter SDKs ignore by default
+(they don't know about `axon_metadata` / `axon.metadata`); SDK-
+free clients that need the compliance data can opt-in via direct
+SSE parsing. Vertical regulatory requirements (HIPAA audit /
+PCI DSS Req 10 / FRE 502) preserved across every dialect.
+
+---
+
+## ▶ 2.1. Original open-questions catalog (now ratified)
 
 ### Q1 — Default dialect
 
