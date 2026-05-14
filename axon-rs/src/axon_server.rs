@@ -18112,163 +18112,26 @@ use axum::response::sse::{Event, Sse};
 use futures::stream::Stream;
 use std::convert::Infallible;
 
-/// Build a single `axon.token` SSE event from a step name + chunk content.
-/// Pure helper — no side effects. `event_id` is the monotonic per-trace
-/// counter; adopter EventSource clients receive it via the `id:` field.
-fn build_token_event(
-    event_id: u64,
-    trace_id: u64,
-    step_name: &str,
-    token: &str,
-    timestamp_ms: i64,
-) -> Event {
-    let data = serde_json::json!({
-        "step": step_name,
-        "trace_id": trace_id,
-        "token": token,
-        "timestamp_ms": timestamp_ms,
-    });
-    Event::default()
-        .event("axon.token")
-        .id(event_id.to_string())
-        .data(serde_json::to_string(&data).unwrap_or_default())
-}
-
-/// Build the final `axon.complete` SSE event carrying the execution
-/// envelope (steps_executed, tokens_input/output, latency, backend,
-/// success). After this event the server closes the response.
-///
-/// §Fase 33.e — When the flow declares any `<stream:<policy>>` effect,
-/// the wire envelope additionally carries a `stream_policies` array of
-/// `{step, policy}` objects so adopters can verify the algebraic-effect
-/// declaration bound to the runtime path. Empty arrays are elided so
-/// pre-33.e wire-shape expectations stay byte-identical (D9).
-fn build_complete_event(event_id: u64, exec: &ServerExecutionResult) -> Event {
-    let mut data = serde_json::json!({
-        "trace_id": exec.trace_id,
-        "flow": exec.flow_name,
-        "backend": exec.backend,
-        "steps_executed": exec.steps_executed,
-        "tokens_input": exec.tokens_input,
-        "tokens_output": exec.tokens_output,
-        "latency_ms": exec.latency_ms,
-        "success": exec.success,
-    });
-    if !exec.effect_policies.is_empty() {
-        let arr = exec
-            .effect_policies
-            .iter()
-            .map(|(step, policy)| serde_json::json!({"step": step, "policy": policy}))
-            .collect::<Vec<_>>();
-        data.as_object_mut()
-            .expect("json object")
-            .insert("stream_policies".to_string(), serde_json::Value::Array(arr));
-    }
-    // §Fase 33.x.d — enforcement summary per step. Emitted ONLY when
-    // the enforcer actually ran (D4 byte-compat with v1.24.0 + with
-    // pre-33.x.d wire: empty map is elided so parsers ignoring
-    // unknown fields see no observable change).
-    if !exec.enforcement_summaries.is_empty() {
-        let mut obj = serde_json::Map::new();
-        for (step, summary) in &exec.enforcement_summaries {
-            obj.insert(
-                step.clone(),
-                serde_json::to_value(summary).unwrap_or(serde_json::Value::Null),
-            );
-        }
-        data.as_object_mut()
-            .expect("json object")
-            .insert(
-                "enforcement_summary".to_string(),
-                serde_json::Value::Object(obj),
-            );
-    }
-    // §Fase 33.x.g — Runtime warnings (closed-catalog W002, etc.).
-    // Emitted ONLY when at least one warning fired (legacy
-    // fallback path); the happy async-streaming path leaves
-    // `runtime_warnings` empty + the field is elided so adopter
-    // parsers see no observable change (D4 byte-compat).
-    if !exec.runtime_warnings.is_empty() {
-        let arr = exec
-            .runtime_warnings
-            .iter()
-            .map(|w| serde_json::to_value(w).unwrap_or(serde_json::Value::Null))
-            .collect::<Vec<_>>();
-        data.as_object_mut()
-            .expect("json object")
-            .insert("warnings".to_string(), serde_json::Value::Array(arr));
-    }
-    Event::default()
-        .event("axon.complete")
-        .id(event_id.to_string())
-        .data(serde_json::to_string(&data).unwrap_or_default())
-}
-
-/// §Fase 33.z.c — Build the `axon.tool_call` SSE event carrying the
-/// upstream-signalled tool-call request. Emitted when the dispatcher's
-/// `pure_shape::run_step` observes `FinishReason::ToolUse` from the
-/// upstream backend (Fase 33.y.k D8 milestone produced the
-/// `FlowExecutionEvent::ToolCall` variant; this is its wire-side
-/// graduation).
-///
-/// The event ARRIVES BEFORE the text `axon.token` events for the
-/// step's response delta (preserves arrival order — the consumer's
-/// EventSource sees the tool-call request first, then any
-/// accompanying reasoning text). Closed-catalog event type — adopter
-/// clients that pattern-match on `event:` discriminate cleanly.
-///
-/// # Wire shape
-///
-/// ```text
-/// event: axon.tool_call
-/// id: <event_id>
-/// data: {"step": "...", "trace_id": N, "tool_name": "...", "content": "...", "timestamp_ms": N}
-///
-/// ```
-///
-/// # D-letter anchor
-///
-/// - **D5** — `axon.tool_call` graduates from silent consume (33.y.k
-///   baseline → 33.z.b graft) to wire emission. The event ID counter
-///   continues monotonically with the rest of the event stream so
-///   adopters consuming via EventSource see strictly-ordered IDs
-///   regardless of event mix.
-fn build_tool_call_event(
-    event_id: u64,
-    trace_id: u64,
-    step_name: &str,
-    tool_name: &str,
-    content: &str,
-    timestamp_ms: u64,
-) -> Event {
-    let data = serde_json::json!({
-        "step": step_name,
-        "trace_id": trace_id,
-        "tool_name": tool_name,
-        "content": content,
-        "timestamp_ms": timestamp_ms,
-    });
-    Event::default()
-        .event("axon.tool_call")
-        .id(event_id.to_string())
-        .data(serde_json::to_string(&data).unwrap_or_default())
-}
-
-/// Build an `axon.error` SSE event for mid-stream failures. After this
-/// event the server closes; client EventSource sees the disconnect +
-/// (per default W3C SSE behavior) attempts reconnection after the
-/// `retry:` interval.
-fn build_error_event(event_id: u64, trace_id: u64, error_msg: &str) -> Event {
-    let data = serde_json::json!({
-        "trace_id": trace_id,
-        "error": error_msg,
-        "recoverable": false,
-    });
-    Event::default()
-        .event("axon.error")
-        .id(event_id.to_string())
-        .data(serde_json::to_string(&data).unwrap_or_default())
-}
+// §Fase 33.z.k.g.2 (v1.28.0) — Wire-format event builders retired.
+// The v1.27.1 inline helpers `build_token_event` / `build_complete_event`
+// / `build_tool_call_event` / `build_error_event` were replaced by the
+// closed-catalog `WireFormatAdapter` dispatch in the SSE consumer loop
+// (see `axon-rs/src/wire_format/`). Per-dialect adapters own:
+//
+//   - axon  → `event: axon.token` / `axon.complete` / `axon.tool_call` /
+//             `axon.error` (D6 byte-compat baseline; AxonDialectAdapter
+//             matches v1.27.1's inline emission verbatim).
+//   - openai → `data: {"choices":[{"delta":{...}}]}` chunks + Q7
+//              `axon_metadata` frame + literal `data: [DONE]`.
+//   - anthropic → `event: message_start` / `content_block_*` /
+//                 `message_delta` + Q7 `axon.metadata` + `message_stop`.
+//
+// Kimi + GLM dialects dispatch to `OpenAIDialectAdapter` (the wire is
+// the OpenAI-compatible Chat Completions streaming format both
+// providers publish). The closed catalog `{axon, openai, kimi, glm,
+// anthropic}` is resolved at deploy via `resolve_effective_dialect`
+// (type_checker.rs) + dispatched at request time via `select_adapter`
+// (wire_format/mod.rs).
 
 /// Build the initial `retry:` directive event. Per W3C SSE spec, this
 /// tells the client EventSource how long to wait before reconnecting
@@ -18694,20 +18557,21 @@ async fn execute_sse_handler_inner(
     headers: HeaderMap,
     payload: StreamExecuteRequest,
     replay_ctx: Option<SseReplayContext>,
-    // §Fase 33.z.k.g.1 (v1.28.0) — SSE wire-format dialect. Closed
-    // catalog `{axon, openai, anthropic}` (resolved by the caller
-    // via `type_checker::resolve_effective_dialect`).
+    // §Fase 33.z.k.g (v1.28.0) — SSE wire-format dialect. Closed
+    // catalog `{axon, openai, kimi, glm, anthropic}` (resolved by the
+    // caller via `type_checker::resolve_effective_dialect` per the
+    // Q1 ratification: explicit `transport: sse(<dialect>)` wins;
+    // otherwise algebraic-effect flows default to `openai`, type-
+    // annotation-only flows default to `axon`).
     //
-    // §33.z.k.g.1 scope (this commit) — threads the dialect through
-    // the producer's signature + clones it into the spawned task.
-    // The consumer loop's event-translation switch from inline
-    // `build_*_event` helpers to `adapter.translate()` is 33.z.k.g.2
-    // (next sub-fase).
-    //
-    // The wire is currently axon-dialect-only on the producer side
-    // regardless of this value; the threading exists to unblock g.2
-    // without re-touching the signature.
-    #[allow(unused_variables)]
+    // §33.z.k.g.2 consumes this value to drive `adapter.translate()`
+    // in the consumer loop below — the producer's event-by-event
+    // translation IS the dialect's wire-format projection. Axon
+    // dialect emits W3C named events (`event: axon.token` +
+    // `event: axon.complete`) byte-identical to v1.27.1; openai
+    // emits `data: {"choices":[...]}` chunks + `data: [DONE]`;
+    // anthropic emits `event: content_block_delta` +
+    // `event: message_stop`. Kimi + GLM reuse the OpenAI wire.
     wire_dialect: String,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     use crate::flow_execution_event::FlowExecutionEvent;
@@ -18761,12 +18625,11 @@ async fn execute_sse_handler_inner(
             let backend_owned = payload.backend.clone();
             let client_owned = client.clone();
             let source_file_for_audit = source_file.clone();
-            // §Fase 33.z.k.g.1 — clone the wire-format dialect for
+            // §Fase 33.z.k.g.2 — clone the wire-format dialect for
             // the spawned task. The adapter is constructed inside
-            // the spawn closure once `trace_id` is reserved.
-            // 33.z.k.g.2 consumes this value to drive `adapter.translate()`
-            // in the consumer loop.
-            #[allow(unused_variables)]
+            // the spawn closure once `trace_id` is reserved + drives
+            // the consumer loop's translation of `FlowExecutionEvent`
+            // into per-dialect wire frames via `adapter.translate()`.
             let wire_dialect_for_task = wire_dialect.clone();
 
             // 33.c: trace_id reservation precedes the executor spawn
@@ -18826,65 +18689,51 @@ async fn execute_sse_handler_inner(
                     cancel.clone(),
                 );
 
-                let mut event_id: u64 = 0;
+                // §Fase 33.z.k.g.2 — Construct the wire-format adapter
+                // for this request. The adapter owns its own monotonic
+                // event-ID counter + per-dialect state (role-marker
+                // emission flag for openai, content-block boundary
+                // tracker for anthropic, etc.). Every internal
+                // FlowExecutionEvent flows through `adapter.translate()`
+                // → zero-or-more dialect-shaped wire frames. The Q5
+                // invariant ("axon dialect backwards-compat is
+                // indefinite") is preserved by `AxonDialectAdapter`
+                // emitting byte-identical wire to the v1.27.1 inline
+                // helpers; the openai + anthropic adapters project the
+                // same per-token + per-tool-call + per-completion
+                // information onto their respective spec-faithful
+                // wires.
+                let mut wire_adapter = crate::wire_format::select_adapter(
+                    &wire_dialect_for_task,
+                    trace_id,
+                );
+
                 let mut steps_executed: usize = 0;
                 let mut tokens_input: u64 = 0;
                 let mut tokens_output: u64 = 0;
                 let mut errors_seen: usize = 0;
                 let mut flow_succeeded = true;
                 let mut terminator_seen = false;
+                let mut consumer_disconnected = false;
 
                 while let Some(event) = event_rx.recv().await {
-                    match event {
-                        FlowExecutionEvent::FlowStart { .. } => {
-                            // Consumed; not surfaced on the wire so
-                            // the byte body matches the pre-33.c shape
-                            // adopters (and Fase 30+31+32 tests)
-                            // depend on. D9 (wire identical, timing
-                            // differs).
-                        }
-                        FlowExecutionEvent::StepStart { .. } => {
-                            // Same: consumed silently.
-                        }
-                        FlowExecutionEvent::StepToken {
-                            step_name,
-                            content,
-                            timestamp_ms,
-                            ..
-                        } => {
-                            event_id += 1;
-                            // §Fase 33.f cancel-safety — when the SSE
-                            // tx returns Err the client disconnected
-                            // (axum dropped the Sse response → rx
-                            // dropped). Cancel the upstream producer
-                            // so it stops emitting events into a
-                            // dropped channel; break out of the
-                            // consumer loop so the trace gets recorded
-                            // with the partial-execution status (no
-                            // FlowComplete observed).
-                            if tx
-                                .send(Ok(build_token_event(
-                                    event_id,
-                                    trace_id,
-                                    &step_name,
-                                    &content,
-                                    timestamp_ms as i64,
-                                )))
-                                .await
-                                .is_err()
-                            {
-                                cancel.cancel();
-                                break;
-                            }
-                        }
+                    // Pre-dispatch bookkeeping for arms that need
+                    // accumulator updates BEFORE handing the event to
+                    // the adapter. FlowStart / StepStart / StepToken /
+                    // ToolCall / FlowError fall through to the unified
+                    // `adapter.translate(&event)` call below; only
+                    // StepComplete (tokens accumulator) and FlowComplete
+                    // (envelope assembly + replay write) need pre-work.
+                    let frames: Vec<Event> = match &event {
                         FlowExecutionEvent::StepComplete {
                             tokens_output: out,
                             ..
                         } => {
-                            tokens_output = tokens_output.saturating_add(out);
+                            tokens_output = tokens_output.saturating_add(*out);
                             // step counter is authoritative on
                             // FlowComplete; we don't increment here to
                             // avoid double-counting.
+                            wire_adapter.translate(&event)
                         }
                         FlowExecutionEvent::FlowComplete {
                             flow_name,
@@ -18896,17 +18745,15 @@ async fn execute_sse_handler_inner(
                             latency_ms: _,
                             timestamp_ms: _,
                         } => {
-                            steps_executed = se;
-                            tokens_input = ti;
-                            tokens_output = to;
-                            flow_succeeded = success;
+                            steps_executed = *se;
+                            tokens_input = *ti;
+                            tokens_output = *to;
+                            flow_succeeded = *success;
                             terminator_seen = true;
 
-                            // Build the same ServerExecutionResult
-                            // shape the existing build_complete_event
-                            // helper expects — wire body stays
-                            // byte-identical with the 30.f path.
-                            //
+                            let flow_name = flow_name.clone();
+                            let backend = backend.clone();
+
                             // §Fase 33.x.d — read enforcement_summaries
                             // from the shared side-channel that the
                             // streaming async producer populates as
@@ -18934,25 +18781,6 @@ async fn execute_sse_handler_inner(
                                 let guard = runtime_warnings_for_consumer.lock().await;
                                 guard.clone()
                             };
-                            let er = ServerExecutionResult {
-                                success,
-                                flow_name: flow_name.clone(),
-                                source_file: source_file.clone(),
-                                backend: backend.clone(),
-                                steps_executed: se,
-                                latency_ms: req_start.elapsed().as_millis() as u64,
-                                tokens_input: ti,
-                                tokens_output: to,
-                                anchor_checks: 0,
-                                anchor_breaches: 0,
-                                errors: errors_seen,
-                                step_names: Vec::new(),
-                                step_results: Vec::new(),
-                                trace_id,
-                                effect_policies: effect_policies.clone(),
-                                enforcement_summaries: summaries_vec,
-                                runtime_warnings: warnings_vec.clone(),
-                            };
 
                             // §Fase 33.x.f — Write the SSE replay
                             // entry IF the route declared `replay: true`.
@@ -18971,20 +18799,7 @@ async fn execute_sse_handler_inner(
                                     let guard = step_audit_records_for_consumer.lock().await;
                                     guard.clone()
                                 };
-                                // §Fase 33.x.g — Read the warnings
-                                // side-channel + mirror onto the
-                                // replay entry. Adopter retrieves
-                                // them via GET /v1/replay/<uuid>
-                                // long after the SSE wire has closed.
-                                let replay_warnings: Vec<crate::runtime_warnings::RuntimeWarning> = {
-                                    // Reuse the already-cloned
-                                    // `warnings_vec` from the wire
-                                    // assembly above instead of
-                                    // re-acquiring the lock — same
-                                    // contents, one less Mutex
-                                    // round-trip.
-                                    warnings_vec.clone()
-                                };
+                                let replay_warnings = warnings_vec.clone();
                                 let now_ms = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .map(|d| d.as_millis() as u64)
@@ -19027,57 +18842,85 @@ async fn execute_sse_handler_inner(
                                 s.axonendpoint_replay.append(replay_entry);
                             }
 
-                            event_id += 1;
-                            let _ = tx
-                                .send(Ok(build_complete_event(event_id, &er)))
-                                .await;
+                            // §Fase 33.z.k.g.2 — Build the
+                            // CompleteEnvelope from the accumulated
+                            // flow state + algebraic-policy side-
+                            // channels, then ask the adapter to project
+                            // it onto the dialect's wire-format
+                            // convention. Axon embeds the fields
+                            // directly on `axon.complete` (D4 byte-
+                            // compat with v1.27.1 inline emission);
+                            // openai + anthropic surface the
+                            // algebraic-policy data via per-dialect
+                            // `axon_metadata` / `axon.metadata` frames
+                            // emitted from `flush_terminator()` (Q7).
+                            let envelope = crate::wire_format::CompleteEnvelope {
+                                trace_id,
+                                flow_name: flow_name.clone(),
+                                backend: backend.clone(),
+                                success: flow_succeeded,
+                                steps_executed,
+                                tokens_input,
+                                tokens_output,
+                                latency_ms: req_start.elapsed().as_millis() as u64,
+                                effect_policies: effect_policies.clone(),
+                                enforcement_summaries: summaries_vec,
+                                runtime_warnings: warnings_vec,
+                            };
+                            wire_adapter.build_complete_envelope_event(&envelope)
                         }
-                        FlowExecutionEvent::FlowError { error, .. } => {
+                        FlowExecutionEvent::FlowError { .. } => {
                             errors_seen += 1;
                             flow_succeeded = false;
                             terminator_seen = true;
-                            event_id += 1;
-                            let _ = tx
-                                .send(Ok(build_error_event(event_id, trace_id, &error)))
-                                .await;
+                            wire_adapter.translate(&event)
                         }
-                        // §Fase 33.z.c — D5 milestone. ToolCall events
-                        // are emitted by the dispatcher's pure_shape
-                        // handler when an upstream backend signals
-                        // FinishReason::ToolUse (Fase 33.y.k D8 surface).
-                        // 33.z.c GRADUATES the consumer from silent
-                        // consume (33.y.k → 33.z.b graft baseline) to
-                        // active wire emission as a closed-catalog
-                        // `axon.tool_call` SSE event. Adopter clients
-                        // pattern-matching on `event:` distinguish
-                        // tool-call requests from text token deltas
-                        // cleanly. Event ID counter continues
-                        // monotonically.
-                        //
-                        // The event ARRIVES BEFORE the step's text
-                        // `axon.token` events (the dispatcher emits
-                        // ToolCall before StepToken when ToolUse
-                        // signals — preserves arrival order).
-                        // Stub backend signals FinishReason::Stop +
-                        // never emits ToolCall → D4 byte-compat
-                        // preserved for adopters running on stub.
-                        FlowExecutionEvent::ToolCall {
-                            step_name,
-                            tool_name,
-                            content,
-                            timestamp_ms,
-                        } => {
-                            event_id += 1;
-                            let _ = tx
-                                .send(Ok(build_tool_call_event(
-                                    event_id,
-                                    trace_id,
-                                    &step_name,
-                                    &tool_name,
-                                    &content,
-                                    timestamp_ms,
-                                )))
-                                .await;
+                        // FlowStart / StepStart / StepToken / ToolCall
+                        // — pure projection through the adapter. Axon
+                        // adapter silently consumes FlowStart +
+                        // StepStart + StepComplete to preserve v1.27.1
+                        // byte-compat; openai emits a role-marker
+                        // frame for FlowStart + per-token content
+                        // deltas; anthropic emits message_start +
+                        // content_block boundary frames.
+                        _ => wire_adapter.translate(&event),
+                    };
+
+                    // §Fase 33.f cancel-safety — when the SSE tx
+                    // returns Err the client disconnected (axum
+                    // dropped the Sse response → rx dropped). Cancel
+                    // the upstream producer so it stops emitting
+                    // events into a dropped channel; break out of the
+                    // consumer loop so the trace gets recorded with
+                    // the partial-execution status (no FlowComplete
+                    // observed). The adapter may emit MULTIPLE frames
+                    // for a single internal event (e.g., anthropic's
+                    // tool-use 3-frame burst, openai's role-marker +
+                    // content-delta pair on FlowStart); cancel-on-err
+                    // checks fire per frame so partial bursts close
+                    // the channel cleanly.
+                    for wire_event in frames {
+                        if tx.send(Ok(wire_event)).await.is_err() {
+                            cancel.cancel();
+                            consumer_disconnected = true;
+                            break;
+                        }
+                    }
+                    if consumer_disconnected {
+                        break;
+                    }
+                }
+
+                // §Fase 33.z.k.g.2 — Emit dialect-specific terminator
+                // frames after the FlowComplete/FlowError translation.
+                // Axon emits nothing (terminator is in-line with the
+                // axon.complete frame); openai emits the Q7
+                // axon_metadata frame + literal `data: [DONE]`;
+                // anthropic emits axon.metadata + `event: message_stop`.
+                if !consumer_disconnected {
+                    for wire_event in wire_adapter.flush_terminator() {
+                        if tx.send(Ok(wire_event)).await.is_err() {
+                            break;
                         }
                     }
                 }
@@ -19087,17 +18930,24 @@ async fn execute_sse_handler_inner(
                 // an error event so the wire is well-formed. This
                 // path is unreachable in 33.c's producer but the
                 // closed-catalog invariant lives in the consumer too.
+                // Route the synthetic FlowError through the adapter so
+                // EVERY dialect surfaces the well-formed terminator
+                // (anthropic emits message_delta; openai emits a final
+                // chunk with finish_reason; axon emits axon.error).
                 if !terminator_seen {
                     flow_succeeded = false;
                     errors_seen = errors_seen.saturating_add(1);
-                    event_id += 1;
-                    let _ = tx
-                        .send(Ok(build_error_event(
-                            event_id,
-                            trace_id,
-                            "executor channel closed without terminator",
-                        )))
-                        .await;
+                    let synthetic_error = FlowExecutionEvent::FlowError {
+                        flow_name: flow_name_owned.clone(),
+                        error: "executor channel closed without terminator".to_string(),
+                        timestamp_ms: 0,
+                    };
+                    for wire_event in wire_adapter.translate(&synthetic_error) {
+                        let _ = tx.send(Ok(wire_event)).await;
+                    }
+                    for wire_event in wire_adapter.flush_terminator() {
+                        let _ = tx.send(Ok(wire_event)).await;
+                    }
                 }
 
                 // Record the trace with the reserved id so audit /
@@ -19134,12 +18984,27 @@ async fn execute_sse_handler_inner(
             });
         }
         None => {
-            // Not-deployed: emit a single error event + close. The
-            // wire shape is `retry: 5000` (already queued above)
-            // followed by `event: axon.error`. tx drops at the end
-            // of this arm.
+            // Not-deployed: emit a single error event + dialect
+            // terminator + close. §Fase 33.z.k.g.2 — route through the
+            // wire-format adapter so EVERY dialect surfaces a well-
+            // formed error. Axon emits `event: axon.error`; openai
+            // emits a final chunk with finish_reason + `data: [DONE]`;
+            // anthropic emits message_delta + `event: message_stop`.
+            // The wire shape is `retry: 5000` (already queued above)
+            // followed by the dialect-specific error projection.
             let err_msg = format!("flow '{}' not deployed", payload.flow_name);
-            let _ = tx.try_send(Ok(build_error_event(1, 0, &err_msg)));
+            let mut wire_adapter = crate::wire_format::select_adapter(&wire_dialect, 0);
+            let synthetic_error = crate::flow_execution_event::FlowExecutionEvent::FlowError {
+                flow_name: payload.flow_name.clone(),
+                error: err_msg,
+                timestamp_ms: 0,
+            };
+            for wire_event in wire_adapter.translate(&synthetic_error) {
+                let _ = tx.try_send(Ok(wire_event));
+            }
+            for wire_event in wire_adapter.flush_terminator() {
+                let _ = tx.try_send(Ok(wire_event));
+            }
         }
     }
 

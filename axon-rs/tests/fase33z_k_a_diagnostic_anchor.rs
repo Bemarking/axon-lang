@@ -137,10 +137,24 @@ async fn s1_canonical_step_stub_emits_one_token_one_complete() {
     assert_eq!(completes, 1, "§1 D4 anchor: exactly 1 axon.complete");
 }
 
-// ─── §2 — Algebraic-effect flow → axon-named wire surface today ─────
+// ─── §2 — Algebraic-effect flow → OpenAI wire surface (Q1 ratification) ─────
+//
+// **Inverted post-33.z.k.g.2** — the consumer-loop refactor + dialect
+// adapter wiring closes the cycle's core promise. Algebraic-effect
+// flows (disjunct b: tool with `effects: <stream:<policy>>`) default
+// to the openai dialect per the founder's Q1 ratification: the LLM-
+// streaming ecosystem's adopter SDKs (litellm, langchain, vercel-ai,
+// instructor) parse the openai wire verbatim, so axon delivers it.
+// Type-annotation-only flows (disjunct a) still default to the axon
+// dialect (W3C named events) — see §1.
+//
+// Q5 escape valve preserved: an adopter who wants the W3C named-event
+// dialect on an algebraic-effect flow declares
+// `transport: sse(axon)` explicitly. That path is exercised in the
+// 33.z.k.g E2E test pack.
 
 #[tokio::test]
-async fn s2_algebraic_effect_emits_axon_named_events_pre_33_z_k_e() {
+async fn s2_algebraic_effect_emits_openai_wire_post_33_z_k_g_2() {
     let src = "tool chat_token_stream { description: \"S\" effects: <stream:drop_oldest> }\n\
         flow Chat() -> Unit {\n\
             step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
@@ -159,33 +173,52 @@ async fn s2_algebraic_effect_emits_axon_named_events_pre_33_z_k_e() {
     let axon_tokens = count_event_lines(&body, "axon.token");
     let axon_completes = count_event_lines(&body, "axon.complete");
     let has_done_sentinel = body.contains("data: [DONE]");
-    let has_chunk_field = body.contains("\"chunk\"");
+    let has_chat_completion_chunk = body.contains("\"object\":\"chat.completion.chunk\"");
+    let has_role_assistant = body.contains("\"delta\":{\"role\":\"assistant\"}");
+    let has_finish_reason_stop = body.contains("\"finish_reason\":\"stop\"");
 
     eprintln!(
-        "§2 anchor (algebraic-effect flow, PRE-33.z.k.e baseline):\n\
+        "§2 anchor (algebraic-effect flow, POST-33.z.k.g.2 OpenAI dialect):\n\
          Content-Type: {ct}\n\
-         axon.token count = {axon_tokens}\n\
-         axon.complete count = {axon_completes}\n\
-         has `data: [DONE]` sentinel (openai-style) = {has_done_sentinel} (expected false)\n\
-         has `\"chunk\"` field (openai-style) = {has_chunk_field} (expected false)\n\
+         axon.token count = {axon_tokens} (expected 0 — openai wire)\n\
+         axon.complete count = {axon_completes} (expected 0 — openai wire)\n\
+         has `data: [DONE]` sentinel = {has_done_sentinel} (expected true)\n\
+         has `chat.completion.chunk` object = {has_chat_completion_chunk} (expected true)\n\
+         has `delta.role: assistant` marker = {has_role_assistant} (expected true)\n\
+         has `finish_reason: stop` = {has_finish_reason_stop} (expected true)\n\
          body sample:\n{}",
         body.chars().take(500).collect::<String>()
     );
 
-    // Pre-33.z.k.e: axon dialect is the default for ALL SSE flows.
-    // Post-33.z.k.e: this anchor inverts — algebraic-effect flows
-    // default to openai dialect; the next two assertions flip.
-    assert!(
-        axon_tokens >= 1,
-        "§2 PRE-33.z.k.e: at least 1 axon.token expected on axon dialect"
+    // POST-33.z.k.g.2 (Q1 ratification): algebraic-effect flows
+    // default to the openai dialect. W3C named axon.* events are
+    // structurally absent; the wire is OpenAI Chat Completions
+    // streaming verbatim.
+    assert_eq!(
+        axon_tokens, 0,
+        "§2 POST-33.z.k.g.2: axon.token MUST NOT appear on openai-dialect wire"
+    );
+    assert_eq!(
+        axon_completes, 0,
+        "§2 POST-33.z.k.g.2: axon.complete MUST NOT appear on openai-dialect wire"
     );
     assert!(
-        !has_done_sentinel,
-        "§2 PRE-33.z.k.e: openai-style [DONE] sentinel MUST NOT appear yet"
+        has_done_sentinel,
+        "§2 POST-33.z.k.g.2: openai-style `data: [DONE]` sentinel MUST terminate the stream"
     );
     assert!(
-        !has_chunk_field,
-        "§2 PRE-33.z.k.e: openai-style \"chunk\" field MUST NOT appear yet"
+        has_chat_completion_chunk,
+        "§2 POST-33.z.k.g.2: every chunk frame MUST carry `object: \"chat.completion.chunk\"` \
+         per OpenAI Chat Completions streaming spec"
+    );
+    assert!(
+        has_role_assistant,
+        "§2 POST-33.z.k.g.2: first chunk MUST emit role-marker `delta: {{\"role\": \"assistant\"}}` \
+         per OpenAI Chat Completions streaming spec"
+    );
+    assert!(
+        has_finish_reason_stop,
+        "§2 POST-33.z.k.g.2: final chunk MUST carry `finish_reason: \"stop\"` per OpenAI spec"
     );
 }
 

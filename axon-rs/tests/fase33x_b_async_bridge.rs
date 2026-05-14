@@ -158,33 +158,38 @@ const SIMPLE_STREAM: &str =
      }\n\
      axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
 
+// §Fase 33.z.k.g.2 — Algebraic-effect flows declare
+// `transport: sse(axon)` explicitly (Q5 escape valve) so the 33.x.b
+// async-bridge anchor continues to assert axon.complete.stream_policies
+// shape. The openai-dialect projection of the same data lands on the
+// Q7 axon_metadata frame (covered by 33.z.k.g E2E pack).
 const STREAM_WITH_DROP_OLDEST: &str =
     "tool chat_tokens { description: \"stream\" effects: <stream:drop_oldest> }\n\
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_tokens }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
 
 const STREAM_WITH_FAIL_POLICY: &str =
     "tool chat_tokens { description: \"stream\" effects: <stream:fail> }\n\
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_tokens }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
 
 const STREAM_WITH_PAUSE_UPSTREAM: &str =
     "tool chat_tokens { description: \"stream\" effects: <stream:pause_upstream> }\n\
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_tokens }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
 
 const STREAM_WITH_DEGRADE_QUALITY: &str =
     "tool chat_tokens { description: \"stream\" effects: <stream:degrade_quality> }\n\
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_tokens }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
 
 const MULTI_STEP_STREAM: &str =
     "flow Chain() -> Unit {\n\
@@ -434,12 +439,13 @@ async fn unparseable_source_falls_to_legacy_which_surfaces_error() {
 
 #[tokio::test]
 async fn declared_effect_on_one_step_does_not_pollute_other_steps() {
+    // §Fase 33.z.k.g.2 — `transport: sse(axon)` keeps W3C wire (Q5).
     let src = "tool chat_tokens { description: \"stream\" effects: <stream:drop_oldest> }\n\
                flow Multi() -> Unit {\n\
                    step Plain { ask: \"plain\" output: Stream<Token> }\n\
                    step Effecting { ask: \"hi\" apply: chat_tokens }\n\
                }\n\
-               axonendpoint MultiEndpoint { method: POST path: \"/multi\" execute: Multi transport: sse }";
+               axonendpoint MultiEndpoint { method: POST path: \"/multi\" execute: Multi transport: sse(axon) }";
     let app = build_router(server_cfg());
     deploy(app.clone(), src).await;
     let (_status, _, body) = fetch_sse_body(app, "/multi", "{}").await;

@@ -81,12 +81,18 @@ const ADOPTER_DISJUNCT_A: &str =
 /// Adopter-canonical disjunct (b) shape — tool with `effects:
 /// <stream:...>` referenced via `step S { apply: <tool> }`. Closed
 /// since Fase 31.b for both stacks.
+///
+/// §Fase 33.z.k.g.2 — Explicit `transport: sse(axon)` preserves the
+/// W3C named-event wire so this 33.a hollow-shape diagnostic
+/// continues to count `axon.token` / `axon.complete` frames. The Q1
+/// default flip to openai for algebraic-effect flows is exercised in
+/// the 33.z.k.g E2E pack; this anchor is dialect-pinned.
 const ADOPTER_DISJUNCT_B: &str =
     "tool chat_token_stream { description: \"stream\" effects: <stream:drop_oldest> }\n\
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_token_stream }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat }";
+     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
 
 /// Explicit `transport: sse` shape — D5 path. Always SSE regardless
 /// of mode / Accept.

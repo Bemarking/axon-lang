@@ -442,6 +442,13 @@ fn tool_call_event_payload_shape_documented() {
 // CDS, legal privilege scanner, fintech AML — each exercising 3+
 // IRFlowNode variants through the dispatcher default-on path.
 
+// §Fase 33.z.k.g.2 (v1.28.0) — algebraic-effect verticals declare
+// `transport: sse(axon)` explicit so the W3C named-events wire is
+// preserved despite the Q1 default flip to openai for algebraic-
+// effect flows. These tests verify DISPATCHER behavior + warning
+// catalog (not wire format); the openai-dialect projection of the
+// same vertical patterns is exercised in the 33.z.k.g E2E test pack.
+// Q5 escape valve: explicit dialect declaration always wins.
 const BANKING_DECISION_FLOW: &str =
     "tool aml_check {\n\
         description: \"AML scanner\"\n\
@@ -453,7 +460,7 @@ const BANKING_DECISION_FLOW: &str =
         }\n\
         step Adjudicate { ask: \"Final decision\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint Decision { method: POST path: \"/loan\" execute: LoanDecision transport: sse }";
+     axonendpoint Decision { method: POST path: \"/loan\" execute: LoanDecision transport: sse(axon) }";
 
 const HEALTHCARE_CDS_FLOW: &str =
     "tool clinical_reasoning {\n\
@@ -471,7 +478,7 @@ const HEALTHCARE_CDS_FLOW: &str =
         step Differential { ask: \"diagnosis\" apply: clinical_reasoning }\n\
         shield PHIShield on response -> SanitizedResponse\n\
      }\n\
-     axonendpoint CDS { method: POST path: \"/cds\" execute: CDSAssessment transport: sse }";
+     axonendpoint CDS { method: POST path: \"/cds\" execute: CDSAssessment transport: sse(axon) }";
 
 const LEGAL_PRIVILEGE_FLOW: &str =
     "shield PrivilegeShield {\n\
@@ -501,7 +508,7 @@ const FINTECH_AML_FLOW: &str =
         }\n\
         step Decide { ask: \"final report\" output: Stream<Token> }\n\
      }\n\
-     axonendpoint Aml { method: POST path: \"/aml\" execute: AmlInvestigation transport: sse }";
+     axonendpoint Aml { method: POST path: \"/aml\" execute: AmlInvestigation transport: sse(axon) }";
 
 async fn assert_vertical_pattern(label: &str, src: &str, path: &str) {
 

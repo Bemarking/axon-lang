@@ -148,12 +148,18 @@ async fn fetch_sse_body(
 ///   D2: tool declares effect_policy → stream_policies wire field
 ///   D4: wire format from Fase 30.a-d + Fase 31 + Fase 32 + Fase 33.a-i
 ///   D6: replay binding active when transport=sse (Fase 32.h)
+// §Fase 33.z.k.g.2 — Explicit `transport: sse(axon)` retains the W3C
+// named-event wire on this algebraic-effect flow (Q5 escape valve).
+// The 33.x diagnostic captures the axon-dialect wire envelope
+// (stream_policies / enforcement_summary / warnings); the openai-
+// dialect projection of the same fields is exercised in the
+// 33.z.k.g E2E test pack via the Q7 axon_metadata frame.
 const ADOPTER_STREAM_DROP_OLDEST: &str =
     "tool chat_token_stream { description: \"stream\" effects: <stream:drop_oldest> }\n\
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_token_stream }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse }";
+     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(axon) }";
 
 /// Same shape but without effect declaration — D2 should NOT activate
 /// enforcer; stream_policies array should be EMPTY (or omitted per D4
@@ -465,7 +471,7 @@ const ADOPTER_STREAM_DROP_OLDEST_WITH_REPLAY: &str =
      flow Chat() -> Unit {\n\
         step Generate { ask: \"hi\" apply: chat_token_stream }\n\
      }\n\
-     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse replay: true }";
+     axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat transport: sse(axon) replay: true }";
 
 #[tokio::test]
 async fn d6_post_33_x_f_replay_returns_step_audit_for_sse_flow() {

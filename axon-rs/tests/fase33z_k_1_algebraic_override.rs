@@ -206,25 +206,54 @@ async fn s1_kivi_shape_post_without_accept_returns_sse_d11() {
     );
 }
 
-// ─── §2 — Wire body shape (event: axon.token + axon.complete) ───────
+// ─── §2 — Wire body shape (OpenAI chunks + [DONE] post-33.z.k.g.2) ───
+//
+// **Inverted post-33.z.k.g.2** — the Kivi-shape (tool with
+// `effects: <stream:<policy>>`) resolves to the OpenAI dialect per
+// the Q1 ratification. The wire body is OpenAI Chat Completions
+// streaming format verbatim: `data: {"choices":[{"delta":{...}}]}`
+// chunks terminated by `data: [DONE]`. The D11 algebraic-effect
+// override (33.z.k.1) still fires — SSE wire IS served — but the
+// FRAMING is the LLM-streaming ecosystem's wire, not axon's W3C
+// named events. Adopters who want W3C named events declare
+// `transport: sse(axon)` explicitly (Q5 escape valve).
 
 #[tokio::test]
-async fn s2_kivi_shape_wire_body_carries_axon_token_then_axon_complete() {
+async fn s2_kivi_shape_wire_body_emits_openai_chunks_and_done_sentinel() {
     let app = build_router(server_cfg());
     assert_eq!(deploy(app.clone(), kivi_shape_source()).await, StatusCode::OK);
     let (status, ct, body) = post_without_accept(app, "/chat").await;
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("text/event-stream"), "expected SSE Content-Type");
+    // POST-33.z.k.g.2: openai-dialect wire is the default for
+    // algebraic-effect flows. Closed-catalog assertions:
     assert!(
-        body.contains("event: axon.token"),
-        "33.z.k.1 D11: SSE body MUST contain at least one `event: axon.token` \
-         frame produced by the dispatcher's pure_shape handler against the stub \
-         backend. Body: {body:?}"
+        body.contains("\"object\":\"chat.completion.chunk\""),
+        "33.z.k.g.2 Q1: SSE body MUST contain `chat.completion.chunk` object \
+         shape per OpenAI Chat Completions streaming spec. Body: {body:?}"
     );
     assert!(
-        body.contains("event: axon.complete"),
-        "33.z.k.1 D11: SSE body MUST contain terminal `event: axon.complete`. \
+        body.contains("\"delta\":{\"role\":\"assistant\"}"),
+        "33.z.k.g.2 Q1: first frame MUST carry role-marker \
+         `delta: {{\"role\": \"assistant\"}}` per OpenAI spec. Body: {body:?}"
+    );
+    assert!(
+        body.contains("data: [DONE]"),
+        "33.z.k.g.2 Q1: SSE body MUST terminate with `data: [DONE]` sentinel \
+         per OpenAI spec. Body: {body:?}"
+    );
+    // axon-named events MUST be structurally absent on the openai
+    // wire (the dialect catalog is closed; adapters do not interleave).
+    assert!(
+        !body.contains("event: axon.token"),
+        "33.z.k.g.2 Q1: openai-dialect wire MUST NOT carry W3C `event: axon.token` \
+         lines (those are exclusive to the axon dialect — Q5 escape valve). \
          Body: {body:?}"
+    );
+    assert!(
+        !body.contains("event: axon.complete"),
+        "33.z.k.g.2 Q1: openai-dialect wire MUST NOT carry W3C `event: axon.complete` \
+         lines. Body: {body:?}"
     );
     // D2 invariant — no unsupported_flow_shape on the wire (the
     // variant was deleted in 33.z.e; this is a defensive cross-check).
