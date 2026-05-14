@@ -31,25 +31,20 @@
 //!    legal privilege scanner, fintech AML investigative) each
 //!    exercise 3+ IRFlowNode variants with the dispatcher default-on.
 //!
-//! # Test isolation
+//! # §Fase 33.z.e — Flag retirement note
 //!
-//! Tests that explicitly toggle the flag use the
-//! `StreamingViaDispatcherGuard` RAII helper + the shared
-//! `FLAG_TEST_LOCK` Mutex. The flag's NEW DEFAULT (ON) is the
-//! observation of `streaming_via_dispatcher_enabled()` without any
-//! guard active.
+//! The `AXON_STREAMING_VIA_DISPATCHER` flag + `StreamingViaDispatcherGuard`
+//! + `streaming_via_dispatcher_enabled()` were retired in 33.z.e — the
+//! dispatcher is the unconditional production hot path. These tests
+//! no longer manipulate any flag; they simply hit the endpoints + assert
+//! the dispatcher's wire shape is what arrives.
 
 use axon::axon_server::{build_router, ServerConfig};
-use axon::runtime_flags::{
-    streaming_via_dispatcher_enabled, StreamingViaDispatcherGuard,
-};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use std::sync::Mutex;
 use tower::ServiceExt;
 
-static FLAG_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn server_cfg() -> ServerConfig {
     ServerConfig {
@@ -162,35 +157,16 @@ fn complete_has_w002(events: &SseEvents) -> bool {
 }
 
 // ────────────────────────────────────────────────────────────────────
-//  §1 — Default flag observability + opt-out availability
+//  §1 — Flag-state pins RETIRED (33.z.e closure)
 // ────────────────────────────────────────────────────────────────────
-
-#[test]
-fn default_flag_value_is_on_post_33_z_c() {
-    let _serial = FLAG_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    // Defensive: ensure no prior test left an explicit OFF state.
-    // (RAII guards restore on drop, but if a panic skipped Drop we
-    // could see staleness. Use the guard pattern to be explicit.)
-    let _guard = StreamingViaDispatcherGuard::set(true);
-    assert!(
-        streaming_via_dispatcher_enabled(),
-        "33.z.c invariant: dispatcher default is ON. Adopters who don't \
-         explicitly opt OUT see per-chunk wire across every IRFlowNode \
-         variant the dispatcher graduates (Fase 33.y 45/45)."
-    );
-}
-
-#[test]
-fn explicit_opt_out_to_off_still_works() {
-    let _serial = FLAG_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let _guard = StreamingViaDispatcherGuard::set(false);
-    assert!(
-        !streaming_via_dispatcher_enabled(),
-        "D4 safety net: adopters can still set the flag to false until \
-         33.z.e deletes the flag + the legacy path entirely. This is the \
-         deployment-hardening rollback path."
-    );
-}
+//
+// Pre-33.z.e this section exercised:
+//   - `default_flag_value_is_on_post_33_z_c` — verifies default ON
+//   - `explicit_opt_out_to_off_still_works` — verifies D4 safety net
+// Both deleted in 33.z.e: the flag itself is gone, the dispatcher is
+// unconditional. The semantic intent of these tests — "non-canonical
+// shapes activate the dispatcher" — is now covered by §2 below
+// without flag manipulation.
 
 // ────────────────────────────────────────────────────────────────────
 //  §2 — 8 anchor shapes activate dispatcher path by DEFAULT (no flag set)
@@ -282,11 +258,9 @@ const LAMBDA_DATA_APPLY_FLOW: &str =
      axonendpoint ChatEndpoint { method: POST path: \"/c\" execute: Chat transport: sse }";
 
 async fn assert_default_on_no_w002(label: &str, src: &str) {
-    let _serial = FLAG_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     // Defensive flag-state assertion — the test depends on the
     // 33.z.c default ON. If a previous test left the flag at OFF
     // via panic-during-guard, we reset to the documented default.
-    let _guard = StreamingViaDispatcherGuard::set(true);
 
     let app = build_router(server_cfg());
     let dep = deploy(app.clone(), src).await;
@@ -313,8 +287,6 @@ async fn assert_default_on_no_w002(label: &str, src: &str) {
 
 #[tokio::test]
 async fn default_on_canonical_step_d4_byte_compat() {
-    let _serial = FLAG_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let _guard = StreamingViaDispatcherGuard::set(true);
 
     let app = build_router(server_cfg());
     let dep = deploy(app.clone(), CANONICAL_STEP_FLOW).await;
@@ -396,8 +368,6 @@ async fn default_on_lambda_data_apply_no_w002() {
 async fn stub_backend_never_emits_tool_call_event() {
     // Canonical Step + apply: stub_tool. stub backend signals Stop;
     // dispatcher's pure_shape doesn't emit FlowExecutionEvent::ToolCall.
-    let _serial = FLAG_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let _guard = StreamingViaDispatcherGuard::set(true);
     let src = "tool example_tool {\n\
                    description: \"stub tool\"\n\
                    effects: <stream:drop_oldest>\n\
@@ -534,8 +504,6 @@ const FINTECH_AML_FLOW: &str =
      axonendpoint Aml { method: POST path: \"/aml\" execute: AmlInvestigation transport: sse }";
 
 async fn assert_vertical_pattern(label: &str, src: &str, path: &str) {
-    let _serial = FLAG_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let _guard = StreamingViaDispatcherGuard::set(true);
 
     let app = build_router(server_cfg());
     let dep = deploy(app.clone(), src).await;

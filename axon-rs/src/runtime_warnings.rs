@@ -97,19 +97,17 @@ impl WarningCode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FallbackMode {
-    /// Plan extraction succeeded but the flow uses an `IRFlowNode`
-    /// variant the 33.x.b streaming planner doesn't model (anchors,
-    /// lambda apply, let bindings, mid-stream `use_tool`, hibernate,
-    /// PIX, etc.). The legacy synchronous path runs the full
-    /// orchestration; the wire delivers synthetic 3-word chunks.
-    UnsupportedFlowShape,
+    // §Fase 33.z.e — `UnsupportedFlowShape` variant DELETED. The
+    // per-IRFlowNode dispatcher (Fase 33.y 45/45) covers every shape
+    // the planner could previously reject; W002 cannot fire for
+    // "unsupported flow shape" because no shape is unsupported.
     /// `resolve_streaming_backend` returned `None` for the
     /// requested backend name (after `auto` resolution). The
-    /// legacy path emits an `axon.error` event.
+    /// dispatcher's BackendError surfaces as `axon.error`.
     UnknownBackend,
     /// Source could not be parsed (lex / parse / type-check / IR-
-    /// generation error). The legacy path surfaces the diagnostic
-    /// via `axon.error`.
+    /// generation error). The dispatcher's compilation-error path
+    /// surfaces the diagnostic via `axon.error`.
     SourceCompilationFailed,
     /// Reserved for future scenarios where a custom adopter-
     /// provided backend implements `Backend::complete()` but not
@@ -126,7 +124,6 @@ impl FallbackMode {
     /// programmatically for adopters that don't go through serde.
     pub fn slug(&self) -> &'static str {
         match self {
-            Self::UnsupportedFlowShape => "unsupported_flow_shape",
             Self::UnknownBackend => "unknown_backend",
             Self::SourceCompilationFailed => "source_compilation_failed",
             Self::BackendLacksStream => "backend_lacks_stream",
@@ -248,20 +245,21 @@ mod closed_catalog_pins {
     }
 
     #[test]
-    fn fallback_mode_catalog_has_four_variants() {
+    fn fallback_mode_catalog_has_three_variants_post_33_z_e() {
+        // §Fase 33.z.e — `UnsupportedFlowShape` retired; catalog
+        // shrinks from 4 to 3. The dispatcher path covers every
+        // IRFlowNode variant; no shape is "unsupported".
         let all = [
-            FallbackMode::UnsupportedFlowShape,
             FallbackMode::UnknownBackend,
             FallbackMode::SourceCompilationFailed,
             FallbackMode::BackendLacksStream,
         ];
-        assert_eq!(all.len(), 4);
+        assert_eq!(all.len(), 3);
     }
 
     #[test]
     fn fallback_mode_slugs_are_snake_case_unique() {
         let all = [
-            FallbackMode::UnsupportedFlowShape,
             FallbackMode::UnknownBackend,
             FallbackMode::SourceCompilationFailed,
             FallbackMode::BackendLacksStream,
@@ -286,13 +284,13 @@ mod closed_catalog_pins {
         let w = RuntimeWarning::streaming_not_supported(
             "Chat",
             "anthropic",
-            FallbackMode::UnsupportedFlowShape,
+            FallbackMode::UnknownBackend,
             "",
         );
         assert_eq!(w.code, WarningCode::AxonW002);
         assert_eq!(w.flow_name, "Chat");
         assert_eq!(w.backend, "anthropic");
-        assert_eq!(w.fallback_mode, FallbackMode::UnsupportedFlowShape);
+        assert_eq!(w.fallback_mode, FallbackMode::UnknownBackend);
         assert_eq!(w.message, "streaming-not-supported");
         assert!(w.timestamp_ms > 0);
     }
@@ -302,12 +300,12 @@ mod closed_catalog_pins {
         let w = RuntimeWarning::streaming_not_supported(
             "Chat",
             "stub",
-            FallbackMode::UnsupportedFlowShape,
-            "flow uses lambda_data_apply",
+            FallbackMode::SourceCompilationFailed,
+            "parse: missing closing brace",
         );
         assert_eq!(
             w.message,
-            "streaming-not-supported: flow uses lambda_data_apply"
+            "streaming-not-supported: parse: missing closing brace"
         );
     }
 

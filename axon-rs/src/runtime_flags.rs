@@ -95,84 +95,20 @@ impl Drop for TokenizerFallbackGuard {
 }
 
 // ────────────────────────────────────────────────────────────────────
-//  §Fase 33.z.b/c — Streaming-via-dispatcher graft skeleton flag
+//  §Fase 33.z.e — Streaming-via-dispatcher flag RETIRED
 // ────────────────────────────────────────────────────────────────────
 //
-// Process-wide flag that controls whether `server_execute_streaming`
-// dispatches IRFlowNode variants through the structurally-complete
-// `flow_dispatcher::dispatch_node` (Fase 33.y) or falls back to the
-// v1.26.0 paths (`run_streaming_async_path` for canonical Step +
-// `run_streaming_legacy_path` for everything else).
+// Pre-33.z.e this module exposed `streaming_via_dispatcher_enabled()`
+// + `set_streaming_via_dispatcher(bool)` + `StreamingViaDispatcherGuard`
+// for the feature-flagged dispatcher graft (33.z.b alpha, 33.z.c
+// stable default-on). 33.z.e DELETES all three symbols — the
+// dispatcher is the unconditional production path; there is no
+// opt-out.
 //
-// # §Fase 33.z.c — Default flipped from OFF to ON
-//
-// 33.z.b shipped the graft behind a default-OFF flag for v1.27.0-alpha
-// (D4 safety net during migration). 33.z.c GRADUATES the default to
-// ON: every adopter flow shape activates the dispatcher in production
-// by default. Adopters who NEED to roll back to the v1.26.0 wire
-// behavior (e.g., during deployment hardening) can still opt OUT via
-// `set_streaming_via_dispatcher(false)` — the flag remains operational
-// until 33.z.e deletes it + the legacy path entirely.
-//
-// What flipping the default ON delivers:
-// - Conditional / ForIn / Par / Remember / ShieldApply / Emit /
-//   Hibernate / LambdaDataApply (the 8 architectural-group anchors
-//   from 33.z.a) + 35 more variants via the dispatcher's compiler-
-//   enforced 45-arm exhaustive match all stream per-chunk on the
-//   production SSE wire.
-// - `axon-W002 UnsupportedFlowShape` becomes structurally unreachable
-//   on the default path (D2 invariant).
-// - `axon.tool_call` SSE event family active (33.z.c D5 milestone —
-//   the wire-emission graduation of the 33.y.k `FlowExecutionEvent::ToolCall`
-//   variant via `build_tool_call_event` in axon_server.rs).
-//
-// Mirrors the proven 33.x.h opt-in BPE chunking pattern — land behind
-// flag → validate → flip default → retire.
-
-static STREAMING_VIA_DISPATCHER: Mutex<bool> = Mutex::new(true);
-
-/// Read the current `AXON_STREAMING_VIA_DISPATCHER` flag value.
-/// Called once per `server_execute_streaming` invocation (per-flow,
-/// not per-chunk) so lock contention is negligible.
-pub fn streaming_via_dispatcher_enabled() -> bool {
-    *STREAMING_VIA_DISPATCHER
-        .lock()
-        .expect("streaming_via_dispatcher flag mutex poisoned")
-}
-
-/// Set the flag explicitly. Returns the previous value so callers
-/// can restore it (the [`StreamingViaDispatcherGuard`] RAII helper
-/// does this automatically).
-pub fn set_streaming_via_dispatcher(enabled: bool) -> bool {
-    let mut g = STREAMING_VIA_DISPATCHER
-        .lock()
-        .expect("streaming_via_dispatcher flag mutex poisoned");
-    let prev = *g;
-    *g = enabled;
-    prev
-}
-
-/// RAII guard that restores the flag to its previous value on drop.
-/// Use in tests to scope a flag mutation to a single `#[tokio::test]`
-/// body. Mirrors `TokenizerFallbackGuard` discipline.
-pub struct StreamingViaDispatcherGuard {
-    previous: bool,
-}
-
-impl StreamingViaDispatcherGuard {
-    /// Set the flag to `enabled` and capture the previous value for
-    /// restoration on drop.
-    pub fn set(enabled: bool) -> Self {
-        let previous = set_streaming_via_dispatcher(enabled);
-        Self { previous }
-    }
-}
-
-impl Drop for StreamingViaDispatcherGuard {
-    fn drop(&mut self) {
-        set_streaming_via_dispatcher(self.previous);
-    }
-}
+// Any downstream crate that called `set_streaming_via_dispatcher(...)`
+// hits an explicit compile error at the v1.26.0 → v1.27.0 upgrade —
+// the intended failure shape for the deprecation cycle started in
+// 33.y.l and closed here.
 
 // ────────────────────────────────────────────────────────────────────
 //  Tokenizer-aware chunking helper

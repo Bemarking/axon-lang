@@ -47,12 +47,9 @@
 //! tuned so the full pack runs in well under 1 second.
 
 #![allow(clippy::needless_return)]
-// §Fase 33.y.l — `PlanError::LegacyOrchestrationRequired` is marked
-// `#[deprecated]` in 33.y.l (the 45/45 per-IRFlowNode dispatcher
-// makes it obsolete in 33.z). This fuzz pack legitimately drives the
-// still-functional legacy fallback gate; silence the deprecation
-// noise until 33.z deletes the variant.
-#![allow(deprecated)]
+// §Fase 33.z.e — `PlanError::LegacyOrchestrationRequired` +
+// `FallbackMode::UnsupportedFlowShape` DELETED. Pattern matches
+// against them retired in lockstep below.
 
 // ── §0 — Deterministic PRNG (linear congruential) ────────────────────
 
@@ -144,8 +141,7 @@ fn fuzz_build_streaming_plan_never_panics_under_malformed_source() {
             Err(PlanError::Parse(_))
             | Err(PlanError::TypeCheck(_))
             | Err(PlanError::IrGeneration(_))
-            | Err(PlanError::FlowNotFound { .. })
-            | Err(PlanError::LegacyOrchestrationRequired { .. }) => {
+            | Err(PlanError::FlowNotFound { .. }) => {
                 // Closed-catalog PlanError — totality preserved.
             }
         }
@@ -168,8 +164,7 @@ fn fuzz_compile_source_to_ir_never_panics_under_random_bytes() {
             Err(PlanError::Parse(_))
             | Err(PlanError::TypeCheck(_))
             | Err(PlanError::IrGeneration(_))
-            | Err(PlanError::FlowNotFound { .. })
-            | Err(PlanError::LegacyOrchestrationRequired { .. }) => {}
+            | Err(PlanError::FlowNotFound { .. }) => {}
         }
     }
 }
@@ -363,7 +358,8 @@ fn fuzz_fallback_mode_serde_rejects_unknown_slugs() {
     const ITERS: u64 = 200;
     let mut lcg = Lcg::new(SEED);
     let known_slugs: std::collections::HashSet<&'static str> = [
-        FallbackMode::UnsupportedFlowShape,
+        // §Fase 33.z.e — `UnsupportedFlowShape` retired (the
+        // dispatcher path covers every IRFlowNode variant).
         FallbackMode::UnknownBackend,
         FallbackMode::SourceCompilationFailed,
         FallbackMode::BackendLacksStream,
@@ -390,7 +386,7 @@ fn fuzz_runtime_warning_round_trip_over_closed_catalog() {
     const ITERS: u64 = 200;
     let mut lcg = Lcg::new(SEED);
     let modes = [
-        FallbackMode::UnsupportedFlowShape,
+        // §Fase 33.z.e — `UnsupportedFlowShape` retired.
         FallbackMode::UnknownBackend,
         FallbackMode::SourceCompilationFailed,
         FallbackMode::BackendLacksStream,
@@ -479,15 +475,15 @@ fn fuzz_warning_code_catalog_count_locked_at_one() {
 }
 
 #[test]
-fn fuzz_fallback_mode_catalog_count_locked_at_four() {
+fn fuzz_fallback_mode_catalog_count_locked_at_three_post_33_z_e() {
     use axon::runtime_warnings::FallbackMode;
+    // §Fase 33.z.e — `UnsupportedFlowShape` retired; catalog 4 → 3.
     let all = [
-        FallbackMode::UnsupportedFlowShape,
         FallbackMode::UnknownBackend,
         FallbackMode::SourceCompilationFailed,
         FallbackMode::BackendLacksStream,
     ];
-    assert_eq!(all.len(), 4);
+    assert_eq!(all.len(), 3);
 }
 
 // ── §7 — Sanity: total iter count adds to ~1500 ────────────────────
