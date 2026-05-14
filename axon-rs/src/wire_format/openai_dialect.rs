@@ -85,7 +85,7 @@
 //!   be order-agnostic per JSON spec; OpenAI's own wire is not
 //!   key-ordered. Tests pin field PRESENCE + values, not byte order.
 
-use super::WireFormatAdapter;
+use super::{CompleteEnvelope, WireFormatAdapter};
 use crate::flow_execution_event::FlowExecutionEvent;
 use axum::response::sse::Event;
 
@@ -112,15 +112,20 @@ pub struct OpenAIDialectAdapter {
     /// Per-request running counter for synthesizing tool_call IDs
     /// (OpenAI requires `id` on each tool_calls[] entry).
     tool_call_counter: u64,
-    /// §Q7 — Algebraic-policy buffering. We accumulate the
-    /// algebraic-policy side-channels (enforcement_summary,
-    /// runtime_warnings, step_audit) over the flow's lifetime
-    /// and emit them as a single `axon_metadata` frame BEFORE
-    /// the `data: [DONE]` terminator. Pre-33.z.k.h these fields
-    /// are populated by the producer wiring (33.z.k.g); for
-    /// 33.z.k.e they are emitted as an empty placeholder so the
-    /// adapter's wire shape is complete.
+    /// Tracks how the stream terminated for adopter visibility on
+    /// the axon_metadata frame.
     saw_terminal_reason: TerminalReason,
+    /// §Fase 33.z.k.h — Algebraic-policy envelope stashed at
+    /// FlowComplete time so `flush_terminator()` can emit a
+    /// POPULATED `axon_metadata` frame. `None` pre-FlowComplete
+    /// (defensive — flush before FlowComplete is unreachable in
+    /// the production producer but legal per the trait contract).
+    /// Adopters consuming the openai wire receive per-step
+    /// provenance (PCI DSS Req 10 / FedRAMP AU-2 / FRE 502 /
+    /// 21 CFR Part 11 §11.10) via this extension frame even
+    /// though OpenAI's `chat.completion.chunk` shape doesn't
+    /// model multi-step flows.
+    stashed_envelope: Option<CompleteEnvelope>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -148,6 +153,7 @@ impl OpenAIDialectAdapter {
             terminal_emitted: false,
             tool_call_counter: 0,
             saw_terminal_reason: TerminalReason::None,
+            stashed_envelope: None,
         }
     }
 
@@ -185,24 +191,125 @@ impl OpenAIDialectAdapter {
         )
     }
 
-    /// Q7 — Emit the optional `axon_metadata` frame carrying the
-    /// algebraic-policy side-channels. Pre-33.z.k.h this returns
-    /// an empty-body frame (a placeholder); 33.z.k.h wires the
-    /// actual enforcement_summary / runtime_warnings / step_audit
-    /// data through.
+    /// §Q7 + §Fase 33.z.k.h — Build the `axon_metadata` extension
+    /// frame carrying the full algebraic-policy side-channel data
+    /// + flow envelope. Adopters on the openai wire (litellm,
+    /// langchain, vercel/ai, instructor, llama_index) ignore unknown
+    /// top-level keys per their permissive JSON parsing; SDK-free
+    /// clients + axon-aware tooling consume the `axon_metadata` key
+    /// directly to surface vertical-regulator audit data.
+    ///
+    /// Frame shape (every field optional / elided when empty for
+    /// minimal-overhead default behavior):
+    ///
+    /// ```text
+    /// data: {"axon_metadata": {
+    ///     "trace_id": N, "flow": "...", "backend": "...",
+    ///     "success": bool, "steps_executed": N,
+    ///     "tokens_input": N, "tokens_output": N, "latency_ms": N,
+    ///     "stream_policies": [{step, policy}, ...],
+    ///     "enforcement_summary": {step: {policy_slug, chunks_pushed, ...}},
+    ///     "runtime_warnings": [...],
+    ///     "step_audit": [{step_name, step_index, tokens_emitted,
+    ///                     output_hash_hex, effect_policy_applied, ...}, ...],
+    ///     "terminal_reason": "stop" | "error" | "none"
+    /// }}
+    /// ```
+    ///
+    /// When no envelope has been stashed (pre-FlowComplete flush —
+    /// defensive path), the frame carries only the terminal_reason
+    /// + empty algebraic-policy fields. The frame's existence is
+    /// invariant; the data populated is conditional on having
+    /// reached FlowComplete.
     fn build_axon_metadata_frame(&self) -> Event {
-        let payload = serde_json::json!({
-            "axon_metadata": {
-                // §33.z.k.h will populate these from the
-                // FlowExecutionEvent stream's accumulated state.
-                // For 33.z.k.e these are placeholders so the wire
-                // shape is complete + adopters can rely on the
-                // frame's existence.
-                "enforcement_summary": {},
-                "runtime_warnings": [],
-                "step_audit": [],
+        let mut metadata = serde_json::Map::new();
+        if let Some(envelope) = self.stashed_envelope.as_ref() {
+            metadata.insert("trace_id".to_string(), serde_json::json!(envelope.trace_id));
+            metadata.insert("flow".to_string(), serde_json::json!(&envelope.flow_name));
+            metadata.insert(
+                "backend".to_string(),
+                serde_json::json!(&envelope.backend),
+            );
+            metadata.insert("success".to_string(), serde_json::json!(envelope.success));
+            metadata.insert(
+                "steps_executed".to_string(),
+                serde_json::json!(envelope.steps_executed),
+            );
+            metadata.insert(
+                "tokens_input".to_string(),
+                serde_json::json!(envelope.tokens_input),
+            );
+            metadata.insert(
+                "tokens_output".to_string(),
+                serde_json::json!(envelope.tokens_output),
+            );
+            metadata.insert(
+                "latency_ms".to_string(),
+                serde_json::json!(envelope.latency_ms),
+            );
+
+            // §Fase 33.e — stream_policies (elided when empty).
+            if !envelope.effect_policies.is_empty() {
+                let arr: Vec<serde_json::Value> = envelope
+                    .effect_policies
+                    .iter()
+                    .map(|(step, policy)| serde_json::json!({"step": step, "policy": policy}))
+                    .collect();
+                metadata.insert(
+                    "stream_policies".to_string(),
+                    serde_json::Value::Array(arr),
+                );
             }
-        });
+            // §Fase 33.x.d — enforcement_summary (elided when empty).
+            if !envelope.enforcement_summaries.is_empty() {
+                let mut obj = serde_json::Map::new();
+                for (step, summary) in &envelope.enforcement_summaries {
+                    obj.insert(
+                        step.clone(),
+                        serde_json::to_value(summary).unwrap_or(serde_json::Value::Null),
+                    );
+                }
+                metadata.insert(
+                    "enforcement_summary".to_string(),
+                    serde_json::Value::Object(obj),
+                );
+            }
+            // §Fase 33.x.g — runtime_warnings (elided when empty).
+            if !envelope.runtime_warnings.is_empty() {
+                let arr: Vec<serde_json::Value> = envelope
+                    .runtime_warnings
+                    .iter()
+                    .map(|w| serde_json::to_value(w).unwrap_or(serde_json::Value::Null))
+                    .collect();
+                metadata.insert(
+                    "runtime_warnings".to_string(),
+                    serde_json::Value::Array(arr),
+                );
+            }
+            // §Fase 33.x.f — step_audit (elided when empty).
+            if !envelope.step_audit_records.is_empty() {
+                let arr: Vec<serde_json::Value> = envelope
+                    .step_audit_records
+                    .iter()
+                    .map(|r| serde_json::to_value(r).unwrap_or(serde_json::Value::Null))
+                    .collect();
+                metadata.insert("step_audit".to_string(), serde_json::Value::Array(arr));
+            }
+        }
+        // Always include terminal_reason so adopters parsing the
+        // metadata frame can distinguish stop / error / none paths
+        // even when the rest of the envelope is missing.
+        let terminal_str = match self.saw_terminal_reason {
+            TerminalReason::None => "none",
+            TerminalReason::Stop => "stop",
+            TerminalReason::Error => "error",
+        };
+        metadata.insert(
+            "terminal_reason".to_string(),
+            serde_json::json!(terminal_str),
+        );
+
+        let payload = serde_json::json!({ "axon_metadata": metadata });
         Event::default().data(serde_json::to_string(&payload).unwrap_or_default())
     }
 }
@@ -210,6 +317,20 @@ impl OpenAIDialectAdapter {
 impl WireFormatAdapter for OpenAIDialectAdapter {
     fn dialect(&self) -> &'static str {
         "openai"
+    }
+
+    /// §Fase 33.z.k.h — Stash the full envelope so flush_terminator()
+    /// can populate the axon_metadata frame with real algebraic-policy
+    /// data, then emit the final chunk with `finish_reason: "stop"`
+    /// per OpenAI spec.
+    fn build_complete_envelope_event(&mut self, envelope: &CompleteEnvelope) -> Vec<Event> {
+        self.terminal_emitted = true;
+        self.saw_terminal_reason = TerminalReason::Stop;
+        // Stash the envelope BEFORE building the final chunk so that
+        // if the producer's tx send fails mid-burst the flush would
+        // still see the side-channel data on a defensive retry.
+        self.stashed_envelope = Some(envelope.clone());
+        vec![self.build_chunk_frame(serde_json::json!({}), Some("stop"))]
     }
 
     fn translate(&mut self, event: &FlowExecutionEvent) -> Vec<Event> {

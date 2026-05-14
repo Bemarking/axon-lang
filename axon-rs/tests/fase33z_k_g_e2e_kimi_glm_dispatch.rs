@@ -85,9 +85,17 @@ async fn post_no_accept(app: axum::Router, path: &str) -> (StatusCode, String, S
     (status, ct, body)
 }
 
-/// Strip volatile fields (created timestamp, response_id, latency)
-/// so byte-equivalence assertions compare wire shape, not transient
-/// noise.
+/// Strip volatile fields so byte-equivalence assertions compare
+/// wire shape, not wall-clock or per-request noise.
+///
+/// Stripped fields (per dispatch comparison):
+///   - Top-level chunk: `created` (Unix-seconds timestamp varies per
+///     adapter construction), `id` (synthesized from trace_id but
+///     adapter constructions race the timestamp).
+///   - §Fase 33.z.k.h `axon_metadata`: `latency_ms` (wall-clock
+///     accumulator from request start).
+///   - §Fase 33.x.f `step_audit[*]`: `timestamp_ms` (per-step
+///     wall-clock).
 fn strip_volatile_openai(body: &str) -> String {
     let mut out = String::new();
     for line in body.lines() {
@@ -95,10 +103,7 @@ fn strip_volatile_openai(body: &str) -> String {
             let prefix = &line[..data_pos + 6];
             let payload = &line[data_pos + 6..];
             if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(payload) {
-                if let Some(obj) = v.as_object_mut() {
-                    obj.remove("created");
-                    obj.remove("id");
-                }
+                strip_volatile_in_place(&mut v);
                 out.push_str(prefix);
                 out.push_str(&serde_json::to_string(&v).unwrap_or_default());
             } else {
@@ -110,6 +115,24 @@ fn strip_volatile_openai(body: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+fn strip_volatile_in_place(v: &mut serde_json::Value) {
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("created");
+        obj.remove("id");
+        // §Fase 33.z.k.h — axon_metadata.latency_ms varies per request.
+        if let Some(meta) = obj.get_mut("axon_metadata").and_then(|m| m.as_object_mut()) {
+            meta.remove("latency_ms");
+            if let Some(audit) = meta.get_mut("step_audit").and_then(|a| a.as_array_mut()) {
+                for entry in audit.iter_mut() {
+                    if let Some(eo) = entry.as_object_mut() {
+                        eo.remove("timestamp_ms");
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ─── §1 — `transport: sse(kimi)` emits canonical OpenAI wire ───────

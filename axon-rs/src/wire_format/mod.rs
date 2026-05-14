@@ -73,6 +73,7 @@ pub mod axon_dialect;
 pub mod openai_dialect;
 
 use crate::axon_server::EnforcementSummaryWire;
+use crate::axonendpoint_replay::StepAuditRecord;
 use crate::flow_execution_event::FlowExecutionEvent;
 use crate::runtime_warnings::RuntimeWarning;
 use axum::response::sse::Event;
@@ -98,6 +99,14 @@ use axum::response::sse::Event;
 ///   (Fase 33.x.g).
 /// - `effect_policies`: per-step `<stream:<policy>>` declarations
 ///   (Fase 33.e).
+/// - `step_audit_records`: per-step audit rows (step_name +
+///   tokens_emitted + output_hash + effect_policy_applied +
+///   counters), populated by the dispatcher (Fase 33.x.f). Surfaces
+///   on the `axon.metadata` extension frame for openai + anthropic
+///   dialects (Q7 algebraic-policy preservation channel — adopters
+///   on those wires use this to satisfy banking PCI DSS Req 10 /
+///   government FedRAMP AU-2 / legal FRE 502 / medicine 21 CFR Part
+///   11 §11.10 per-step provenance requirements).
 /// - Flow envelope: trace_id, flow_name, backend, success, counters,
 ///   latency.
 #[derive(Debug, Clone)]
@@ -113,6 +122,7 @@ pub struct CompleteEnvelope {
     pub effect_policies: Vec<(String, String)>,
     pub enforcement_summaries: Vec<(String, EnforcementSummaryWire)>,
     pub runtime_warnings: Vec<RuntimeWarning>,
+    pub step_audit_records: Vec<StepAuditRecord>,
 }
 
 /// Wire-format adapter trait — translates internal flow-execution

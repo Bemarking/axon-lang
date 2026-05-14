@@ -18782,6 +18782,24 @@ async fn execute_sse_handler_inner(
                                 guard.clone()
                             };
 
+                            // §Fase 33.z.k.h — Read the per-step audit
+                            // records UNCONDITIONALLY (was previously
+                            // gated behind `replay_ctx.is_some()`).
+                            // The records flow into the CompleteEnvelope
+                            // so non-axon dialect adapters (openai +
+                            // anthropic) can surface them on the Q7
+                            // `axon_metadata` extension frame — adopters
+                            // on those wires need per-step provenance
+                            // for the vertical-regulator audit trails
+                            // (PCI DSS Req 10 / FedRAMP AU-2 / FRE 502 /
+                            // 21 CFR Part 11 §11.10). The replay-log
+                            // write below reuses the same already-read
+                            // vec to avoid double-locking the mutex.
+                            let step_audit_vec: Vec<crate::axonendpoint_replay::StepAuditRecord> = {
+                                let guard = step_audit_records_for_consumer.lock().await;
+                                guard.clone()
+                            };
+
                             // §Fase 33.x.f — Write the SSE replay
                             // entry IF the route declared `replay: true`.
                             // Reads the producer's per-step audit
@@ -18795,10 +18813,7 @@ async fn execute_sse_handler_inner(
                             // server-side write that surfaces only
                             // via `GET /v1/replay/<uuid>`.
                             if let Some(ref rctx) = replay_ctx {
-                                let step_records: Vec<crate::axonendpoint_replay::StepAuditRecord> = {
-                                    let guard = step_audit_records_for_consumer.lock().await;
-                                    guard.clone()
-                                };
+                                let step_records = step_audit_vec.clone();
                                 let replay_warnings = warnings_vec.clone();
                                 let now_ms = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
@@ -18866,6 +18881,7 @@ async fn execute_sse_handler_inner(
                                 effect_policies: effect_policies.clone(),
                                 enforcement_summaries: summaries_vec,
                                 runtime_warnings: warnings_vec,
+                                step_audit_records: step_audit_vec,
                             };
                             wire_adapter.build_complete_envelope_event(&envelope)
                         }
