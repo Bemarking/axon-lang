@@ -1,9 +1,291 @@
 # §Fase 33.z.k — Wire-format adapter cycle (target v1.28.0)
 
-> **Status:** 🚀 IN PROGRESS 2026-05-13 — founder ratification
-> received ("Si"); auto-ratified Q1-Q7 design questions per the
-> Axon-for-Axon discipline (documented in §2 below); sub-fases
-> 33.z.k.a-m sequenced for v1.28.0.
+> **Status:** 🚀 IN PROGRESS — checkpoint 2026-05-14;
+> 7 sub-fases SHIPPED (a, b, c, d, e, f, g.1); 8 sub-fases pendientes.
+> Founder Q3 revision 2026-05-14: catalog expanded 3→5 (added kimi +
+> glm as first-class entries — Bemarking AI's primary adopter
+> pipelines through Moonshot Kimi K2.x + Zhipu ChatGLM-4.x).
+
+---
+
+## ⚠️ TIP — BRIEFING FOR NEXT SESSION (READ FIRST)
+
+> If you are an agent resuming this cycle in a fresh session, READ
+> THIS BEFORE TOUCHING ANY CODE. Every line below is a load-bearing
+> constraint captured from the founder's intent + the cycle's
+> architectural decisions already in production.
+
+### Why this cycle exists
+
+The user's adopter (Bemarking AI's Kivi product) reported on
+2026-05-13 that **algebraic effects declared on tools** (the paper's
+core promise) were emitting `Content-Type: application/json` instead
+of streaming SSE. v1.27.1 (commit cb47879 ancestor) closed the
+**route classifier** gap via D11 algebraic-effect override. But the
+**wire FORMAT** the SSE producer emits is still `event: axon.token` +
+`data: {step,token,...}` (W3C named events). Adopters expecting
+OpenAI-style framing (`data: {"choices":[{"delta":{"content":...}}]}`
++ `data: [DONE]`) and Anthropic-style framing
+(`event: content_block_delta` + `event: message_stop`) still face a
+format mismatch.
+
+The founder principle is non-negotiable:
+> *"los algebraics effects SSE, deben funcionar perfectametne y
+> cumplir la promesa del paper... una primitiva cognitiva que
+> supera lo que hoy ofrece el mercado en ese sentido."*
+
+This means: **adopters never adapt to axon's wire; axon delivers
+the wire format their SDK ecosystem already parses.** The work is
+NOT to satisfy one adopter — it is to make algebraic-effect SSE a
+language primitive that surpasses what the market offers today.
+
+### The critical bytes (33.z.k.g.2 is THE focus)
+
+The remaining producer-loop refactor in `axon-rs/src/axon_server.rs`
+is the LOAD-BEARING work. Lines of interest:
+
+- **`execute_sse_handler_inner`** at `axon-rs/src/axon_server.rs:18687`
+  is the SSE producer. It receives `wire_dialect: String` (added in
+  33.z.k.g.1 but `#[allow(unused_variables)]` because the consumer
+  loop doesn't dispatch on it yet).
+- The **spawned consumer task** starts at `axon-rs/src/axon_server.rs:18766`
+  (`tokio::spawn(async move { ... })`). The dialect is cloned into
+  the closure via `wire_dialect_for_task` at line ~18761.
+- The **consumer loop** runs from `axon-rs/src/axon_server.rs:18822`
+  with `while let Some(event) = event_rx.recv().await`. Inside it,
+  inline calls to `build_token_event` (~18839), `build_complete_event`
+  (~19005), `build_error_event` (~19014, ~19068), `build_tool_call_event`
+  (~19045) emit axon-named events directly.
+
+**The refactor must:**
+
+1. Construct the dialect adapter just before the loop:
+   ```rust
+   let mut wire_adapter =
+       crate::wire_format::select_adapter(&wire_dialect_for_task, trace_id);
+   ```
+
+2. Replace each inline `tx.send(Ok(build_X_event(...)))` with an
+   adapter dispatch loop:
+   ```rust
+   for wire_event in wire_adapter.translate(&event) {
+       if tx.send(Ok(wire_event)).await.is_err() {
+           cancel.cancel();
+           break_to_outer_loop = true;
+           break;
+       }
+   }
+   ```
+   Special-case `FlowComplete`: build a `CompleteEnvelope` from the
+   accumulated state + call `wire_adapter.build_complete_envelope_event(&envelope)`
+   instead of `translate(FlowComplete)`. This is how
+   `enforcement_summaries` / `runtime_warnings` / `effect_policies`
+   reach the wire byte-identical to v1.27.1 for axon dialect.
+
+3. After the loop terminates, emit the dialect-specific terminator:
+   ```rust
+   for wire_event in wire_adapter.flush_terminator() {
+       let _ = tx.send(Ok(wire_event)).await;
+   }
+   ```
+   - axon: empty (terminator in-line with axon.complete)
+   - openai: 1 axon_metadata frame + `data: [DONE]`
+   - anthropic: 1 axon.metadata frame + `event: message_stop`
+
+4. The "executor channel closed without terminator" defensive
+   fallback at ~19063 must also route through the adapter (synthesize
+   a `FlowExecutionEvent::FlowError` and call `adapter.translate(&event)`).
+
+### What MUST stay green during the refactor
+
+The axon-dialect MUST emit byte-identical output to v1.27.1. These
+test files pin that invariant — they're your safety net:
+
+- `axon-rs/tests/fase33z_k_a_diagnostic_anchor.rs` — 4 tests
+  pinning canonical Step + stub → 1 axon.token + 1 axon.complete
+  + W3C named-events catalog of 4 events
+- `axon-rs/tests/fase33z_d_parity_corpus.rs` — 50-fixture sync↔async
+  parity drift gate
+- `axon-rs/tests/fase33x_real_streaming_diagnostic.rs` — checks
+  `axon.complete.enforcement_summary` + `step_audit` populate
+- `axon-rs/tests/fase33z_c_default_on_and_tool_call.rs` — 16 tests
+  including canonical Step byte-compat + tool_call SSE wire emission
+- `axon-rs/tests/fase33z_e_parity_gate.rs` — 10 tests grep-gating
+  the 9 retired symbols (don't re-introduce any)
+- `axon-rs/tests/fase33z_production_fuzz.rs` — ~5,100 LCG iters
+- `axon-rs/tests/fase33z_k_1_algebraic_override.rs` — 5 tests
+  pinning the D11 override behavior
+- `axon-rs/tests/fase33z_k_e_openai_dialect_adapter.rs` — 11 byte-
+  exact tests against OpenAI spec (will continue passing because
+  the adapter unit tests are isolated)
+- `axon-rs/tests/fase33z_k_f_anthropic_dialect_adapter.rs` — 11 byte-
+  exact tests against Anthropic spec
+
+After the refactor, add NEW integration tests that drive each
+dialect through a real HTTP POST and verify the wire bytes:
+
+- `axon-rs/tests/fase33z_k_g_e2e_openai_wire.rs` — POST to a route
+  declared with `transport: sse(openai)`; assert response body
+  contains `data: [DONE]` + at least one `data: {...,"choices":[{"delta":{"content":"..."}}]}`
+  frame; assert no `event: axon.token` lines.
+- `axon-rs/tests/fase33z_k_g_e2e_anthropic_wire.rs` — POST to a
+  route declared with `transport: sse(anthropic)`; assert body
+  contains `event: message_start` + `event: content_block_delta` +
+  `event: message_stop`; assert no `data: [DONE]` sentinel.
+- `axon-rs/tests/fase33z_k_g_e2e_axon_byte_compat.rs` — POST to a
+  route with `transport: sse(axon)` AND a route with bare
+  `transport: sse` for a type-annotation-only flow; assert byte-
+  identical output (D6 invariant).
+- `axon-rs/tests/fase33z_k_g_e2e_kimi_glm_dispatch.rs` — POST to
+  routes declared with `transport: sse(kimi)` and `transport: sse(glm)`;
+  assert the wire is canonical-OpenAI-bytes (same shape as `sse(openai)`).
+
+### Decision-density landmines to avoid
+
+1. **`event_id` confusion**: the old inline helpers took `event_id`
+   from the outer scope. AxonDialectAdapter has its OWN internal
+   counter starting at 1. After the refactor, drop the outer
+   `event_id` variable entirely — the adapter owns IDs.
+
+2. **`ServerExecutionResult` vs `CompleteEnvelope`**: the old code
+   built a `ServerExecutionResult` struct just before calling
+   `build_complete_event`. The new adapter takes a `CompleteEnvelope`
+   defined in `axon-rs/src/wire_format/mod.rs`. They have the same
+   FIELDS but different types. Build a `CompleteEnvelope` from the
+   accumulated state at FlowComplete time.
+
+3. **Side-channel timing**: `enforcement_summaries`, `runtime_warnings`,
+   and the (Fase 33.e) `effect_policies` resolved at flow-spawn time
+   are read AT FlowComplete from `Arc<Mutex<...>>` shared with the
+   dispatcher. Keep that order intact — read AFTER FlowComplete,
+   BEFORE building CompleteEnvelope.
+
+4. **Cancel-on-disconnect semantics** (D3 invariant): the current
+   StepToken match arm catches `tx.send(...).await.is_err()` and
+   calls `cancel.cancel()` then `break;`. After the refactor, EVERY
+   adapter-emitted frame's `.send()` call must respect this — if
+   `.send()` fails, fire cancel + break. The OpenAI adapter emits
+   MULTIPLE frames for some events (e.g. role-marker + content
+   delta on first FlowStart+StepToken sequence) — each one needs
+   the cancel-on-err check.
+
+5. **Defense-in-depth terminator** (~19063): when the executor
+   channel closes without a FlowComplete, the current code emits
+   `build_error_event` directly. The refactor synthesizes a
+   `FlowError` and dispatches via the adapter — different dialects
+   handle FlowError differently (anthropic emits message_delta;
+   openai emits final chunk with finish_reason).
+
+### Architectural decisions LOCKED IN (do not relitigate)
+
+From the Q1-Q7 ratifications (founder bloque "Si" 2026-05-13):
+
+- **Q1**: Algebraic-effect-driven default. `effects: <stream:...>`
+  on a tool → openai default. Type-annotation only → axon default.
+  D3 `transport: json` explicit opt-out STILL wins.
+- **Q2**: Parametrized grammar `transport: sse(<dialect>)`. NOT
+  a new `wire_format:` field. Reuses the existing axonendpoint
+  field's value-parsing path.
+- **Q3 (revised 2026-05-14)**: 5 dialects {axon, openai, kimi, glm,
+  anthropic}. Kimi + GLM dispatch to `OpenAIDialectAdapter` (shared
+  wire). NO open-set pluggability.
+- **Q4**: Per-dialect native terminators. NO unified terminator.
+- **Q5**: Axon dialect backwards-compat is INDEFINITE. Never
+  deprecate it. It's the W3C-correct baseline.
+- **Q6**: Per-dialect tool-call interleaving. Already implemented
+  in each adapter's `translate(FlowExecutionEvent::ToolCall)` arm
+  — OpenAI inlines `tool_calls[]` in the chunk delta; Anthropic
+  emits a 3-frame tool_use block triad.
+- **Q7**: Algebraic-policy preservation channel — axon embeds on
+  `axon.complete`; openai emits `data: {"axon_metadata":{...}}`
+  BEFORE `data: [DONE]`; anthropic emits `event: axon.metadata`
+  BEFORE `event: message_stop`. 33.z.k.h will populate the actual
+  data (today the openai/anthropic adapters emit empty placeholders).
+
+### Current production state (after commits 7ff1985 → cb47879)
+
+- `transport: sse(<dialect>)` grammar accepts {axon, openai, kimi,
+  glm, anthropic} cross-stack at parse time.
+- `resolve_effective_dialect(transport_dialect, has_algebraic_stream_effect)`
+  returns the right dialect (Q1 default rules).
+- `WireFormatAdapter` trait + 3 adapters (axon/openai/anthropic)
+  pass byte-exact unit tests against their respective wire specs.
+- `select_adapter()` dispatches all 5 dialect strings correctly
+  (kimi + glm → OpenAIDialectAdapter; canonical openai → same).
+- `DynamicEndpointRoute` carries `transport_dialect` field.
+- `execute_sse_handler_inner` has `wire_dialect` parameter threaded
+  but NOT YET CONSUMED inside the consumer loop.
+- The wire emitted by the SSE producer is still axon-named events
+  for all dialects (because the inline `build_*_event` helpers
+  remain). This is the gap 33.z.k.g.2 closes.
+
+### Suggested execution order for next session
+
+1. **33.z.k.g.2**: Consumer-loop refactor in `axon_server.rs`.
+   Estimated 4-6 hours of focused work. Land it as a SINGLE commit
+   so the byte-compat anchor either holds or breaks atomically.
+2. **33.z.k.g.3**: Add the 4 E2E integration tests listed above.
+   ~2 hours.
+3. **33.z.k.h**: Wire the side-channels (enforcement_summaries /
+   runtime_warnings / step_audit) into OpenAI's axon_metadata frame
+   + Anthropic's axon.metadata frame. ~2 hours.
+4. **33.z.k.i**: Drift gate across the dialect catalog. ~1 hour.
+5. **33.z.k.j**: D12 production-grade fuzz × dialects. ~3 hours.
+6. **33.z.k.k**: CI workflow. ~30 min.
+7. **33.z.k.l**: Adopter docs MIGRATION_v1.28 + ADOPTER_STREAMING
+   §dialects. ~3 hours.
+8. **33.z.k.m**: Coordinated release v1.28.0 + axon-enterprise
+   v1.19.0 catch-up. ~1 hour.
+
+Total estimated: ~16-18 hours over 2-3 fresh sessions.
+
+### Commit reference (in order, all on origin/master)
+
+| Commit | Sub-fase |
+|---|---|
+| `7ff1985` | 33.z.k.a anchor + Q1-Q7 ratification |
+| `419ce16` | 33.z.k.b grammar cross-stack |
+| `c55d1d8` | 33.z.k.c resolver |
+| `92fa44a` | 33.z.k.d trait + AxonDialectAdapter |
+| `02c1c11` | 33.z.k.e OpenAIDialectAdapter |
+| `021004a` | 33.z.k.f AnthropicDialectAdapter |
+| `cb47879` | 33.z.k.g.1 producer-signature scaffold |
+| _(this commit)_ | Q3 revision: kimi + glm added |
+
+### The single test that proves everything works end-to-end
+
+After 33.z.k.g.2 lands, this is the test that will close the cycle's
+core promise. Write it in `axon-rs/tests/fase33z_k_g_e2e_openai_wire.rs`:
+
+```rust
+#[tokio::test]
+async fn kivi_shape_emits_openai_wire_bytes_end_to_end() {
+    let src = "tool chat_token_stream { description: \"S\" \
+               effects: <stream:drop_oldest> }\n\
+        flow Chat() -> Unit {\n\
+            step Generate { ask: \"hi\" apply: chat_token_stream output: Stream<Token> }\n\
+        }\n\
+        axonendpoint ChatEndpoint { method: POST path: \"/chat\" execute: Chat }";
+    let app = build_router(server_cfg());
+    assert_eq!(deploy(app.clone(), src).await, StatusCode::OK);
+    let (status, ct, body) = post_no_accept(app, "/chat").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.contains("text/event-stream"));
+    // The wire is OpenAI-style (Q1 default for algebraic-effect flows).
+    assert!(body.contains("\"object\":\"chat.completion.chunk\""));
+    assert!(body.contains("\"delta\":{\"role\":\"assistant\"}"));
+    assert!(body.contains("\"content\":\""));
+    assert!(body.contains("\"finish_reason\":\"stop\""));
+    assert!(body.contains("data: [DONE]"));
+    // And NO axon-named events (the wire is now OpenAI-style).
+    assert!(!body.contains("event: axon.token"));
+}
+```
+
+When THAT test passes, the paper's promise of algebraic-effect SSE
+as a market-surpassing language primitive is delivered.
+
+---
 >
 > **Trigger:** adopter pain 2026-05-13 — after v1.27.1's
 > algebraic-effect override fired SSE wire correctly on the

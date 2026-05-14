@@ -203,6 +203,14 @@ pub fn select_adapter(
         "axon" => Box::new(axon_dialect::AxonDialectAdapter::new(trace_id)),
         // §Fase 33.z.k.e — OpenAI Chat Completions streaming wire.
         "openai" => Box::new(openai_dialect::OpenAIDialectAdapter::new(trace_id)),
+        // §Q3 revision 2026-05-14 — Kimi (Moonshot) + GLM (Zhipu).
+        // Both providers use the OpenAI-compatible Chat Completions
+        // streaming wire verbatim (same chunk shape, same `data: [DONE]`
+        // sentinel). First-class catalog entries for adopter intent
+        // declaration; the wire is dispatched to the same
+        // OpenAIDialectAdapter so the bytes are canonical-OpenAI.
+        "kimi" => Box::new(openai_dialect::OpenAIDialectAdapter::new(trace_id)),
+        "glm" => Box::new(openai_dialect::OpenAIDialectAdapter::new(trace_id)),
         // §Fase 33.z.k.f — Anthropic Messages streaming wire.
         "anthropic" => Box::new(anthropic_dialect::AnthropicDialectAdapter::new(trace_id)),
         _ => Box::new(axon_dialect::AxonDialectAdapter::new(trace_id)),

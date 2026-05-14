@@ -336,17 +336,29 @@ _AXONENDPOINT_TRANSPORT_VALUES: frozenset[str] = frozenset({
 
 # §Fase 33.z.k.b (v1.28.0) — Closed-catalog SSE wire-format dialects.
 # Mirrors axon-frontend's `AXONENDPOINT_TRANSPORT_DIALECTS` (D11 cross-
-# stack contract). Three dialects per Q3 vertical-grounded scope:
+# stack contract). Five dialects per Q3 revised vertical-grounded scope:
 #   - "axon"      W3C named events (current; D6 backwards-compat baseline)
-#   - "openai"    data: {"chunk": "..."} + data: [DONE] sentinel
+#   - "openai"    data: {"choices":[{"delta":{...}}]} + data: [DONE] sentinel
+#   - "kimi"      Moonshot Kimi — OpenAI-compat wire (same bytes as openai)
+#   - "glm"       Zhipu ChatGLM — OpenAI-compat wire (same bytes as openai)
 #   - "anthropic" event: content_block_delta + event: message_stop
 # Selected via the parametrized grammar `transport: sse(<dialect>)`;
 # bare `transport: sse` resolves to the Q1 default per the flow's
 # algebraic-effect predicate (openai for tool-streaming flows;
 # axon for type-annotation-only).
+#
+# Q3 revision 2026-05-14: kimi + glm added as first-class catalog
+# entries (originally Q3 scoped only axon/openai/anthropic). Adopter
+# pipelines through Kimi K2.x + Zhipu GLM-4.x; declaring
+# `transport: sse(kimi)` / `transport: sse(glm)` lets observability +
+# audit surfaces correlate adopter intent against the underlying
+# provider. The wire is byte-identical to openai (both providers
+# ship OpenAI-compat Chat Completions streaming).
 _AXONENDPOINT_TRANSPORT_DIALECTS: frozenset[str] = frozenset({
     "axon",
     "openai",
+    "kimi",
+    "glm",
     "anthropic",
 })
 

@@ -52,7 +52,7 @@ def test_s1_bare_transport_sse_parses_with_empty_dialect_d6():
 # ─── §2 — `transport: sse(<dialect>)` parses dialect into AST ──────
 
 
-@pytest.mark.parametrize("dialect", ["axon", "openai", "anthropic"])
+@pytest.mark.parametrize("dialect", ["axon", "openai", "kimi", "glm", "anthropic"])
 def test_s2_transport_sse_dialect_parses(dialect: str) -> None:
     src = (
         'flow F() -> Unit { step S { ask: "x" output: Stream<Token> } }\n'
@@ -122,13 +122,18 @@ def test_s6_missing_rparen_errors():
 # ─── §7 — Closed-catalog cardinality pin ───────────────────────────
 
 
-def test_s7_dialect_catalog_exact_three():
-    assert len(_AXONENDPOINT_TRANSPORT_DIALECTS) == 3, (
-        "33.z.k.b Q3 ratification: vertical-grounded scope = exactly 3 "
-        "dialects {axon, openai, anthropic}. Adding a 4th requires a "
-        "deliberate sub-fase + cross-stack drift gate update."
+def test_s7_dialect_catalog_exact_five_q3_revised():
+    assert len(_AXONENDPOINT_TRANSPORT_DIALECTS) == 5, (
+        "33.z.k.b Q3 revised 2026-05-14: vertical-grounded scope = "
+        "exactly 5 dialects {axon, openai, kimi, glm, anthropic}. "
+        "kimi + glm added as first-class entries (adopter pipelines "
+        "through Moonshot Kimi + Zhipu ChatGLM); their wire is "
+        "byte-identical to openai. Adding a 6th requires a deliberate "
+        "sub-fase + cross-stack drift gate update."
     )
-    assert _AXONENDPOINT_TRANSPORT_DIALECTS == frozenset({"axon", "openai", "anthropic"}), (
+    assert _AXONENDPOINT_TRANSPORT_DIALECTS == frozenset(
+        {"axon", "openai", "kimi", "glm", "anthropic"}
+    ), (
         "33.z.k.b: cross-stack drift — Python catalog must match the "
         "Rust frontend's AXONENDPOINT_TRANSPORT_DIALECTS verbatim"
     )
