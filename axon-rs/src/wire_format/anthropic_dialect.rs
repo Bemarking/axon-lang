@@ -487,14 +487,26 @@ impl WireFormatAdapter for AnthropicDialectAdapter {
     }
 
     fn flush_terminator(&mut self) -> Vec<Event> {
+        // §Fase 33.z.k.j defense-in-depth — close any orphan text
+        // block before emitting the terminator. In production this
+        // is unreachable (build_complete_envelope_event +
+        // translate(FlowComplete/FlowError) both call
+        // close_text_block_if_open before returning), but a malformed
+        // input stream (producer crashed mid-flight, channel dropped
+        // before FlowComplete, fuzz harness driving incomplete
+        // sequences) could leave a block open. The Anthropic spec
+        // (§Streaming / "ill-formed streams") requires every
+        // content_block_start to be balanced by content_block_stop;
+        // emitting message_stop with an orphan open block produces
+        // wire that some strict-validating clients reject.
+        let mut frames = self.close_text_block_if_open();
         // Q7 axon.metadata extension frame BEFORE the terminator
         // (anthropic-compat clients ignore unknown events; adopters
         // who want the algebraic-policy data subscribe to the
         // `axon.metadata` event name explicitly).
+        frames.push(self.build_axon_metadata_frame());
         // Then D5 message_stop per Anthropic spec.
-        vec![
-            self.build_axon_metadata_frame(),
-            Self::build_message_stop(),
-        ]
+        frames.push(Self::build_message_stop());
+        frames
     }
 }
