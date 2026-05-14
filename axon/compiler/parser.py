@@ -334,6 +334,23 @@ _AXONENDPOINT_TRANSPORT_VALUES: frozenset[str] = frozenset({
 })
 
 
+# §Fase 33.z.k.b (v1.28.0) — Closed-catalog SSE wire-format dialects.
+# Mirrors axon-frontend's `AXONENDPOINT_TRANSPORT_DIALECTS` (D11 cross-
+# stack contract). Three dialects per Q3 vertical-grounded scope:
+#   - "axon"      W3C named events (current; D6 backwards-compat baseline)
+#   - "openai"    data: {"chunk": "..."} + data: [DONE] sentinel
+#   - "anthropic" event: content_block_delta + event: message_stop
+# Selected via the parametrized grammar `transport: sse(<dialect>)`;
+# bare `transport: sse` resolves to the Q1 default per the flow's
+# algebraic-effect predicate (openai for tool-streaming flows;
+# axon for type-annotation-only).
+_AXONENDPOINT_TRANSPORT_DIALECTS: frozenset[str] = frozenset({
+    "axon",
+    "openai",
+    "anthropic",
+})
+
+
 # §Fase 30 — Closed keepalive duration enum (D6 ratified 2026-05-10).
 # Sized for common LB idle-timeout windows:
 #   AWS ALB 60s default, CloudFlare 100s, GCP LB 30s, nginx 60s.
@@ -4986,6 +5003,48 @@ class Parser:
                     # inference knows NOT to override this value with
                     # the produces_stream-driven inference.
                     node.transport_explicit = True
+                    # §Fase 33.z.k.b (v1.28.0) — Optional dialect
+                    # parametrization: `transport: sse(<dialect>)`.
+                    if self._check(TokenType.LPAREN):
+                        if value != "sse":
+                            raise AxonParseError(
+                                f"Dialect parametrization "
+                                f"`transport: {value}(<dialect>)` is only "
+                                f"valid for `sse`; got `{value}` in "
+                                f"axonendpoint '{name.value}'.",
+                                line=self._current().line,
+                                column=self._current().column,
+                            )
+                        self._advance()  # consume LPAREN
+                        dialect_tok = self._consume_any_identifier_or_keyword()
+                        dialect = dialect_tok.value
+                        if dialect not in _AXONENDPOINT_TRANSPORT_DIALECTS:
+                            hint = suggest_for(
+                                dialect,
+                                tuple(_AXONENDPOINT_TRANSPORT_DIALECTS),
+                            )
+                            base = (
+                                f"Invalid SSE dialect '{dialect}' in "
+                                f"axonendpoint '{name.value}'. "
+                            )
+                            msg = f"{base}{hint}" if hint else base.rstrip()
+                            raise AxonParseError(
+                                msg,
+                                line=dialect_tok.line,
+                                column=dialect_tok.column,
+                                expected="axon | openai | anthropic",
+                                found=dialect,
+                            )
+                        if not self._check(TokenType.RPAREN):
+                            raise AxonParseError(
+                                f"Expected `)` after dialect name in "
+                                f"axonendpoint '{name.value}' "
+                                f"(transport: sse(<dialect>) grammar).",
+                                line=self._current().line,
+                                column=self._current().column,
+                            )
+                        self._advance()  # consume RPAREN
+                        node.transport_dialect = dialect
                 case "keepalive":
                     # §Fase 30.b — SSE keepalive interval (D6).
                     # Closed enum {5s, 15s, 30s, 60s}.

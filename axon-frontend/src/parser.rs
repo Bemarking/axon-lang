@@ -485,6 +485,32 @@ const fn is_top_level_decl_kw_for_recovery(tt: &TokenType) -> bool {
 /// type-checker (30.c) so adopter tooling sees one canonical list.
 pub const AXONENDPOINT_TRANSPORT_VALUES: &[&str] = &["json", "sse", "ndjson"];
 
+/// §Fase 33.z.k.b (v1.28.0) — Closed-catalog SSE wire-format
+/// dialects. Selected via the parametrized grammar
+/// `transport: sse(<dialect>)`; bare `transport: sse` resolves to
+/// the Q1 default per the flow's algebraic-effect predicate
+/// (openai for tool-streaming flows; axon for type-annotation-only).
+///
+/// Vertical-grounded scope (Q3): three dialects cover ~95% of
+/// LLM-streaming adopter expectations.
+///   - `axon`      — current W3C named events
+///                   (event: axon.token / event: axon.complete).
+///                   D6 backwards-compat baseline; indefinitely
+///                   supported as a first-class option.
+///   - `openai`    — `data: {"chunk": "..."}` frames terminated by
+///                   `data: [DONE]`. Adopter SDKs targeting OpenAI /
+///                   Kimi / GLM / Ollama / OpenRouter consume this
+///                   shape verbatim.
+///   - `anthropic` — `event: content_block_delta` frames terminated
+///                   by `event: message_stop`. Adopter SDKs
+///                   targeting Anthropic Claude consume this shape
+///                   verbatim.
+///
+/// Open-set adapter pluggability (downstream crates registering
+/// custom dialects) is explicitly out of scope per the
+/// Axon-for-Axon discipline.
+pub const AXONENDPOINT_TRANSPORT_DIALECTS: &[&str] = &["axon", "openai", "anthropic"];
+
 /// Adopter-facing acceptable values for `keepalive:` field.
 pub const AXONENDPOINT_KEEPALIVE_VALUES: &[&str] = &["5s", "15s", "30s", "60s"];
 
@@ -4658,6 +4684,11 @@ impl Parser {
             // at deploy time using the method-default heuristic.
             replay_explicit: false,
             replay: false,
+            // §Fase 33.z.k.b (v1.28.0) — Wire-format dialect default
+            // empty; the runtime classifier resolves the default
+            // dialect per the algebraic-effect predicate when the
+            // source omits `transport: sse(<dialect>)`.
+            transport_dialect: String::new(),
             // §Fase 33.z.k.1 (v1.27.1) — Algebraic-effect override.
             // Parser default false; populated by the type-checker's
             // compute_implicit_transports pass once the full program
@@ -4802,6 +4833,77 @@ impl Parser {
                         // inference knows NOT to override this value with
                         // the produces_stream-driven inference.
                         node.transport_explicit = true;
+                        // §Fase 33.z.k.b (v1.28.0) — Optional dialect
+                        // parametrization: `transport: sse(<dialect>)`.
+                        // Only valid when the base value is `sse`
+                        // (json + ndjson dialects are the dialects
+                        // themselves; `json(<x>)` / `ndjson(<x>)`
+                        // would be parse errors caught below).
+                        if self.check(TokenType::LParen) {
+                            if value != "sse" {
+                                let tok = self.current().clone();
+                                return Err(ParseError {
+                                    message: format!(
+                                        "Dialect parametrization \
+                                         `transport: {value}(<dialect>)` is \
+                                         only valid for `sse`; got \
+                                         `{value}` in axonendpoint '{}'.",
+                                        node.name
+                                    ),
+                                    line: tok.line,
+                                    column: tok.column,
+                                    ..Default::default()
+                                });
+                            }
+                            self.advance(); // consume LParen
+                            let dialect_tok = self.consume_any_ident_or_kw()?;
+                            let dialect = dialect_tok.value.clone();
+                            if !AXONENDPOINT_TRANSPORT_DIALECTS
+                                .iter()
+                                .any(|&d| d == dialect)
+                            {
+                                let hint = crate::smart_suggest::suggest_for(
+                                    &dialect,
+                                    AXONENDPOINT_TRANSPORT_DIALECTS,
+                                );
+                                let base = format!(
+                                    "Invalid SSE dialect '{dialect}' in axonendpoint '{}'.",
+                                    node.name
+                                );
+                                let message = if hint.is_empty() {
+                                    format!(
+                                        "{base} expected axon | openai | anthropic, found {dialect}"
+                                    )
+                                } else {
+                                    format!(
+                                        "{base} {hint} (expected axon | openai | anthropic, found {dialect})"
+                                    )
+                                };
+                                return Err(ParseError {
+                                    message,
+                                    line: dialect_tok.line,
+                                    column: dialect_tok.column,
+                                    ..Default::default()
+                                });
+                            }
+                            // Closing RParen.
+                            let rparen_tok = self.current().clone();
+                            if !self.check(TokenType::RParen) {
+                                return Err(ParseError {
+                                    message: format!(
+                                        "Expected `)` after dialect name \
+                                         in axonendpoint '{}' \
+                                         (transport: sse(<dialect>) grammar).",
+                                        node.name
+                                    ),
+                                    line: rparen_tok.line,
+                                    column: rparen_tok.column,
+                                    ..Default::default()
+                                });
+                            }
+                            self.advance(); // consume RParen
+                            node.transport_dialect = dialect;
+                        }
                     }
                     "keepalive" => {
                         // Accepts either a DURATION token (e.g. `15s`) or

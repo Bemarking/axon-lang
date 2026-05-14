@@ -1987,6 +1987,21 @@ class AxonEndpointDefinition(ASTNode):
     replay_explicit: bool = False
     replay: bool = False
 
+    # §Fase 33.z.k.b (v1.28.0) — Selected SSE wire-format dialect.
+    #
+    # Populated when the source uses the parametrized grammar
+    # `transport: sse(<dialect>)`. Closed catalog
+    # `_AXONENDPOINT_TRANSPORT_DIALECTS = {axon, openai, anthropic}`.
+    # Empty string when the source declared a non-SSE transport,
+    # bare `transport: sse` without parens, or omitted transport
+    # entirely (D1 implicit path).
+    #
+    # When empty + the effective wire is SSE (per the runtime
+    # classifier), the runtime resolves the dialect via the Q1
+    # algebraic-effect-driven default: openai for tool-streaming
+    # flows, axon for type-annotation-only.
+    transport_dialect: str = ""
+
     # §Fase 33.z.k.1 (v1.27.1) — Algebraic-effect override predicate.
     #
     # True when `execute_flow` references a tool that declares
