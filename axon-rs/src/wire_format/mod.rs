@@ -69,6 +69,7 @@
 //!   counters); no allocation per token translation.
 
 pub mod axon_dialect;
+pub mod openai_dialect;
 
 use crate::flow_execution_event::FlowExecutionEvent;
 use axum::response::sse::Event;
@@ -124,10 +125,10 @@ pub fn select_adapter(
 ) -> Box<dyn WireFormatAdapter> {
     match dialect {
         "axon" => Box::new(axon_dialect::AxonDialectAdapter::new(trace_id)),
-        // §Fase 33.z.k.e / 33.z.k.f — added in subsequent sub-fases.
-        // Today they fall through to axon defensively; tests in
-        // 33.z.k.e/f flip these arms to the named adapters.
-        "openai" => Box::new(axon_dialect::AxonDialectAdapter::new(trace_id)),
+        // §Fase 33.z.k.e — OpenAI Chat Completions streaming wire.
+        "openai" => Box::new(openai_dialect::OpenAIDialectAdapter::new(trace_id)),
+        // §Fase 33.z.k.f — Anthropic Messages streaming wire. Until
+        // that sub-fase ships, falls through to axon defensively.
         "anthropic" => Box::new(axon_dialect::AxonDialectAdapter::new(trace_id)),
         _ => Box::new(axon_dialect::AxonDialectAdapter::new(trace_id)),
     }

@@ -180,13 +180,14 @@ fn s5_dialect_returns_axon_string() {
 //       through to axon pre-33.z.k.e/f ──────────────────────────────
 
 #[test]
-fn s6_select_adapter_openai_falls_through_to_axon_pre_33_z_k_e() {
+fn s6_select_adapter_openai_returns_openai_post_33_z_k_e() {
     let adapter = select_adapter("openai", 1);
     assert_eq!(
         adapter.dialect(),
-        "axon",
-        "33.z.k.d defensive: openai adapter not yet implemented; falls \
-         through to axon. 33.z.k.e flips this assertion."
+        "openai",
+        "33.z.k.e flipped this assertion from `axon` (33.z.k.d \
+         defensive fallthrough) to `openai`. The OpenAI dialect \
+         adapter ships in 33.z.k.e and dispatches via select_adapter."
     );
 }
 
