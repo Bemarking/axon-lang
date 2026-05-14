@@ -1,10 +1,10 @@
 [package]
 name = "axon-frontend"
-version = "0.11.2"
+version = "0.12.0"
 edition = "2021"
 rust-version = "1.95"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
-description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator. Zero runtime dependencies. v0.11.0 ships Fase 32 Axonendpoint as First-Class HTTP REST: AST `requires_capabilities` + `replay_explicit` + `replay` fields + parser support for `requires: [slug.dotted]` (closed slug grammar with smart-suggest) + `replay: true | false`. v0.10.0 Fase 31 Type-Driven Wire Inference. v0.9.0 Fase 30 HTTP transport. v0.8.0 Fase 28 parse_with_recovery + SourceSnippet + smart_suggest. v0.7.0 algebraic effects IR. v0.6.0 IRBreak/IRContinue. v0.5.0 IRReturn.value_kind. v0.4.0 let. v0.3.0 lossless lexing. v0.2.0 typed channels."
+description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator. Zero runtime dependencies. v0.12.0 ships Fase 33.z.k Wire-format adapter cycle: parametrized transport grammar `transport: sse(<dialect>)` + closed 5-dialect catalog AXONENDPOINT_TRANSPORT_DIALECTS `{axon, openai, kimi, glm, anthropic}` + resolve_effective_dialect resolver (Q1 default rules) + AxonEndpointDefinition.transport_dialect AST field. v0.11.0 Fase 32 Axonendpoint as First-Class HTTP REST. v0.10.0 Fase 31 Type-Driven Wire Inference. v0.9.0 Fase 30 HTTP transport. v0.8.0 Fase 28 parse_with_recovery + SourceSnippet + smart_suggest. v0.7.0 algebraic effects IR. v0.6.0 IRBreak/IRContinue. v0.5.0 IRReturn.value_kind. v0.4.0 let. v0.3.0 lossless lexing. v0.2.0 typed channels."
 license = "MIT"
 repository = "https://github.com/Bemarking/axon-lang"
 readme = "README.md"
