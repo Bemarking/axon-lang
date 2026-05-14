@@ -97,7 +97,7 @@
 //! - COMPUTING — state machine is bounded (one current text block
 //!   index + one rolling block counter); per-event O(1).
 
-use super::WireFormatAdapter;
+use super::{CompleteEnvelope, WireFormatAdapter};
 use crate::flow_execution_event::FlowExecutionEvent;
 use axum::response::sse::Event;
 
@@ -124,6 +124,26 @@ pub struct AnthropicDialectAdapter {
     output_tokens_accumulated: u64,
     /// Whether FlowComplete / FlowError has been translated.
     terminal_emitted: bool,
+    /// Tracks how the stream terminated for adopter visibility on
+    /// the axon.metadata frame.
+    saw_terminal_reason: TerminalReason,
+    /// §Fase 33.z.k.h — Algebraic-policy envelope stashed at
+    /// FlowComplete time so `flush_terminator()` can emit a
+    /// POPULATED `axon.metadata` frame. `None` pre-FlowComplete.
+    /// Adopters consuming the anthropic wire receive per-step
+    /// provenance (banking PCI DSS Req 10 / government FedRAMP
+    /// AU-2 / legal FRE 502 / medicine 21 CFR Part 11 §11.10) via
+    /// this extension frame; anthropic-compat SDKs ignore unknown
+    /// event names verbatim per Anthropic spec §Streaming.
+    stashed_envelope: Option<CompleteEnvelope>,
+}
+
+/// Closed-catalog terminal reason mirror (parallel to OpenAI dialect).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TerminalReason {
+    None,
+    Stop,
+    Error,
 }
 
 impl AnthropicDialectAdapter {
@@ -139,6 +159,8 @@ impl AnthropicDialectAdapter {
             tool_use_counter: 0,
             output_tokens_accumulated: 0,
             terminal_emitted: false,
+            saw_terminal_reason: TerminalReason::None,
+            stashed_envelope: None,
         }
     }
 
@@ -253,17 +275,106 @@ impl AnthropicDialectAdapter {
         Self::build_event("message_stop", payload)
     }
 
-    fn build_axon_metadata_frame() -> Event {
-        // §Q7 — algebraic-policy preservation extension. Pre-33.z.k.h
-        // these fields are empty placeholders. Anthropic-compat
-        // clients ignore unknown events.
+    /// §Q7 + §Fase 33.z.k.h — Build the `axon.metadata` extension
+    /// frame carrying the full algebraic-policy side-channel data
+    /// + flow envelope. Anthropic-compat clients ignore unknown
+    /// `event:` names per Anthropic spec §Streaming / "Other events"
+    /// ("any event-type your client doesn't recognize should be
+    /// silently dropped"); SDK-free clients + axon-aware tooling
+    /// consume `event: axon.metadata` directly to surface vertical-
+    /// regulator audit data.
+    ///
+    /// Frame shape mirrors the openai dialect's `axon_metadata` JSON
+    /// payload — adopters using both dialects (multi-provider
+    /// orchestration) get a uniform algebraic-policy surface.
+    fn build_axon_metadata_frame(&self) -> Event {
+        let mut metadata = serde_json::Map::new();
+        if let Some(envelope) = self.stashed_envelope.as_ref() {
+            metadata.insert("trace_id".to_string(), serde_json::json!(envelope.trace_id));
+            metadata.insert("flow".to_string(), serde_json::json!(&envelope.flow_name));
+            metadata.insert(
+                "backend".to_string(),
+                serde_json::json!(&envelope.backend),
+            );
+            metadata.insert("success".to_string(), serde_json::json!(envelope.success));
+            metadata.insert(
+                "steps_executed".to_string(),
+                serde_json::json!(envelope.steps_executed),
+            );
+            metadata.insert(
+                "tokens_input".to_string(),
+                serde_json::json!(envelope.tokens_input),
+            );
+            metadata.insert(
+                "tokens_output".to_string(),
+                serde_json::json!(envelope.tokens_output),
+            );
+            metadata.insert(
+                "latency_ms".to_string(),
+                serde_json::json!(envelope.latency_ms),
+            );
+
+            // §Fase 33.e — stream_policies (elided when empty).
+            if !envelope.effect_policies.is_empty() {
+                let arr: Vec<serde_json::Value> = envelope
+                    .effect_policies
+                    .iter()
+                    .map(|(step, policy)| serde_json::json!({"step": step, "policy": policy}))
+                    .collect();
+                metadata.insert(
+                    "stream_policies".to_string(),
+                    serde_json::Value::Array(arr),
+                );
+            }
+            // §Fase 33.x.d — enforcement_summary (elided when empty).
+            if !envelope.enforcement_summaries.is_empty() {
+                let mut obj = serde_json::Map::new();
+                for (step, summary) in &envelope.enforcement_summaries {
+                    obj.insert(
+                        step.clone(),
+                        serde_json::to_value(summary).unwrap_or(serde_json::Value::Null),
+                    );
+                }
+                metadata.insert(
+                    "enforcement_summary".to_string(),
+                    serde_json::Value::Object(obj),
+                );
+            }
+            // §Fase 33.x.g — runtime_warnings (elided when empty).
+            if !envelope.runtime_warnings.is_empty() {
+                let arr: Vec<serde_json::Value> = envelope
+                    .runtime_warnings
+                    .iter()
+                    .map(|w| serde_json::to_value(w).unwrap_or(serde_json::Value::Null))
+                    .collect();
+                metadata.insert(
+                    "runtime_warnings".to_string(),
+                    serde_json::Value::Array(arr),
+                );
+            }
+            // §Fase 33.x.f — step_audit (elided when empty).
+            if !envelope.step_audit_records.is_empty() {
+                let arr: Vec<serde_json::Value> = envelope
+                    .step_audit_records
+                    .iter()
+                    .map(|r| serde_json::to_value(r).unwrap_or(serde_json::Value::Null))
+                    .collect();
+                metadata.insert("step_audit".to_string(), serde_json::Value::Array(arr));
+            }
+        }
+        let terminal_str = match self.saw_terminal_reason {
+            TerminalReason::None => "none",
+            TerminalReason::Stop => "stop",
+            TerminalReason::Error => "error",
+        };
+        metadata.insert(
+            "terminal_reason".to_string(),
+            serde_json::json!(terminal_str),
+        );
+
         let payload = serde_json::json!({
             "type": "axon.metadata",
-            "axon_metadata": {
-                "enforcement_summary": {},
-                "runtime_warnings": [],
-                "step_audit": [],
-            }
+            "axon_metadata": metadata,
         });
         Self::build_event("axon.metadata", payload)
     }
@@ -339,6 +450,7 @@ impl WireFormatAdapter for AnthropicDialectAdapter {
                 // message_stop emits from flush_terminator() — separating
                 // the terminator allows Q7 axon.metadata to interpose.
                 self.terminal_emitted = true;
+                self.saw_terminal_reason = TerminalReason::Stop;
                 let mut events = self.close_text_block_if_open();
                 events.push(self.build_message_delta("end_turn"));
                 events
@@ -349,13 +461,29 @@ impl WireFormatAdapter for AnthropicDialectAdapter {
                 // "stop_sequence" or simply omitting. We emit
                 // stop_reason="end_turn" defensively + rely on the
                 // axon.metadata frame for adopters who need explicit
-                // error signaling.
+                // error signaling (terminal_reason: "error").
                 self.terminal_emitted = true;
+                self.saw_terminal_reason = TerminalReason::Error;
                 let mut events = self.close_text_block_if_open();
                 events.push(self.build_message_delta("end_turn"));
                 events
             }
         }
+    }
+
+    /// §Fase 33.z.k.h — Stash the full envelope so flush_terminator()
+    /// can populate the `axon.metadata` frame with real algebraic-
+    /// policy data, then emit the standard message_delta sequence
+    /// (close-text-block-if-open + message_delta with stop_reason).
+    fn build_complete_envelope_event(&mut self, envelope: &CompleteEnvelope) -> Vec<Event> {
+        self.terminal_emitted = true;
+        self.saw_terminal_reason = TerminalReason::Stop;
+        // Stash before emitting frames so a partial-burst send failure
+        // can't strand the side-channel data.
+        self.stashed_envelope = Some(envelope.clone());
+        let mut events = self.close_text_block_if_open();
+        events.push(self.build_message_delta("end_turn"));
+        events
     }
 
     fn flush_terminator(&mut self) -> Vec<Event> {
@@ -365,7 +493,7 @@ impl WireFormatAdapter for AnthropicDialectAdapter {
         // `axon.metadata` event name explicitly).
         // Then D5 message_stop per Anthropic spec.
         vec![
-            Self::build_axon_metadata_frame(),
+            self.build_axon_metadata_frame(),
             Self::build_message_stop(),
         ]
     }
