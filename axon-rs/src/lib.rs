@@ -238,6 +238,12 @@ pub mod tool_registry;
 // the dispatcher's per-chunk wire emission path (Fase 34.d/g lands
 // the wiring; this module is the structural foundation).
 pub mod tool_trait;
+// §Fase 34.d (v1.29.0) — Bridge from ToolEntry (registry shape) to
+// Tool trait impls (dispatcher's streaming surface). The dispatcher's
+// `pure_shape::run_step` calls `tool_dispatch_bridge::resolve_streaming_tool`
+// for is_streaming-flagged tools + drains the resulting Stream<ToolChunk>
+// chunk-by-chunk into the wire.
+pub mod tool_dispatch_bridge;
 pub mod tool_validator;
 pub mod trace_export;
 pub mod trace_store;
