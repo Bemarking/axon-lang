@@ -4059,6 +4059,90 @@ pub fn implicit_transport(
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  §Fase 33.z.k.c (v1.28.0) — Effective dialect resolver
+// ═══════════════════════════════════════════════════════════════════
+//
+// The dialect resolver answers the question "WHICH SSE dialect does
+// this route emit?". It is orthogonal to `classify_dynamic_route_wire`
+// which answers "IS the wire SSE?". The two compose:
+//
+//   1. classify_dynamic_route_wire → DynamicRouteWire::{Sse, Json}
+//   2. If Sse:  resolve_effective_dialect → "axon" | "openai" | "anthropic"
+//      If Json: dialect is "" (irrelevant)
+//
+// # Q1 algebraic-effect-driven default
+//
+// When the source omits the explicit `transport: sse(<dialect>)`
+// parametrization, the resolver applies the founder-ratified default:
+//   - openai: when the flow declares an algebraic effect (the tool
+//             carries `effects: <stream:<policy>>`). The LLM-streaming
+//             ecosystem expects OpenAI-style on the wire.
+//   - axon:   when the flow uses type-annotation only
+//             (`output: Stream<T>` without a tool effect). W3C
+//             named-events stays the structural-commitment baseline.
+//
+// # D3 precedence preserved
+//
+// Adopter-explicit `transport: sse(<dialect>)` always wins. Adopter-
+// explicit `transport: json` short-circuits before the resolver
+// runs (the wire is JSON; no dialect applies).
+//
+// # Pure function discipline (D10)
+//
+// `resolve_effective_dialect` is total over its 2-input domain.
+// Returns `""` only when called with an inconsistent state (no
+// algebraic signal AND no explicit dialect AND no type-annotation
+// stream — i.e., the caller violated the precondition that the
+// wire IS SSE). Defensive: returns "axon" in that case rather than
+// panic.
+//
+// Pillar trace:
+//   MATHEMATICS — pure 2-input function with total domain.
+//   LOGIC       — closed catalog of 3 outputs + defensive fallback.
+//   PHILOSOPHY  — algebraic effects on tools drive openai default
+//                 because that's where LLM-streaming adopters
+//                 already live; type-annotation stays axon-baseline.
+//   COMPUTING   — adopters' SDKs see the wire format their
+//                 ecosystem documents; no client-side adapter
+//                 work required.
+
+/// Resolve which SSE dialect the runtime should emit for a route.
+///
+/// Precondition: caller already determined the wire IS SSE (via
+/// `classify_dynamic_route_wire`). Calling this on a JSON-wire
+/// route is meaningless but never panics.
+///
+/// Closed-catalog output: always one of `"axon"`, `"openai"`, or
+/// `"anthropic"`. Never returns an empty string under valid input.
+///
+/// # Resolution rules (Q1 ratified)
+///
+/// 1. **Explicit dialect wins.** When `transport_dialect != ""`,
+///    return it verbatim. (The parser already validated it
+///    against `AXONENDPOINT_TRANSPORT_DIALECTS` so it's one of
+///    `axon`/`openai`/`anthropic`.)
+/// 2. **Algebraic-effect → openai.** Tool with declared stream
+///    effect → adopters consume LLM-style streams → openai default.
+/// 3. **Type-annotation only → axon.** No tool effect; W3C named
+///    events stay the structural-commitment baseline.
+pub fn resolve_effective_dialect(
+    transport_dialect: &str,
+    has_algebraic_stream_effect: bool,
+) -> String {
+    // Rule 1 — explicit dialect wins (D3-style precedence for the
+    // dialect choice).
+    if !transport_dialect.is_empty() {
+        return transport_dialect.to_string();
+    }
+    // Rule 2 — algebraic effect (disjunct b) → openai default.
+    if has_algebraic_stream_effect {
+        return "openai".to_string();
+    }
+    // Rule 3 — type-annotation only (disjunct a) → axon default.
+    "axon".to_string()
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  §FASE 31.c — COMPILE-TIME WARNING `axon-W001` (D4, D10)
 // ═══════════════════════════════════════════════════════════════════
 //
