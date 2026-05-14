@@ -43,7 +43,7 @@
 //!   has been translated; `flush_terminator()` no-ops once true
 //!   (axon dialect emits the terminator IN-LINE with FlowComplete).
 
-use super::WireFormatAdapter;
+use super::{CompleteEnvelope, WireFormatAdapter};
 use crate::flow_execution_event::FlowExecutionEvent;
 use axum::response::sse::Event;
 
@@ -165,9 +165,76 @@ impl AxonDialectAdapter {
     }
 }
 
+impl AxonDialectAdapter {
+    /// §Fase 33.z.k.g — Build the full `axon.complete` event with
+    /// all the v1.27.1 envelope fields including the optional
+    /// algebraic-policy side-channels (stream_policies,
+    /// enforcement_summary, warnings). Each side-channel is elided
+    /// from the JSON when empty (D4 byte-compat with v1.27.1 inline
+    /// `build_complete_event` helper).
+    fn build_full_complete_event(&mut self, envelope: &CompleteEnvelope) -> Event {
+        let mut data = serde_json::json!({
+            "trace_id": envelope.trace_id,
+            "flow": envelope.flow_name,
+            "backend": envelope.backend,
+            "steps_executed": envelope.steps_executed,
+            "tokens_input": envelope.tokens_input,
+            "tokens_output": envelope.tokens_output,
+            "latency_ms": envelope.latency_ms,
+            "success": envelope.success,
+        });
+        // §Fase 33.e — stream_policies array, elided when empty.
+        if !envelope.effect_policies.is_empty() {
+            let arr = envelope
+                .effect_policies
+                .iter()
+                .map(|(step, policy)| serde_json::json!({"step": step, "policy": policy}))
+                .collect::<Vec<_>>();
+            data.as_object_mut()
+                .expect("json object")
+                .insert("stream_policies".to_string(), serde_json::Value::Array(arr));
+        }
+        // §Fase 33.x.d — enforcement_summary, elided when empty.
+        if !envelope.enforcement_summaries.is_empty() {
+            let mut obj = serde_json::Map::new();
+            for (step, summary) in &envelope.enforcement_summaries {
+                obj.insert(
+                    step.clone(),
+                    serde_json::to_value(summary).unwrap_or(serde_json::Value::Null),
+                );
+            }
+            data.as_object_mut().expect("json object").insert(
+                "enforcement_summary".to_string(),
+                serde_json::Value::Object(obj),
+            );
+        }
+        // §Fase 33.x.g — runtime_warnings, elided when empty.
+        if !envelope.runtime_warnings.is_empty() {
+            let arr = envelope
+                .runtime_warnings
+                .iter()
+                .map(|w| serde_json::to_value(w).unwrap_or(serde_json::Value::Null))
+                .collect::<Vec<_>>();
+            data.as_object_mut()
+                .expect("json object")
+                .insert("warnings".to_string(), serde_json::Value::Array(arr));
+        }
+        let event_id = self.next_id();
+        Event::default()
+            .event("axon.complete")
+            .id(event_id.to_string())
+            .data(serde_json::to_string(&data).unwrap_or_default())
+    }
+}
+
 impl WireFormatAdapter for AxonDialectAdapter {
     fn dialect(&self) -> &'static str {
         "axon"
+    }
+
+    fn build_complete_envelope_event(&mut self, envelope: &CompleteEnvelope) -> Vec<Event> {
+        self.terminal_emitted = true;
+        vec![self.build_full_complete_event(envelope)]
     }
 
     fn translate(&mut self, event: &FlowExecutionEvent) -> Vec<Event> {
