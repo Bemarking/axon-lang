@@ -72,8 +72,48 @@ pub mod anthropic_dialect;
 pub mod axon_dialect;
 pub mod openai_dialect;
 
+use crate::axon_server::EnforcementSummaryWire;
 use crate::flow_execution_event::FlowExecutionEvent;
+use crate::runtime_warnings::RuntimeWarning;
 use axum::response::sse::Event;
+
+/// §Fase 33.z.k.g (v1.28.0) — Envelope carrying all the side-channel
+/// + summary data the SSE producer accumulates over the lifetime of
+/// a flow. Passed to `adapter.build_complete_envelope_event()` at
+/// FlowComplete time so dialect adapters can surface the data per
+/// their wire-format conventions:
+///
+/// - **axon**: embeds the fields directly on `axon.complete` (D4
+///   wire byte-compat with v1.27.1 inline `build_complete_event`).
+/// - **openai**: emits a separate `data: {"axon_metadata": {...}}`
+///   frame BEFORE `data: [DONE]` (Q7 ratification).
+/// - **anthropic**: emits a separate `event: axon.metadata` frame
+///   BEFORE `event: message_stop` (Q7).
+///
+/// Built by the producer from the same side-channels v1.27.1
+/// `build_complete_event` consumed:
+/// - `enforcement_summaries`: per-step enforcement counters from
+///   the dispatcher's `StreamPolicyEnforcer` (Fase 33.x.d).
+/// - `runtime_warnings`: closed-catalog axon-W002 etc. warnings
+///   (Fase 33.x.g).
+/// - `effect_policies`: per-step `<stream:<policy>>` declarations
+///   (Fase 33.e).
+/// - Flow envelope: trace_id, flow_name, backend, success, counters,
+///   latency.
+#[derive(Debug, Clone)]
+pub struct CompleteEnvelope {
+    pub trace_id: u64,
+    pub flow_name: String,
+    pub backend: String,
+    pub success: bool,
+    pub steps_executed: usize,
+    pub tokens_input: u64,
+    pub tokens_output: u64,
+    pub latency_ms: u64,
+    pub effect_policies: Vec<(String, String)>,
+    pub enforcement_summaries: Vec<(String, EnforcementSummaryWire)>,
+    pub runtime_warnings: Vec<RuntimeWarning>,
+}
 
 /// Wire-format adapter trait — translates internal flow-execution
 /// events into per-dialect SSE wire events.
@@ -97,7 +137,42 @@ pub trait WireFormatAdapter: Send {
     /// Returning an empty Vec is valid — some dialects swallow
     /// certain internal events (e.g., openai doesn't have a per-step
     /// `step_start` concept; AxonDialectAdapter emits one).
+    ///
+    /// NOTE: the producer calls `build_complete_envelope_event()`
+    /// instead of `translate()` for `FlowComplete` so the adapter
+    /// receives the full algebraic-policy side-channel data. The
+    /// `translate(FlowComplete)` path is retained for adapters /
+    /// callers that don't have the full envelope available; it
+    /// produces a minimal envelope without enforcement_summaries /
+    /// runtime_warnings / effect_policies.
     fn translate(&mut self, event: &FlowExecutionEvent) -> Vec<Event>;
+
+    /// §Fase 33.z.k.g (v1.28.0) — Build the dialect-specific
+    /// "complete" event with the full algebraic-policy side-channel
+    /// data accumulated over the flow's lifetime. The producer calls
+    /// this in place of `translate(FlowComplete)` so adapters can
+    /// surface enforcement_summaries / runtime_warnings /
+    /// effect_policies per their wire-format conventions.
+    ///
+    /// Default impl: produces the same output as
+    /// `translate(FlowComplete{...})` reconstructed from the envelope
+    /// — adapters that don't override see the envelope's flow-level
+    /// fields but no side-channel data.
+    fn build_complete_envelope_event(&mut self, envelope: &CompleteEnvelope) -> Vec<Event> {
+        // Default fallback: build a FlowComplete event from the
+        // envelope's flow-level fields + translate it normally.
+        let event = FlowExecutionEvent::FlowComplete {
+            flow_name: envelope.flow_name.clone(),
+            backend: envelope.backend.clone(),
+            success: envelope.success,
+            steps_executed: envelope.steps_executed,
+            tokens_input: envelope.tokens_input,
+            tokens_output: envelope.tokens_output,
+            latency_ms: envelope.latency_ms,
+            timestamp_ms: 0,
+        };
+        self.translate(&event)
+    }
 
     /// Emit any final terminator frames after the internal
     /// `FlowComplete` / `FlowError` event has been translated.

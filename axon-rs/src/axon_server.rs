@@ -18671,7 +18671,12 @@ async fn execute_sse_handler(
     headers: HeaderMap,
     Json(payload): Json<StreamExecuteRequest>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
-    execute_sse_handler_inner(state, headers, payload, None).await
+    // §Fase 33.z.k.g — `/v1/execute/sse` direct hits default to the
+    // axon W3C named-events dialect (D6 backwards-compat for this
+    // legacy entrypoint; adopters on `/v1/execute/sse` never expressed
+    // a dialect preference + their existing EventSource clients parse
+    // `event: axon.token`).
+    execute_sse_handler_inner(state, headers, payload, None, "axon".to_string()).await
 }
 
 /// §Fase 33.x.f — Internal SSE handler with optional replay context.
@@ -18689,6 +18694,21 @@ async fn execute_sse_handler_inner(
     headers: HeaderMap,
     payload: StreamExecuteRequest,
     replay_ctx: Option<SseReplayContext>,
+    // §Fase 33.z.k.g.1 (v1.28.0) — SSE wire-format dialect. Closed
+    // catalog `{axon, openai, anthropic}` (resolved by the caller
+    // via `type_checker::resolve_effective_dialect`).
+    //
+    // §33.z.k.g.1 scope (this commit) — threads the dialect through
+    // the producer's signature + clones it into the spawned task.
+    // The consumer loop's event-translation switch from inline
+    // `build_*_event` helpers to `adapter.translate()` is 33.z.k.g.2
+    // (next sub-fase).
+    //
+    // The wire is currently axon-dialect-only on the producer side
+    // regardless of this value; the threading exists to unblock g.2
+    // without re-touching the signature.
+    #[allow(unused_variables)]
+    wire_dialect: String,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
     use crate::flow_execution_event::FlowExecutionEvent;
     use futures::SinkExt;
@@ -18741,6 +18761,13 @@ async fn execute_sse_handler_inner(
             let backend_owned = payload.backend.clone();
             let client_owned = client.clone();
             let source_file_for_audit = source_file.clone();
+            // §Fase 33.z.k.g.1 — clone the wire-format dialect for
+            // the spawned task. The adapter is constructed inside
+            // the spawn closure once `trace_id` is reserved.
+            // 33.z.k.g.2 consumes this value to drive `adapter.translate()`
+            // in the consumer loop.
+            #[allow(unused_variables)]
+            let wire_dialect_for_task = wire_dialect.clone();
 
             // 33.c: trace_id reservation precedes the executor spawn
             // so the first axon.token event already carries the id
@@ -19780,6 +19807,21 @@ pub struct DynamicEndpointRoute {
     /// GET/DELETE → false); an explicit `replay: true | false`
     /// declaration overrides.
     pub replay_enabled: bool,
+    /// §Fase 33.z.k.b (v1.28.0) — Selected SSE wire-format dialect.
+    ///
+    /// Populated when the source declares `transport: sse(<dialect>)`.
+    /// Closed catalog from `AXONENDPOINT_TRANSPORT_DIALECTS`:
+    /// `{axon, openai, anthropic}`. Empty string when the source
+    /// declared a non-SSE transport, bare `transport: sse` without
+    /// parens, or omitted `transport:` entirely.
+    ///
+    /// Copied from `AxonEndpointDefinition.transport_dialect` at
+    /// route construction. The runtime resolves the effective
+    /// dialect via `type_checker::resolve_effective_dialect()` —
+    /// when this field is empty, the algebraic-effect predicate
+    /// drives the Q1 default (openai for tool-streaming flows,
+    /// axon for type-annotation-only).
+    pub transport_dialect: String,
     /// §Fase 33.z.k.1 (v1.27.1) — Algebraic-effect override predicate.
     ///
     /// `true` when `execute_flow` references a tool that declares
@@ -19865,6 +19907,10 @@ pub fn collect_axonendpoint_routes(
                     replay_enabled: crate::axonendpoint_replay::resolve_replay_enabled(
                         &method, ae.replay_explicit, ae.replay,
                     ),
+                    // §Fase 33.z.k.b (v1.28.0) — wire-format dialect
+                    // copied verbatim from the AST. Parser already
+                    // validated it against the closed catalog.
+                    transport_dialect: ae.transport_dialect.clone(),
                     // §Fase 33.z.k.1 (v1.27.1) — algebraic-effect override
                     // copied verbatim from the AST. The
                     // compute_implicit_transports pass on the frontend
@@ -20291,8 +20337,18 @@ async fn dynamic_endpoint_handler(
             } else {
                 None
             };
+            // §Fase 33.z.k.g — Resolve the effective SSE dialect for
+            // this route. The resolver applies the Q1 ratification:
+            // explicit `transport: sse(<dialect>)` wins; otherwise
+            // algebraic-effect flows default to openai dialect (the
+            // LLM-streaming ecosystem expectation), type-annotation-
+            // only flows default to axon (W3C named events baseline).
+            let wire_dialect = axon_frontend::type_checker::resolve_effective_dialect(
+                &route.transport_dialect,
+                route.has_algebraic_stream_effect,
+            );
             let sse_response =
-                execute_sse_handler_inner(state.clone(), headers, stream_req, replay_ctx)
+                execute_sse_handler_inner(state.clone(), headers, stream_req, replay_ctx, wire_dialect)
                     .await
                     .into_response();
             // Attach the X-Axon-Trace-Id header so adopters can
