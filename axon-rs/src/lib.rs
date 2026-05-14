@@ -232,6 +232,12 @@ pub mod pem;
 pub mod ots;
 pub mod tool_executor;
 pub mod tool_registry;
+// §Fase 34.b (v1.29.0) — Tool trait + ToolChunk closed-catalog
+// surface for tools-as-stream-producers. Bridges adopter-source
+// `effects: <stream:<policy>>` declarations into the runtime via
+// the dispatcher's per-chunk wire emission path (Fase 34.d/g lands
+// the wiring; this module is the structural foundation).
+pub mod tool_trait;
 pub mod tool_validator;
 pub mod trace_export;
 pub mod trace_store;
