@@ -19,8 +19,19 @@
 > bloque ("Si") 2026-05-13 + Q3 catalog revision 2026-05-14
 > (axon/openai/anthropic → axon/openai/kimi/glm/anthropic).
 >
-> **Follow-up:** axon-enterprise v1.19.0 catch-up release pending
-> (lean — dep pin bump `axon-lang>=1.27.0` → `>=1.28.0`).
+> **axon-enterprise v1.19.0 catch-up SHIPPED 2026-05-14** — PR #22
+> merged commit `dfa0b57` + tag `v1.19.0` pushed via refspec mapping
+> `enterprise/v1.19.0:refs/tags/v1.19.0` + GitHub Release published
+> https://github.com/Bemarking/axon-enterprise/releases/tag/v1.19.0.
+> Lean catch-up: 2 files bumped (`pyproject.toml` 1.18.1 → 1.19.0 +
+> `axon_enterprise/__init__.py` `__version__` + dep pin
+> `axon-lang>=1.27.1` → `>=1.28.0`). Enterprise tenants on regulated
+> verticals (HIPAA + 21 CFR Part 11 / FRE 502 + Upjohn + Hickman +
+> ABA Rule 1.6 / BSA + OFAC + MiFID II / FedRAMP AU-2 + FOIA)
+> inherit the closed-catalog 5-dialect wire surface + Q7 algebraic-
+> policy preservation channel transparently. CI 24/25 pass + 1 TSan
+> soft-fail per known rustc nightly quirk (same pattern as past
+> catch-ups v1.16-v1.18.x).
 > **Cycle core promise delivered 2026-05-14 via 33.z.k.g.2** —
 > algebraic-effect flows now emit OpenAI Chat Completions streaming
 > bytes verbatim when POSTed against the dynamic-route handler. The
