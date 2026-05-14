@@ -314,8 +314,8 @@ before `[DONE]`, dropped entirely. Each has tradeoffs.
 
 | Sub-phase | Scope | LOC | Status |
 |---|---|---|---|
-| **33.z.k.a** | spec + diagnostic anchor over the current wire surface | ~600 | ⏳ pending |
-| **33.z.k.b** | dialect AST + parser grammar (`transport: sse(<dialect>)` or `wire_format:`) | ~800 | ⏳ pending |
+| **33.z.k.a** | spec + diagnostic anchor over the current wire surface | ~600 | ✅ SHIPPED 2026-05-13 — commit 7ff1985; 4 tests verde forensic baseline |
+| **33.z.k.b** | dialect AST + parser grammar `transport: sse(<dialect>)` + closed enum | ~600 | ✅ SHIPPED 2026-05-13 — closed-catalog `AXONENDPOINT_TRANSPORT_DIALECTS = {axon, openai, anthropic}` cross-stack; parser grammar extends `transport: sse` to `transport: sse(<dialect>)` with smart-suggest on unknown dialect + error on `json(<x>)`/`ndjson(<x>)` (only sse is parametrizable); 9 Rust frontend tests + 9 Python tests (cross-stack parity); 293 regression tests verde (Fase 31 corpus + frontend contract + 33.z.f drift gate) |
 | **33.z.k.c** | type-checker — closed-catalog enum + cross-disjunct inference (D8) | ~500 | ⏳ pending |
 | **33.z.k.d** | axon dialect (current wire) — extracted into a named adapter for D6 backwards-compat | ~400 | ⏳ pending |
 | **33.z.k.e** | openai dialect — `data: {"chunk": "..."}` + `data: [DONE]` adapter | ~600 | ⏳ pending |

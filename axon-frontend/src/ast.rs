@@ -796,6 +796,24 @@ pub struct AxonEndpointDefinition {
     /// trace_id; auditors retrieve it via GET /v1/replay/<trace_id>.
     pub replay_explicit: bool,
     pub replay: bool,
+    /// §Fase 33.z.k.b (v1.28.0) — Selected SSE wire-format dialect.
+    ///
+    /// Populated when the source uses the parametrized grammar
+    /// `transport: sse(<dialect>)`. Closed catalog
+    /// (`AXONENDPOINT_TRANSPORT_DIALECTS`): `{axon, openai, anthropic}`.
+    /// Empty string `""` when:
+    ///   - the source declared a non-SSE transport (`json`/`ndjson`), OR
+    ///   - the source declared bare `transport: sse` without parens, OR
+    ///   - the source omitted `transport:` entirely (D1 implicit path).
+    ///
+    /// When empty + the effective wire is SSE (per the runtime
+    /// classifier `classify_dynamic_route_wire`), the runtime
+    /// resolves the dialect via the Q1 algebraic-effect-driven
+    /// default: openai for tool-streaming flows (algebraic predicate
+    /// true), axon for type-annotation-only flows (algebraic predicate
+    /// false). D3 explicit `transport: sse(<dialect>)` overrides the
+    /// default.
+    pub transport_dialect: String,
     /// §Fase 33.z.k.1 (v1.27.1) — Algebraic-effect override predicate.
     ///
     /// `true` when `execute_flow` references a tool that declares
