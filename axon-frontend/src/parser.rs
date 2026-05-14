@@ -491,25 +491,45 @@ pub const AXONENDPOINT_TRANSPORT_VALUES: &[&str] = &["json", "sse", "ndjson"];
 /// the Q1 default per the flow's algebraic-effect predicate
 /// (openai for tool-streaming flows; axon for type-annotation-only).
 ///
-/// Vertical-grounded scope (Q3): three dialects cover ~95% of
-/// LLM-streaming adopter expectations.
+/// Vertical-grounded scope (Q3 revised 2026-05-14): five dialects
+/// cover ~99% of LLM-streaming adopter expectations.
 ///   - `axon`      — current W3C named events
 ///                   (event: axon.token / event: axon.complete).
 ///                   D6 backwards-compat baseline; indefinitely
 ///                   supported as a first-class option.
-///   - `openai`    — `data: {"chunk": "..."}` frames terminated by
-///                   `data: [DONE]`. Adopter SDKs targeting OpenAI /
-///                   Kimi / GLM / Ollama / OpenRouter consume this
-///                   shape verbatim.
+///   - `openai`    — `data: {"choices":[{"delta":{...}}]}` frames
+///                   terminated by `data: [DONE]`. OpenAI Chat
+///                   Completions streaming wire verbatim.
+///   - `kimi`      — Moonshot Kimi (kimi.moonshot.cn) — uses the
+///                   OpenAI-compatible Chat Completions wire format
+///                   verbatim (same chunk shape, same `data: [DONE]`
+///                   sentinel). First-class entry so adopters
+///                   declare intent explicitly; under the hood the
+///                   wire is identical to `openai`.
+///   - `glm`       — Zhipu ChatGLM (open.bigmodel.cn) — same as
+///                   kimi, uses OpenAI-compat wire. First-class
+///                   entry for adopter clarity.
 ///   - `anthropic` — `event: content_block_delta` frames terminated
 ///                   by `event: message_stop`. Adopter SDKs
 ///                   targeting Anthropic Claude consume this shape
 ///                   verbatim.
 ///
+/// Why kimi + glm as first-class entries (Q3 revision rationale):
+/// Bemarking AI's primary adopter pipelines through Kimi K2.x +
+/// Zhipu GLM-4.x. While the wire IS byte-identical to OpenAI's
+/// Chat Completions streaming, declaring `transport: sse(kimi)` /
+/// `transport: sse(glm)` lets the audit trail + observability
+/// surfaces correlate adopter intent against the underlying
+/// provider — without the adopter having to know that "kimi
+/// happens to be OpenAI-compat on the wire today". The runtime
+/// dispatches kimi + glm to the same `OpenAIDialectAdapter` so
+/// the wire shape stays canonical-OpenAI-bytes.
+///
 /// Open-set adapter pluggability (downstream crates registering
-/// custom dialects) is explicitly out of scope per the
+/// custom dialects) remains explicitly out of scope per the
 /// Axon-for-Axon discipline.
-pub const AXONENDPOINT_TRANSPORT_DIALECTS: &[&str] = &["axon", "openai", "anthropic"];
+pub const AXONENDPOINT_TRANSPORT_DIALECTS: &[&str] =
+    &["axon", "openai", "kimi", "glm", "anthropic"];
 
 /// Adopter-facing acceptable values for `keepalive:` field.
 pub const AXONENDPOINT_KEEPALIVE_VALUES: &[&str] = &["5s", "15s", "30s", "60s"];
@@ -4872,11 +4892,11 @@ impl Parser {
                                 );
                                 let message = if hint.is_empty() {
                                     format!(
-                                        "{base} expected axon | openai | anthropic, found {dialect}"
+                                        "{base} expected axon | openai | kimi | glm | anthropic, found {dialect}"
                                     )
                                 } else {
                                     format!(
-                                        "{base} {hint} (expected axon | openai | anthropic, found {dialect})"
+                                        "{base} {hint} (expected axon | openai | kimi | glm | anthropic, found {dialect})"
                                     )
                                 };
                                 return Err(ParseError {

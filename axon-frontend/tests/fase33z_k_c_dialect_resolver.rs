@@ -31,6 +31,18 @@ fn s1_explicit_openai_wins_regardless_of_algebraic_predicate() {
 }
 
 #[test]
+fn s1_explicit_kimi_wins_regardless_of_algebraic_predicate() {
+    assert_eq!(resolve_effective_dialect("kimi", true), "kimi");
+    assert_eq!(resolve_effective_dialect("kimi", false), "kimi");
+}
+
+#[test]
+fn s1_explicit_glm_wins_regardless_of_algebraic_predicate() {
+    assert_eq!(resolve_effective_dialect("glm", true), "glm");
+    assert_eq!(resolve_effective_dialect("glm", false), "glm");
+}
+
+#[test]
 fn s1_explicit_anthropic_wins_regardless_of_algebraic_predicate() {
     assert_eq!(resolve_effective_dialect("anthropic", true), "anthropic");
     assert_eq!(resolve_effective_dialect("anthropic", false), "anthropic");
@@ -67,7 +79,7 @@ fn s4_total_function_closed_catalog() {
     use axon_frontend::parser::AXONENDPOINT_TRANSPORT_DIALECTS;
     let catalog: std::collections::HashSet<&str> =
         AXONENDPOINT_TRANSPORT_DIALECTS.iter().copied().collect();
-    for explicit in ["", "axon", "openai", "anthropic"] {
+    for explicit in ["", "axon", "openai", "kimi", "glm", "anthropic"] {
         for algebraic in [false, true] {
             let result = resolve_effective_dialect(explicit, algebraic);
             assert!(

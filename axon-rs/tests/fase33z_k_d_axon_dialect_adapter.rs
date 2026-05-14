@@ -215,3 +215,35 @@ fn s6_select_adapter_unknown_falls_through_to_axon_defensively() {
          a structural bug — but we never panic on a stale input."
     );
 }
+
+// §Q3 revision 2026-05-14 — Kimi + GLM dispatch to OpenAIDialectAdapter
+// (they share the OpenAI-compat wire byte-identically). The dialect
+// string survives as a first-class identifier for adopter intent
+// declaration + observability correlation, but the wire is canonical
+// OpenAI Chat Completions streaming.
+
+#[test]
+fn s7_select_adapter_kimi_dispatches_to_openai_adapter_q3_revision() {
+    let adapter = select_adapter("kimi", 1);
+    assert_eq!(
+        adapter.dialect(),
+        "openai",
+        "Q3 revision: kimi shares the OpenAI-compat wire — dispatched \
+         to OpenAIDialectAdapter so the bytes are canonical-OpenAI. \
+         Adopter declares `transport: sse(kimi)` for intent; runtime \
+         delivers OpenAI-shape wire."
+    );
+}
+
+#[test]
+fn s7_select_adapter_glm_dispatches_to_openai_adapter_q3_revision() {
+    let adapter = select_adapter("glm", 1);
+    assert_eq!(
+        adapter.dialect(),
+        "openai",
+        "Q3 revision: glm shares the OpenAI-compat wire — dispatched \
+         to OpenAIDialectAdapter so the bytes are canonical-OpenAI. \
+         Adopter declares `transport: sse(glm)` for intent; runtime \
+         delivers OpenAI-shape wire."
+    );
+}

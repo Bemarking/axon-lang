@@ -13,7 +13,7 @@ from axon.compiler.type_checker import resolve_effective_dialect
 # ─── §1 — Explicit dialect wins (Rule 1) ────────────────────────────
 
 
-@pytest.mark.parametrize("dialect", ["axon", "openai", "anthropic"])
+@pytest.mark.parametrize("dialect", ["axon", "openai", "kimi", "glm", "anthropic"])
 @pytest.mark.parametrize("algebraic", [False, True])
 def test_s1_explicit_dialect_wins(dialect: str, algebraic: bool) -> None:
     assert resolve_effective_dialect(dialect, algebraic) == dialect
@@ -44,7 +44,7 @@ def test_s3_q1_type_annotation_default_axon():
 
 def test_s4_total_function_closed_catalog():
     catalog = _AXONENDPOINT_TRANSPORT_DIALECTS
-    for explicit in ["", "axon", "openai", "anthropic"]:
+    for explicit in ["", "axon", "openai", "kimi", "glm", "anthropic"]:
         for algebraic in [False, True]:
             result = resolve_effective_dialect(explicit, algebraic)
             assert result in catalog, (
@@ -66,6 +66,10 @@ def test_s5_cross_stack_parity_explicit_paths():
         ("axon", False, "axon"),
         ("openai", True, "openai"),
         ("openai", False, "openai"),
+        ("kimi", True, "kimi"),
+        ("kimi", False, "kimi"),
+        ("glm", True, "glm"),
+        ("glm", False, "glm"),
         ("anthropic", True, "anthropic"),
         ("anthropic", False, "anthropic"),
         ("", True, "openai"),

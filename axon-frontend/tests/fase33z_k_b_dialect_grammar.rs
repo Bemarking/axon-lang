@@ -148,18 +148,45 @@ fn s6_missing_rparen_errors() {
 // ─── §7 — Closed-catalog cardinality pin (defensive) ───────────────
 
 #[test]
-fn s7_dialect_catalog_exact_three() {
+fn s7_dialect_catalog_exact_five_q3_revised() {
     use axon_frontend::parser::AXONENDPOINT_TRANSPORT_DIALECTS;
     assert_eq!(
         AXONENDPOINT_TRANSPORT_DIALECTS.len(),
-        3,
-        "33.z.k.b Q3 ratification: vertical-grounded scope = exactly 3 \
-         dialects {{axon, openai, anthropic}}. Adding a 4th requires a \
-         deliberate sub-fase + cross-stack drift gate update."
+        5,
+        "33.z.k.b Q3 revised 2026-05-14: vertical-grounded scope = \
+         exactly 5 dialects {{axon, openai, kimi, glm, anthropic}}. \
+         kimi + glm added as first-class entries (adopter pipelines \
+         through Moonshot Kimi + Zhipu ChatGLM); their wire is \
+         byte-identical to openai (OpenAI-compat Chat Completions). \
+         Adding a 6th requires a deliberate sub-fase + cross-stack \
+         drift gate update."
     );
     let expected: std::collections::HashSet<&str> =
-        ["axon", "openai", "anthropic"].iter().copied().collect();
+        ["axon", "openai", "kimi", "glm", "anthropic"]
+            .iter()
+            .copied()
+            .collect();
     let actual: std::collections::HashSet<&str> =
         AXONENDPOINT_TRANSPORT_DIALECTS.iter().copied().collect();
     assert_eq!(actual, expected, "33.z.k.b: closed-catalog set drift");
+}
+
+#[test]
+fn s8_transport_sse_kimi_parses() {
+    let src = "flow F() -> Unit { step S { ask: \"x\" output: Stream<Token> } }\n\
+        axonendpoint E { method: POST path: \"/x\" execute: F transport: sse(kimi) }";
+    let prog = parse(src).expect("parse");
+    let ae = endpoint(&prog, "E");
+    assert_eq!(ae.transport, "sse");
+    assert_eq!(ae.transport_dialect, "kimi");
+}
+
+#[test]
+fn s8_transport_sse_glm_parses() {
+    let src = "flow F() -> Unit { step S { ask: \"x\" output: Stream<Token> } }\n\
+        axonendpoint E { method: POST path: \"/x\" execute: F transport: sse(glm) }";
+    let prog = parse(src).expect("parse");
+    let ae = endpoint(&prog, "E");
+    assert_eq!(ae.transport, "sse");
+    assert_eq!(ae.transport_dialect, "glm");
 }
