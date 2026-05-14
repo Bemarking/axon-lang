@@ -246,6 +246,19 @@ pub struct DispatchCtx {
     /// orchestration handlers (`Par` / `ForIn`) when child nodes
     /// declare effects.
     pub pending_effect_policy: Option<BackpressurePolicy>,
+    /// §Fase 34.d (v1.29.0) — Tool registry surface for the
+    /// streaming-tool dispatcher branch. When `Some(registry)`,
+    /// `pure_shape::run_step` resolves `step.apply_ref` against
+    /// the registry; if the entry's `is_streaming` flag is true,
+    /// the step bypasses `Backend::stream()` entirely + invokes
+    /// `tool.stream(args, ctx)` via the
+    /// [`crate::tool_dispatch_bridge::resolve_streaming_tool`]
+    /// factory. When `None` (D9 backwards-compat), the legacy
+    /// LLM-side path is taken regardless of source-declared
+    /// `effects: <stream:<policy>>` — adopters who haven't wired
+    /// the registry yet see no behavior change. Arc-shared for
+    /// concurrent dispatch (Fase 33.y.e parity).
+    pub tool_registry: Option<std::sync::Arc<crate::tool_registry::ToolRegistry>>,
 }
 
 impl DispatchCtx {
@@ -278,7 +291,19 @@ impl DispatchCtx {
             tenant_id: String::new(),
             let_bindings: std::collections::HashMap::new(),
             pending_effect_policy: None,
+            tool_registry: None,
         }
+    }
+
+    /// §Fase 34.d — Builder: attach a tool registry so the
+    /// dispatcher's streaming-tool branch can resolve `apply_ref`
+    /// against it. Returns `self` so builders chain.
+    pub fn with_tool_registry(
+        mut self,
+        registry: std::sync::Arc<crate::tool_registry::ToolRegistry>,
+    ) -> Self {
+        self.tool_registry = Some(registry);
+        self
     }
 
     /// Builder: attach a PEM persistence backend. Returns `self` so

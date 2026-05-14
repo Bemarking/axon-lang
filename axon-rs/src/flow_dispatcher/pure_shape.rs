@@ -137,6 +137,30 @@ pub async fn run_step(
     step: &IRStep,
     ctx: &mut DispatchCtx,
 ) -> Result<NodeOutcome, DispatchError> {
+    // §Fase 34.d — Streaming-tool branch. When the step's
+    // `apply_ref` resolves to a tool flagged `is_streaming` in the
+    // attached registry, bypass the LLM upstream entirely + invoke
+    // `tool.stream(args, ctx)` via the
+    // [`crate::tool_dispatch_bridge::resolve_streaming_tool`] factory.
+    //
+    // The branch fires ONLY when ALL THREE conditions hold:
+    //   1. `step.apply_ref` is non-empty (tool reference present)
+    //   2. `ctx.tool_registry` is Some (registry wired)
+    //   3. The resolved entry's `is_streaming` flag is true
+    //
+    // When any condition fails, the legacy LLM-side path is taken
+    // (Fase 33.y.k+33.z behavior preserved). D9 backwards-compat:
+    // adopters who don't wire the registry see no change.
+    if !step.apply_ref.is_empty() {
+        if let Some(registry) = ctx.tool_registry.clone() {
+            if let Some(entry) = registry.get(&step.apply_ref) {
+                if entry.is_streaming {
+                    return run_step_streaming_tool(step, entry.clone(), ctx).await;
+                }
+            }
+        }
+    }
+    // Legacy path: LLM-side dispatch (Fase 33.y.k+33.z).
     let tools = synthesize_tools_from_step(step);
     let shape = PureShapeStep {
         name: if step.name.is_empty() {
@@ -150,6 +174,224 @@ pub async fn run_step(
         tools,
     };
     run_pure_shape(shape, ctx).await
+}
+
+/// §Fase 34.d (v1.29.0) — Streaming-tool dispatch branch.
+///
+/// Bypasses `Backend::stream()` entirely. Invokes
+/// `tool.stream(step.ask, ctx)` via the bridge factory + drains the
+/// resulting `Stream<ToolChunk>` chunk-by-chunk into the wire as
+/// `FlowExecutionEvent::StepToken` events.
+///
+/// # Wire-event sequence
+///
+/// 1. `FlowExecutionEvent::StepStart` (kind_slug = "step")
+/// 2. `FlowExecutionEvent::StepToken` × N (one per non-empty chunk
+///    delta the tool emitted)
+/// 3. `FlowExecutionEvent::StepComplete` carrying the accumulated
+///    output + tokens_emitted (= chunk count) + success flag
+///
+/// # Cancel discipline
+///
+/// Polled BEFORE invoking `tool.stream()`, BETWEEN each chunk
+/// drain, and AFTER the stream closes. Surfaces
+/// `DispatchError::UpstreamCancelled` to the caller; the consumer
+/// (post-33.z producer) treats this as a clean exit.
+///
+/// # Audit row
+///
+/// Records `StepAuditRecord` with:
+/// - `step_name`, `step_index` — standard fields
+/// - `tokens_emitted` — chunk count (1 per non-empty delta)
+/// - `output_hash_hex` — SHA-256 of concatenated tool deltas
+/// - `effect_policy_applied` — the policy slug from the tool's
+///   `effect_row` (e.g., "drop_oldest"). Captured at the dispatch
+///   layer; actual enforcement at the chunk level lands in
+///   Fase 34.g's `unified_stream_handler`.
+/// - `chunks_dropped` / `chunks_degraded` — 0 for 34.d (enforcer
+///   integration deferred to 34.g).
+///
+/// # Honest scope
+///
+/// 34.d ships the BRANCH POINT: the dispatcher correctly detects
+/// `is_streaming` tools + routes through the streaming path + the
+/// wire emits per-chunk content. The full `StreamPolicyEnforcer`
+/// integration (where `drop_oldest` actually drops chunks etc.)
+/// lands in 34.g. For 34.d, the policy is captured in the audit
+/// row but not enforced at chunk granularity.
+async fn run_step_streaming_tool(
+    step: &IRStep,
+    entry: crate::tool_registry::ToolEntry,
+    ctx: &mut DispatchCtx,
+) -> Result<NodeOutcome, DispatchError> {
+    use futures::StreamExt;
+
+    // 1. Reserve step index for audit-row + StepStart parity.
+    let step_index = ctx.step_counter;
+    ctx.step_counter += 1;
+
+    // 2. Cancel check at entry — same discipline as run_pure_shape.
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+
+    // 3. Resolve declared backpressure policy from the tool's
+    //    effect_row. None when the tool flagged is_streaming via a
+    //    non-stream slug (parser guarantees one stream policy per
+    //    declaration, but the registry's is_streaming flag could be
+    //    set programmatically without a declared policy).
+    let policy =
+        crate::tool_dispatch_bridge::extract_stream_policy(&entry.effect_row);
+
+    let step_name = if step.name.is_empty() {
+        "Step".to_string()
+    } else {
+        step.name.clone()
+    };
+
+    // 4. Emit StepStart. Carries the standard `step` kind_slug —
+    //    adopters EventSource-filtering on kind don't need to
+    //    distinguish stream-tool steps from non-stream steps at the
+    //    StepStart layer; the per-chunk StepToken events carry the
+    //    per-tool semantics.
+    ctx.tx
+        .send(FlowExecutionEvent::StepStart {
+            step_name: step_name.clone(),
+            step_index,
+            step_type: "step".to_string(),
+            timestamp_ms: now_ms(),
+        })
+        .map_err(|_| DispatchError::ChannelClosed)?;
+
+    // 5. Construct ToolContext + Tool trait impl via the bridge.
+    let tool_ctx = crate::tool_dispatch_bridge::build_tool_context(
+        ctx.cancel.clone(),
+        0, // 34.d-scope: trace_id placeholder. The dispatcher doesn't
+           // currently carry trace_id in DispatchCtx; future sub-fase
+           // (34.i audit extension) plumbs through.
+    );
+    let tool = crate::tool_dispatch_bridge::resolve_streaming_tool(&entry);
+
+    // 6. Cancel check before invoking the tool — its body might do
+    //    work even at .await entry. Mirrors run_pure_shape's pre-
+    //    backend-call check.
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+
+    // 7. Invoke tool.stream() + drain.
+    let mut stream = tool.stream(step.ask.clone(), tool_ctx).await;
+    let mut accumulated = String::new();
+    let mut tokens_emitted: u64 = 0;
+    let mut terminator_error: Option<String> = None;
+    let mut cancelled_mid_stream = false;
+
+    while let Some(chunk) = stream.next().await {
+        // Per-chunk cancel poll. The dispatcher fires cancel +
+        // breaks out so the tool's drain doesn't continue
+        // emitting events into a dropped channel.
+        if ctx.cancel.is_cancelled() {
+            cancelled_mid_stream = true;
+            break;
+        }
+
+        // Skip empty terminator chunks at the wire layer — empty
+        // deltas would surface as zero-content StepToken events
+        // (D4 byte-compat with the existing pure-shape drain
+        // discipline that skips empty deltas).
+        if !chunk.delta.is_empty() {
+            tokens_emitted += 1;
+            accumulated.push_str(&chunk.delta);
+            ctx.tx
+                .send(FlowExecutionEvent::StepToken {
+                    step_name: step_name.clone(),
+                    content: chunk.delta.clone(),
+                    token_index: tokens_emitted,
+                    timestamp_ms: now_ms(),
+                })
+                .map_err(|_| DispatchError::ChannelClosed)?;
+        }
+
+        // Terminator: record finish reason for audit/error surfaces.
+        if let Some(reason) = chunk.finish_reason {
+            match reason {
+                crate::tool_trait::ToolFinishReason::Stop => {}
+                crate::tool_trait::ToolFinishReason::Error { message } => {
+                    terminator_error = Some(message);
+                }
+                crate::tool_trait::ToolFinishReason::Cancelled => {
+                    cancelled_mid_stream = true;
+                }
+            }
+            break;
+        }
+    }
+
+    // 8. Cancel mid-stream → propagate. The accumulated chunks
+    //    already reached the wire; the StepComplete + audit row
+    //    are skipped (the producer/consumer chain treats this as
+    //    upstream-cancelled).
+    if cancelled_mid_stream && ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+
+    // 9. Honest error propagation: if the tool stream emitted an
+    //    Error-terminator, surface as DispatchError::BackendError
+    //    so the dispatcher's caller observes the failure on the
+    //    audit-trail side (the wire already saw the terminator
+    //    chunk's content via the partial accumulation above).
+    let success = terminator_error.is_none();
+    let output_hash_hex = sha256_hex(&accumulated);
+
+    // 10. StepComplete event. Mirrors run_pure_shape's shape.
+    ctx.tx
+        .send(FlowExecutionEvent::StepComplete {
+            step_name: step_name.clone(),
+            step_index,
+            success,
+            full_output: accumulated.clone(),
+            tokens_input: 0,
+            tokens_output: tokens_emitted,
+            timestamp_ms: now_ms(),
+        })
+        .map_err(|_| DispatchError::ChannelClosed)?;
+
+    // 11. Audit row — D6 per-step replay binding. 34.d captures
+    //     the tool execution trail using the existing StepAuditRecord
+    //     fields; 34.i adds dedicated tool_name/tool_chunks_emitted/
+    //     tool_output_hash_hex fields. For 34.d, tokens_emitted +
+    //     output_hash_hex + effect_policy_applied carry the
+    //     equivalent data (per-chunk count + concatenated-delta
+    //     hash + declared policy slug).
+    {
+        let record = crate::axonendpoint_replay::StepAuditRecord {
+            step_name: step_name.clone(),
+            step_index,
+            success,
+            tokens_emitted,
+            output_hash_hex,
+            effect_policy_applied: policy.map(|p| p.slug().to_string()),
+            chunks_dropped: 0,     // 34.g activates real enforcer
+            chunks_degraded: 0,    // 34.g activates real enforcer
+            timestamp_ms: now_ms(),
+        };
+        let mut guard = ctx.step_audit_records.lock().await;
+        guard.push(record);
+    }
+
+    // 12. Surface DispatchError on Error-terminator.
+    if let Some(message) = terminator_error {
+        return Err(DispatchError::BackendError {
+            name: format!("tool:{}", entry.name),
+            message,
+        });
+    }
+
+    Ok(NodeOutcome::Completed {
+        output: accumulated,
+        tokens_emitted,
+        step_index,
+    })
 }
 
 /// §Fase 33.y.k — Resolve `step.apply_ref` into a `Vec<ToolSpec>`.
