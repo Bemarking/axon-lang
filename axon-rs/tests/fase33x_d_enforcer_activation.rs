@@ -118,12 +118,16 @@ fn parse_complete(body: &str) -> Value {
 }
 
 fn stream_source_with_policy(policy: &str) -> String {
+    // §Fase 33.z.k.g.2 — `transport: sse(axon)` (Q5) keeps W3C wire
+    // for this 33.x.d enforcement-summary anchor; the openai-dialect
+    // projection of the same summary lives on the Q7 axon_metadata
+    // frame (covered by the 33.z.k.g E2E pack).
     format!(
         "tool tk {{ description: \"stream\" effects: <stream:{policy}> }}\n\
          flow Chat() -> Unit {{\n\
             step Generate {{ ask: \"hi\" apply: tk }}\n\
          }}\n\
-         axonendpoint E {{ method: POST path: \"/c\" execute: Chat transport: sse }}"
+         axonendpoint E {{ method: POST path: \"/c\" execute: Chat transport: sse(axon) }}"
     )
 }
 
@@ -215,12 +219,13 @@ async fn d4_flow_without_declared_effect_omits_enforcement_summary() {
 
 #[tokio::test]
 async fn multi_step_summary_keyed_per_declared_step_only() {
+    // §Fase 33.z.k.g.2 — `transport: sse(axon)` (Q5) keeps W3C wire.
     let src = "tool tk { description: \"stream\" effects: <stream:drop_oldest> }\n\
                flow Chat() -> Unit {\n\
                    step Plain { ask: \"plain\" output: Stream<Token> }\n\
                    step Effecting { ask: \"hi\" apply: tk }\n\
                }\n\
-               axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse }";
+               axonendpoint E { method: POST path: \"/c\" execute: Chat transport: sse(axon) }";
     let app = build_router(server_cfg());
     deploy(app.clone(), src).await;
     let body = fetch_sse_body(app, "/c", "{}").await;

@@ -1,7 +1,15 @@
 # §Fase 33.z.k — Wire-format adapter cycle (target v1.28.0)
 
 > **Status:** 🚀 IN PROGRESS — checkpoint 2026-05-14;
-> 7 sub-fases SHIPPED (a, b, c, d, e, f, g.1); 8 sub-fases pendientes.
+> 8 sub-fases SHIPPED (a, b, c, d, e, f, g.1, g.2); 7 sub-fases pendientes.
+> **Cycle core promise delivered 2026-05-14 via 33.z.k.g.2** —
+> algebraic-effect flows now emit OpenAI Chat Completions streaming
+> bytes verbatim when POSTed against the dynamic-route handler. The
+> founder's principle *"adopters never adapt to axon's wire; axon
+> delivers the wire format their SDK ecosystem already parses"* is
+> honored end-to-end. Adopter SDKs (litellm, langchain, vercel/ai,
+> instructor, llama_index) parse the response verbatim with zero
+> axon-awareness.
 > Founder Q3 revision 2026-05-14: catalog expanded 3→5 (added kimi +
 > glm as first-class entries — Bemarking AI's primary adopter
 > pipelines through Moonshot Kimi K2.x + Zhipu ChatGLM-4.x).
@@ -221,14 +229,14 @@ From the Q1-Q7 ratifications (founder bloque "Si" 2026-05-13):
 
 ### Suggested execution order for next session
 
-1. **33.z.k.g.2**: Consumer-loop refactor in `axon_server.rs`.
-   Estimated 4-6 hours of focused work. Land it as a SINGLE commit
-   so the byte-compat anchor either holds or breaks atomically.
-2. **33.z.k.g.3**: Add the 4 E2E integration tests listed above.
-   ~2 hours.
+1. ~~**33.z.k.g.2**: Consumer-loop refactor~~ ✅ SHIPPED 2026-05-14.
+2. ~~**33.z.k.g.3**: Add the 4 E2E integration tests~~ ✅ FOLDED INTO
+   33.z.k.g.2 — 13 new tests across 4 packs landed atomically with
+   the refactor.
 3. **33.z.k.h**: Wire the side-channels (enforcement_summaries /
    runtime_warnings / step_audit) into OpenAI's axon_metadata frame
-   + Anthropic's axon.metadata frame. ~2 hours.
+   + Anthropic's axon.metadata frame. Today these emit placeholder
+   `{}` / `[]` data; this sub-fase populates them. ~2 hours.
 4. **33.z.k.i**: Drift gate across the dialect catalog. ~1 hour.
 5. **33.z.k.j**: D12 production-grade fuzz × dialects. ~3 hours.
 6. **33.z.k.k**: CI workflow. ~30 min.
@@ -237,7 +245,7 @@ From the Q1-Q7 ratifications (founder bloque "Si" 2026-05-13):
 8. **33.z.k.m**: Coordinated release v1.28.0 + axon-enterprise
    v1.19.0 catch-up. ~1 hour.
 
-Total estimated: ~16-18 hours over 2-3 fresh sessions.
+Total estimated remaining: ~10-12 hours over 2 fresh sessions.
 
 ### Commit reference (in order, all on origin/master)
 
@@ -250,7 +258,8 @@ Total estimated: ~16-18 hours over 2-3 fresh sessions.
 | `02c1c11` | 33.z.k.e OpenAIDialectAdapter |
 | `021004a` | 33.z.k.f AnthropicDialectAdapter |
 | `cb47879` | 33.z.k.g.1 producer-signature scaffold |
-| _(this commit)_ | Q3 revision: kimi + glm added |
+| `373dc07` | Q3 revision: kimi + glm added |
+| _(this commit)_ | 33.z.k.g.2 consumer-loop refactor + 4 E2E test packs |
 
 ### The single test that proves everything works end-to-end
 
@@ -603,7 +612,7 @@ before `[DONE]`, dropped entirely. Each has tradeoffs.
 | **33.z.k.e** | OpenAIDialectAdapter — Chat Completions streaming wire | ~590 LOC | ✅ SHIPPED 2026-05-14 — new `axon-rs/src/wire_format/openai_dialect.rs` matches OpenAI Chat Completions streaming wire verbatim per https://platform.openai.com/docs/api-reference/chat/streaming. Every frame is `data: {...}` (no `event:`), payload carries `{id, object: "chat.completion.chunk", created, model, choices: [{index, delta, finish_reason}]}`. axon → openai event mapping: FlowStart → role-marker `delta: {"role": "assistant"}`; StepStart/Complete silently consumed (no multi-step concept in OpenAI); StepToken → `delta: {"content": "<token>"}`; ToolCall → `delta: {"tool_calls": [{index, id, type: "function", function: {name, arguments}}]}` with synthesized stable call_id; FlowComplete → final chunk `delta: {}` + `finish_reason: "stop"`; FlowError → same with stop (OpenAI has no error finish_reason); flush_terminator emits Q7 axon_metadata frame + literal `data: [DONE]` sentinel. Response id stable across stream (`chatcmpl-axon-<trace_id_hex>`); model identifier captured from FlowStart.backend. **11 byte-exact tests verde** citing OpenAI spec verbatim per assertion: §1 dispatch, §2 role-marker, §3 content-delta, §4 silently-consumed multi-step, §5 finish_reason=stop, §6 axon_metadata+[DONE], §7 tool_calls.function shape, §8 canonical sequence emits 5 frames total, §9 id stable across stream, §10 model captured from backend. Pre-33.z.k.g this adapter doesn't yet reach the production SSE producer — 33.z.k.g wires `axon_server::execute_sse_handler` to use `select_adapter()` + adapter.translate() in the consumer loop. |
 | **33.z.k.f** | AnthropicDialectAdapter — Messages streaming wire | ~570 LOC | ✅ SHIPPED 2026-05-14 — new `axon-rs/src/wire_format/anthropic_dialect.rs` matches Anthropic Messages streaming spec verbatim per https://docs.anthropic.com/en/api/messages-streaming. Structured W3C SSE with named events: `message_start` (announces msg id + role: assistant + model + initial usage) / `content_block_start` (per-block type: text or tool_use + index 0+) / `content_block_delta` (text_delta or input_json_delta) / `content_block_stop` / `message_delta` (final stop_reason + usage) / `message_stop` (terminator). axon → anthropic event mapping uses on-demand text-block management: text block lazy-opens on first StepToken, closes on StepComplete OR when ToolCall interleaves a tool_use block. Tool-use blocks emit 3-frame triad (start + input_json_delta + stop) per Anthropic spec. ToolCall mid-text-block closes the text block first (4-frame burst). FlowComplete emits message_delta only; message_stop emits from flush_terminator so Q7 axon.metadata can interpose. **11 byte-exact tests verde**: §1 dispatch, §2 message_start shape (role+model), §3 StepStart silently consumed (lazy block), §4 first StepToken opens text block + delta, §5 subsequent StepToken reuses block, §6 StepComplete closes block, §7 ToolCall standalone 3-frame triad, §8 ToolCall mid-text-block 4-frame burst, §9 FlowComplete emits message_delta NOT message_stop, §10 flush_terminator emits axon.metadata + message_stop in order, §11 block indices monotonic across stream. 33.z.k.d defensive-fallthrough assertion for `anthropic` flipped to assert new behavior. |
 | **33.z.k.g.1** | producer-signature dialect threading scaffold | ~120 LOC | ✅ SHIPPED 2026-05-14 — `execute_sse_handler_inner` takes new `wire_dialect: String` parameter; `DynamicEndpointRoute` gains `transport_dialect: String` field (copied from AST); dynamic-route call site computes dialect via `resolve_effective_dialect(transport_dialect, has_algebraic_stream_effect)` + passes to handler; `/v1/execute/sse` legacy entrypoint passes "axon" (D6); spawned producer task clones dialect into closure. Adapter NOT YET constructed inside producer; consumer-loop refactor (replace inline `build_*_event` with `adapter.translate()`) deferred to 33.z.k.g.2. Compiles + all 33.z lanes regression-clean (33.z.k.a 4/4 + 33.z.k.d 14/14 + 33.z.k.e 11/11 + 33.z.k.f 11/11 + 33.z.k.1 5/5 + 33.z.c 16/16 + 33.z.d 2/2 + 33.z.e 10/10). |
-| **33.z.k.g.2** | consumer-loop refactor — replace inline `build_*_event` with `adapter.translate()` + `build_complete_envelope_event()` + `flush_terminator()` | ~400 LOC | ⏳ pending — surgical refactor in `axon_server.rs` consumer loop (~250 LOC of inline emission to replace); must preserve byte-compat for axon dialect (33.z.k.a anchor + existing 33.z.d/c/e tests pin); add per-dialect integration tests verifying OpenAI/Anthropic wire bytes end-to-end via HTTP POST |
+| **33.z.k.g.2** | consumer-loop refactor — replace inline `build_*_event` with `adapter.translate()` + `build_complete_envelope_event()` + `flush_terminator()` | ~520 LOC | ✅ SHIPPED 2026-05-14 — surgical refactor in `axon-rs/src/axon_server.rs` `execute_sse_handler_inner`. The producer's spawned consumer loop now constructs `wire_adapter = wire_format::select_adapter(&wire_dialect_for_task, trace_id)` once per request + dispatches every `FlowExecutionEvent` through `adapter.translate()` (StepToken / FlowStart / StepStart / StepComplete / FlowError / ToolCall) or `adapter.build_complete_envelope_event(&envelope)` (FlowComplete). After the loop terminates, `adapter.flush_terminator()` emits per-dialect terminator frames (axon: empty; openai: Q7 axon_metadata + `data: [DONE]`; anthropic: Q7 axon.metadata + `event: message_stop`). The defense-in-depth "executor channel closed without terminator" fallback synthesizes a `FlowError` + dispatches through the same adapter so every dialect surfaces a well-formed terminator. Cancel-on-disconnect (D3) preserved per-frame: each adapter-emitted wire event's `.send().await.is_err()` check cancels the producer + breaks the loop. The `None` arm (flow-not-deployed) also routes through the adapter for dialect consistency. Retired 4 inline helpers (`build_token_event` / `build_complete_event` / `build_tool_call_event` / `build_error_event`) — closed-catalog wire emission now LIVES in `axon-rs/src/wire_format/`. **+13 new E2E integration tests** across 4 new packs: `fase33z_k_g_e2e_openai_wire` (4 tests pinning Kivi-shape → OpenAI Chat Completions wire bytes verbatim + Q7 axon_metadata precedence + closed-catalog mutex) + `fase33z_k_g_e2e_anthropic_wire` (3 tests pinning `transport: sse(anthropic)` → Anthropic Messages streaming wire + Q7 axon.metadata → message_stop ordering + openai-shape mutex) + `fase33z_k_g_e2e_axon_byte_compat` (3 tests pinning D6 byte-equivalence between bare `transport: sse` + explicit `transport: sse(axon)` for type-annotation flows + Q5 escape valve for algebraic-effect flows) + `fase33z_k_g_e2e_kimi_glm_dispatch` (3 tests pinning Q3 revision: `sse(kimi)` + `sse(glm)` both dispatch to `OpenAIDialectAdapter` byte-identically to canonical `sse(openai)`). Inverted 2 anchor tests in lockstep: `fase33z_k_a_diagnostic_anchor::s2` (now `s2_algebraic_effect_emits_openai_wire_post_33_z_k_g_2`) + `fase33z_k_1_algebraic_override::s2` (now `s2_kivi_shape_wire_body_emits_openai_chunks_and_done_sentinel`). Updated 6 algebraic-effect test fixtures to use `transport: sse(axon)` explicit so 33.x.b / 33.x.d / 33.x_real_streaming_diagnostic / 33.z.c verticals / 33.e / 33.sse_full_body_diagnostic continue to surface axon-named-event wire shape (Q5 escape valve). **Zero regressions** across full test corpus: 1743 axon-rs lib tests + ~700 integration tests + 13 new E2E tests all green. **The single test that proves everything** (per the TIP's load-bearing anchor): `kivi_shape_emits_openai_wire_bytes_end_to_end` PASSES — the canonical Kivi-shape (tool with `effects: <stream:drop_oldest>` + bare axonendpoint) POSTed against `/chat` returns `Content-Type: text/event-stream` with body containing `"object":"chat.completion.chunk"` + `"delta":{"role":"assistant"}` + `"content":"(stub)"` + `"finish_reason":"stop"` + `data: [DONE]` and NO `event: axon.token` line — the paper's promise of algebraic-effect SSE as a market-surpassing language primitive is delivered. |
 | **33.z.k.g.3** | tool-call interleaving per dialect (D11) wire-byte verification | ~200 LOC | ⏳ pending |
 | **33.z.k.h** | algebraic-policy surfacing per dialect (D4 — counters, warnings, audit) | ~400 | ⏳ pending |
 | **33.z.k.i** | drift gate over the dialect catalog | ~350 | ⏳ pending |

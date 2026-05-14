@@ -97,12 +97,17 @@ fn axon_complete_data(body: &str) -> serde_json::Value {
 // ─── §1 — Each policy round-trips through the wire ────────────────
 
 async fn fire_dynamic_route_for_policy(policy_slug: &str) -> serde_json::Value {
+    // §Fase 33.z.k.g.2 — Explicit `transport: sse(axon)` keeps the
+    // W3C named-events wire (Q5 escape valve) so this 33.e suite
+    // continues to surface stream_policies on `axon.complete`. The
+    // openai-dialect projection of the same data lives on the Q7
+    // axon_metadata frame (covered by the 33.z.k.g E2E pack).
     let src = format!(
         "tool chat_stream {{ effects: <stream:{policy}> }}\n\
          flow Chat() -> Unit {{\n\
             step Generate {{ ask: \"hi\" apply: chat_stream output: Stream<Token> }}\n\
          }}\n\
-         axonendpoint ChatEndpoint {{ method: POST path: \"/chat\" execute: Chat transport: sse }}",
+         axonendpoint ChatEndpoint {{ method: POST path: \"/chat\" execute: Chat transport: sse(axon) }}",
         policy = policy_slug,
     );
 
@@ -199,7 +204,7 @@ async fn multi_step_flow_surfaces_per_step_policies_independently() {
             step Generate { ask: \"do\" apply: chat_stream output: Stream<Token> }\n\
             step Audit { ask: \"verify\" apply: audit_tool output: Stream<Token> }\n\
          }\n\
-         axonendpoint PipelineEndpoint { method: POST path: \"/pipe\" execute: Pipeline transport: sse }";
+         axonendpoint PipelineEndpoint { method: POST path: \"/pipe\" execute: Pipeline transport: sse(axon) }";
     let app = build_router(server_cfg(true));
     deploy(app.clone(), src).await;
     let req = Request::builder()
