@@ -68,6 +68,7 @@
 //!   per-request adapter state is unbounded but small (~3-5
 //!   counters); no allocation per token translation.
 
+pub mod anthropic_dialect;
 pub mod axon_dialect;
 pub mod openai_dialect;
 
@@ -127,9 +128,8 @@ pub fn select_adapter(
         "axon" => Box::new(axon_dialect::AxonDialectAdapter::new(trace_id)),
         // §Fase 33.z.k.e — OpenAI Chat Completions streaming wire.
         "openai" => Box::new(openai_dialect::OpenAIDialectAdapter::new(trace_id)),
-        // §Fase 33.z.k.f — Anthropic Messages streaming wire. Until
-        // that sub-fase ships, falls through to axon defensively.
-        "anthropic" => Box::new(axon_dialect::AxonDialectAdapter::new(trace_id)),
+        // §Fase 33.z.k.f — Anthropic Messages streaming wire.
+        "anthropic" => Box::new(anthropic_dialect::AnthropicDialectAdapter::new(trace_id)),
         _ => Box::new(axon_dialect::AxonDialectAdapter::new(trace_id)),
     }
 }

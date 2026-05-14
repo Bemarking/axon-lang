@@ -192,13 +192,14 @@ fn s6_select_adapter_openai_returns_openai_post_33_z_k_e() {
 }
 
 #[test]
-fn s6_select_adapter_anthropic_falls_through_to_axon_pre_33_z_k_f() {
+fn s6_select_adapter_anthropic_returns_anthropic_post_33_z_k_f() {
     let adapter = select_adapter("anthropic", 1);
     assert_eq!(
         adapter.dialect(),
-        "axon",
-        "33.z.k.d defensive: anthropic adapter not yet implemented; \
-         falls through to axon. 33.z.k.f flips this assertion."
+        "anthropic",
+        "33.z.k.f flipped this assertion from `axon` (33.z.k.d \
+         defensive fallthrough) to `anthropic`. The Anthropic \
+         dialect adapter ships in 33.z.k.f."
     );
 }
 
