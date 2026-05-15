@@ -289,6 +289,22 @@ pub async fn unified_stream_handler(
     tx: &mpsc::UnboundedSender<FlowExecutionEvent>,
     step_name: &str,
 ) -> Result<ToolStreamSummary, DispatchError> {
+    // Pre-flight cancel check. An already-cancelled flag MUST
+    // short-circuit with a `cancelled` summary even when the source
+    // is empty — otherwise an empty `Stream<ToolChunk>` never
+    // triggers the per-chunk cancel poll inside the drain loop and
+    // the summary would mis-report `cancelled: false`. This makes
+    // the handler's cancel contract total: cancel-before-entry ⟹
+    // `summary.cancelled` regardless of how many chunks the source
+    // produces.
+    if cancel.is_cancelled() {
+        return Ok(ToolStreamSummary {
+            success: false,
+            cancelled: true,
+            output_hash_hex: sha256_hex(""),
+            ..Default::default()
+        });
+    }
     if let Some(p) = policy {
         unified_drain_with_policy(source, p, cancel, tx, step_name).await
     } else {
