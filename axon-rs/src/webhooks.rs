@@ -460,23 +460,69 @@ impl WebhookRegistry {
         self.dead_letters.len()
     }
 
-    /// Compute HMAC-SHA256 signature for a payload (hex-encoded).
-    /// Returns None if webhook has no secret.
+    /// Compute the **HMAC-SHA256** signature of a payload, hex-encoded
+    /// and prefixed `sha256=` — the GitHub / Stripe webhook-signature
+    /// convention that every off-the-shelf verification library
+    /// (`hmac` in Python, `crypto.createHmac` in Node, etc.) expects.
+    ///
+    /// - `secret` — the webhook's shared secret, used verbatim as the
+    ///   HMAC key. HMAC accepts a key of any length (RFC 2104 hashes
+    ///   keys longer than the block size + zero-pads shorter ones), so
+    ///   no key-length precondition is imposed on adopters.
+    /// - `payload` — the EXACT request-body bytes the receiver will
+    ///   see; the receiver recomputes `HMAC-SHA256(secret, body)` and
+    ///   compares. Use [`Self::verify_signature`] for the receiving
+    ///   side — it does the comparison in constant time.
+    ///
+    /// The output is `"sha256="` followed by 64 lowercase hex digits
+    /// (256-bit digest). This is a real keyed MAC: without the secret
+    /// an attacker cannot forge a signature for a chosen payload.
     pub fn compute_signature(secret: &str, payload: &[u8]) -> String {
-        // Simple HMAC-SHA256 using manual computation
-        // For production, use a proper HMAC crate; here we do a basic hash
-        // that combines secret + payload for signing purposes.
-        let mut hasher_input = Vec::with_capacity(secret.len() + payload.len());
-        hasher_input.extend_from_slice(secret.as_bytes());
-        hasher_input.extend_from_slice(payload);
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        use std::fmt::Write as _;
 
-        // Simple hash: sum bytes with mixing
-        let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
-        for &byte in &hasher_input {
-            hash ^= byte as u64;
-            hash = hash.wrapping_mul(0x100000001b3); // FNV prime
+        // `new_from_slice` is infallible for HMAC — it accepts a key
+        // of any length per RFC 2104. The `InvalidLength` error
+        // variant exists only for fixed-key MACs; HMAC never returns
+        // it, so the `expect` is unreachable by construction.
+        let mut mac = <Hmac<Sha256>>::new_from_slice(secret.as_bytes())
+            .expect("HMAC-SHA256 accepts a key of any length (RFC 2104)");
+        mac.update(payload);
+        let digest = mac.finalize().into_bytes();
+
+        let mut out = String::with_capacity("sha256=".len() + digest.len() * 2);
+        out.push_str("sha256=");
+        for byte in digest {
+            let _ = write!(out, "{byte:02x}");
         }
-        format!("sha256={:016x}", hash)
+        out
+    }
+
+    /// Verify a webhook signature against a payload, in **constant
+    /// time**.
+    ///
+    /// Recomputes `HMAC-SHA256(secret, payload)` and compares it
+    /// against `provided` — the value an inbound caller supplied
+    /// (e.g. an `X-Axon-Signature` header) — using a constant-time
+    /// equality check. The constant-time compare denies a network
+    /// attacker the timing side-channel that a byte-by-byte
+    /// `==` comparison would leak (which would let them recover the
+    /// correct signature one byte at a time).
+    ///
+    /// Returns `true` iff `provided` is exactly the correct
+    /// signature. A length mismatch returns `false` immediately —
+    /// the signature LENGTH is public (it is always
+    /// `"sha256=" + 64 hex`), so short-circuiting on it leaks
+    /// nothing secret.
+    pub fn verify_signature(secret: &str, payload: &[u8], provided: &str) -> bool {
+        use subtle::ConstantTimeEq;
+
+        let expected = Self::compute_signature(secret, payload);
+        if expected.len() != provided.len() {
+            return false;
+        }
+        expected.as_bytes().ct_eq(provided.as_bytes()).into()
     }
 
     /// Set a payload template for a webhook. Returns true if webhook found.
@@ -767,9 +813,84 @@ mod tests {
         assert_eq!(sig1, sig2);
         assert!(sig1.starts_with("sha256="));
 
-        // Different secret produces different signature
+        // Different secret produces a different signature.
         let sig3 = WebhookRegistry::compute_signature("other", b"payload");
         assert_ne!(sig1, sig3);
+
+        // Different payload produces a different signature.
+        let sig4 = WebhookRegistry::compute_signature("secret", b"payload2");
+        assert_ne!(sig1, sig4);
+    }
+
+    #[test]
+    fn compute_signature_emits_256_bit_digest() {
+        // `sha256=` + 64 lowercase hex digits = a real 256-bit HMAC
+        // digest. The pre-fix FNV-64 implementation emitted only 16
+        // hex digits (64 bits) — this pins the regression shut.
+        let sig = WebhookRegistry::compute_signature("k", b"body");
+        let hex = sig.strip_prefix("sha256=").expect("sha256= prefix");
+        assert_eq!(hex.len(), 64, "HMAC-SHA256 digest is 256 bits / 64 hex");
+        assert!(
+            hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "digest must be lowercase hex"
+        );
+    }
+
+    #[test]
+    fn compute_signature_matches_canonical_hmac_sha256_vectors() {
+        // Known-answer tests against published HMAC-SHA256 vectors —
+        // the proof that this is a REAL HMAC, not a look-alike hash.
+
+        // Vector 1 — the widely-published Wikipedia HMAC example:
+        //   HMAC-SHA256(key="key", "The quick brown fox jumps over the lazy dog")
+        assert_eq!(
+            WebhookRegistry::compute_signature(
+                "key",
+                b"The quick brown fox jumps over the lazy dog",
+            ),
+            "sha256=f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8",
+        );
+
+        // Vector 2 — RFC 4231 §4.3 Test Case 2 (printable key + data):
+        //   HMAC-SHA256(key="Jefe", "what do ya want for nothing?")
+        assert_eq!(
+            WebhookRegistry::compute_signature("Jefe", b"what do ya want for nothing?"),
+            "sha256=5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+        );
+    }
+
+    #[test]
+    fn verify_signature_accepts_correct_and_rejects_forgeries() {
+        let secret = "webhook-shared-secret";
+        let payload = br#"{"event":"deploy","ok":true}"#;
+        let good = WebhookRegistry::compute_signature(secret, payload);
+
+        // Correct (secret, payload, signature) triple verifies.
+        assert!(WebhookRegistry::verify_signature(secret, payload, &good));
+
+        // Tampered payload — signature no longer matches.
+        assert!(!WebhookRegistry::verify_signature(
+            secret,
+            br#"{"event":"deploy","ok":false}"#,
+            &good,
+        ));
+
+        // Wrong secret — cannot reproduce the signature.
+        assert!(!WebhookRegistry::verify_signature(
+            "wrong-secret",
+            payload,
+            &good,
+        ));
+
+        // Garbage / wrong-length signature strings are rejected
+        // without panicking.
+        assert!(!WebhookRegistry::verify_signature(secret, payload, ""));
+        assert!(!WebhookRegistry::verify_signature(secret, payload, "sha256=deadbeef"));
+        assert!(!WebhookRegistry::verify_signature(
+            secret,
+            payload,
+            "not-even-a-signature",
+        ));
     }
 
     #[test]
