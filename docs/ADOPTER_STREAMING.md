@@ -40,7 +40,9 @@
 18. [Production-path activation (Fase 33.x, v1.25.0+)](#production-path-activation-fase-33x-v1250)
 19. [Universal algebraic streaming (Fase 33.y, v1.26.0+)](#universal-algebraic-streaming-fase-33y-v1260)
 20. [Total production streaming (Fase 33.z, v1.27.0+)](#total-production-streaming-fase-33z-v1270)
-21. [Where to file bugs](#where-to-file-bugs)
+21. [Multi-dialect wire format (Fase 33.z.k, v1.28.0+)](#multi-dialect-wire-format-fase-33zk-v1280)
+22. [Tools as stream-producers (Fase 34, v1.29.0+)](#tools-as-stream-producers-fase-34-v1290)
+23. [Where to file bugs](#where-to-file-bugs)
 
 ---
 
@@ -2560,6 +2562,174 @@ Q7 `axon_metadata` extension frame for vertical-regulator audit;
 (F) downstream-crate integration with the public
 `WireFormatAdapter` trait API — see
 [`MIGRATION_v1.28.md`](MIGRATION_v1.28.md).
+
+---
+
+## Tools as stream-producers (Fase 34, v1.29.0+)
+
+**A `tool` can be a stream.** The AXON paper §3 describes a tool
+not as a request→response function but as something that can *be*
+a backpressured chunk stream — `tool T { effects: <stream:drop_oldest> }`
+declares exactly that. Before v1.29.0 the declaration was
+compile-time documentation only: the `<stream:<policy>>` effect
+parsed, but no runtime path ever drained a tool as a stream
+because tools had no `stream()` method. Fase 34 closes that gap.
+
+This section is the adopter reference for the streaming-tool
+layer. For the worked migration recipes see
+[`MIGRATION_v1.29.md`](MIGRATION_v1.29.md).
+
+### What the paper means by stream-effect tools
+
+The paper's `produces_stream(F)` predicate is a disjunction over
+**four** syntactic surfaces a flow `F` can produce a stream
+through:
+
+- **(a)** `step S { output: Stream<T> }` — type-level streaming;
+  the LLM backend's `Backend::stream()` is the source.
+- **(b)** `step S { apply: <stream-tool> }` — a tool whose
+  `effect_row` declares `<stream:<policy>>`; the tool's `stream()`
+  is the source.
+- **(c)** `use_tool` syntax — semantically reduces to (a) at
+  runtime (the LLM emits the tool-call; the dispatch is a
+  follow-on step).
+- **(d)** `perform Stream.Yield(x)` — the algebraic effect; a
+  static scan over the IR materializes the Yield values.
+
+Pre-Fase-34 these four had **divergent** drain paths — disjunct
+(a) enforced backpressure at chunk granularity, (b) had no tool
+`stream()` to drain at all, (d) emitted wire tokens with no policy
+involvement. Fase 34's `unified_stream_handler` (34.g) is the
+single drain loop **all** `Stream<ToolChunk>`-producing
+disjunctions converge on. Disjunct (b) — the tool-stream case —
+is the one Fase 34 newly wires; (a) and (c) keep their existing
+production paths; (d) gains an opt-in unified variant.
+
+### The streaming-tool layer — public surface
+
+| Surface | Module | What it is |
+|---|---|---|
+| `Tool` trait | `axon::tool_trait` (Rust) / `axon.runtime.tools.streaming` (Python) | `async fn execute` + `async fn stream() → Stream<ToolChunk>` + `fn is_streaming() → bool`. Default `stream()` single-chunk-wraps `execute()` (D9) |
+| `ToolChunk` | `axon::tool_trait` | Closed-catalog `{ delta, finish_reason?, timestamp_ms }`. `finish_reason` populated only on the terminator chunk; serde-elided when `None` (D4) |
+| `ToolFinishReason` | `axon::tool_trait` | Closed enum `{Stop, Error{message}, Cancelled}` — distinct from the LLM-side `FinishReason` (tools have a different vocabulary) |
+| `ToolContext` | `axon::tool_trait` | `{ cancel, trace_id }` — the per-invocation context; tool bodies poll `cancel` between chunks (D5) |
+| `HttpStreamingTool` | `axon::http_tool` | An HTTP endpoint as a stream producer — Content-Type-driven framing |
+| `McpStreamingTool` | `axon::emcp` | An MCP server as a stream producer — JSON-RPC 2.0 partial-response notifications |
+| `unified_stream_handler` | `axon::flow_dispatcher::unified_stream` | The 4-disjunction convergence drain loop + real `BackpressurePolicy` enforcement; returns a `ToolStreamSummary` |
+| `run_step_streaming_tool` | `axon::flow_dispatcher::pure_shape` | The dispatcher arm — fires when a `ToolRegistry` is attached + the step's tool `is_streaming` |
+
+### Activation model — the streaming-tool arm is embedder-activated
+
+The dispatcher's streaming-tool arm fires only when **all three**
+hold: `step.apply_ref` non-empty AND a `ToolRegistry` is attached
+to `DispatchCtx` (`with_tool_registry(...)`) AND the resolved
+`ToolEntry` has `is_streaming == true`.
+
+The production HTTP server (`server_execute_streaming`) constructs
+its `DispatchCtx` **without** a registry — so streaming-tool
+dispatch does **not** fire for HTTP-server traffic in v1.29.0;
+`step S { apply: <tool> }` keeps routing the tool to the LLM as in
+v1.28.0. This mirrors the Fase 33.y → 33.z pattern: the layer
+ships structurally complete, the production-server wiring is a
+separate future activation. Embedders of the Rust runtime activate
+it explicitly via `with_tool_registry`. See
+[`MIGRATION_v1.29.md`](MIGRATION_v1.29.md) §"Activation model".
+
+### HTTP / MCP adapter framing reference
+
+`HttpStreamingTool` classifies the upstream response Content-Type:
+
+| Upstream Content-Type | Framing | ToolChunk emission |
+|---|---|---|
+| `text/event-stream` | SSE | one chunk per W3C SSE `data:` field |
+| `application/x-ndjson` / `application/jsonl` | NDJSON | one chunk per LF-delimited non-empty line |
+| anything else (`application/json`, `text/plain`, …) | Single | the full body accumulated as one chunk — D9 backwards-compat for non-streaming endpoints |
+
+`McpStreamingTool` speaks JSON-RPC 2.0:
+
+| Upstream Content-Type | Behavior |
+|---|---|
+| `application/x-ndjson` / `application/jsonl` | streaming MCP — each `notifications/message` / `notifications/progress` envelope → one chunk; the final `result` envelope closes the stream; an `error` envelope → `Error` terminator with blame-tagged diagnostic |
+| `application/json` (or other) | non-streaming MCP — the single JSON-RPC response → one chunk + `Stop` terminator (byte-equal to legacy `dispatch_mcp`) |
+
+Both adapters turn **every** failure surface — connect / timeout /
+non-2xx / mid-stream byte error / unparseable envelope — into an
+honest `ToolFinishReason::Error` terminator. Cancel is polled per
+chunk; `McpStreamingTool` additionally fires a best-effort
+`notifications/cancelled` POST on cancel.
+
+### 4-policy backpressure behavior at the tool layer
+
+When a streaming tool's `effect_row` declares `<stream:<policy>>`,
+`unified_stream_handler` enforces it at chunk granularity. The
+`StepAuditRecord` counters become **real** (vs the pre-34.g
+always-0 placeholder):
+
+| Policy | Under burst | Audit counter | Failure |
+|---|---|---|---|
+| `drop_oldest` | head-of-queue chunks evicted when the buffer is full | `chunks_dropped` ticks | never fails |
+| `degrade_quality` | the degrader fires on overflow (OSS default: identity; enterprise verticals override) | `chunks_degraded` ticks; `degraded + delivered == pushed` (conservation) | never fails |
+| `pause_upstream` | the producer blocks until the consumer drains | `pause_upstream_blocks` ticks; `delivered == pushed` (never drops) | never fails |
+| `fail` | an overflow push surfaces `StreamError::Overflow` | `fail_overflows` ticks | the step surfaces `DispatchError::BackendError` |
+
+### Per-step tool-stream audit (D6)
+
+A step that drained a streaming tool records four extra
+`StepAuditRecord` fields — `tool_name`, `tool_chunks_emitted`
+(source chunk count, distinct from wire `tokens_emitted`),
+`tool_output_hash_hex` (SHA-256 of concatenated tool deltas),
+`tool_terminator_kind` (`"stop"`/`"error"`/`"cancelled"`). They
+surface on `GET /v1/replay/<trace_id>` automatically; legacy
+LLM-side rows elide them (D4 byte-compat). See
+[`MIGRATION_v1.29.md`](MIGRATION_v1.29.md) Scenario C.
+
+### Canonical pattern catalog
+
+[`axon-rs/tests/fase34_canonical_stream_tools.rs`](../axon-rs/tests/fase34_canonical_stream_tools.rs)
+ships 8 adopter-agnostic reference `Tool::stream()`
+implementations — `ChunkedListProcessor` (per-input-item),
+`ProgressiveRefinement` (multi-stage), `PaginatedSource`
+(pagination), `MultiStagePipeline` (pipeline stages),
+`ProgressReporter` (progress + result), `EarlyErrorTool`
+(mid-stream error), `CancelAwareCounter` (cooperative cancel),
+`BurstProducer` (backpressure exercise). The Python mirror
+[`tests/test_fase34_canonical_stream_tools.py`](../tests/test_fase34_canonical_stream_tools.py)
+ships the same 8 as `Tool` ABC subclasses; a shared
+`CANONICAL_CORPUS` cross-stack drift gate pins the delta
+sequences. These are the copy-from references for Scenario B of
+the migration guide.
+
+> Verticals (banking / medicine / legal / government) are
+> exclusive to axon-enterprise — the OSS crate ships only the
+> domain-neutral canonical patterns. Vertical-grounded stream
+> producers (HIPAA PHI scrubber, FRE 502 privilege scanner, PCI
+> DSS compliance-log streamer, FedRAMP audit-trail streamer) ship
+> in axon-enterprise's v1.20.0 catch-up.
+
+### D-letters mapped to adopter-observable behavior
+
+| D-letter | What it guarantees | How adopters observe it |
+|---|---|---|
+| **D1 — `Tool` trait streaming surface** | `Tool` gains `stream()` + `is_streaming()`; default `stream()` single-chunk-wraps `execute()` | Implement `Tool`; override `stream()` for a real producer OR rely on the default for a synchronous tool. Pinned by `tool_trait.rs` lib tests + `tests/test_fase34_b_tool_trait_cross_stack.py` |
+| **D2 — `is_streaming` derived from `effect_row`** | A tool registered from `tool T { effects: <stream:<policy>> }` is auto-flagged `is_streaming = true` | Declare the effect; inspect the registry entry. Pinned by `fase34_c_registry_drift.rs` + the Python mirror (30-tool corpus) |
+| **D3 — 4-disjunction convergence** | All `Stream<ToolChunk>` disjunctions drain through `unified_stream_handler` with real policy enforcement | `chunks_dropped`/`chunks_degraded` audit counters are non-zero under burst. Pinned by `fase34_g_convergence.rs` (22 tests) |
+| **D4 — wire byte-compat** | Disjunct (a) flows + legacy audit rows are byte-identical pre/post-34 | Diff any existing flow's wire body / `step_audit` JSON against a v1.28.0 capture — zero difference. Pinned by `fase34_g` + `fase34_i` tests |
+| **D5 — cancel-into-tool-body** | `ctx.cancel` is polled per chunk in `HttpStreamingTool` / `McpStreamingTool` / `unified_stream_handler`; a cancelled tool emits a `Cancelled` terminator | Fire the cancel flag mid-stream; observe the stream short-circuit. Pinned by `fase34_e`/`fase34_f`/`fase34_g` cancel tests + `fase34_fuzz` §5. *(The p95 ≤100ms wall-clock measurement is Fase 34.h — tracked separately.)* |
+| **D6 — per-step tool-stream audit** | `StepAuditRecord` gains the 4-field tool-stream provenance quartet | Read `GET /v1/replay/<trace_id>`; streaming-tool steps carry `tool_name` etc. Pinned by `fase34_i_audit_tool_stream.rs` (13 tests) |
+| **D9 — backwards-compat absolute** | Every existing tool keeps working byte-equal; default `stream()` wraps `execute()` | Upgrade with no `.axon` change; observe zero wire/tool behavior change (Scenario E). Pinned across the Fase 34 suite |
+| **D10 — cross-stack contract** | Python `Tool` ABC mirrors the Rust trait; `ToolChunk`/`ToolFinishReason` closed catalogs byte-identical | Author tools in Python via `axon.runtime.tools.streaming`. Pinned by 3 cross-stack drift gates |
+| **D11 — diagnostic anchor** | The 4 disjunctions are pinned in `fase34_a_unified_stream_handler_diagnostic.rs` (7 tests) — the foundation every 34.b–k sub-fase preserves | Run the diagnostic pack — it asserts each disjunction's wire shape |
+| **D12 — D12 fuzz** | `fase34_fuzz.rs` — 16 tests, ~8 800 deterministic LCG iters across the new surface | Run `cargo test --test fase34_fuzz`; failures reproduce verbatim from the printed seed |
+| **D13 — canonical patterns** | 8 adopter-agnostic `Tool::stream()` reference patterns, cross-stack | Copy from `fase34_canonical_stream_tools.rs` / `.py` for Scenario B |
+
+### Migration scenarios
+
+For the 5 worked recipes — (A) activating streaming-tool dispatch
+as an embedder; (B) implementing a custom streaming tool (HTTP/MCP
+adapter path + `Tool` trait path); (C) per-chunk tool-stream audit
+for regulated-vertical replay; (D) cross-stack Python `Tool`
+parity; (E) the backwards-compatible no-op upgrade — see
+[`MIGRATION_v1.29.md`](MIGRATION_v1.29.md).
 
 ---
 
