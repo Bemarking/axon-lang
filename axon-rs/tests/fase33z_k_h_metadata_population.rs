@@ -182,6 +182,10 @@ fn full_envelope_fixture() -> CompleteEnvelope {
             chunks_dropped: 2,
             chunks_degraded: 0,
             timestamp_ms: 1715648400500,
+            // §Fase 34.i — tool-stream provenance fields stay None
+            // for legacy LLM-side construction; serde elides them
+            // (D4 byte-compat with the pre-34.i wire shape).
+            ..Default::default()
         }],
     }
 }
