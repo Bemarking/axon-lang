@@ -377,6 +377,9 @@ fn gen_random_envelope(lcg: &mut Lcg) -> CompleteEnvelope {
                 chunks_dropped: lcg.range(10) as u64,
                 chunks_degraded: lcg.range(10) as u64,
                 timestamp_ms: 1_000_000 + lcg.range(1_000_000) as u64,
+                // §Fase 34.i — tool-stream provenance fields not
+                // exercised by this dialect fuzz; serde elides None.
+                ..Default::default()
             });
         }
     }

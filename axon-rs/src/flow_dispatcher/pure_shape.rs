@@ -324,8 +324,21 @@ async fn run_step_streaming_tool(
 
     // 10. Audit row — D6 per-step replay binding. 34.g activates
     //     real `chunks_dropped`/`chunks_degraded` counters from the
-    //     unified handler's metrics snapshot.
+    //     unified handler's metrics snapshot. 34.i adds the tool-
+    //     stream provenance quartet: tool_name (entry.name), the
+    //     source-chunk count (summary.chunks_pushed including
+    //     terminator + empty-delta intermediates), explicit
+    //     tool_output_hash_hex (same scope as output_hash_hex for
+    //     34.i; diverges in future fases with degrader transforms),
+    //     and the closed-catalog terminator kind slug.
     {
+        let terminator_kind = if summary.cancelled {
+            "cancelled"
+        } else if summary.terminator_message.is_some() {
+            "error"
+        } else {
+            "stop"
+        };
         let record = crate::axonendpoint_replay::StepAuditRecord {
             step_name: step_name.clone(),
             step_index,
@@ -336,6 +349,10 @@ async fn run_step_streaming_tool(
             chunks_dropped: summary.chunks_dropped,
             chunks_degraded: summary.chunks_degraded,
             timestamp_ms: now_ms(),
+            tool_name: Some(entry.name.clone()),
+            tool_chunks_emitted: Some(summary.chunks_pushed),
+            tool_output_hash_hex: Some(summary.output_hash_hex.clone()),
+            tool_terminator_kind: Some(terminator_kind.to_string()),
         };
         let mut guard = ctx.step_audit_records.lock().await;
         guard.push(record);
@@ -678,6 +695,11 @@ pub async fn run_pure_shape(
         .map_err(|_| DispatchError::ChannelClosed)?;
 
     // 12. Push the audit row for D6 per-step replay binding.
+    //     LLM-side disjunct (a) → no Tool::stream() source backing
+    //     this path; the 34.i tool-stream provenance quartet stays
+    //     `None`. D4 byte-compat: serde elides the fields so the
+    //     wire shape for legacy LLM-side rows is byte-identical to
+    //     the pre-34.i emission.
     {
         let record = crate::axonendpoint_replay::StepAuditRecord {
             step_name: shape.name.clone(),
@@ -689,6 +711,10 @@ pub async fn run_pure_shape(
             chunks_dropped: drop_count,
             chunks_degraded: degrade_count,
             timestamp_ms: now_ms(),
+            tool_name: None,
+            tool_chunks_emitted: None,
+            tool_output_hash_hex: None,
+            tool_terminator_kind: None,
         };
         let mut guard = ctx.step_audit_records.lock().await;
         guard.push(record);

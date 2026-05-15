@@ -232,6 +232,14 @@ pub async fn bridge_effect_stream_yield(
         for byte in digest.as_slice() {
             let _ = write!(output_hash_hex, "{byte:02x}");
         }
+        // §Fase 34.i — Legacy bridge path populates the tool-stream
+        // provenance fields with sensible defaults: tool_name stays
+        // `None` (no Tool trait impl backs Stream.Yield); the chunk
+        // count + hash + terminator kind reflect the static-scan
+        // emission (yields.len() chunks, hash byte-equal to
+        // output_hash_hex, always "stop" since the legacy path
+        // doesn't surface error/cancel terminator semantics).
+        let tool_output_hash_hex = output_hash_hex.clone();
         let record = crate::axonendpoint_replay::StepAuditRecord {
             step_name: step_name.to_string(),
             step_index: ctx.step_counter,
@@ -242,6 +250,10 @@ pub async fn bridge_effect_stream_yield(
             chunks_dropped: 0,
             chunks_degraded: 0,
             timestamp_ms: now_ms(),
+            tool_name: None,
+            tool_chunks_emitted: Some(yields.len() as u64),
+            tool_output_hash_hex: Some(tool_output_hash_hex),
+            tool_terminator_kind: Some("stop".to_string()),
         };
         let mut guard = ctx.step_audit_records.lock().await;
         guard.push(record);
@@ -348,8 +360,21 @@ pub async fn bridge_effect_stream_yield_unified(
         })?;
 
     // §5 — Audit row. 34.g activates the policy-enforcement
-    // counters when a policy is declared.
+    // counters when a policy is declared. 34.i adds the tool-stream
+    // provenance quartet: tool_name stays `None` (algebraic-effect
+    // bridge has no Tool trait impl); tool_chunks_emitted reports
+    // the source chunk count = yields + synthetic terminator;
+    // tool_output_hash_hex mirrors output_hash_hex; terminator kind
+    // derived from summary surfaces (stop / error / cancelled).
     {
+        let terminator_kind = if summary.cancelled {
+            "cancelled"
+        } else if summary.terminator_message.is_some() {
+            "error"
+        } else {
+            "stop"
+        };
+        let tool_hash = summary.output_hash_hex.clone();
         let record = crate::axonendpoint_replay::StepAuditRecord {
             step_name: step_name.to_string(),
             step_index: ctx.step_counter,
@@ -360,6 +385,10 @@ pub async fn bridge_effect_stream_yield_unified(
             chunks_dropped: summary.chunks_dropped,
             chunks_degraded: summary.chunks_degraded,
             timestamp_ms: now_ms(),
+            tool_name: None,
+            tool_chunks_emitted: Some(summary.chunks_pushed),
+            tool_output_hash_hex: Some(tool_hash),
+            tool_terminator_kind: Some(terminator_kind.to_string()),
         };
         let mut guard = ctx.step_audit_records.lock().await;
         guard.push(record);

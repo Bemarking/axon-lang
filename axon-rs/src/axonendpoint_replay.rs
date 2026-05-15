@@ -75,7 +75,7 @@ pub const DEFAULT_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 ///   conclusion.
 /// - **Medicine** (21 CFR Part 11 §11.10) — CDS clinician trails
 ///   require per-step recommendation provenance.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct StepAuditRecord {
     /// Step name as declared in the source (matches
     /// `IRStep.name`). Stable across versions of the flow.
@@ -110,6 +110,52 @@ pub struct StepAuditRecord {
     /// Unix-millis timestamp when the step completed. Monotonic
     /// within a single flow execution.
     pub timestamp_ms: u64,
+
+    // ── §Fase 34.i — Tool-stream provenance fields ────────────────
+    //
+    // The four fields below capture per-step tool-stream provenance
+    // distinct from the LLM-side `tokens_emitted` / `output_hash_hex`
+    // pair. They land as **optional** to preserve D4 byte-compat:
+    // legacy LLM-side rows (no tool stream) serialize byte-identical
+    // to the pre-34.i shape because serde elides `None` via
+    // `skip_serializing_if`. Streaming-tool rows (disjunct b apply:
+    // / disjunct d Yield) carry the populated values.
+    /// `Some(name)` for steps that drained a `Tool::stream()` source
+    /// via [`crate::flow_dispatcher::unified_stream::unified_stream_handler`]
+    /// (disjunct b — `apply: <stream-tool>`). `None` for LLM-side
+    /// `output: Stream<T>` (disjunct a) + algebraic-effect
+    /// `Stream.Yield` (disjunct d) since neither has a Tool trait
+    /// impl backing the stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// `Some(n)` where `n` is the count of `ToolChunk`s the source
+    /// stream produced (including empty-delta intermediates and the
+    /// terminator chunk). Distinct from `tokens_emitted` — that
+    /// counts only **non-empty deltas reaching the wire** post-
+    /// policy enforcement. Auditors can compare `tool_chunks_emitted`
+    /// vs `tokens_emitted` vs `chunks_dropped`/`chunks_degraded` to
+    /// reconstruct the per-step policy enforcement story. `None` for
+    /// non-tool-stream steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_chunks_emitted: Option<u64>,
+    /// `Some(hash)` SHA-256 hex of the concatenated tool-stream
+    /// deltas (same scope as `output_hash_hex` for tool-stream
+    /// steps). Distinct field exists for D6 audit provenance: a
+    /// future fase may diverge `tool_output_hash_hex` (raw tool
+    /// chunks pre-degrader) from `output_hash_hex` (post-policy
+    /// wire emission) when degrader transforms ship. `None` for
+    /// non-tool-stream steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_output_hash_hex: Option<String>,
+    /// `Some(slug)` closed-catalog terminator kind:
+    /// `"stop"` (natural end / `ToolFinishReason::Stop`),
+    /// `"error"` (tool surfaced `ToolFinishReason::Error`),
+    /// `"cancelled"` (cancel observed mid-stream or
+    /// `ToolFinishReason::Cancelled` terminator). `None` for non-
+    /// tool-stream steps. Auditors filter on this slug to identify
+    /// failure modes across a flow without re-parsing the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_terminator_kind: Option<String>,
 }
 
 /// One replay binding entry. Immutable once minted.
