@@ -548,7 +548,7 @@ dependencies = [
 
 [[package]]
 name = "axon-lang"
-version = "1.29.0"
+version = "1.29.1"
 dependencies = [
  "async-trait",
  "aws-config",
