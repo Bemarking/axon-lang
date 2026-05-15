@@ -88,6 +88,13 @@ fn entry(
     }
 }
 
+fn http_entry(name: &str, runtime: &str, effect_row: Vec<&str>) -> ToolEntry {
+    let mut e = entry(name, "http", effect_row, true);
+    e.runtime = runtime.to_string();
+    e.timeout = "1s".to_string();
+    e
+}
+
 fn registry_with(entries: Vec<ToolEntry>) -> Arc<ToolRegistry> {
     let mut reg = ToolRegistry::new();
     for e in entries {
@@ -220,28 +227,32 @@ async fn s1_native_provider_with_is_streaming_set_emits_single_chunk() {
 }
 
 #[tokio::test]
-async fn s1_http_provider_with_stream_effect_emits_error_terminator_honest_fallback() {
-    // §34.d honest scope: HTTP/MCP streaming adapters land in
-    // 34.e/f. Today the bridge falls through to SyncFallbackTool
-    // which emits an error-terminator with a clear hint pointing
-    // at the future sub-fase. Wire emits 0 StepToken events (empty
-    // delta on the terminator) + StepComplete with success=false.
-    let reg = registry_with(vec![entry(
+async fn s1_http_provider_unreachable_url_emits_connect_error_terminator() {
+    // §Fase 34.e shipped HTTP streaming. With a valid-but-unreachable
+    // runtime URL (port 1 is conventionally closed), the dispatcher
+    // routes through [`HttpStreamingTool`] which fails the connect
+    // step + emits a `ToolFinishReason::Error` terminator. The
+    // dispatcher surfaces this as `DispatchError::BackendError`
+    // with the connection diagnostic in the message body.
+    let reg = registry_with(vec![http_entry(
         "HttpStreamer",
-        "http",
+        "http://127.0.0.1:1/api",
         vec!["stream:drop_oldest"],
-        true,
     )]);
     let (mut ctx, mut rx) = fresh_ctx_with_registry(reg);
     let s = step_with_apply("HttpFetch", "x", "HttpStreamer");
     let outcome = run_step(&s, &mut ctx).await;
-    // Surfaces as DispatchError::BackendError mentioning the future sub-fase.
     match outcome {
         Err(DispatchError::BackendError { ref name, ref message }) => {
             assert!(name.contains("HttpStreamer"));
+            // Real reqwest diagnostic varies by platform (Windows vs.
+            // Linux, refused vs. timeout) — accept any of the three
+            // honest failure surfaces.
             assert!(
-                message.contains("Fase 34.e"),
-                "honest fallback error MUST reference Fase 34.e for HTTP: got {message}"
+                message.contains("connection failed")
+                    || message.contains("request failed")
+                    || message.contains("timed out"),
+                "expected connect/timeout diagnostic, got {message}"
             );
         }
         other => panic!("expected BackendError, got {other:?}"),
@@ -249,6 +260,32 @@ async fn s1_http_provider_with_stream_effect_emits_error_terminator_honest_fallb
     // Wire still emits StepStart + StepComplete(success=false) before the error.
     let events = drain_events(&mut rx);
     assert!(matches!(events[0], FlowExecutionEvent::StepStart { .. }));
+}
+
+#[tokio::test]
+async fn s1_http_provider_with_invalid_url_falls_back_to_sync_fallback_honest() {
+    // Defensive path: when the registry holds an http entry with
+    // a malformed URL (parser would reject at compile time, but
+    // programmatic registration in tests can bypass), the bridge
+    // falls back to SyncFallbackTool which emits an honest error
+    // terminator pointing at URL validation (post-34.e hint).
+    let reg = registry_with(vec![http_entry(
+        "BadUrlHttp",
+        "ftp://example.com/", // wrong scheme
+        vec!["stream:drop_oldest"],
+    )]);
+    let (mut ctx, _rx) = fresh_ctx_with_registry(reg);
+    let s = step_with_apply("Bad", "x", "BadUrlHttp");
+    let outcome = run_step(&s, &mut ctx).await;
+    match outcome {
+        Err(DispatchError::BackendError { ref message, .. }) => {
+            assert!(
+                message.contains("runtime") || message.contains("URL"),
+                "post-34.e fallback must reference URL validation: {message}"
+            );
+        }
+        other => panic!("expected BackendError, got {other:?}"),
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -464,17 +501,17 @@ async fn s4_audit_row_for_stub_stream_captures_no_policy_when_absent() {
 }
 
 #[tokio::test]
-async fn s4_audit_row_for_http_fallback_records_only_when_stepcomplete_fires() {
-    // HTTP fallback returns DispatchError::BackendError; the
+async fn s4_audit_row_for_http_unreachable_records_success_false() {
+    // Post-34.e: HTTP routes through HttpStreamingTool. With an
+    // unreachable URL, the tool emits an Error terminator; the
     // dispatcher's run_step_streaming_tool emits StepComplete +
     // pushes the audit row BEFORE surfacing the error (so the
     // audit trail captures the attempt). Verify the row's success
     // flag is false.
-    let reg = registry_with(vec![entry(
+    let reg = registry_with(vec![http_entry(
         "FailingHttp",
-        "http",
+        "http://127.0.0.1:1/api",
         vec!["stream:fail"],
-        true,
     )]);
     let (mut ctx, _rx) = fresh_ctx_with_registry(reg);
     let s = step_with_apply("FailHttp", "x", "FailingHttp");
@@ -483,7 +520,7 @@ async fn s4_audit_row_for_http_fallback_records_only_when_stepcomplete_fires() {
     assert_eq!(audit.len(), 1);
     assert!(
         !audit[0].success,
-        "34.d §4: HTTP fallback error → audit row success=false"
+        "34.e §4: HTTP connect failure → audit row success=false"
     );
 }
 

@@ -25,9 +25,17 @@
 //!   `tool MyStream { provider: "stub_stream" effects:
 //!   <stream:drop_oldest> ... }`. Same impl as `stub` but the
 //!   declaration documents the streaming intent.
-//! - **`http`** / **`mcp`** → fall through to
-//!   [`SyncFallbackTool`] today. Fase 34.e (HTTP) + 34.f (MCP)
-//!   ship dedicated streaming adapters that override this bridge.
+//! - **`http`** → [`crate::http_tool::HttpStreamingTool`] (Fase 34.e).
+//!   Async reqwest::Client + `bytes_stream()` drain with framing
+//!   classified by Content-Type: `text/event-stream` →
+//!   per-SSE-event ToolChunks; `application/x-ndjson` /
+//!   `application/jsonl` → per-line ToolChunks; everything else →
+//!   single-chunk wrap (D9 backwards-compat). HONEST error
+//!   terminator on every failure surface. Falls back to
+//!   [`SyncFallbackTool`] when the registry entry has an
+//!   invalid/missing URL (parser would already reject, defensive).
+//! - **`mcp`** → falls through to [`SyncFallbackTool`] today. Fase
+//!   34.f ships the dedicated MCP streaming adapter.
 //!
 //! # Cross-stack contract
 //!
@@ -52,14 +60,15 @@ use futures::stream;
 /// `entry.is_streaming` is true. The returned trait object's
 /// `stream()` method drives the per-chunk wire emission path.
 ///
-/// # 34.d-scoped dispatch
+/// # 34.e-scoped dispatch
 ///
 /// | Provider | Impl | Behavior |
 /// |---|---|---|
 /// | `stub` | [`StubStreamingTool`] | Deterministic 3-chunk stream |
 /// | `stub_stream` | [`StubStreamingTool`] | Alias for adopter clarity |
 /// | `native` | [`NativeWrappedTool`] | Wraps `tool_executor::dispatch` as 1-chunk |
-/// | _other_ | [`SyncFallbackTool`] | Synchronous fallback (34.e/f extend) |
+/// | `http` | [`crate::http_tool::HttpStreamingTool`] | Async reqwest + framing-aware drain (Fase 34.e) |
+/// | _other_ (incl. `mcp`) | [`SyncFallbackTool`] | Synchronous fallback (34.f extends `mcp`) |
 pub fn resolve_streaming_tool(entry: &ToolEntry) -> Box<dyn Tool> {
     match entry.provider.as_str() {
         "stub" | "stub_stream" => {
@@ -68,10 +77,23 @@ pub fn resolve_streaming_tool(entry: &ToolEntry) -> Box<dyn Tool> {
         "native" => {
             Box::new(NativeWrappedTool::new(entry.name.clone()))
         }
-        // `http`, `mcp`, and any other provider fall through to the
-        // synchronous wrapper today. Fase 34.e (HTTP) + 34.f (MCP)
-        // ship dedicated streaming adapters that intercept these
-        // arms before falling through.
+        "http" => match crate::http_tool::HttpStreamingTool::from_entry(entry) {
+            Ok(t) => Box::new(t),
+            // Defensive: parser rejects invalid URLs at compile time,
+            // but if a malformed runtime URL reaches the registry
+            // (e.g. programmatic registration in tests / hot-reload
+            // edge), fall back to the honest SyncFallbackTool so the
+            // consumer sees a structured error-terminator chunk
+            // instead of a panic.
+            Err(_) => Box::new(SyncFallbackTool::new(
+                entry.name.clone(),
+                "http".to_string(),
+            )),
+        },
+        // `mcp` and any other provider fall through to the
+        // synchronous wrapper today. Fase 34.f ships the dedicated
+        // MCP streaming adapter that intercepts the `mcp` arm
+        // before falling through.
         other => Box::new(SyncFallbackTool::new(
             entry.name.clone(),
             other.to_string(),
@@ -247,15 +269,25 @@ impl Tool for SyncFallbackTool {
     async fn stream(&self, args: String, ctx: ToolContext) -> ToolStream {
         let provider = self.provider.clone();
         let result = self.execute(args, ctx).await;
-        let sub_fase = match provider.as_str() {
-            "http" => "34.e",
-            "mcp" => "34.f",
-            _ => "34.d.x",
+        // Post-Fase 34.e, the `http` arm of the bridge resolves to
+        // [`crate::http_tool::HttpStreamingTool`] for entries with a
+        // valid `runtime:` URL. SyncFallbackTool is only reached for
+        // http when [`crate::http_tool::HttpStreamingTool::from_entry`]
+        // returns Err (empty / non-http scheme). For mcp, 34.f is
+        // pending. Any other unknown provider falls here.
+        let hint = match provider.as_str() {
+            "http" => {
+                "Fase 34.e shipped HTTP streaming — verify the \
+                 tool's `runtime:` URL starts with http:// or https://"
+            }
+            "mcp" => "Fase 34.f (pending) ships the MCP streaming adapter",
+            _ => "no dedicated streaming adapter — pending later sub-fase",
         };
         let error_msg = format!(
-            "streaming adapter not yet implemented for provider '{provider}' \
-             (pending Fase {sub_fase}); synchronous fallback returned: {}",
-            result.output
+            "streaming dispatch fallback for provider '{provider}' tool '{name}' \
+             ({hint}); synchronous fallback returned: {output}",
+            name = self.name,
+            output = result.output,
         );
         Box::pin(stream::iter(vec![ToolChunk::terminator(
             String::new(),
@@ -368,10 +400,35 @@ mod tests {
     }
 
     #[test]
-    fn resolve_http_provider_falls_through_to_sync_fallback() {
-        let e = entry("HttpTool", "http", vec!["stream:drop_oldest".into()]);
+    fn resolve_http_provider_with_valid_url_returns_http_streaming_tool() {
+        // §Fase 34.e — `http` arm now resolves to HttpStreamingTool
+        // (when the runtime URL is valid). The HttpStreamingTool
+        // reports `is_streaming() = true` (first-class streaming
+        // surface).
+        let mut e = entry("HttpTool", "http", vec!["stream:drop_oldest".into()]);
+        e.runtime = "https://example.com/api".to_string();
+        e.timeout = "10s".to_string();
         let tool = resolve_streaming_tool(&e);
-        // SyncFallbackTool reports is_streaming = false (honest).
+        assert!(tool.is_streaming());
+    }
+
+    #[test]
+    fn resolve_http_provider_with_invalid_url_falls_back_to_sync_fallback() {
+        // Defensive: parser rejects invalid URLs, but if a malformed
+        // runtime URL reaches the registry, the bridge falls back to
+        // the honest SyncFallbackTool (is_streaming = false) so the
+        // consumer sees a structured error-terminator chunk.
+        let mut e = entry("HttpTool", "http", vec!["stream:drop_oldest".into()]);
+        e.runtime = "ftp://example.com/api".to_string(); // bad scheme
+        let tool = resolve_streaming_tool(&e);
+        assert!(!tool.is_streaming());
+    }
+
+    #[test]
+    fn resolve_http_provider_with_empty_url_falls_back_to_sync_fallback() {
+        let mut e = entry("HttpTool", "http", vec!["stream:drop_oldest".into()]);
+        e.runtime = String::new();
+        let tool = resolve_streaming_tool(&e);
         assert!(!tool.is_streaming());
     }
 
@@ -455,6 +512,10 @@ mod tests {
 
     #[tokio::test]
     async fn sync_fallback_tool_for_http_emits_error_terminator() {
+        // Post-34.e: SyncFallbackTool for `http` is only reached
+        // when [`HttpStreamingTool::from_entry`] fails (invalid
+        // URL). The error hint MUST point at URL validation rather
+        // than the (now-shipped) Fase 34.e itself.
         let tool = SyncFallbackTool::new("HttpTool".to_string(), "http".to_string());
         let cancel = CancellationFlag::new();
         let ctx = ToolContext::new(cancel, 0);
@@ -465,6 +526,10 @@ mod tests {
             Some(ToolFinishReason::Error { ref message }) => {
                 assert!(message.contains("Fase 34.e"));
                 assert!(message.contains("http"));
+                assert!(
+                    message.contains("runtime") || message.contains("URL"),
+                    "post-34.e fallback hint must reference URL validation: {message}"
+                );
             }
             other => panic!("expected Error finish_reason, got {other:?}"),
         }
