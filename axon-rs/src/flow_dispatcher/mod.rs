@@ -157,6 +157,23 @@ pub mod pix;
 /// 33.y.k D8). Completes the 45-variant total coverage.
 pub mod lambda_tools;
 
+/// §Fase 34.g — Unified stream handler (4-disjunction convergence).
+/// Pre-34.g the four streaming-effect disjunctions (LLM-side
+/// `output: Stream<T>`, `apply: <stream-tool>`, `use_tool` syntax,
+/// `perform Stream.Yield`) had divergent drain paths — disjunct (a)
+/// enforced `BackpressurePolicy` at chunk granularity while (b)/(d)
+/// only captured the policy slug in audit without enforcement. This
+/// module ships [`unified_stream::unified_stream_handler`] — the
+/// single drain loop that ALL `Stream<ToolChunk>`-producing
+/// disjunctions route through; the handler integrates a
+/// [`crate::stream_runtime::Stream<ToolChunk>`] policy primitive +
+/// returns a [`unified_stream::ToolStreamSummary`] with real
+/// `chunks_dropped`/`chunks_degraded` counters. Also ships the
+/// [`unified_stream::chat_chunk_to_tool_chunk`] type-bridge for
+/// disjunct (a) symmetry tests + [`unified_stream::unified_stream_from_chunks`]
+/// adapter for disjunct (d)'s static-scan output.
+pub mod unified_stream;
+
 // ────────────────────────────────────────────────────────────────────
 //  DispatchCtx — shared per-flow async surface
 // ────────────────────────────────────────────────────────────────────

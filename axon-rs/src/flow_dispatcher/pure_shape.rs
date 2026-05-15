@@ -224,7 +224,14 @@ async fn run_step_streaming_tool(
     entry: crate::tool_registry::ToolEntry,
     ctx: &mut DispatchCtx,
 ) -> Result<NodeOutcome, DispatchError> {
-    use futures::StreamExt;
+    // §Fase 34.g convergence — the per-chunk drain loop now lives
+    // in `flow_dispatcher::unified_stream::unified_stream_handler`.
+    // Pre-34.g this function ran an inline drain loop with policy
+    // capture-but-no-enforcement; 34.g shifts the drain to the
+    // unified handler which integrates a
+    // `crate::stream_runtime::Stream<ToolChunk>` policy primitive
+    // + returns a `ToolStreamSummary` with real
+    // `chunks_dropped`/`chunks_degraded` counters.
 
     // 1. Reserve step index for audit-row + StepStart parity.
     let step_index = ctx.step_counter;
@@ -279,108 +286,66 @@ async fn run_step_streaming_tool(
         return Err(DispatchError::UpstreamCancelled);
     }
 
-    // 7. Invoke tool.stream() + drain.
-    let mut stream = tool.stream(step.ask.clone(), tool_ctx).await;
-    let mut accumulated = String::new();
-    let mut tokens_emitted: u64 = 0;
-    let mut terminator_error: Option<String> = None;
-    let mut cancelled_mid_stream = false;
-
-    while let Some(chunk) = stream.next().await {
-        // Per-chunk cancel poll. The dispatcher fires cancel +
-        // breaks out so the tool's drain doesn't continue
-        // emitting events into a dropped channel.
-        if ctx.cancel.is_cancelled() {
-            cancelled_mid_stream = true;
-            break;
-        }
-
-        // Skip empty terminator chunks at the wire layer — empty
-        // deltas would surface as zero-content StepToken events
-        // (D4 byte-compat with the existing pure-shape drain
-        // discipline that skips empty deltas).
-        if !chunk.delta.is_empty() {
-            tokens_emitted += 1;
-            accumulated.push_str(&chunk.delta);
-            ctx.tx
-                .send(FlowExecutionEvent::StepToken {
-                    step_name: step_name.clone(),
-                    content: chunk.delta.clone(),
-                    token_index: tokens_emitted,
-                    timestamp_ms: now_ms(),
-                })
-                .map_err(|_| DispatchError::ChannelClosed)?;
-        }
-
-        // Terminator: record finish reason for audit/error surfaces.
-        if let Some(reason) = chunk.finish_reason {
-            match reason {
-                crate::tool_trait::ToolFinishReason::Stop => {}
-                crate::tool_trait::ToolFinishReason::Error { message } => {
-                    terminator_error = Some(message);
-                }
-                crate::tool_trait::ToolFinishReason::Cancelled => {
-                    cancelled_mid_stream = true;
-                }
-            }
-            break;
-        }
-    }
+    // 7. Invoke tool.stream() + route through the unified handler.
+    //    The handler applies the declared policy at chunk
+    //    granularity (real enforcement, not just slug-capture-in-
+    //    audit) + returns a typed summary the caller uses to
+    //    populate the audit row + decide the outcome.
+    let source = tool.stream(step.ask.clone(), tool_ctx).await;
+    let summary = crate::flow_dispatcher::unified_stream::unified_stream_handler(
+        source,
+        policy,
+        &ctx.cancel,
+        &ctx.tx,
+        &step_name,
+    )
+    .await?;
 
     // 8. Cancel mid-stream → propagate. The accumulated chunks
-    //    already reached the wire; the StepComplete + audit row
-    //    are skipped (the producer/consumer chain treats this as
-    //    upstream-cancelled).
-    if cancelled_mid_stream && ctx.cancel.is_cancelled() {
+    //    already reached the wire via the unified handler; the
+    //    StepComplete + audit row are skipped (consumer chain
+    //    treats this as upstream-cancelled).
+    if summary.cancelled && ctx.cancel.is_cancelled() {
         return Err(DispatchError::UpstreamCancelled);
     }
 
-    // 9. Honest error propagation: if the tool stream emitted an
-    //    Error-terminator, surface as DispatchError::BackendError
-    //    so the dispatcher's caller observes the failure on the
-    //    audit-trail side (the wire already saw the terminator
-    //    chunk's content via the partial accumulation above).
-    let success = terminator_error.is_none();
-    let output_hash_hex = sha256_hex(&accumulated);
-
-    // 10. StepComplete event. Mirrors run_pure_shape's shape.
+    // 9. StepComplete event. Mirrors run_pure_shape's shape.
     ctx.tx
         .send(FlowExecutionEvent::StepComplete {
             step_name: step_name.clone(),
             step_index,
-            success,
-            full_output: accumulated.clone(),
+            success: summary.success,
+            full_output: summary.accumulated.clone(),
             tokens_input: 0,
-            tokens_output: tokens_emitted,
+            tokens_output: summary.tokens_emitted,
             timestamp_ms: now_ms(),
         })
         .map_err(|_| DispatchError::ChannelClosed)?;
 
-    // 11. Audit row — D6 per-step replay binding. 34.d captures
-    //     the tool execution trail using the existing StepAuditRecord
-    //     fields; 34.i adds dedicated tool_name/tool_chunks_emitted/
-    //     tool_output_hash_hex fields. For 34.d, tokens_emitted +
-    //     output_hash_hex + effect_policy_applied carry the
-    //     equivalent data (per-chunk count + concatenated-delta
-    //     hash + declared policy slug).
+    // 10. Audit row — D6 per-step replay binding. 34.g activates
+    //     real `chunks_dropped`/`chunks_degraded` counters from the
+    //     unified handler's metrics snapshot.
     {
         let record = crate::axonendpoint_replay::StepAuditRecord {
             step_name: step_name.clone(),
             step_index,
-            success,
-            tokens_emitted,
-            output_hash_hex,
+            success: summary.success,
+            tokens_emitted: summary.tokens_emitted,
+            output_hash_hex: summary.output_hash_hex.clone(),
             effect_policy_applied: policy.map(|p| p.slug().to_string()),
-            chunks_dropped: 0,     // 34.g activates real enforcer
-            chunks_degraded: 0,    // 34.g activates real enforcer
+            chunks_dropped: summary.chunks_dropped,
+            chunks_degraded: summary.chunks_degraded,
             timestamp_ms: now_ms(),
         };
         let mut guard = ctx.step_audit_records.lock().await;
         guard.push(record);
     }
 
-    // 12. Surface DispatchError on Error-terminator.
-    if let Some(message) = terminator_error {
+    // 11. Surface DispatchError on Error-terminator. Includes the
+    //     Fail-policy overflow surface (the summary carries the
+    //     terminator_message that the unified handler synthesized
+    //     from `StreamError::Overflow`).
+    if let Some(message) = summary.terminator_message {
         return Err(DispatchError::BackendError {
             name: format!("tool:{}", entry.name),
             message,
@@ -388,8 +353,8 @@ async fn run_step_streaming_tool(
     }
 
     Ok(NodeOutcome::Completed {
-        output: accumulated,
-        tokens_emitted,
+        output: summary.accumulated,
+        tokens_emitted: summary.tokens_emitted,
         step_index,
     })
 }
