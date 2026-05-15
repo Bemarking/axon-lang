@@ -1,0 +1,22 @@
+//! §Fase 35 — the `axonstore` cognitive data plane runtime.
+//!
+//! `axonstore` is reframed in Fase 35 from an ignored declaration into
+//! a load-bearing runtime primitive: a persistent relation that is
+//! epistemically typed, audit-chained by construction, streamable, and
+//! capability-secured (the plan vivo's four pillars).
+//!
+//! This module is built **Rust-canonical** per the 0-Python strategic
+//! direction — the Python `axon/runtime/store_backends/` modules are
+//! the historical reference this cycle learns from, frozen.
+//!
+//! # Sub-module map (sequenced per the plan vivo §5)
+//!
+//! - [`filter`] — 35.b — the parameterized `where`-expression filter
+//!   compiler. SQL-injection-proof by construction (D4).
+//! - `postgres_backend` — 35.c — the `sqlx::PgPool` SQL substrate.
+//! - `registry` — 35.d — closed-catalog `store_name` → backend dispatch.
+//! - `epistemic` — 35.g — Pillar I, the ESK trust lattice join.
+//! - `audit_chain` — 35.h — Pillar II, the HMAC-Merkle mutation chain.
+//! - `row_stream` — 35.i — Pillar III, `retrieve` as a `Stream<Row>`.
+
+pub mod filter;
