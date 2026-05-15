@@ -11,10 +11,12 @@
 #                           into an isolated prefix; keeps runtime image
 #                           free of build tooling.
 #
-#  Stage 3  (runtime):      minimal Python 3.12 slim base with the
-#                           Rust binary on PATH and the enterprise
-#                           layer importable.  Runs as a non-root
-#                           user on ports 8000 (HTTP) / 8001 (WS).
+#  Stage 3  (runtime):      minimal Python 3.12 slim base. The Rust
+#                           server binary is on PATH at
+#                           `/usr/local/bin/axon-server`; the Python
+#                           CLI is at `/usr/local/bin/axon`; the
+#                           enterprise layer is importable. Runs as a
+#                           non-root user on ports 8000 / 8001.
 # ═══════════════════════════════════════════════════════════════════
 
 # ─── Stage 1: axon-lang Rust binary ──────────────────────────────────
@@ -70,9 +72,24 @@ RUN groupadd --system axon \
     && mkdir -p /app /app/config /app/logs \
     && chown -R axon:axon /app
 
-# Bring in the Rust binary and the Python enterprise layer.
-COPY --from=axon-binary /opt/axon/axon /usr/local/bin/axon
+# Bring in the Python enterprise layer, THEN the Rust server binary.
+#
+# Order is load-bearing. `pip install` of axon_enterprise also installs
+# its `axon-lang` dependency, whose `[project.scripts]` declares an
+# `axon` console script — so the python-layer prefix contains
+# `/opt/enterprise/bin/axon` (a Python entry-point script). Copying
+# the python layer into `/usr/local` therefore writes a Python `axon`
+# to `/usr/local/bin/axon`.
+#
+# The Rust server binary is consequently copied LAST and to its OWN
+# path, `/usr/local/bin/axon-server` — so the python-layer COPY can
+# never clobber it. (Pre-fix, the Rust binary was copied to
+# `/usr/local/bin/axon` BEFORE the python layer, and the python COPY
+# silently overwrote it with the Python script — the image shipped
+# without a runnable Rust server.) `/usr/local/bin/axon` remains the
+# Python CLI; `/usr/local/bin/axon-server` is the Rust runtime.
 COPY --from=python-layer /opt/enterprise /usr/local
+COPY --from=axon-binary /opt/axon/axon /usr/local/bin/axon-server
 
 # Feature flags (override at deploy time).
 ENV AXON_RBAC_ENABLED=true \
@@ -90,8 +107,14 @@ USER axon
 # 8000 = HTTP API, 8001 = WebSocket.
 EXPOSE 8000 8001
 
-# Default to serving the axon-lang runtime on 0.0.0.0:8000.  Operators
-# can override CMD to run migrations, one-off tools, etc.
+# Default ENTRYPOINT is the Python CLI (`/usr/local/bin/axon`) — the
+# v1.20.x baseline behaviour, kept unchanged so existing deployments
+# are not surprised mid-migration. The Rust server is available at
+# `/usr/local/bin/axon-server`; deployments migrating to it override
+# the entrypoint/command (e.g. via a `docker compose` service that
+# runs `/usr/local/bin/axon-server serve ...`). The production cutover
+# — flipping this default ENTRYPOINT to `axon-server` — is a separate,
+# deliberate step once the Rust server is validated in staging.
 ENTRYPOINT ["/usr/local/bin/axon"]
 CMD ["serve", "--host", "0.0.0.0", "--port", "8000"]
 
