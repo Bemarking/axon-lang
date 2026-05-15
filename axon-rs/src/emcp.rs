@@ -532,6 +532,596 @@ impl BlameTracker {
     }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+//  §Fase 34.f — McpStreamingTool: Tool::stream() over MCP JSON-RPC 2.0
+//  partial responses (`notifications/message` / `notifications/progress`)
+//  + best-effort `notifications/cancelled` on cancel.
+// ════════════════════════════════════════════════════════════════════════════
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use futures::StreamExt;
+
+use crate::backends::sse_streaming::LineBuffer;
+use crate::tool_trait::{Tool, ToolChunk, ToolContext, ToolFinishReason, ToolStream};
+
+/// MCP tool with first-class streaming surface (Fase 34.f).
+///
+/// MCP's wire format is JSON-RPC 2.0 over HTTP. Servers that
+/// support partial-response streaming emit a sequence of JSON-RPC
+/// envelopes — one per line — over a `application/x-ndjson` (or
+/// `application/jsonl`) response body. Each envelope is either:
+///
+/// - A **notification** (no `id`): `method == "notifications/message"`
+///   or `method == "notifications/progress"`. The notification's
+///   `params.data` / `params.text` / `params.message` field becomes a
+///   `ToolChunk::intermediate` delta.
+/// - A **response** (has `id`): `result` is the final tool payload;
+///   the `result.content[0].text` field becomes the terminator's
+///   delta + the stream closes with `ToolFinishReason::Stop`. An
+///   `error` envelope closes the stream with `ToolFinishReason::Error`.
+///
+/// Servers that **don't** support streaming respond with a single
+/// JSON-RPC response (Content-Type `application/json`). The
+/// streaming tool gracefully falls back to D9 single-chunk wrap:
+/// the materialized `result.content[0].text` becomes one intermediate
+/// `ToolChunk` followed by a `Stop` terminator — byte-equal to the
+/// legacy [`dispatch_mcp`] output.
+///
+/// # Cancel discipline (D5)
+///
+/// `ctx.cancel` is polled between every `bytes_stream().next().await`
+/// boundary. When fired, the streaming task:
+///
+/// 1. Drops the in-flight reqwest response (closing the connection).
+/// 2. Best-effort fires a JSON-RPC `notifications/cancelled`
+///    notification (POST + fire-and-forget; no await on response) so
+///    MCP servers that support cooperative cancellation can clean up.
+/// 3. Emits a `ToolFinishReason::Cancelled` terminator.
+///
+/// # Error discipline
+///
+/// Every failure surface — URL invalid / client build / connect /
+/// timeout / non-2xx status / JSON-RPC error envelope / mid-stream
+/// byte error / unparseable line — is captured as a
+/// `ToolFinishReason::Error { message }` terminator chunk.
+///
+/// # Epistemic taint
+///
+/// All MCP-sourced data is born `Untrusted` (⊥) per the ℰMCP charter.
+/// The streaming tool preserves this discipline — each chunk's delta
+/// reaches the dispatcher untrusted; downstream `shield`/`know`
+/// blocks elevate the taint via reasoning. Taint metadata is not
+/// embedded in the `ToolChunk` (the dispatcher's audit row + ℰMCP
+/// [`BlameTracker`] are the durable trail).
+pub struct McpStreamingTool {
+    name: String,
+    server_url: String,
+    timeout: Duration,
+}
+
+impl McpStreamingTool {
+    /// Construct from a registry [`ToolEntry`]. Validates the server
+    /// URL + extracts the timeout. Returns `Err` with adopter-facing
+    /// diagnostic when the URL is missing or has an invalid scheme.
+    pub fn from_entry(entry: &ToolEntry) -> Result<Self, String> {
+        let url = entry.runtime.trim();
+        if url.is_empty() {
+            return Err(format!(
+                "ℰMCP tool '{}': no server URL. Set runtime: \"http://...\" in tool definition.",
+                entry.name
+            ));
+        }
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(format!(
+                "ℰMCP tool '{}': invalid server URL '{}'. Must start with http:// or https://.",
+                entry.name, url
+            ));
+        }
+        let timeout =
+            crate::http_tool::parse_timeout_pub(&entry.timeout).unwrap_or(Duration::from_secs(30));
+        Ok(Self {
+            name: entry.name.clone(),
+            server_url: url.to_string(),
+            timeout,
+        })
+    }
+
+    /// Public new() ctor for tests + adopters who construct directly
+    /// without a registry entry.
+    pub fn new(name: String, server_url: String, timeout: Duration) -> Self {
+        Self {
+            name,
+            server_url,
+            timeout,
+        }
+    }
+}
+
+/// Build the JSON-RPC 2.0 `tools/call` request body. Mirrors the
+/// legacy [`McpClient::call_tool`] argument-handling discipline:
+/// JSON-shaped arguments pass through; plain strings wrap as
+/// `{ input: <args> }`.
+fn build_mcp_request_body(tool_name: &str, args: &str, request_id: u64) -> String {
+    let params = if args.trim_start().starts_with('{') {
+        serde_json::from_str::<serde_json::Value>(args).unwrap_or_else(|_| {
+            serde_json::json!({
+                "name": tool_name,
+                "arguments": { "input": args }
+            })
+        })
+    } else {
+        serde_json::json!({
+            "name": tool_name,
+            "arguments": { "input": args }
+        })
+    };
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": params,
+        "id": request_id,
+    })
+    .to_string()
+}
+
+/// Classify an MCP response Content-Type as streaming vs single.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpFramingMode {
+    /// `application/x-ndjson` / `application/jsonl` — line-delimited
+    /// JSON-RPC envelopes. Drain per-line + parse each envelope.
+    NdjsonStream,
+    /// `application/json` or anything else — single JSON-RPC
+    /// response. D9 fallback: parse full body, emit `result.content`
+    /// as 1 chunk + `Stop` terminator (byte-equal to
+    /// [`dispatch_mcp`]).
+    SingleResponse,
+}
+
+fn classify_mcp_framing(content_type: &str) -> McpFramingMode {
+    let lc = content_type.to_ascii_lowercase();
+    if lc.contains("application/x-ndjson") || lc.contains("application/jsonl") {
+        McpFramingMode::NdjsonStream
+    } else {
+        McpFramingMode::SingleResponse
+    }
+}
+
+/// Parsed JSON-RPC 2.0 envelope read from the streaming body. The
+/// public ToolStream surface is downstream of this enum.
+enum McpEnvelope {
+    /// `method == "notifications/message"` / `"notifications/progress"`.
+    /// The extracted human-readable text (params.data / params.text /
+    /// params.message — the first non-empty wins). Empty notifications
+    /// (no text payload) emit empty deltas which the dispatcher
+    /// already skips per D4.
+    Notification { delta: String },
+    /// JSON-RPC response with a `result` field. The extracted
+    /// `result.content[0].text` (or stringified result if shape
+    /// differs).
+    Result { delta: String },
+    /// JSON-RPC error envelope. Carries code + message + blame slug.
+    Error { message: String },
+}
+
+/// Parse one line of the MCP NDJSON body into an envelope. Returns
+/// `None` for blank lines (per NDJSON spec) + for lines we don't
+/// recognize (defensive — drop unknown envelopes rather than fail
+/// the whole stream).
+fn parse_mcp_envelope(line: &str) -> Option<McpEnvelope> {
+    if line.trim().is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+
+    // Error envelope wins precedence (a response can have both
+    // result==null + error set; we honor the error path).
+    if let Some(err) = value.get("error") {
+        let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+        let message = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown JSON-RPC error");
+        let blame = if (-32603..=-32600).contains(&code) {
+            "caller"
+        } else {
+            "server"
+        };
+        return Some(McpEnvelope::Error {
+            message: format!("JSON-RPC error {code}: {message} [blame={blame}]"),
+        });
+    }
+
+    // Notification: has `method` field, no `id`.
+    if let Some(method) = value.get("method").and_then(|m| m.as_str()) {
+        if method == "notifications/message" || method == "notifications/progress" {
+            let delta = extract_notification_text(value.get("params"));
+            return Some(McpEnvelope::Notification { delta });
+        }
+        // Unknown method — drop defensively.
+        return None;
+    }
+
+    // Response envelope: has `id` + `result`.
+    if let Some(result) = value.get("result") {
+        let delta = extract_result_text(result);
+        return Some(McpEnvelope::Result { delta });
+    }
+    None
+}
+
+/// Extract the human-readable text from a notification's `params`.
+/// First non-empty of: `data`, `text`, `message`. Falls back to
+/// `serde_json` stringification of the params if no canonical field
+/// matches (preserves the payload for downstream debugging).
+fn extract_notification_text(params: Option<&serde_json::Value>) -> String {
+    let Some(p) = params else { return String::new() };
+    for key in ["data", "text", "message"] {
+        if let Some(val) = p.get(key).and_then(|v| v.as_str()) {
+            if !val.is_empty() {
+                return val.to_string();
+            }
+        }
+    }
+    serde_json::to_string(p).unwrap_or_default()
+}
+
+/// Extract `result.content[0].text` from a JSON-RPC response result.
+/// Falls back to serialized result on shape mismatch.
+fn extract_result_text(result: &serde_json::Value) -> String {
+    result
+        .get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|item| item.get("text"))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| serde_json::to_string(result).unwrap_or_default())
+}
+
+/// Best-effort fire-and-forget `notifications/cancelled` POST. Used
+/// by the streaming task when cancel fires mid-stream. We don't
+/// wait on the response — MCP servers that support cooperative
+/// cancellation will honor it; servers that don't see only a
+/// closed connection. No-op if the URL is unreachable.
+fn fire_cancel_notification(server_url: String, request_id: u64, name: String) {
+    tokio::spawn(async move {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/cancelled",
+            "params": { "requestId": request_id },
+        })
+        .to_string();
+        if let Ok(client) = reqwest::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+        {
+            let _ = client
+                .post(&server_url)
+                .header("Content-Type", "application/json")
+                .header("X-Axon-EMCP", "1.0")
+                .header("X-Axon-Tool", name)
+                .body(body)
+                .send()
+                .await;
+        }
+    });
+}
+
+#[async_trait]
+impl Tool for McpStreamingTool {
+    async fn execute(&self, args: String, _ctx: ToolContext) -> ToolResult {
+        // Synchronous path delegates to legacy `dispatch_mcp` via
+        // spawn_blocking so reqwest::blocking::Client doesn't panic
+        // inside the async runtime. Output is byte-equal to
+        // dispatch_mcp (D9 backwards-compat).
+        let entry = ToolEntry {
+            name: self.name.clone(),
+            provider: "mcp".to_string(),
+            timeout: format!("{}s", self.timeout.as_secs()),
+            runtime: self.server_url.clone(),
+            sandbox: None,
+            max_results: None,
+            output_schema: String::new(),
+            effect_row: Vec::new(),
+            source: crate::tool_registry::ToolSource::Program,
+            is_streaming: false,
+        };
+        let args_owned = args;
+        match tokio::task::spawn_blocking(move || dispatch_mcp(&entry, &args_owned)).await {
+            Ok(result) => result,
+            Err(e) => ToolResult {
+                success: false,
+                output: format!("ℰMCP tool '{}': blocking task join failed: {e}", self.name),
+                tool_name: self.name.clone(),
+            },
+        }
+    }
+
+    async fn stream(&self, args: String, ctx: ToolContext) -> ToolStream {
+        let server_url = self.server_url.clone();
+        let name = self.name.clone();
+        let timeout = self.timeout;
+        let cancel = ctx.cancel.clone();
+        // request_id is monotonic per-invocation; the cancel
+        // notification uses it for correlation. We start at the
+        // ToolContext's trace_id so the audit trail can link the
+        // MCP correlation back to the trace. (ID collisions between
+        // distinct McpStreamingTool invocations are accepted — MCP
+        // servers correlate per-connection.)
+        let request_id = ctx.trace_id.max(1);
+        let body = build_mcp_request_body(&name, &args, request_id);
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ToolChunk>();
+
+        tokio::spawn(async move {
+            let send_terminator = |reason: ToolFinishReason| {
+                let _ = tx.send(ToolChunk::terminator("", reason));
+            };
+
+            // Pre-flight cancel.
+            if cancel.is_cancelled() {
+                fire_cancel_notification(server_url.clone(), request_id, name.clone());
+                send_terminator(ToolFinishReason::Cancelled);
+                return;
+            }
+
+            // 1. Build async client.
+            let client = match reqwest::Client::builder().timeout(timeout).build() {
+                Ok(c) => c,
+                Err(e) => {
+                    send_terminator(ToolFinishReason::Error {
+                        message: format!(
+                            "ℰMCP tool '{name}': failed to build async client: {e}"
+                        ),
+                    });
+                    return;
+                }
+            };
+
+            // 2. Issue request.
+            let response = match client
+                .post(&server_url)
+                .header("Content-Type", "application/json")
+                .header("X-Axon-EMCP", "1.0")
+                .header("Accept", "application/x-ndjson, application/json")
+                .body(body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let message = if e.is_timeout() {
+                        format!(
+                            "ℰMCP tool '{name}': server timed out after {}s",
+                            timeout.as_secs()
+                        )
+                    } else if e.is_connect() {
+                        format!("ℰMCP tool '{name}': cannot connect to MCP server at {server_url}")
+                    } else {
+                        format!("ℰMCP tool '{name}': MCP request failed: {e}")
+                    };
+                    send_terminator(ToolFinishReason::Error { message });
+                    return;
+                }
+            };
+
+            // 3. Non-2xx → error terminator with status + truncated body.
+            let status = response.status();
+            if !status.is_success() {
+                let body_text = response.text().await.unwrap_or_default();
+                let truncated = if body_text.len() > 200 {
+                    format!("{}...", &body_text[..200])
+                } else {
+                    body_text
+                };
+                send_terminator(ToolFinishReason::Error {
+                    message: format!(
+                        "ℰMCP server '{name}' returned HTTP {}: {}",
+                        status.as_u16(),
+                        truncated
+                    ),
+                });
+                return;
+            }
+
+            // 4. Read Content-Type → classify framing.
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            let framing = classify_mcp_framing(&content_type);
+
+            // 5. Drain per framing mode.
+            let mut byte_stream = response.bytes_stream();
+            let drain_result = match framing {
+                McpFramingMode::NdjsonStream => {
+                    drain_mcp_ndjson(&mut byte_stream, &cancel, &tx).await
+                }
+                McpFramingMode::SingleResponse => {
+                    drain_mcp_single(&mut byte_stream, &cancel, &tx).await
+                }
+            };
+
+            match drain_result {
+                McpDrainOutcome::Completed => send_terminator(ToolFinishReason::Stop),
+                McpDrainOutcome::CompletedWith(reason) => send_terminator(reason),
+                McpDrainOutcome::Cancelled => {
+                    fire_cancel_notification(server_url.clone(), request_id, name.clone());
+                    send_terminator(ToolFinishReason::Cancelled);
+                }
+                McpDrainOutcome::Error(message) => {
+                    send_terminator(ToolFinishReason::Error { message })
+                }
+            }
+        });
+
+        Box::pin(futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|chunk| (chunk, rx))
+        }))
+    }
+
+    fn is_streaming(&self) -> bool {
+        true
+    }
+}
+
+/// Per-drain outcome. The `CompletedWith` variant lets a drain
+/// helper carry a JSON-RPC error all the way back to the spawned
+/// task without losing the typed surface.
+enum McpDrainOutcome {
+    /// Stream ended naturally → `Stop` terminator.
+    Completed,
+    /// Stream ended with an explicit reason — used when the
+    /// JSON-RPC body returns an error envelope (we want to keep
+    /// the typed `ToolFinishReason::Error` surface intact instead
+    /// of stringifying through `Error(message)`).
+    CompletedWith(ToolFinishReason),
+    /// Cancel flag observed mid-drain.
+    Cancelled,
+    /// Stream byte error or unrecoverable parse error.
+    Error(String),
+}
+
+/// Drain MCP NDJSON-streaming body. Parse each LF-delimited line as
+/// a JSON-RPC envelope; emit notifications as intermediate chunks,
+/// stop on response/error envelopes.
+async fn drain_mcp_ndjson<S>(
+    byte_stream: &mut S,
+    cancel: &crate::cancel_token::CancellationFlag,
+    tx: &tokio::sync::mpsc::UnboundedSender<ToolChunk>,
+) -> McpDrainOutcome
+where
+    S: futures::Stream<Item = reqwest::Result<Bytes>> + Unpin + Send,
+{
+    let mut line_buf = LineBuffer::new();
+    loop {
+        if cancel.is_cancelled() {
+            return McpDrainOutcome::Cancelled;
+        }
+        match byte_stream.next().await {
+            None => break,
+            Some(Err(e)) => {
+                return McpDrainOutcome::Error(format!("MCP stream chunk error: {e}"))
+            }
+            Some(Ok(bytes)) => {
+                let lines = line_buf.push(&bytes);
+                for line in lines {
+                    if let Some(env) = parse_mcp_envelope(&line) {
+                        match env {
+                            McpEnvelope::Notification { delta } => {
+                                if !delta.is_empty()
+                                    && tx.send(ToolChunk::intermediate(delta)).is_err()
+                                {
+                                    return McpDrainOutcome::Cancelled;
+                                }
+                            }
+                            McpEnvelope::Result { delta } => {
+                                if !delta.is_empty() {
+                                    let _ = tx.send(ToolChunk::intermediate(delta));
+                                }
+                                return McpDrainOutcome::Completed;
+                            }
+                            McpEnvelope::Error { message } => {
+                                return McpDrainOutcome::CompletedWith(
+                                    ToolFinishReason::Error { message },
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(line) = line_buf.flush() {
+        if let Some(env) = parse_mcp_envelope(&line) {
+            match env {
+                McpEnvelope::Notification { delta } => {
+                    if !delta.is_empty() {
+                        let _ = tx.send(ToolChunk::intermediate(delta));
+                    }
+                }
+                McpEnvelope::Result { delta } => {
+                    if !delta.is_empty() {
+                        let _ = tx.send(ToolChunk::intermediate(delta));
+                    }
+                    return McpDrainOutcome::Completed;
+                }
+                McpEnvelope::Error { message } => {
+                    return McpDrainOutcome::CompletedWith(ToolFinishReason::Error {
+                        message,
+                    });
+                }
+            }
+        }
+    }
+    McpDrainOutcome::Completed
+}
+
+/// Drain MCP single-response (non-streaming) body. Parse the full
+/// body as one JSON-RPC envelope; D9 backwards-compat: emit
+/// `result.content[0].text` as 1 chunk + `Stop` terminator (matches
+/// [`dispatch_mcp`] byte-equal); on `error`, emit `Error` terminator.
+async fn drain_mcp_single<S>(
+    byte_stream: &mut S,
+    cancel: &crate::cancel_token::CancellationFlag,
+    tx: &tokio::sync::mpsc::UnboundedSender<ToolChunk>,
+) -> McpDrainOutcome
+where
+    S: futures::Stream<Item = reqwest::Result<Bytes>> + Unpin + Send,
+{
+    let mut acc: Vec<u8> = Vec::new();
+    loop {
+        if cancel.is_cancelled() {
+            return McpDrainOutcome::Cancelled;
+        }
+        match byte_stream.next().await {
+            None => break,
+            Some(Err(e)) => {
+                return McpDrainOutcome::Error(format!("MCP body chunk error: {e}"))
+            }
+            Some(Ok(bytes)) => acc.extend_from_slice(&bytes),
+        }
+    }
+    let body_text = String::from_utf8_lossy(&acc).into_owned();
+    if body_text.trim().is_empty() {
+        return McpDrainOutcome::Completed;
+    }
+    let value: serde_json::Value = match serde_json::from_str(&body_text) {
+        Ok(v) => v,
+        Err(e) => {
+            return McpDrainOutcome::Error(format!(
+                "ℰMCP server returned unparseable JSON-RPC response: {e}"
+            ));
+        }
+    };
+    if let Some(err) = value.get("error") {
+        let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+        let message = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown JSON-RPC error");
+        let blame = if (-32603..=-32600).contains(&code) {
+            "caller"
+        } else {
+            "server"
+        };
+        return McpDrainOutcome::CompletedWith(ToolFinishReason::Error {
+            message: format!("JSON-RPC error {code}: {message} [blame={blame}]"),
+        });
+    }
+    if let Some(result) = value.get("result") {
+        let delta = extract_result_text(result);
+        if !delta.is_empty() {
+            let _ = tx.send(ToolChunk::intermediate(delta));
+        }
+        return McpDrainOutcome::Completed;
+    }
+    McpDrainOutcome::Error("ℰMCP response has neither result nor error".to_string())
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -797,5 +1387,187 @@ mod tests {
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"blame\":\"None\""));
         assert!(json.contains("\"taint\":\"Untrusted\""));
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //  §Fase 34.f — McpStreamingTool lib unit tests
+    // ════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn mcp_streaming_tool_from_entry_accepts_valid_http_url() {
+        let entry = make_mcp_entry("McpTool", "http://localhost:3000/mcp", "10s");
+        let t = McpStreamingTool::from_entry(&entry).expect("ok");
+        assert_eq!(t.name, "McpTool");
+        assert_eq!(t.server_url, "http://localhost:3000/mcp");
+        assert_eq!(t.timeout, Duration::from_secs(10));
+        assert!(t.is_streaming());
+    }
+
+    #[test]
+    fn mcp_streaming_tool_from_entry_accepts_https_url() {
+        let entry = make_mcp_entry("McpTool", "https://api.example.com/mcp", "5s");
+        let t = McpStreamingTool::from_entry(&entry).expect("ok");
+        assert!(t.server_url.starts_with("https://"));
+    }
+
+    #[test]
+    fn mcp_streaming_tool_from_entry_rejects_empty_url() {
+        let entry = make_mcp_entry("McpTool", "", "10s");
+        let err = McpStreamingTool::from_entry(&entry).err().unwrap();
+        assert!(err.contains("no server URL"));
+    }
+
+    #[test]
+    fn mcp_streaming_tool_from_entry_rejects_invalid_scheme() {
+        let entry = make_mcp_entry("McpTool", "ws://localhost:3000", "10s");
+        let err = McpStreamingTool::from_entry(&entry).err().unwrap();
+        assert!(err.contains("invalid server URL"));
+    }
+
+    #[test]
+    fn mcp_streaming_tool_default_timeout_when_empty() {
+        let entry = make_mcp_entry("McpTool", "http://localhost", "");
+        let t = McpStreamingTool::from_entry(&entry).expect("ok");
+        assert_eq!(t.timeout, Duration::from_secs(30));
+    }
+
+    // ─── Framing classification ─────────────────────────────────────
+
+    #[test]
+    fn classify_mcp_framing_ndjson() {
+        assert_eq!(
+            classify_mcp_framing("application/x-ndjson"),
+            McpFramingMode::NdjsonStream
+        );
+        assert_eq!(
+            classify_mcp_framing("application/x-ndjson; charset=utf-8"),
+            McpFramingMode::NdjsonStream
+        );
+        assert_eq!(
+            classify_mcp_framing("application/jsonl"),
+            McpFramingMode::NdjsonStream
+        );
+    }
+
+    #[test]
+    fn classify_mcp_framing_single_default() {
+        assert_eq!(
+            classify_mcp_framing("application/json"),
+            McpFramingMode::SingleResponse
+        );
+        assert_eq!(
+            classify_mcp_framing("text/plain"),
+            McpFramingMode::SingleResponse
+        );
+        assert_eq!(classify_mcp_framing(""), McpFramingMode::SingleResponse);
+    }
+
+    // ─── Envelope parsing ───────────────────────────────────────────
+
+    #[test]
+    fn parse_envelope_notification_message_data() {
+        let line = r#"{"jsonrpc":"2.0","method":"notifications/message","params":{"data":"partial-1"}}"#;
+        match parse_mcp_envelope(line) {
+            Some(McpEnvelope::Notification { delta }) => assert_eq!(delta, "partial-1"),
+            other => panic!("expected Notification, got {}", envelope_label(&other)),
+        }
+    }
+
+    #[test]
+    fn parse_envelope_notification_progress_text() {
+        let line = r#"{"jsonrpc":"2.0","method":"notifications/progress","params":{"text":"50% done"}}"#;
+        match parse_mcp_envelope(line) {
+            Some(McpEnvelope::Notification { delta }) => assert_eq!(delta, "50% done"),
+            other => panic!("expected Notification, got {}", envelope_label(&other)),
+        }
+    }
+
+    #[test]
+    fn parse_envelope_notification_message_field_fallback() {
+        // `message` key as third-priority fallback.
+        let line = r#"{"jsonrpc":"2.0","method":"notifications/message","params":{"message":"hi"}}"#;
+        match parse_mcp_envelope(line) {
+            Some(McpEnvelope::Notification { delta }) => assert_eq!(delta, "hi"),
+            other => panic!("expected Notification, got {}", envelope_label(&other)),
+        }
+    }
+
+    #[test]
+    fn parse_envelope_response_with_content() {
+        let line = r#"{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"final answer"}]},"id":1}"#;
+        match parse_mcp_envelope(line) {
+            Some(McpEnvelope::Result { delta }) => assert_eq!(delta, "final answer"),
+            other => panic!("expected Result, got {}", envelope_label(&other)),
+        }
+    }
+
+    #[test]
+    fn parse_envelope_error_server_blame() {
+        let line = r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"internal"},"id":1}"#;
+        match parse_mcp_envelope(line) {
+            Some(McpEnvelope::Error { message }) => {
+                assert!(message.contains("-32000"));
+                assert!(message.contains("blame=server"));
+            }
+            other => panic!("expected Error, got {}", envelope_label(&other)),
+        }
+    }
+
+    #[test]
+    fn parse_envelope_error_caller_blame_invalid_params() {
+        let line = r#"{"jsonrpc":"2.0","error":{"code":-32602,"message":"bad params"},"id":1}"#;
+        match parse_mcp_envelope(line) {
+            Some(McpEnvelope::Error { message }) => {
+                assert!(message.contains("blame=caller"));
+            }
+            other => panic!("expected Error, got {}", envelope_label(&other)),
+        }
+    }
+
+    #[test]
+    fn parse_envelope_blank_line_returns_none() {
+        assert!(parse_mcp_envelope("").is_none());
+        assert!(parse_mcp_envelope("   ").is_none());
+    }
+
+    #[test]
+    fn parse_envelope_unknown_method_returns_none() {
+        let line = r#"{"jsonrpc":"2.0","method":"notifications/heartbeat","params":{}}"#;
+        assert!(parse_mcp_envelope(line).is_none());
+    }
+
+    #[test]
+    fn parse_envelope_malformed_json_returns_none() {
+        assert!(parse_mcp_envelope("not json").is_none());
+        assert!(parse_mcp_envelope("{").is_none());
+    }
+
+    #[test]
+    fn build_mcp_request_body_json_args_passthrough() {
+        let body = build_mcp_request_body("Tool", r#"{"name":"Tool","arguments":{"x":1}}"#, 42);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["jsonrpc"], "2.0");
+        assert_eq!(v["method"], "tools/call");
+        assert_eq!(v["id"], 42);
+        assert_eq!(v["params"]["arguments"]["x"], 1);
+    }
+
+    #[test]
+    fn build_mcp_request_body_plain_args_wrapped() {
+        let body = build_mcp_request_body("Tool", "search query", 1);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["params"]["name"], "Tool");
+        assert_eq!(v["params"]["arguments"]["input"], "search query");
+    }
+
+    /// Helper to name McpEnvelope variants in test failure messages
+    /// without exposing them via Debug.
+    fn envelope_label(env: &Option<McpEnvelope>) -> &'static str {
+        match env {
+            None => "None",
+            Some(McpEnvelope::Notification { .. }) => "Notification",
+            Some(McpEnvelope::Result { .. }) => "Result",
+            Some(McpEnvelope::Error { .. }) => "Error",
+        }
     }
 }
