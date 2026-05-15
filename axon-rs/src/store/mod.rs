@@ -21,3 +21,4 @@
 
 pub mod filter;
 pub mod postgres_backend;
+pub mod registry;
