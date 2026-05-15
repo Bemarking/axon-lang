@@ -5,7 +5,7 @@ The first programming language for AI cognition.
 
 from __future__ import annotations
 
-__version__ = "1.28.0"
+__version__ = "1.29.0"
 
 # ── Public API ────────────────────────────────────────────────────
 # These imports define what ``import axon`` gives you.
