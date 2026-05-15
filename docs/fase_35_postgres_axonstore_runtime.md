@@ -5,7 +5,7 @@ owner: AXON Runtime + Backends Team
 created: 2026-05-15
 target: axon-lang v1.30.0 (minor — `axonstore` becomes a load-bearing runtime primitive: a persistent relation that is epistemically typed, audit-chained by construction, streamable, and capability-secured)
 depends_on: Fase 34 SHIPPED v1.29.x (the `unified_stream_handler` + `Stream<ToolChunk>` surface — Pillar III routes through it). Fase 33.z SHIPPED v1.27.0 (the dispatcher is the production path). ESK Fase 6 (the epistemic lattice — Pillar I). Fase 16 / `esk::provenance` (HMAC-Merkle audit chains — Pillar II). Fase 32.g `auth_scope` + Fase 11/13 trust + capability types (Pillar IV). `sqlx` (postgres) + `axon-rs/src/db_pool.rs` already establish the `PgPool` substrate.
-charter_class: OSS — every adopter that declares an `axonstore` gets the cognitive data plane. Adopter-agnostic; no vertical content. The OSS audit chain uses OSS crypto (`sha2`/`hmac` + axon-csys pure-C); axon-enterprise overrides Pillar II's crypto with the FIPS-validated + mmap tamper-evident kernel (`axon-csys-enterprise`) via the charter's SPLIT discipline. axon-enterprise inherits the base via the v1.30.0 catch-up (35.n).
+charter_class: SPLIT — the cognitive data plane primitive (the four pillars) is **OSS, non-negotiably** — it is the `axonstore` joining systems axon-lang OSS already ships; walling it would amputate the language. The **moat is the hardening layer, not the primitive**: the enterprise product is the named **axonstore Regulatory Hardening Layer** (FIPS-validated audit-chain crypto + mmap tamper-evident kernel + court-admissible evidence packager + per-vertical confidence policies + multitenant store-isolation ops + per-vertical regulatory replay). Per-sub-fase classification + the full enterprise surface are in §6. v1.30.0 ships the OSS plane; the Hardening Layer ships on the axon-enterprise vertical R&D track (the Fase-20 shape).
 strategic_direction: This cycle is built **Rust-canonical**. Per the founder directive 2026-05-15 — *"todo encaminado a ser 100% Rust + C, 0 Python"* — the Rust implementation IS the canonical `axonstore` runtime. The Python `axon/runtime/store_backends/` modules are the historical reference this cycle learns from, but they are frozen: no new Python store work, no Python↔Rust parity infrastructure is built (a permanent cross-stack drift gate would deepen exactly the coupling the project is retiring). The Python store backends are on the eventual deprecation path.
 
 pillars: |
@@ -137,7 +137,39 @@ Substrate first (35.a–f) — the relation must be real before it is enriched. 
 
 **Total target: ~10 000 LOC + the real-Postgres integration harness + D12 fuzz. Built Rust-canonical (the strategic direction — 0 Python). D3 zero-regression absolute.**
 
-## ▶ 6. Open scoping questions for the ratification bloque
+## ▶ 6. OSS / ENTERPRISE / SPLIT classification
+
+The cognitive data plane is **OSS — non-negotiably**. The four pillars are the `axonstore` joining systems axon-lang OSS already ships (the ESK epistemic lattice, the audit-chain base, the `unified_stream_handler`, the capability/trust types). An OSS `axonstore` that could not join them would be a language contradicting its own type — `IRAxonStore` declares `confidence_floor` / `on_breach`, so OSS axon must honor them. Walling the pillars behind enterprise would amputate the language and forfeit the strategic goal (the *default* language for AI software is the OSS one).
+
+**The moat is real — but it lives at the HARDENING layer, not the primitive layer.** This follows the established charter pattern: Fase 20 shipped the Shield *mechanism* OSS and the *vertical scanners* (HIPAA/legal/fintech) enterprise; Fase 27 shipped the C kernels OSS and the *FIPS-validated link* enterprise. The cognitive data plane follows the same line: the **primitive is OSS**, the **regulatory-grade hardening of the primitive is enterprise**.
+
+### Per-sub-fase classification
+
+| Sub-phase | Class | Rationale |
+|---|---|---|
+| 35.a–35.f (substrate: anchor, filter, backend, registry, both wirings) | **OSS** | The data plane mechanism — adopter-agnostic. |
+| 35.g — Pillar I, Epistemic | **SPLIT** | OSS: the epistemic-grade mechanism (rows born `Untrusted`, `confidence_floor` enforcement). ENTERPRISE: per-vertical confidence calibration (what "believe" means for a HIPAA clinical row / a legal-privilege assessment / a fintech AML risk score). |
+| 35.h — Pillar II, Audit-chain | **SPLIT** | OSS: the HMAC-Merkle chain mechanism with `sha2`/`hmac` crypto + `on_breach`. ENTERPRISE: the FIPS-validated crypto link + the mmap tamper-evident kernel + the court-admissible evidence packager. |
+| 35.i — Pillar III, `Stream<Row>` | **OSS** | The streaming surface is `unified_stream_handler` + the closed `BackpressurePolicy` catalog — all OSS. |
+| 35.j — Pillar IV, Capability-typed access | **SPLIT** | OSS: the capability-typing mechanism + type-checker enforcement. ENTERPRISE: the multitenant store-isolation operations (per-tenant capability provisioning, tenant-scoped connection routing, per-tenant chain segregation). |
+| 35.k–35.l (fuzz, real-Postgres integration) | **OSS** | The robustness gates for the OSS primitive. |
+| 35.m (docs) | **SPLIT** | OSS: `docs/ADOPTER_AXONSTORE.md`. ENTERPRISE: the `INTEGRATION_GUIDE.md` extension for the hardening layer. |
+| 35.n (release) | **SPLIT** | axon-lang v1.30.0 (OSS) + axon-enterprise catch-up. |
+
+### The axonstore Regulatory Hardening Layer (enterprise track)
+
+The enterprise product is a coherent, named surface — the **axonstore Regulatory Hardening Layer** — that layers on top of the OSS cognitive data plane. It does NOT gate the primitive; it makes the primitive *audit-defensible before a regulator*. Six components:
+
+1. **FIPS-validated audit-chain crypto.** Pillar II's HMAC-Merkle chain re-routed through the `axon-csys-enterprise` BoringSSL / OpenSSL-FIPS link (FIPS 140-3 posture for HIPAA / SOC 2 / FedRAMP). Wire-byte-identical to the OSS pure-C path → cross-deployment verification.
+2. **mmap tamper-evident append-only kernel.** The chain's storage backed by the `axon-csys-enterprise` mmap kernel (~290k events/sec, per-tenant HMAC chain + segment rotation) instead of a plain Postgres sidecar.
+3. **Court-admissible evidence packager.** Export a store's mutation chain as a byte-deterministic evidence bundle (ZIP STORE + canonical-JSON manifest + Merkle root + Ed25519 signature) — the Fase 27 enterprise evidence packager applied to `axonstore`.
+4. **Vertical confidence policies (Pillar I R&D).** Per-vertical calibration of `confidence_floor` semantics — HIPAA clinical-data confidence, legal privilege confidence, fintech AML risk-score confidence, government decision-support confidence. OSS ships the *mechanism*; enterprise ships the *regulator-defensible calibration*.
+5. **Multitenant store-isolation operations (Pillar IV ops).** Per-tenant capability provisioning, tenant-scoped connection routing (the `axon/tenants/*` Secrets Manager namespace), per-tenant audit-chain segregation, tenant-isolation invariant gates — the operational multitenancy the enterprise charter owns.
+6. **Per-vertical regulatory replay + retention.** `GET /v1/replay` extended to the store mutation chain; per-vertical retention policies (PCI DSS Req 10 / FedRAMP AU-2 / 21 CFR Part 11 §11.10 / FRE 502).
+
+**Sequencing:** v1.30.0 ships the OSS cognitive data plane (35.a–n). The Regulatory Hardening Layer ships as a subsequent **axon-enterprise** release on the enterprise vertical R&D track — the same shape as Fase 20's enterprise Shield layer landing after the OSS mechanism. The SPLIT sub-fases (35.g/h/j) design their OSS surface with the documented enterprise override seam from day 1, so the hardening layer slots in without an OSS refactor.
+
+## ▶ 7. Open scoping questions for the ratification bloque
 
 1. **Pillar sequencing.** All four pillars (35.g–j) in v1.30.0 — or substrate + a subset in v1.30.0, the rest in v1.30.x? Recommendation: all four — the substrate alone is the "industry-standard" version the founder explicitly rejected; the pillars ARE Fase 35.
 2. **`confidence_floor` storage (Pillar I).** A row's stored confidence — a reserved `_confidence` column convention, or a sidecar metadata table? Affects the schema contract with the adopter's existing tables.
