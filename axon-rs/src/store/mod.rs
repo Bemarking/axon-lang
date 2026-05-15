@@ -20,3 +20,4 @@
 //! - `row_stream` — 35.i — Pillar III, `retrieve` as a `Stream<Row>`.
 
 pub mod filter;
+pub mod postgres_backend;

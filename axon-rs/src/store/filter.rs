@@ -56,6 +56,25 @@ const MAX_COLUMN_LEN: usize = 63;
 /// 65535-bind-parameter ceiling.
 const MAX_CONDITIONS: usize = 256;
 
+/// `true` iff `name` is a safe SQL identifier for the `axonstore` data
+/// plane: ASCII `[A-Za-z_][A-Za-z0-9_]*`, 1..=63 bytes.
+///
+/// The `where`-clause lexer enforces this discipline structurally for
+/// filter columns. Table names and `insert`/`mutate` column names —
+/// which the 35.c backend quotes directly into SQL text — are checked
+/// against this predicate before quoting, so that **no untrusted
+/// identifier ever reaches SQL** (the D4 invariant applied to the
+/// identifier surface, not just the value surface).
+pub fn is_safe_identifier(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_COLUMN_LEN
+        && name.bytes().enumerate().all(|(i, b)| {
+            b == b'_'
+                || b.is_ascii_alphabetic()
+                || (i > 0 && b.is_ascii_digit())
+        })
+}
+
 // ════════════════════════════════════════════════════════════════════
 //  Value catalog
 // ════════════════════════════════════════════════════════════════════
@@ -1101,6 +1120,36 @@ mod tests {
         assert!(parse_filter("").unwrap().is_empty());
         assert!(parse_filter("  ").unwrap().is_empty());
         assert!(!parse_filter("a = 1").unwrap().is_empty());
+    }
+
+    // ── is_safe_identifier ───────────────────────────────────────────
+
+    #[test]
+    fn safe_identifiers_are_accepted() {
+        for name in ["users", "user_id", "_private", "Table1", "a", "_"] {
+            assert!(is_safe_identifier(name), "`{name}` should be safe");
+        }
+    }
+
+    #[test]
+    fn unsafe_identifiers_are_rejected() {
+        for name in [
+            "",
+            "1abc",            // starts with a digit
+            "user-name",       // hyphen
+            "a b",             // space
+            "drop;table",      // statement terminator
+            "col\"injected",   // embedded quote
+            "naïve",           // non-ASCII
+        ] {
+            assert!(!is_safe_identifier(name), "`{name}` should be rejected");
+        }
+    }
+
+    #[test]
+    fn identifier_length_boundary() {
+        assert!(is_safe_identifier(&"c".repeat(MAX_COLUMN_LEN)));
+        assert!(!is_safe_identifier(&"c".repeat(MAX_COLUMN_LEN + 1)));
     }
 
     // ── Error Display is non-empty + informative ─────────────────────
