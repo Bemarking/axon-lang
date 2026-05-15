@@ -1,119 +1,150 @@
 ---
-title: "Plan vivo: Fase 35 — Postgres-backed axonstore runtime (the data plane the language already declares)"
-status: 🚀 PROPOSED 2026-05-15 — D1–D13 pending founder bloque ratification. Triggered by the kivi-enterprise adopter gap report 2026-05-15 ("el runtime Rust ignora `axonstore { backend: postgresql }`"), verified true cross-path against the source.
+title: "Plan vivo: Fase 35 — axonstore as a cognitive data plane (the persistent relation no other language has)"
+status: 🚀 PROPOSED 2026-05-15 (reframed from the industry-standard port to the axon-native vision per founder directive) — D1–D14 pending bloque ratification. Triggered by the kivi-enterprise gap report 2026-05-15, verified true; reframed because a faithful Postgres-ORM port would only EQUAL the market, and axon exists to surpass it.
 owner: AXON Runtime + Backends Team
 created: 2026-05-15
-target: axon-lang v1.30.0 (minor — the `axonstore { backend: postgresql }` declaration becomes load-bearing at runtime: `retrieve` / `persist` / `mutate` / `purge` against a postgresql-backed store execute real SQL instead of routing to the session key-value store)
-depends_on: Fase 34 SHIPPED v1.29.0 + v1.29.1 (Tools as stream-producers; the streaming dispatcher is the production hot path). Fase 33.z SHIPPED v1.27.0 (the dispatcher IS the production path — so wiring the store backend into `flow_dispatcher` reaches production traffic). `sqlx` (postgres feature) is already an axon-rs dependency; `axon-rs/src/db_pool.rs` + `storage_postgres.rs` + `migrations.rs` already establish the `PgPool` conventions to follow.
-charter_class: OSS — every adopter that declares `axonstore { backend: postgresql }` gets a real SQL data plane. The capability is adopter-agnostic; no vertical-specific content. axon-enterprise inherits via the v1.30.0 catch-up (35.k).
+target: axon-lang v1.30.0 (minor — `axonstore` becomes a load-bearing runtime primitive: a persistent relation that is epistemically typed, audit-chained by construction, streamable, and capability-secured)
+depends_on: Fase 34 SHIPPED v1.29.x (the `unified_stream_handler` + `Stream<ToolChunk>` surface — Pillar III routes through it). Fase 33.z SHIPPED v1.27.0 (the dispatcher is the production path). ESK Fase 6 (the epistemic lattice — Pillar I). Fase 16 / `esk::provenance` (HMAC-Merkle audit chains — Pillar II). Fase 32.g `auth_scope` + Fase 11/13 trust + capability types (Pillar IV). `sqlx` (postgres) + `axon-rs/src/db_pool.rs` already establish the `PgPool` substrate.
+charter_class: OSS — every adopter that declares an `axonstore` gets the cognitive data plane. Adopter-agnostic; no vertical content. The OSS audit chain uses OSS crypto (`sha2`/`hmac` + axon-csys pure-C); axon-enterprise overrides Pillar II's crypto with the FIPS-validated + mmap tamper-evident kernel (`axon-csys-enterprise`) via the charter's SPLIT discipline. axon-enterprise inherits the base via the v1.30.0 catch-up (35.n).
+strategic_direction: This cycle is built **Rust-canonical**. Per the founder directive 2026-05-15 — *"todo encaminado a ser 100% Rust + C, 0 Python"* — the Rust implementation IS the canonical `axonstore` runtime. The Python `axon/runtime/store_backends/` modules are the historical reference this cycle learns from, but they are frozen: no new Python store work, no Python↔Rust parity infrastructure is built (a permanent cross-stack drift gate would deepen exactly the coupling the project is retiring). The Python store backends are on the eventual deprecation path.
 
 pillars: |
-  MATHEMATICS — The `axonstore` declaration is a categorical statement: the store IS the table (the Python reference impl names this the "Univalence A ≃ B" / HoTT schema-isomorphism — `CREATE TABLE ↔ IRStoreSchema`). `retrieve from S where φ` is the relational selection σ_φ(S); `persist` is a tuple insertion; `mutate` an update; `purge` a deletion. Today the Rust runtime reinterprets all four as key-value `get`/`put` on a `__store_<name>_<key>` namespace — categorically a DIFFERENT structure (a finite map, not a relation). Fase 35 corrects the morphism: a postgresql-backed `axonstore` denotes the actual relation, and the four operations denote the four relational-algebra operations against it.
+  MATHEMATICS — A relation `R` is not just a set of tuples. axon's `axonstore` is a relation enriched, ORTHOGONALLY, in four dimensions the relational model never carried: (1) an EPISTEMIC grading — each tuple sits somewhere in the lattice ⊥ ⊑ doubt ⊑ speculate ⊑ believe ⊑ know; (2) a TEMPORAL-INTEGRITY structure — the mutation history is a Merkle-chained sequence, a free monoid of deltas with a verifiable fold; (3) an ALGEBRAIC-EFFECT structure — selection σ_φ(R) is a coinductive `Stream`, not an eager set; (4) a CAPABILITY structure — access to `R` is a typed permission in the linear/affine sense. The faithful-ORM port realizes only the bare relation. Fase 35 realizes the enriched object — which is a genuinely new mathematical structure, not present in SQLAlchemy / Prisma / Diesel / sqlx, because those have no epistemic lattice, no algebraic-effect calculus, no capability types to enrich WITH.
 
-  LOGIC — Store resolution is a total function over a closed catalog. Every `IRRetrieveStep` / `IRPersistStep` / `IRMutateStep` / `IRPurgeStep` carries a `store_name`; that name resolves against `IRProgram.axonstore_specs` to exactly one `IRAxonStore` or to the implicit in-memory default. `IRAxonStore.backend` is a closed catalog `{in_memory, postgresql}`. There is no third path, no silent fallback: a declared-but-unresolvable store, or an unknown backend slug, is an error — never a quiet KV lookup that looks like success.
+  LOGIC — The four enrichments are not bolt-ons; they are axon SYSTEMS the store JOINS. axon already HAS the epistemic lattice (ESK, Fase 6), the HMAC-Merkle audit chain (Fase 16 / `esk::provenance`), the algebraic-effect streaming runtime (`unified_stream_handler`, Fase 34), and capability/trust types (Fase 11/13/32). No new invention is required — the `axonstore` simply becomes the PERSISTENT-DATA member of each system. The reason no other language can copy this is not cleverness; it is that no other language has the four systems to join.
 
-  PHILOSOPHY — The language honors its own declarations. An adopter writes `axonstore tenants { backend: postgresql connection: "env:DATABASE_URL" }` and the runtime does what the words say. The pre-35 state — the declaration parses into `IRAxonStore` but the runtime never reads it — is the same class of defect as the SSE gap (Fase 30–34) and the webhook-HMAC gap (v1.29.1): a capability the language lets you DECLARE but the server silently does not HONOR. A language that compiles a lie is worse than one that rejects it.
+  PHILOSOPHY — The language honors its own declarations — ALL of them. `IRAxonStore` carries `confidence_floor` and `on_breach` fields that the runtime has always ignored, exactly as it ignored `backend`. A Fase 35 that honored `backend` while leaving `confidence_floor`/`on_breach` inert would close one instance of the defect and ship the next. The reframed Fase 35 honors every field the declaration carries — and makes the declaration MEAN something the market cannot offer.
 
-  COMPUTING — A real data plane is the floor for building AI applications on axon. An agent flow that reads tenant rows, writes audit records, updates session state — that is most production AI software. `retrieve from tenants` that silently returns a key-value lookup by step-name instead of the tenant table is a divergence that deploys clean and corrupts at runtime. Closing it is what lets axon power "todo tipo de aplicaciones impulsadas por AI".
+  COMPUTING — axon's purpose is to be the default language for building AI applications and agents. An agent's persistent memory is the substrate of its cognition: what it believes, how sure it is, what it is allowed to read, and a tamper-evident record of how its world changed. A plain table answers none of those. The cognitive data plane answers all four — as language primitives, verified, with zero adopter bolt-on. That is the floor for "the default language for AI software".
 
 ---
 
-## ▶ 1. The trigger — verified adopter gap report
+## ▶ 1. The trigger + the reframe
 
-The kivi-enterprise adopter (migrating from the Python server to the Rust server to obtain the Fase 30–34 SSE algebraic-effects surface) filed a gap report 2026-05-15. **Verified true, file-by-file, and broader than the report claims:**
+The kivi-enterprise adopter filed a gap report 2026-05-15: the Rust runtime ignores `axonstore { backend: postgresql }`. **Verified true** (file-by-file; the gap is in BOTH the sync runner `runner.rs` AND the streaming dispatcher `flow_dispatcher/wire_integrations.rs` — both route `retrieve`/`persist`/`mutate`/`purge` to a key-value store, never SQL). The Python runtime has a `PostgreSQLStoreBackend` reference; the Rust runtime has nothing.
 
-| Claim | Verification |
-|---|---|
-| The frontend parses the postgresql store | ✅ `axon-frontend/src/ir_nodes.rs:1286` — `IRAxonStore { name, backend, connection, confidence_floor, isolation, on_breach }`; `IRProgram.axonstore_specs: Vec<IRAxonStore>` (line 35). `axonstore X { backend: postgresql, connection: ... }` → `IRAxonStore` with `backend == "postgresql"`. |
-| The sync runner ignores it | ✅ `axon-rs/src/runner.rs` has **0** references to `IRAxonStore` / `axonstore_specs` / `axonstore`. `execute_real`'s session-memory interception (~line 1139) routes `persist`/`retrieve`/`mutate`/`purge` to `session.*` (the scoped KV store), keyed by `step_name`. |
-| **The streaming dispatcher ALSO ignores it** (not in the report) | ✅ `axon-rs/src/flow_dispatcher/wire_integrations.rs` — `persist_to_store` / `retrieve_from_store` / `mutate_store` / `purge_from_store` are pure key-value ops against `ctx.let_bindings` with `__store_<name>_<key>` keys. Zero SQL, zero `IRAxonStore`. The docstrings say verbatim *"OSS default … Enterprise overrides route to Postgres / Redis"*. **The gap is in BOTH execution paths.** |
-| Python has a reference impl | ✅ `axon/runtime/store_backends/postgresql_backend.py` (376 LOC, `PostgreSQLStoreBackend`) + `sqlite_backend.py` + `filter_parser.py` (310 LOC, `build_pg_where` — parameterized) + `store_dispatcher.py` (497 LOC). |
+The first draft of this plan proposed the obvious fix: a faithful Rust port of the Python backend — `PgPool` + parameterized CRUD. **That draft was correct and would have closed the gap — and it would only have made axon EQUAL the market.** "Map a store declaration to a table and do CRUD with a parameterized WHERE" is what every ORM does.
 
-It is a **runtime-parity gap**: the table-backed store model exists in the Python runtime and is absent from the Rust runtime. The Rust server compiles and deploys a flow that declares a postgresql store, then executes its `retrieve`/`persist` against an in-memory key-value map — a silent divergence.
+The reframe: `axonstore` is not a table. The proof is in the language's own IR — `IRAxonStore` carries `confidence_floor: Option<f64>` and `on_breach: String`, fields the language designers placed there and the runtime never honored. They are the language saying, in its own type, that a store was always meant to be a *cognitive* object. Fase 35 builds that object.
 
-## ▶ 2. The architectural arc — why this matters
+## ▶ 2. The model — the four enrichments
 
-axon-lang ships TWO HTTP servers — the Python `axon serve` server and the Rust `axon-rs` server. The Fase 30–34 cycles built the SSE algebraic-effects surface, the dispatcher, the wire-format adapter, tools-as-stream-producers — **in the Rust server**. Adopters migrating to the Rust server for that surface (kivi-enterprise is the first) discover that the Rust server, while ahead on streaming, is **behind on the data plane**: the Python server's `PostgreSQLStoreBackend` was never ported.
+A normal store is `Relation`. The axon `axonstore` is `Relation` enriched in four orthogonal dimensions, each by JOINING an axon system that already exists:
 
-Migrating to the Rust server today therefore trades "no SSE" for "no data plane". Fase 35 closes the second half so the migration is whole: the Rust server gains the real `axonstore` data plane the Python server already has, and the Rust server becomes the single, complete production surface.
+### Pillar I — Epistemic (the store joins the ESK lattice)
 
-This is the **fourth instance of the same defect class** the project has been systematically closing — a declarable-but-not-wired capability:
+Every tuple in an `axonstore` has an epistemic grade. Data does not enter the world `true` — it enters `Untrusted` (⊥) and is *elevated* by reasoning. This is already how ℰMCP-sourced data (`EpistemicTaint`) and LLM-streamed tokens (`EpistemicGradient`) are treated. The `axonstore` joins that discipline:
 
-- Fase 30–34 — `transport: sse` / algebraic stream effects → wired.
-- v1.29.1 — webhook `compute_signature` documented HMAC-SHA256, was FNV-64 → fixed.
-- v1.20.2 — `Dockerfile.enterprise` fetched the Rust binary then clobbered it → fixed.
-- **Fase 35 — `axonstore { backend: postgresql }` parses but the runtime ignores it → this cycle.**
+- A row produced by `retrieve from S` is born `Untrusted` — a downstream `shield` / `know` / reasoning step must elevate it before it is trusted. A `retrieve` result is NOT a fact; it is a claim.
+- `confidence_floor: f` on the store is enforced: `retrieve` filters or flags tuples whose stored confidence is below `f`.
+- `persist into S` of a value below the store's `confidence_floor`, or of an un-elevated `Untrusted` value, is a typed error — you cannot quietly write doubt into a believed store.
 
-## ▶ 3. The model — `axonstore` IS the table
+No ORM has the concept "this row has a confidence and a trust level". axon does — the store joins it.
 
-The reference (`PostgreSQLStoreBackend`) realizes a clean isomorphism. Fase 35 ports it to the Rust runtime via `sqlx`:
+### Pillar II — Audit-chained by construction (the store joins the Fase 16 / ESK provenance chain)
 
-| `axon` source | Relational denotation | Rust runtime (Fase 35) |
+Every `persist` / `mutate` / `purge` appends a delta to a tamper-evident, **HMAC-Merkle-chained** mutation log. The chain's crypto is the OSS `sha2`/`hmac` path (axon-enterprise overrides with the FIPS-validated + mmap kernel from `axon-csys-enterprise`, per the SPLIT charter — and the C kernels are the "Rust + C" half of the stack).
+
+- The store's complete mutation history is an independently verifiable Merkle sequence — regulatory replay (PCI DSS Req 10, FedRAMP AU-2, 21 CFR Part 11 §11.10, FRE 502) as a *language primitive*, not an event-sourcing framework the adopter bolts on.
+- `on_breach: String` is honored: when chain verification detects tampering, the declared policy fires (`halt` / `quarantine` / `alert`).
+
+The market answer is CDC + audit triggers + an event store, integrated by hand. axon's `axonstore` gives a tamper-evident mutation chain for free.
+
+### Pillar III — `retrieve` is a `Stream<Row>` (the store joins the Fase 34 algebraic-effect surface)
+
+`retrieve from S where φ` is the coinductive selection — a `Stream<Row>` drained through the **same `unified_stream_handler` Fase 34 shipped**. A large result set is not materialized; rows flow with a declared `BackpressurePolicy`, cancel-aware (D5 cancel-into-body).
+
+- A pg-backed `axonstore` is, structurally, a first-class stream producer — unified with `Tool::stream()` and the four streaming-effect disjunctions.
+- `retrieve from huge_table` does not OOM the agent; it streams, exactly like an LLM token stream, through one drain loop.
+
+The market answer is cursors and manual pagination. axon's is the algebraic-effect stream it already has.
+
+### Pillar IV — Capability-typed access (the store joins the trust / capability type system)
+
+`retrieve` / `persist` / `mutate` / `purge` against `S` require the executing flow to hold a capability for `S`. The **type-checker enforces it** — store access is a typed permission, not an app-code `if tenant_id == …` the developer must remember.
+
+- Data isolation (the tenant-isolation audit found it lives entirely in app code) becomes a *language guarantee*: a flow without the capability cannot, by construction, read the store.
+- This joins Fase 32.g auth scopes, Fase 11/13 trust types + capability extrusion.
+
+The market answer is row-level-security policies + app-layer scoping. axon's is a capability type the compiler checks.
+
+## ▶ 3. Why this is the market-surpassing object
+
+| Concern | Industry standard (ORM / query builder) | axon `axonstore` (Fase 35) |
 |---|---|---|
-| `axonstore S { backend: postgresql connection: C }` | the relation `S` reachable at `C` | a `PgPool` keyed by the resolved DSN |
-| `retrieve from S where φ as r` | `r := σ_φ(S)` | `SELECT * FROM "S" WHERE <φ→parameterized>` → rows → JSON-safe value bound to `r` |
-| `persist into S { c1: v1, … }` | `S := S ∪ {(v1,…)}` | `INSERT INTO "S" (c1,…) VALUES ($1,…) RETURNING *` |
-| `mutate S where φ { c: v }` | `S := update_φ(S, c↦v)` | `UPDATE "S" SET c=$1 WHERE <φ→parameterized>` |
-| `purge from S where φ` | `S := S \ σ_φ(S)` | `DELETE FROM "S" WHERE <φ→parameterized>` |
+| A retrieved row is… | a fact | a *claim* — born `Untrusted`, must be elevated (Pillar I) |
+| Mutation history | bolt-on: CDC / triggers / event store | a verifiable HMAC-Merkle chain, by construction (Pillar II) |
+| Large result sets | manual cursors / pagination | a backpressured, cancel-aware `Stream<Row>` (Pillar III) |
+| Access control | RLS policies + app-layer `tenant_id` checks | a capability the type-checker enforces (Pillar IV) |
+| Why others can't copy it | — | they have no epistemic lattice, no algebraic-effect calculus, no audit-chain primitive, no capability types to enrich a relation WITH |
 
-Where `<φ→parameterized>` is the closed-catalog filter compiler: column names regex-validated `[a-zA-Z_]\w*`, operators whitelisted `{=, !=, >, >=, <, <=, LIKE}`, every value bound as `$N` — no user value ever interpolated into the SQL string.
+## ▶ 4. D-letters proposed (D1–D14) — pending founder bloque ratification
 
-## ▶ 4. D-letters proposed (D1–D13) — pending founder bloque ratification
+**The substrate (D1–D7) — the relation must be real before it can be enriched:**
 
-- **D1 — `axonstore { backend: postgresql }` is honored at runtime.** When a flow executes `retrieve` / `persist` / `mutate` / `purge` against a store whose resolved `IRAxonStore.backend == "postgresql"`, the Rust runtime executes real SQL against the declared `connection` — NOT the session/`let_bindings` key-value path.
+- **D1 — `axonstore { backend: postgresql }` honored at runtime.** `retrieve`/`persist`/`mutate`/`purge` against a postgresql-backed store execute real SQL against the declared `connection` — not the key-value path.
 
-- **D2 — Store resolution is a total function over a closed catalog.** Every store-op IR node's `store_name` resolves against `IRProgram.axonstore_specs`. `backend` is the closed catalog `{in_memory, postgresql}` (the implicit default is `in_memory`). A `store_name` that names no `IRAxonStore` AND is not a legacy implicit store, or an `IRAxonStore` with an unknown `backend` slug, surfaces a named error — never a silent KV lookup.
+- **D2 — Store resolution is a total function over a closed catalog.** Every store-op IR node's `store_name` resolves against `IRProgram.axonstore_specs`. `backend ∈ {in_memory, postgresql}` (closed; `in_memory` is the implicit default). Unknown backend or unresolvable store → a named error, never a silent KV lookup.
 
-- **D3 — Zero regression on the key-value path (absolute).** A flow that uses only in-memory / default stores behaves **byte-identically** to pre-35 on BOTH execution paths. The SQL path is entered if and only if a matching `IRAxonStore` has `backend == "postgresql"`. This is kivi's explicit acceptance criterion and is non-negotiable.
+- **D3 — Zero regression on the key-value path (absolute).** A flow using only in-memory/default stores behaves byte-identically to pre-35 on BOTH execution paths. The SQL path is entered iff a matching `IRAxonStore` has `backend == "postgresql"`. kivi's explicit acceptance criterion; non-negotiable.
 
-- **D4 — Every WHERE clause is parameterized — SQL-injection-proof by construction.** The `where "<expr>"` predicate is parsed into a closed-catalog `FilterCondition` AST and rendered with `$1, $2, …` bind placeholders. Column identifiers are regex-validated; operators are whitelist-validated; values are ALWAYS bound parameters. No code path interpolates a user-supplied value into a SQL string. A `where` expression that fails to parse is a named error, not a degraded query.
+- **D4 — Every WHERE clause is parameterized — SQL-injection-proof by construction.** `where "<expr>"` parses into a closed-catalog `FilterCondition` AST (column regex `[a-zA-Z_]\w*`; operators whitelisted `{=,!=,>,>=,<,<=,LIKE}`; values typed) and renders with `$N` bind placeholders. No code path interpolates a user value into SQL.
 
-- **D5 — Cross-stack runtime parity (Python ↔ Rust).** For the same store + operation + where-expression, the Rust backend emits the SAME SQL structure and exhibits the SAME observable behavior as Python's `PostgreSQLStoreBackend`. A shared corpus drift gate locks `build_pg_where` ≡ the Rust filter compiler.
+- **D5 — Both execution paths honored identically.** The sync runner (`runner.rs`) AND the streaming dispatcher (`flow_dispatcher::wire_integrations`) route postgresql-backed ops through the SAME backend. No path divergence — the SSE-gap lesson is not repeated.
 
-- **D6 — Connection resolution: `connection: "env:VAR"` + literal DSN.** `IRAxonStore.connection` with an `env:` prefix resolves the named environment variable at runtime; any other value is treated as a literal DSN. A missing/empty env var surfaces a clear named error identifying the store and the variable — never a panic, never a silent fall-back to the KV path.
+- **D6 — Connection resolution: `connection: "env:VAR"` + literal DSN.** `env:`-prefixed values resolve the named environment variable; other values are literal DSNs. Missing env var → a clear named error, never a panic, never a silent KV fallback.
 
-- **D7 — Both execution paths honored identically.** The sync runner (`runner.rs::execute_server_flow` → `execute_real`) AND the streaming dispatcher (`flow_dispatcher::wire_integrations`) route postgresql-backed store ops through the SAME `PostgresStoreBackend`. No path divergence — the Fase 30–34 lesson (a capability wired in one path and dormant in the other) is not repeated.
+- **D7 — Pooling + honest typed failure surface.** One `sqlx::PgPool` per distinct resolved DSN, lazy, bounded, reused. Every failure (connect, auth, missing table, SQL error, malformed where-expr, type mapping) → a typed named error. No panic; no silent empty result masking a failed query.
 
-- **D8 — Connection pooling + lifecycle.** Exactly one `sqlx::PgPool` is created per distinct resolved DSN, lazily on first use, with bounded min/max connections, and reused across operations within a flow and across flows. Pool acquisition / construction failures surface as typed errors.
+**The four enrichments (D8–D11) — the axon-native object:**
 
-- **D9 — Honest failure surface.** Every failure mode — connection refused, authentication, missing table, SQL error, malformed where-expression, type-mapping failure — surfaces as a typed, named error carrying an adopter-facing diagnostic. No panic. No silent empty result that masks a failed query (an empty `SELECT` result and a failed `SELECT` are distinct observable outcomes).
+- **D8 — Pillar I, Epistemic data plane.** Every tuple from `retrieve` is born `Untrusted` (⊥) in the ESK lattice. `confidence_floor` is enforced at `retrieve` (sub-floor tuples filtered/flagged) and at `persist` (writing an un-elevated or sub-floor value is a typed error). The `axonstore` is a participant in axon's epistemic discipline, not an opaque byte store.
 
-- **D10 — Schema-absence is an honest, documented scope boundary.** `IRAxonStore` carries `backend` + `connection` but NOT the column schema. v1.30.0 therefore operates against **existing** tables — `query` / `insert` / `mutate` / `purge`. It does NOT emit `CREATE TABLE` DDL (`initialize`), `ALTER TABLE` (`migrate`), or `CREATE INDEX`. Those require the column definitions in the IR; extending `IRAxonStore` with the schema + shipping DDL is an explicit follow-on (35.x / Fase 36), documented in the adopter docs as a known boundary — not a silent omission.
+- **D9 — Pillar II, Audit-chained by construction.** Every `persist`/`mutate`/`purge` appends a delta to a tamper-evident HMAC-Merkle mutation chain (OSS `sha2`/`hmac` crypto; enterprise overrides with the FIPS + mmap C kernel). The chain is independently verifiable. `on_breach` is honored on tamper detection. Regulatory replay is a primitive, not a framework.
 
-- **D11 — Transaction discipline (single-statement autocommit in v1.30.0).** Each `retrieve` / `persist` / `mutate` / `purge` runs as one autocommit statement. The Python reference's multi-statement transaction surface (`begin_transaction` / `commit` / `rollback` with linear-logic tokens) binds to a future `transact { … }` block and is out of v1.30.0 scope — documented.
+- **D10 — Pillar III, `retrieve` is a `Stream<Row>`.** Result sets drain through the Fase 34 `unified_stream_handler` with a `BackpressurePolicy`, cancel-aware. A pg-backed `axonstore` is a first-class stream producer, unified with the algebraic-effect surface — large `retrieve` never materializes eagerly.
 
-- **D12 — Production-grade D12 fuzz.** New `axon-rs/tests/fase35_fuzz.rs` (hand-rolled Knuth/MMIX LCG, no external dep): the filter compiler is total + never panics on arbitrary byte input; no input produces an unparameterized value (SQL-injection resistance is a fuzzed invariant, not just a unit test); operator/column closed-catalog rejection is total; store resolution is total.
+- **D11 — Pillar IV, Capability-typed store access.** `retrieve`/`persist`/`mutate`/`purge` against `S` require a capability for `S`, enforced by the type-checker (compile-time) and re-checked at runtime. Data isolation becomes a language guarantee. Joins Fase 32.g auth scopes + Fase 11/13 trust/capability types.
 
-- **D13 — Real-Postgres integration tests (the robustness floor).** Integration tests run `retrieve` / `persist` / `mutate` / `purge` end-to-end against a **real Postgres instance** (a Docker container the test harness spins up, mirroring the `fase33_d` axum-mock-server pattern but for a DB). Real rows, real SQL, real round-trips — not mocks. The implementation is proven against an actual database before it ships.
+**Honest scope + robustness (D12–D14):**
+
+- **D12 — Schema-absence + transaction scope are honest, documented boundaries.** `IRAxonStore` carries no column schema → v1.30.0 operates against existing tables (no `CREATE TABLE`/`migrate`/`CREATE INDEX` DDL — needs an IR schema extension, a documented follow-on). Each op is single-statement autocommit; the multi-statement `transact { … }` block is a documented future fase. Boundaries are stated in the adopter docs, not silently omitted.
+
+- **D13 — Production-grade D12 fuzz.** `axon-rs/tests/fase35_fuzz.rs` (hand-rolled LCG): filter compiler totality + never-panic; SQL-injection-resistance as a fuzzed invariant (no input → unparameterized value); closed-catalog operator/column rejection totality; epistemic-grade assignment totality; audit-chain integrity under arbitrary delta sequences; store-resolution totality.
+
+- **D14 — Real-Postgres integration tests (the robustness floor).** `axon-rs/tests/fase35_*_postgres_integration.rs` exercises all four pillars end-to-end against a REAL Postgres (Docker container spun up by the harness): real rows, real `confidence_floor` filtering, real audit-chain Merkle verification, real `Stream<Row>` backpressure, real capability gating. Not mocks. The implementation is proven against an actual database before it ships.
 
 ## ▶ 5. Sub-fase shape — sequenced execution
 
-Topologically sequenced. 35.a anchors the gap. 35.b–d build the backend bottom-up (filter compiler → SQL backend → store registry). 35.e–f wire the two execution paths. 35.g–i are the robustness gates (fuzz, real-DB integration, cross-stack). 35.j is docs. 35.k is release.
+Substrate first (35.a–f) — the relation must be real before it is enriched. Then the four pillars (35.g–j), each joining an existing axon system. Then the robustness gates (35.k–l), docs (35.m), release (35.n).
 
 | Sub-phase | Scope | LOC target | Status | Description |
 |---|---|---|---|---|
-| **35.a** | Diagnostic anchor + plan ratification | ~350 | ⏳ pending bloque | New `axon-rs/tests/fase35_a_axonstore_gap_diagnostic.rs` capturing the CURRENT behavior as the snapshot baseline: a flow with `axonstore S { backend: postgresql }` + `retrieve from S` routes to the KV path (the pre-35 wire/result shape, pinned). The anchor every 35.b–k sub-fase preserves or deliberately inverts. Founder D1–D13 ratification. |
-| **35.b** | Filter compiler — `where`-expr → parameterized SQL | ~600 | ⏳ pending bloque | New `axon-rs/src/store/filter.rs` — faithful Rust port of `filter_parser.py`: tokenizer + parser → closed-catalog `FilterCondition { column, op, value }` AST → `build_pg_where(expr, param_offset) -> (clause, Vec<SqlValue>)` with `$N` placeholders. Closed operator catalog `{=, !=, >, >=, <, <=, LIKE}`; column regex `[a-zA-Z_]\w*`; typed value parsing (int/float/bool/null/string). Pure, no I/O — exhaustively unit-tested. D4 + D5 anchored here. |
-| **35.c** | `PostgresStoreBackend` — the SQL backend | ~700 | ⏳ pending bloque | New `axon-rs/src/store/postgres_backend.rs` — `PostgresStoreBackend` over `sqlx::PgPool`: `query` (`SELECT * … WHERE`), `insert` (`INSERT … RETURNING *`), `mutate` (`UPDATE … SET … WHERE`), `purge` (`DELETE … WHERE`). `env:`-prefix DSN resolution; lazy bounded pool (D8); pg-row → JSON-safe value mapping (UUID / TIMESTAMPTZ / NUMERIC → JSON-stable strings — pre-empting the exact monkey-patches the kivi adopter reported needing on the Python side); typed `StoreError` surface (D9). |
-| **35.d** | Store registry + backend dispatch | ~400 | ⏳ pending bloque | New `axon-rs/src/store/registry.rs` — `StoreRegistry` built from `IRProgram.axonstore_specs`: resolves `store_name` → `IRAxonStore`; closed-catalog `backend` dispatch (`postgresql` → `PostgresStoreBackend`, `in_memory`/absent → existing KV path); per-DSN `PgPool` cache. D2 + D3 dispatch decision lives here — the single chokepoint that decides SQL-vs-KV. |
-| **35.d.1** | `sqlite` backend (catalog completeness) | ~400 | ⏳ optional bloque | Python ships `sqlite_backend.py`; the closed `backend` catalog is honestly `{in_memory, postgresql, sqlite}`. 35.d.1 ports the sqlite backend so the catalog is complete cross-stack. **Scoping question for ratification:** include in v1.30.0, or defer (catalog stays `{in_memory, postgresql}` for v1.30.0 with sqlite as a documented follow-on)? |
-| **35.e** | Wire into the sync runner | ~450 | ⏳ pending bloque | `runner.rs` — `execute_server_flow` (which has `&IRProgram`) builds the `StoreRegistry` + threads it into `execute_real`; the session-memory interception consults the registry: postgresql store → `PostgresStoreBackend`, else → the current `session.*` path unchanged (D3). |
-| **35.f** | Wire into the streaming dispatcher | ~450 | ⏳ pending bloque | `flow_dispatcher/wire_integrations.rs` — `persist_to_store` / `retrieve_from_store` / `mutate_store` / `purge_from_store` consult the `StoreRegistry` (threaded via `DispatchCtx`); postgresql → SQL, else → the `let_bindings` KV path unchanged (D3 + D7). This is the production hot path (Fase 33.z). |
-| **35.g** | D12 fuzz | ~600 | ⏳ pending bloque | New `axon-rs/tests/fase35_fuzz.rs` — hand-rolled LCG: filter-compiler totality + never-panic on arbitrary input; SQL-injection-resistance invariant (no input → unparameterized value); operator/column closed-catalog rejection totality; store-resolution totality; pg-row → value mapping totality. |
-| **35.h** | Real-Postgres integration tests | ~700 | ⏳ pending bloque | New `axon-rs/tests/fase35_h_postgres_integration.rs` — spins up a real Postgres (Docker container via the test harness), creates fixture tables, runs `retrieve`/`persist`/`mutate`/`purge` end-to-end through the runtime, asserts real rows. The D13 robustness floor. |
-| **35.i** | Cross-stack parity drift gate | ~450 | ⏳ pending bloque | New `axon-rs/tests/fase35_i_cross_stack_filter.rs` + `tests/test_fase35_i_cross_stack_filter.py` — a shared corpus of `(where-expr → expected clause + params)` hardcoded byte-identical in both stacks; drift in Rust `build_pg_where` or Python `build_pg_where` fails both gates. D5. |
-| **35.j** | Adopter docs | ~700 | ⏳ pending | New `docs/ADOPTER_AXONSTORE.md` — the `axonstore` reference: the `backend` catalog, `connection` resolution, the `where` filter grammar, the four operations, the D10/D11 honest scope boundaries (no DDL, single-statement autocommit). New `docs/MIGRATION_v1.30.md` scenario recipes. |
-| **35.k** | Release v1.30.0 cross-stack + axon-enterprise catch-up | release | ⏳ pending | bump-my-version minor 1.29.1 → 1.30.0 across the 6 file entries; axon-frontend version TBD (likely unchanged — Fase 35 is runtime-only unless D10's IR-schema extension lands, which it does not in v1.30.0). crates.io + PyPI + GitHub Release. axon-enterprise catch-up consuming axon-lang 1.30.0. |
+| **35.a** | Diagnostic anchor + four-pillar architecture spec | ~450 | ⏳ pending bloque | `axon-rs/tests/fase35_a_axonstore_gap_diagnostic.rs` pins the CURRENT behavior (pg-store `retrieve` → KV) as the snapshot baseline. The architecture spec for the four enrichments + their join points into ESK / `esk::provenance` / `unified_stream` / `auth_scope`. Founder D1–D14 ratification. |
+| **35.b** | Filter compiler — `where`-expr → parameterized SQL | ~600 | ⏳ pending bloque | New `axon-rs/src/store/filter.rs` — tokenizer + parser → closed-catalog `FilterCondition` AST → `build_pg_where(expr, offset) -> (clause, Vec<SqlValue>)` with `$N` placeholders. Pure, no I/O, exhaustively unit-tested. D4. |
+| **35.c** | `PostgresStoreBackend` — SQL substrate | ~750 | ⏳ pending bloque | New `axon-rs/src/store/postgres_backend.rs` — `query`/`insert`/`mutate`/`purge` over `sqlx::PgPool`; `env:` DSN resolution; lazy bounded pool; pg-row → JSON-safe value mapping (UUID/TIMESTAMPTZ/NUMERIC — pre-empting the kivi-reported Python monkey-patches); typed `StoreError`. D6 + D7. |
+| **35.d** | `StoreRegistry` + closed-catalog dispatch | ~450 | ⏳ pending bloque | New `axon-rs/src/store/registry.rs` — built from `IRProgram.axonstore_specs`; resolves `store_name` → `IRAxonStore`; closed `backend` dispatch (`postgresql` → SQL backend, else → KV path); per-DSN pool cache. D2 + D3 — the single SQL-vs-KV chokepoint. |
+| **35.e** | Wire into the sync runner | ~450 | ⏳ pending bloque | `runner.rs` — `execute_server_flow` builds the `StoreRegistry` + threads it into `execute_real`; the session-memory interception consults it. KV path byte-unchanged (D3). |
+| **35.f** | Wire into the streaming dispatcher | ~450 | ⏳ pending bloque | `flow_dispatcher/wire_integrations.rs` — `persist_to_store`/`retrieve_from_store`/`mutate_store`/`purge_from_store` consult the registry (threaded via `DispatchCtx`). Production hot path. D3 + D5. |
+| **35.g** | **Pillar I — Epistemic data plane** | ~900 | ⏳ pending bloque | New `axon-rs/src/store/epistemic.rs` — `retrieve` tuples born `Untrusted` in the ESK lattice; `confidence_floor` enforced at `retrieve` (filter/flag) + `persist` (sub-floor / un-elevated write → typed error). Joins ESK Fase 6 (`esk/`). D8. |
+| **35.h** | **Pillar II — Audit-chained mutations** | ~1000 | ⏳ pending bloque | New `axon-rs/src/store/audit_chain.rs` — every `persist`/`mutate`/`purge` appends an HMAC-Merkle delta; independent chain verification; `on_breach` policy enforcement. Crypto via `sha2`/`hmac` (OSS) — enterprise overrides with the `axon-csys-enterprise` FIPS + mmap C kernel. D9. |
+| **35.i** | **Pillar III — `retrieve` as `Stream<Row>`** | ~750 | ⏳ pending bloque | New `axon-rs/src/store/row_stream.rs` — `retrieve` produces a `Stream<Row>` drained through the Fase 34 `unified_stream_handler` with a `BackpressurePolicy`, cancel-aware. The pg `axonstore` becomes a first-class stream producer. D10. |
+| **35.j** | **Pillar IV — Capability-typed store access** | ~850 | ⏳ pending bloque | `axon-frontend` type-checker — store access requires a capability (compile-time); `axon-rs` runtime re-check. Joins Fase 32.g `auth_scope` + Fase 11/13 trust/capability types. D11. |
+| **35.k** | D12 fuzz | ~700 | ⏳ pending bloque | `axon-rs/tests/fase35_fuzz.rs` — hand-rolled LCG: filter totality + SQL-injection-resistance invariant + closed-catalog rejection + epistemic-grade totality + audit-chain integrity + resolution totality. D13. |
+| **35.l** | Real-Postgres integration tests | ~900 | ⏳ pending bloque | `axon-rs/tests/fase35_l_postgres_integration.rs` — a real Postgres (Docker container); all four pillars exercised end-to-end: real rows, real `confidence_floor` filter, real Merkle verification, real `Stream<Row>` backpressure, real capability gate. D14. |
+| **35.m** | Adopter docs | ~800 | ⏳ pending | New `docs/ADOPTER_AXONSTORE.md` — the cognitive data plane reference: the four pillars, the `backend`/`connection` catalog, the `where` grammar, the D12 honest scope boundaries. New `docs/MIGRATION_v1.30.md`. |
+| **35.n** | Release v1.30.0 cross-stack + axon-enterprise catch-up | release | ⏳ pending | bump-my-version minor 1.29.1 → 1.30.0; crates.io + PyPI + GitHub Release; axon-enterprise catch-up (inherits the base; the enterprise Pillar-II crypto override ships in the enterprise vertical track). |
 
-**Total target: ~6 200 LOC + the real-Postgres integration harness + the cross-stack drift gate + D12 fuzz. Cross-stack Python+Rust. D3 zero-regression absolute.**
+**Total target: ~10 000 LOC + the real-Postgres integration harness + D12 fuzz. Built Rust-canonical (the strategic direction — 0 Python). D3 zero-regression absolute.**
 
 ## ▶ 6. Open scoping questions for the ratification bloque
 
-1. **`sqlite` backend (35.d.1)** — in v1.30.0, or deferred? Python ships it; including it makes the `backend` catalog complete cross-stack. Deferring keeps v1.30.0 tighter (`{in_memory, postgresql}`).
-2. **DDL / schema (D10)** — confirmed out of v1.30.0 (the IR has no schema). The follow-on that extends `IRAxonStore` with the column schema + ships `CREATE TABLE` — Fase 36, or a 35.x within this cycle?
-3. **`transact { … }` block (D11)** — confirmed out of v1.30.0. The multi-statement transaction surface is a future fase.
-4. **Value model** — `retrieve … as r` binds `r`. The runtime's binding values are strings; rows serialize to JSON. Confirm: a multi-row `SELECT` binds a JSON array; a single-row, a JSON object — or always an array? (Python `query` always returns a list.)
+1. **Pillar sequencing.** All four pillars (35.g–j) in v1.30.0 — or substrate + a subset in v1.30.0, the rest in v1.30.x? Recommendation: all four — the substrate alone is the "industry-standard" version the founder explicitly rejected; the pillars ARE Fase 35.
+2. **`confidence_floor` storage (Pillar I).** A row's stored confidence — a reserved `_confidence` column convention, or a sidecar metadata table? Affects the schema contract with the adopter's existing tables.
+3. **Audit-chain storage (Pillar II).** The Merkle chain — a sidecar table in the same Postgres, or the existing `audit_trail` store? And: is `on_breach` a closed catalog `{halt, quarantine, alert}`?
+4. **Capability grammar (Pillar IV).** Does the store capability reuse the Fase 32.g `requires: [slug]` grammar, or a new `axonstore S { capability: <slug> }` field on the declaration?
+5. **`sqlite` backend.** Python ships `sqlite_backend.py`. Include a Rust `sqlite` backend in the closed catalog for v1.30.0, or keep `{in_memory, postgresql}` and add sqlite later?
 
 ---
 
-*This plan vivo is the Fase 35 source of truth. Sub-fase status flips ⏳ → ✅ SHIPPED at landing. D-letter text is frozen on founder bloque ratification.*
+*This plan vivo is the Fase 35 source of truth. Built Rust-canonical per the 0-Python strategic direction. Sub-fase status flips ⏳ → ✅ SHIPPED at landing. D-letter text is frozen on founder bloque ratification.*
