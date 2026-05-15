@@ -332,6 +332,11 @@ fn dispatcher_module_files_pinned_to_expected_set() {
         "parallel.rs",
         "pix.rs",
         "pure_shape.rs",
+        // §Fase 34.g — added with the 4-disjunction convergence:
+        // `unified_stream_handler` lives here as the single drain
+        // loop both disjunct (b) (Tool::stream) + disjunct (d)
+        // (bridge_effect_stream_yield_unified) route through.
+        "unified_stream.rs",
         "wire_integrations.rs",
     ];
 
@@ -342,9 +347,11 @@ fn dispatcher_module_files_pinned_to_expected_set() {
             .map(|s| s.to_string())
             .collect::<Vec<String>>(),
         "33.y.l parity gate: flow_dispatcher module file set drifted. \
-         Expected 10 files (one per sub-fase 33.y.c–j plus mod.rs); \
-         got {:?}. Adding a new sub-module requires updating this \
-         expected list + adding the corresponding `pub mod` in mod.rs.",
+         Expected 11 files (10 per sub-fase 33.y.c–j plus mod.rs, \
+         plus unified_stream.rs added by Fase 34.g for the \
+         4-disjunction convergence); got {:?}. Adding a new \
+         sub-module requires updating this expected list + adding \
+         the corresponding `pub mod` in mod.rs.",
         found
     );
 }

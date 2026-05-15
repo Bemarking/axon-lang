@@ -250,6 +250,131 @@ pub async fn bridge_effect_stream_yield(
     Ok(result)
 }
 
+// ════════════════════════════════════════════════════════════════════
+//  §Fase 34.g — bridge_effect_stream_yield_unified
+// ════════════════════════════════════════════════════════════════════
+
+/// **34.g convergence variant** of [`bridge_effect_stream_yield`].
+///
+/// Pre-34.g the algebraic-effect bridge (disjunct **d**) had a
+/// divergent drain path: it pre-scanned the IR for `Stream.Yield`
+/// nodes + emitted `FlowExecutionEvent::StepToken` directly, without
+/// any backpressure-policy involvement. Disjunct (b) (Tool::stream)
+/// captured a policy slug in the audit row but didn't enforce it
+/// either (chunks_dropped/degraded were always 0 per 34.d honest
+/// scope). 34.g closes the gap by routing both through the same
+/// [`crate::flow_dispatcher::unified_stream::unified_stream_handler`].
+///
+/// This function:
+///
+/// 1. Runs the same static `Stream.Yield` scan as
+///    [`bridge_effect_stream_yield`].
+/// 2. Materializes each resolved value as a [`ToolChunk`].
+/// 3. Wraps the resulting `Vec<ToolChunk>` as a [`ToolStream`] via
+///    [`crate::flow_dispatcher::unified_stream::unified_stream_from_chunks`].
+/// 4. Invokes [`crate::flow_dispatcher::unified_stream::unified_stream_handler`]
+///    with the supplied `policy` (typically `None` for static-scan
+///    yields, but adopters may declare a policy at the
+///    `IRStreamBlock` level when 33.y.e.2 lands runtime hooks).
+/// 5. Runs the `EffectRuntime` post-emission (same shape as the
+///    legacy function — the static scan precedes runtime execution
+///    by design).
+/// 6. Populates the [`crate::axonendpoint_replay::StepAuditRecord`]
+///    with the unified handler's summary (real
+///    `chunks_dropped`/`chunks_degraded` counters when a policy is
+///    declared).
+///
+/// **Honest scope:** when `policy` is `None` the unified handler
+/// drains directly + chunks_dropped/degraded stay 0. The wire shape
+/// is byte-equal to [`bridge_effect_stream_yield`]'s emission for
+/// the canonical adopter pattern. Adopters who want enforcement
+/// counters on Yield streams pass `Some(policy)` explicitly.
+pub async fn bridge_effect_stream_yield_unified(
+    instructions: &[Instruction],
+    runtime: &mut EffectRuntime,
+    step_name: &str,
+    policy: Option<crate::stream_effect::BackpressurePolicy>,
+    ctx: &mut DispatchCtx,
+) -> Result<ExecutionResult, DispatchError> {
+    use crate::tool_trait::{ToolChunk, ToolFinishReason};
+
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+
+    // §1 — Static Yield scan (same as legacy function).
+    let yields = scan_stream_yields(instructions);
+
+    // §2 — Resolve + materialize as ToolChunks. Each Yield's
+    // resolved value becomes one intermediate chunk; the sequence
+    // closes with a Stop terminator so the unified handler treats
+    // it as a complete stream.
+    let mut tool_chunks: Vec<ToolChunk> =
+        Vec::with_capacity(yields.len().saturating_add(1));
+    for perf in &yields {
+        let resolved_value = resolve_first_argument(perf, runtime);
+        let wire_content = value_to_wire_string(&resolved_value);
+        // Mirror the legacy behavior: empty deltas still produce a
+        // chunk slot (the unified handler skips empty-delta wire
+        // emission internally per D4 byte-compat) — keeps the
+        // tokens_emitted count semantically aligned.
+        tool_chunks.push(ToolChunk::intermediate(wire_content));
+    }
+    tool_chunks.push(ToolChunk::terminator("", ToolFinishReason::Stop));
+
+    // §3 — Route through the unified handler.
+    let source = crate::flow_dispatcher::unified_stream::unified_stream_from_chunks(tool_chunks);
+    let summary = crate::flow_dispatcher::unified_stream::unified_stream_handler(
+        source,
+        policy,
+        &ctx.cancel,
+        &ctx.tx,
+        step_name,
+    )
+    .await?;
+
+    if summary.cancelled && ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+
+    // §4 — Run the EffectRuntime to completion (mirrors the legacy
+    // function — the wire emission precedes runtime execution by
+    // design until 33.y.e.2 ships per-Yield runtime hooks).
+    let result = runtime
+        .run(instructions)
+        .map_err(|e| DispatchError::BackendError {
+            name: "algebraic_effects".to_string(),
+            message: format!("{e:?}"),
+        })?;
+
+    // §5 — Audit row. 34.g activates the policy-enforcement
+    // counters when a policy is declared.
+    {
+        let record = crate::axonendpoint_replay::StepAuditRecord {
+            step_name: step_name.to_string(),
+            step_index: ctx.step_counter,
+            success: summary.success,
+            tokens_emitted: summary.tokens_emitted,
+            output_hash_hex: summary.output_hash_hex,
+            effect_policy_applied: policy.map(|p| p.slug().to_string()),
+            chunks_dropped: summary.chunks_dropped,
+            chunks_degraded: summary.chunks_degraded,
+            timestamp_ms: now_ms(),
+        };
+        let mut guard = ctx.step_audit_records.lock().await;
+        guard.push(record);
+    }
+
+    if let Some(message) = summary.terminator_message {
+        return Err(DispatchError::BackendError {
+            name: "algebraic_effects".to_string(),
+            message,
+        });
+    }
+
+    Ok(result)
+}
+
 // ────────────────────────────────────────────────────────────────────
 //  Internals
 // ────────────────────────────────────────────────────────────────────
