@@ -87,7 +87,7 @@ vía `axon_frontend::`.
 ## Layout propuesto (Opción P1)
 
 ```
-axxon-constructor/
+axon-lang/
 ├── axon/                         # Python reference (sin cambios)
 ├── axon-rs/                      # Rust runtime (depende de axon-frontend)
 │   ├── Cargo.toml                # [dependencies] axon-frontend = { path = "../axon-frontend" }
@@ -121,7 +121,7 @@ axxon-constructor/
 ```
 
 **Por qué P1 y no un workspace `crates/` unificado:**
-- Preserva el shape Python+Rust del repo (axxon-constructor es
+- Preserva el shape Python+Rust del repo (axon-lang es
   multi-lenguaje, no un puro Cargo workspace).
 - Cambia 2 `Cargo.toml` y 9 archivos fuente reubicados — vs. decenas
   de paths en CI, Dockerfiles, scripts si migramos a `crates/`.
@@ -386,7 +386,7 @@ invariante ejecutable en CI, no un comentario en un doc.
 - `git tag v1.4.1 && git push origin v1.4.1` → CI de release verde.
 - Binarios publicados en GitHub Releases.
 - `axon-lsp` repo actualiza su `Cargo.toml` para consumir
-  `axon-frontend` vía path (`../axxon-constructor/axon-frontend`) o
+  `axon-frontend` vía path (`../axon-lang/axon-frontend`) o
   via registry (si 6 completado).
 
 **CHECK:** `axon-lsp v0.1.0 sub-fase 0.b` puede arrancar con

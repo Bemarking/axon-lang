@@ -26,7 +26,7 @@ depends_on: Fase 4 (session types) DONE · Fase 12 (workspace refactor) DONE · 
 
 ## 2. Regla de pureza (hereda de Fase 11/12)
 
-Axon es lenguaje, no adoptante. Este plan vive en `axxon-constructor` porque afecta `axon/` (Python reference) y `axon-frontend/` + `axon-rs/` (Rust parity). El código del lenguaje permanece adopter-agnóstico: cero mención de Kivi, Stripe, Whisper o cualquier cliente. Las primitivas son genéricas (`Channel<Msg>`, `Capability<c>`, `publish`). Las integraciones concretas viven en adopters.
+Axon es lenguaje, no adoptante. Este plan vive en `axon-lang` porque afecta `axon/` (Python reference) y `axon-frontend/` + `axon-rs/` (Rust parity). El código del lenguaje permanece adopter-agnóstico: cero mención de Kivi, Stripe, Whisper o cualquier cliente. Las primitivas son genéricas (`Channel<Msg>`, `Capability<c>`, `publish`). Las integraciones concretas viven en adopters.
 
 ---
 
