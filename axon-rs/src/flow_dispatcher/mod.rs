@@ -276,6 +276,16 @@ pub struct DispatchCtx {
     /// the registry yet see no behavior change. Arc-shared for
     /// concurrent dispatch (Fase 33.y.e parity).
     pub tool_registry: Option<std::sync::Arc<crate::tool_registry::ToolRegistry>>,
+    /// §Fase 35.f (v1.30.0) — axonstore registry for SQL-vs-KV
+    /// dispatch. When `Some(registry)`, `run_persist` / `run_retrieve`
+    /// / `run_mutate` / `run_purge` resolve `store_name` against it: a
+    /// `postgresql`-backed store routes through `PostgresStoreBackend`,
+    /// every other (and every undeclared) store takes the byte-
+    /// identical key-value path. When `None` (the `DispatchCtx::new`
+    /// default), every store op is key-value — the pre-35 behavior,
+    /// unchanged (D3). Arc-shared so concurrent branches share one
+    /// per-DSN pool cache.
+    pub store_registry: Option<std::sync::Arc<crate::store::registry::StoreRegistry>>,
 }
 
 impl DispatchCtx {
@@ -309,7 +319,20 @@ impl DispatchCtx {
             let_bindings: std::collections::HashMap::new(),
             pending_effect_policy: None,
             tool_registry: None,
+            store_registry: None,
         }
+    }
+
+    /// §Fase 35.f — Builder: attach the `axonstore` registry so the
+    /// wire-integration store handlers route postgresql-backed stores
+    /// to SQL. Without it, every store op stays key-value (D3).
+    /// Returns `self` so builders chain.
+    pub fn with_store_registry(
+        mut self,
+        registry: std::sync::Arc<crate::store::registry::StoreRegistry>,
+    ) -> Self {
+        self.store_registry = Some(registry);
+        self
     }
 
     /// §Fase 34.d — Builder: attach a tool registry so the

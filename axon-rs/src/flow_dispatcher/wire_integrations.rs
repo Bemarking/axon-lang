@@ -47,6 +47,9 @@ use crate::ir_nodes::{
     IRConsensusBlock, IRDeliberateBlock, IRDiscover, IREmit, IRMutateStep,
     IRPersistStep, IRPublish, IRPurgeStep, IRRetrieveStep, IRTransactBlock,
 };
+use crate::store::filter::SqlValue;
+use crate::store::postgres_backend::{PostgresStoreBackend, StoreError};
+use crate::store::registry::StoreHandle;
 
 // ────────────────────────────────────────────────────────────────────
 //  Public helpers (enterprise hooks override these)
@@ -162,6 +165,64 @@ pub fn purge_from_store(
         1
     } else {
         0
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  §Fase 35.f — axonstore SQL routing
+// ────────────────────────────────────────────────────────────────────
+//
+// `run_persist`/`run_retrieve`/`run_mutate`/`run_purge` consult the
+// `DispatchCtx`'s `store_registry` (Fase 35.d). A `postgresql`-backed
+// store routes through `PostgresStoreBackend`; every other store —
+// and every store when no registry is attached — takes the byte-
+// identical key-value path above (D3, absolute). D5: this is the SAME
+// `PostgresStoreBackend` the sync runner uses (35.e), so the two
+// execution paths never diverge.
+
+/// Resolve a store name to its Postgres backend, if it routes to SQL.
+///
+/// - `Ok(None)` — the key-value path: no registry attached, or the
+///   store is `in_memory` / undeclared.
+/// - `Ok(Some(backend))` — the SQL path.
+/// - `Err(StoreError)` — a declared `postgresql` store whose
+///   connection could not be resolved. D2 — surfaced loudly, NEVER a
+///   silent fallback to the key-value store.
+fn resolve_pg_backend(
+    ctx: &DispatchCtx,
+    store_name: &str,
+) -> Result<Option<PostgresStoreBackend>, StoreError> {
+    let Some(registry) = ctx.store_registry.as_ref() else {
+        return Ok(None);
+    };
+    match registry.resolve(store_name)? {
+        StoreHandle::InMemory => Ok(None),
+        StoreHandle::Postgres(backend) => Ok(Some(backend)),
+    }
+}
+
+/// Build the row a `persist`/`mutate` writes — every user-level
+/// let-binding (the `__`-prefixed namespace keys are runtime
+/// bookkeeping) as a text column, sorted by name for deterministic
+/// SQL. Mirrors `persist_to_store`'s snapshot discipline.
+fn sql_row_from_bindings(ctx: &DispatchCtx) -> Vec<(String, SqlValue)> {
+    let mut row: Vec<(String, SqlValue)> = ctx
+        .let_bindings
+        .iter()
+        .filter(|(k, _)| !k.starts_with("__"))
+        .map(|(k, v)| (k.clone(), SqlValue::Text(v.clone())))
+        .collect();
+    row.sort_by(|a, b| a.0.cmp(&b.0));
+    row
+}
+
+/// Map a [`StoreError`] to a [`DispatchError`] so a failed SQL store
+/// op surfaces as a structured `axon.error` event — never a panic,
+/// never a silent empty result.
+fn sql_dispatch_error(e: StoreError) -> DispatchError {
+    DispatchError::BackendError {
+        name: "axonstore".to_string(),
+        message: e.to_string(),
     }
 }
 
@@ -299,8 +360,21 @@ pub async fn run_persist(
     };
     emit_step_start(ctx, &step_name, step_index, "persist")?;
 
-    let count = persist_to_store(&node.store_name, ctx);
-    let output = format!("persisted {count} entries to `{}`", node.store_name);
+    let output = match resolve_pg_backend(ctx, &node.store_name) {
+        Ok(Some(backend)) => {
+            let row = sql_row_from_bindings(ctx);
+            let n = backend
+                .insert(&node.store_name, &row)
+                .await
+                .map_err(sql_dispatch_error)?;
+            format!("persisted {n} row(s) to `{}`", node.store_name)
+        }
+        Ok(None) => {
+            let count = persist_to_store(&node.store_name, ctx);
+            format!("persisted {count} entries to `{}`", node.store_name)
+        }
+        Err(e) => return Err(sql_dispatch_error(e)),
+    };
 
     emit_step_complete(ctx, &step_name, step_index, &output, 0)?;
 
@@ -334,7 +408,19 @@ pub async fn run_retrieve(
     };
     emit_step_start(ctx, &step_name, step_index, "retrieve")?;
 
-    let value = retrieve_from_store(&node.store_name, &node.where_expr, ctx);
+    let value = match resolve_pg_backend(ctx, &node.store_name) {
+        Ok(Some(backend)) => {
+            let rows = backend
+                .query(&node.store_name, &node.where_expr)
+                .await
+                .map_err(sql_dispatch_error)?;
+            let arr: Vec<serde_json::Value> =
+                rows.iter().map(|r| r.to_json()).collect();
+            serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string())
+        }
+        Ok(None) => retrieve_from_store(&node.store_name, &node.where_expr, ctx),
+        Err(e) => return Err(sql_dispatch_error(e)),
+    };
     if !node.alias.is_empty() {
         ctx.let_bindings.insert(node.alias.clone(), value.clone());
     }
@@ -370,8 +456,21 @@ pub async fn run_mutate(
     };
     emit_step_start(ctx, &step_name, step_index, "mutate")?;
 
-    let count = mutate_store(&node.store_name, &node.where_expr, ctx);
-    let output = format!("mutated {count} entries in `{}`", node.store_name);
+    let output = match resolve_pg_backend(ctx, &node.store_name) {
+        Ok(Some(backend)) => {
+            let row = sql_row_from_bindings(ctx);
+            let n = backend
+                .mutate(&node.store_name, &node.where_expr, &row)
+                .await
+                .map_err(sql_dispatch_error)?;
+            format!("mutated {n} row(s) in `{}`", node.store_name)
+        }
+        Ok(None) => {
+            let count = mutate_store(&node.store_name, &node.where_expr, ctx);
+            format!("mutated {count} entries in `{}`", node.store_name)
+        }
+        Err(e) => return Err(sql_dispatch_error(e)),
+    };
 
     emit_step_complete(ctx, &step_name, step_index, &output, 0)?;
 
@@ -404,8 +503,20 @@ pub async fn run_purge(
     };
     emit_step_start(ctx, &step_name, step_index, "purge")?;
 
-    let count = purge_from_store(&node.store_name, &node.where_expr, ctx);
-    let output = format!("purged {count} entries from `{}`", node.store_name);
+    let output = match resolve_pg_backend(ctx, &node.store_name) {
+        Ok(Some(backend)) => {
+            let n = backend
+                .purge(&node.store_name, &node.where_expr)
+                .await
+                .map_err(sql_dispatch_error)?;
+            format!("purged {n} row(s) from `{}`", node.store_name)
+        }
+        Ok(None) => {
+            let count = purge_from_store(&node.store_name, &node.where_expr, ctx);
+            format!("purged {count} entries from `{}`", node.store_name)
+        }
+        Err(e) => return Err(sql_dispatch_error(e)),
+    };
 
     emit_step_complete(ctx, &step_name, step_index, &output, 0)?;
 
@@ -985,5 +1096,142 @@ mod tests {
             source_column: 0,
         };
         assert!(matches!(run_consensus(&consensus, &mut ctx).await, Err(DispatchError::UpstreamCancelled)));
+    }
+
+    // ── §Fase 35.f — axonstore SQL routing ──────────────────────────
+
+    fn axonstore(name: &str, backend: &str, connection: &str) -> IRAxonStore {
+        IRAxonStore {
+            node_type: "axonstore",
+            source_line: 0,
+            source_column: 0,
+            name: name.to_string(),
+            backend: backend.to_string(),
+            connection: connection.to_string(),
+            confidence_floor: None,
+            isolation: String::new(),
+            on_breach: String::new(),
+        }
+    }
+
+    fn ctx_with_registry(
+        specs: &[IRAxonStore],
+    ) -> (DispatchCtx, mpsc::UnboundedReceiver<FlowExecutionEvent>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let registry = crate::store::registry::StoreRegistry::build(specs).unwrap();
+        let ctx = DispatchCtx::new("TestFlow", "stub", "", CancellationFlag::new(), tx)
+            .with_store_registry(std::sync::Arc::new(registry));
+        (ctx, rx)
+    }
+
+    #[test]
+    fn resolve_pg_backend_no_registry_is_kv() {
+        // No registry attached (the DispatchCtx::new default) → every
+        // store op is key-value (D3 — pre-35 behavior unchanged).
+        let (ctx, _rx) = fresh_ctx();
+        assert!(resolve_pg_backend(&ctx, "anything").unwrap().is_none());
+    }
+
+    #[test]
+    fn resolve_pg_backend_in_memory_store_is_kv() {
+        let (ctx, _rx) = ctx_with_registry(&[axonstore("cache", "in_memory", "")]);
+        assert!(resolve_pg_backend(&ctx, "cache").unwrap().is_none());
+        // An undeclared store also takes the key-value path.
+        assert!(resolve_pg_backend(&ctx, "undeclared").unwrap().is_none());
+    }
+
+    #[test]
+    fn resolve_pg_backend_missing_env_var_errors_not_kv_fallback() {
+        // D2 — a declared postgresql store whose env var is unset MUST
+        // surface a typed error, never degrade silently to KV.
+        let (ctx, _rx) = ctx_with_registry(&[axonstore(
+            "tenants",
+            "postgresql",
+            "env:AXON_NONEXISTENT_VAR_FASE35F",
+        )]);
+        assert!(matches!(
+            resolve_pg_backend(&ctx, "tenants"),
+            Err(StoreError::MissingEnvVar { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_retrieve_postgresql_missing_env_surfaces_backend_error() {
+        // The SQL path is reached and fails honestly through the
+        // dispatcher — a structured DispatchError, never a silent
+        // empty KV result.
+        let (mut ctx, _rx) = ctx_with_registry(&[axonstore(
+            "tenants",
+            "postgresql",
+            "env:AXON_NONEXISTENT_VAR_FASE35F",
+        )]);
+        let node = IRRetrieveStep {
+            node_type: "retrieve",
+            source_line: 0,
+            source_column: 0,
+            store_name: "tenants".into(),
+            where_expr: "id = 1".into(),
+            alias: "found".into(),
+        };
+        assert!(matches!(
+            run_retrieve(&node, &mut ctx).await,
+            Err(DispatchError::BackendError { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_persist_postgresql_malformed_dsn_surfaces_backend_error() {
+        let (mut ctx, _rx) =
+            ctx_with_registry(&[axonstore("events", "postgresql", "not a dsn")]);
+        ctx.let_bindings.insert("kind".into(), "login".into());
+        let node = IRPersistStep {
+            node_type: "persist",
+            source_line: 0,
+            source_column: 0,
+            store_name: "events".into(),
+        };
+        assert!(matches!(
+            run_persist(&node, &mut ctx).await,
+            Err(DispatchError::BackendError { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_persist_in_memory_store_keeps_byte_identical_kv_path() {
+        // D3 — a registry IS attached but the store is in_memory, so
+        // the key-value path runs: output shape says "entries" (not
+        // "row(s)") and the namespaced `__store_` key is written.
+        let (mut ctx, _rx) = ctx_with_registry(&[axonstore("cache", "in_memory", "")]);
+        ctx.let_bindings.insert("k".into(), "v".into());
+        let node = IRPersistStep {
+            node_type: "persist",
+            source_line: 0,
+            source_column: 0,
+            store_name: "cache".into(),
+        };
+        match run_persist(&node, &mut ctx).await.unwrap() {
+            NodeOutcome::Completed { output, .. } => {
+                assert!(output.contains("entries"), "KV path output shape");
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        assert_eq!(ctx.let_bindings.get("__store_cache_k").unwrap(), "v");
+    }
+
+    #[test]
+    fn sql_row_from_bindings_excludes_namespace_keys_and_sorts() {
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert("name".into(), "Alice".into());
+        ctx.let_bindings.insert("id".into(), "7".into());
+        ctx.let_bindings
+            .insert("__store_internal".into(), "bookkeeping".into());
+        let row = sql_row_from_bindings(&ctx);
+        assert_eq!(
+            row,
+            vec![
+                ("id".to_string(), SqlValue::Text("7".to_string())),
+                ("name".to_string(), SqlValue::Text("Alice".to_string())),
+            ]
+        );
     }
 }
