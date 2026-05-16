@@ -144,6 +144,7 @@ async fn fuzz_persist_never_panics() {
         }
         let node = IRFlowNode::Persist(IRPersistStep {
             node_type: "persist",
+            fields: Vec::new(),
             source_line: 0,
             source_column: 0,
             store_name: lcg.ascii_with_random_len(15),
@@ -284,6 +285,7 @@ async fn fuzz_cancel_propagation_across_wire_handlers() {
             }),
             3 => IRFlowNode::Persist(IRPersistStep {
                 node_type: "persist",
+            fields: Vec::new(),
                 source_line: 0,
                 source_column: 0,
                 store_name: "s".into(),
@@ -372,6 +374,7 @@ async fn fuzz_wire_handlers_nested_inside_orchestration() {
             }),
             3 => IRFlowNode::Persist(IRPersistStep {
                 node_type: "persist",
+            fields: Vec::new(),
                 source_line: 0,
                 source_column: 0,
                 store_name: format!("s_{iter}"),

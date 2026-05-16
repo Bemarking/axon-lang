@@ -133,18 +133,66 @@ operates on the table `tenants`.
 
 | Operation | Syntax | SQL |
 |---|---|---|
-| **persist** | `persist <store>` | `INSERT` — writes the flow's bindings as a row |
+| **persist** | `persist [into] <store> { col: value … }` | `INSERT` — writes exactly the declared columns |
 | **retrieve** | `retrieve <store> { where: "<expr>" as: <alias> }` | `SELECT * … WHERE <expr>` |
 | **mutate** | `mutate <store> { where: "<expr>" }` | `UPDATE … SET … WHERE <expr>` |
 | **purge** | `purge <store> { where: "<expr>" }` | `DELETE … WHERE <expr>` |
 
-- **`persist`** and **`mutate`** write the flow's user bindings (`let`
-  bindings + step results) as the row / `SET` columns. Each binding
-  name is a column; the target table must carry those columns.
+- **`persist`** (v1.31.0+) takes a `{ col: value }` field block —
+  the `INSERT` writes **exactly** the declared columns, with each
+  value expression interpolated against the flow context (see
+  [§4.1](#41-the-persist-field-block-v1310)). The optional `into`
+  connector reads as documentation: `persist into chat { … }` ≡
+  `persist chat { … }`.
+- **`mutate`** writes the flow's user bindings (`let` bindings + step
+  results) as the `SET` columns; each binding name is a column.
 - **`retrieve`** binds its result under the `as:` alias.
 - A `mutate` / `purge` **without** a `{ where: }` block operates on the
   **whole store** (the runtime renders `WHERE TRUE`). Always write a
   `where:` clause unless you mean *every row*.
+
+---
+
+## 4.1 The `persist` field block (v1.31.0+)
+
+A `persist` step declares the columns it writes as a `{ col: value }`
+block:
+
+```axon
+flow ChatFlow(message, session_id, tenant_id, channel_kind) -> Unit {
+    step GenerateResponse { ask: "reply to ${message}" }
+    persist into chat_history {
+        session_id: "${session_id}"
+        sender:     "user"
+        content:    "${message}"
+        tenant_id:  "${tenant_id}"
+    }
+}
+```
+
+This compiles to `INSERT INTO chat_history (session_id, sender,
+content, tenant_id) VALUES ($1, $2, $3, $4)` — **exactly** the four
+declared columns. Every other binding the flow holds (`channel_kind`,
+the `GenerateResponse` step result, …) is ignored.
+
+- **Interpolation is `${name}` / `$name`** — the same syntax used
+  everywhere else in axon. `"${session_id}"` substitutes the flow
+  binding `session_id`. A literal value (`sender: "user"`) needs no
+  `$`. (Note: `{{double-brace}}` is **not** axon interpolation — it is
+  left literal.)
+- **Column names** are the keys of the block; they must exist on the
+  target table (v1.31.0 has no DDL — see [§12](#12-honest-scope-boundaries-v1300)).
+- **No block ⇒ the v1.30.0 fallback.** A bare `persist <store>` (no
+  `{ }`) still writes every user binding as a row — backward-compatible,
+  but it fails against any table whose columns do not exactly match the
+  flow's bindings. **Always declare a field block for a real table.**
+- The `in_memory` backend snapshots flow state as key-value entries and
+  is unaffected by the field block (it has no columns).
+
+> Before v1.31.0 the `persist` block was parsed but **silently
+> dropped**; the runtime wrote every binding, so `INSERT` failed on any
+> flow with more bindings than the table has columns. v1.31.0 closes
+> that gap — see [`docs/MIGRATION_v1.31.md`](MIGRATION_v1.31.md).
 
 ---
 
@@ -412,7 +460,7 @@ silently omitted:
 | `axonstore registry: unknown backend 'sqlite'` | `sqlite`/`mysql` are not in the v1.30.0 catalog. Use `postgresql` or `in_memory`. |
 | `environment variable 'X' is not set` | `connection: "env:X"` and `X` is unset. Export it; never falls back to KV. |
 | `unsafe table identifier` / `unsafe column identifier` | A table or binding name is not `[A-Za-z_]\w*` / ≤ 63 bytes. |
-| `column 'X' does not exist` (from Postgres) | A `persist`/`mutate` binding has no matching column. v1.30.0 operates against existing tables — add the column. |
+| `column 'X' does not exist` (from Postgres) | A `persist`/`mutate` is writing a binding that is not a table column. For `persist`, declare a `{ col: value }` field block (v1.31.0+, [§4.1](#41-the-persist-field-block-v1310)) so the `INSERT` is scoped to exactly the columns you name. v1.30.0 operates against existing tables — the columns must already exist. |
 | `persist … blocked: un-elevated write` | A `confidence_floor` store received a `persist` with no `_confidence`. Bind a `_confidence` ≥ the floor. |
 | Endpoint fails `axon check` with "requiring capability" | A flow touches a `capability`-gated store; add the capability to the endpoint's `requires:`. |
 | `column 'X' has Postgres type 'Y', outside the v1.30.0 supported catalog` | See [§12](#12-honest-scope-boundaries-v1300) for the supported type catalog. |

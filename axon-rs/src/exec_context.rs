@@ -74,51 +74,11 @@ impl ExecContext {
     /// Interpolate variables in a string.
     ///
     /// Replaces `${name}` and `$name` with their values from the context.
-    /// Unknown variables are left as-is.
+    /// Unknown variables are left as-is. Delegates to the free
+    /// [`interpolate_vars`] so the streaming dispatcher interpolates
+    /// `persist` field values with byte-identical semantics (D5).
     pub fn interpolate(&self, text: &str) -> String {
-        let bytes = text.as_bytes();
-        let mut out = String::with_capacity(text.len());
-        let mut i = 0;
-
-        while i < bytes.len() {
-            if bytes[i] == b'$' && i + 1 < bytes.len() {
-                if bytes[i + 1] == b'{' {
-                    // ${name} form
-                    if let Some(close) = text[i + 2..].find('}') {
-                        let var_name = &text[i + 2..i + 2 + close];
-                        if let Some(val) = self.vars.get(var_name) {
-                            out.push_str(val);
-                        } else {
-                            // Unknown variable — keep literal
-                            out.push_str(&text[i..i + 3 + close]);
-                        }
-                        i += 3 + close;
-                        continue;
-                    }
-                } else if bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_' {
-                    // $name form — consume alphanumeric + underscore
-                    let start = i + 1;
-                    let mut end = start;
-                    while end < bytes.len()
-                        && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
-                    {
-                        end += 1;
-                    }
-                    let var_name = &text[start..end];
-                    if let Some(val) = self.vars.get(var_name) {
-                        out.push_str(val);
-                    } else {
-                        out.push_str(&text[i..end]);
-                    }
-                    i = end;
-                    continue;
-                }
-            }
-            out.push(bytes[i] as char);
-            i += 1;
-        }
-
-        out
+        interpolate_vars(text, &self.vars)
     }
 
     /// Number of variables currently set.
@@ -141,6 +101,59 @@ impl ExecContext {
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
+}
+
+/// §Fase 35.o — Interpolate `${name}` / `$name` references in `text`
+/// against an arbitrary variable map. Extracted from
+/// [`ExecContext::interpolate`] so both execution paths — the sync
+/// runner (`ExecContext.vars`) and the streaming dispatcher
+/// (`DispatchCtx.let_bindings`) — interpolate `persist` field values
+/// with byte-identical semantics (D5: the two paths never diverge).
+/// Unknown variables are left literal.
+pub fn interpolate_vars(text: &str, vars: &HashMap<String, String>) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'$' && i + 1 < bytes.len() {
+            if bytes[i + 1] == b'{' {
+                // ${name} form
+                if let Some(close) = text[i + 2..].find('}') {
+                    let var_name = &text[i + 2..i + 2 + close];
+                    if let Some(val) = vars.get(var_name) {
+                        out.push_str(val);
+                    } else {
+                        // Unknown variable — keep literal
+                        out.push_str(&text[i..i + 3 + close]);
+                    }
+                    i += 3 + close;
+                    continue;
+                }
+            } else if bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_' {
+                // $name form — consume alphanumeric + underscore
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len()
+                    && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+                {
+                    end += 1;
+                }
+                let var_name = &text[start..end];
+                if let Some(val) = vars.get(var_name) {
+                    out.push_str(val);
+                } else {
+                    out.push_str(&text[i..end]);
+                }
+                i = end;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+
+    out
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────

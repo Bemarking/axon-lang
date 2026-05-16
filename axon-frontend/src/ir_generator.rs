@@ -720,6 +720,7 @@ impl IRGenerator {
                 source_line: s.loc.line,
                 source_column: s.loc.column,
                 store_name: s.store_name.clone(),
+                fields: s.fields.clone(),
             }),
             FlowStep::Retrieve(s) => IRFlowNode::Retrieve(IRRetrieveStep {
                 node_type: "retrieve",

@@ -468,6 +468,7 @@ fn discover_node() -> IRFlowNode {
 fn persist_node() -> IRFlowNode {
     IRFlowNode::Persist(IRPersistStep {
         node_type: "persist",
+            fields: Vec::new(),
         source_line: 0,
         source_column: 0,
         store_name: String::new(),
