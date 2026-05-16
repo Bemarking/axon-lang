@@ -286,6 +286,16 @@ pub struct DispatchCtx {
     /// unchanged (D3). Arc-shared so concurrent branches share one
     /// per-DSN pool cache.
     pub store_registry: Option<std::sync::Arc<crate::store::registry::StoreRegistry>>,
+    /// §Fase 35.j (v1.30.0) — Pillar IV: the capability slugs the
+    /// current request carries (the JWT bearer's `capabilities`
+    /// claim). When `Some`, the store handlers re-check a
+    /// capability-gated store against this set before any access —
+    /// defense-in-depth behind the type-checker's compile-time
+    /// guarantee. When `None` (the `DispatchCtx::new` default), there
+    /// is no capability context at this layer and the runtime
+    /// re-check is a no-op: the compile-time check + the endpoint's
+    /// Fase 32.g `requires:` gate stand.
+    pub held_capabilities: Option<Vec<String>>,
 }
 
 impl DispatchCtx {
@@ -320,6 +330,7 @@ impl DispatchCtx {
             pending_effect_policy: None,
             tool_registry: None,
             store_registry: None,
+            held_capabilities: None,
         }
     }
 
@@ -332,6 +343,14 @@ impl DispatchCtx {
         registry: std::sync::Arc<crate::store::registry::StoreRegistry>,
     ) -> Self {
         self.store_registry = Some(registry);
+        self
+    }
+
+    /// §Fase 35.j — Builder: attach the request's held capability
+    /// slugs so the store handlers re-check capability-gated stores
+    /// (Pillar IV). Returns `self` so builders chain.
+    pub fn with_held_capabilities(mut self, capabilities: Vec<String>) -> Self {
+        self.held_capabilities = Some(capabilities);
         self
     }
 

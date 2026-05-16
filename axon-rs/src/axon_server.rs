@@ -18329,6 +18329,10 @@ fn server_execute_streaming(
     flow_name: String,
     backend: String,
     cancel: crate::cancel_token::CancellationFlag,
+    // §Fase 35.j (Pillar IV) — the request's held capability slugs,
+    // threaded into the dispatcher so the store handlers re-check
+    // capability-gated stores.
+    held_capabilities: Option<Vec<String>>,
 ) -> StreamingExecution {
     use crate::flow_execution_event::FlowExecutionEvent;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FlowExecutionEvent>();
@@ -18452,6 +18456,7 @@ fn server_execute_streaming(
             enforcement_for_dispatcher,
             audit_for_dispatcher,
             warnings_for_dispatcher,
+            held_capabilities,
         )
         .await;
         exited_for_dispatcher.notify_waiters();
@@ -18687,6 +18692,12 @@ async fn execute_sse_handler_inner(
                     flow_name_owned.clone(),
                     backend_owned.clone(),
                     cancel.clone(),
+                    // §Fase 35.j — the request's held capabilities
+                    // (JWT bearer `capabilities` claim) for the store
+                    // handlers' Pillar IV runtime re-check.
+                    Some(crate::auth_scope::extract_capabilities_from_bearer(
+                        &headers,
+                    )),
                 );
 
                 // §Fase 33.z.k.g.2 — Construct the wire-format adapter

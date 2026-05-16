@@ -1293,6 +1293,9 @@ pub struct IRAxonStore {
     pub confidence_floor: Option<f64>,
     pub isolation: String,
     pub on_breach: String,
+    /// §Fase 35.j (D11) — Pillar IV: the capability slug required to
+    /// access this store (empty = no gate).
+    pub capability: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

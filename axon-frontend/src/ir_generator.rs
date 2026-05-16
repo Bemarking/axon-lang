@@ -995,6 +995,7 @@ impl IRGenerator {
             confidence_floor: n.confidence_floor,
             isolation: n.isolation.clone(),
             on_breach: n.on_breach.clone(),
+            capability: n.capability.clone(),
         }
     }
 

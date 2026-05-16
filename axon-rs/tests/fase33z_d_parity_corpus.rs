@@ -131,6 +131,7 @@ async fn run_async(source: String, source_file: String, flow_name: String) -> As
         enforcement,
         audit,
         warnings,
+        None,
     )
     .await;
 

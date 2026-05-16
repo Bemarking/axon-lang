@@ -348,6 +348,7 @@ mod tests {
             confidence_floor: None,
             isolation: String::new(),
             on_breach: String::new(),
+            capability: String::new(),
         }
     }
 
