@@ -236,6 +236,14 @@ jobs:
           CFLAGS: "-fsanitize=${{ matrix.kind }} -fno-omit-frame-pointer -O1 -g"
           LDFLAGS: "-fsanitize=${{ matrix.kind }}"
           RUSTFLAGS: "-Zsanitizer=${{ matrix.kind }} -Cunsafe-allow-abi-mismatch=sanitizer -Cforce-frame-pointers=yes -Cdebuginfo=2"
+          # rustdoc reads RUSTDOCFLAGS, not RUSTFLAGS. Without this the
+          # doctest crate is compiled WITHOUT `-Zsanitizer`, while its
+          # deps (rebuilt via `-Zbuild-std`) carry it — a recent nightly
+          # promotes that mismatch from a warning to a hard error
+          # (`mixing -Zsanitizer will cause an ABI mismatch`). Mirroring
+          # RUSTFLAGS into RUSTDOCFLAGS compiles the doctest crate with
+          # the same sanitizer ABI as the rest of the build.
+          RUSTDOCFLAGS: "-Zsanitizer=${{ matrix.kind }} -Cunsafe-allow-abi-mismatch=sanitizer -Cforce-frame-pointers=yes -Cdebuginfo=2"
         run: |
           cargo +nightly test \
             -Zbuild-std \
