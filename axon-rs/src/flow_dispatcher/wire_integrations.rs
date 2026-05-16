@@ -226,21 +226,22 @@ fn sql_row_from_bindings(ctx: &DispatchCtx) -> Vec<(String, SqlValue)> {
     row
 }
 
-/// §Fase 35.o — Build the SQL row a `persist` writes.
+/// §Fase 35.o / 35.p — Build the SQL row a `persist` (`INSERT`
+/// columns) or a `mutate` (`UPDATE … SET` assignments) writes.
 ///
-/// When the step declared a `{ col: value }` field block, the row is
-/// EXACTLY those columns, with each value expression interpolated
-/// against the flow's `let_bindings` via the SAME `${name}` engine the
-/// sync runner uses ([`crate::exec_context::interpolate_vars`], D5 —
-/// the two execution paths never diverge). When no block was written
-/// (`node.fields` empty), it falls back to `sql_row_from_bindings` —
-/// the v1.30.0 user-bindings form — so a `persist <store>` with no
-/// block is byte-for-byte unchanged.
-fn persist_row(node: &IRPersistStep, ctx: &DispatchCtx) -> Vec<(String, SqlValue)> {
-    if node.fields.is_empty() {
+/// When the step declared a `{ col: value }` block, the row is EXACTLY
+/// those columns, with each value expression interpolated against the
+/// flow's `let_bindings` via the SAME `${name}` engine the sync runner
+/// uses ([`crate::exec_context::interpolate_vars`], D5 — the two
+/// execution paths never diverge). When no block was declared
+/// (`fields` empty), it falls back to `sql_row_from_bindings` — the
+/// v1.31.0 user-bindings form — so a `persist`/`mutate` with no block
+/// is byte-for-byte unchanged.
+fn store_row(fields: &[(String, String)], ctx: &DispatchCtx) -> Vec<(String, SqlValue)> {
+    if fields.is_empty() {
         return sql_row_from_bindings(ctx);
     }
-    node.fields
+    fields
         .iter()
         .map(|(col, expr)| {
             (
@@ -447,8 +448,8 @@ pub async fn run_persist(
     let output = match resolve_pg_backend(ctx, &node.store_name) {
         Ok(Some((backend, floor))) => {
             // §35.o — scope the row to the declared `{ col: value }`
-            // block when present; else the v1.30.0 user-bindings form.
-            let row = persist_row(node, ctx);
+            // block when present; else the v1.31.0 user-bindings form.
+            let row = store_row(&node.fields, ctx);
             // §35.g Pillar I — a sub-floor or un-elevated write into a
             // confidence-floored store is a typed error.
             epistemic::enforce_persist_floor(&row, floor, &node.store_name)
@@ -573,7 +574,10 @@ pub async fn run_mutate(
 
     let output = match resolve_pg_backend(ctx, &node.store_name) {
         Ok(Some((backend, _floor))) => {
-            let row = sql_row_from_bindings(ctx);
+            // §35.p — scope the UPDATE SET to the declared
+            // `{ col: value }` block when present; else the v1.31.0
+            // user-bindings form.
+            let row = store_row(&node.fields, ctx);
             let n = backend
                 .mutate(&node.store_name, &node.where_expr, &row)
                 .await
@@ -988,12 +992,12 @@ mod tests {
         assert_eq!(ctx.let_bindings.get("retrieved_id").unwrap(), "42");
     }
 
-    /// §Fase 35.o — `persist_row` with a declared `{ col: value }`
+    /// §Fase 35.o — `store_row` with a declared `{ col: value }`
     /// block builds the SQL row from EXACTLY those columns, value
     /// expressions interpolated against `let_bindings`. No other
     /// context binding leaks in — the gap-report blocker, closed.
     #[test]
-    fn persist_row_scopes_to_the_declared_field_block() {
+    fn store_row_scopes_to_the_declared_field_block() {
         let (mut ctx, _rx) = fresh_ctx();
         ctx.let_bindings.insert("message".into(), "hello".into());
         ctx.let_bindings.insert("tenant_id".into(), "acme".into());
@@ -1010,7 +1014,7 @@ mod tests {
                 ("tenant_id".into(), "${tenant_id}".into()),
             ],
         };
-        let row = persist_row(&node, &ctx);
+        let row = store_row(&node.fields, &ctx);
         assert_eq!(
             row,
             vec![
@@ -1026,10 +1030,10 @@ mod tests {
             .any(|(c, _)| c == "channel_kind" || c == "message"));
     }
 
-    /// §Fase 35.o — `persist_row` with no declared block falls back to
-    /// the v1.30.0 user-bindings form, byte-for-byte (backward-compat).
+    /// §Fase 35.o — `store_row` with no declared block falls back to
+    /// the v1.31.0 user-bindings form, byte-for-byte (backward-compat).
     #[test]
-    fn persist_row_without_a_block_falls_back_to_user_bindings() {
+    fn store_row_without_a_block_falls_back_to_user_bindings() {
         let (mut ctx, _rx) = fresh_ctx();
         ctx.let_bindings.insert("a".into(), "1".into());
         ctx.let_bindings.insert("b".into(), "2".into());
@@ -1040,7 +1044,38 @@ mod tests {
             store_name: "s".into(),
             fields: Vec::new(),
         };
-        assert_eq!(persist_row(&node, &ctx), sql_row_from_bindings(&ctx));
+        assert_eq!(store_row(&node.fields, &ctx), sql_row_from_bindings(&ctx));
+    }
+
+    /// §Fase 35.p — an `IRMutateStep`'s `{ col: value }` SET block
+    /// flows through the SAME `store_row` the dispatcher's `run_mutate`
+    /// uses; the `UPDATE SET` is scoped to exactly those columns.
+    #[test]
+    fn store_row_for_a_mutate_node_scopes_to_its_set_block() {
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert("new_balance".into(), "500".into());
+        ctx.let_bindings.insert("tenant_id".into(), "acme".into());
+        let node = IRMutateStep {
+            node_type: "mutate",
+            source_line: 0,
+            source_column: 0,
+            store_name: "accounts".into(),
+            where_expr: "id = 1".into(),
+            fields: vec![
+                ("balance".into(), "${new_balance}".into()),
+                ("status".into(), "active".into()),
+            ],
+        };
+        let row = store_row(&node.fields, &ctx);
+        assert_eq!(
+            row,
+            vec![
+                ("balance".to_string(), SqlValue::Text("500".into())),
+                ("status".to_string(), SqlValue::Text("active".into())),
+            ]
+        );
+        // `tenant_id` is a flow binding, not a column — must not leak.
+        assert!(!row.iter().any(|(c, _)| c == "tenant_id"));
     }
 
     #[tokio::test]
@@ -1059,6 +1094,7 @@ mod tests {
         ctx.let_bindings.insert("counter".into(), "2".into());
         let mutate = IRMutateStep {
             node_type: "mutate",
+            fields: Vec::new(),
             source_line: 0,
             source_column: 0,
             store_name: "stats".into(),
@@ -1240,6 +1276,7 @@ mod tests {
 
         let mutate = IRMutateStep {
             node_type: "mutate",
+            fields: Vec::new(),
             source_line: 0,
             source_column: 0,
             store_name: "s".into(),
@@ -1568,6 +1605,7 @@ mod tests {
         run_mutate(
             &IRMutateStep {
                 node_type: "mutate",
+            fields: Vec::new(),
                 source_line: 0,
                 source_column: 0,
                 store_name: "s".into(),

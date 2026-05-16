@@ -1122,6 +1122,10 @@ pub struct IRMutateStep {
     pub source_column: u32,
     pub store_name: String,
     pub where_expr: String,
+    /// §Fase 35.p — declared `{ col: value }` SET assignments (value
+    /// expressions kept raw; interpolated at runtime). Empty ⇒ the
+    /// runtime writes the flow's user bindings (v1.31.0 fallback).
+    pub fields: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize)]

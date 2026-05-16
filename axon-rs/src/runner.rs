@@ -117,12 +117,13 @@ struct CompiledStep {
     /// SSA binding without re-traversing the IR.
     #[serde(skip_serializing_if = "Option::is_none")]
     let_payload: Option<LetPayload>,
-    /// §Fase 35.o — for `persist` steps: the declared `{ col: value }`
-    /// field block. `Some` ⇒ the SQL row is built from exactly these
-    /// columns (interpolated); `None` ⇒ no block was written and the
-    /// runtime falls back to the flow's user bindings (v1.30.0).
+    /// §Fase 35.o / 35.p — for `persist` (INSERT columns) and `mutate`
+    /// (UPDATE SET assignments) steps: the declared `{ col: value }`
+    /// block. `Some` ⇒ the SQL row is built from exactly these columns
+    /// (interpolated); `None` ⇒ no block was written and the runtime
+    /// falls back to the flow's user bindings (v1.31.0).
     #[serde(skip_serializing_if = "Option::is_none")]
-    persist_fields: Option<Vec<(String, String)>>,
+    store_fields: Option<Vec<(String, String)>>,
 }
 
 /// Fase 17.c — payload carried inside a CompiledStep for `let X = value`
@@ -326,12 +327,16 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             _ => None,
         };
 
-        // §Fase 35.o — materialise the declared `persist { col: value }`
-        // field block so `execute_sql_store_step` scopes the SQL row to
-        // exactly those columns. A `persist` with no block stays `None`
-        // → the v1.30.0 user-bindings fallback.
-        let persist_fields = match node {
+        // §Fase 35.o / 35.p — materialise the declared `{ col: value }`
+        // block of a `persist` (INSERT columns) or `mutate` (UPDATE SET
+        // assignments) so `execute_sql_store_step` scopes the SQL row
+        // to exactly those columns. No block ⇒ `None` → the v1.31.0
+        // user-bindings fallback.
+        let store_fields = match node {
             IRFlowNode::Persist(s) if !s.fields.is_empty() => {
+                Some(s.fields.clone())
+            }
+            IRFlowNode::Mutate(s) if !s.fields.is_empty() => {
                 Some(s.fields.clone())
             }
             _ => None,
@@ -346,7 +351,7 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             memory_expression,
             lambda_apply_payload,
             let_payload,
-            persist_fields,
+            store_fields,
         });
     }
 
@@ -788,20 +793,21 @@ where
 /// summary or a typed [`StoreError`].
 ///
 /// The store name doubles as the SQL table name (D12 — `IRAxonStore`
-/// carries no schema, so v1.30.0 operates against existing tables).
-/// §Fase 35.o — `persist` writes the columns of its declared
-/// `{ col: value }` block (`persist_fields`, value expressions
-/// interpolated); a `persist` with no block, and every `mutate`,
-/// fall back to writing the flow's user bindings as a row
-/// ([`ExecContext::user_bindings`]). `retrieve`/`purge` are driven by
-/// the `where`-expression. D5 — the SAME `PostgresStoreBackend` the
-/// streaming dispatcher uses, so the two execution paths never diverge.
+/// carries no schema, so v1.31.0 operates against existing tables).
+/// §Fase 35.o / 35.p — `persist` (INSERT columns) and `mutate`
+/// (UPDATE SET assignments) write the columns of their declared
+/// `{ col: value }` block (`store_fields`, value expressions
+/// interpolated); with no block they fall back to writing the flow's
+/// user bindings as a row ([`ExecContext::user_bindings`]).
+/// `retrieve`/`purge` are driven by the `where`-expression. D5 — the
+/// SAME `PostgresStoreBackend` the streaming dispatcher uses, so the
+/// two execution paths never diverge.
 fn execute_sql_store_step(
     store_registry: &StoreRegistry,
     step_type: &str,
     store_name: &str,
     interpolated_expr: &str,
-    persist_fields: Option<&[(String, String)]>,
+    store_fields: Option<&[(String, String)]>,
     ctx: &ExecContext,
 ) -> Result<String, StoreError> {
     // The connection + confidence_floor live on the `IRAxonStore` the
@@ -819,21 +825,22 @@ fn execute_sql_store_step(
         .unwrap_or("")
         .to_string();
 
-    // §Fase 35.o — when the `persist` step declared a `{ col: value }`
-    // field block, the SQL row is exactly those columns with their
-    // value expressions interpolated against the flow context. When no
-    // block was written (`persist_fields` is `None`), fall back to the
-    // v1.30.0 behaviour: every user binding as a text column. `mutate`
-    // has no field block and always takes the user-bindings form.
-    // Every value binds as text (D12 — no column-type schema in v1.30).
-    let data: Vec<(String, SqlValue)> = match persist_fields {
-        Some(fields) if step_type == "persist" => fields
+    // §Fase 35.o / 35.p — when the `persist` / `mutate` step declared a
+    // `{ col: value }` block, the SQL row is exactly those columns with
+    // their value expressions interpolated against the flow context.
+    // With no block (`store_fields` is `None`) fall back to the v1.31.0
+    // behaviour: every user binding as a text column. `store_fields` is
+    // only materialised for `persist`/`mutate`, so `retrieve`/`purge`
+    // (which ignore `data`) always take the fallback. Every value binds
+    // as text (D12 — no column-type schema in v1.31).
+    let data: Vec<(String, SqlValue)> = match store_fields {
+        Some(fields) => fields
             .iter()
             .map(|(col, expr)| {
                 (col.clone(), SqlValue::Text(ctx.interpolate(expr)))
             })
             .collect(),
-        _ => ctx
+        None => ctx
             .user_bindings()
             .into_iter()
             .map(|(k, v)| (k, SqlValue::Text(v)))
@@ -1332,7 +1339,7 @@ fn execute_real(
                         &step.step_type,
                         &step.step_name,
                         &expr,
-                        step.persist_fields.as_deref(),
+                        step.store_fields.as_deref(),
                         &ctx,
                     ) {
                         Ok(summary) => (summary, true),
@@ -2705,6 +2712,35 @@ mod fase35e_tests {
             "persist",
             "chat_history",
             "chat_history",
+            Some(&fields),
+            &ctx,
+        );
+        assert!(matches!(result, Err(StoreError::PoolInit { .. })));
+    }
+
+    #[test]
+    fn sql_mutate_scopes_the_set_to_the_declared_field_block() {
+        // §Fase 35.p — a `mutate` carrying a `{ col: value }` block
+        // builds the UPDATE SET from EXACTLY those columns (value
+        // expressions interpolated), ignoring every other binding the
+        // flow holds. The malformed DSN fails at connect (typed
+        // PoolInit) — proving the field-scoped SET row was assembled
+        // and reached the SQL path. The pre-35.p behaviour would have
+        // SET `tenant_id` (a flow param, not a column).
+        let registry =
+            StoreRegistry::build(&[pg_store("accounts", "not a dsn")]).unwrap();
+        let mut ctx = ExecContext::new("F", "P", 0);
+        ctx.set("tenant_id", "acme"); // a flow param, NOT a column
+        ctx.set("new_balance", "500");
+        let fields = vec![
+            ("balance".to_string(), "${new_balance}".to_string()),
+            ("status".to_string(), "active".to_string()),
+        ];
+        let result = execute_sql_store_step(
+            &registry,
+            "mutate",
+            "accounts",
+            "accounts:id = 1",
             Some(&fields),
             &ctx,
         );

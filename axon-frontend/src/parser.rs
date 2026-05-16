@@ -1990,7 +1990,7 @@ impl Parser {
             TokenType::Discover => self.parse_discover_step(),
             TokenType::Persist => self.parse_persist_step(),
             TokenType::Retrieve => self.parse_retrieve_step(),
-            TokenType::Mutate => self.parse_store_where_step().map(|(loc, store_name, where_expr)| FlowStep::Mutate(MutateStep { store_name, where_expr, loc })),
+            TokenType::Mutate => self.parse_mutate_step(),
             TokenType::Purge => self.parse_store_where_step().map(|(loc, store_name, where_expr)| FlowStep::Purge(PurgeStep { store_name, where_expr, loc })),
             TokenType::Transact => self.parse_block_step("transact").map(|l| FlowStep::Transact(TransactBlock { loc: l })),
 
@@ -3099,8 +3099,10 @@ impl Parser {
         }))
     }
 
-    /// §Fase 35.m — Parse a `mutate` / `purge` step, capturing the
-    /// optional `{ where: "<expr>" }` filter.
+    /// §Fase 35.m — Parse a `purge` step, capturing the optional
+    /// `{ where: "<expr>" }` filter. (Fase 35.p moved `mutate` to its
+    /// own `parse_mutate_step`, which also captures SET columns; this
+    /// helper now serves `purge` alone — a `DELETE` has no SET clause.)
     ///
     /// Before Fase 35.m these two steps parsed via `parse_flow_step_simple`,
     /// which *skipped* the braced block — so a written `where:` clause
@@ -3217,6 +3219,75 @@ impl Parser {
         }
         Ok(FlowStep::Persist(PersistStep {
             store_name: store,
+            fields,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
+    }
+
+    /// §Fase 35.p — Parse a `mutate` step, capturing both the
+    /// `{ where: "<expr>" }` filter AND the `{ col: value }` SET
+    /// assignments.
+    ///
+    /// Before Fase 35.p `mutate` parsed via `parse_store_where_step`,
+    /// which captured only `where:` and *skipped* every other key — so
+    /// the runtime built the `UPDATE … SET` clause from every flow
+    /// binding (params + step results + `let`s), which fails against
+    /// any real table (`column "X" does not exist`). This closes the
+    /// gap symmetrically to 35.o's `persist` block: every key other
+    /// than `where:` is a SET column; a `mutate` with no SET column
+    /// keeps the v1.31.0 user-bindings fallback. `where:` keeps its
+    /// string-literal grammar (as in `retrieve` / `purge`).
+    fn parse_mutate_step(&mut self) -> Result<FlowStep, ParseError> {
+        let tok = self.current().clone();
+        self.advance(); // consume `mutate`
+        let store = if self.at_declaration_start()
+            || self.check(TokenType::LBrace)
+            || self.check(TokenType::RBrace)
+            || self.check(TokenType::Eof)
+        {
+            String::new()
+        } else {
+            self.consume_any_ident_or_kw()?.value.clone()
+        };
+        let mut where_expr = String::new();
+        let mut fields: Vec<(String, String)> = Vec::new();
+        if self.check(TokenType::LBrace) {
+            self.advance();
+            while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                let key = self.current().value.clone();
+                self.advance();
+                if self.check(TokenType::Colon) {
+                    self.advance();
+                    if key == "where" {
+                        where_expr =
+                            self.consume(TokenType::StringLit)?.value.clone();
+                    } else {
+                        let value = if self.check(TokenType::StringLit) {
+                            self.consume(TokenType::StringLit)?.value.clone()
+                        } else if self.check(TokenType::RBrace)
+                            || self.check(TokenType::Eof)
+                            || self.check(TokenType::Colon)
+                        {
+                            String::new()
+                        } else {
+                            let v = self.current().clone();
+                            self.advance();
+                            v.value.clone()
+                        };
+                        fields.push((key, value));
+                    }
+                }
+            }
+            if self.check(TokenType::RBrace) {
+                self.advance();
+            }
+        }
+        Ok(FlowStep::Mutate(MutateStep {
+            store_name: store,
+            where_expr,
             fields,
             loc: Loc {
                 line: tok.line,
@@ -6994,6 +7065,105 @@ mod fase35o_persist_fields_tests {
                 );
             }
             other => panic!("expected IRFlowNode::Persist, got {other:?}"),
+        }
+    }
+}
+
+// ── §Fase 35.p — mutate SET-field-block capture ─────────────────────
+
+#[cfg(test)]
+mod fase35p_mutate_fields_tests {
+    use super::*;
+
+    fn parse(src: &str) -> Program {
+        let tokens = crate::lexer::Lexer::new(src, "<test>")
+            .tokenize()
+            .expect("lex");
+        Parser::new(tokens).parse().expect("parse")
+    }
+
+    fn first_step<'a>(prog: &'a Program, flow: &str) -> &'a FlowStep {
+        for d in &prog.declarations {
+            if let Declaration::Flow(f) = d {
+                if f.name == flow {
+                    return f.body.first().expect("flow has at least one step");
+                }
+            }
+        }
+        panic!("flow `{flow}` not found");
+    }
+
+    #[test]
+    fn mutate_captures_its_set_field_block() {
+        // Pre-35.p every key but `where:` was skipped — the runtime
+        // SET every flow binding. The SET columns must now reach
+        // `fields`, in source order, with `where:` still captured.
+        let prog = parse(
+            "flow F() -> Unit { mutate accounts { where: \"id = ${id}\" \
+             balance: \"${new_balance}\" status: \"active\" } }",
+        );
+        match first_step(&prog, "F") {
+            FlowStep::Mutate(m) => {
+                assert_eq!(m.store_name, "accounts");
+                assert_eq!(m.where_expr, "id = ${id}");
+                assert_eq!(
+                    m.fields,
+                    vec![
+                        ("balance".to_string(), "${new_balance}".to_string()),
+                        ("status".to_string(), "active".to_string()),
+                    ]
+                );
+            }
+            other => panic!("expected Mutate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutate_where_only_block_has_no_set_fields() {
+        // A `{ where: }`-only block → empty `fields` → the runtime
+        // falls back to the v1.31.0 user-bindings SET.
+        let prog =
+            parse("flow F() -> Unit { mutate accounts { where: \"id = 1\" } }");
+        match first_step(&prog, "F") {
+            FlowStep::Mutate(m) => {
+                assert_eq!(m.where_expr, "id = 1");
+                assert!(m.fields.is_empty());
+            }
+            other => panic!("expected Mutate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutate_with_no_block_is_a_whole_store_op() {
+        // No block at all → empty where + empty fields (a whole-store
+        // UPDATE from user bindings) — unchanged from 35.m.
+        let prog = parse("flow F() -> Unit { mutate accounts }");
+        match first_step(&prog, "F") {
+            FlowStep::Mutate(m) => {
+                assert_eq!(m.store_name, "accounts");
+                assert_eq!(m.where_expr, "");
+                assert!(m.fields.is_empty());
+            }
+            other => panic!("expected Mutate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutate_fields_lower_into_the_ir() {
+        let prog = parse(
+            "flow F() -> Unit { mutate t { where: \"id = 1\" v: \"${x}\" } }",
+        );
+        let ir = crate::ir_generator::IRGenerator::new().generate(&prog);
+        let flow = ir.flows.iter().find(|f| f.name == "F").expect("flow F");
+        match flow.steps.first().expect("one step") {
+            crate::ir_nodes::IRFlowNode::Mutate(m) => {
+                assert_eq!(m.where_expr, "id = 1");
+                assert_eq!(
+                    m.fields,
+                    vec![("v".to_string(), "${x}".to_string())]
+                );
+            }
+            other => panic!("expected IRFlowNode::Mutate, got {other:?}"),
         }
     }
 }
