@@ -1,7 +1,8 @@
 <p align="center">
-  <strong>AXON</strong> <em>v1.3.1</em><br>
-  The first formal cognitive language for AI — now with <strong>Cognitive I/O</strong>
-  for compile-time compliant infrastructure.
+  <strong>AXON</strong> <em>v1.30.0</em><br>
+  The first formal cognitive language for AI — a native Rust runtime with
+  <strong>Cognitive I/O</strong>, real-time streaming, first-class HTTP
+  endpoints, and a four-pillar cognitive data plane.
 </p>
 
 <p align="center">
@@ -28,11 +29,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.3.1-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.30.0-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-production-brightgreen" alt="Status: Production">
-  <img src="https://img.shields.io/badge/rust-native-orange" alt="Rust Native">
-  <img src="https://img.shields.io/badge/rust%20parity-byte--identical-brightgreen" alt="Byte-identical Rust parity">
-  <img src="https://img.shields.io/badge/tests-3740%20py%20%2B%201758%20rs-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/runtime-rust%20native-orange" alt="Rust Native">
+  <img src="https://img.shields.io/badge/streaming-SSE%20%7C%20NDJSON-brightgreen" alt="Streaming">
+  <img src="https://img.shields.io/badge/tests-4513%20rs%20%2B%205156%20py-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/compliance-HIPAA%20%7C%20PCI__DSS%20%7C%20GDPR%20%7C%20SOX%20%7C%20SOC2%20%7C%20ISO27001%20%7C%20FIPS%20%7C%20CC%20EAL4%2B-blueviolet" alt="Compliance">
   <img src="https://img.shields.io/badge/persistence-postgresql-blue" alt="PostgreSQL">
   <img src="https://img.shields.io/badge/observability-tracing-green" alt="Tracing">
@@ -44,11 +45,13 @@
 ## What is AXON?
 
 AXON is a **compiled language** that targets LLMs instead of CPUs. It has a
-formal EBNF grammar, a lexer, parser, AST, intermediate representation, multiple
-compiler backends (Anthropic, OpenAI, Gemini, Ollama), and a runtime with
-semantic type checking, retry engines, and execution tracing.
+formal EBNF grammar, a lexer, parser, AST, intermediate representation, **seven
+native Rust LLM backends** (Anthropic, OpenAI, Gemini, Kimi, GLM, Ollama,
+OpenRouter), and a native Rust runtime with semantic type checking, an
+algebraic-effects execution engine, real-time SSE/NDJSON streaming, retry +
+circuit-breaker resilience, and execution tracing.
 
-Beyond cognition, AXON v1.0 ships **Cognitive I/O** — a λ-calculus-based
+Beyond cognition, AXON ships **Cognitive I/O** — a λ-calculus-based
 infrastructure layer where resources, control loops, observability, security
 kernels, and UI components carry their regulatory class (HIPAA / PCI_DSS /
 GDPR / SOX / SOC 2 / ISO 27001 / FIPS / CC EAL 4+) as a **compile-time type**.
@@ -86,10 +89,10 @@ error**, not a post-mortem finding.
 1. **Compile-time compliance.** `shield<HIPAA>` / `type PatientRecord compliance [HIPAA, GDPR]` are *types*. A `.axon` program that sends PHI to an unshielded endpoint fails `axon check` — same exit code as a syntax error.
 2. **Blame Calculus (Findler–Felleisen).** Every error is classified as **CT-1** (axon/runtime bug), **CT-2** (program author: anchor breach, expired lease), or **CT-3** (infrastructure: partition, missing credential, provider quota). No silent downgrades.
 3. **Audit-ready artefacts.** `axon dossier` + `axon sbom` + `axon audit --framework {soc2,iso27001,fips,cc,all}` + `axon evidence-package` produce byte-identical, deterministic JSON/ZIP — the SHA-256 of every output is a *contract* against your release.
-4. **Native Rust binary + byte-identical Python parity.** `cargo install axon` or `pip install axon-lang` — pick one, get the same output. CI gates (`.github/workflows/rust_parity.yml`) enforce byte-identical equivalence on every push.
+4. **Native Rust runtime, no interpreter.** The whole stack — lexer, parser, type-checker, IR, the algebraic-effects execution engine, the HTTP server, the seven LLM backends, and the streaming wire — is a single native Rust binary. Download a prebuilt or `cargo build --release`. No GC, no interpreter, no runtime dependency.
 5. **Cognitive immune system.** `immune + reflex + heal` is a first-class language primitive, not a plug-in. Signed HMAC traces per firing, three compliance modes (`audit_only` / `human_in_loop` / `adversarial`), Linear-Logic patch FSM preventing double-application.
 6. **Post-Quantum-ready ESK.** HMAC-SHA256 baseline + Ed25519 + ML-DSA-65 (NIST FIPS 204 Dilithium) + Hybrid signer (NIST SP 800-208 transition posture). Feature-gated; no silent classical fallbacks.
-7. **Zero-Python user experience.** The Rust binary covers `check`, `compile`, `dossier`, `sbom`, `audit`, `evidence-package` with byte-identical output. Only the optional `axon run` (LLM execution) still lives on Python — because that's an external API call, not a compiler concern.
+7. **Persistence is a typed cognitive primitive.** A database in AXON is an `axonstore`, not an ORM bolt-on: retrieved rows are born epistemically `Untrusted` and a `confidence_floor` is enforced at read and write; every mutation appends to an HMAC-Merkle audit chain; `retrieve` is a bounded, back-pressured `Stream<Row>`; and store access is capability-typed and checked at *compile time*. No other language treats stored data this way.
 
 ### External audit readiness
 
@@ -136,20 +139,23 @@ Remove the `shield` line and `axon check` fails with *"endpoint 'Api' sends regu
 
 ---
 
-## Production Status (Phase K + Phases 1–9)
+## Production Status
 
-AXON v1.3.1 is **production-ready**. The full stack is cross-validated:
+AXON v1.30.0 is **production-ready**. The full stack is cross-validated:
 
-- ✅ All 47 cognitive primitives + 18 Cognitive-I/O primitives wired and cross-validated
-- ✅ 282 HTTP routes tested end-to-end
+- ✅ 65+ cognitive + Cognitive-I/O primitives wired to the native Rust runtime
+- ✅ 285 HTTP routes tested end-to-end
+- ✅ Seven native Rust LLM backends (Anthropic, OpenAI, Gemini, Kimi, GLM, Ollama, OpenRouter) with full async streaming
+- ✅ Real-time streaming wire — SSE + NDJSON, type-driven transport inference, per-chunk algebraic-effect dispatch
+- ✅ `axonendpoint` as a first-class HTTP REST primitive — typed routes, body + output schema validation, `Idempotency-Key`, auth scopes
+- ✅ `axonstore` cognitive data plane — epistemically typed rows, HMAC-Merkle audit chains, `Stream<Row>`, capability-typed access
 - ✅ Compile-time regulatory compliance for HIPAA / PCI_DSS / GDPR / SOX / SOC 2 / ISO 27001 / FIPS / CC EAL 4+
 - ✅ Cognitive immune system (anomaly detection + reflex + heal) paper-faithful
-- ✅ Byte-identical native Rust runtime (no Python needed for compile / dossier / sbom / audit / evidence-package)
 - ✅ Post-Quantum signatures: HMAC-SHA256 baseline + Ed25519 + ML-DSA-65 + Hybrid (NIST SP 800-208)
 - ✅ PostgreSQL persistence with migrations and health checks
 - ✅ Structured observability (JSON logging + request tracing)
 - ✅ LLM call resilience (retry + circuit breaker + fallback)
-- ✅ **3,740 Python + 1,758 Rust = 5,498 tests passing, zero regressions**
+- ✅ **4,513 Rust + 5,156 Python = 9,669 tests, zero regressions**
 - ✅ Zero "por ahora", zero "lo mínimo" — production-complete
 
 Designed for cognitive AI applications that require formal semantics, reliability, epistemic rigor, and *provable* regulatory coverage.
@@ -204,9 +210,11 @@ flow AnalyzeContract(doc: Document) -> StructuredReport {
 
 ---
 
-## Native Rust Runtime (v1.3.x — byte-identical with Python reference)
+## Native Rust Runtime
 
-AXON v1.3.1 ships a **production-hardened** native Rust runtime server with **282 HTTP routes**, **65 primitives** (47 cognitive + 18 Cognitive I/O) wired to runtime, a full **ℰMCP** (Epistemic Model Context Protocol) implementation, **PostgreSQL persistence**, **structured observability via tracing**, **LLM call resilience** (retry + circuit breaker + fallback chains), and — since v1.3.0 — **byte-identical CLI parity with the Python reference implementation** for `check`, `compile`, `dossier`, `sbom`, `audit`, and `evidence-package` (verified on every push by `.github/workflows/rust_parity.yml`).
+AXON v1.30.0 ships a **production-hardened** native Rust runtime server with **285 HTTP routes**, **65+ primitives** wired to runtime, an **algebraic-effects execution engine**, a **real-time SSE/NDJSON streaming wire**, a full **ℰMCP** (Epistemic Model Context Protocol) implementation, **PostgreSQL persistence**, **structured observability via tracing**, **LLM call resilience** (retry + circuit breaker + fallback chains across seven native backends), and a complete native CLI (`check`, `compile`, `run`, `serve`, `parse`, `dossier`, `sbom`, `audit`, `evidence-package`, and more).
+
+The **Rust + C stack is the canonical implementation** of the language. The original Python package (`pip install axon-lang`) remains published as the historical reference implementation; new runtime surfaces (streaming, the cognitive data plane, the HTTP REST layer) are Rust-canonical.
 
 **Production Foundation (Phase K):**
 - **Observability**: JSON structured logging with request tracing, daily log rotation, configurable levels
@@ -299,15 +307,16 @@ AXON v1.0.0 launched with three production-critical systems that remain the foun
 
 | Surface | Count |
 |---------|-------|
-| HTTP API routes | 282 |
-| Cognitive primitives | 47/47 (100%) |
+| HTTP API routes | 285 |
+| Language primitives | 65+ (cognitive + Cognitive I/O) |
+| LLM backends | 7 (anthropic, openai, gemini, kimi, glm, openrouter, ollama) — native async, all streaming |
 | MCP tool types | 8 (flow, dataspace, axonstore, shield, corpus, compute, mandate, forge) |
 | MCP resource types | 10 (traces, metrics, backends, flows, dataspaces, axonstores, shields, corpora, mandates, forges) |
 | MCP workflow prompts | 5 (research, decide, secure_transfer, reflect, analyze_image) |
-| Library tests | 713 |
-| Integration tests | 753 |
-| Total tests | 1,466 (all passing) |
-| LLM backends | 7 (anthropic, openai, gemini, kimi, glm, openrouter, ollama) |
+| `axon-rs` library tests | 2,012 |
+| `axon-rs` integration tests | 1,959 |
+| Rust workspace tests | 4,513 (`axon-rs` + `axon-frontend` + `axon-csys`) |
+| Python reference-suite tests | 5,156 |
 | SQL tables | 12 (traces, sessions, daemons, audit_log, axon_stores, dataspaces, hibernations, event_history, execution_cache, cost_tracking, schedules, backend_registry) |
 | Performance indexes | 15 |
 
@@ -347,8 +356,8 @@ Full language specification: [docs/axon_language_specification.md](docs/axon_lan
 
 ## Paradigm Shifts
 
-> AXON v0.7 introduces three compiler-level paradigm shifts that elevate the
-> language from prompt compilation to a Cognitive Operating System.
+> AXON's compiler-level paradigm shifts elevate the language from prompt
+> compilation to a Cognitive Operating System.
 
 ### I. Formal Model — Epistemic Constraint Calculus
 
@@ -539,7 +548,7 @@ flow HandleTicket(ticket: String) -> Resolution {
 
 ### IV. Directed Creative Synthesis — the `forge` Primitive
 
-> AXON v0.10 introduces a sixth paradigm shift: **mathematical formalization of
+> AXON introduces a sixth paradigm shift: **mathematical formalization of
 > the creative process** inside LLMs.
 
 The industry suffers from a structural limitation: LLMs can interpolate, but
@@ -620,7 +629,7 @@ precision AXON applies to every other cognitive primitive.
 
 ### V. Autonomous Goal-Seeking — the `agent` Primitive
 
-> AXON v0.12 introduces a seventh paradigm shift: **compiler-verified autonomous
+> AXON introduces a seventh paradigm shift: **compiler-verified autonomous
 > agents** grounded in the Belief-Desire-Intention (BDI) architecture, epistemic
 > logic, and coinductive semantics.
 
@@ -864,7 +873,7 @@ agent OnboardingGuide {
 
 ### VI. Compile-Time Security — the `shield` Primitive
 
-> AXON v0.13 introduces an eighth paradigm shift: **Information Flow Control
+> AXON introduces an eighth paradigm shift: **Information Flow Control
 > (IFC) as a first-class compiled construct**, providing compile-time security
 > guarantees against LLM-specific attack vectors.
 
@@ -1038,13 +1047,13 @@ agent Researcher {
 
 ### VII. Epistemic Tool Fortification — Streaming, Effects & Blame Semantics
 
-> AXON v0.14 and v0.19.1 introduce a ninth paradigm shift: **formal epistemic control over
+> AXON introduces a ninth paradigm shift: **formal epistemic control over
 > tool invocations, streaming outputs, and foreign-function interfaces** — backed
 > by algebraic effect theory, coinductive stream semantics, and Findler-Felleisen
-> blame calculus. The v0.19.1 release renews the `stream` primitive by decoupling pure deliberation from the I/O mechanism.
+> blame calculus. The `stream` primitive decouples pure deliberation from the I/O mechanism.
 
 #### The Hard Argument (Computational Decoupling)
-In pragmatic software engineering, Python generators (`yield` and `async for`) have become the standard for data streaming. However, under the rigor of formal language theory and category mathematics, this approach has a structural flaw: it inextricably couples "deliberation" (data generation) with the "I/O mechanism" (transmission). AXON v0.19.1 resolves this by applying **Algebraic Effects and Handlers** to streaming. The `stream` primitive no longer executes I/O; it yields a pure effect (`YieldChunk(data)`), suspending the continuation `k`. An external Handler (e.g., `SSEHandler`) intercepts the effect, executes the I/O side-effect, and then resumes `k`. This mathematical decoupling ensures the generative core remains functionally pure and independently testable.
+In pragmatic software engineering, Python generators (`yield` and `async for`) have become the standard for data streaming. However, under the rigor of formal language theory and category mathematics, this approach has a structural flaw: it inextricably couples "deliberation" (data generation) with the "I/O mechanism" (transmission). AXON resolves this by applying **Algebraic Effects and Handlers** to streaming. The `stream` primitive no longer executes I/O; it yields a pure effect (`YieldChunk(data)`), suspending the continuation `k`. An external Handler (e.g., `SSEHandler`) intercepts the effect, executes the I/O side-effect, and then resumes `k`. This mathematical decoupling ensures the generative core remains functionally pure and independently testable.
 
 #### The Sweet Argument (Why it's awesome)
 Imagine writing streaming logic without ever worrying about the HTTP connection! With the renewed `stream` primitive, your AI agents don't "push bytes"—they express pure conceptual intentions. You just write your LLM generation logic in the cleanest way possible. Want to switch from Server-Sent Events (SSE) to WebSockets, or maybe just log to a file? The agent code doesn't change a single character! You simply swap the Handler. Your codebase becomes incredibly pristine, blazingly fast to test, and theoretically invincible. It makes streaming feel like pure magic backed by hardcore category theory.
@@ -1057,7 +1066,7 @@ Imagine writing streaming logic without ever worrying about the HTTP connection!
 Every LLM framework treats tool calls as black boxes: a function returns a
 string, and the framework trusts it unconditionally. Streaming is even worse —
 partial tokens arrive without any notion of confidence, reliability, or
-epistemic state. AXON v0.14 solves this by making **every interaction with the
+epistemic state. AXON solves this by making **every interaction with the
 external world** subject to formal epistemic tracking.
 
 #### Formal Model — Four Convergence Theorems
@@ -1299,7 +1308,7 @@ flow ProcessOrder(order: Order) -> Receipt {
 
 ### VIII. Structured Cognitive Retrieval — the `pix` Primitive
 
-> AXON v0.15 introduces a tenth paradigm shift: **intent-driven tree navigation
+> AXON introduces a tenth paradigm shift: **intent-driven tree navigation
 > as a formally grounded alternative to vector-similarity retrieval (RAG)**,
 > built on information foraging theory, bounded rational search, and full
 > explainability via reasoning trails.
@@ -1567,7 +1576,7 @@ know {
 
 #### Epistemic Vision — Visual Perception for PIX
 
-> AXON v0.25.1 extends PIX from document-only navigation to **deterministic
+> AXON extends PIX from document-only navigation to **deterministic
 > visual perception**, treating images as structured data isomorphic to
 > documents. No neural networks. No GPUs. No stochastic outputs. Pure
 > mathematics — and it sees better than any "vision model" at structural tasks.
@@ -1782,7 +1791,7 @@ flow MonitorChanges(before: Image, after: Image) -> ChangeReport {
 
 ### IX. Multi-Document Navigation — the `corpus` Primitive
 
-> AXON v0.16 introduces an eleventh paradigm shift: **formal cross-document
+> AXON introduces an eleventh paradigm shift: **formal cross-document
 > navigation with provenance guarantees, epistemic typing, and graph-theoretic
 > bounded reachability** — the first retrieval framework with mathematical proofs
 > of soundness, termination, and information convergence.
@@ -2027,7 +2036,7 @@ doubt {
 
 ### X. Memory-Augmented MDN — Structural Learning via Graph Transformation
 
-> AXON v0.17 introduces a twelfth paradigm shift: **memory as a functorial
+> AXON introduces a twelfth paradigm shift: **memory as a functorial
 > endomorphism on the category of corpora** — not storage, but a formal
 > transformation of the epistemological space that enables structural learning
 > through interaction history.
@@ -2282,7 +2291,7 @@ doubt {
 
 ### XI. Psychological-Epistemic Modeling — the `psyche` Primitive
 
-> AXON v0.18 introduces a thirteenth paradigm shift: **formal psychological-
+> AXON introduces a thirteenth paradigm shift: **formal psychological-
 > epistemic modeling with Riemannian state dynamics, quantum cognitive probability,
 > and active inference** — the first compiled construct that treats mental states
 > as epistemological objects with structured uncertainty and formal safety
@@ -2626,7 +2635,7 @@ ots MathOperator<Tensor, Tensor> {
 
 ### XIII. Universal Protocol: Model Execution Kernel (MEK)
 
-> AXON v0.20.0 introduces a fifteenth paradigm shift: **The Model Execution Kernel (MEK)**, a universal hypervisor that categorically decouples cognitive state from external LLM representations.
+> AXON introduces a fifteenth paradigm shift: **The Model Execution Kernel (MEK)**, a universal hypervisor that categorically decouples cognitive state from external LLM representations.
 
 #### A. Hard Mathematical Argument — Decoupling by Decoherence
 In all traditional frameworks, the execution state is implicitly tied to the exact shape of an external API (e.g., an OpenAI JSON payload). AXON replaces this with a continuous, universal `LatentState` mathematically defined as a manifold. LLM interactions are no longer string exchanges; they are modeled as the application of a **Logical Transducer**—a diffeomorphism that maps the pristine topological spaces of AXON directly into the rigid, discrete logical spaces expected by black-box APIs (acting as "Categorical Oracles"). 
@@ -2650,7 +2659,7 @@ An enterprise needs to migrate its massive multi-agent infrastructure from OpenA
 
 ### XIV. Epistemic Model Context Protocol — the `mcp` and `taint` Primitives
 
-> AXON v0.21.0 introduces a sixteenth paradigm shift: **Categorial Subyugation
+> AXON introduces a sixteenth paradigm shift: **Categorial Subyugation
 > of the MCP Standard** — formally assimilating external Model Context Protocol
 > servers (databases, tools, resources) into AXON's epistemic lattice via
 > structural transduction, taint propagation, and compile-time capability
@@ -2935,7 +2944,7 @@ know {
 
 ### XV. Cybernetic Refinement Calculus — the `mandate` Primitive
 
-> AXON v0.22.0 introduces a seventeenth paradigm shift: **Deterministic LLM
+> AXON introduces a seventeenth paradigm shift: **Deterministic LLM
 > Control via Closed-Loop PID Enforcement** — the first compiler-native
 > implementation of the Cybernetic Refinement Calculus (CRC), unifying Axiomatic
 > Semantics, Dependent Refinement Types, and Thermodynamic PID Control to
@@ -3249,7 +3258,7 @@ without modification alongside 34 new EMS-specific tests (185 total).
 
 ### XVII. Lambda Data (ΛD) — Epistemic State Vectors as First-Class Data
 
-> AXON v0.24.1 introduces an eighteenth paradigm shift: **formal epistemic
+> AXON introduces an eighteenth paradigm shift: **formal epistemic
 > data primitives with compile-time degradation enforcement** — replacing
 > JSON's semantics-blind serialization with invariant epistemic state
 > vectors grounded in information thermodynamics and Peircean semiotics.
@@ -3555,7 +3564,7 @@ know {
 
 ### XVIII. Deterministic Muscle — the `compute` Primitive
 
-> AXON v0.26 introduces a nineteenth paradigm shift: **deterministic execution
+> AXON introduces a nineteenth paradigm shift: **deterministic execution
 > as a first-class cognitive primitive**, grounding the System 1 / System 2
 > duality of Kahneman directly into the compiler pipeline.
 
@@ -3775,7 +3784,7 @@ crafting a personalized response.
 
 ### XIX. Reactive Daemon Infrastructure — the `daemon` and `listen` Primitives
 
-> AXON v0.27.5 introduces a twentieth paradigm shift: **π-Calculus reactive
+> AXON introduces a twentieth paradigm shift: **π-Calculus reactive
 > processes as first-class compiled constructs**, grounding event-driven AI
 > agents in Milner's π-calculus channel theory, Rutten's co-algebraic stream
 > semantics, and Erlang/OTP supervision trees — backed by a pluggable EventBus
@@ -4047,20 +4056,50 @@ daemon ComplianceReporter(event: RiskAssessment) -> SARReport {
 
 ---
 
-### XI. Muscle AxonStore — the `axonstore` Primitive
+### XX. The Cognitive Data Plane — the `axonstore` Primitive
 
-> AXON v0.30.6 consolidates Phase 24 as a production paradigm shift: **compiler-verified
-> transactional persistence with ACID guarantees, HoTT schema validation, and
-> Linear Logic transaction tokens** — the first cognitive language primitive
-> that subyugates the stochastic volatility of LLMs to the formal guarantees
-> of relational databases.
+> The `axonstore` primitive turns a database into a **cognitive data plane** —
+> a persistent relation enriched in four orthogonal dimensions no relational
+> model ever carried: an **epistemic** grading, an **audit-chained** mutation
+> history, an **algebraic-effect** (streaming) selection, and a **capability**
+> type. v1.30.0 (Fase 35) ships these four pillars on a native Rust + `sqlx`
+> PostgreSQL substrate.
 
-Every existing LLM framework bolt-on a database as an afterthought: wrap a
-SQLAlchemy session in a Python class, call it "memory", and hope the agent
-doesn't hallucinate column names. AXON rejects this entirely. `axonstore` is
-a **compiled cognitive primitive** whose schema, transaction semantics, and
-epistemic contracts are verified at compile time — before a single query
-ever reaches a database engine.
+Every existing LLM framework bolts a database on as an afterthought: wrap a
+SQLAlchemy session in a class, call it "memory", and hope the agent doesn't
+hallucinate column names. AXON rejects this. `axonstore` is a **compiled
+cognitive primitive** — its `where` filters compile to parameterized SQL
+(injection is *unrepresentable*), its rows are epistemically typed, every
+mutation is audit-chained, and store access is checked against a capability
+type at compile time.
+
+> **What v1.30.0 ships (Fase 35).** The four pillars below are live and proven
+> end-to-end against a real `postgres:16` in CI. The `schema { … }` and
+> `transact { … }` syntax shown later in this section *parses* today, but full
+> DDL schema synthesis (`CREATE TABLE` / `migrate()`) and multi-statement
+> transactions are the Fase 35.x roadmap — v1.30.0 runs single-statement
+> autocommit and maps the store name to an existing SQL table.
+
+#### The four pillars
+
+1. **Epistemic (Pillar I).** Every row `retrieve`d is born `Untrusted` (⊥) in
+   the ESK trust lattice; a `confidence_floor` on the store is enforced at both
+   `retrieve` and `persist` — sub-floor data cannot enter a trusted result or
+   be silently written.
+2. **Audit-chained (Pillar II).** Every `persist` / `mutate` / `purge` appends
+   an HMAC-SHA256, Merkle-linked delta to a per-flow mutation chain; `head()`
+   is a tamper-evident root, `verify()` re-checks the whole history, and an
+   `on_breach` policy (`log` / `raise` / `rollback`) fires on a detected tamper.
+3. **Streaming (Pillar III).** `retrieve` is a lazy, back-pressured
+   `Stream<Row>` — it drains a server-side `sqlx` cursor through the Fase 34
+   streaming surface under a `BackpressurePolicy`, so a million-row scan never
+   materialises in memory.
+4. **Capability-typed (Pillar IV).** A `capability: "<slug>"` on the store is a
+   typed permission; the frontend type-checker enforces an
+   endpoint → flow → gated-store compositional check at *compile time* — an
+   under-privileged endpoint that could reach a gated store does not compile.
+
+The remainder of this section gives the formal model behind the data plane.
 
 #### 1. Argumento duro (pura matematica)
 
@@ -4196,6 +4235,12 @@ Rust's ownership model.
 
 #### 3. Argumento con tres casos de uso
 
+> *Scope note — the `schema { … }`, `transact { … }` and `migrate()` constructs
+> in the examples below parse today and illustrate the design model. v1.30.0
+> enforces the four pillars (epistemic floor, audit chain, `Stream<Row>`,
+> capability typing); DDL schema synthesis and multi-statement transactions are
+> the Fase 35.x roadmap.*
+
 **Use Case 1 — Financial Ledger with Atomic Double-Entry Bookkeeping**
 
 A fintech platform requires that every debit is paired with exactly one credit.
@@ -4258,7 +4303,7 @@ axonstore Users {
         email:             text     not_null
         name:              text
         created_at:        text
-        // v0.30.6: new column — migrate() handles ALTER TABLE automatically
+        // roadmap: migrate() will handle ALTER TABLE automatically
         subscription_tier: text
     }
     indexes {
@@ -4392,18 +4437,27 @@ know {
                               Typed Output (validated, traced, epistemic)
 ```
 
-**v1.3.1 metrics: ~96K source lines · ~40K test lines · 282 routes · 65 primitives · 3,740 Python + 1,758 Rust = 5,498 tests passing · 108 mapped external-audit controls across 4 frameworks**
+**v1.30.0 metrics: ~161K Rust + ~92K Python source lines · 285 routes · 65+ primitives · 4,513 Rust + 5,156 Python = 9,669 tests · 108 mapped external-audit controls across 4 frameworks**
 
 > **Versioning trail (semver MINOR bumps, all backward-compatible):**
 > - **v1.0.0** — Initial Phase K production release (47 cognitive primitives, 738 tests)
 > - **v1.1.0** — Fases 1–5 Cognitive I/O: `resource` / `fabric` / `manifest` / `observe` / `reconcile` / `lease` / `ensemble` / `topology` / `session` / `immune` / `reflex` / `heal`
 > - **v1.2.0** — Fases 6–7.x ESK: `compliance` annotations + Regulatory Type Theory + audit engine (108 controls across SOC 2 / ISO 27001 / FIPS 140-3 / CC EAL 4+)
 > - **v1.3.0** — Fase 8: native Rust runtime with byte-identical parity + CLI parity (`dossier` / `sbom` / `audit` / `evidence-package`) + binary distribution
-> - **v1.3.1** — Fase 9: UI cognitiva declarativa core primitives (`component` / `view` + compile-time compliance contract); renderers deferred to v1.4.x
+> - **v1.3.1** — Fase 9: UI cognitiva declarativa core primitives (`component` / `view` + compile-time compliance contract)
+> - **v1.4.x–v1.9.x** — Fases 11–14: neuro-symbolic micro-OS, π-calculus mobile typed channels, lossless lexing
+> - **v1.10.0–v1.15.0** — Fases 15–20: runtime wiring (lambda-apply, `let`, IR meta-audit), production hardening, daemon supervisor, the production Shield runtime
+> - **v1.16.0–v1.18.0** — Fases 22–24: seven native Rust LLM backends + the algebraic-effects execution runtime
+> - **v1.19.x–v1.20.0** — Fases 25 + 28: C23 metal-bound kernels (`axon-csys`) + adopter diagnostic robustness (multi-file `axon parse`, rustc-style diagnostics)
+> - **v1.21.0–v1.22.0** — Fases 30–31: HTTP transport for algebraic stream effects (SSE / NDJSON) + type-driven wire inference
+> - **v1.23.0–v1.23.1** — Fase 32: `axonendpoint` as a first-class HTTP REST primitive — typed routes, body + output schema validation, `Idempotency-Key`, auth scopes
+> - **v1.24.0–v1.28.0** — Fase 33: SSE as a cognitive primitive — per-`IRFlowNode` async dispatcher, production streaming wiring, wire-format adapters
+> - **v1.29.0** — Fase 34: tools as stream-producers
+> - **v1.30.0** — Fase 35: `axonstore` as a cognitive data plane (four pillars — epistemic / audit-chained / `Stream<Row>` / capability-typed)
 
-### 65 Primitives — 47 Cognitive + 18 Cognitive I/O (100% wired to runtime)
+### 65+ Language Primitives — Cognitive + Cognitive I/O (100% wired to runtime)
 
-**Block 1 — the 47 original Cognitive Primitives:**
+**Block 1 — the core Cognitive Primitives:**
 
 
 | Primitive  | Keyword      | What it represents                                   |
@@ -4456,7 +4510,7 @@ know {
 | Daemon     | `daemon`     | π-Calculus reactive process — persistent event-driven agent with OTP supervision |
 | Listen     | `listen`     | Co-algebraic event subscription — binds daemon to typed EventBus channels       |
 | AxonEndpoint | `axonendpoint` (`axpoint`) | Native HTTP boundary primitive — typed ingress, flow dispatch, and holographic endpoint telemetry |
-| AxonStore  | `axonstore`  | Transactional persistence — ACID-guaranteed CRUD with HoTT schema validation     |
+| AxonStore  | `axonstore`  | Cognitive data plane — epistemically-typed rows, HMAC-Merkle audit chain, `Stream<Row>`, capability-typed access |
 | APX        | `apx`        | Epistemic dependency manager — MEC/PCC verification, EPR ranking, quarantine, and compliance gates |
 
 **Block 2 — the 18 Cognitive I/O primitives (Fases 1–9, λ-L-E calculus):**
@@ -4517,80 +4571,71 @@ Compound:     StructuredReport
 
 ## Project Structure
 
+AXON is a Rust + C workspace. The Rust crates are the **canonical
+implementation**; the Python package remains as the historical reference.
+
 ```
 axon-constructor/
-├── axon/
-│   ├── compiler/
-│   │   ├── lexer.py              # Source → Token stream
-│   │   ├── tokens.py             # Token type enum (88 keywords)
-│   │   ├── parser.py             # Tokens → AST (recursive descent)
-│   │   ├── ast_nodes.py          # AST node class hierarchy
-│   │   ├── type_checker.py       # Semantic type validation
-│   │   ├── ir_generator.py       # AST → AXON IR
-│   │   └── ir_nodes.py           # IR node definitions
-│   ├── backends/
-│   │   ├── base_backend.py       # Abstract backend interface
-│   │   ├── anthropic.py          # Claude
-│   │   ├── openai.py             # GPT
-│   │   ├── gemini.py             # Gemini
-│   │   └── ollama.py             # Local models
-│   ├── engine/                   # In-memory associative data engine
-│   │   ├── symbol_table.py       # Dictionary encoding
-│   │   ├── data_column.py        # Columnar storage + inverted index
-│   │   ├── association_index.py  # Cross-table link graph
-│   │   ├── selection_state.py    # Selection propagation engine
-│   │   ├── dataspace.py          # Top-level data container
-│   │   ├── pix/                  # PIX retrieval engine
-│   │   │   ├── document_tree.py  # PixNode + DocumentTree (navigable tree)
-│   │   │   ├── navigator.py      # PixNavigator (bounded tree search)
-│   │   │   └── indexer.py        # PixIndexer (document → tree)
-│   │   └── mdn/                  # Multi-Document Navigation engine
-│   │       ├── corpus_graph.py   # CorpusGraph, Document, Edge (Def. 1)
-│   │       ├── navigator.py      # CorpusNavigator + MemoryAugmentedNavigator
-│   │       ├── epr.py            # EpistemicPageRank (Thm 3 + incremental)
-│   │       ├── epistemic_types.py# Epistemic lattice (T, ≤) + promotion/demotion
-│   │       ├── builder.py        # Fluent corpus construction API
-│   │       └── memory.py         # Memory operator μ (Def. 2, Thm 4)
-│   ├── runtime/
-│   │   ├── executor.py           # Flow execution engine
-│   │   ├── data_dispatcher.py    # Data Science IR → engine bridge
-│   │   ├── context_mgr.py        # Mutable state between steps
-│   │   ├── semantic_validator.py # Output type validation
-│   │   ├── retry_engine.py       # Backoff + failure context
-│   │   ├── memory_backend.py     # Abstract + InMemoryBackend
-│   │   ├── state_backend.py      # CPS persistence (hibernate/resume)
-│   │   ├── tracer.py             # 23 event types, JSON trace
-│   │   ├── runtime_errors.py     # 11-level error hierarchy
-│   │   └── tools/
-│   │       ├── base_tool.py      # BaseTool ABC + ToolResult
-│   │       ├── registry.py       # RuntimeToolRegistry (cached)
-│   │       ├── dispatcher.py     # IR → runtime tool bridge
-│   │       ├── contract_tool.py  # @contract_tool FFI decorator
-│   │       ├── csp_tool.py       # @csp_tool auto-inference decorator
-│   │       ├── blame.py          # Blame semantics (CT-3)
-│   │       ├── epistemic_inference.py  # CSP heuristic engine (CT-4)
-│   │       ├── stubs/            # 8 tools (6 stubs + 2 real)
-│   │       └── backends/         # 3 production backends
-│   ├── runtime/
-│   │   └── streaming.py          # Coinductive streaming engine (CT-1)
-│   └── stdlib/                   # Built-in personas, flows, anchors
-└── tests/                        # 1800 tests
+├── axon-frontend/               # Rust — the canonical compiler frontend
+│   └── src/
+│       ├── lexer.rs             # Source → token stream (lossless)
+│       ├── tokens.rs            # Keyword table (100+ keywords)
+│       ├── parser.rs            # Tokens → AST (recursive descent + recovery)
+│       ├── ast.rs               # AST node hierarchy
+│       ├── type_checker.rs      # Semantic + epistemic + capability typing
+│       ├── checker.rs           # Compliance / κ-coverage checker
+│       ├── ir_generator.rs      # AST → AXON IR
+│       ├── ir_nodes.rs          # IR node definitions
+│       ├── stream_effect.rs     # Algebraic stream-effect inference
+│       ├── channel_analysis.rs  # π-calculus session-type duality
+│       └── smart_suggest.rs     # "Did you mean X?" Levenshtein hints
+├── axon-rs/                     # Rust — the canonical runtime, server & CLI
+│   └── src/
+│       ├── main.rs              # `axon` CLI — 21 subcommands
+│       ├── runner.rs            # Synchronous flow execution engine
+│       ├── flow_dispatcher/     # Per-IRFlowNode async dispatcher (45-variant)
+│       ├── streaming_via_dispatcher.rs  # Production SSE streaming producer
+│       ├── stream_runtime.rs    # Algebraic-effects streaming runtime
+│       ├── effects/             # Algebraic effect handlers
+│       ├── backends/            # 7 native LLM backends + SSE streaming + retry
+│       ├── store/               # axonstore cognitive data plane (4 pillars)
+│       │   ├── filter.rs            # where-expr → parameterized SQL compiler
+│       │   ├── postgres_backend.rs  # sqlx PgPool substrate
+│       │   ├── registry.rs          # closed-catalog backend dispatch
+│       │   ├── epistemic.rs         # Pillar I — confidence_floor enforcement
+│       │   ├── audit_chain.rs       # Pillar II — HMAC-Merkle mutation chain
+│       │   ├── row_stream.rs        # Pillar III — retrieve as Stream<Row>
+│       │   └── capability.rs        # Pillar IV — capability-typed access
+│       ├── axon_server.rs       # axum HTTP / JSON-RPC server (285 routes)
+│       ├── emcp.rs              # Epistemic Model Context Protocol
+│       ├── esk/                 # Epistemic Substrate Kernel (trust lattice)
+│       ├── wire_format/         # SSE / NDJSON wire-format adapters
+│       ├── storage_postgres.rs  # PostgreSQL persistence + migrations
+│       └── resilient_backend.rs # Retry + circuit breaker + fallback chains
+├── axon-csys/                   # C23 metal-bound kernels (BPE, crypto, SIMD)
+├── axon/                        # Python — historical reference implementation
+├── examples/                    # Reference .axon programs (healthcare, banking…)
+├── docs/                        # Language spec, papers, adopter guides, plans
+├── sdk/                         # TypeScript MCP client SDK
+├── tests/                       # Python reference test suite (5,156 tests)
+└── .github/workflows/           # CI — per-fase test workflows + release pipelines
 ```
 
 ---
 
 ## Installation
 
-> **Two equivalent channels as of v1.3.0** — pick whichever fits your toolchain:
-> - **Python** via `pip install axon-lang` — the formal reference implementation. All 65 primitives, full CLI, PyPI-published.
-> - **Rust** via the pre-built native binary (see Option 1 below). Byte-identical output on `check` / `compile` / `dossier` / `sbom` / `audit` / `evidence-package` — no Python interpreter required. Rust still depends on a Python install only if you run `axon run` with an LLM backend (external API call).
->
-> A CI parity gate (`.github/workflows/rust_parity.yml`) enforces byte-identical equivalence on every push, so you can switch channels mid-project without observable differences in audit artefacts.
+> **The Rust binary is the canonical channel.** The whole stack — compiler,
+> runtime, HTTP server, seven LLM backends, and the streaming wire — ships as a
+> single native binary, no interpreter required. Download a prebuilt (Option 1)
+> or `cargo build` from source (Option 2). The original Python package
+> (`pip install axon-lang`) is still published as the historical reference
+> implementation.
 
 ### Option 1 — Download the binary (recommended)
 
 Pre-built executables for Linux, macOS, and Windows are available on the
-[releases page](https://github.com/axon-lang/axon/releases).
+[releases page](https://github.com/Bemarking/axon-lang/releases).
 
 ```bash
 # Add to PATH, then:
@@ -4606,8 +4651,8 @@ Requires [Rust](https://rustup.rs) 1.75+.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Clone and build
-git clone https://github.com/axon-lang/axon.git
-cd axon/axon-rs
+git clone https://github.com/Bemarking/axon-lang.git
+cd axon-lang/axon-rs
 cargo build --release
 
 # Run a program
@@ -4631,14 +4676,15 @@ Without `DATABASE_URL`, AXON uses in-memory storage (perfect for development and
 
 Optional — only needed to execute flows against real backends (not for CLI validation):
 
-| Key                 | For               | Get it at                                               |
-| ------------------- | ----------------- | ------------------------------------------------------- |
-| `ANTHROPIC_API_KEY` | Claude backend    | [console.anthropic.com](https://console.anthropic.com/) |
-| `OPENAI_API_KEY`    | GPT backend       | [platform.openai.com](https://platform.openai.com/)     |
-| `GEMINI_API_KEY`    | Gemini backend    | [aistudio.google.com](https://aistudio.google.com/)     |
-| `OPENAI_API_KEY`    | OpenRouter (compatible) | [openrouter.ai](https://openrouter.ai)          |
-| `GLM_API_KEY`    | GLM backend       | [platform.openai.com](https://platform.openai.com/)     |
-| `KIM_API_KEY`    | Kimi backend       | [platform.openai.com](https://platform.openai.com/)     |
+| Key                  | For                       | Get it at                                               |
+| -------------------- | ------------------------- | ------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`  | Claude backend            | [console.anthropic.com](https://console.anthropic.com/) |
+| `OPENAI_API_KEY`     | GPT backend               | [platform.openai.com](https://platform.openai.com/)     |
+| `GEMINI_API_KEY`     | Gemini backend            | [aistudio.google.com](https://aistudio.google.com/)     |
+| `KIMI_API_KEY`       | Kimi backend              | Moonshot AI platform                                    |
+| `GLM_API_KEY`        | GLM backend               | Zhipu AI open platform                                  |
+| `OPENROUTER_API_KEY` | OpenRouter backend        | [openrouter.ai](https://openrouter.ai)                  |
+| `OLLAMA_API_KEY`     | Ollama (local — optional) | runs locally; no key for the default setup              |
 
 Stubs work without keys — perfect for development and CI/CD.
 
@@ -4695,6 +4741,24 @@ axon inspect anchors                       # list all anchors
 axon inspect personas                      # list all personas
 axon inspect NoHallucination               # detail for a component
 axon inspect --all                         # list everything
+
+# Deploy a flow to a running server
+axon deploy program.axon --server http://localhost:3000
+
+# Lambda Data (ΛD) epistemic codec — encode / decode / inspect envelopes
+axon ld encode data.json
+axon ld inspect envelope.ld.json
+
+# Compare two execution plans / replay a trace as a regression check
+axon diff old.ir.json new.ir.json
+axon replay program.trace.json
+
+# Aggregate trace statistics (text | json | prometheus | csv)
+axon stats traces/ --format prometheus
+
+# Dependency graph (DOT or Mermaid) + token/USD cost estimate
+axon graph program.axon --format mermaid
+axon estimate program.axon -b anthropic
 ```
 
 ### Server Endpoints (HTTP/JSON-RPC)
@@ -4736,65 +4800,38 @@ cd axon-rs
 cargo test
 
 # Specific test suites
-cargo test test_k5_                        # Phase K integration tests
-cargo test --lib                           # Unit tests only
-cargo test --test integration              # Integration tests only
+cargo test --lib                           # axon-rs unit tests
+cargo test --test integration              # axon-rs integration tests
+cd ../axon-frontend && cargo test          # compiler frontend tests
 ```
 
-### Current Status (Phase K Complete)
+### Current Status
 
 ```
-1,466 tests passing (713 lib + 753 integration), 0 failures ✅
+Rust workspace:  4,513 tests  (axon-rs 3,971 · axon-frontend 321 · axon-csys 221)
+Python suite:    5,156 tests  (historical reference implementation)
+Total:           9,669 tests — zero regressions
 ```
 
-**Phase K Test Coverage (15 new tests):**
+Every development cycle (Fase) lands behind a dedicated CI workflow under
+[`.github/workflows/`](.github/workflows/) — per-fase test lanes, cross-stack
+drift gates, fuzz packs, and a real-`postgres:16` integration lane for the
+`axonstore` data plane. The discipline is **zero regressions**: a cycle does
+not ship until the full suite is green.
 
-| Test | Purpose |
-|------|---------|
-| `test_k5_log_format_variants` | JSON/pretty logging output validation |
-| `test_k5_circuit_breaker_full_lifecycle` | Closed → Open → HalfOpen → Closed transitions |
-| `test_k5_circuit_breaker_half_open_failure_reopens` | HalfOpen failure → Open recovery |
-| `test_k5_retry_policy_backoff_escalation` | Exponential backoff with jitter |
-| `test_k5_retry_policy_respects_rate_limit_hint` | Retry-After header handling |
-| `test_k5_error_classification_comprehensive` | HTTP status → retryable classification |
-| `test_k5_resilient_backend_all_providers_initialized` | 7 providers in Closed state |
-| `test_k5_resilient_backend_circuit_reset` | Manual reset via admin endpoint |
-| `test_k5_storage_dispatcher_in_memory` | Save/load round-trip (in-memory) |
-| `test_k5_hibernation_lifecycle_agent` | Create → checkpoint → suspend → resume |
-| `test_k5_server_config_new_fields` | `log_format`, `log_file`, `database_url` |
-| `test_k5_server_state_has_storage_and_resilient_backend` | Storage + resilience in ServerState |
-| `test_k5_health_endpoint_with_tracing_middleware` | `/v1/health` with request tracing |
-| `test_k5_db_url_masking` | Password masking in database URLs |
-| `test_k5_storage_error_types` | All error variants format correctly |
+**Coverage by area:**
 
-**Full Test Breakdown:**
-
-| Phase | Tests | What's covered                              |
-| ----- | ----- | ------------------------------------------- |
-| 1     | 83    | Lexer, Parser, AST, Type Checker            |
-| 2     | 164   | IR Generator, Compiler Backends             |
-| 3     | 115   | Executor, Context, Retry, Tracer, Validator |
-| 4     | 88    | Tool infra (53) + Real backends (35)        |
-| 7     | 56    | Paradigm Shifts (epistemic, par, hibernate) |
-| 8     | 69    | Data Science Engine (core)                  |
-| 11    | 22    | Forge (creative synthesis pipeline)         |
-| 12    | 28    | Agent (BDI pipeline + integration)          |
-| 13    | 70    | Shield (compiler + runtime + integration)   |
-| 14    | 83    | Streaming, Effects, Contract, CSP (CT-1–4)  |
-| 15    | 124   | PIX (engine + compiler + integration)       |
-| 16    | 208   | MDN (graph + navigator + EPR + epistemic)   |
-| 17    | 70    | Memory (μ operator + 5 formal properties)   |
-| 18    | 12    | OTS (compiler + runtime execution)          |
-| 19    | 22    | MEK (LatentState, Transducer, Holographic)  |
-| 20    | 26    | EMCP (mcp ingestion + taint + shield integration) |
-| 21    | 38    | Lambda Data (ΛD — lexer + parser + type checker + IR + integration) |
-| 22    | 31    | Compute (lexer + parser + IR + dispatcher + backend + integration) |
-| 23    | 98    | Daemon/Listen (π-calculus + EventBus FFI + AxonServer HTTP/WS API) |
-| 24    | 158   | AxonStore Enterprise (ACID + HoTT + Linear Logic + confidence floor + circuit breaker + migrations + health checks) |
-| 25    | 50    | APX Enterprise (lattice, graph invariants, runtime resolver, registry, observability, compliance hardening) |
-| 26    | 6     | AxonEndpoint primitive (lexer/parser/AST/type-check/IR + runtime HTTP dispatch + endpoint telemetry) |
-| **K** | **15** | **Observability, Resilience, Persistence (Phase K Launch)** |
-| misc  | 894   | Stdlib, integration, edge cases             |
+| Area | What's covered |
+| ---- | -------------- |
+| Frontend | Lexer, parser (with error recovery), AST, type checker, IR generator, smart-suggest, channel analysis |
+| Compiler backends | IR generation, seven LLM backends, locked-model dispatch, retry / transport |
+| Runtime | Flow execution, algebraic-effects engine, per-`IRFlowNode` async dispatcher, context, tracer, validator |
+| Streaming | SSE / NDJSON wire, type-driven transport inference, backpressure, cancellation, wire-format adapters |
+| Cognitive primitives | forge, agent, shield, pix, corpus / MDN, memory, ots, mcp / taint, mandate, compute, daemon / listen |
+| HTTP surface | `axonendpoint` REST routes, body + output schema validation, idempotency, auth scopes, 285 server routes |
+| Data plane | `axonstore` four pillars — filter compiler, Postgres backend, epistemic floor, audit chain, `Stream<Row>`, capability typing |
+| Compliance | ESK regulatory type theory, audit engine (108 controls), dossier / sbom / evidence-package determinism |
+| Hardening | Observability, resilience (retry + circuit breaker), persistence, fuzz packs, immune / reflex / heal |
 
 ---
 
@@ -4931,6 +4968,12 @@ honesty:
 | 25    | Epistemic Dependency Management (`apx` — lattice + MEC/PCC + EPR + registry + observability/compliance) | ✅ Done |
 | 26    | Native Endpoint Surface (`axonendpoint` / `axpoint` — typed HTTP ingress + flow dispatch + endpoint telemetry) | ✅ Done |
 | **K**     | **Production Hardening — Observability, Resilience, Persistence** | ✅ Done |
+| v1.10–v1.20 | Runtime wiring (`let` / lambda-apply / IR meta-audit) + production hardening + daemon supervisor + 7 native Rust LLM backends + algebraic-effects runtime + adopter diagnostics | ✅ Done |
+| v1.21–v1.22 | HTTP transport for algebraic stream effects (SSE / NDJSON) + type-driven wire inference | ✅ Done |
+| v1.23     | `axonendpoint` as a first-class HTTP REST primitive (schema validation, idempotency, auth scopes) | ✅ Done |
+| v1.24–v1.28 | SSE as a cognitive primitive — per-`IRFlowNode` async dispatcher + production streaming wiring | ✅ Done |
+| v1.29     | Tools as stream-producers                         | ✅ Done |
+| v1.30     | `axonstore` cognitive data plane — four pillars (epistemic / audit-chained / `Stream<Row>` / capability-typed) | ✅ Done |
 
 ---
 
@@ -4992,6 +5035,15 @@ honesty:
 | OTP supervision trees         | ❌        | ❌      | ❌       | ✅       |
 | Pluggable EventBus FFI        | ❌        | ❌      | ❌       | ✅       |
 | Native HTTP/WS server API     | ❌        | ❌      | ❌       | ✅       |
+| Real-time SSE / NDJSON streaming wire | ❌ | ❌    | ❌       | ✅       |
+| Type-driven wire-format inference | ❌    | ❌      | ❌       | ✅       |
+| Algebraic-effects streaming runtime | ❌  | ❌      | ❌       | ✅       |
+| First-class HTTP REST endpoints | ❌      | ❌      | ❌       | ✅       |
+| Compile-time request/response schema typing | ❌ | ❌ | ❌      | ✅       |
+| Compile-time regulatory compliance | ❌    | ❌      | ❌       | ✅       |
+| Epistemically-typed persistent storage | ❌ | ❌    | ❌       | ✅       |
+| Audit-chained database mutations | ❌      | ❌      | ❌       | ✅       |
+| Capability-typed data access  | ❌        | ❌      | ❌       | ✅       |
 
 ---
 
