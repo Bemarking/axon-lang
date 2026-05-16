@@ -1493,6 +1493,11 @@ pub struct RetrieveStep {
 pub struct MutateStep {
     pub store_name: String,
     pub where_expr: String,
+    /// §Fase 35.p — the `{ col: value }` SET assignments. Empty when
+    /// the step declares no columns, in which case the runtime falls
+    /// back to writing the flow's user bindings as the `SET` clause
+    /// (backward-compatible with v1.31.0).
+    pub fields: Vec<(String, String)>,
     pub loc: Loc,
 }
 #[derive(Debug)]

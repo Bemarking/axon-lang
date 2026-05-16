@@ -736,6 +736,7 @@ impl IRGenerator {
                 source_column: s.loc.column,
                 store_name: s.store_name.clone(),
                 where_expr: s.where_expr.clone(),
+                fields: s.fields.clone(),
             }),
             FlowStep::Purge(s) => IRFlowNode::Purge(IRPurgeStep {
                 node_type: "purge",

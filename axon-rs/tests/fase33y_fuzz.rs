@@ -559,6 +559,7 @@ fn random_retrieve(lcg: &mut Lcg) -> IRFlowNode {
 fn random_mutate(lcg: &mut Lcg) -> IRFlowNode {
     IRFlowNode::Mutate(IRMutateStep {
         node_type: "mutate",
+            fields: Vec::new(),
         source_line: 0,
         source_column: 0,
         store_name: lcg.ascii_with_random_len(8),

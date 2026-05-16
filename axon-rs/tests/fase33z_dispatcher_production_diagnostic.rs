@@ -1071,6 +1071,7 @@ fn d1_catalog_totality_pin_45_variants() {
         }),
         IRFlowNode::Mutate(IRMutateStep {
             node_type: "mutate",
+            fields: Vec::new(),
             source_line: 0,
             source_column: 0,
             store_name: String::new(),

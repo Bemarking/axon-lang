@@ -95,6 +95,7 @@ fn retrieve_node(store: &str, where_expr: &str, alias: &str) -> IRFlowNode {
 fn mutate_node(store: &str, where_expr: &str) -> IRFlowNode {
     IRFlowNode::Mutate(IRMutateStep {
         node_type: "mutate",
+            fields: Vec::new(),
         source_line: 0,
         source_column: 0,
         store_name: store.into(),

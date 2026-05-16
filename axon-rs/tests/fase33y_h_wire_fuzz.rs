@@ -179,6 +179,7 @@ async fn fuzz_mutate_never_panics() {
         let (mut ctx, _rx) = fresh_ctx();
         let node = IRFlowNode::Mutate(IRMutateStep {
             node_type: "mutate",
+            fields: Vec::new(),
             source_line: 0,
             source_column: 0,
             store_name: lcg.ascii_with_random_len(15),
@@ -300,6 +301,7 @@ async fn fuzz_cancel_propagation_across_wire_handlers() {
             }),
             5 => IRFlowNode::Mutate(IRMutateStep {
                 node_type: "mutate",
+            fields: Vec::new(),
                 source_line: 0,
                 source_column: 0,
                 store_name: "s".into(),
@@ -389,6 +391,7 @@ async fn fuzz_wire_handlers_nested_inside_orchestration() {
             }),
             5 => IRFlowNode::Mutate(IRMutateStep {
                 node_type: "mutate",
+            fields: Vec::new(),
                 source_line: 0,
                 source_column: 0,
                 store_name: format!("s_{iter}"),

@@ -135,7 +135,7 @@ operates on the table `tenants`.
 |---|---|---|
 | **persist** | `persist [into] <store> { col: value … }` | `INSERT` — writes exactly the declared columns |
 | **retrieve** | `retrieve <store> { where: "<expr>" as: <alias> }` | `SELECT * … WHERE <expr>` |
-| **mutate** | `mutate <store> { where: "<expr>" }` | `UPDATE … SET … WHERE <expr>` |
+| **mutate** | `mutate <store> { where: "<expr>" col: value … }` | `UPDATE … SET <cols> WHERE <expr>` |
 | **purge** | `purge <store> { where: "<expr>" }` | `DELETE … WHERE <expr>` |
 
 - **`persist`** (v1.31.0+) takes a `{ col: value }` field block —
@@ -144,8 +144,10 @@ operates on the table `tenants`.
   [§4.1](#41-the-persist-field-block-v1310)). The optional `into`
   connector reads as documentation: `persist into chat { … }` ≡
   `persist chat { … }`.
-- **`mutate`** writes the flow's user bindings (`let` bindings + step
-  results) as the `SET` columns; each binding name is a column.
+- **`mutate`** (v1.32.0+) takes the same `{ col: value }` block —
+  alongside `where:`, every other key is a `SET` assignment; the
+  `UPDATE` SETs **exactly** the declared columns (see
+  [§4.2](#42-the-mutate-set-block-v1320)).
 - **`retrieve`** binds its result under the `as:` alias.
 - A `mutate` / `purge` **without** a `{ where: }` block operates on the
   **whole store** (the runtime renders `WHERE TRUE`). Always write a
@@ -193,6 +195,46 @@ the `GenerateResponse` step result, …) is ignored.
 > dropped**; the runtime wrote every binding, so `INSERT` failed on any
 > flow with more bindings than the table has columns. v1.31.0 closes
 > that gap — see [`docs/MIGRATION_v1.31.md`](MIGRATION_v1.31.md).
+
+---
+
+## 4.2 The `mutate` SET block (v1.32.0+)
+
+A `mutate` step declares its `SET` assignments the same way `persist`
+declares its columns — the block carries `where:` (the filter) plus
+one `col: value` entry per column to update:
+
+```axon
+flow AdjustBalance(account_id, new_balance, tenant_id) -> Unit {
+    mutate accounts {
+        where:   "id = ${account_id}"
+        balance: "${new_balance}"
+        status:  "active"
+    }
+}
+```
+
+This compiles to `UPDATE accounts SET "balance" = $1, "status" = $2
+WHERE id = $3` — **exactly** the two declared `SET` columns. Every
+other binding the flow holds (`tenant_id`, `account_id`) stays out of
+the `SET`.
+
+- `where:` keeps its string-literal grammar ([§5](#5-the-where-grammar));
+  every **other** key in the block is a `SET` column.
+- Value interpolation is `${name}` / `$name` — exactly as for `persist`
+  ([§4.1](#41-the-persist-field-block-v1310)).
+- **No SET column ⇒ the v1.31.0 fallback.** A `mutate <store>
+  { where: … }` with no `col:` entry still SETs every user binding —
+  backward-compatible, but it fails against any table whose columns do
+  not exactly match the flow's bindings. **Always declare the SET
+  columns for a real table.**
+- The `in_memory` backend is unaffected by the SET block (no columns).
+
+> Before v1.32.0 the `mutate` block captured only `where:` and skipped
+> every other key — the runtime built the `UPDATE … SET` from every
+> flow binding, so it failed on any flow carrying a binding that is not
+> a column. v1.32.0 closes that gap symmetrically to the v1.31.0
+> `persist` fix — see [`docs/MIGRATION_v1.32.md`](MIGRATION_v1.32.md).
 
 ---
 
@@ -460,7 +502,7 @@ silently omitted:
 | `axonstore registry: unknown backend 'sqlite'` | `sqlite`/`mysql` are not in the v1.30.0 catalog. Use `postgresql` or `in_memory`. |
 | `environment variable 'X' is not set` | `connection: "env:X"` and `X` is unset. Export it; never falls back to KV. |
 | `unsafe table identifier` / `unsafe column identifier` | A table or binding name is not `[A-Za-z_]\w*` / ≤ 63 bytes. |
-| `column 'X' does not exist` (from Postgres) | A `persist`/`mutate` is writing a binding that is not a table column. For `persist`, declare a `{ col: value }` field block (v1.31.0+, [§4.1](#41-the-persist-field-block-v1310)) so the `INSERT` is scoped to exactly the columns you name. v1.30.0 operates against existing tables — the columns must already exist. |
+| `column 'X' does not exist` (from Postgres) | A `persist`/`mutate` is writing a binding that is not a table column. Declare a `{ col: value }` block — for `persist` ([§4.1](#41-the-persist-field-block-v1310), v1.31.0+) the `INSERT` is scoped to exactly those columns; for `mutate` ([§4.2](#42-the-mutate-set-block-v1320), v1.32.0+) the `UPDATE … SET` is. axonstore operates against existing tables — the columns must already exist. |
 | `persist … blocked: un-elevated write` | A `confidence_floor` store received a `persist` with no `_confidence`. Bind a `_confidence` ≥ the floor. |
 | Endpoint fails `axon check` with "requiring capability" | A flow touches a `capability`-gated store; add the capability to the endpoint's `requires:`. |
 | `column 'X' has Postgres type 'Y', outside the v1.30.0 supported catalog` | See [§12](#12-honest-scope-boundaries-v1300) for the supported type catalog. |
