@@ -46,6 +46,12 @@ infrastructure/terraform/*.tfstate.backup
 # Temp files
 temp_*.py
 temp_*.json
+temp_*.txt
+
+# Local test-run scratch output — never commit (root-level dumps)
+/test_*.txt
+/pytest_*.txt
+*.log
 
 # SDK (not part of this repo)
 sdk/

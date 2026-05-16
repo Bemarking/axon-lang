@@ -13,7 +13,7 @@ lenguaje**, garantizadas en tiempo de compilación por `checker.rs`.
 
 ## Regla de pureza
 
-Axon es lenguaje, no adoptante. Este plan vive en `axxon-constructor`
+Axon es lenguaje, no adoptante. Este plan vive en `axon-lang`
 porque describe la evolución del lenguaje **y** su integración con
 Enterprise. El código en `axon-lang` permanece adopter-agnóstico:
 **cero mención** de Whisper, Stripe, Kivi, o cualquier cliente
@@ -760,7 +760,7 @@ cada cambio requiere entrada en este log con justificación.
   (`axon-enterprise`) co-evolucionan; no tiene sentido disociar releases.
 - **Regla de pureza activa.** Axon-lang sigue adopter-agnostic. Ninguna
   mención de Whisper, Stripe, Kivi, o clientes específicos en código o
-  docstrings de axon-lang. Este plan vive en axxon-constructor porque
+  docstrings de axon-lang. Este plan vive en axon-lang porque
   coordina ambos.
 - **Zero shortcuts.** Ninguna sub-fase marca "completado" con
   `@TODO`/`# por ahora` sin su contraparte production-ready. Regla de
@@ -804,7 +804,7 @@ pentest externo PRE-GA obligatorio.
 - [x] 11.f Integration Testing + Security Audit
 
 **Sesión abierta en:**
-- Plan vivo: `axxon-constructor:docs/fase_11_neuro_symbolic_axon.md`
+- Plan vivo: `axon-lang:docs/fase_11_neuro_symbolic_axon.md`
 - Commits axon-lang pushed a `origin`: `363f845`, `aa6f7a2`, `495bc34` (11.a); `57844c9`, `c49bbee`, `95df120` (11.b); `2b933a1`, `b4e5bec`, `f6f6208`, `b9d1926` (11.c); `7e9e421`, `86d23e2`, `afc2172` (11.d); `e50ca4a`, `91fb237`, `87cddeb` (11.e); `f370eeb`, `240a7e8` (11.f).
 - Commits axon-enterprise pushed a `origin`: `0db9b4f`, `903ad77` (11.c); `5033569`, `79607d2` (11.d).
 - Tag `v1.2.0` pendiente de sign-off por engineering lead + external pentest per `docs/SECURITY_AUDIT_v1_2_0.md`.

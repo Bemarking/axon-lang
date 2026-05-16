@@ -1234,7 +1234,7 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 **Sesión abierta en:**
 - `axon-enterprise`: commits hasta `04b01b9` (Security audit + threat model + GA checklist)
 - Tag `v1.1.0` pendiente de sign-off por engineering lead según `docs/SECURITY_AUDIT.md`
-- Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
+- Doc vivo actualizado en `axon-lang:docs/multi_tenancy_axon.md`
 
 ---
 
@@ -1305,7 +1305,7 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 
 **Sesión abierta en:**
 - `axon-enterprise`: commits hasta `808946d` (Observability + tests + docs)
-- Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
+- Doc vivo actualizado en `axon-lang:docs/multi_tenancy_axon.md`
 
 ---
 
@@ -1332,7 +1332,7 @@ Las decisiones tomadas durante la ejecución de Fase 10 se registran aquí con f
 
 **Sesión abierta en:**
 - `axon-enterprise`: commits hasta `a7374b7` (Metering + tests + docs)
-- Doc vivo actualizado en `axxon-constructor:docs/multi_tenancy_axon.md`
+- Doc vivo actualizado en `axon-lang:docs/multi_tenancy_axon.md`
 
 ---
 
