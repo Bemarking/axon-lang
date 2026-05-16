@@ -194,6 +194,33 @@ pub async fn run_streaming_via_dispatcher(
         }
     };
 
+    // §2.5 — Build the axonstore registry (Fase 35.f). The D2 closed-
+    // catalog gate runs here: an unknown `backend:` fails fast with a
+    // named FlowError before any node dispatches.
+    let store_registry = match crate::store::registry::StoreRegistry::build(
+        &ir.axonstore_specs,
+    ) {
+        Ok(r) => std::sync::Arc::new(r),
+        Err(reg_error) => {
+            let _ = emit(FlowExecutionEvent::FlowError {
+                flow_name: flow_name.clone(),
+                error: format!("axonstore registry: {reg_error}"),
+                timestamp_ms: now_ms(),
+            });
+            let _ = emit(FlowExecutionEvent::FlowComplete {
+                flow_name,
+                backend,
+                success: false,
+                steps_executed: 0,
+                tokens_input: 0,
+                tokens_output: 0,
+                latency_ms: exec_start.elapsed().as_millis() as u64,
+                timestamp_ms: now_ms(),
+            });
+            return;
+        }
+    };
+
     // §3 — Resolve the requested flow from the IR's flow list.
     // The frontend's IR generator preserves source declaration order
     // so a multi-flow program can dispatch any of them by name.
@@ -243,7 +270,8 @@ pub async fn run_streaming_via_dispatcher(
         enforcement_summaries,
         step_audit_records,
         runtime_warnings,
-    );
+    )
+    .with_store_registry(store_registry);
 
     // §6 — Walk the flow body. For each top-level IRFlowNode, call
     // dispatch_node and honor the outcome semantics:
