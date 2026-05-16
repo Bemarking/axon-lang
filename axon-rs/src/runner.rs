@@ -39,6 +39,7 @@ use crate::plan_export::{self, PlanBuilder, PlanUnit, PlanStep, PlanTools, PlanT
 use crate::parser::{ParseError, Parser};
 use crate::session_store::SessionStore;
 use crate::step_deps;
+use crate::store::epistemic;
 use crate::store::filter::SqlValue;
 use crate::store::postgres_backend::{PostgresStoreBackend, StoreError};
 use crate::store::registry::{StoreBackendKind, StoreRegistry};
@@ -780,11 +781,11 @@ fn execute_sql_store_step(
     interpolated_expr: &str,
     ctx: &ExecContext,
 ) -> Result<String, StoreError> {
-    // The connection lives on the `IRAxonStore` the registry validated.
-    let connection = store_registry
-        .spec(store_name)
-        .map(|s| s.connection.clone())
-        .unwrap_or_default();
+    // The connection + confidence_floor live on the `IRAxonStore` the
+    // registry validated.
+    let spec = store_registry.spec(store_name);
+    let connection = spec.map(|s| s.connection.clone()).unwrap_or_default();
+    let confidence_floor = spec.and_then(|s| s.confidence_floor);
 
     // `memory_expression` is `"store:where"` for retrieve/mutate/purge
     // and the bare store name for persist — the where-expr is whatever
@@ -810,18 +811,31 @@ fn execute_sql_store_step(
         let backend = PostgresStoreBackend::connect(&connection)?;
         match step_type.as_str() {
             "retrieve" => {
+                // §35.g Pillar I — every tuple born Untrusted;
+                // confidence_floor filters sub-floor rows. The result
+                // is an epistemic envelope, not a bare row array.
                 let rows = backend.query(&store_name, &where_expr).await?;
-                let json: Vec<serde_json::Value> =
-                    rows.iter().map(|r| r.to_json()).collect();
-                let payload = serde_json::to_string(&json)
-                    .unwrap_or_else(|_| "[]".to_string());
-                Ok(format!("{} row(s): {payload}", rows.len()))
+                let outcome = epistemic::enforce_retrieve_floor(
+                    epistemic::mark_retrieved(rows),
+                    confidence_floor,
+                );
+                let envelope =
+                    epistemic::retrieve_envelope(&outcome, confidence_floor);
+                Ok(serde_json::to_string(&envelope)
+                    .unwrap_or_else(|_| "{}".to_string()))
             }
             "purge" => {
                 let n = backend.purge(&store_name, &where_expr).await?;
                 Ok(format!("{n} row(s) purged"))
             }
             "persist" => {
+                // §35.g Pillar I — a sub-floor or un-elevated write
+                // into a confidence-floored store is a typed error.
+                epistemic::enforce_persist_floor(
+                    &data,
+                    confidence_floor,
+                    &store_name,
+                )?;
                 let n = backend.insert(&store_name, &data).await?;
                 Ok(format!("{n} row(s) persisted"))
             }
@@ -2578,6 +2592,21 @@ mod fase35e_tests {
             &ctx,
         );
         assert!(matches!(result, Err(StoreError::MissingEnvVar { .. })));
+    }
+
+    #[test]
+    fn sql_persist_below_confidence_floor_is_blocked() {
+        // §35.g Pillar I — a store declaring confidence_floor rejects
+        // an un-elevated persist (no `_confidence` binding) with a
+        // typed epistemic error, before any row is written.
+        let mut store = pg_store("ledger", "postgresql://u:p@localhost:5432/db");
+        store.confidence_floor = Some(0.8);
+        let registry = StoreRegistry::build(&[store]).unwrap();
+        let mut ctx = ExecContext::new("F", "P", 0);
+        ctx.set("amount", "100"); // a user binding, but no `_confidence`
+        let result =
+            execute_sql_store_step(&registry, "persist", "ledger", "ledger", &ctx);
+        assert!(matches!(result, Err(StoreError::Epistemic(_))));
     }
 
     #[test]
