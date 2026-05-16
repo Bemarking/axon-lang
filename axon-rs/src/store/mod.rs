@@ -25,3 +25,4 @@ pub mod epistemic;
 pub mod filter;
 pub mod postgres_backend;
 pub mod registry;
+pub mod row_stream;

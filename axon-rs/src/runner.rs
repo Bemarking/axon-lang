@@ -41,6 +41,7 @@ use crate::session_store::SessionStore;
 use crate::step_deps;
 use crate::store::epistemic;
 use crate::store::filter::SqlValue;
+use crate::store::row_stream;
 use crate::store::postgres_backend::{PostgresStoreBackend, StoreError};
 use crate::store::registry::{StoreBackendKind, StoreRegistry};
 use crate::tool_registry::ToolRegistry;
@@ -811,16 +812,32 @@ fn execute_sql_store_step(
         let backend = PostgresStoreBackend::connect(&connection)?;
         match step_type.as_str() {
             "retrieve" => {
-                // §35.g Pillar I — every tuple born Untrusted;
+                // §35.i Pillar III — retrieve drains off a lazy cursor,
+                // bounded (never materializes a huge result set).
+                // §35.g Pillar I — every tuple born Untrusted,
                 // confidence_floor filters sub-floor rows. The result
-                // is an epistemic envelope, not a bare row array.
-                let rows = backend.query(&store_name, &where_expr).await?;
+                // is an epistemic envelope carrying both dispositions.
+                let cancel = crate::cancel_token::CancellationFlag::new();
+                let stream_outcome = row_stream::stream_retrieve(
+                    &backend,
+                    &store_name,
+                    &where_expr,
+                    row_stream::DEFAULT_RETRIEVE_POLICY,
+                    row_stream::DEFAULT_MAX_ROWS,
+                    &cancel,
+                )
+                .await?;
+                let metadata = row_stream::stream_metadata(
+                    row_stream::DEFAULT_RETRIEVE_POLICY,
+                    &stream_outcome,
+                );
                 let outcome = epistemic::enforce_retrieve_floor(
-                    epistemic::mark_retrieved(rows),
+                    epistemic::mark_retrieved(stream_outcome.rows),
                     confidence_floor,
                 );
-                let envelope =
+                let mut envelope =
                     epistemic::retrieve_envelope(&outcome, confidence_floor);
+                envelope["stream"] = metadata;
                 Ok(serde_json::to_string(&envelope)
                     .unwrap_or_else(|_| "{}".to_string()))
             }
