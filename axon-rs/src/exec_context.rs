@@ -17,6 +17,20 @@
 
 use std::collections::HashMap;
 
+/// Variable names the runner manages internally. They are excluded from
+/// the "user binding" view (see [`ExecContext::user_bindings`]) so that
+/// a `persist`/`mutate` into a SQL-backed `axonstore` writes only the
+/// flow's own data as a row — never runner bookkeeping.
+const BUILTIN_VARS: &[&str] = &[
+    "flow_name",
+    "persona_name",
+    "unit_index",
+    "result",
+    "step_name",
+    "step_type",
+    "step_index",
+];
+
 /// Execution context — holds runtime variables for a single execution unit.
 #[derive(Debug, Clone)]
 pub struct ExecContext {
@@ -110,6 +124,22 @@ impl ExecContext {
     /// Number of variables currently set.
     pub fn var_count(&self) -> usize {
         self.vars.len()
+    }
+
+    /// The user-meaningful bindings — every variable that is not a
+    /// runner built-in ([`BUILTIN_VARS`]): `let` bindings and step
+    /// results keyed by step name. These are the columns a `persist` /
+    /// `mutate` into a postgresql-backed `axonstore` writes as a row
+    /// (Fase 35.e). Sorted by name for deterministic SQL.
+    pub fn user_bindings(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .vars
+            .iter()
+            .filter(|(k, _)| !BUILTIN_VARS.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 }
 
@@ -211,5 +241,30 @@ mod tests {
         let ctx = ExecContext::new("F", "P", 0);
         // flow_name, persona_name, unit_index, result = 4
         assert_eq!(ctx.var_count(), 4);
+    }
+
+    #[test]
+    fn user_bindings_excludes_builtins() {
+        let mut ctx = ExecContext::new("F", "P", 0);
+        ctx.set_step("Gather", "step", 0);
+        ctx.set_result("Gather", "data");
+        ctx.set("tenant_id", "acme");
+        // Built-ins (flow_name, persona_name, unit_index, result,
+        // step_name, step_type, step_index) are excluded; only the
+        // `let`/result bindings remain, sorted by name.
+        let bindings = ctx.user_bindings();
+        assert_eq!(
+            bindings,
+            vec![
+                ("Gather".to_string(), "data".to_string()),
+                ("tenant_id".to_string(), "acme".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn user_bindings_empty_for_fresh_context() {
+        let ctx = ExecContext::new("F", "P", 0);
+        assert!(ctx.user_bindings().is_empty());
     }
 }
