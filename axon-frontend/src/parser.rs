@@ -3599,6 +3599,7 @@ impl Parser {
             confidence_floor: None,
             isolation: String::new(),
             on_breach: String::new(),
+            capability: String::new(),
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -3629,6 +3630,28 @@ impl Parser {
                     "confidence_floor" => node.confidence_floor = self.parse_optional_float(),
                     "isolation" => node.isolation = self.consume_any_ident_or_kw()?.value.clone(),
                     "on_breach" => node.on_breach = self.consume_any_ident_or_kw()?.value.clone(),
+                    // §Fase 35.j (D11) — Pillar IV: the capability slug
+                    // required to access this store. Validated against
+                    // the closed slug grammar shared with `requires:`.
+                    "capability" => {
+                        let slug_tok = self.consume(TokenType::StringLit)?.clone();
+                        if !is_valid_capability_slug(&slug_tok.value) {
+                            return Err(ParseError {
+                                message: format!(
+                                    "Invalid capability slug '{}' in axonstore '{}' \
+                                     `capability:`. Capability slugs must match \
+                                     ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$ — dot-separated \
+                                     lowercase identifiers starting with a letter. Examples: \
+                                     `admin`, `tenant.read`, `hipaa.phi.read`.",
+                                    slug_tok.value, node.name
+                                ),
+                                line: slug_tok.line,
+                                column: slug_tok.column,
+                                ..Default::default()
+                            });
+                        }
+                        node.capability = slug_tok.value.clone();
+                    }
                     _ => self.skip_value(),
                 }
             } else if self.check(TokenType::LBrace) {

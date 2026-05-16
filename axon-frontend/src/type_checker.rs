@@ -3114,6 +3114,66 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
+
+        // §Fase 35.j (D11) — Pillar IV: capability-typed store access.
+        // The endpoint must GRANT (in `requires:`) every capability a
+        // capability-gated store accessed by its flow declares — data
+        // isolation as a language guarantee, enforced statically.
+        // Nested store ops (inside `for`/`par` bodies) are caught by
+        // the runtime re-check (35.j `store::capability`), not this
+        // top-level walk.
+        if !node.execute_flow.is_empty() {
+            if let Some(flow) = self.find_flow(&node.execute_flow) {
+                for step in &flow.body {
+                    let store_name = match step {
+                        FlowStep::Persist(s) => &s.store_name,
+                        FlowStep::Retrieve(s) => &s.store_name,
+                        FlowStep::Mutate(s) => &s.store_name,
+                        FlowStep::Purge(s) => &s.store_name,
+                        _ => continue,
+                    };
+                    let Some(store) = self.find_store(store_name) else {
+                        continue;
+                    };
+                    if store.capability.is_empty()
+                        || node.requires_capabilities.contains(&store.capability)
+                    {
+                        continue;
+                    }
+                    self.emit(
+                        format!(
+                            "axonendpoint '{}' executes flow '{}' which accesses \
+                             axonstore '{}' requiring capability '{}', but '{}' \
+                             does not grant it — add '{}' to the endpoint's \
+                             `requires:` list (Fase 35.j Pillar IV).",
+                            node.name,
+                            node.execute_flow,
+                            store_name,
+                            store.capability,
+                            node.name,
+                            store.capability,
+                        ),
+                        &node.loc,
+                    );
+                }
+            }
+        }
+    }
+
+    /// §Fase 35.j — Resolve a flow declaration by name.
+    fn find_flow(&self, name: &str) -> Option<&'a FlowDefinition> {
+        self.program.declarations.iter().find_map(|d| match d {
+            Declaration::Flow(f) if f.name == name => Some(f),
+            _ => None,
+        })
+    }
+
+    /// §Fase 35.j — Resolve an axonstore declaration by name.
+    fn find_store(&self, name: &str) -> Option<&'a AxonStoreDefinition> {
+        self.program.declarations.iter().find_map(|d| match d {
+            Declaration::AxonStore(s) if s.name == name => Some(s),
+            _ => None,
+        })
     }
 
     // ── Flow-level reference checks ─────────────────────────────────
@@ -4587,6 +4647,95 @@ mod fase13_typecheck_tests {
                 .any(|e| e.message.contains("second-order schema mismatch")),
             "expected mobility violation for bare-id ref, got: {:?}",
             errs
+        );
+    }
+}
+
+// ── §Fase 35.j — Pillar IV: capability-typed store access ───────────
+
+#[cfg(test)]
+mod fase35j_capability_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn check_errors(src: &str) -> Vec<TypeError> {
+        let tokens = Lexer::new(src, "<test>").tokenize().expect("lex");
+        let prog = Parser::new(tokens).parse().expect("parse");
+        TypeChecker::new(&prog).check()
+    }
+
+    fn mentions_capability(errs: &[TypeError]) -> bool {
+        errs.iter().any(|e| e.message.contains("requiring capability"))
+    }
+
+    #[test]
+    fn endpoint_must_grant_a_gated_store_capability() {
+        // The flow accesses a `capability: "tenant.read"` store, but
+        // the endpoint executing it grants nothing → a type error.
+        let src = r#"
+            axonstore tenants {
+                backend: postgresql
+                connection: "env:DB"
+                capability: "tenant.read"
+            }
+            flow GetTenants() -> Unit {
+                retrieve tenants { where: "id = 1" }
+            }
+            axonendpoint Ep { method: GET path: "/t" execute: GetTenants }
+        "#;
+        assert!(
+            mentions_capability(&check_errors(src)),
+            "an endpoint that does not grant the store's capability \
+             must fail the compositional check"
+        );
+    }
+
+    #[test]
+    fn endpoint_granting_the_capability_type_checks_clean() {
+        let src = r#"
+            axonstore tenants {
+                backend: postgresql
+                connection: "env:DB"
+                capability: "tenant.read"
+            }
+            flow GetTenants() -> Unit {
+                retrieve tenants { where: "id = 1" }
+            }
+            axonendpoint Ep {
+                method: GET path: "/t" execute: GetTenants
+                requires: [tenant.read]
+            }
+        "#;
+        assert!(
+            !mentions_capability(&check_errors(src)),
+            "an endpoint that grants the capability must type-check clean"
+        );
+    }
+
+    #[test]
+    fn ungated_store_needs_no_endpoint_grant() {
+        let src = r#"
+            axonstore cache { backend: postgresql connection: "env:DB" }
+            flow Fetch() -> Unit {
+                retrieve cache { where: "k = 1" }
+            }
+            axonendpoint Ep { method: GET path: "/c" execute: Fetch }
+        "#;
+        assert!(
+            !mentions_capability(&check_errors(src)),
+            "a store with no `capability:` requires no endpoint grant"
+        );
+    }
+
+    #[test]
+    fn malformed_capability_slug_is_a_parse_error() {
+        // The closed slug grammar is enforced at parse time.
+        let src = r#"axonstore s { backend: postgresql connection: "env:DB" capability: "Tenant.Read" }"#;
+        let tokens = Lexer::new(src, "<test>").tokenize().expect("lex");
+        assert!(
+            Parser::new(tokens).parse().is_err(),
+            "an uppercase capability slug must be rejected at parse time"
         );
     }
 }

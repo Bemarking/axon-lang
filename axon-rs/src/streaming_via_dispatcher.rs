@@ -144,6 +144,11 @@ pub async fn run_streaming_via_dispatcher(
     runtime_warnings: std::sync::Arc<
         tokio::sync::Mutex<Vec<crate::runtime_warnings::RuntimeWarning>>,
     >,
+    // §Fase 35.j (Pillar IV) — the capability slugs the request
+    // carries (the JWT bearer's `capabilities` claim). `Some` activates
+    // the store handlers' runtime capability re-check; `None` defers to
+    // the type-checker's compile-time guarantee.
+    held_capabilities: Option<Vec<String>>,
 ) {
     // Cancel-safety helper — mirrors the legacy path's `emit` closure.
     // Returns `Err(())` when the producer should exit early (cancel
@@ -272,6 +277,9 @@ pub async fn run_streaming_via_dispatcher(
         runtime_warnings,
     )
     .with_store_registry(store_registry);
+    // §Fase 35.j — thread the request's held capabilities into the
+    // dispatcher so the store handlers can re-check gated stores.
+    ctx.held_capabilities = held_capabilities;
 
     // §6 — Walk the flow body. For each top-level IRFlowNode, call
     // dispatch_node and honor the outcome semantics:
@@ -428,6 +436,7 @@ mod tests {
             enforcement,
             audit,
             warnings,
+            None,
         )
         .await;
 
@@ -475,6 +484,7 @@ mod tests {
             enforcement,
             audit,
             warnings,
+            None,
         )
         .await;
 
@@ -527,6 +537,7 @@ mod tests {
             enforcement,
             audit,
             warnings,
+            None,
         )
         .await;
 
@@ -566,6 +577,7 @@ mod tests {
             enforcement,
             audit,
             warnings,
+            None,
         )
         .await;
 

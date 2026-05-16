@@ -724,6 +724,11 @@ pub struct AxonStoreDefinition {
     pub confidence_floor: Option<f64>,
     pub isolation: String, // read_committed | repeatable_read | serializable
     pub on_breach: String, // rollback | raise | log
+    /// §Fase 35.j (D11) — Pillar IV: the capability slug required to
+    /// access this store. Empty = no capability gate. Validated at
+    /// parse time against the closed slug grammar (shared with the
+    /// Fase 32.g `requires:` grammar).
+    pub capability: String,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

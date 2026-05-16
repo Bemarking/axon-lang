@@ -47,6 +47,7 @@ use crate::ir_nodes::{
     IRConsensusBlock, IRDeliberateBlock, IRDiscover, IREmit, IRMutateStep,
     IRPersistStep, IRPublish, IRPurgeStep, IRRetrieveStep, IRTransactBlock,
 };
+use crate::store::capability;
 use crate::store::epistemic;
 use crate::store::filter::SqlValue;
 use crate::store::postgres_backend::{PostgresStoreBackend, StoreError};
@@ -233,6 +234,33 @@ fn sql_dispatch_error(e: StoreError) -> DispatchError {
     }
 }
 
+/// §Fase 35.j Pillar IV — re-check a capability-gated store against the
+/// request's held capabilities before any access. A no-op when no
+/// capability context is attached (`held_capabilities == None`) — the
+/// type-checker's compile-time guarantee + the endpoint's Fase 32.g
+/// `requires:` gate stand. A denial surfaces as a structured
+/// `axon.error`, never a silent read of isolated data.
+fn enforce_store_capability(
+    ctx: &DispatchCtx,
+    store_name: &str,
+) -> Result<(), DispatchError> {
+    let Some(held) = ctx.held_capabilities.as_ref() else {
+        return Ok(());
+    };
+    let required = ctx
+        .store_registry
+        .as_ref()
+        .and_then(|r| r.spec(store_name))
+        .map(|s| s.capability.as_str())
+        .unwrap_or("");
+    capability::check_store_capability(store_name, required, held).map_err(
+        |denied| DispatchError::BackendError {
+            name: "axonstore.capability".to_string(),
+            message: denied.to_string(),
+        },
+    )
+}
+
 // ────────────────────────────────────────────────────────────────────
 //  Emit (Fase 13 π-calc output prefix)
 // ────────────────────────────────────────────────────────────────────
@@ -365,6 +393,8 @@ pub async fn run_persist(
     } else {
         node.store_name.clone()
     };
+    // §Fase 35.j Pillar IV — capability gate (before any side effect).
+    enforce_store_capability(ctx, &node.store_name)?;
     emit_step_start(ctx, &step_name, step_index, "persist")?;
 
     let output = match resolve_pg_backend(ctx, &node.store_name) {
@@ -417,6 +447,8 @@ pub async fn run_retrieve(
     } else {
         node.alias.clone()
     };
+    // §Fase 35.j Pillar IV — capability gate (before any side effect).
+    enforce_store_capability(ctx, &node.store_name)?;
     emit_step_start(ctx, &step_name, step_index, "retrieve")?;
 
     let value = match resolve_pg_backend(ctx, &node.store_name) {
@@ -471,6 +503,8 @@ pub async fn run_mutate(
     } else {
         node.store_name.clone()
     };
+    // §Fase 35.j Pillar IV — capability gate (before any side effect).
+    enforce_store_capability(ctx, &node.store_name)?;
     emit_step_start(ctx, &step_name, step_index, "mutate")?;
 
     let output = match resolve_pg_backend(ctx, &node.store_name) {
@@ -518,6 +552,8 @@ pub async fn run_purge(
     } else {
         node.store_name.clone()
     };
+    // §Fase 35.j Pillar IV — capability gate (before any side effect).
+    enforce_store_capability(ctx, &node.store_name)?;
     emit_step_start(ctx, &step_name, step_index, "purge")?;
 
     let output = match resolve_pg_backend(ctx, &node.store_name) {
@@ -1128,6 +1164,7 @@ mod tests {
             confidence_floor: None,
             isolation: String::new(),
             on_breach: String::new(),
+            capability: String::new(),
         }
     }
 
@@ -1256,6 +1293,98 @@ mod tests {
             run_persist(&node, &mut ctx).await,
             Err(DispatchError::BackendError { .. })
         ));
+    }
+
+    // ── §Fase 35.j — Pillar IV capability-gated store access ────────
+
+    fn gated_kv(name: &str, capability: &str) -> IRAxonStore {
+        let mut s = axonstore(name, "in_memory", "");
+        s.capability = capability.to_string();
+        s
+    }
+
+    fn ctx_with_caps(
+        specs: &[IRAxonStore],
+        held: Vec<String>,
+    ) -> (DispatchCtx, mpsc::UnboundedReceiver<FlowExecutionEvent>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let registry = crate::store::registry::StoreRegistry::build(specs).unwrap();
+        let ctx = DispatchCtx::new("F", "stub", "", CancellationFlag::new(), tx)
+            .with_store_registry(std::sync::Arc::new(registry))
+            .with_held_capabilities(held);
+        (ctx, rx)
+    }
+
+    fn retrieve_node(store: &str) -> IRRetrieveStep {
+        IRRetrieveStep {
+            node_type: "retrieve",
+            source_line: 0,
+            source_column: 0,
+            store_name: store.to_string(),
+            where_expr: "k".to_string(),
+            alias: "v".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn retrieve_denied_when_capability_not_held() {
+        // The gated store demands `tenant.read`; the request carries
+        // only `audit.write` → a typed denial, never a silent read.
+        let (mut ctx, _rx) = ctx_with_caps(
+            &[gated_kv("tenants", "tenant.read")],
+            vec!["audit.write".to_string()],
+        );
+        assert!(matches!(
+            run_retrieve(&retrieve_node("tenants"), &mut ctx).await,
+            Err(DispatchError::BackendError { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn retrieve_allowed_when_capability_held() {
+        // Holding the capability clears the gate; the in_memory KV
+        // path then runs to completion.
+        let (mut ctx, _rx) = ctx_with_caps(
+            &[gated_kv("tenants", "tenant.read")],
+            vec!["tenant.read".to_string()],
+        );
+        assert!(run_retrieve(&retrieve_node("tenants"), &mut ctx).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn persist_into_gated_store_denied_without_capability() {
+        let (mut ctx, _rx) =
+            ctx_with_caps(&[gated_kv("ledger", "ledger.write")], vec![]);
+        let node = IRPersistStep {
+            node_type: "persist",
+            source_line: 0,
+            source_column: 0,
+            store_name: "ledger".into(),
+        };
+        assert!(matches!(
+            run_persist(&node, &mut ctx).await,
+            Err(DispatchError::BackendError { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn ungated_store_needs_no_capability() {
+        // An in_memory store with no `capability:` — accessible even
+        // with an empty held set.
+        let (mut ctx, _rx) =
+            ctx_with_caps(&[axonstore("cache", "in_memory", "")], vec![]);
+        assert!(run_retrieve(&retrieve_node("cache"), &mut ctx).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn no_capability_context_skips_the_runtime_recheck() {
+        // `held_capabilities == None` (DispatchCtx::new default) → the
+        // runtime re-check is a no-op; the compile-time guarantee
+        // stands. A gated store is reachable here (the dispatcher was
+        // not given a capability context).
+        let (mut ctx, _rx) = ctx_with_registry(&[gated_kv("tenants", "tenant.read")]);
+        assert!(ctx.held_capabilities.is_none());
+        assert!(run_retrieve(&retrieve_node("tenants"), &mut ctx).await.is_ok());
     }
 
     #[test]
