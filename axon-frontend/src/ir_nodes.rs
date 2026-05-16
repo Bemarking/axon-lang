@@ -1099,6 +1099,10 @@ pub struct IRPersistStep {
     pub source_line: u32,
     pub source_column: u32,
     pub store_name: String,
+    /// §Fase 35.o — declared `{ col: value }` field block (value
+    /// expressions kept raw; interpolated at runtime). Empty ⇒ the
+    /// runtime writes the flow's user bindings (v1.30.0 fallback).
+    pub fields: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize)]

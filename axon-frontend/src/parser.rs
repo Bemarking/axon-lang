@@ -1988,7 +1988,7 @@ impl Parser {
             TokenType::Emit => self.parse_emit_step(),
             TokenType::Publish => self.parse_publish_step(),
             TokenType::Discover => self.parse_discover_step(),
-            TokenType::Persist => self.parse_flow_step_simple("persist").map(|l| FlowStep::Persist(PersistStep { store_name: l.1, loc: l.0 })),
+            TokenType::Persist => self.parse_persist_step(),
             TokenType::Retrieve => self.parse_retrieve_step(),
             TokenType::Mutate => self.parse_store_where_step().map(|(loc, store_name, where_expr)| FlowStep::Mutate(MutateStep { store_name, where_expr, loc })),
             TokenType::Purge => self.parse_store_where_step().map(|(loc, store_name, where_expr)| FlowStep::Purge(PurgeStep { store_name, where_expr, loc })),
@@ -3151,6 +3151,78 @@ impl Parser {
             store,
             where_expr,
         ))
+    }
+
+    /// §Fase 35.o — Parse a `persist` step, capturing the optional
+    /// `{ col: value }` field block.
+    ///
+    /// Before Fase 35.o `persist` parsed via `parse_flow_step_simple`,
+    /// which *skipped* the braced block — so a written field block was
+    /// silently dropped and the runtime fell back to writing every
+    /// context binding as a row, which fails against any real table
+    /// (flows always carry more bindings than a table has columns).
+    /// This captures the declared columns into `PersistStep.fields`;
+    /// the runtime writes exactly those (interpolated). A `persist`
+    /// with no block keeps the v1.30.0 user-bindings fallback — fully
+    /// backward-compatible. Mirror of `parse_retrieve_step`, but the
+    /// keys are arbitrary column names rather than the fixed
+    /// `where:` / `as:` filter keys.
+    ///
+    /// The optional `into` connector (`persist into <store>`) is
+    /// accepted and skipped — before Fase 35.o `into` was captured as
+    /// the store name.
+    fn parse_persist_step(&mut self) -> Result<FlowStep, ParseError> {
+        let tok = self.current().clone();
+        self.advance(); // consume `persist`
+        // Optional `into` connector — skip it so the store name that
+        // follows is not mistaken for the target.
+        if self.current().value == "into" && !self.check(TokenType::LBrace) {
+            self.advance();
+        }
+        let store = if self.at_declaration_start()
+            || self.check(TokenType::LBrace)
+            || self.check(TokenType::RBrace)
+            || self.check(TokenType::Eof)
+        {
+            String::new()
+        } else {
+            self.consume_any_ident_or_kw()?.value.clone()
+        };
+        let mut fields: Vec<(String, String)> = Vec::new();
+        if self.check(TokenType::LBrace) {
+            self.advance();
+            while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                let col = self.current().value.clone();
+                self.advance();
+                if self.check(TokenType::Colon) {
+                    self.advance();
+                    let value = if self.check(TokenType::StringLit) {
+                        self.consume(TokenType::StringLit)?.value.clone()
+                    } else if self.check(TokenType::RBrace)
+                        || self.check(TokenType::Eof)
+                        || self.check(TokenType::Colon)
+                    {
+                        String::new()
+                    } else {
+                        let v = self.current().clone();
+                        self.advance();
+                        v.value.clone()
+                    };
+                    fields.push((col, value));
+                }
+            }
+            if self.check(TokenType::RBrace) {
+                self.advance();
+            }
+        }
+        Ok(FlowStep::Persist(PersistStep {
+            store_name: store,
+            fields,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        }))
     }
 
     // ── TIER 2 DECLARATIONS ────────────────────────────────────────
@@ -6806,6 +6878,122 @@ mod fase35m_mutate_purge_where_tests {
                 assert_eq!(m.where_expr, "");
             }
             other => panic!("expected Mutate, got {other:?}"),
+        }
+    }
+}
+
+// ── §Fase 35.o — persist field-block capture ────────────────────────
+
+#[cfg(test)]
+mod fase35o_persist_fields_tests {
+    use super::*;
+
+    fn parse(src: &str) -> Program {
+        let tokens = crate::lexer::Lexer::new(src, "<test>")
+            .tokenize()
+            .expect("lex");
+        Parser::new(tokens).parse().expect("parse")
+    }
+
+    fn first_step<'a>(prog: &'a Program, flow: &str) -> &'a FlowStep {
+        for d in &prog.declarations {
+            if let Declaration::Flow(f) = d {
+                if f.name == flow {
+                    return f.body.first().expect("flow has at least one step");
+                }
+            }
+        }
+        panic!("flow `{flow}` not found");
+    }
+
+    #[test]
+    fn persist_captures_its_field_block() {
+        // Pre-35.o the `{ col: value }` block was skipped — every
+        // persist wrote the whole binding context. It must now reach
+        // `fields`, in source order, with value expressions raw.
+        let prog = parse(
+            "flow F() -> Unit { persist into chat_history { \
+             session_id: \"${session_id}\" sender: \"user\" \
+             content: \"${message}\" } }",
+        );
+        match first_step(&prog, "F") {
+            FlowStep::Persist(p) => {
+                assert_eq!(p.store_name, "chat_history");
+                assert_eq!(
+                    p.fields,
+                    vec![
+                        ("session_id".to_string(), "${session_id}".to_string()),
+                        ("sender".to_string(), "user".to_string()),
+                        ("content".to_string(), "${message}".to_string()),
+                    ]
+                );
+            }
+            other => panic!("expected Persist, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn persist_without_a_block_keeps_the_user_bindings_fallback() {
+        // No `{ }` → empty `fields` → the runtime falls back to the
+        // v1.30.0 user-bindings row. Backward-compatible.
+        let prog = parse("flow F() -> Unit { persist events }");
+        match first_step(&prog, "F") {
+            FlowStep::Persist(p) => {
+                assert_eq!(p.store_name, "events");
+                assert!(p.fields.is_empty());
+            }
+            other => panic!("expected Persist, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn persist_accepts_the_optional_into_connector() {
+        // `persist into X` and `persist X` resolve to the SAME store
+        // name — pre-35.o `into` was captured AS the store name.
+        let with =
+            parse("flow F() -> Unit { persist into accounts { id: \"1\" } }");
+        let without =
+            parse("flow F() -> Unit { persist accounts { id: \"1\" } }");
+        for prog in [&with, &without] {
+            match first_step(prog, "F") {
+                FlowStep::Persist(p) => assert_eq!(p.store_name, "accounts"),
+                other => panic!("expected Persist, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn persist_into_without_a_block_resolves_the_store_name() {
+        // `persist into events` — the `into` connector is skipped, the
+        // store name is `events` (not `into`). Lateral bug closed.
+        let prog = parse("flow F() -> Unit { persist into events }");
+        match first_step(&prog, "F") {
+            FlowStep::Persist(p) => {
+                assert_eq!(p.store_name, "events");
+                assert!(p.fields.is_empty());
+            }
+            other => panic!("expected Persist, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn persist_fields_lower_into_the_ir() {
+        // The IR generator must carry `fields` onto `IRPersistStep`
+        // so the runtime reads exactly the declared columns.
+        let prog = parse(
+            "flow F() -> Unit { persist into chat { content: \"${msg}\" } }",
+        );
+        let ir = crate::ir_generator::IRGenerator::new().generate(&prog);
+        let flow = ir.flows.iter().find(|f| f.name == "F").expect("flow F");
+        match flow.steps.first().expect("one step") {
+            crate::ir_nodes::IRFlowNode::Persist(p) => {
+                assert_eq!(p.store_name, "chat");
+                assert_eq!(
+                    p.fields,
+                    vec![("content".to_string(), "${msg}".to_string())]
+                );
+            }
+            other => panic!("expected IRFlowNode::Persist, got {other:?}"),
         }
     }
 }

@@ -117,6 +117,12 @@ struct CompiledStep {
     /// SSA binding without re-traversing the IR.
     #[serde(skip_serializing_if = "Option::is_none")]
     let_payload: Option<LetPayload>,
+    /// §Fase 35.o — for `persist` steps: the declared `{ col: value }`
+    /// field block. `Some` ⇒ the SQL row is built from exactly these
+    /// columns (interpolated); `None` ⇒ no block was written and the
+    /// runtime falls back to the flow's user bindings (v1.30.0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    persist_fields: Option<Vec<(String, String)>>,
 }
 
 /// Fase 17.c — payload carried inside a CompiledStep for `let X = value`
@@ -320,6 +326,17 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             _ => None,
         };
 
+        // §Fase 35.o — materialise the declared `persist { col: value }`
+        // field block so `execute_sql_store_step` scopes the SQL row to
+        // exactly those columns. A `persist` with no block stays `None`
+        // → the v1.30.0 user-bindings fallback.
+        let persist_fields = match node {
+            IRFlowNode::Persist(s) if !s.fields.is_empty() => {
+                Some(s.fields.clone())
+            }
+            _ => None,
+        };
+
         steps.push(CompiledStep {
             step_name,
             step_type,
@@ -329,6 +346,7 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             memory_expression,
             lambda_apply_payload,
             let_payload,
+            persist_fields,
         });
     }
 
@@ -771,8 +789,11 @@ where
 ///
 /// The store name doubles as the SQL table name (D12 — `IRAxonStore`
 /// carries no schema, so v1.30.0 operates against existing tables).
-/// `persist`/`mutate` write the flow's user bindings as a row
-/// ([`ExecContext::user_bindings`]); `retrieve`/`purge` are driven by
+/// §Fase 35.o — `persist` writes the columns of its declared
+/// `{ col: value }` block (`persist_fields`, value expressions
+/// interpolated); a `persist` with no block, and every `mutate`,
+/// fall back to writing the flow's user bindings as a row
+/// ([`ExecContext::user_bindings`]). `retrieve`/`purge` are driven by
 /// the `where`-expression. D5 — the SAME `PostgresStoreBackend` the
 /// streaming dispatcher uses, so the two execution paths never diverge.
 fn execute_sql_store_step(
@@ -780,6 +801,7 @@ fn execute_sql_store_step(
     step_type: &str,
     store_name: &str,
     interpolated_expr: &str,
+    persist_fields: Option<&[(String, String)]>,
     ctx: &ExecContext,
 ) -> Result<String, StoreError> {
     // The connection + confidence_floor live on the `IRAxonStore` the
@@ -797,13 +819,26 @@ fn execute_sql_store_step(
         .unwrap_or("")
         .to_string();
 
-    // persist/mutate write the flow's user bindings as a row; every
-    // value binds as text (D12 — no column-type schema in v1.30.0).
-    let data: Vec<(String, SqlValue)> = ctx
-        .user_bindings()
-        .into_iter()
-        .map(|(k, v)| (k, SqlValue::Text(v)))
-        .collect();
+    // §Fase 35.o — when the `persist` step declared a `{ col: value }`
+    // field block, the SQL row is exactly those columns with their
+    // value expressions interpolated against the flow context. When no
+    // block was written (`persist_fields` is `None`), fall back to the
+    // v1.30.0 behaviour: every user binding as a text column. `mutate`
+    // has no field block and always takes the user-bindings form.
+    // Every value binds as text (D12 — no column-type schema in v1.30).
+    let data: Vec<(String, SqlValue)> = match persist_fields {
+        Some(fields) if step_type == "persist" => fields
+            .iter()
+            .map(|(col, expr)| {
+                (col.clone(), SqlValue::Text(ctx.interpolate(expr)))
+            })
+            .collect(),
+        _ => ctx
+            .user_bindings()
+            .into_iter()
+            .map(|(k, v)| (k, SqlValue::Text(v)))
+            .collect(),
+    };
 
     let store_name = store_name.to_string();
     let step_type = step_type.to_string();
@@ -1297,6 +1332,7 @@ fn execute_real(
                         &step.step_type,
                         &step.step_name,
                         &expr,
+                        step.persist_fields.as_deref(),
                         &ctx,
                     ) {
                         Ok(summary) => (summary, true),
@@ -2607,6 +2643,7 @@ mod fase35e_tests {
             "retrieve",
             "logs",
             "logs:id = 1",
+            None,
             &ctx,
         );
         assert!(matches!(result, Err(StoreError::MissingEnvVar { .. })));
@@ -2623,7 +2660,7 @@ mod fase35e_tests {
         let mut ctx = ExecContext::new("F", "P", 0);
         ctx.set("amount", "100"); // a user binding, but no `_confidence`
         let result =
-            execute_sql_store_step(&registry, "persist", "ledger", "ledger", &ctx);
+            execute_sql_store_step(&registry, "persist", "ledger", "ledger", None, &ctx);
         assert!(matches!(result, Err(StoreError::Epistemic(_))));
     }
 
@@ -2639,7 +2676,38 @@ mod fase35e_tests {
         let mut ctx = ExecContext::new("F", "P", 0);
         ctx.set("event_kind", "login");
         let result =
-            execute_sql_store_step(&registry, "persist", "events", "events", &ctx);
+            execute_sql_store_step(&registry, "persist", "events", "events", None, &ctx);
+        assert!(matches!(result, Err(StoreError::PoolInit { .. })));
+    }
+
+    #[test]
+    fn sql_persist_scopes_the_row_to_the_declared_field_block() {
+        // §Fase 35.o — a `persist` carrying a `{ col: value }` block
+        // writes EXACTLY those columns (value expressions interpolated
+        // against the flow context), ignoring every other binding the
+        // flow holds. The malformed DSN fails at connect (typed
+        // PoolInit) — proving the field-scoped row was assembled and
+        // reached the SQL path. The pre-35.o behaviour would have
+        // dumped `message`/`channel_kind`/… into the INSERT.
+        let registry =
+            StoreRegistry::build(&[pg_store("chat_history", "not a dsn")]).unwrap();
+        let mut ctx = ExecContext::new("F", "P", 0);
+        ctx.set("message", "hello");
+        ctx.set("channel_kind", "whatsapp");
+        ctx.set("tenant_id", "acme");
+        let fields = vec![
+            ("sender".to_string(), "user".to_string()),
+            ("content".to_string(), "${message}".to_string()),
+            ("tenant_id".to_string(), "${tenant_id}".to_string()),
+        ];
+        let result = execute_sql_store_step(
+            &registry,
+            "persist",
+            "chat_history",
+            "chat_history",
+            Some(&fields),
+            &ctx,
+        );
         assert!(matches!(result, Err(StoreError::PoolInit { .. })));
     }
 }

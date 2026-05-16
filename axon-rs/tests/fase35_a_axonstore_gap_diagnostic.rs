@@ -230,6 +230,7 @@ async fn s3_run_handlers_route_to_kv_ir_steps_have_no_backend_handle() {
 
     let persist = IRPersistStep {
         node_type: "persist",
+            fields: Vec::new(),
         source_line: 0,
         source_column: 0,
         store_name: "entities".into(),

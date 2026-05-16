@@ -1475,6 +1475,11 @@ pub struct DaemonStepNode {
 #[derive(Debug)]
 pub struct PersistStep {
     pub store_name: String,
+    /// §Fase 35.o — the `{ col: value }` field block. Empty when the
+    /// step is written without a block (`persist <store>`), in which
+    /// case the runtime falls back to writing the flow's user
+    /// bindings as a row (backward-compatible with v1.30.0).
+    pub fields: Vec<(String, String)>,
     pub loc: Loc,
 }
 #[derive(Debug)]

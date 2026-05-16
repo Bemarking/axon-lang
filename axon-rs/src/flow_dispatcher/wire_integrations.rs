@@ -226,6 +226,34 @@ fn sql_row_from_bindings(ctx: &DispatchCtx) -> Vec<(String, SqlValue)> {
     row
 }
 
+/// §Fase 35.o — Build the SQL row a `persist` writes.
+///
+/// When the step declared a `{ col: value }` field block, the row is
+/// EXACTLY those columns, with each value expression interpolated
+/// against the flow's `let_bindings` via the SAME `${name}` engine the
+/// sync runner uses ([`crate::exec_context::interpolate_vars`], D5 —
+/// the two execution paths never diverge). When no block was written
+/// (`node.fields` empty), it falls back to `sql_row_from_bindings` —
+/// the v1.30.0 user-bindings form — so a `persist <store>` with no
+/// block is byte-for-byte unchanged.
+fn persist_row(node: &IRPersistStep, ctx: &DispatchCtx) -> Vec<(String, SqlValue)> {
+    if node.fields.is_empty() {
+        return sql_row_from_bindings(ctx);
+    }
+    node.fields
+        .iter()
+        .map(|(col, expr)| {
+            (
+                col.clone(),
+                SqlValue::Text(crate::exec_context::interpolate_vars(
+                    expr,
+                    &ctx.let_bindings,
+                )),
+            )
+        })
+        .collect()
+}
+
 /// Map a [`StoreError`] to a [`DispatchError`] so a failed SQL store
 /// op surfaces as a structured `axon.error` event — never a panic,
 /// never a silent empty result.
@@ -418,7 +446,9 @@ pub async fn run_persist(
 
     let output = match resolve_pg_backend(ctx, &node.store_name) {
         Ok(Some((backend, floor))) => {
-            let row = sql_row_from_bindings(ctx);
+            // §35.o — scope the row to the declared `{ col: value }`
+            // block when present; else the v1.30.0 user-bindings form.
+            let row = persist_row(node, ctx);
             // §35.g Pillar I — a sub-floor or un-elevated write into a
             // confidence-floored store is a typed error.
             epistemic::enforce_persist_floor(&row, floor, &node.store_name)
@@ -938,6 +968,7 @@ mod tests {
 
         let persist = IRPersistStep {
             node_type: "persist",
+            fields: Vec::new(),
             source_line: 0,
             source_column: 0,
             store_name: "entities".into(),
@@ -957,12 +988,68 @@ mod tests {
         assert_eq!(ctx.let_bindings.get("retrieved_id").unwrap(), "42");
     }
 
+    /// §Fase 35.o — `persist_row` with a declared `{ col: value }`
+    /// block builds the SQL row from EXACTLY those columns, value
+    /// expressions interpolated against `let_bindings`. No other
+    /// context binding leaks in — the gap-report blocker, closed.
+    #[test]
+    fn persist_row_scopes_to_the_declared_field_block() {
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert("message".into(), "hello".into());
+        ctx.let_bindings.insert("tenant_id".into(), "acme".into());
+        ctx.let_bindings
+            .insert("channel_kind".into(), "whatsapp".into());
+        let node = IRPersistStep {
+            node_type: "persist",
+            source_line: 0,
+            source_column: 0,
+            store_name: "chat_history".into(),
+            fields: vec![
+                ("sender".into(), "user".into()),
+                ("content".into(), "${message}".into()),
+                ("tenant_id".into(), "${tenant_id}".into()),
+            ],
+        };
+        let row = persist_row(&node, &ctx);
+        assert_eq!(
+            row,
+            vec![
+                ("sender".to_string(), SqlValue::Text("user".into())),
+                ("content".to_string(), SqlValue::Text("hello".into())),
+                ("tenant_id".to_string(), SqlValue::Text("acme".into())),
+            ]
+        );
+        // `message` / `channel_kind` are raw context bindings, NOT
+        // columns of `chat_history` — they must not reach the row.
+        assert!(!row
+            .iter()
+            .any(|(c, _)| c == "channel_kind" || c == "message"));
+    }
+
+    /// §Fase 35.o — `persist_row` with no declared block falls back to
+    /// the v1.30.0 user-bindings form, byte-for-byte (backward-compat).
+    #[test]
+    fn persist_row_without_a_block_falls_back_to_user_bindings() {
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert("a".into(), "1".into());
+        ctx.let_bindings.insert("b".into(), "2".into());
+        let node = IRPersistStep {
+            node_type: "persist",
+            source_line: 0,
+            source_column: 0,
+            store_name: "s".into(),
+            fields: Vec::new(),
+        };
+        assert_eq!(persist_row(&node, &ctx), sql_row_from_bindings(&ctx));
+    }
+
     #[tokio::test]
     async fn run_mutate_updates_existing() {
         let (mut ctx, _rx) = fresh_ctx();
         ctx.let_bindings.insert("counter".into(), "1".into());
         let persist = IRPersistStep {
             node_type: "persist",
+            fields: Vec::new(),
             source_line: 0,
             source_column: 0,
             store_name: "stats".into(),
@@ -997,6 +1084,7 @@ mod tests {
         run_persist(
             &IRPersistStep {
                 node_type: "persist",
+            fields: Vec::new(),
                 source_line: 0,
                 source_column: 0,
                 store_name: "scratch".into(),
@@ -1133,6 +1221,7 @@ mod tests {
 
         let persist = IRPersistStep {
             node_type: "persist",
+            fields: Vec::new(),
             source_line: 0,
             source_column: 0,
             store_name: "s".into(),
@@ -1278,6 +1367,7 @@ mod tests {
         ctx.let_bindings.insert("kind".into(), "login".into());
         let node = IRPersistStep {
             node_type: "persist",
+            fields: Vec::new(),
             source_line: 0,
             source_column: 0,
             store_name: "events".into(),
@@ -1297,6 +1387,7 @@ mod tests {
         ctx.let_bindings.insert("k".into(), "v".into());
         let node = IRPersistStep {
             node_type: "persist",
+            fields: Vec::new(),
             source_line: 0,
             source_column: 0,
             store_name: "cache".into(),
@@ -1323,6 +1414,7 @@ mod tests {
         ctx.let_bindings.insert("amount".into(), "100".into()); // no `_confidence`
         let node = IRPersistStep {
             node_type: "persist",
+            fields: Vec::new(),
             source_line: 0,
             source_column: 0,
             store_name: "ledger".into(),
@@ -1395,6 +1487,7 @@ mod tests {
             ctx_with_caps(&[gated_kv("ledger", "ledger.write")], vec![]);
         let node = IRPersistStep {
             node_type: "persist",
+            fields: Vec::new(),
             source_line: 0,
             source_column: 0,
             store_name: "ledger".into(),
@@ -1433,6 +1526,7 @@ mod tests {
         ctx.let_bindings.insert("k".into(), "v".into());
         let node = IRPersistStep {
             node_type: "persist",
+            fields: Vec::new(),
             source_line: 0,
             source_column: 0,
             store_name: "s".into(),
@@ -1462,6 +1556,7 @@ mod tests {
         run_persist(
             &IRPersistStep {
                 node_type: "persist",
+            fields: Vec::new(),
                 source_line: 0,
                 source_column: 0,
                 store_name: "s".into(),

@@ -538,6 +538,7 @@ fn random_discover(lcg: &mut Lcg) -> IRFlowNode {
 fn random_persist(lcg: &mut Lcg) -> IRFlowNode {
     IRFlowNode::Persist(IRPersistStep {
         node_type: "persist",
+            fields: Vec::new(),
         source_line: 0,
         source_column: 0,
         store_name: lcg.ascii_with_random_len(8),
