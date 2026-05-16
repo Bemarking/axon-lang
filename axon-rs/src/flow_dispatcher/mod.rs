@@ -296,6 +296,13 @@ pub struct DispatchCtx {
     /// re-check is a no-op: the compile-time check + the endpoint's
     /// Fase 32.g `requires:` gate stand.
     pub held_capabilities: Option<Vec<String>>,
+    /// §Fase 35.h (v1.30.0) — Pillar II: the flow's tamper-evident
+    /// HMAC-Merkle mutation chain. Every `persist`/`mutate`/`purge`
+    /// appends a delta. Shared (`Arc`) across concurrent branches so a
+    /// `Par` block's mutations land in one chain; the Merkle head is a
+    /// verifiable fingerprint of the flow's complete mutation history.
+    pub audit_chain:
+        std::sync::Arc<std::sync::Mutex<crate::store::audit_chain::StoreAuditChain>>,
 }
 
 impl DispatchCtx {
@@ -331,6 +338,9 @@ impl DispatchCtx {
             tool_registry: None,
             store_registry: None,
             held_capabilities: None,
+            audit_chain: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::store::audit_chain::StoreAuditChain::new(),
+            )),
         }
     }
 

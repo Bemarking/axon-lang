@@ -47,6 +47,7 @@ use crate::ir_nodes::{
     IRConsensusBlock, IRDeliberateBlock, IRDiscover, IREmit, IRMutateStep,
     IRPersistStep, IRPublish, IRPurgeStep, IRRetrieveStep, IRTransactBlock,
 };
+use crate::store::audit_chain::StoreMutationKind;
 use crate::store::capability;
 use crate::store::epistemic;
 use crate::store::filter::SqlValue;
@@ -261,6 +262,23 @@ fn enforce_store_capability(
     )
 }
 
+/// §Fase 35.h Pillar II — append a mutation delta to the flow's
+/// tamper-evident HMAC-Merkle audit chain. Called after a `persist` /
+/// `mutate` / `purge` succeeds (a failed op `return`s before reaching
+/// here). Best-effort: a poisoned lock is recovered, never panicked.
+fn record_store_mutation(
+    ctx: &DispatchCtx,
+    kind: StoreMutationKind,
+    store: &str,
+    summary: &str,
+) {
+    let mut chain = ctx
+        .audit_chain
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    chain.record(kind, store, summary);
+}
+
 // ────────────────────────────────────────────────────────────────────
 //  Emit (Fase 13 π-calc output prefix)
 // ────────────────────────────────────────────────────────────────────
@@ -417,6 +435,8 @@ pub async fn run_persist(
         Err(e) => return Err(sql_dispatch_error(e)),
     };
 
+    // §Fase 35.h Pillar II — chain the mutation.
+    record_store_mutation(ctx, StoreMutationKind::Persist, &node.store_name, &output);
     emit_step_complete(ctx, &step_name, step_index, &output, 0)?;
 
     Ok(NodeOutcome::Completed {
@@ -523,6 +543,8 @@ pub async fn run_mutate(
         Err(e) => return Err(sql_dispatch_error(e)),
     };
 
+    // §Fase 35.h Pillar II — chain the mutation.
+    record_store_mutation(ctx, StoreMutationKind::Mutate, &node.store_name, &output);
     emit_step_complete(ctx, &step_name, step_index, &output, 0)?;
 
     Ok(NodeOutcome::Completed {
@@ -571,6 +593,8 @@ pub async fn run_purge(
         Err(e) => return Err(sql_dispatch_error(e)),
     };
 
+    // §Fase 35.h Pillar II — chain the mutation.
+    record_store_mutation(ctx, StoreMutationKind::Purge, &node.store_name, &output);
     emit_step_complete(ctx, &step_name, step_index, &output, 0)?;
 
     Ok(NodeOutcome::Completed {
@@ -1385,6 +1409,83 @@ mod tests {
         let (mut ctx, _rx) = ctx_with_registry(&[gated_kv("tenants", "tenant.read")]);
         assert!(ctx.held_capabilities.is_none());
         assert!(run_retrieve(&retrieve_node("tenants"), &mut ctx).await.is_ok());
+    }
+
+    // ── §Fase 35.h — Pillar II audit-chained mutations ──────────────
+
+    #[tokio::test]
+    async fn persist_appends_a_delta_to_the_audit_chain() {
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert("k".into(), "v".into());
+        let node = IRPersistStep {
+            node_type: "persist",
+            source_line: 0,
+            source_column: 0,
+            store_name: "s".into(),
+        };
+        run_persist(&node, &mut ctx).await.unwrap();
+        let chain = ctx.audit_chain.lock().unwrap();
+        assert_eq!(chain.len(), 1);
+        assert_eq!(
+            chain.verify(),
+            crate::store::audit_chain::ChainVerdict::Intact
+        );
+    }
+
+    #[tokio::test]
+    async fn retrieve_does_not_append_an_audit_delta() {
+        // `retrieve` reads — it is not a mutation; D9 chains only
+        // persist/mutate/purge.
+        let (mut ctx, _rx) = fresh_ctx();
+        run_retrieve(&retrieve_node("s"), &mut ctx).await.unwrap();
+        assert!(ctx.audit_chain.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn persist_mutate_purge_chain_into_one_verifiable_history() {
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert("k".into(), "v".into());
+        run_persist(
+            &IRPersistStep {
+                node_type: "persist",
+                source_line: 0,
+                source_column: 0,
+                store_name: "s".into(),
+            },
+            &mut ctx,
+        )
+        .await
+        .unwrap();
+        run_mutate(
+            &IRMutateStep {
+                node_type: "mutate",
+                source_line: 0,
+                source_column: 0,
+                store_name: "s".into(),
+                where_expr: "k".into(),
+            },
+            &mut ctx,
+        )
+        .await
+        .unwrap();
+        run_purge(
+            &IRPurgeStep {
+                node_type: "purge",
+                source_line: 0,
+                source_column: 0,
+                store_name: "s".into(),
+                where_expr: "k".into(),
+            },
+            &mut ctx,
+        )
+        .await
+        .unwrap();
+        let chain = ctx.audit_chain.lock().unwrap();
+        assert_eq!(chain.len(), 3, "three mutations → three chained deltas");
+        assert_eq!(
+            chain.verify(),
+            crate::store::audit_chain::ChainVerdict::Intact
+        );
     }
 
     #[test]
