@@ -1990,8 +1990,8 @@ impl Parser {
             TokenType::Discover => self.parse_discover_step(),
             TokenType::Persist => self.parse_flow_step_simple("persist").map(|l| FlowStep::Persist(PersistStep { store_name: l.1, loc: l.0 })),
             TokenType::Retrieve => self.parse_retrieve_step(),
-            TokenType::Mutate => self.parse_flow_step_simple("mutate").map(|l| FlowStep::Mutate(MutateStep { store_name: l.1, where_expr: String::new(), loc: l.0 })),
-            TokenType::Purge => self.parse_flow_step_simple("purge").map(|l| FlowStep::Purge(PurgeStep { store_name: l.1, where_expr: String::new(), loc: l.0 })),
+            TokenType::Mutate => self.parse_store_where_step().map(|(loc, store_name, where_expr)| FlowStep::Mutate(MutateStep { store_name, where_expr, loc })),
+            TokenType::Purge => self.parse_store_where_step().map(|(loc, store_name, where_expr)| FlowStep::Purge(PurgeStep { store_name, where_expr, loc })),
             TokenType::Transact => self.parse_block_step("transact").map(|l| FlowStep::Transact(TransactBlock { loc: l })),
 
             _ => {
@@ -3097,6 +3097,60 @@ impl Parser {
                 column: tok.column,
             },
         }))
+    }
+
+    /// §Fase 35.m — Parse a `mutate` / `purge` step, capturing the
+    /// optional `{ where: "<expr>" }` filter.
+    ///
+    /// Before Fase 35.m these two steps parsed via `parse_flow_step_simple`,
+    /// which *skipped* the braced block — so a written `where:` clause
+    /// was silently dropped and every `mutate`/`purge` ran against the
+    /// whole store, leaving the entire Fase 35.b/c parameterized-filter
+    /// machinery unreachable for them. This mirror of `parse_retrieve_step`
+    /// (minus the `as:` alias — a mutate/purge binds no result) closes
+    /// that gap. Returns `(loc, store_name, where_expr)`.
+    fn parse_store_where_step(
+        &mut self,
+    ) -> Result<(Loc, String, String), ParseError> {
+        let tok = self.current().clone();
+        self.advance(); // consume the keyword
+        let store = if self.at_declaration_start()
+            || self.check(TokenType::RBrace)
+            || self.check(TokenType::Eof)
+        {
+            String::new()
+        } else {
+            self.consume_any_ident_or_kw()?.value.clone()
+        };
+        let mut where_expr = String::new();
+        if self.check(TokenType::LBrace) {
+            self.advance();
+            while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                let field = self.current().value.clone();
+                self.advance();
+                if self.check(TokenType::Colon) {
+                    self.advance();
+                    match field.as_str() {
+                        "where" => {
+                            where_expr =
+                                self.consume(TokenType::StringLit)?.value.clone()
+                        }
+                        _ => self.skip_value(),
+                    }
+                }
+            }
+            if self.check(TokenType::RBrace) {
+                self.advance();
+            }
+        }
+        Ok((
+            Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            store,
+            where_expr,
+        ))
     }
 
     // ── TIER 2 DECLARATIONS ────────────────────────────────────────
@@ -6686,6 +6740,73 @@ mod fase28_smart_suggest_parser_tests {
             "errors: {:?}",
             result.errors
         );
+    }
+}
+
+// ── §Fase 35.m — mutate / purge where-clause capture ────────────────
+
+#[cfg(test)]
+mod fase35m_mutate_purge_where_tests {
+    use super::*;
+
+    fn parse(src: &str) -> Program {
+        let tokens = crate::lexer::Lexer::new(src, "<test>")
+            .tokenize()
+            .expect("lex");
+        Parser::new(tokens).parse().expect("parse")
+    }
+
+    fn first_step<'a>(prog: &'a Program, flow: &str) -> &'a FlowStep {
+        for d in &prog.declarations {
+            if let Declaration::Flow(f) = d {
+                if f.name == flow {
+                    return f.body.first().expect("flow has at least one step");
+                }
+            }
+        }
+        panic!("flow `{flow}` not found");
+    }
+
+    #[test]
+    fn mutate_captures_its_where_clause() {
+        // Pre-35.m the `{ where: }` block was skipped — every mutate
+        // ran whole-store. It must now reach `where_expr`.
+        let prog =
+            parse("flow F() -> Unit { mutate accounts { where: \"id = 1\" } }");
+        match first_step(&prog, "F") {
+            FlowStep::Mutate(m) => {
+                assert_eq!(m.store_name, "accounts");
+                assert_eq!(m.where_expr, "id = 1");
+            }
+            other => panic!("expected Mutate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn purge_captures_its_where_clause() {
+        let prog =
+            parse("flow F() -> Unit { purge logs { where: \"ts < 100\" } }");
+        match first_step(&prog, "F") {
+            FlowStep::Purge(p) => {
+                assert_eq!(p.store_name, "logs");
+                assert_eq!(p.where_expr, "ts < 100");
+            }
+            other => panic!("expected Purge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutate_without_a_where_block_is_a_whole_store_op() {
+        // No `{ where: }` → an empty filter → the runtime renders
+        // `WHERE TRUE` (every row). A valid, intentional op.
+        let prog = parse("flow F() -> Unit { mutate accounts }");
+        match first_step(&prog, "F") {
+            FlowStep::Mutate(m) => {
+                assert_eq!(m.store_name, "accounts");
+                assert_eq!(m.where_expr, "");
+            }
+            other => panic!("expected Mutate, got {other:?}"),
+        }
     }
 }
 
