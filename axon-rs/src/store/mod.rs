@@ -19,6 +19,7 @@
 //! - `audit_chain` — 35.h — Pillar II, the HMAC-Merkle mutation chain.
 //! - `row_stream` — 35.i — Pillar III, `retrieve` as a `Stream<Row>`.
 
+pub mod epistemic;
 pub mod filter;
 pub mod postgres_backend;
 pub mod registry;

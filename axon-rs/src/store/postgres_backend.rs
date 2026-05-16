@@ -58,6 +58,7 @@ use sqlx::postgres::{PgArguments, PgPoolOptions, PgRow};
 use sqlx::query::Query;
 use sqlx::{Column, PgPool, Postgres, Row, TypeInfo};
 
+use crate::store::epistemic::EpistemicError;
 use crate::store::filter::{self, build_pg_where, FilterError, SqlValue};
 
 /// Upper bound on pooled connections per backend (D7 — bounded).
@@ -91,6 +92,9 @@ pub enum StoreError {
     EmptyData { op: &'static str },
     /// The `where` expression did not compile (delegates to 35.b).
     Filter(FilterError),
+    /// A `confidence_floor` violation — a sub-floor or un-elevated
+    /// `persist` (delegates to 35.g's Pillar I epistemic data plane).
+    Epistemic(EpistemicError),
     /// A live connection could not be acquired / the ping failed.
     Connect { source: String },
     /// A SQL statement failed at execution time.
@@ -135,6 +139,7 @@ impl fmt::Display for StoreError {
                 "axonstore `{op}` was given no column data"
             ),
             StoreError::Filter(e) => write!(f, "where-expression: {e}"),
+            StoreError::Epistemic(e) => write!(f, "{e}"),
             StoreError::Connect { source } => {
                 write!(f, "axonstore could not reach the database: {source}")
             }
@@ -158,6 +163,7 @@ impl std::error::Error for StoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             StoreError::Filter(e) => Some(e),
+            StoreError::Epistemic(e) => Some(e),
             _ => None,
         }
     }
@@ -166,6 +172,12 @@ impl std::error::Error for StoreError {
 impl From<FilterError> for StoreError {
     fn from(e: FilterError) -> Self {
         StoreError::Filter(e)
+    }
+}
+
+impl From<EpistemicError> for StoreError {
+    fn from(e: EpistemicError) -> Self {
+        StoreError::Epistemic(e)
     }
 }
 

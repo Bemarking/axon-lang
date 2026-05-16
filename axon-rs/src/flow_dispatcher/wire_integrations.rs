@@ -47,6 +47,7 @@ use crate::ir_nodes::{
     IRConsensusBlock, IRDeliberateBlock, IRDiscover, IREmit, IRMutateStep,
     IRPersistStep, IRPublish, IRPurgeStep, IRRetrieveStep, IRTransactBlock,
 };
+use crate::store::epistemic;
 use crate::store::filter::SqlValue;
 use crate::store::postgres_backend::{PostgresStoreBackend, StoreError};
 use crate::store::registry::StoreHandle;
@@ -180,24 +181,30 @@ pub fn purge_from_store(
 // `PostgresStoreBackend` the sync runner uses (35.e), so the two
 // execution paths never diverge.
 
-/// Resolve a store name to its Postgres backend, if it routes to SQL.
+/// Resolve a store name to its Postgres backend + declared
+/// `confidence_floor`, if it routes to SQL.
 ///
 /// - `Ok(None)` — the key-value path: no registry attached, or the
 ///   store is `in_memory` / undeclared.
-/// - `Ok(Some(backend))` — the SQL path.
+/// - `Ok(Some((backend, floor)))` — the SQL path; `floor` is the
+///   store's `confidence_floor` (Pillar I, 35.g).
 /// - `Err(StoreError)` — a declared `postgresql` store whose
 ///   connection could not be resolved. D2 — surfaced loudly, NEVER a
 ///   silent fallback to the key-value store.
 fn resolve_pg_backend(
     ctx: &DispatchCtx,
     store_name: &str,
-) -> Result<Option<PostgresStoreBackend>, StoreError> {
+) -> Result<Option<(PostgresStoreBackend, Option<f64>)>, StoreError> {
     let Some(registry) = ctx.store_registry.as_ref() else {
         return Ok(None);
     };
     match registry.resolve(store_name)? {
         StoreHandle::InMemory => Ok(None),
-        StoreHandle::Postgres(backend) => Ok(Some(backend)),
+        StoreHandle::Postgres(backend) => {
+            let floor =
+                registry.spec(store_name).and_then(|s| s.confidence_floor);
+            Ok(Some((backend, floor)))
+        }
     }
 }
 
@@ -361,8 +368,12 @@ pub async fn run_persist(
     emit_step_start(ctx, &step_name, step_index, "persist")?;
 
     let output = match resolve_pg_backend(ctx, &node.store_name) {
-        Ok(Some(backend)) => {
+        Ok(Some((backend, floor))) => {
             let row = sql_row_from_bindings(ctx);
+            // §35.g Pillar I — a sub-floor or un-elevated write into a
+            // confidence-floored store is a typed error.
+            epistemic::enforce_persist_floor(&row, floor, &node.store_name)
+                .map_err(|e| sql_dispatch_error(StoreError::from(e)))?;
             let n = backend
                 .insert(&node.store_name, &row)
                 .await
@@ -409,14 +420,20 @@ pub async fn run_retrieve(
     emit_step_start(ctx, &step_name, step_index, "retrieve")?;
 
     let value = match resolve_pg_backend(ctx, &node.store_name) {
-        Ok(Some(backend)) => {
+        Ok(Some((backend, floor))) => {
+            // §35.g Pillar I — every tuple born Untrusted;
+            // confidence_floor filters sub-floor rows. The bound value
+            // is an epistemic envelope, not a bare row array.
             let rows = backend
                 .query(&node.store_name, &node.where_expr)
                 .await
                 .map_err(sql_dispatch_error)?;
-            let arr: Vec<serde_json::Value> =
-                rows.iter().map(|r| r.to_json()).collect();
-            serde_json::to_string(&arr).unwrap_or_else(|_| "[]".to_string())
+            let outcome = epistemic::enforce_retrieve_floor(
+                epistemic::mark_retrieved(rows),
+                floor,
+            );
+            let envelope = epistemic::retrieve_envelope(&outcome, floor);
+            serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string())
         }
         Ok(None) => retrieve_from_store(&node.store_name, &node.where_expr, ctx),
         Err(e) => return Err(sql_dispatch_error(e)),
@@ -457,7 +474,7 @@ pub async fn run_mutate(
     emit_step_start(ctx, &step_name, step_index, "mutate")?;
 
     let output = match resolve_pg_backend(ctx, &node.store_name) {
-        Ok(Some(backend)) => {
+        Ok(Some((backend, _floor))) => {
             let row = sql_row_from_bindings(ctx);
             let n = backend
                 .mutate(&node.store_name, &node.where_expr, &row)
@@ -504,7 +521,7 @@ pub async fn run_purge(
     emit_step_start(ctx, &step_name, step_index, "purge")?;
 
     let output = match resolve_pg_backend(ctx, &node.store_name) {
-        Ok(Some(backend)) => {
+        Ok(Some((backend, _floor))) => {
             let n = backend
                 .purge(&node.store_name, &node.where_expr)
                 .await
@@ -1216,6 +1233,29 @@ mod tests {
             other => panic!("expected Completed, got {other:?}"),
         }
         assert_eq!(ctx.let_bindings.get("__store_cache_k").unwrap(), "v");
+    }
+
+    #[tokio::test]
+    async fn run_persist_below_confidence_floor_is_blocked() {
+        // §35.g Pillar I — the epistemic gate is wired into the
+        // dispatcher's persist handler: an un-elevated write (no
+        // `_confidence`) into a confidence-floored store is a typed
+        // BackendError, before any row is written.
+        let mut store =
+            axonstore("ledger", "postgresql", "postgresql://u:p@localhost:5432/db");
+        store.confidence_floor = Some(0.8);
+        let (mut ctx, _rx) = ctx_with_registry(&[store]);
+        ctx.let_bindings.insert("amount".into(), "100".into()); // no `_confidence`
+        let node = IRPersistStep {
+            node_type: "persist",
+            source_line: 0,
+            source_column: 0,
+            store_name: "ledger".into(),
+        };
+        assert!(matches!(
+            run_persist(&node, &mut ctx).await,
+            Err(DispatchError::BackendError { .. })
+        ));
     }
 
     #[test]
