@@ -50,10 +50,10 @@ jobs:
         with:
           workspaces: axon-rs
 
-      - name: Store module unit tests (filter / backend / registry /
-              epistemic / audit-chain / capability / row-stream)
+      - name: Store module unit tests
         working-directory: axon-rs
-        run: cargo test --lib store:: -- --nocapture
+        run: |
+          cargo test --lib store:: -- --nocapture
 
       - name: Fase 35.a — axonstore gap diagnostic anchor
         working-directory: axon-rs
