@@ -50,6 +50,7 @@ use crate::ir_nodes::{
 use crate::store::audit_chain::StoreMutationKind;
 use crate::store::capability;
 use crate::store::epistemic;
+use crate::store::row_stream;
 use crate::store::filter::SqlValue;
 use crate::store::postgres_backend::{PostgresStoreBackend, StoreError};
 use crate::store::registry::StoreHandle;
@@ -473,18 +474,31 @@ pub async fn run_retrieve(
 
     let value = match resolve_pg_backend(ctx, &node.store_name) {
         Ok(Some((backend, floor))) => {
-            // §35.g Pillar I — every tuple born Untrusted;
+            // §35.i Pillar III — retrieve drains off a lazy cursor,
+            // bounded + cancel-aware (never materializes a huge result
+            // set). §35.g Pillar I — every tuple born Untrusted,
             // confidence_floor filters sub-floor rows. The bound value
-            // is an epistemic envelope, not a bare row array.
-            let rows = backend
-                .query(&node.store_name, &node.where_expr)
-                .await
-                .map_err(sql_dispatch_error)?;
-            let outcome = epistemic::enforce_retrieve_floor(
-                epistemic::mark_retrieved(rows),
+            // is an epistemic envelope carrying both dispositions.
+            let stream_outcome = row_stream::stream_retrieve(
+                &backend,
+                &node.store_name,
+                &node.where_expr,
+                row_stream::DEFAULT_RETRIEVE_POLICY,
+                row_stream::DEFAULT_MAX_ROWS,
+                &ctx.cancel,
+            )
+            .await
+            .map_err(sql_dispatch_error)?;
+            let metadata = row_stream::stream_metadata(
+                row_stream::DEFAULT_RETRIEVE_POLICY,
+                &stream_outcome,
+            );
+            let floored = epistemic::enforce_retrieve_floor(
+                epistemic::mark_retrieved(stream_outcome.rows),
                 floor,
             );
-            let envelope = epistemic::retrieve_envelope(&outcome, floor);
+            let mut envelope = epistemic::retrieve_envelope(&floored, floor);
+            envelope["stream"] = metadata;
             serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string())
         }
         Ok(None) => retrieve_from_store(&node.store_name, &node.where_expr, ctx),

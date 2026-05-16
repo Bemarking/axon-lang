@@ -520,8 +520,9 @@ fn pg_value_to_json(
     })
 }
 
-/// Map a whole `PgRow` to a [`StoreRow`].
-fn map_pg_row(row: &PgRow) -> Result<StoreRow, StoreError> {
+/// Map a whole `PgRow` to a [`StoreRow`]. `pub(crate)` so 35.i's
+/// `row_stream` cursor drain shares one row-decode path with `query`.
+pub(crate) fn map_pg_row(row: &PgRow) -> Result<StoreRow, StoreError> {
     let mut columns = Vec::with_capacity(row.len());
     for (idx, col) in row.columns().iter().enumerate() {
         let name = col.name().to_string();
@@ -535,7 +536,9 @@ fn map_pg_row(row: &PgRow) -> Result<StoreRow, StoreError> {
 /// Bind one [`SqlValue`] onto a query. `NULL` is rendered inline by the
 /// builders and so never reaches this function in practice; the `Null`
 /// arm binds a typed NULL defensively to keep the function total.
-fn bind_value<'q>(
+/// `pub(crate)` so 35.i's `row_stream` binds cursor-query params
+/// through the same path.
+pub(crate) fn bind_value<'q>(
     q: Query<'q, Postgres, PgArguments>,
     value: &SqlValue,
 ) -> Query<'q, Postgres, PgArguments> {
