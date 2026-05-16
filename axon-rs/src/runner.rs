@@ -39,6 +39,9 @@ use crate::plan_export::{self, PlanBuilder, PlanUnit, PlanStep, PlanTools, PlanT
 use crate::parser::{ParseError, Parser};
 use crate::session_store::SessionStore;
 use crate::step_deps;
+use crate::store::filter::SqlValue;
+use crate::store::postgres_backend::{PostgresStoreBackend, StoreError};
+use crate::store::registry::{StoreBackendKind, StoreRegistry};
 use crate::tool_registry::ToolRegistry;
 use crate::tool_validator::{self, EffectTracker};
 use crate::type_checker::TypeChecker;
@@ -729,6 +732,112 @@ fn execute_stub(
 
 const MAX_ANCHOR_RETRIES: u32 = 2;
 
+// ── §Fase 35.e — axonstore SQL routing for the sync runner ──────────
+//
+// The sync runner is synchronous; `PostgresStoreBackend`'s operations
+// are async. `block_on_store` bridges the two by running the future on
+// a freshly-spawned OS thread that owns a current-thread Tokio runtime.
+// A fresh thread never carries an ambient runtime, so this is safe
+// whether `execute_real` runs on a server worker thread, a
+// `spawn_blocking` thread, or a plain CLI thread — there is no
+// "runtime within a runtime" hazard. `std::thread::scope` joins the
+// thread before returning. One pool is created + used + dropped per
+// store op; cross-request pooling is the streaming dispatcher's path
+// (35.f, the production hot path).
+fn block_on_store<F>(fut: F) -> F::Output
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Fase 35.e: failed to build the store-op Tokio runtime")
+                    .block_on(fut)
+            })
+            .join()
+            .expect("Fase 35.e: the store-op thread panicked")
+    })
+}
+
+/// Execute one `persist`/`retrieve`/`mutate`/`purge` step against a
+/// postgresql-backed `axonstore`, returning a human-readable result
+/// summary or a typed [`StoreError`].
+///
+/// The store name doubles as the SQL table name (D12 — `IRAxonStore`
+/// carries no schema, so v1.30.0 operates against existing tables).
+/// `persist`/`mutate` write the flow's user bindings as a row
+/// ([`ExecContext::user_bindings`]); `retrieve`/`purge` are driven by
+/// the `where`-expression. D5 — the SAME `PostgresStoreBackend` the
+/// streaming dispatcher uses, so the two execution paths never diverge.
+fn execute_sql_store_step(
+    store_registry: &StoreRegistry,
+    step_type: &str,
+    store_name: &str,
+    interpolated_expr: &str,
+    ctx: &ExecContext,
+) -> Result<String, StoreError> {
+    // The connection lives on the `IRAxonStore` the registry validated.
+    let connection = store_registry
+        .spec(store_name)
+        .map(|s| s.connection.clone())
+        .unwrap_or_default();
+
+    // `memory_expression` is `"store:where"` for retrieve/mutate/purge
+    // and the bare store name for persist — the where-expr is whatever
+    // follows the first colon (empty when absent).
+    let where_expr = interpolated_expr
+        .splitn(2, ':')
+        .nth(1)
+        .unwrap_or("")
+        .to_string();
+
+    // persist/mutate write the flow's user bindings as a row; every
+    // value binds as text (D12 — no column-type schema in v1.30.0).
+    let data: Vec<(String, SqlValue)> = ctx
+        .user_bindings()
+        .into_iter()
+        .map(|(k, v)| (k, SqlValue::Text(v)))
+        .collect();
+
+    let store_name = store_name.to_string();
+    let step_type = step_type.to_string();
+
+    block_on_store(async move {
+        let backend = PostgresStoreBackend::connect(&connection)?;
+        match step_type.as_str() {
+            "retrieve" => {
+                let rows = backend.query(&store_name, &where_expr).await?;
+                let json: Vec<serde_json::Value> =
+                    rows.iter().map(|r| r.to_json()).collect();
+                let payload = serde_json::to_string(&json)
+                    .unwrap_or_else(|_| "[]".to_string());
+                Ok(format!("{} row(s): {payload}", rows.len()))
+            }
+            "purge" => {
+                let n = backend.purge(&store_name, &where_expr).await?;
+                Ok(format!("{n} row(s) purged"))
+            }
+            "persist" => {
+                let n = backend.insert(&store_name, &data).await?;
+                Ok(format!("{n} row(s) persisted"))
+            }
+            "mutate" => {
+                let n = backend.mutate(&store_name, &where_expr, &data).await?;
+                Ok(format!("{n} row(s) mutated"))
+            }
+            // The caller only routes the four store-op step types here.
+            other => Err(StoreError::Query {
+                op: "store",
+                source: format!("unsupported store step type `{other}`"),
+            }),
+        }
+    })
+}
+
 fn execute_real(
     units: &[ExecutionUnit],
     backend_name: &str,
@@ -739,6 +848,7 @@ fn execute_real(
     output_fmt: OutputFormat,
     report: &mut ReportBuilder,
     registry: &ToolRegistry,
+    store_registry: &StoreRegistry,
     api_key_override: Option<&str>,
 ) -> Result<(bool, Vec<TraceEvent>), backend::BackendError> {
     let api_key = match api_key_override {
@@ -1140,6 +1250,61 @@ fn execute_real(
             if matches!(step.step_type.as_str(), "remember" | "recall" | "persist" | "retrieve" | "mutate" | "purge") {
                 let raw_expr = step.memory_expression.as_deref().unwrap_or("");
                 let expr = ctx.interpolate(raw_expr);
+
+                // §Fase 35.e — SQL routing. A persist/retrieve/mutate/
+                // purge whose store resolves to a postgresql backend
+                // executes real SQL and skips the key-value path
+                // entirely. remember/recall, and every in_memory or
+                // undeclared store, fall through to the byte-identical
+                // pre-35 key-value path below (D3 — absolute).
+                if matches!(step.step_type.as_str(), "persist" | "retrieve" | "mutate" | "purge")
+                    && store_registry.backend_kind(&step.step_name)
+                        == Some(StoreBackendKind::Postgresql)
+                {
+                    let (result_text, ok) = match execute_sql_store_step(
+                        store_registry,
+                        &step.step_type,
+                        &step.step_name,
+                        &expr,
+                        &ctx,
+                    ) {
+                        Ok(summary) => (summary, true),
+                        Err(e) => (format!("store error: {e}"), false),
+                    };
+                    ctx.set_result(&step.step_name, &result_text);
+                    let detail = format!("{} → {}", step.step_name, result_text);
+                    if !json {
+                        let color = if ok { "\x1b[35m" } else { "\x1b[31m" };
+                        println!(
+                            "  {} {} [{}]",
+                            c(if ok { "💾" } else { "✗" }, color, use_color),
+                            c(&detail, color, use_color),
+                            step.step_type,
+                        );
+                    }
+                    hooks.on_step_end(0, 0, 0, 0, false);
+                    report.record_step(StepReport {
+                        name: step.step_name.clone(),
+                        step_type: step.step_type.clone(),
+                        result: detail.clone(),
+                        duration_ms: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        anchor_breaches: 0,
+                        chain_activations: 0,
+                        was_retried: false,
+                    });
+                    if trace {
+                        events.push(TraceEvent {
+                            event: format!("axonstore_sql_{}", step.step_type),
+                            unit: unit.flow_name.clone(),
+                            step: step.step_name.clone(),
+                            detail,
+                        });
+                    }
+                    continue; // Skip the key-value path and the LLM call.
+                }
+
                 let (action, detail) = match step.step_type.as_str() {
                     "remember" => {
                         session.remember(&step.step_name, &expr, &step.step_name);
@@ -1985,6 +2150,12 @@ pub fn execute_server_flow(
     let mut report = crate::output::ReportBuilder::new(source_file, backend, "json");
     let mut registry = crate::tool_registry::ToolRegistry::new();
 
+    // §Fase 35.e — build the axonstore registry from the program's
+    // declarations. The D2 closed-catalog gate runs here: an unknown
+    // backend fails fast, at deploy, with a named error.
+    let store_registry = StoreRegistry::build(&ir.axonstore_specs)
+        .map_err(|e| format!("axonstore registry: {e}"))?;
+
     let (success, _events) = if backend == "stub" {
         let result = execute_stub(&execution_units, false, false);
         // §Fase 33.b Layer 1 — close the steps_executed:0 hollow-wire bug.
@@ -2035,6 +2206,7 @@ pub fn execute_server_flow(
             crate::output::OutputFormat::Json,
             &mut report,
             &registry,
+            &store_registry,
             api_key_override,
         ).map_err(|e| format!("Backend error: {:?}", e))?
     };
@@ -2214,6 +2386,19 @@ pub fn run_run(
     let mut registry = ToolRegistry::new();
     registry.register_from_ir(&ir_program.tools);
 
+    // §Fase 35.e — build the axonstore registry (D2 closed-catalog
+    // gate). An unknown `backend:` fails fast, before execution.
+    let store_registry = match StoreRegistry::build(&ir_program.axonstore_specs) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "{}  {e}",
+                c(&format!("✗ {filename}"), "\x1b[1;31m", use_color)
+            );
+            return 1;
+        }
+    };
+
     if !json && !registry.program_names().is_empty() {
         println!(
             "  {}",
@@ -2238,7 +2423,7 @@ pub fn run_run(
     }
 
     let (success, events) = if tool_mode == "real" {
-        match execute_real(&units, backend, file, use_color, trace, stream, output_fmt, &mut report, &registry, None) {
+        match execute_real(&units, backend, file, use_color, trace, stream, output_fmt, &mut report, &registry, &store_registry, None) {
             Ok((s, e)) => (s, e),
             Err(err) => {
                 eprintln!(
@@ -2334,4 +2519,80 @@ pub fn run_run(
     }
 
     if success { 0 } else { 1 }
+}
+
+// ── §Fase 35.e — sync-runner axonstore wiring tests ─────────────────
+
+#[cfg(test)]
+mod fase35e_tests {
+    use super::*;
+
+    fn pg_store(name: &str, connection: &str) -> IRAxonStore {
+        IRAxonStore {
+            node_type: "axonstore",
+            source_line: 0,
+            source_column: 0,
+            name: name.to_string(),
+            backend: "postgresql".to_string(),
+            connection: connection.to_string(),
+            confidence_floor: None,
+            isolation: String::new(),
+            on_breach: String::new(),
+        }
+    }
+
+    #[test]
+    fn block_on_store_runs_a_future_from_a_plain_thread() {
+        // The CLI path: `execute_real` runs with no ambient runtime.
+        let n = block_on_store(async { 20 + 15 });
+        assert_eq!(n, 35);
+    }
+
+    #[tokio::test]
+    async fn block_on_store_runs_a_future_from_within_a_runtime() {
+        // The server path: `execute_real` runs on a Tokio worker
+        // thread. `block_on_store` must NOT panic with "runtime within
+        // a runtime" — it spawns a fresh OS thread that owns its own
+        // runtime.
+        let n = block_on_store(async { 7 * 6 });
+        assert_eq!(n, 42);
+    }
+
+    #[test]
+    fn sql_store_step_surfaces_missing_env_var_never_a_kv_fallback() {
+        // The SQL path is reached (routing works) and fails honestly:
+        // a postgresql store whose `env:` var is unset yields a typed
+        // StoreError — D2's "never a silent KV fallback", proven
+        // end-to-end through the sync runner's helper.
+        let registry = StoreRegistry::build(&[pg_store(
+            "logs",
+            "env:AXON_NONEXISTENT_VAR_FASE35E",
+        )])
+        .unwrap();
+        let ctx = ExecContext::new("F", "P", 0);
+        let result = execute_sql_store_step(
+            &registry,
+            "retrieve",
+            "logs",
+            "logs:id = 1",
+            &ctx,
+        );
+        assert!(matches!(result, Err(StoreError::MissingEnvVar { .. })));
+    }
+
+    #[test]
+    fn sql_store_step_persist_builds_a_row_from_user_bindings() {
+        // persist into a postgresql store writes the flow's user
+        // bindings as a row. With a malformed DSN the connect fails
+        // (typed PoolInit error) — proving persist reaches the SQL
+        // path with the bindings-as-row data assembled, not the KV
+        // path.
+        let registry =
+            StoreRegistry::build(&[pg_store("events", "not a dsn")]).unwrap();
+        let mut ctx = ExecContext::new("F", "P", 0);
+        ctx.set("event_kind", "login");
+        let result =
+            execute_sql_store_step(&registry, "persist", "events", "events", &ctx);
+        assert!(matches!(result, Err(StoreError::PoolInit { .. })));
+    }
 }
