@@ -77,7 +77,7 @@ def test_executor_has_no_scan_passed_literal_assignment():
             f"True` assignment in favor of registry-driven dispatch. "
             f"If this regressed, the Shield runtime is back to "
             f"falsely-guaranteed pass — see "
-            f"docs/fase_20_production_shield_runtime.md §3.1."
+            f"fase/fase_20_production_shield_runtime.md §3.1."
         )
 
 
@@ -107,7 +107,7 @@ def test_every_valid_shield_strategy_has_at_least_one_scanner():
         f"scanner registered:\n  {sorted(missing)}\n\n"
         "Every member of _VALID_SHIELD_STRATEGIES must have a "
         "scanner in axon.runtime.shield_scanners.default_registry. "
-        "See docs/fase_20_production_shield_runtime.md §3.2."
+        "See fase/fase_20_production_shield_runtime.md §3.2."
     )
 
 

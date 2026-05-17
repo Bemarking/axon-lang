@@ -27,7 +27,7 @@ runtime status. Fase 19's contribution closes a different drift class:
 
   * The Rust-parity assertion (every WIRED Python primitive has a
     Rust counterpart) is the Tier C deliverable in
-    docs/fase_19_production_hardening.md and is tracked separately
+    fase/fase_19_production_hardening.md and is tracked separately
     once the Rust dispatchers land. This file marks that gap with a
     deliberately-skipped placeholder so the obligation is not
     forgotten.
@@ -64,7 +64,7 @@ def test_executor_no_stub_true_markers():
         "Fase 19.a/b/c removed the Fase 18 MVP placeholders — this "
         "marker reappearing means a dispatcher regressed to the stub "
         "shape. Wire it to the real subsystem (see "
-        "docs/fase_19_production_hardening.md §19.a–§19.c for the "
+        "fase/fase_19_production_hardening.md §19.a–§19.c for the "
         "expected pattern: ContinuityTokenSigner / PixNavigator / "
         "ContextView)."
     )
@@ -257,7 +257,7 @@ def test_rust_parity_for_wired_primitives():
         f"following Fase-19 WIRED primitives:\n  {sorted(missing)}\n\n"
         f"Each WIRED Python dispatcher must have a stub-correct "
         f"match arm in `execute_stub`. See "
-        f"docs/fase_19_production_hardening.md §19.f/g for the "
+        f"fase/fase_19_production_hardening.md §19.f/g for the "
         f"contract — the arm should:\n"
         f"  1. Recognize step.step_type.\n"
         f"  2. Bind any adopter-visible placeholders to ExecContext.\n"

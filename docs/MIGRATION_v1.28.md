@@ -821,7 +821,7 @@ python -m pytest tests/test_fase33z_k_i_dialect_catalog_drift_gate.py
 - [`docs/MIGRATION_v1.27.md`](MIGRATION_v1.27.md) — the prior cycle
   (33.z production-wiring lift). v1.27.0 is the baseline this guide
   assumes.
-- [`docs/fase_33z_k_wire_format_adapter.md`](fase_33z_k_wire_format_adapter.md)
+- [`fase/fase_33z_k_wire_format_adapter.md`](fase_33z_k_wire_format_adapter.md)
   — the plan vivo for the 33.z.k cycle. Source of truth for Q1-Q7
   ratifications + D1-D12 invariant text + per-sub-fase landing
   status.
