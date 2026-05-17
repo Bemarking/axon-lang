@@ -108,13 +108,19 @@ async fn hit_sse(app: &axum::Router, path: &str) -> (StatusCode, String) {
 }
 
 #[tokio::test]
-async fn s2_streaming_error_path_emits_a_double_terminator() {
+async fn s2_streaming_error_path_emits_exactly_one_terminator_post_36xc() {
+    // INVERTED by §Fase 36.x.c (D1). The v1.34.0 baseline emitted a
+    // double terminator on the streaming error path — `FlowError`
+    // AND, unconditionally, `FlowComplete`. 36.x.c gated the §7
+    // `FlowComplete` emit; this assertion is now flipped to its fixed
+    // form (exactly one terminator) and stands as the regression
+    // guard.
+    //
     // A `sqlite` store type-checks (sqlite ∈ VALID_STORE_BACKENDS)
     // but the runtime registry only implements `postgresql` +
     // `in_memory` — `StoreRegistry::build` rejects `sqlite` with
-    // `UnknownBackend`. `run_streaming_via_dispatcher` then emits
-    // `FlowError` AND, unconditionally, `FlowComplete`. Deterministic
-    // — no env, no database.
+    // `UnknownBackend`, so the streaming producer terminates via
+    // `FlowError`. Deterministic — no env, no database.
     let app = build_router(server_cfg());
     let src = "axonstore mem { backend: sqlite connection: \"file:x.db\" }\n\
         flow ChatFlow() -> Unit {\n\
@@ -138,13 +144,11 @@ async fn s2_streaming_error_path_emits_a_double_terminator() {
     let has_complete = wire.contains("axon.complete");
 
     assert!(
-        has_error && has_complete,
-        "§Fase 36.x.a §2 — v1.34.0 baseline: the streaming error path \
-         emits BOTH `axon.error` AND `axon.complete` — a double \
-         terminator, violating the Fase 33 one-terminator contract. \
-         36.x.c (D1) inverts this: an errored flow must emit ONLY \
-         `axon.error`. has_error={has_error} has_complete={has_complete}\n\
-         wire:\n{wire}"
+        has_error && !has_complete,
+        "§Fase 36.x.a §2 (inverted by 36.x.c / D1): the streaming error \
+         path must emit EXACTLY ONE terminator — `axon.error` ONLY, \
+         never a trailing `axon.complete`. has_error={has_error} \
+         has_complete={has_complete}\n  wire:\n{wire}"
     );
 }
 

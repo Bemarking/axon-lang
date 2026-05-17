@@ -185,16 +185,9 @@ pub async fn run_streaming_via_dispatcher(
                 error: format!("compilation failed: {plan_error:?}"),
                 timestamp_ms: now_ms(),
             });
-            let _ = emit(FlowExecutionEvent::FlowComplete {
-                flow_name,
-                backend,
-                success: false,
-                steps_executed: 0,
-                tokens_input: 0,
-                tokens_output: 0,
-                latency_ms: exec_start.elapsed().as_millis() as u64,
-                timestamp_ms: now_ms(),
-            });
+            // §Fase 36.x.c (D1) — exactly one terminator: a
+            // compilation failure emits ONLY `FlowError` (the failure
+            // terminator). No trailing `FlowComplete`.
             return;
         }
     };
@@ -212,16 +205,8 @@ pub async fn run_streaming_via_dispatcher(
                 error: format!("axonstore registry: {reg_error}"),
                 timestamp_ms: now_ms(),
             });
-            let _ = emit(FlowExecutionEvent::FlowComplete {
-                flow_name,
-                backend,
-                success: false,
-                steps_executed: 0,
-                tokens_input: 0,
-                tokens_output: 0,
-                latency_ms: exec_start.elapsed().as_millis() as u64,
-                timestamp_ms: now_ms(),
-            });
+            // §Fase 36.x.c (D1) — exactly one terminator: a registry
+            // build failure emits ONLY `FlowError`.
             return;
         }
     };
@@ -241,16 +226,8 @@ pub async fn run_streaming_via_dispatcher(
                 ),
                 timestamp_ms: now_ms(),
             });
-            let _ = emit(FlowExecutionEvent::FlowComplete {
-                flow_name,
-                backend,
-                success: false,
-                steps_executed: 0,
-                tokens_input: 0,
-                tokens_output: 0,
-                latency_ms: exec_start.elapsed().as_millis() as u64,
-                timestamp_ms: now_ms(),
-            });
+            // §Fase 36.x.c (D1) — exactly one terminator: a
+            // flow-not-found failure emits ONLY `FlowError`.
             return;
         }
     };
@@ -331,6 +308,14 @@ pub async fn run_streaming_via_dispatcher(
     let mut total_tokens_output: u64 = 0;
     let mut steps_executed: usize = 0;
     let mut flow_success = true;
+    // §Fase 36.x.c (D1) — `true` once a `FlowError` terminator has
+    // been emitted from the dispatch loop. Gates the §7 `FlowComplete`
+    // so the producer NEVER emits a second terminator after
+    // `FlowError` — the wire carries exactly one (`FlowComplete` XOR
+    // `FlowError`). Distinct from `flow_success`: a flow can complete
+    // with `success:false` (a clean non-success) WITHOUT erroring, and
+    // that case still gets its single `FlowComplete` terminator.
+    let mut flow_errored = false;
 
     // §Fase 33.z.c — Look up the AST flow that corresponds to the
     // IR flow. The AST is needed by `resolve_stream_effect_for_step`
@@ -398,6 +383,9 @@ pub async fn run_streaming_via_dispatcher(
             }
             Err(e) => {
                 flow_success = false;
+                // §Fase 36.x.c (D1) — `FlowError` is the terminator
+                // for this flow; §7 must NOT also emit `FlowComplete`.
+                flow_errored = true;
                 let _ = emit(FlowExecutionEvent::FlowError {
                     flow_name: flow_name.clone(),
                     error: format!("dispatcher error: {e:?}"),
@@ -412,16 +400,25 @@ pub async fn run_streaming_via_dispatcher(
     // 0 because the dispatcher doesn't currently track input tokens
     // separately (the per-step audit records do, but the FlowComplete
     // input field stays 0 until 33.z.c extends the surface).
-    let _ = emit(FlowExecutionEvent::FlowComplete {
-        flow_name,
-        backend,
-        success: flow_success,
-        steps_executed,
-        tokens_input: 0,
-        tokens_output: total_tokens_output,
-        latency_ms: exec_start.elapsed().as_millis() as u64,
-        timestamp_ms: now_ms(),
-    });
+    //
+    // §Fase 36.x.c (D1) — GATED on `!flow_errored`. When the dispatch
+    // loop already terminated the stream with `FlowError`, emitting
+    // `FlowComplete` here would put a SECOND terminator on the wire —
+    // the malformed double-terminator the 36.x.a anchor pinned. The
+    // wire carries exactly one terminator: `FlowComplete` XOR
+    // `FlowError`.
+    if !flow_errored {
+        let _ = emit(FlowExecutionEvent::FlowComplete {
+            flow_name,
+            backend,
+            success: flow_success,
+            steps_executed,
+            tokens_input: 0,
+            tokens_output: total_tokens_output,
+            latency_ms: exec_start.elapsed().as_millis() as u64,
+            timestamp_ms: now_ms(),
+        });
+    }
 
     // Drop ctx (and its tx clone) so the consumer's `recv().await`
     // returns None when this producer task completes — the original

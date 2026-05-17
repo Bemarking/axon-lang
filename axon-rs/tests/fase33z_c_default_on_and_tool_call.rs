@@ -464,8 +464,15 @@ const BANKING_DECISION_FLOW: &str =
      axonendpoint Decision { method: POST path: \"/loan\" execute: LoanDecision transport: sse(axon) }";
 
 const HEALTHCARE_CDS_FLOW: &str =
+    // §Fase 36.x.c — `clinical_reasoning` is applied at TOP LEVEL by
+    // `step Differential`; since Fase 36.i wired the tool registry, a
+    // `<stream:…>` tool with no `provider:` resolves to the
+    // SyncFallbackTool and errors. It declares `provider: stub_stream`
+    // so the canonical healthcare CDS flow actually streams + completes
+    // (the v1.34.0 double-terminator bug had masked the error).
     "tool clinical_reasoning {\n\
         description: \"differential\"\n\
+        provider: stub_stream\n\
         effects: <stream:drop_oldest>\n\
      }\n\
      shield PHIShield {\n\
