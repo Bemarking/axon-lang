@@ -47,6 +47,7 @@ fn server_cfg(strict: bool) -> ServerConfig {
         database_url: None,
         config_path: None,
         strict_type_driven_transport: strict,
+        default_backend: None,
     }
 }
 

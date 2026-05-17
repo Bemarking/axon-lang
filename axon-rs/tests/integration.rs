@@ -3417,6 +3417,7 @@ async fn server_health_endpoint() {
         database_url: None,
         config_path: None,
         strict_type_driven_transport: false,
+        default_backend: None,
     });
 
     let req = Request::builder()
@@ -3452,6 +3453,7 @@ async fn server_deploy_and_list_daemons() {
         database_url: None,
         config_path: None,
         strict_type_driven_transport: false,
+        default_backend: None,
     };
 
     // Deploy a valid source
@@ -3492,6 +3494,7 @@ async fn server_auth_enforcement() {
         database_url: None,
         config_path: None,
         strict_type_driven_transport: false,
+        default_backend: None,
     });
 
     // No auth → 401
@@ -3589,6 +3592,7 @@ async fn deploy_to_live_server() {
         database_url: None,
         config_path: None,
         strict_type_driven_transport: false,
+        default_backend: None,
     };
 
     let app = build_router(config);
@@ -3692,6 +3696,7 @@ async fn server_event_publish_and_supervisor() {
         database_url: None,
         config_path: None,
         strict_type_driven_transport: false,
+        default_backend: None,
     };
 
     let app = build_router(config);
@@ -7304,6 +7309,7 @@ fn trace_auto_record_on_server_state() {
         database_url: None,
         config_path: None,
         strict_type_driven_transport: false,
+        default_backend: None,
     };
 
     let (_router, state) = axon::axon_server::build_router_with_state(config);
@@ -7668,6 +7674,7 @@ fn daemon_executor_state_sync_with_server() {
         database_url: None,
         config_path: None,
         strict_type_driven_transport: false,
+        default_backend: None,
     };
 
     let (_router, state) = axon::axon_server::build_router_with_state(config);
@@ -7806,6 +7813,7 @@ fn daemon_trigger_topic_binding() {
         database_url: None,
         config_path: None,
         strict_type_driven_transport: false,
+        default_backend: None,
     };
 
     let (_router, state) = axon::axon_server::build_router_with_state(config);
@@ -27978,6 +27986,7 @@ async fn test_k5_server_config_new_fields() {
         database_url: Some("postgresql://user:pass@localhost:5432/axon".into()),
         config_path: None,
         strict_type_driven_transport: false,
+        default_backend: None,
     };
 
     assert_eq!(config.bind_addr(), "0.0.0.0:8420");
@@ -28005,6 +28014,7 @@ fn test_k5_server_state_has_storage_and_resilient_backend() {
         database_url: None,
         config_path: None,
         strict_type_driven_transport: false,
+        default_backend: None,
     };
 
     let (_router, state) = build_router_with_state(config);
@@ -28038,6 +28048,7 @@ async fn test_k5_health_endpoint_with_tracing_middleware() {
         database_url: None,
         config_path: None,
         strict_type_driven_transport: false,
+        default_backend: None,
     };
 
     let app = build_router(config);

@@ -227,6 +227,30 @@ pub struct ServerConfig {
     ///   * Config file: `[server] strict_type_driven_transport = true`
     ///   * Env var:    `AXON_STRICT_TYPE_DRIVEN_TRANSPORT=1`
     pub strict_type_driven_transport: bool,
+    /// §Fase 36.g (D7) — Server-wide default execution backend.
+    ///
+    /// Rung 3 of the Fase 36 Backend Resolution Contract ladder: when
+    /// a request behind an `axonendpoint` names no backend (rung 1)
+    /// and the route declares none (rung 2), this server default is
+    /// consulted before the environment-available `auto` rungs.
+    ///
+    /// `None` ≡ no server default — resolution falls straight through
+    /// to the `auto` rungs (operator-tuned registry scores → the
+    /// providers with an API key in the environment). A `Some("auto")`
+    /// value is transparent — it behaves as `None` at the ladder. Lets
+    /// an operator pin a fleet-wide default without editing a single
+    /// `.axon`.
+    ///
+    /// Adopters set it via three converging surfaces (D7 — mirrors the
+    /// `strict_type_driven_transport` precedence):
+    ///   * CLI:     `axon serve --backend <name>`
+    ///   * Env var: `AXON_DEFAULT_BACKEND=<name>`
+    ///   * Programmatic: this field.
+    /// The CLI flag wins when both CLI and env are set. The value is
+    /// validated against the closed catalog
+    /// (`parser::AXONENDPOINT_BACKEND_VALUES`) at `run_serve` startup —
+    /// an unknown name fails fast, before the first request is served.
+    pub default_backend: Option<String>,
 }
 
 impl ServerConfig {
@@ -19928,6 +19952,31 @@ pub fn resolve_route_backend(
     )
 }
 
+/// §Fase 36.g (D7) — validate a server default backend name against
+/// the closed catalog.
+///
+/// The `--backend` CLI flag / `AXON_DEFAULT_BACKEND` env var is
+/// checked against the SAME closed catalog the `axonendpoint
+/// backend:` declaration is validated against (36.d —
+/// `parser::AXONENDPOINT_BACKEND_VALUES` = `CANONICAL_PROVIDERS ∪
+/// {auto, stub}`). `None` (no server default configured) is always
+/// valid. Pure + total — `run_serve` calls it at startup to fail
+/// fast; an `Err` carries the operator-facing diagnostic verbatim.
+pub fn validate_server_default_backend(
+    default_backend: &Option<String>,
+) -> Result<(), String> {
+    if let Some(name) = default_backend {
+        if !crate::parser::AXONENDPOINT_BACKEND_VALUES.contains(&name.as_str()) {
+            return Err(format!(
+                "invalid server default backend '{name}' (from --backend \
+                 or AXON_DEFAULT_BACKEND). Valid: {}",
+                crate::parser::AXONENDPOINT_BACKEND_VALUES.join(" | ")
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Merge a freshly-collected route table into the live
 /// `ServerState.dynamic_routes`. Detects cross-deploy path collisions
 /// (D2 across deploys) — if the incoming table contains a
@@ -20323,23 +20372,25 @@ async fn dynamic_endpoint_handler(
     // retiring the hardcoded `"auto"` that made every deployed route
     // execute against the no-op `stub` on a server with provider keys
     // set (Break A).
-    let registry_ranked: Vec<String> = {
+    let (registry_ranked, server_default): (Vec<String>, Option<String>) = {
         let s = state.lock().unwrap();
-        compute_backend_scores(&s, "balanced")
+        let ranked = compute_backend_scores(&s, "balanced")
             .into_iter()
             .map(|bs| bs.name)
-            .collect()
+            .collect();
+        (ranked, s.config.default_backend.clone())
     };
     // On the honest-failure outcome (every ladder rung empty — no
-    // provider key anywhere, empty registry) we fall back to `"auto"`
-    // here, preserving the pre-36 behavior; §Fase 36.h (D5) replaces
-    // this arm with the structured 503 / `axon.error` honest failure
-    // so a deployed route can never silently degrade to the no-op.
+    // provider key anywhere, empty registry, no server default) we
+    // fall back to `"auto"` here, preserving the pre-36 behavior;
+    // §Fase 36.h (D5) replaces this arm with the structured 503 /
+    // `axon.error` honest failure so a deployed route can never
+    // silently degrade to the no-op.
     let resolved_backend = match resolve_route_backend(
         &route,
         registry_ranked,
         crate::backends::env_available_backends(),
-        None, // §Fase 36.g wires `ServerConfig.default_backend` here.
+        server_default, // §Fase 36.g (D7) — rung 3 of the ladder.
     ) {
         Ok(r) => r.backend,
         Err(_) => "auto".to_string(),
@@ -27296,6 +27347,15 @@ pub fn run_serve(config: ServerConfig) -> i32 {
         config.log_file.as_deref(),
     );
 
+    // §Fase 36.g (D7) — fail fast on an unknown server default backend.
+    // An operator who fat-fingers the provider name learns at server
+    // startup, not at the first production request.
+    if let Err(msg) = validate_server_default_backend(&config.default_backend) {
+        eprintln!("axon serve: {msg}");
+        tracing::error!("invalid_server_default_backend");
+        return 1;
+    }
+
     let bind_addr = config.bind_addr();
 
     tracing::info!(
@@ -27425,6 +27485,7 @@ mod tests {
             database_url: None,
             config_path: None,
             strict_type_driven_transport: false,
+            default_backend: None,
         }
     }
 
@@ -27440,6 +27501,7 @@ mod tests {
             database_url: None,
             config_path: None,
             strict_type_driven_transport: false,
+            default_backend: None,
         }
     }
 
