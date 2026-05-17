@@ -541,6 +541,38 @@ pub const AXONENDPOINT_KEEPALIVE_VALUES: &[&str] = &["5s", "15s", "30s", "60s"];
 /// catches near-misses at parse time.
 pub const AXONENDPOINT_METHOD_VALUES: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH"];
 
+/// §Fase 36.d (D2) — Closed catalog for the `axonendpoint backend:`
+/// declaration. The set is `CANONICAL_PROVIDERS ∪ {auto, stub}`:
+///
+///   - the seven canonical LLM providers — `anthropic`, `gemini`,
+///     `glm`, `kimi`, `ollama`, `openai`, `openrouter` — a concrete,
+///     declared backend that rung 2 of the Fase 36 D1 resolution
+///     ladder fires immediately;
+///   - `auto` — transparent: declaring it is equivalent to omitting
+///     `backend:` entirely (the route resolves down the ladder —
+///     server default → environment-available providers);
+///   - `stub` — the no-op backend, reachable ONLY by an explicit,
+///     written declaration (D5: a silent degradation to `stub` is
+///     forbidden; an explicit opt-in is not).
+///
+/// `axon-frontend` carries zero runtime deps and therefore cannot
+/// import `axon::backends::CANONICAL_PROVIDERS`; this list is a
+/// hand-maintained mirror. The axon-rs drift gate
+/// (`tests/fase36_d_backend_catalog_drift.rs`) asserts the two stay
+/// byte-identical — adding a provider in one place without the other
+/// fails CI.
+pub const AXONENDPOINT_BACKEND_VALUES: &[&str] = &[
+    "anthropic",
+    "auto",
+    "gemini",
+    "glm",
+    "kimi",
+    "ollama",
+    "openai",
+    "openrouter",
+    "stub",
+];
+
 #[inline]
 fn axonendpoint_is_valid_transport(s: &str) -> bool {
     AXONENDPOINT_TRANSPORT_VALUES.iter().any(|&v| v == s)
@@ -549,6 +581,11 @@ fn axonendpoint_is_valid_transport(s: &str) -> bool {
 #[inline]
 fn axonendpoint_is_valid_method(s: &str) -> bool {
     AXONENDPOINT_METHOD_VALUES.iter().any(|&v| v == s)
+}
+
+#[inline]
+fn axonendpoint_is_valid_backend(s: &str) -> bool {
+    AXONENDPOINT_BACKEND_VALUES.iter().any(|&v| v == s)
 }
 
 #[inline]
@@ -4935,6 +4972,11 @@ impl Parser {
             // is known (the predicate cross-references tool effects
             // declared anywhere in the program).
             has_algebraic_stream_effect: false,
+            // §Fase 36.d (D2) — declared execution backend; empty ≡
+            // not declared (the endpoint resolves down the Fase 36 D1
+            // ladder). A non-empty value is validated against the
+            // closed `AXONENDPOINT_BACKEND_VALUES` catalog below.
+            backend: String::new(),
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -5176,6 +5218,42 @@ impl Parser {
                             });
                         }
                         node.keepalive = value.clone();
+                    }
+                    "backend" => {
+                        // §Fase 36.d (D2) — declared execution backend.
+                        // Closed catalog `CANONICAL_PROVIDERS ∪ {auto,
+                        // stub}`; an unknown name is a parse error with
+                        // a smart-suggest hint (the same discipline as
+                        // `method`/`transport`/`keepalive`). The
+                        // type-checker re-validates defensively for
+                        // ASTs built outside the parser (LSP, tests).
+                        let value_tok = self.consume_any_ident_or_kw()?;
+                        let value = &value_tok.value;
+                        if !axonendpoint_is_valid_backend(value) {
+                            let hint = crate::smart_suggest::suggest_for(
+                                value,
+                                AXONENDPOINT_BACKEND_VALUES,
+                            );
+                            let expected = AXONENDPOINT_BACKEND_VALUES.join(" | ");
+                            let base = format!(
+                                "Invalid backend '{}' in axonendpoint '{}'.",
+                                value, node.name
+                            );
+                            let message = if hint.is_empty() {
+                                format!("{base} expected {expected}, found {value}")
+                            } else {
+                                format!(
+                                    "{base} {hint} (expected {expected}, found {value})"
+                                )
+                            };
+                            return Err(ParseError {
+                                message,
+                                line: value_tok.line,
+                                column: value_tok.column,
+                                ..Default::default()
+                            });
+                        }
+                        node.backend = value.clone();
                     }
                     _ => self.skip_value(),
                 }

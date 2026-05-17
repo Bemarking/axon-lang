@@ -3049,6 +3049,25 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // §Fase 36.d (D2) — declared execution backend, closed catalog.
+        // The parser already rejects an unknown backend with a smart-
+        // suggest hint; this re-check defends ASTs built outside the
+        // parser (LSP synthesis, programmatic construction) so an
+        // impossible backend is a compile error on every path.
+        if !node.backend.is_empty()
+            && !is_valid(&node.backend, crate::parser::AXONENDPOINT_BACKEND_VALUES)
+        {
+            self.emit(
+                format!(
+                    "Unknown backend '{}' in axonendpoint '{}'. Valid: {}",
+                    node.backend,
+                    node.name,
+                    valid_list(crate::parser::AXONENDPOINT_BACKEND_VALUES)
+                ),
+                &node.loc,
+            );
+        }
+
         // Path must start with /
         if !node.path.is_empty() && !node.path.starts_with('/') {
             self.emit(
