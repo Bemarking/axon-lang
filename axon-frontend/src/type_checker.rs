@@ -3068,6 +3068,16 @@ impl<'a> TypeChecker<'a> {
             );
         }
 
+        // §Fase 36.k (D10) — `axon-W003`: an axonendpoint that declares
+        // no `backend:` relies on the Fase 36 ladder for resolution.
+        // An explicit `backend: auto` is the adopter's deliberate
+        // opt-in to ladder resolution — it carries no warning. An
+        // omitted field does: the adopter learns at compile time, not
+        // at the first production 503.
+        if node.backend.is_empty() {
+            self.warn(build_w003_message(&node.name), &node.loc);
+        }
+
         // Path must start with /
         if !node.path.is_empty() && !node.path.starts_with('/') {
             self.emit(
@@ -4234,6 +4244,32 @@ pub fn resolve_effective_dialect(
 /// namespace `axon-Wnnn`. Errors keep their `axon-Ennn` namespace
 /// from Fase 28 + Fase 30.
 pub const W001_CODE: &str = "axon-W001";
+
+/// §Fase 36.k (D10) — warning code for an `axonendpoint` that
+/// declares no `backend:`.
+///
+/// `axon-W002` is held by the runtime warning catalog
+/// (`axon::runtime_warnings` — `streaming-not-supported`, Fase
+/// 33.x.g); the `axon-Wnnn` namespace is shared across the frontend
+/// and the runtime, so the next free slot is `axon-W003`.
+pub const W003_CODE: &str = "axon-W003";
+
+/// §Fase 36.k (D10) — build the canonical `axon-W003` message: an
+/// `axonendpoint` that declares no `backend:` relies on ladder
+/// resolution. Emitted by `check_axonendpoint`, surfaced by
+/// `axon check` (and promoted to an error under `--strict`).
+fn build_w003_message(endpoint_name: &str) -> String {
+    format!(
+        "warning[{W003_CODE}]: axonendpoint '{endpoint_name}' declares \
+         no `backend:` — its execution backend is resolved at request \
+         time down the Fase 36 precedence ladder (server default → \
+         environment-available providers). If none resolves the \
+         endpoint fails with a structured HTTP 503; it never silently \
+         runs the no-op `stub`. Declare `backend: <provider>` to pin \
+         the model, or `backend: auto` to make the reliance on ladder \
+         resolution explicit and silence this warning."
+    )
+}
 
 /// Find the most informative description of WHY the flow produces
 /// a stream — mirror of Python `_describe_stream_origin`. Used by
