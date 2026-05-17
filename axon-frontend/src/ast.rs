@@ -840,6 +840,16 @@ pub struct AxonEndpointDefinition {
     /// pass runs (matches AST construction defaults; D9 backwards-
     /// compat preserved for older AST consumers).
     pub has_algebraic_stream_effect: bool,
+    /// §Fase 36.d (D2) — the declared execution backend for the flow
+    /// behind this endpoint. Empty string `""` means "not declared"
+    /// (the endpoint resolves its backend down the Fase 36 D1
+    /// precedence ladder — server default → environment-available
+    /// `auto`). When non-empty the parser has validated it against the
+    /// closed catalog [`crate::parser::AXONENDPOINT_BACKEND_VALUES`]
+    /// and the type-checker rejects an unknown name as a compile
+    /// error. A declared `backend:` is rung 2 of the resolution
+    /// contract.
+    pub backend: String,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
