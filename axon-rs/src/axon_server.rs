@@ -1644,6 +1644,71 @@ async fn deploy_handler(
     // §Fase 36.e (D3) — stop discarding `DeployRequest.backend`.
     apply_deploy_backend_default(&mut incoming_routes, &payload.backend);
 
+    // §Fase 36.k (D10) — deploy-time backend resolution check. Run the
+    // D1 ladder for every collected route against the server's CURRENT
+    // environment (operator-tuned registry scores + provider API keys
+    // + server default). A route whose backend cannot be resolved will
+    // fail with a structured HTTP 503 at request time (36.h);
+    // surfacing it in the deploy response lets the adopter learn at
+    // deploy, not at the first production request. Non-blocking — the
+    // deploy still succeeds (the operator may set a provider key or
+    // populate the backend registry afterwards).
+    let backend_deploy_warnings: Vec<serde_json::Value> = {
+        let (registry_ranked, server_default): (Vec<String>, Option<String>) = {
+            let s = state.lock().unwrap();
+            (
+                compute_backend_scores(&s, "balanced")
+                    .into_iter()
+                    .map(|bs| bs.name)
+                    .collect(),
+                s.config.default_backend.clone(),
+            )
+        };
+        let env_available = crate::backends::env_available_backends();
+        let mut warns: Vec<serde_json::Value> = incoming_routes
+            .iter()
+            .filter(|(_, route)| {
+                resolve_route_backend(
+                    route,
+                    registry_ranked.clone(),
+                    env_available.clone(),
+                    server_default.clone(),
+                )
+                .is_err()
+            })
+            .map(|((method, path), route)| {
+                serde_json::json!({
+                    "code": "no_resolvable_backend",
+                    "d_letter": "D10",
+                    "endpoint": route.endpoint_name,
+                    "method": method,
+                    "path": path,
+                    "message": format!(
+                        "axonendpoint '{}' ({method} {path}) has no \
+                         resolvable execution backend at deploy time — \
+                         no `backend:` declaration, no server default, \
+                         empty backend registry, and no provider API key \
+                         in the server environment. It will fail with \
+                         HTTP 503 at request time. Fix: declare \
+                         `backend:` on the axonendpoint, set a provider \
+                         API key, pass `--backend` to `axon serve`, or \
+                         request `backend=stub` explicitly.",
+                        route.endpoint_name
+                    ),
+                })
+            })
+            .collect();
+        // Deterministic order — HashMap iteration is unordered.
+        warns.sort_by(|a, b| {
+            let pa = a["path"].as_str().unwrap_or("");
+            let pb = b["path"].as_str().unwrap_or("");
+            let ma = a["method"].as_str().unwrap_or("");
+            let mb = b["method"].as_str().unwrap_or("");
+            pa.cmp(pb).then(ma.cmp(mb))
+        });
+        warns
+    };
+
     // §Fase 32.c — Capture every `type T { … }` declaration in the
     // deployed source. Consulted by the dynamic-route fallback handler
     // to validate request bodies against the axonendpoint's declared
@@ -1761,6 +1826,9 @@ async fn deploy_handler(
         "flow_count": registered.len(),
         "backend": payload.backend,
         "versions": version_results.iter().map(|(n, v)| serde_json::json!({"flow": n, "version": v})).collect::<Vec<serde_json::Value>>(),
+        // §Fase 36.k (D10) — deploy-time backend resolution warnings.
+        // Empty when every route has a resolvable backend.
+        "warnings": backend_deploy_warnings,
     })))
 }
 
