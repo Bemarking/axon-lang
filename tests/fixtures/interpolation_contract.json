@@ -1,0 +1,86 @@
+[
+  {
+    "name": "braced_known",
+    "input": "${greeting} world",
+    "vars": { "greeting": "hello" },
+    "expected": "hello world"
+  },
+  {
+    "name": "bare_known",
+    "input": "$greeting world",
+    "vars": { "greeting": "hi" },
+    "expected": "hi world"
+  },
+  {
+    "name": "braced_unknown_kept_literal",
+    "input": "${missing}!",
+    "vars": {},
+    "expected": "${missing}!"
+  },
+  {
+    "name": "bare_unknown_kept_literal",
+    "input": "$missing!",
+    "vars": {},
+    "expected": "$missing!"
+  },
+  {
+    "name": "dollar_at_end_is_literal",
+    "input": "price: $",
+    "vars": {},
+    "expected": "price: $"
+  },
+  {
+    "name": "empty_braces_kept_literal",
+    "input": "${}",
+    "vars": {},
+    "expected": "${}"
+  },
+  {
+    "name": "dollar_digit_is_literal",
+    "input": "$1 and $2",
+    "vars": {},
+    "expected": "$1 and $2"
+  },
+  {
+    "name": "bare_name_stops_at_non_identifier",
+    "input": "$user_id.",
+    "vars": { "user_id": "42" },
+    "expected": "42."
+  },
+  {
+    "name": "adjacent_braced_refs",
+    "input": "${a}${b}",
+    "vars": { "a": "X", "b": "Y" },
+    "expected": "XY"
+  },
+  {
+    "name": "no_reference_unchanged",
+    "input": "plain text, no vars",
+    "vars": { "a": "X" },
+    "expected": "plain text, no vars"
+  },
+  {
+    "name": "braced_name_is_opaque_until_close",
+    "input": "${a.b}",
+    "vars": { "a.b": "nested" },
+    "expected": "nested"
+  },
+  {
+    "name": "mixed_bare_and_braced",
+    "input": "id=${tenant_id} name=$user",
+    "vars": { "tenant_id": "acme", "user": "bob" },
+    "expected": "id=acme name=bob"
+  },
+  {
+    "name": "single_pass_no_rescan_of_substituted_value",
+    "input": "${a}",
+    "vars": { "a": "${b}", "b": "X" },
+    "expected": "${b}"
+  },
+  {
+    "name": "sql_where_clause_shape",
+    "input": "id == '${tenant_id}'",
+    "vars": { "tenant_id": "t_99" },
+    "expected": "id == 't_99'"
+  }
+]
