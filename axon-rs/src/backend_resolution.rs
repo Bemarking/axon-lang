@@ -139,18 +139,22 @@ pub fn resolve_backend(
 
     // Rung 4 — `auto` resolution. The registry's operator-tuned
     // ranking wins when populated; else the environment-available
-    // providers. `stub` is filtered from both — auto never lands on it.
-    if let Some(top) =
-        inputs.registry_ranked.iter().find(|b| b.as_str() != "stub")
-    {
+    // providers. An auto rung fires ONLY on a usable CONCRETE backend
+    // — `is_explicit_backend` (non-empty, not `"auto"`) AND not
+    // `"stub"`. So the transparent tokens and the no-op are skipped:
+    // auto-resolution can never land on `stub` (D5), nor on an empty
+    // / `"auto"` entry should one slip into the caller's list. The
+    // resolver stays total — it never returns a non-backend.
+    let is_usable_auto = |b: &&String| {
+        is_explicit_backend(b.as_str()) && b.as_str() != "stub"
+    };
+    if let Some(top) = inputs.registry_ranked.iter().find(is_usable_auto) {
         return Ok(BackendResolution {
             backend: top.clone(),
             reason: BackendResolutionReason::RegistryRanked,
         });
     }
-    if let Some(top) =
-        inputs.env_available.iter().find(|b| b.as_str() != "stub")
-    {
+    if let Some(top) = inputs.env_available.iter().find(is_usable_auto) {
         return Ok(BackendResolution {
             backend: top.clone(),
             reason: BackendResolutionReason::EnvironmentAvailable,
