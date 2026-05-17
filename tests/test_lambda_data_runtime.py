@@ -4,7 +4,7 @@ AXON Lambda Data (ΛD) Apply — Phase-2 Lowering + Runtime Dispatcher Tests
 Verifies Fase 15 sub-phases 15.a (Phase-2 lowering: IR → CompiledStep)
 and 15.b (Python runtime dispatcher: CompiledStep → bound ψ).
 
-Coverage matrix follows docs/fase_15_lambda_apply_runtime.md §4 (15.e):
+Coverage matrix follows fase/fase_15_lambda_apply_runtime.md §4 (15.e):
 
   1. lambda raw, certainty=1.0, derivation=raw applied → c=1.0 preserved
   2. lambda inferred, certainty=0.7 applied → c=0.7 propagated

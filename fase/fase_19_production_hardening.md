@@ -327,7 +327,7 @@ Each property runs ≥100 examples (Hypothesis default). Fuzzing interval bounde
 Extends `tests/test_ir_runtime_coverage.py`:
 - `test_no_remaining_mvp_markers_for_tier_a` — asserts matrix rows for Hibernate/Drill/Trail do NOT contain "MVP" once 19.a/b/c land.
 - `test_rust_parity_for_every_wired_primitive` — parses `axon-rs/src/runner.rs` for `step.step_type ==` arms in `execute_stub`; asserts every WIRED primitive in the matrix has a Rust counterpart.
-- Updates the matrix table in `docs/fase_18_ir_runtime_audit.md` with a new "Rust" column (✅ wired / 🔵 LLM-fallback / N/A).
+- Updates the matrix table in `fase/fase_18_ir_runtime_audit.md` with a new "Rust" column (✅ wired / 🔵 LLM-fallback / N/A).
 
 ### 19.m — Documentation honesty + memory `[PLANNED]`
 

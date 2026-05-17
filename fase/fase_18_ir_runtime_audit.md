@@ -275,7 +275,7 @@ This sub-phase is shippable BY ITSELF as a documentation + drift-prevention rele
 `tests/test_ir_runtime_coverage.py::test_every_irflownode_has_status`:
 
 - Loads the canonical Rust `IRFlowNode` enum variant list (parsed from `axon-frontend/src/ir_nodes.rs` or a generated manifest).
-- Loads the matrix table from `docs/fase_18_ir_runtime_audit.md` §3 (markdown-parsed at test time).
+- Loads the matrix table from `fase/fase_18_ir_runtime_audit.md` §3 (markdown-parsed at test time).
 - Asserts every variant has a row in the matrix.
 - Asserts the status is one of the closed set `{✅ WIRED, 🔵 LLM-CORRECT, 🔴 GAP-CRITICAL, 🟠 GAP-HIGH, 🟡 GAP-MEDIUM}`.
 - Adding a new variant without classification fails the test → CI red → forces classification at PR time.

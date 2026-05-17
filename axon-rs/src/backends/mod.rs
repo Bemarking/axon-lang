@@ -37,7 +37,7 @@
 //! println!("{}", response.content);
 //! ```
 //!
-//! # Architecture decisions (see docs/fase_24_native_rust_backends.md)
+//! # Architecture decisions (see fase/fase_24_native_rust_backends.md)
 //!
 //! * **D1** — `async_trait` over native async-fn-in-trait so `dyn Backend`
 //!   stays object-safe (Registry uses `HashMap<String, Box<dyn Backend>>`).

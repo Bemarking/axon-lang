@@ -12,7 +12,7 @@ depends_on: Fase 22 SHIPPED (multi-provider backend coverage + observability fou
 
 | Sub-phase | Status | LOC target | Stack | Module(s) / Notes |
 |---|---|---|---|---|
-| 23.a Engineering spec | ✅ DONE | doc-only | — | Operacionaliza paper §1-§6 en specs verificables. `docs/fase_23_algebraic_effects_runtime.md` (este doc) + `axon_language_specification.md` §3.21 + decisiones D1–D12 (D1/D6/D11 founder-ratified 2026-05-08) |
+| 23.a Engineering spec | ✅ DONE | doc-only | — | Operacionaliza paper §1-§6 en specs verificables. `fase/fase_23_algebraic_effects_runtime.md` (este doc) + `axon_language_specification.md` §3.21 + decisiones D1–D12 (D1/D6/D11 founder-ratified 2026-05-08) |
 | 23.b Lexer + Parser + AST | ✅ DONE 2026-05-08 | ~720 effective | Python | 6 keywords + `BANG` token + 9 AST classes + 8 parser productions + 57/57 tests verdes; 0 regressions |
 | 23.c Typechecker + effect row inference + row polymorphism + operation polymorphism | ✅ DONE 2026-05-08 | ~750 effective | Python | EffectRow + EffectEnvironment + HandlerFrame data classes + 11 nuevos `_check_*` methods en TypeChecker + integración `_check_flow` y `_check_step` + 98/98 tests verdes; 0 regressions (562/562) |
 | 23.d IR opcodes + CPS lowering | ✅ DONE 2026-05-08 | ~520 effective | Python | 8 IR opcodes + `IRProgram.effects` field + 9 nuevos `_visit_*` methods + per-flow CPS state counters + handler stack + body_states accumulator + 37/37 tests verdes; 0 regressions. State machine FSM canónico: `(flow_name, state_id)` is the Rust runtime coordinate. |

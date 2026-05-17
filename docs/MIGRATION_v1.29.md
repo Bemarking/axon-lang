@@ -506,7 +506,7 @@ via `ToolChunk::from_result` — so even a tool you never migrate
 - [`docs/MIGRATION_v1.28.md`](MIGRATION_v1.28.md) — the prior cycle
   (33.z.k multi-dialect wire format). v1.28.0 is the baseline this
   guide assumes.
-- [`docs/fase_34_tools_as_stream_producers.md`](fase_34_tools_as_stream_producers.md)
+- [`fase/fase_34_tools_as_stream_producers.md`](fase_34_tools_as_stream_producers.md)
   — the plan vivo for the Fase 34 cycle. Source of truth for the
   D1–D13 invariant text + per-sub-fase landing status + honest
   scope statements.

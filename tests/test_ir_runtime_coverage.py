@@ -1,6 +1,6 @@
 """
 Fase 18.l — Drift gate: every IRFlowNode variant must have a classified
-runtime status in docs/fase_18_ir_runtime_audit.md §3.
+runtime status in fase/fase_18_ir_runtime_audit.md §3.
 
 This test parses the canonical IRFlowNode variant list from
 axon-frontend/src/ir_nodes.rs and the matrix table from the Fase 18
@@ -71,7 +71,7 @@ def _matrix_rows_from_plan() -> dict[str, str]:
     """Parse the Fase 18 matrix table (markdown) and return
     `{variant_name: status}`.
 
-    The table lives under §3 of docs/fase_18_ir_runtime_audit.md with
+    The table lives under §3 of fase/fase_18_ir_runtime_audit.md with
     rows shaped:
       | N | `VariantName` | <status emoji + text> | <evidence> |
     """
@@ -86,7 +86,7 @@ def _matrix_rows_from_plan() -> dict[str, str]:
     if section_match is None:
         raise AssertionError(
             "Could not locate `## 3. The matrix ...` in "
-            "docs/fase_18_ir_runtime_audit.md — the drift gate parses "
+            "fase/fase_18_ir_runtime_audit.md — the drift gate parses "
             "this section to enforce coverage."
         )
     section = section_match.group(1)
@@ -133,7 +133,7 @@ def test_every_variant_has_classification():
     missing = variants - set(rows)
     assert not missing, (
         f"IRFlowNode variants without a status row in "
-        f"docs/fase_18_ir_runtime_audit.md §3:\n  {sorted(missing)}\n\n"
+        f"fase/fase_18_ir_runtime_audit.md §3:\n  {sorted(missing)}\n\n"
         f"Add a row for each one with one of the valid statuses: "
         f"{sorted(_VALID_STATUSES)}.\n"
         f"This gate exists to prevent silent compile-only/runtime-stub "

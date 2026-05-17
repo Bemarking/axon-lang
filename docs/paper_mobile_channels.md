@@ -27,7 +27,7 @@ There exist exactly two coherent design points for channels in Axon:
 - **Runtime-routed strings** — topics are dynamic, routing is opaque, type system is bypassed. This is Kafka/NATS re-packaged in Axon syntax; it contributes nothing to the formal foundation.
 - **Compile-time typed + mobile** — channels are typed terms whose *identities* can still be passed, stored, and published dynamically, exactly because π-calculus mobility (Milner 1991) already separates **static typing** from **dynamic scope extrusion**. This is the design we take.
 
-A third option — a stable hybrid — is incoherent: the untyped escape-hatch drains adoption away from the typed path, leaving the language permanently with the weaker of the two guarantees. Decision D4 of [docs/fase_13_mobile_typed_channels.md](fase_13_mobile_typed_channels.md) therefore accepts a *transitional* hybrid only (v1.4.x dual-mode, v2.0 typed-only).
+A third option — a stable hybrid — is incoherent: the untyped escape-hatch drains adoption away from the typed path, leaving the language permanently with the weaker of the two guarantees. Decision D4 of [fase/fase_13_mobile_typed_channels.md](fase_13_mobile_typed_channels.md) therefore accepts a *transitional* hybrid only (v1.4.x dual-mode, v2.0 typed-only).
 
 ---
 
@@ -373,7 +373,7 @@ All rows `[PLANNED]` as of 2026-04-24 — the paper precedes the code by Fase-13
 
 ## Appendix A — Design decisions (sign-off 2026-04-24)
 
-The nine fundational decisions for Fase 13 are fixed in [docs/fase_13_mobile_typed_channels.md §3](fase_13_mobile_typed_channels.md). They are (in shorthand): D1 affine handles, D2 first-class mobility, D3 schema-typed messages, D4 dual-mode transition to v2.0 typed-only, D5 Python-then-Rust ordering, D6 integration with existing primitives (manifest/session/axonstore/daemon), D7 per-channel QoS, D8 capability-gated publish, D9 paper precedes parser. This document is the realization of D9.
+The nine fundational decisions for Fase 13 are fixed in [fase/fase_13_mobile_typed_channels.md §3](fase_13_mobile_typed_channels.md). They are (in shorthand): D1 affine handles, D2 first-class mobility, D3 schema-typed messages, D4 dual-mode transition to v2.0 typed-only, D5 Python-then-Rust ordering, D6 integration with existing primitives (manifest/session/axonstore/daemon), D7 per-channel QoS, D8 capability-gated publish, D9 paper precedes parser. This document is the realization of D9.
 
 ## Appendix B — Open questions (deferred to Fase 14+)
 

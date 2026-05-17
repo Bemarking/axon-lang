@@ -1131,7 +1131,7 @@ class IREffectRow(IRNode):
 # ═══════════════════════════════════════════════════════════════════
 #  ALGEBRAIC EFFECTS IR NODES — Fase 23
 #  (Operationalises paper §1-§6 + D1-D12 from
-#  docs/fase_23_algebraic_effects_runtime.md)
+#  fase/fase_23_algebraic_effects_runtime.md)
 #
 #  These IR nodes carry the result of the CPS lowering pass. Each
 #  perform site receives a monotonic `state_id` (the FSM state the

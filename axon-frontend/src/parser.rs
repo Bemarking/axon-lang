@@ -362,7 +362,7 @@ impl std::error::Error for ParseError {}
 //
 // Mirror of Python's `axon.compiler.parser.ParseResult` (Fase 28.b).
 // The rationale, sync semantics, and test contract are documented in
-// `docs/fase_28_adopter_diagnostic_robustness.md`. The Rust frontend
+// `fase/fase_28_adopter_diagnostic_robustness.md`. The Rust frontend
 // must produce structurally identical error lists to the Python parser
 // when handed the same source — that is the cross-stack drift gate
 // (D7 ratified 2026-05-10: byte-identical error lists).

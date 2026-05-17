@@ -212,7 +212,7 @@ declaration churn.
   Adopters expecting OpenAI-style wire bodies still face a
   format mismatch. That conversation is the Fase 33.z.k wire-
   format adapter cycle scoped in
-  [`docs/fase_33z_k_wire_format_adapter.md`](fase_33z_k_wire_format_adapter.md)
+  [`fase/fase_33z_k_wire_format_adapter.md`](fase_33z_k_wire_format_adapter.md)
   and tracked toward v1.28.0.
 - This is a PATCH release (v1.27.0 → v1.27.1). No semver
   conflicts; no removal of public surface. Pure additive:

@@ -1,7 +1,7 @@
 """
 AXON `let` Runtime — Phase-2 Lowering + Dispatcher + Type-Checker (Fase 17).
 
-Coverage matrix following docs/fase_17_let_runtime_wiring.md §4 / §6:
+Coverage matrix following fase/fase_17_let_runtime_wiring.md §4 / §6:
 
   17.a Phase-2 lowering — IR → CompiledStep with `let_binding` metadata
   17.b Python runtime dispatcher — pure binding, no LLM, no I/O
