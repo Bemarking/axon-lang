@@ -489,6 +489,28 @@ pub const CANONICAL_PROVIDERS: &[&str] = &[
     "openrouter",
 ];
 
+/// §Fase 36.c — Canonical providers with a usable API key present in
+/// the environment, in `CANONICAL_PROVIDERS` priority order.
+///
+/// Feeds the `env_available` rung of the Backend Resolution Contract
+/// (D1 / D6): when the operator-tuned `backend_registry` is empty,
+/// `auto` resolution picks the first canonical provider whose
+/// `<PROVIDER>_API_KEY` is set — so a server started with one provider
+/// key "just works" without a `PUT /v1/backends` registration dance.
+///
+/// `ollama` (whose key is optional for the local daemon) is included
+/// ONLY when `OLLAMA_API_KEY` is explicitly set to a non-empty value —
+/// a local-ollama deployment declares `backend: ollama` explicitly (or
+/// sets the var) rather than the resolver probing a network port.
+/// `stub` is not a canonical provider, so it is never returned here.
+pub fn env_available_backends() -> Vec<String> {
+    CANONICAL_PROVIDERS
+        .iter()
+        .filter(|p| get_api_key(p).map(|k| !k.is_empty()).unwrap_or(false))
+        .map(|p| p.to_string())
+        .collect()
+}
+
 /// §Fase 33.x.i — Canonical API-key env-var resolution.
 ///
 /// Same semantics as the legacy `crate::backend::get_api_key`:

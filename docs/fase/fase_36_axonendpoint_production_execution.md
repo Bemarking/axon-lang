@@ -1,6 +1,6 @@
 ---
 title: "Plan vivo: Fase 36 — Axonendpoint Production Execution (the backend is a declared, compiled, deterministically-resolved property of the program)"
-status: 🚀 PROPOSED 2026-05-17 — D1–D12 PENDING founder bloque ratification. Triggered by the kivi-enterprise gap report 2026-05-17 (axonendpoint SSE executes against the no-op `stub` backend; no way to wire a real LLM), verified true and deeper than reported. Target axon-lang v1.34.0. Rust-canonical.
+status: 🚀 IN PROGRESS — D1–D12 ratificadas bloque 2026-05-17 (founder "Ratifico todos D-Letters"). Triggered by the kivi-enterprise gap report 2026-05-17 (axonendpoint SSE executes against the no-op `stub` backend; no way to wire a real LLM), verified true and deeper than reported. Target axon-lang v1.34.0. Rust-canonical.
 owner: AXON Runtime + Backends Team
 created: 2026-05-17
 target: axon-lang v1.34.0 (minor — backend selection becomes a first-class, declared, type-checked, deterministically-resolved property of an `axonendpoint`; the production execution path of a deployed endpoint stops silently degrading to a no-op)
@@ -158,21 +158,21 @@ The resolution of every step is deterministic and recorded (D8).
 
 # ▶ 5. Sub-fases (36.a–36.m — topologically ordered)
 
-| Sub-fase | What | Class | D-letters |
-|---|---|---|---|
-| **36.a** | Diagnostic anchor — a test that pins the v1.33.0 broken state (deployed `axonendpoint` → `stub`, declared tool provider ignored, `with_tool_registry` dead). Each later sub-fase inverts a §-assertion. | OSS | — |
-| **36.b** | The Backend Resolution Contract — pure, total `resolve_backend(inputs) -> BackendResolution`; closed `reason` catalog; exhaustive unit tests. | OSS | D1 |
-| **36.c** | Environment-aware `auto` — `CANONICAL_PROVIDERS` filtered by env-key presence, fixed priority; registry still wins when populated. | OSS | D6 |
-| **36.d** | `axonendpoint backend:` field — `axon-frontend` AST + parser + type-checker; closed-catalog validation, unknown backend = compile error. | OSS | D2 |
-| **36.e** | `DynamicEndpointRoute.backend` + `collect_axonendpoint_routes` populates it + `deploy_handler` stops discarding `DeployRequest.backend`. | OSS | D3 |
-| **36.f** | `dynamic_endpoint_handler` resolves via the D1 ladder + passes the resolved backend (retire the hardcoded `"auto"`), both SSE and JSON branches. | OSS | D1, D3 |
-| **36.g** | Server default backend — `--backend` CLI flag + `AXON_DEFAULT_BACKEND` + `ServerConfig.default_backend`. | OSS | D7 |
-| **36.h** | No-silent-stub honest failure — the deploy-time + request-time guard; structured 503 / `axon.error`; `stub` only when explicitly named. | OSS | D5 |
-| **36.i** | Tool registry wired into `run_streaming_via_dispatcher` (`with_tool_registry` becomes live) + per-step tool-`provider` execution; the `<stream:policy>` effect honored end-to-end. | OSS | D4 |
-| **36.j** | Resolution observability — `BackendResolution.reason` into `axon_metadata` + the trace + the `X-Axon-Backend` header. | OSS | D8 |
-| **36.k** | `steps_executed` honesty + `axon check` `axon-Wnnn` no-backend warning + deploy-time resolution check. | OSS | D10, D11 |
-| **36.l** | Real-backend E2E CI lane (deploy + hit + assert real execution vs a mock-LLM server) + `resolve_backend` fuzz/property pass + D9 backwards-compat corpus + adopter docs (`docs/ADOPTER_BACKENDS.md` + `docs/MIGRATION_v1.34.md`). | OSS | D12, D9 |
-| **36.m** | Coordinated release axon-lang v1.34.0 cross-stack (crates.io + PyPI + GitHub Release + binaries) + axon-enterprise catch-up. | SPLIT | — |
+| Sub-fase | What | Class | D-letters | Status |
+|---|---|---|---|---|
+| **36.a** | Diagnostic anchor — a test that pins the v1.33.0 broken state (deployed `axonendpoint` → `stub`, declared tool provider ignored, `with_tool_registry` dead). Each later sub-fase inverts a §-assertion. | OSS | — | ✅ SHIPPED — `axon-rs/tests/fase36_a_axonendpoint_backend_gap_diagnostic.rs` (5 tests green); pins the closed catalog + the `auto`-unresolvable / `stub`-resolvable surface. |
+| **36.b** | The Backend Resolution Contract — pure, total `resolve_backend(inputs) -> BackendResolution`; closed `reason` catalog; exhaustive unit tests. | OSS | D1 | ✅ SHIPPED — new `axon-rs/src/backend_resolution.rs`: pure, total, deterministic `resolve_backend` over the 5-rung ladder; `BackendResolutionReason` closed catalog (5 slugs); `NoBackendAvailable` honest-failure error whose `Display` names every fix; `auto` rungs filter `stub` (D5 baked in). 13 unit tests green. |
+| **36.c** | Environment-aware `auto` — `CANONICAL_PROVIDERS` filtered by env-key presence, fixed priority; registry still wins when populated. | OSS | D6 | ✅ SHIPPED — `backends::env_available_backends()` scans `CANONICAL_PROVIDERS` for a non-empty `<PROVIDER>_API_KEY`, returns them in canonical priority order; `ollama` included only with an explicit key; `stub` never. Feeds the resolver's `env_available` rung. |
+| **36.d** | `axonendpoint backend:` field — `axon-frontend` AST + parser + type-checker; closed-catalog validation, unknown backend = compile error. | OSS | D2 | ⏳ pending |
+| **36.e** | `DynamicEndpointRoute.backend` + `collect_axonendpoint_routes` populates it + `deploy_handler` stops discarding `DeployRequest.backend`. | OSS | D3 | ⏳ pending |
+| **36.f** | `dynamic_endpoint_handler` resolves via the D1 ladder + passes the resolved backend (retire the hardcoded `"auto"`), both SSE and JSON branches. | OSS | D1, D3 | ⏳ pending |
+| **36.g** | Server default backend — `--backend` CLI flag + `AXON_DEFAULT_BACKEND` + `ServerConfig.default_backend`. | OSS | D7 | ⏳ pending |
+| **36.h** | No-silent-stub honest failure — the deploy-time + request-time guard; structured 503 / `axon.error`; `stub` only when explicitly named. | OSS | D5 | ⏳ pending |
+| **36.i** | Tool registry wired into `run_streaming_via_dispatcher` (`with_tool_registry` becomes live) + per-step tool-`provider` execution; the `<stream:policy>` effect honored end-to-end. | OSS | D4 | ⏳ pending |
+| **36.j** | Resolution observability — `BackendResolution.reason` into `axon_metadata` + the trace + the `X-Axon-Backend` header. | OSS | D8 | ⏳ pending |
+| **36.k** | `steps_executed` honesty + `axon check` `axon-Wnnn` no-backend warning + deploy-time resolution check. | OSS | D10, D11 | ⏳ pending |
+| **36.l** | Real-backend E2E CI lane (deploy + hit + assert real execution vs a mock-LLM server) + `resolve_backend` fuzz/property pass + D9 backwards-compat corpus + adopter docs (`docs/ADOPTER_BACKENDS.md` + `docs/MIGRATION_v1.34.md`). | OSS | D12, D9 | ⏳ pending |
+| **36.m** | Coordinated release axon-lang v1.34.0 cross-stack (crates.io + PyPI + GitHub Release + binaries) + axon-enterprise catch-up. | SPLIT | — | ⏳ pending |
 
 **Total estimate: ~3 500–4 500 LOC** (frontend field + resolver + handler rewiring + tool-registry wiring + observability + honest-failure + the E2E harness). Built Rust-canonical. D9 zero-regression absolute.
 
