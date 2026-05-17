@@ -1513,13 +1513,20 @@ pub struct DeployRequest {
     /// Optional filename for error messages.
     #[serde(default)]
     pub filename: String,
-    /// Backend for execution (default: anthropic).
+    /// Deploy-scoped execution backend. §Fase 36.e (D3) — when set to
+    /// an explicit, concrete value this becomes the declared backend
+    /// for every deployed `axonendpoint` route that did not declare
+    /// its own `backend:`. The default is `"auto"` (transparent — the
+    /// routes resolve down the Fase 36 D1 ladder; D5 forbids a silent
+    /// degradation to a no-op). Pre-36 the default was `"anthropic"`,
+    /// but the dynamic-route execution path never consulted this
+    /// field, so the change cannot regress a working deploy (D9).
     #[serde(default = "default_backend")]
     pub backend: String,
 }
 
 fn default_backend() -> String {
-    "anthropic".to_string()
+    "auto".to_string()
 }
 
 /// POST /v1/deploy
@@ -1596,7 +1603,7 @@ async fn deploy_handler(
     // collisions (D2 within deploy). The collected table is merged
     // into ServerState.dynamic_routes below; cross-deploy collisions
     // are detected by the merge step.
-    let incoming_routes = match collect_axonendpoint_routes(&program, &source, &filename) {
+    let mut incoming_routes = match collect_axonendpoint_routes(&program, &source, &filename) {
         Ok(r) => r,
         Err(msg) => {
             let mut s = state.lock().unwrap();
@@ -1609,6 +1616,9 @@ async fn deploy_handler(
             })));
         }
     };
+
+    // §Fase 36.e (D3) — stop discarding `DeployRequest.backend`.
+    apply_deploy_backend_default(&mut incoming_routes, &payload.backend);
 
     // §Fase 32.c — Capture every `type T { … }` declaration in the
     // deployed source. Consulted by the dynamic-route fallback handler
@@ -19730,6 +19740,26 @@ pub struct DynamicEndpointRoute {
     /// runtime flag (D6). D3 explicit `transport: json` opt-out still
     /// wins above this override.
     pub has_algebraic_stream_effect: bool,
+    /// §Fase 36.e (D3) — the route's declared execution backend.
+    ///
+    /// Resolved at deploy time: the `axonendpoint backend:` field
+    /// (Fase 36.d, `AxonEndpointDefinition.backend`) if the source
+    /// declared one; otherwise the deploy-request backend
+    /// (`DeployRequest.backend`) when that was set to an explicit,
+    /// concrete value (`deploy_handler` fills it as a deploy-scoped
+    /// default for every route that did not declare its own).
+    ///
+    /// Empty string `""` ≡ "not declared" — the route resolves its
+    /// backend at request time down the Fase 36 D1 precedence ladder
+    /// (server default → environment-available `auto`; honest failure
+    /// if nothing real resolves). When non-empty this value is rung 2
+    /// of that ladder (`EndpointDeclared`).
+    ///
+    /// (D3 frames this as an "optional backend"; the struct realizes
+    /// "optional" via its uniform empty-string-sentinel convention —
+    /// shared with every sibling field — rather than introducing a
+    /// lone `Option<String>`.)
+    pub backend: String,
 }
 
 /// Walk the program's AxonEndpoint declarations and produce the
@@ -19809,11 +19839,48 @@ pub fn collect_axonendpoint_routes(
                     // already cross-referenced the flow body against the
                     // program's tool declarations.
                     has_algebraic_stream_effect: ae.has_algebraic_stream_effect,
+                    // §Fase 36.e (D3) — the `axonendpoint backend:`
+                    // declaration (Fase 36.d), copied verbatim from the
+                    // AST. The parser already validated it against the
+                    // closed catalog. Empty when the source omitted
+                    // `backend:`; `deploy_handler` may then fill it from
+                    // an explicit `DeployRequest.backend` as a
+                    // deploy-scoped default.
+                    backend: ae.backend.clone(),
                 },
             );
         }
     }
     Ok(routes)
+}
+
+/// §Fase 36.e (D3) — apply the deploy-scoped backend default to a
+/// freshly-collected route table.
+///
+/// A route that did not declare its own `axonendpoint backend:`
+/// (Fase 36.d) inherits `deploy_backend` — the `DeployRequest.backend`
+/// field — as a deploy-scoped default. The fill fires ONLY when
+/// `deploy_backend` is an explicit, concrete choice: `"auto"` and the
+/// empty string are transparent (a route left empty resolves down the
+/// Fase 36 D1 ladder at request time, so D5's no-silent-`stub`
+/// guarantee is preserved). A route that DID declare its own backend
+/// is never overridden — the per-route source declaration outranks
+/// the per-deploy default.
+///
+/// Pure + total + deterministic — the same `(routes, deploy_backend)`
+/// always produces the same table. Exhaustively unit-testable.
+pub fn apply_deploy_backend_default(
+    routes: &mut HashMap<(String, String), DynamicEndpointRoute>,
+    deploy_backend: &str,
+) {
+    if !crate::backend_resolution::is_explicit_backend(deploy_backend) {
+        return;
+    }
+    for route in routes.values_mut() {
+        if route.backend.is_empty() {
+            route.backend = deploy_backend.to_string();
+        }
+    }
 }
 
 /// Merge a freshly-collected route table into the live
