@@ -19952,6 +19952,74 @@ pub fn resolve_route_backend(
     )
 }
 
+/// §Fase 36.h (D5) — build the honest-failure response for a dynamic
+/// route whose execution backend the D1 ladder could not resolve.
+///
+/// The Backend Resolution Contract is TOTAL: when every rung is empty
+/// (no request backend, no `axonendpoint backend:`, no server
+/// default, no operator-tuned registry entry, no provider API key in
+/// the environment) `resolve_route_backend` returns
+/// `Err(NoBackendAvailable)`. D5 forbids degrading silently to the
+/// no-op `stub`; the request must fail LOUDLY, naming exactly what to
+/// fix.
+///
+///   - **JSON route** → HTTP 503 Service Unavailable + a structured
+///     `{error: "no_backend_available", …}` body.
+///   - **SSE route** → HTTP 200 `text/event-stream` carrying a single
+///     dialect-translated `axon.error` event then the terminator —
+///     the streaming-API expectation that the wire format is honored
+///     even for failures (the same discipline as the not-deployed
+///     SSE path).
+///
+/// The `NoBackendAvailable` `Display` already enumerates every fix
+/// (declare `backend:`, set a provider key, pass `--backend`, or
+/// request `backend=stub` explicitly to opt into the no-op) — it is
+/// reused verbatim as the human-facing `message`.
+pub fn honest_backend_failure_response(
+    route_wire: DynamicRouteWire,
+    route: &DynamicEndpointRoute,
+    no_backend: &crate::backend_resolution::NoBackendAvailable,
+    trace_id: &str,
+    wire_dialect: &str,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let message = no_backend.to_string();
+    match route_wire {
+        DynamicRouteWire::Json => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "no_backend_available",
+                "message": message,
+                "endpoint": route.endpoint_name,
+                "flow": route.flow_name,
+                "trace_id": trace_id,
+                "d_letter": "D5",
+            })),
+        )
+            .into_response(),
+        DynamicRouteWire::Sse => {
+            // Route the synthetic `FlowError` through the wire-format
+            // adapter so EVERY dialect surfaces a well-formed error:
+            // axon emits `event: axon.error`; openai/kimi/glm emit a
+            // final chunk with `finish_reason` + `data: [DONE]`;
+            // anthropic emits `message_delta` + `event: message_stop`.
+            let mut adapter = crate::wire_format::select_adapter(wire_dialect, 0);
+            let synthetic =
+                crate::flow_execution_event::FlowExecutionEvent::FlowError {
+                    flow_name: route.flow_name.clone(),
+                    error: message,
+                    timestamp_ms: 0,
+                };
+            let mut events: Vec<Result<Event, Infallible>> =
+                vec![Ok(build_retry_hint_event())];
+            events.extend(adapter.translate(&synthetic).into_iter().map(Ok));
+            events.extend(adapter.flush_terminator().into_iter().map(Ok));
+            Sse::new(futures::stream::iter(events)).into_response()
+        }
+    }
+}
+
 /// §Fase 36.g (D7) — validate a server default backend name against
 /// the closed catalog.
 ///
@@ -20380,12 +20448,6 @@ async fn dynamic_endpoint_handler(
             .collect();
         (ranked, s.config.default_backend.clone())
     };
-    // On the honest-failure outcome (every ladder rung empty — no
-    // provider key anywhere, empty registry, no server default) we
-    // fall back to `"auto"` here, preserving the pre-36 behavior;
-    // §Fase 36.h (D5) replaces this arm with the structured 503 /
-    // `axon.error` honest failure so a deployed route can never
-    // silently degrade to the no-op.
     let resolved_backend = match resolve_route_backend(
         &route,
         registry_ranked,
@@ -20393,7 +20455,34 @@ async fn dynamic_endpoint_handler(
         server_default, // §Fase 36.g (D7) — rung 3 of the ladder.
     ) {
         Ok(r) => r.backend,
-        Err(_) => "auto".to_string(),
+        Err(no_backend) => {
+            // §Fase 36.h (D5) — honest failure. Every ladder rung was
+            // empty (no request backend, no `axonendpoint backend:`,
+            // no server default, empty registry, no provider API key
+            // in the environment) and `stub` was not explicitly
+            // named. D5 forbids degrading silently to the no-op: the
+            // request fails LOUDLY with a structured diagnostic that
+            // names exactly what to fix. NEVER a silent `stub`.
+            {
+                let mut s = state.lock().unwrap();
+                s.metrics.total_errors += 1;
+            }
+            let wire_dialect =
+                axon_frontend::type_checker::resolve_effective_dialect(
+                    &route.transport_dialect,
+                    route.has_algebraic_stream_effect,
+                );
+            let mut resp = honest_backend_failure_response(
+                route_wire,
+                &route,
+                &no_backend,
+                &trace_id,
+                &wire_dialect,
+            );
+            resp.headers_mut()
+                .insert("x-axon-trace-id", trace_hdr.clone());
+            return resp;
+        }
     };
 
     let response = match route_wire {
