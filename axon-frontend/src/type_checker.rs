@@ -118,7 +118,19 @@ const VALID_OTS_HOMOTOPY: &[&str] = &["deep", "shallow", "speculative"];
 
 const VALID_MANDATE_POLICIES: &[&str] = &["coerce", "halt", "retry"];
 
-const VALID_STORE_BACKENDS: &[&str] = &["mysql", "postgresql", "sqlite"];
+// §Fase 36.x.b (D2) — `in_memory` is a first-class declarable
+// `axonstore` backend. The runtime `StoreRegistry::classify_backend`
+// already maps `"in_memory"` → `StoreHandle::InMemory` (the
+// key-value path); adding it here makes a source-declared in-memory
+// store type-check, so the canonical agent flow (retrieve → step →
+// persist) is runnable + testable with ZERO external infrastructure
+// — no Postgres, no `DATABASE_URL`. `connection:` is optional for an
+// `in_memory` store (it is optional for every backend at the
+// type-checker layer — no `connection`-required check exists here).
+//
+// `mysql` / `sqlite` remain type-check-valid but runtime-absent (a
+// documented future fase) — see `docs/fase/fase_36x_mixed_flow_streaming.md` §7.
+const VALID_STORE_BACKENDS: &[&str] = &["in_memory", "mysql", "postgresql", "sqlite"];
 
 const VALID_STORE_ISOLATION: &[&str] = &["read_committed", "repeatable_read", "serializable"];
 
