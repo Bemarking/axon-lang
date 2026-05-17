@@ -48,6 +48,7 @@ from axon.backends.base_backend import (
 )
 from axon.runtime.context_mgr import ContextManager
 from axon.runtime.effects import EmitEvent, perform
+from axon.runtime.interpolation import interpolate_vars
 from axon.runtime.memory_backend import InMemoryBackend, MemoryBackend
 from axon.runtime.pem.continuity_token import (
     ContinuityToken,
@@ -2466,17 +2467,22 @@ class Executor:
         return response
 
     def _interpolate_step_refs(self, value: Any, ctx: ContextManager) -> Any:
-        """Recursively replace ``{{step_name}}`` placeholders inside any
+        """Recursively interpolate variable references inside any
         JSON-shaped value with the matching step result from ``ctx``.
 
-        Strings are scanned for each completed step's placeholder and
-        substituted; lists, tuples, and dicts are walked. Primitives
-        (int, float, bool, None) and unrecognised types pass through
-        unchanged. Names that don't correspond to a completed step are
-        left literal — the same conservative behaviour
-        ``_build_user_prompt`` had pre-v1.15.4, now consolidated as the
-        single interpolation primitive shared by every consumer of step
-        references in the Executor.
+        §Fase 35.q — the language interpolation **contract** is
+        ``${name}`` / ``$name`` (see :mod:`axon.runtime.interpolation`),
+        byte-identical with the canonical Rust runtime. ``{{name}}`` is
+        a legacy Python-runtime-only dialect kept working transitionally
+        until flows convert to ``${name}``; it is not part of the
+        contract and dies with the Python runtime.
+
+        Strings are interpolated; lists, tuples, and dicts are walked.
+        Primitives (int, float, bool, None) and unrecognised types pass
+        through unchanged. Names that don't correspond to a completed
+        step are left literal — the conservative behaviour consolidated
+        as the single interpolation primitive shared by every consumer
+        of step references in the Executor.
 
         Single source of truth — three callers route through here:
           1. ``_build_user_prompt`` (LLM prompt template substitution)
@@ -2488,14 +2494,23 @@ class Executor:
              interpolation contract stays uniform across primitives.
         """
         if isinstance(value, str):
-            if "{{" not in value:
+            # §Fase 35.q — fast path: no reference of either dialect.
+            if "$" not in value and "{{" not in value:
                 return value
-            for name in ctx.completed_steps:
-                placeholder = "{{" + name + "}}"
-                if placeholder in value:
-                    value = value.replace(
-                        placeholder, str(ctx.get_step_result(name))
-                    )
+            variables = {
+                name: str(ctx.get_step_result(name))
+                for name in ctx.completed_steps
+            }
+            # The contract: `${name}` / `$name`. Applied first, on the
+            # pristine string — a single pass, byte-identical with the
+            # Rust runtime (§Fase 35.q; pinned by the shared corpus).
+            value = interpolate_vars(value, variables)
+            # Legacy `{{name}}` — Python-runtime-only, not the contract.
+            if "{{" in value:
+                for name in ctx.completed_steps:
+                    placeholder = "{{" + name + "}}"
+                    if placeholder in value:
+                        value = value.replace(placeholder, variables[name])
             return value
         if isinstance(value, list):
             return [self._interpolate_step_refs(item, ctx) for item in value]
