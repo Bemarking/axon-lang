@@ -98,6 +98,7 @@ fn server_cfg() -> ServerConfig {
         // The whole point of the override is to honor algebraic
         // effects WITHOUT requiring strict mode.
         strict_type_driven_transport: false,
+        default_backend: None,
     }
 }
 

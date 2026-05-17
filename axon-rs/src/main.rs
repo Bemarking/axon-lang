@@ -132,6 +132,20 @@ enum Commands {
         /// D6 default: false in v1.22.x, flips to true in v2.0.0.
         #[arg(long)]
         strict_type_driven_transport: bool,
+        /// §Fase 36.g (D7) — Server-wide default execution backend.
+        ///
+        /// Rung 3 of the Backend Resolution Contract: an `axonendpoint`
+        /// that declares no `backend:` of its own inherits this server
+        /// default. Valid values are the closed catalog `anthropic |
+        /// auto | gemini | glm | kimi | ollama | openai | openrouter |
+        /// stub` — an unknown name aborts startup with exit code 1.
+        ///
+        /// Also readable from the env var `AXON_DEFAULT_BACKEND`; the
+        /// CLI flag wins when both are set. Unset ≡ no server default
+        /// (resolution falls through to the environment-available
+        /// providers).
+        #[arg(long)]
+        backend: Option<String>,
     },
     /// Lambda Data (ΛD) epistemic codec: encode, decode, inspect.
     Ld {
@@ -274,6 +288,7 @@ fn main() {
             log_file,
             database_url,
             strict_type_driven_transport,
+            backend,
         } => axon_server::run_serve(axon_server::ServerConfig {
             host,
             port,
@@ -301,6 +316,21 @@ fn main() {
                 || axon::axon_server::parse_truthy_env(
                     "AXON_STRICT_TYPE_DRIVEN_TRANSPORT",
                 ),
+            // §Fase 36.g (D7) — server default backend (rung 3 of the
+            // Backend Resolution Contract). Resolution order, highest
+            // precedence first:
+            //   1. CLI flag `--backend <name>` (explicit at run-time).
+            //   2. Env var `AXON_DEFAULT_BACKEND` (12-factor; common
+            //      in k8s/docker deploys).
+            //   3. `None` — no server default; the ladder falls
+            //      through to the environment-available `auto` rungs.
+            // An empty string from either surface collapses to `None`.
+            // The value is validated against the closed catalog at
+            // `run_serve` startup — an unknown name fails fast.
+            default_backend: backend
+                .or_else(|| std::env::var("AXON_DEFAULT_BACKEND").ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
         }),
         Commands::Diff {
             file_a,
