@@ -34,28 +34,29 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-// ─── §1 — `in_memory` is not a source-declarable store backend ─────
+// ─── §1 — `in_memory` is a source-declarable store backend ─────────
+//
+// INVERTED by §Fase 36.x.b (D2). The v1.34.0 baseline rejected
+// `backend: in_memory` at the type-checker (`VALID_STORE_BACKENDS`
+// omitted it) — so the canonical agent flow could not be declared
+// against an in-memory store. 36.x.b added `in_memory` to the
+// catalog; this assertion is now flipped to its fixed form and
+// stands as the regression guard.
 
 #[test]
-fn s1_in_memory_store_backend_is_rejected_by_the_type_checker() {
-    // The runtime `StoreRegistry::classify_backend` already maps
-    // `"in_memory"` → `StoreHandle::InMemory`. The gap is purely the
-    // frontend: `VALID_STORE_BACKENDS` = {mysql, postgresql, sqlite}
-    // omits `in_memory`, so a source-declared in-memory store is a
-    // COMPILE ERROR — the canonical agent flow cannot be declared
-    // against an in-memory store, hence cannot run without Postgres.
+fn s1_in_memory_store_backend_is_declarable_post_36xb() {
     let src = "axonstore mem { backend: in_memory }";
     let tokens = Lexer::new(src, "<diag>").tokenize().expect("lex");
     let prog = Parser::new(tokens).parse().expect("parse");
     let errors = TypeChecker::new(&prog).check();
     assert!(
-        errors.iter().any(|e| {
+        !errors.iter().any(|e| {
             let m = e.message.to_lowercase();
             m.contains("backend") && m.contains("in_memory")
         }),
-        "§Fase 36.x.a §1 — v1.34.0 baseline: `backend: in_memory` is \
-         rejected by the type-checker. 36.x.b (D2) inverts this. \
-         Errors: {:?}",
+        "§Fase 36.x.a §1 (inverted by 36.x.b / D2): `backend: \
+         in_memory` is a first-class declarable axonstore backend — \
+         it must type-check with no backend error. Errors: {:?}",
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
