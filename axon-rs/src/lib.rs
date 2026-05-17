@@ -68,6 +68,11 @@ pub mod effects;
 /// infra (trait + types + error + retry + observability + locked_model
 /// + tokens dispatch).
 pub mod backends;
+/// §Fase 36.b — the Backend Resolution Contract (D1): the pure,
+/// deterministic precedence ladder that resolves a flow's execution
+/// backend (request → axonendpoint `backend:` → server default →
+/// environment-available `auto` → honest failure).
+pub mod backend_resolution;
 /// §ESK Fase 6 — Epistemic Security Kernel. Port of `axon/runtime/esk/`.
 pub mod esk;
 /// CLI handlers for the ESK audit commands (dossier, sbom, audit, evidence-package).
