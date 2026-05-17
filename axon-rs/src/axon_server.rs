@@ -19952,6 +19952,44 @@ pub fn resolve_route_backend(
     )
 }
 
+/// §Fase 36.j (D8) — inject the `backend_resolution` observability
+/// object into a dynamic-route JSON response body.
+///
+/// The resolved backend and the precedence rung that chose it are
+/// added under a top-level `backend_resolution` key:
+///
+/// ```json
+/// { …flow result…, "backend_resolution": { "backend": "gemini",
+///   "reason": "endpoint_declared" } }
+/// ```
+///
+/// Total + safe: a body that is not a JSON object (already malformed,
+/// or an array / scalar) is returned untouched — observability is
+/// best-effort and never corrupts a response. The `reason` slug is
+/// the closed catalog from [`backend_resolution::
+/// BackendResolutionReason::as_slug`].
+pub fn inject_backend_resolution(
+    body: &[u8],
+    backend: &str,
+    reason_slug: &str,
+) -> Vec<u8> {
+    match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(serde_json::Value::Object(mut map)) => {
+            map.insert(
+                "backend_resolution".to_string(),
+                serde_json::json!({
+                    "backend": backend,
+                    "reason": reason_slug,
+                }),
+            );
+            serde_json::to_vec(&serde_json::Value::Object(map))
+                .unwrap_or_else(|_| body.to_vec())
+        }
+        // Not a JSON object — leave the body byte-for-byte untouched.
+        _ => body.to_vec(),
+    }
+}
+
 /// §Fase 36.h (D5) — build the honest-failure response for a dynamic
 /// route whose execution backend the D1 ladder could not resolve.
 ///
@@ -20448,13 +20486,13 @@ async fn dynamic_endpoint_handler(
             .collect();
         (ranked, s.config.default_backend.clone())
     };
-    let resolved_backend = match resolve_route_backend(
+    let (resolved_backend, resolution_reason) = match resolve_route_backend(
         &route,
         registry_ranked,
         crate::backends::env_available_backends(),
         server_default, // §Fase 36.g (D7) — rung 3 of the ladder.
     ) {
-        Ok(r) => r.backend,
+        Ok(r) => (r.backend, r.reason),
         Err(no_backend) => {
             // §Fase 36.h (D5) — honest failure. Every ladder rung was
             // empty (no request backend, no `axonendpoint backend:`,
@@ -20481,9 +20519,32 @@ async fn dynamic_endpoint_handler(
             );
             resp.headers_mut()
                 .insert("x-axon-trace-id", trace_hdr.clone());
+            // §Fase 36.j (D8) — observability even on the honest
+            // failure: no backend resolved, and the header says why.
+            resp.headers_mut().insert(
+                "x-axon-backend",
+                axum::http::HeaderValue::from_static(
+                    "none; reason=no_backend_available",
+                ),
+            );
             return resp;
         }
     };
+
+    // §Fase 36.j (D8) — resolution observability. The resolved
+    // backend AND the precedence rung that chose it travel on the
+    // `X-Axon-Backend` response header (`<backend>; reason=<rung>`)
+    // and are injected into the JSON wire body as a
+    // `backend_resolution` object. For a replay-enabled route the
+    // injected body is what the replay log persists — so the
+    // per-endpoint execution trace retrievable via
+    // `GET /v1/replay/<trace_id>` carries the resolution too. An
+    // operator can always answer "why this model?".
+    let backend_hdr = axum::http::HeaderValue::from_str(&format!(
+        "{resolved_backend}; reason={}",
+        resolution_reason.as_slug()
+    ))
+    .unwrap_or_else(|_| axum::http::HeaderValue::from_static("unknown"));
 
     let response = match route_wire {
         DynamicRouteWire::Sse => {
@@ -20604,9 +20665,13 @@ async fn dynamic_endpoint_handler(
     // via the ReplayContext; the JSON branch uses it for the body-
     // capture replay-binding write + the X-Axon-Trace-Id header.
 
-    let should_capture_body = idempotency_cache_marker.is_some()
-        || route.replay_enabled;
-    if should_capture_body && validated.status().is_success() {
+    // §Fase 36.j (D8) + §Fase 32.f/h — every 2xx application/json
+    // dynamic-route response is read + rebuilt here: 36.j injects the
+    // `backend_resolution` observability object into the body, and —
+    // when needed — the idempotency cache + replay-log writes share
+    // the SAME post-injection bytes, so the cached / replayed body is
+    // byte-identical to what the client received.
+    if validated.status().is_success() {
         let content_type = validated
             .headers()
             .get(axum::http::header::CONTENT_TYPE)
@@ -20614,11 +20679,11 @@ async fn dynamic_endpoint_handler(
             .unwrap_or("")
             .to_string();
         if content_type.starts_with("application/json") {
-            // Capture the body bytes once; replay log + idempotency
-            // cache share the bytes; the rebuilt response carries the
-            // same bytes back to the client.
+            // Read the body once; 36.j injects `backend_resolution`;
+            // replay log + idempotency cache share the injected bytes;
+            // the rebuilt response carries them back to the client.
             let (mut parts, response_body_stream) = validated.into_parts();
-            let body_bytes = match axum::body::to_bytes(response_body_stream, usize::MAX).await {
+            let raw_body = match axum::body::to_bytes(response_body_stream, usize::MAX).await {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::error!(
@@ -20626,12 +20691,22 @@ async fn dynamic_endpoint_handler(
                         "axon-rs Fase 32.f+h: failed to read response body for post-dispatch capture"
                     );
                     parts.headers.insert("x-axon-trace-id", trace_hdr);
+                    parts.headers.insert("x-axon-backend", backend_hdr);
                     return axum::response::Response::from_parts(
                         parts,
                         axum::body::Body::from(Vec::new()),
                     );
                 }
             };
+            // §Fase 36.j (D8) — inject the `backend_resolution`
+            // observability object. The injected bytes are what the
+            // client sees AND what the caches below persist.
+            let body_bytes: axum::body::Bytes = inject_backend_resolution(
+                &raw_body,
+                &resolved_backend,
+                resolution_reason.as_slug(),
+            )
+            .into();
 
             // 32.f cache write (if marker present).
             if let Some((cache_key, body_hash)) = idempotency_cache_marker {
@@ -20697,16 +20772,18 @@ async fn dynamic_endpoint_handler(
             }
 
             parts.headers.insert("x-axon-trace-id", trace_hdr);
+            parts.headers.insert("x-axon-backend", backend_hdr);
             return axum::response::Response::from_parts(
                 parts,
                 axum::body::Body::from(body_bytes),
             );
         }
-        // Non-JSON 2xx (SSE/ndjson) — pass through with trace header.
+        // Non-JSON 2xx (SSE/ndjson) — pass through with the headers.
     }
-    // Non-2xx OR no capture needed — attach trace header + return.
+    // Non-2xx OR non-JSON 2xx — attach trace + backend headers + return.
     let mut resp = validated;
     resp.headers_mut().insert("x-axon-trace-id", trace_hdr);
+    resp.headers_mut().insert("x-axon-backend", backend_hdr);
     resp
 }
 
