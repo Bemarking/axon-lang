@@ -261,6 +261,31 @@ pub async fn run_streaming_via_dispatcher(
     // `axon.complete.backend` field already carries the backend name.
     let system_prompt = crate::flow_plan::compose_system_prompt_public(&flow, &ir, None);
 
+    // §Fase 36.i (D4) — Build the tool registry from the compiled
+    // IR's tool declarations. Pre-36.i `DispatchCtx::with_tool_registry`
+    // had ZERO production callers: `run_streaming_via_dispatcher`
+    // attached only the store registry + side-channels, so
+    // `ctx.tool_registry` stayed `None` and the dispatcher's
+    // streaming-tool branch in `run_step` (`pure_shape.rs`) — gated on
+    // `ctx.tool_registry == Some` — could never fire. A
+    // `step S { apply: <tool> }` whose `tool` declared
+    // `provider: <p>, effects: <stream:<policy>>` silently fell
+    // through to the plain-LLM path: the declared provider AND the
+    // declared stream effect were ignored at execution.
+    //
+    // Wiring the registry here makes the dead builder LIVE: a step
+    // applying a tool the registry flags `is_streaming` now reaches
+    // `run_step_streaming_tool` and executes against the TOOL's
+    // declared `provider:` (the per-step backend, overriding the
+    // flow-level backend for that step) with the `<stream:<policy>>`
+    // effect honored end-to-end. `register_from_ir` auto-derives the
+    // `is_streaming` flag from each tool's `effect_row` (Fase 34.c).
+    let tool_registry = {
+        let mut reg = crate::tool_registry::ToolRegistry::new();
+        reg.register_from_ir(&ir.tools);
+        std::sync::Arc::new(reg)
+    };
+
     // §5 — Construct DispatchCtx. The mpsc tx is the SAME channel
     // the SSE consumer reads from; the dispatcher's events flow
     // directly to the wire with no intermediate buffering.
@@ -276,7 +301,10 @@ pub async fn run_streaming_via_dispatcher(
         step_audit_records,
         runtime_warnings,
     )
-    .with_store_registry(store_registry);
+    .with_store_registry(store_registry)
+    // §Fase 36.i (D4) — the tool registry, now LIVE on the production
+    // SSE path. Activates the dispatcher's streaming-tool branch.
+    .with_tool_registry(tool_registry);
     // §Fase 35.j — thread the request's held capabilities into the
     // dispatcher so the store handlers can re-check gated stores.
     ctx.held_capabilities = held_capabilities;
