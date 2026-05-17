@@ -208,4 +208,4 @@ This package contains enterprise-only features:
   telemetry sink + vertical-aware suggest dictionaries).
 """
 
-__version__ = "1.23.0"
+__version__ = "1.24.0"
