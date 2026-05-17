@@ -19883,6 +19883,51 @@ pub fn apply_deploy_backend_default(
     }
 }
 
+/// §Fase 36.f (D1) — resolve the execution backend for one dynamic
+/// route by the Backend Resolution Contract ladder.
+///
+/// A thin, pure adapter over [`backend_resolution::resolve_backend`]
+/// that projects a `DynamicEndpointRoute` + the live environment onto
+/// the ladder's inputs:
+///
+///   - **Rung 1 — request-explicit:** `None`. A per-request backend
+///     override is not a surface on dynamic routes — a deployed route
+///     is hit by plain HTTP carrying the adopter's own body schema,
+///     not an `ExecuteRequest`. (`/v1/execute` is the rung-1 surface.)
+///   - **Rung 2 — endpoint-declared:** `route.backend` (the
+///     `axonendpoint backend:` field, 36.d, carried onto the route by
+///     36.e). Empty / `"auto"` are transparent.
+///   - **Rung 3 — server default:** `server_default` (the
+///     `ServerConfig.default_backend`, wired by §Fase 36.g; `None`
+///     until then).
+///   - **Rungs 4a/4b — environment-available `auto`:** the
+///     operator-tuned `registry_ranked` scores, else `env_available`
+///     (the providers with an API key in the environment, 36.c).
+///
+/// Pure given its arguments — the caller does the I/O (locking the
+/// registry, scanning the environment) and hands the results in, so
+/// this stays deterministic and unit-testable. Returns the honest
+/// `Err(NoBackendAvailable)` when every rung is empty.
+pub fn resolve_route_backend(
+    route: &DynamicEndpointRoute,
+    registry_ranked: Vec<String>,
+    env_available: Vec<String>,
+    server_default: Option<String>,
+) -> Result<
+    crate::backend_resolution::BackendResolution,
+    crate::backend_resolution::NoBackendAvailable,
+> {
+    crate::backend_resolution::resolve_backend(
+        &crate::backend_resolution::BackendResolutionInputs {
+            request_backend: None,
+            endpoint_backend: Some(route.backend.clone()),
+            server_default,
+            registry_ranked,
+            env_available,
+        },
+    )
+}
+
 /// Merge a freshly-collected route table into the live
 /// `ServerState.dynamic_routes`. Detects cross-deploy path collisions
 /// (D2 across deploys) — if the incoming table contains a
@@ -20273,11 +20318,38 @@ async fn dynamic_endpoint_handler(
             axum::http::HeaderValue::from_static("unknown")
         });
 
+    // §Fase 36.f (D1, D3) — resolve the execution backend by the
+    // Backend Resolution Contract ladder (`resolve_route_backend`),
+    // retiring the hardcoded `"auto"` that made every deployed route
+    // execute against the no-op `stub` on a server with provider keys
+    // set (Break A).
+    let registry_ranked: Vec<String> = {
+        let s = state.lock().unwrap();
+        compute_backend_scores(&s, "balanced")
+            .into_iter()
+            .map(|bs| bs.name)
+            .collect()
+    };
+    // On the honest-failure outcome (every ladder rung empty — no
+    // provider key anywhere, empty registry) we fall back to `"auto"`
+    // here, preserving the pre-36 behavior; §Fase 36.h (D5) replaces
+    // this arm with the structured 503 / `axon.error` honest failure
+    // so a deployed route can never silently degrade to the no-op.
+    let resolved_backend = match resolve_route_backend(
+        &route,
+        registry_ranked,
+        crate::backends::env_available_backends(),
+        None, // §Fase 36.g wires `ServerConfig.default_backend` here.
+    ) {
+        Ok(r) => r.backend,
+        Err(_) => "auto".to_string(),
+    };
+
     let response = match route_wire {
         DynamicRouteWire::Sse => {
             let stream_req = StreamExecuteRequest {
                 flow_name: route.flow_name.clone(),
-                backend: "auto".to_string(),
+                backend: resolved_backend.clone(),
             };
             // §Fase 33.x.f — Build the replay context when the
             // route declares `replay: true`. The inner handler
@@ -20320,7 +20392,7 @@ async fn dynamic_endpoint_handler(
         DynamicRouteWire::Json => {
             let exec_req = ExecuteRequest {
                 flow: route.flow_name.clone(),
-                backend: "auto".to_string(),
+                backend: resolved_backend.clone(),
             };
             let mut resp = execute_handler(State(state.clone()), headers.clone(), Json(exec_req))
                 .await
