@@ -804,7 +804,7 @@ pentest externo PRE-GA obligatorio.
 - [x] 11.f Integration Testing + Security Audit
 
 **Sesión abierta en:**
-- Plan vivo: `axon-lang:fase/fase_11_neuro_symbolic_axon.md`
+- Plan vivo: `axon-lang:docs/fase/fase_11_neuro_symbolic_axon.md`
 - Commits axon-lang pushed a `origin`: `363f845`, `aa6f7a2`, `495bc34` (11.a); `57844c9`, `c49bbee`, `95df120` (11.b); `2b933a1`, `b4e5bec`, `f6f6208`, `b9d1926` (11.c); `7e9e421`, `86d23e2`, `afc2172` (11.d); `e50ca4a`, `91fb237`, `87cddeb` (11.e); `f370eeb`, `240a7e8` (11.f).
 - Commits axon-enterprise pushed a `origin`: `0db9b4f`, `903ad77` (11.c); `5033569`, `79607d2` (11.d).
 - Tag `v1.2.0` pendiente de sign-off por engineering lead + external pentest per `docs/SECURITY_AUDIT_v1_2_0.md`.

@@ -7,7 +7,7 @@ name: Rust ↔ Python IR Parity
 # primitive + compliance lists + named identifiers).
 #
 # Byte-identical parity is NOT yet gated here — known divergences are
-# documented in fase/fase8_parity_divergences.md and tracked as
+# documented in docs/fase/fase8_parity_divergences.md and tracked as
 # sub-phases §8.2.h.1 … §8.2.h.4. Once those land, this workflow will
 # be extended to add a `diff -q` step.
 

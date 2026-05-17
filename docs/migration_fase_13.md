@@ -200,7 +200,7 @@ Migration unlocks features that string topics structurally denied:
 
 - [`docs/paper_mobile_channels.md`](paper_mobile_channels.md) — full
   formal specification of the typed-channel calculus
-- [`fase/fase_13_mobile_typed_channels.md`](fase_13_mobile_typed_channels.md)
+- [`docs/fase/fase_13_mobile_typed_channels.md`](fase_13_mobile_typed_channels.md)
   — phase plan with implementation status
 - `scripts/migrate_string_topics.py` — migration helper source
 - `axon/runtime/channels/typed.py` — runtime layer reference

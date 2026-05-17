@@ -29327,7 +29327,7 @@ fn fase5_heal_max_patches_zero_is_type_error() {
 // §Fase 8.2.h — Rust↔Python IR structural parity gate.
 //
 // Divergences that prevent byte-identical output are catalogued in
-// fase/fase8_parity_divergences.md (D1–D4). This test verifies everything
+// docs/fase/fase8_parity_divergences.md (D1–D4). This test verifies everything
 // ELSE: same declaration counts, same named symbols, compliance arrays
 // match item-for-item. A regression here signals that the Rust IR drifted
 // away from the Python reference.

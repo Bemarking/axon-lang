@@ -569,7 +569,7 @@ is the single-source-of-truth status check.
 
 ## See also
 
-- [fase/fase_33z_dispatcher_production_wiring.md](fase_33z_dispatcher_production_wiring.md)
+- [docs/fase/fase_33z_dispatcher_production_wiring.md](fase_33z_dispatcher_production_wiring.md)
   — the plan vivo with D1-D11 spec + sub-fase sequencing.
 - [docs/ADOPTER_STREAMING.md](ADOPTER_STREAMING.md) §"Total production
   streaming (Fase 33.z, v1.27.0+)" — adopter-observable D-letter

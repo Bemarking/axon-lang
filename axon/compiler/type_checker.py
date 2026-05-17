@@ -925,7 +925,7 @@ VALID_APX_FFI_MODE = frozenset({"taint", "sanitize", "strict"})
 # ═══════════════════════════════════════════════════════════════════
 #  ALGEBRAIC EFFECTS — Fase 23 typechecker support
 #  (Operationalises paper §1-§6 + decisions D1-D12 from
-#  fase/fase_23_algebraic_effects_runtime.md.)
+#  docs/fase/fase_23_algebraic_effects_runtime.md.)
 #
 #  Three concerns:
 #    (i)   Effect rows — track which effects a step performs (D9).

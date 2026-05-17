@@ -46,5 +46,5 @@ MIT — same as `axon-lang`. See `../LICENSE`.
 
 ## Provenance
 
-Plan vivo: [`../fase/fase_25_silicon_cognition.md`](../fase/fase_25_silicon_cognition.md).
+Plan vivo: [`../docs/fase/fase_25_silicon_cognition.md`](../docs/fase/fase_25_silicon_cognition.md).
 Founder ratification of decisions D1–D12: 2026-05-08.

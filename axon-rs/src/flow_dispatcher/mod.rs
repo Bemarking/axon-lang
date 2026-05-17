@@ -665,7 +665,7 @@ pub async fn dispatch_node(
         // `pure_shape::run_pure_shape` async core. The shim is
         // retired for these 6 variants; subsequent sub-fases retire
         // it for the remaining 39 variants per the topological
-        // schedule in `fase/fase_33y_algebraic_streaming_dispatcher.md`.
+        // schedule in `docs/fase/fase_33y_algebraic_streaming_dispatcher.md`.
         IRFlowNode::Step(step) => pure_shape::run_step(step, ctx).await,
         IRFlowNode::Probe(probe) => pure_shape::run_probe(probe, ctx).await,
         IRFlowNode::Reason(reason) => pure_shape::run_reason(reason, ctx).await,

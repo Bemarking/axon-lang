@@ -418,7 +418,7 @@ Final test sweep: target 80+ tests across the enterprise supervisor package. Cov
 
 ### 16.r — Documentation honesty + release notes  `[BOTH]` `[PLANNED]`
 
-- axon-lang: update `axon/runtime/supervisor.py` module docstring to point to fase/fase_16 + the OSS scope boundary.
+- axon-lang: update `axon/runtime/supervisor.py` module docstring to point to docs/fase/fase_16 + the OSS scope boundary.
 - axon-lang: README Phase XX row (if applicable) qualified to "OSS basic + enterprise hardened".
 - axon-enterprise: README adds new section "Production Daemon Supervision" with the §4 use-case table.
 - axon-enterprise: 4 new docs under `docs/`:
