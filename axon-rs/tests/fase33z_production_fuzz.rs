@@ -234,6 +234,7 @@ async fn drive_production_path(
         audit,
         warnings,
         None,
+        None,
     )
     .await;
 
@@ -888,6 +889,7 @@ async fn run_async_snapshot(
         audit,
         warnings,
         None,
+        None,
     )
     .await;
 
@@ -986,7 +988,7 @@ async fn fuzz_s4_parity_determinism_stress() {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let sync = execute_server_flow(&ir, flow_name, "stub", &source_file, None);
+        let sync = execute_server_flow(&ir, flow_name, "stub", &source_file, None, None);
         if let Ok(sync_metrics) = sync {
             if sync_metrics.success != baseline.success {
                 nondeterministic.push(format!(

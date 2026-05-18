@@ -92,6 +92,13 @@ struct ExecutionUnit {
     effort: String,
     #[serde(skip)]
     resolved_anchors: Vec<IRAnchor>,
+    /// §Fase 37.b (D1) — the Request Binding Contract bindings:
+    /// `(flow parameter name, value)` pairs resolved from the HTTP
+    /// request body. Seeded into the unit's `ExecContext` before the
+    /// step walk so `${param}` interpolates. Empty for a caller with
+    /// no request body (CLI / batch / pipeline) — D5 backwards-compat.
+    #[serde(skip)]
+    param_bindings: Vec<(String, String)>,
 }
 
 /// A compiled step ready for LLM dispatch.
@@ -165,6 +172,9 @@ fn build_execution_plan(ir: &IRProgram, backend: &str) -> Vec<ExecutionUnit> {
             anchor_instructions,
             effort: run.effort.clone(),
             resolved_anchors: run.resolved_anchors.clone(),
+            // §Fase 37.b — the CLI / `run`-statement plan builder has
+            // no HTTP request body; the binding is empty (D5).
+            param_bindings: Vec::new(),
         });
     }
 
@@ -468,6 +478,11 @@ fn execute_stub(
             &unit.persona_name,
             i,
         );
+        // §Fase 37.b (D1) — seed the flow's parameters from the
+        // request body BEFORE the step walk so `${param}` resolves.
+        for (name, value) in &unit.param_bindings {
+            stub_ctx.set(name, value);
+        }
         for (j, step) in unit.steps.iter().enumerate() {
             stub_ctx.set_step(&step.step_name, &step.step_type, j);
             println!(
@@ -967,6 +982,12 @@ fn execute_real(
         }
 
         let mut ctx = ExecContext::new(&unit.flow_name, &unit.persona_name, i);
+        // §Fase 37.b (D1) — seed the flow's parameters from the
+        // request body BEFORE the step walk so `${param}` resolves in
+        // step prompts, `where:` clauses and `persist` field blocks.
+        for (name, value) in &unit.param_bindings {
+            ctx.set(name, value);
+        }
         let mut conversation = ConversationHistory::new();
         let mut context_window = ContextWindow::new();
         hooks.on_unit_start(&unit.flow_name, &unit.persona_name);
@@ -2135,6 +2156,11 @@ pub fn execute_server_flow(
     backend: &str,
     source_file: &str,
     api_key_override: Option<&str>,
+    // §Fase 37.b (D1) — the parsed HTTP request body. The flow's
+    // declared parameters bind from its same-named fields (the Request
+    // Binding Contract) and seed each `ExecContext` before the step
+    // walk. `None` for a caller with no request body (D5).
+    request_body: Option<&serde_json::Value>,
 ) -> Result<ServerRunnerMetrics, String> {
     let mut target_run = None;
     for run in &ir.runs {
@@ -2156,6 +2182,13 @@ pub fn execute_server_flow(
             anchor_instructions: build_anchor_instructions(run),
             effort: run.effort.clone(),
             resolved_anchors: run.resolved_anchors.clone(),
+            // §Fase 37.b (D1) — bind the request body to the resolved
+            // flow's declared parameters.
+            param_bindings: run
+                .resolved_flow
+                .as_ref()
+                .map(|f| crate::request_binding::bind_request_body(f, request_body))
+                .unwrap_or_default(),
         });
     } else {
         let target_flow: &crate::ir_nodes::IRFlow = ir
@@ -2218,6 +2251,12 @@ pub fn execute_server_flow(
             anchor_instructions: build_anchor_instructions(&run),
             effort: run.effort.clone(),
             resolved_anchors: run.resolved_anchors.clone(),
+            // §Fase 37.b (D1) — bind the request body to the flow's
+            // declared parameters (the dynamic-route execution path).
+            param_bindings: crate::request_binding::bind_request_body(
+                target_flow,
+                request_body,
+            ),
         });
     }
 

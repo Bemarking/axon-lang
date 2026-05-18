@@ -107,7 +107,7 @@ struct AsyncMetrics {
 fn run_sync(source: &str, source_file: &str, flow_name: &str) -> Result<ServerRunnerMetrics, String> {
     let (_program, ir) = axon::flow_plan::compile_source_to_ir(source, source_file)
         .map_err(|e| format!("compile failed: {e:?}"))?;
-    execute_server_flow(&ir, flow_name, "stub", source_file, None)
+    execute_server_flow(&ir, flow_name, "stub", source_file, None, None)
 }
 
 /// Drive the async dispatcher path on the same inputs + collect the
@@ -131,6 +131,7 @@ async fn run_async(source: String, source_file: String, flow_name: String) -> As
         enforcement,
         audit,
         warnings,
+        None,
         None,
     )
     .await;

@@ -129,6 +129,7 @@ pub mod parallel;
 pub mod plan_diff;
 pub mod plan_export;
 pub mod rate_limiter;
+pub mod request_binding;
 pub mod request_log;
 pub mod request_middleware;
 pub mod repl;

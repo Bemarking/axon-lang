@@ -1842,6 +1842,13 @@ pub struct ExecuteRequest {
     /// Backend for execution (default: "stub").
     #[serde(default = "default_execute_backend")]
     pub backend: String,
+    /// §Fase 37.b (D1) — the parsed HTTP request body, carried so the
+    /// flow's declared parameters bind from it (the Request Binding
+    /// Contract) on the JSON dynamic-route transport. `#[serde(default)]`
+    /// ⇒ `None` for a legacy `/v1/execute` RPC hit that sends only
+    /// `{flow, backend}` (D5 backwards-compat).
+    #[serde(default)]
+    pub request_body: Option<serde_json::Value>,
 }
 
 fn default_execute_backend() -> String {
@@ -1958,6 +1965,9 @@ fn server_execute(
     flow_name: &str,
     backend: &str,
     api_key_override: Option<&str>,
+    // §Fase 37.b (D1) — the parsed request body for the Request
+    // Binding Contract; `None` for callers with no HTTP request body.
+    request_body: Option<&serde_json::Value>,
 ) -> Result<ServerExecutionResult, String> {
     let start = Instant::now();
 
@@ -1979,7 +1989,9 @@ fn server_execute(
     let ir = crate::ir_generator::IRGenerator::new().generate(&program);
 
     // Execute via runner
-    let run_res = crate::runner::execute_server_flow(&ir, flow_name, backend, source_file, api_key_override)?;
+    let run_res = crate::runner::execute_server_flow(
+        &ir, flow_name, backend, source_file, api_key_override, request_body,
+    )?;
 
     // Count anchors from IR
     let anchor_count = ir.anchors.len();
@@ -2047,9 +2059,14 @@ async fn execute_handler(
     };
 
     // Execute with fallback chain support (outside lock — CPU-bound compilation)
+    // §Fase 37.b (D1) — `payload.request_body` carries the parsed
+    // request body of a JSON dynamic-route hit; the flow's declared
+    // parameters bind from it (the Request Binding Contract). `None`
+    // for a legacy `/v1/execute` RPC call (D5 backwards-compat).
     let (result, actual_backend) = execute_with_fallback(
         &state, &source, &source_file, &payload.flow,
         &effective_backend, resolved_key.as_deref(),
+        payload.request_body.as_ref(),
     );
 
     match result {
@@ -13183,9 +13200,13 @@ fn execute_with_fallback(
     flow_name: &str,
     primary_backend: &str,
     primary_key: Option<&str>,
+    // §Fase 37.b (D1) — the parsed request body for the Request
+    // Binding Contract, threaded through to `runner::execute_server_flow`.
+    request_body: Option<&serde_json::Value>,
 ) -> (Result<ServerExecutionResult, String>, String) {
     // Try primary
-    let result = server_execute(source, source_file, flow_name, primary_backend, primary_key);
+    let result =
+        server_execute(source, source_file, flow_name, primary_backend, primary_key, request_body);
     if result.is_ok() {
         return (result, primary_backend.to_string());
     }
@@ -13209,7 +13230,9 @@ fn execute_with_fallback(
             let s = state.lock().unwrap();
             resolve_backend_key(&s, fallback_backend).ok()
         };
-        let fb_result = server_execute(source, source_file, flow_name, fallback_backend, fb_key.as_deref());
+        let fb_result = server_execute(
+            source, source_file, flow_name, fallback_backend, fb_key.as_deref(), request_body,
+        );
         if fb_result.is_ok() {
             return (fb_result, fallback_backend.clone());
         }
@@ -13252,9 +13275,12 @@ fn server_execute_full(
         resolve_backend_key(&s, &effective_backend).ok()
     };
 
-    // Execute with fallback chain
+    // Execute with fallback chain. §Fase 37.b — `server_execute_full`
+    // serves non-dynamic-route callers (CLI-style RPC, batch, pipeline
+    // stages); there is no HTTP request body to bind, so `None`.
     let (result, actual_backend) = execute_with_fallback(
         state, source, source_file, flow_name, &effective_backend, resolved_key.as_deref(),
+        None,
     );
 
     // Record metrics
@@ -14751,7 +14777,9 @@ async fn mcp_handler(
             };
 
             // Execute
-            let result = server_execute(&source, &source_file, flow_name, backend, resolved_key.as_deref());
+            let result = server_execute(
+                &source, &source_file, flow_name, backend, resolved_key.as_deref(), None,
+            );
 
             match result {
                 Ok(exec_result) => {
@@ -15827,7 +15855,7 @@ async fn mcp_stream_handler(
     };
 
     // Execute
-    match server_execute(&source, &source_file, flow_name, backend, resolved_key.as_deref()) {
+    match server_execute(&source, &source_file, flow_name, backend, resolved_key.as_deref(), None) {
         Ok(mut er) => {
             // Record trace
             let mut trace_entry = crate::trace_store::build_trace(
@@ -18060,6 +18088,12 @@ pub struct StreamExecuteRequest {
     /// Backend (default "stub").
     #[serde(default = "default_execute_backend")]
     pub backend: String,
+    /// §Fase 37.b (D1) — the parsed HTTP request body, carried so the
+    /// flow's declared parameters bind from it (the Request Binding
+    /// Contract). `#[serde(default)]` ⇒ `None` for a `/v1/execute/sse`
+    /// direct hit that sends only `{flow_name, backend}` (D5).
+    #[serde(default)]
+    pub request_body: Option<serde_json::Value>,
 }
 
 /// POST /v1/execute/stream — execute a flow with algebraic effect streaming.
@@ -18435,6 +18469,10 @@ fn server_execute_streaming(
     // threaded into the dispatcher so the store handlers re-check
     // capability-gated stores.
     held_capabilities: Option<Vec<String>>,
+    // §Fase 37.b (D1) — the parsed HTTP request body, threaded to the
+    // dispatcher so the flow's declared parameters bind from it (the
+    // Request Binding Contract). `None` for a request with no body.
+    request_body: Option<serde_json::Value>,
 ) -> StreamingExecution {
     use crate::flow_execution_event::FlowExecutionEvent;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FlowExecutionEvent>();
@@ -18559,6 +18597,7 @@ fn server_execute_streaming(
             audit_for_dispatcher,
             warnings_for_dispatcher,
             held_capabilities,
+            request_body,
         )
         .await;
         exited_for_dispatcher.notify_waiters();
@@ -18732,6 +18771,9 @@ async fn execute_sse_handler_inner(
             let backend_owned = payload.backend.clone();
             let client_owned = client.clone();
             let source_file_for_audit = source_file.clone();
+            // §Fase 37.b (D1) — the parsed request body for the
+            // Request Binding Contract, moved into the spawned task.
+            let request_body_for_task = payload.request_body.clone();
             // §Fase 33.z.k.g.2 — clone the wire-format dialect for
             // the spawned task. The adapter is constructed inside
             // the spawn closure once `trace_id` is reserved + drives
@@ -18800,6 +18842,9 @@ async fn execute_sse_handler_inner(
                     Some(crate::auth_scope::extract_capabilities_from_bearer(
                         &headers,
                     )),
+                    // §Fase 37.b — the parsed request body for the
+                    // Request Binding Contract.
+                    request_body_for_task,
                 );
 
                 // §Fase 33.z.k.g.2 — Construct the wire-format adapter
@@ -20614,11 +20659,23 @@ async fn dynamic_endpoint_handler(
     ))
     .unwrap_or_else(|_| axum::http::HeaderValue::from_static("unknown"));
 
+    // §Fase 37.b (D1) — parse the request body ONCE for the Request
+    // Binding Contract. The flow's declared parameters bind from its
+    // same-named fields. A request with no body, or a body that is
+    // not a JSON object, yields `None` — the flow then runs with only
+    // its own `let` / step bindings (D5 backwards-compat). The §32.c
+    // body-schema gate above already rejected a malformed body for a
+    // route that declared `body: T`; this parse is a best-effort read
+    // for the binding and never itself rejects the request.
+    let request_body_json: Option<serde_json::Value> =
+        serde_json::from_slice(&body).ok();
+
     let response = match route_wire {
         DynamicRouteWire::Sse => {
             let stream_req = StreamExecuteRequest {
                 flow_name: route.flow_name.clone(),
                 backend: resolved_backend.clone(),
+                request_body: request_body_json.clone(),
             };
             // §Fase 33.x.f — Build the replay context when the
             // route declares `replay: true`. The inner handler
@@ -20662,6 +20719,7 @@ async fn dynamic_endpoint_handler(
             let exec_req = ExecuteRequest {
                 flow: route.flow_name.clone(),
                 backend: resolved_backend.clone(),
+                request_body: request_body_json.clone(),
             };
             let mut resp = execute_handler(State(state.clone()), headers.clone(), Json(exec_req))
                 .await
@@ -21165,9 +21223,13 @@ async fn execute_handler_with_negotiation(
 
     if promote_sse {
         // Adapt ExecuteRequest → StreamExecuteRequest.
+        // §Fase 37.b — carry the request body across the JSON→SSE
+        // content-negotiation promotion so the Request Binding
+        // Contract holds on the promoted transport too.
         let stream_req = StreamExecuteRequest {
             flow_name: payload.flow,
             backend: payload.backend,
+            request_body: payload.request_body,
         };
         return execute_sse_handler(State(state), headers, Json(stream_req))
             .await
@@ -27097,7 +27159,7 @@ async fn execute_warm_handler(
         }
 
         // Execute to warm
-        match server_execute(source, source_file, flow_name, "stub", None) {
+        match server_execute(source, source_file, flow_name, "stub", None, None) {
             Ok(er) => {
                 let mut entry = crate::trace_store::build_trace(&er.flow_name, &er.source_file, &er.backend, &client,
                     if er.success { crate::trace_store::TraceStatus::Success } else { crate::trace_store::TraceStatus::Partial },

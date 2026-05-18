@@ -107,6 +107,10 @@ use tokio::sync::mpsc::UnboundedSender;
 /// - `cancel` — the cancellation flag shared with the SSE handler.
 /// - `tx` — the FlowExecutionEvent mpsc channel the SSE consumer
 ///   reads from.
+/// - `request_body` — §Fase 37.b: the parsed HTTP request body. The
+///   flow's declared parameters bind from its same-named fields (the
+///   Request Binding Contract) and seed `DispatchCtx.let_bindings`
+///   before the flow walk.
 ///
 /// # Cancel safety
 ///
@@ -149,6 +153,15 @@ pub async fn run_streaming_via_dispatcher(
     // the store handlers' runtime capability re-check; `None` defers to
     // the type-checker's compile-time guarantee.
     held_capabilities: Option<Vec<String>>,
+    // §Fase 37.b (D1) — the parsed HTTP request body. The flow's
+    // declared parameters bind from its same-named fields and seed
+    // `DispatchCtx.let_bindings` before the flow walk, so a `${param}`
+    // interpolates in `where:` clauses, step `ask:` prompts, and
+    // `persist`/`mutate` field blocks. `None` for a request with no
+    // body, or for a non-dynamic-route caller (e.g. a `/v1/execute/sse`
+    // direct hit) — the flow then runs with only its own `let` / step
+    // bindings (D5 backwards-compat).
+    request_body: Option<serde_json::Value>,
 ) {
     // Cancel-safety helper — mirrors the legacy path's `emit` closure.
     // Returns `Err(())` when the producer should exit early (cancel
@@ -285,6 +298,21 @@ pub async fn run_streaming_via_dispatcher(
     // §Fase 35.j — thread the request's held capabilities into the
     // dispatcher so the store handlers can re-check gated stores.
     ctx.held_capabilities = held_capabilities;
+
+    // §Fase 37.b (D1, D4) — The Request Binding Contract. Seed the
+    // flow's declared parameters from the parsed request body BEFORE
+    // the flow walk, so `${param}` resolves everywhere downstream — a
+    // `retrieve` / `mutate` / `purge` `where:` clause, a `step` `ask:`
+    // prompt, a `persist` / `mutate` field block. `bind_request_body`
+    // binds ONLY declared parameters (D4): a body field that matches
+    // no parameter is never silently injected. A flow-body `let` that
+    // shadows a parameter name overwrites it later in the walk — the
+    // author's explicit `let` wins, by construction.
+    for (name, value) in
+        crate::request_binding::bind_request_body(&flow, request_body.as_ref())
+    {
+        ctx.let_bindings.insert(name, value);
+    }
 
     // §6 — Walk the flow body. For each top-level IRFlowNode, call
     // dispatch_node and honor the outcome semantics:
@@ -462,6 +490,7 @@ mod tests {
             audit,
             warnings,
             None,
+            None,
         )
         .await;
 
@@ -511,6 +540,7 @@ mod tests {
             enforcement,
             audit,
             warnings,
+            None,
             None,
         )
         .await;
@@ -570,6 +600,7 @@ mod tests {
             audit,
             warnings,
             None,
+            None,
         )
         .await;
 
@@ -609,6 +640,7 @@ mod tests {
             enforcement,
             audit,
             warnings,
+            None,
             None,
         )
         .await;
