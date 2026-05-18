@@ -3199,6 +3199,83 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+
+        // §Fase 37.c (D2) — The Request Binding Contract totality check.
+        //
+        // When the endpoint declares `body: T`, the type-checker
+        // proves every REQUIRED parameter of `execute: F` is covered
+        // by a field of T — by name, type-compatible. An uncovered
+        // required parameter is a compile error: otherwise the flow
+        // reaches production and fails at REQUEST time for a missing
+        // argument (the exact v1.35.0 defect Fase 37 closes). The
+        // failure moves from production to `axon check`. Sibling of
+        // the Fase 35.j Pillar IV endpoint→flow→store-capability check.
+        //
+        // The check runs only when `body: T` resolves to a declared
+        // struct type. A primitive `body:` (or a `body:` naming an
+        // undeclared type) has no fields to cover parameters — the
+        // runtime binding is then untyped/best-effort and outside the
+        // D2 theorem (honest scope). An OPTIONAL parameter need not be
+        // covered. Type-compatibility is exact: same type name + same
+        // generic parameter.
+        if !node.body_type.is_empty() && !node.execute_flow.is_empty() {
+            if let (Some(flow), Some(body)) = (
+                self.find_flow(&node.execute_flow),
+                find_type_by_name(self.program, &node.body_type),
+            ) {
+                for param in &flow.parameters {
+                    if param.type_expr.optional {
+                        continue; // an optional parameter need not bind.
+                    }
+                    match body.fields.iter().find(|f| f.name == param.name) {
+                        None => self.emit(
+                            format!(
+                                "axonendpoint '{}' executes flow '{}' whose \
+                                 required parameter '{}: {}' has no matching \
+                                 field in body type '{}'. The Request Binding \
+                                 Contract binds a flow parameter from the \
+                                 same-named body field — add a field '{}: {}' \
+                                 to '{}', or make the parameter optional \
+                                 (Fase 37 D2).",
+                                node.name,
+                                node.execute_flow,
+                                param.name,
+                                fmt_type_expr(&param.type_expr),
+                                node.body_type,
+                                param.name,
+                                fmt_type_expr(&param.type_expr),
+                                node.body_type,
+                            ),
+                            &node.loc,
+                        ),
+                        Some(field)
+                            if field.type_expr.name != param.type_expr.name
+                                || field.type_expr.generic_param
+                                    != param.type_expr.generic_param =>
+                        {
+                            self.emit(
+                                format!(
+                                    "axonendpoint '{}' executes flow '{}' whose \
+                                     parameter '{}' is '{}', but body type '{}' \
+                                     declares field '{}' as '{}' — the types \
+                                     must match for the Request Binding \
+                                     Contract to bind it (Fase 37 D2).",
+                                    node.name,
+                                    node.execute_flow,
+                                    param.name,
+                                    fmt_type_expr(&param.type_expr),
+                                    node.body_type,
+                                    field.name,
+                                    fmt_type_expr(&field.type_expr),
+                                ),
+                                &node.loc,
+                            );
+                        }
+                        Some(_) => {}
+                    }
+                }
+            }
+        }
     }
 
     /// §Fase 35.j — Resolve a flow declaration by name.
@@ -3968,6 +4045,21 @@ fn find_session_by_name<'a>(program: &'a Program, name: &str) -> Option<&'a Sess
         }
     }
     None
+}
+
+/// §Fase 37.c — Render a `TypeExpr` for a diagnostic message:
+/// `String`, `List<String>`, `String?` (optional marker appended).
+fn fmt_type_expr(t: &TypeExpr) -> String {
+    let mut s = t.name.clone();
+    if !t.generic_param.is_empty() {
+        s.push('<');
+        s.push_str(&t.generic_param);
+        s.push('>');
+    }
+    if t.optional {
+        s.push('?');
+    }
+    s
 }
 
 fn find_type_by_name<'a>(program: &'a Program, name: &str) -> Option<&'a TypeDefinition> {
