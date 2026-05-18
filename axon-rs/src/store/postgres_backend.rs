@@ -240,12 +240,16 @@ fn check_identifier(name: &str, kind: &'static str) -> Result<(), StoreError> {
 // ════════════════════════════════════════════════════════════════════
 
 /// Build a parameterized `SELECT * FROM "table" WHERE …` statement.
+///
+/// §Fase 37.d (D3) — `bindings` resolves `${name}` placeholders in the
+/// `where` expression to `$N` bind parameters (never string-spliced).
 pub fn build_select_sql(
     table: &str,
     where_expr: &str,
+    bindings: &std::collections::HashMap<String, String>,
 ) -> Result<(String, Vec<SqlValue>), StoreError> {
     check_identifier(table, "table")?;
-    let (clause, params) = build_pg_where(where_expr, 0)?;
+    let (clause, params) = build_pg_where(where_expr, 0, bindings)?;
     Ok((format!("SELECT * FROM \"{table}\" WHERE {clause}"), params))
 }
 
@@ -253,9 +257,10 @@ pub fn build_select_sql(
 pub fn build_delete_sql(
     table: &str,
     where_expr: &str,
+    bindings: &std::collections::HashMap<String, String>,
 ) -> Result<(String, Vec<SqlValue>), StoreError> {
     check_identifier(table, "table")?;
-    let (clause, params) = build_pg_where(where_expr, 0)?;
+    let (clause, params) = build_pg_where(where_expr, 0, bindings)?;
     Ok((format!("DELETE FROM \"{table}\" WHERE {clause}"), params))
 }
 
@@ -312,6 +317,7 @@ pub fn build_update_sql(
     table: &str,
     where_expr: &str,
     data: &[(String, SqlValue)],
+    bindings: &std::collections::HashMap<String, String>,
 ) -> Result<(String, Vec<SqlValue>), StoreError> {
     check_identifier(table, "table")?;
     if data.is_empty() {
@@ -336,7 +342,8 @@ pub fn build_update_sql(
 
     // `idx - 1` SET placeholders were emitted; WHERE continues there.
     let set_param_count = idx - 1;
-    let (clause, where_params) = build_pg_where(where_expr, set_param_count)?;
+    let (clause, where_params) =
+        build_pg_where(where_expr, set_param_count, bindings)?;
     params.extend(where_params);
 
     let sql = format!(
@@ -619,8 +626,9 @@ impl PostgresStoreBackend {
         &self,
         table: &str,
         where_expr: &str,
+        bindings: &std::collections::HashMap<String, String>,
     ) -> Result<Vec<StoreRow>, StoreError> {
-        let (sql, params) = build_select_sql(table, where_expr)?;
+        let (sql, params) = build_select_sql(table, where_expr, bindings)?;
         let mut q = sqlx::query(&sql);
         for value in &params {
             q = bind_value(q, value);
@@ -656,8 +664,9 @@ impl PostgresStoreBackend {
         table: &str,
         where_expr: &str,
         data: &[(String, SqlValue)],
+        bindings: &std::collections::HashMap<String, String>,
     ) -> Result<u64, StoreError> {
-        let (sql, params) = build_update_sql(table, where_expr, data)?;
+        let (sql, params) = build_update_sql(table, where_expr, data, bindings)?;
         let mut q = sqlx::query(&sql);
         for value in &params {
             q = bind_value(q, value);
@@ -674,8 +683,9 @@ impl PostgresStoreBackend {
         &self,
         table: &str,
         where_expr: &str,
+        bindings: &std::collections::HashMap<String, String>,
     ) -> Result<u64, StoreError> {
-        let (sql, params) = build_delete_sql(table, where_expr)?;
+        let (sql, params) = build_delete_sql(table, where_expr, bindings)?;
         let mut q = sqlx::query(&sql);
         for value in &params {
             q = bind_value(q, value);
@@ -706,6 +716,13 @@ mod tests {
 
     fn txt(s: &str) -> SqlValue {
         SqlValue::Text(s.to_string())
+    }
+
+    /// Empty bindings — these `build_*_sql` tests pin the pre-37.d
+    /// behaviour (no `${name}` resolution). The §Fase 37.d resolution
+    /// is exercised by `tests/fase37_d_*` and `store::filter`.
+    fn nb() -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
     }
 
     // ── resolve_dsn ──────────────────────────────────────────────────
@@ -810,14 +827,14 @@ mod tests {
 
     #[test]
     fn select_with_filter() {
-        let (sql, params) = build_select_sql("users", "id = 1").unwrap();
+        let (sql, params) = build_select_sql("users", "id = 1", &nb()).unwrap();
         assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"id\" = $1");
         assert_eq!(params, vec![SqlValue::Integer(1)]);
     }
 
     #[test]
     fn select_with_empty_filter_renders_where_true() {
-        let (sql, params) = build_select_sql("users", "").unwrap();
+        let (sql, params) = build_select_sql("users", "", &nb()).unwrap();
         assert_eq!(sql, "SELECT * FROM \"users\" WHERE TRUE");
         assert!(params.is_empty());
     }
@@ -825,7 +842,7 @@ mod tests {
     #[test]
     fn select_rejects_unsafe_table_name() {
         assert!(matches!(
-            build_select_sql("users; DROP TABLE x", ""),
+            build_select_sql("users; DROP TABLE x", "", &nb()),
             Err(StoreError::InvalidIdentifier { kind: "table", .. })
         ));
     }
@@ -833,7 +850,7 @@ mod tests {
     #[test]
     fn select_propagates_filter_errors() {
         assert!(matches!(
-            build_select_sql("users", "id = 1 AND"),
+            build_select_sql("users", "id = 1 AND", &nb()),
             Err(StoreError::Filter(_))
         ));
     }
@@ -842,7 +859,8 @@ mod tests {
 
     #[test]
     fn delete_with_filter() {
-        let (sql, params) = build_delete_sql("sessions", "expired = true").unwrap();
+        let (sql, params) =
+            build_delete_sql("sessions", "expired = true", &nb()).unwrap();
         assert_eq!(sql, "DELETE FROM \"sessions\" WHERE \"expired\" = $1");
         assert_eq!(params, vec![SqlValue::Boolean(true)]);
     }
@@ -850,7 +868,7 @@ mod tests {
     #[test]
     fn delete_rejects_unsafe_table() {
         assert!(matches!(
-            build_delete_sql("evil\"table", "a = 1"),
+            build_delete_sql("evil\"table", "a = 1", &nb()),
             Err(StoreError::InvalidIdentifier { .. })
         ));
     }
@@ -921,6 +939,7 @@ mod tests {
             "users",
             "id = 5",
             &[("name".into(), txt("Bob")), ("age".into(), SqlValue::Integer(40))],
+            &nb(),
         )
         .unwrap();
         assert_eq!(
@@ -942,6 +961,7 @@ mod tests {
             "users",
             "id = 5",
             &[("name".into(), SqlValue::Null), ("age".into(), SqlValue::Integer(40))],
+            &nb(),
         )
         .unwrap();
         assert_eq!(
@@ -954,7 +974,7 @@ mod tests {
     #[test]
     fn update_with_empty_where_targets_all_rows() {
         let (sql, _) =
-            build_update_sql("t", "", &[("a".into(), SqlValue::Integer(1))])
+            build_update_sql("t", "", &[("a".into(), SqlValue::Integer(1))], &nb())
                 .unwrap();
         assert_eq!(sql, "UPDATE \"t\" SET \"a\" = $1 WHERE TRUE");
     }
@@ -962,7 +982,7 @@ mod tests {
     #[test]
     fn update_empty_data_errors() {
         assert_eq!(
-            build_update_sql("t", "id = 1", &[]),
+            build_update_sql("t", "id = 1", &[], &nb()),
             Err(StoreError::EmptyData { op: "mutate" })
         );
     }
@@ -970,7 +990,7 @@ mod tests {
     #[test]
     fn update_rejects_unsafe_column() {
         assert!(matches!(
-            build_update_sql("t", "id = 1", &[("a-b".into(), SqlValue::Integer(1))]),
+            build_update_sql("t", "id = 1", &[("a-b".into(), SqlValue::Integer(1))], &nb()),
             Err(StoreError::InvalidIdentifier { kind: "column", .. })
         ));
     }
@@ -978,7 +998,7 @@ mod tests {
     #[test]
     fn update_propagates_filter_errors() {
         assert!(matches!(
-            build_update_sql("t", "bad ;", &[("a".into(), SqlValue::Integer(1))]),
+            build_update_sql("t", "bad ;", &[("a".into(), SqlValue::Integer(1))], &nb()),
             Err(StoreError::Filter(_))
         ));
     }
@@ -988,7 +1008,8 @@ mod tests {
     #[test]
     fn injection_in_value_position_is_a_bound_parameter() {
         let (sql, params) =
-            build_select_sql("users", "name = '; DROP TABLE users; --'").unwrap();
+            build_select_sql("users", "name = '; DROP TABLE users; --'", &nb())
+                .unwrap();
         assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"name\" = $1");
         assert_eq!(
             params,
@@ -999,7 +1020,7 @@ mod tests {
     #[test]
     fn injection_in_table_identifier_is_rejected_not_quoted() {
         assert!(matches!(
-            build_select_sql("users\" WHERE 1=1; --", ""),
+            build_select_sql("users\" WHERE 1=1; --", "", &nb()),
             Err(StoreError::InvalidIdentifier { .. })
         ));
     }

@@ -58,6 +58,13 @@ impl ExecContext {
         self.vars.get(key).map(|s| s.as_str())
     }
 
+    /// §Fase 37.d (D3) — the full variable map, for resolving `${name}`
+    /// placeholders in a store `where:` clause against the flow context
+    /// (the Request Binding Contract on the synchronous filter path).
+    pub fn vars(&self) -> &HashMap<String, String> {
+        &self.vars
+    }
+
     /// Set the current step context variables.
     pub fn set_step(&mut self, step_name: &str, step_type: &str, step_index: usize) {
         self.vars.insert("step_name".to_string(), step_name.to_string());

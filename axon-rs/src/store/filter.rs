@@ -538,8 +538,35 @@ fn parse_value(tok: &Token) -> Result<SqlValue, FilterError> {
 /// Parse a `where` expression into a [`Filter`] AST. An empty (or
 /// whitespace-only) expression yields an empty filter. Total: every
 /// input yields a `Filter` or a [`FilterError`].
-pub fn parse_filter(expr: &str) -> Result<Filter, FilterError> {
-    let tokens = tokenize(expr)?;
+///
+/// §Fase 37.d (D3) — `bindings` resolves the Request Binding Contract.
+/// The `where` expression is tokenized FIRST (raw), so the boundaries
+/// of every string literal are fixed before any value is substituted;
+/// THEN each `Token::Str`'s content is interpolated (`${name}` /
+/// `$name`) against `bindings`. A request-bound value therefore lives
+/// only inside an already-delimited string token — it is rendered as a
+/// `$N` bind placeholder by [`build_pg_where`], never spliced into the
+/// `where` source. A value carrying a `'`, `;`, `--`, or `OR 1=1`
+/// cannot move a literal boundary or inject filter syntax: injection
+/// is closed by construction. An empty `bindings` map leaves every
+/// `${name}` literal (the pre-37.d behaviour — backwards-compatible).
+pub fn parse_filter(
+    expr: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Result<Filter, FilterError> {
+    let raw_tokens = tokenize(expr)?;
+    // §Fase 37.d (D3) — resolve `${name}` ONLY inside already-tokenized
+    // string literals; the value can never escape the `Token::Str` it
+    // sits in.
+    let tokens: Vec<Token> = raw_tokens
+        .into_iter()
+        .map(|t| match t {
+            Token::Str(s) => Token::Str(
+                crate::exec_context::interpolate_vars(&s, bindings),
+            ),
+            other => other,
+        })
+        .collect();
     let mut filter = Filter::default();
     let mut i = 0;
     let n = tokens.len();
@@ -653,12 +680,13 @@ pub fn parse_filter(expr: &str) -> Result<Filter, FilterError> {
 pub fn build_pg_where(
     expr: &str,
     param_offset: usize,
+    bindings: &std::collections::HashMap<String, String>,
 ) -> Result<(String, Vec<SqlValue>), FilterError> {
     if expr.trim().is_empty() {
         return Ok(("TRUE".to_string(), Vec::new()));
     }
 
-    let filter = parse_filter(expr)?;
+    let filter = parse_filter(expr, bindings)?;
     if filter.is_empty() {
         return Ok(("TRUE".to_string(), Vec::new()));
     }
@@ -708,12 +736,19 @@ pub fn build_pg_where(
 mod tests {
     use super::*;
 
+    /// Empty bindings — the pre-37.d filter behaviour (no `${name}`
+    /// resolution). The §Fase 37.d resolution is exercised by the
+    /// dedicated `bound` helpers below + `tests/fase37_d_*`.
+    fn nb() -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
+    }
+
     fn ok(expr: &str) -> (String, Vec<SqlValue>) {
-        build_pg_where(expr, 0).expect("expected the filter to compile")
+        build_pg_where(expr, 0, &nb()).expect("expected the filter to compile")
     }
 
     fn err(expr: &str) -> FilterError {
-        build_pg_where(expr, 0).expect_err("expected a compile error")
+        build_pg_where(expr, 0, &nb()).expect_err("expected a compile error")
     }
 
     // ── Empty ────────────────────────────────────────────────────────
@@ -866,13 +901,13 @@ mod tests {
 
     #[test]
     fn param_offset_shifts_placeholder_numbering() {
-        let (clause, _) = build_pg_where("id = 1", 2).unwrap();
+        let (clause, _) = build_pg_where("id = 1", 2, &nb()).unwrap();
         assert_eq!(clause, "\"id\" = $3");
     }
 
     #[test]
     fn param_offset_shifts_every_placeholder() {
-        let (clause, _) = build_pg_where("a = 1 AND b = 2", 5).unwrap();
+        let (clause, _) = build_pg_where("a = 1 AND b = 2", 5, &nb()).unwrap();
         assert_eq!(clause, "\"a\" = $6 AND \"b\" = $7");
     }
 
@@ -1051,14 +1086,14 @@ mod tests {
     #[test]
     fn column_at_the_length_limit_compiles() {
         let col = "c".repeat(MAX_COLUMN_LEN);
-        assert!(build_pg_where(&format!("{col} = 1"), 0).is_ok());
+        assert!(build_pg_where(&format!("{col} = 1"), 0, &nb()).is_ok());
     }
 
     #[test]
     fn column_over_the_length_limit_errors() {
         let col = "c".repeat(MAX_COLUMN_LEN + 1);
         assert!(matches!(
-            build_pg_where(&format!("{col} = 1"), 0),
+            build_pg_where(&format!("{col} = 1"), 0, &nb()),
             Err(FilterError::ColumnTooLong { .. })
         ));
     }
@@ -1069,7 +1104,7 @@ mod tests {
             .map(|i| format!("c{i} = {i}"))
             .collect::<Vec<_>>()
             .join(" AND ");
-        let (_, params) = build_pg_where(&expr, 0).unwrap();
+        let (_, params) = build_pg_where(&expr, 0, &nb()).unwrap();
         assert_eq!(params.len(), MAX_CONDITIONS);
     }
 
@@ -1080,7 +1115,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" AND ");
         assert!(matches!(
-            build_pg_where(&expr, 0),
+            build_pg_where(&expr, 0, &nb()),
             Err(FilterError::TooManyConditions { .. })
         ));
     }
@@ -1089,7 +1124,7 @@ mod tests {
 
     #[test]
     fn parse_filter_exposes_the_typed_ast() {
-        let filter = parse_filter("id = 1 AND name LIKE 'A%'").unwrap();
+        let filter = parse_filter("id = 1 AND name LIKE 'A%'", &nb()).unwrap();
         assert_eq!(filter.conditions.len(), 2);
         assert_eq!(filter.connectors, vec![Connector::And]);
         assert_eq!(
@@ -1110,16 +1145,16 @@ mod tests {
     #[test]
     fn parse_filter_invariant_connectors_plus_one_equals_conditions() {
         for expr in ["a = 1", "a = 1 AND b = 2", "a = 1 OR b = 2 AND c = 3"] {
-            let f = parse_filter(expr).unwrap();
+            let f = parse_filter(expr, &nb()).unwrap();
             assert_eq!(f.connectors.len() + 1, f.conditions.len());
         }
     }
 
     #[test]
     fn empty_filter_is_empty() {
-        assert!(parse_filter("").unwrap().is_empty());
-        assert!(parse_filter("  ").unwrap().is_empty());
-        assert!(!parse_filter("a = 1").unwrap().is_empty());
+        assert!(parse_filter("", &nb()).unwrap().is_empty());
+        assert!(parse_filter("  ", &nb()).unwrap().is_empty());
+        assert!(!parse_filter("a = 1", &nb()).unwrap().is_empty());
     }
 
     // ── is_safe_identifier ───────────────────────────────────────────

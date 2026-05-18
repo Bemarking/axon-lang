@@ -179,9 +179,12 @@ pub async fn stream_retrieve(
     policy: BackpressurePolicy,
     max_rows: usize,
     cancel: &CancellationFlag,
+    // §Fase 37.d (D3) — resolves `${name}` in `where_expr` to `$N`
+    // bind parameters (the Request Binding Contract on the filter path).
+    bindings: &std::collections::HashMap<String, String>,
 ) -> Result<RowStreamOutcome, StoreError> {
     let (sql, params): (String, Vec<SqlValue>) =
-        build_select_sql(table, where_expr)?;
+        build_select_sql(table, where_expr, bindings)?;
 
     let mut query = sqlx::query(&sql);
     for value in &params {
