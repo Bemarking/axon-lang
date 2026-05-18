@@ -487,10 +487,12 @@ mod tests {
         assert_eq!(complete_count, 1, "exactly 1 FlowComplete");
     }
 
-    /// Compilation error → FlowError + FlowComplete{success=false}
-    /// + no StepToken events.
+    /// §Fase 36.x.c (D1) — a compilation error emits EXACTLY ONE
+    /// terminator: `FlowError`, no StepToken events, and NO redundant
+    /// post-error `FlowComplete`. A stream that ends twice is a lie
+    /// about where it ended.
     #[tokio::test]
-    async fn compilation_error_emits_flow_error_and_completes() {
+    async fn compilation_error_emits_exactly_one_flow_error() {
         let src = "not valid axon source ::: <<< broken";
         let (tx, mut rx) = mpsc::unbounded_channel();
         let cancel = CancellationFlag::new();
@@ -526,19 +528,24 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, FlowExecutionEvent::StepToken { .. }))
             .count();
-        let complete_success: Vec<bool> = events
+        let complete_count = events
             .iter()
-            .filter_map(|e| match e {
-                FlowExecutionEvent::FlowComplete { success, .. } => Some(*success),
-                _ => None,
-            })
-            .collect();
-        assert!(error_count >= 1, "compilation error emits FlowError");
+            .filter(|e| matches!(e, FlowExecutionEvent::FlowComplete { .. }))
+            .count();
+        assert_eq!(error_count, 1, "compilation error emits exactly one FlowError");
         assert_eq!(token_count, 0, "no tokens on compilation failure");
-        assert_eq!(complete_success, vec![false], "FlowComplete success=false");
+        assert_eq!(
+            complete_count, 0,
+            "no FlowComplete after a FlowError — exactly one terminator (36.x.c/D1)"
+        );
+        assert!(
+            matches!(events.last(), Some(FlowExecutionEvent::FlowError { .. })),
+            "the FlowError is the final event — nothing follows the terminator"
+        );
     }
 
-    /// Missing flow name → FlowError + FlowComplete{success=false}.
+    /// §Fase 36.x.c (D1) — a missing flow name emits a single
+    /// structured `FlowError` terminator, no `FlowComplete`.
     #[tokio::test]
     async fn missing_flow_name_emits_flow_error() {
         let src = "flow Chat() -> Unit {\n\
