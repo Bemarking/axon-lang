@@ -142,8 +142,14 @@ async fn d2_drop_oldest_activates_with_canonical_summary_shape() {
     let complete = parse_complete(&body);
     let summary = complete["enforcement_summary"]["Generate"].as_object().unwrap();
     assert_eq!(summary["policy_slug"], "drop_oldest");
-    assert_eq!(summary["chunks_pushed"].as_u64(), Some(1));
-    assert_eq!(summary["chunks_delivered"].as_u64(), Some(1));
+    // §Fase 36.x.e.2 — `apply: tk` routes through the streaming-tool
+    // path (Fase 36.i wired the tool registry); the stub stream emits
+    // more than one chunk, so the canonical shape is asserted
+    // robustly: ≥1 chunk produced, and every chunk delivered (no
+    // backpressure fires under the fast test consumer).
+    let pushed = summary["chunks_pushed"].as_u64().unwrap_or(0);
+    assert!(pushed >= 1, "36.x.e.2: the streaming tool produced chunks");
+    assert_eq!(summary["chunks_delivered"].as_u64(), Some(pushed));
     assert_eq!(summary["drop_oldest_hits"].as_u64(), Some(0));
     assert_eq!(summary["failed"], false);
 }
@@ -156,8 +162,14 @@ async fn d2_degrade_quality_activates_with_canonical_summary_shape() {
     let complete = parse_complete(&body);
     let summary = complete["enforcement_summary"]["Generate"].as_object().unwrap();
     assert_eq!(summary["policy_slug"], "degrade_quality");
-    assert_eq!(summary["chunks_pushed"].as_u64(), Some(1));
-    assert_eq!(summary["chunks_delivered"].as_u64(), Some(1));
+    // §Fase 36.x.e.2 — `apply: tk` routes through the streaming-tool
+    // path (Fase 36.i wired the tool registry); the stub stream emits
+    // more than one chunk, so the canonical shape is asserted
+    // robustly: ≥1 chunk produced, and every chunk delivered (no
+    // backpressure fires under the fast test consumer).
+    let pushed = summary["chunks_pushed"].as_u64().unwrap_or(0);
+    assert!(pushed >= 1, "36.x.e.2: the streaming tool produced chunks");
+    assert_eq!(summary["chunks_delivered"].as_u64(), Some(pushed));
     assert_eq!(summary["failed"], false);
 }
 
@@ -169,8 +181,14 @@ async fn d2_pause_upstream_activates_with_canonical_summary_shape() {
     let complete = parse_complete(&body);
     let summary = complete["enforcement_summary"]["Generate"].as_object().unwrap();
     assert_eq!(summary["policy_slug"], "pause_upstream");
-    assert_eq!(summary["chunks_pushed"].as_u64(), Some(1));
-    assert_eq!(summary["chunks_delivered"].as_u64(), Some(1));
+    // §Fase 36.x.e.2 — `apply: tk` routes through the streaming-tool
+    // path (Fase 36.i wired the tool registry); the stub stream emits
+    // more than one chunk, so the canonical shape is asserted
+    // robustly: ≥1 chunk produced, and every chunk delivered (no
+    // backpressure fires under the fast test consumer).
+    let pushed = summary["chunks_pushed"].as_u64().unwrap_or(0);
+    assert!(pushed >= 1, "36.x.e.2: the streaming tool produced chunks");
+    assert_eq!(summary["chunks_delivered"].as_u64(), Some(pushed));
     assert_eq!(summary["pause_upstream_blocks"].as_u64(), Some(0));
     assert_eq!(summary["failed"], false);
 }
@@ -183,8 +201,14 @@ async fn d2_fail_activates_with_canonical_summary_shape() {
     let complete = parse_complete(&body);
     let summary = complete["enforcement_summary"]["Generate"].as_object().unwrap();
     assert_eq!(summary["policy_slug"], "fail");
-    assert_eq!(summary["chunks_pushed"].as_u64(), Some(1));
-    assert_eq!(summary["chunks_delivered"].as_u64(), Some(1));
+    // §Fase 36.x.e.2 — `apply: tk` routes through the streaming-tool
+    // path (Fase 36.i wired the tool registry); the stub stream emits
+    // more than one chunk, so the canonical shape is asserted
+    // robustly: ≥1 chunk produced, and every chunk delivered (no
+    // backpressure fires under the fast test consumer).
+    let pushed = summary["chunks_pushed"].as_u64().unwrap_or(0);
+    assert!(pushed >= 1, "36.x.e.2: the streaming tool produced chunks");
+    assert_eq!(summary["chunks_delivered"].as_u64(), Some(pushed));
     assert_eq!(summary["fail_overflows"].as_u64(), Some(0));
     assert_eq!(summary["failed"], false);
 }
