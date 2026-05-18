@@ -18959,11 +18959,12 @@ fn execute_server_flow_accepts_api_key_override() {
     let ir = IRProgram::new();
 
     // Calling with None (env fallback) — stub doesn't need a key
-    let result = execute_server_flow(&ir, "nonexistent", "stub", "test.axon", None);
-    assert!(result.is_err()); // flow not found, but the function accepted the 5th arg
+    let result = execute_server_flow(&ir, "nonexistent", "stub", "test.axon", None, None);
+    assert!(result.is_err()); // flow not found, but the function accepted the args
 
     // Calling with Some (server registry key) — stub ignores it
-    let result2 = execute_server_flow(&ir, "nonexistent", "stub", "test.axon", Some("sk-test-123"));
+    let result2 =
+        execute_server_flow(&ir, "nonexistent", "stub", "test.axon", Some("sk-test-123"), None);
     assert!(result2.is_err()); // flow not found, but key override was accepted
 }
 

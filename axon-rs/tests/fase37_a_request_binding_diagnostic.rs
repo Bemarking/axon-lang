@@ -17,9 +17,10 @@
 //!     `flow_name + backend` only, on BOTH transports, and nothing
 //!     seeds `DispatchCtx.let_bindings` from `IRFlow.parameters`. A
 //!     `${param}` therefore interpolates to the literal.
-//!     §1 pins it; §2 is the positive control (a `let` binding DOES
+//!     §1 pinned it; §2 is the positive control (a `let` binding DOES
 //!     interpolate — so the defect is body-params specifically, not a
-//!     broken harness). 37.b/D1 inverts §1.
+//!     broken harness). §Fase 37.b/D1 SHIPPED — §1 was inverted in
+//!     place and is now a green regression guard for the contract.
 //!
 //!   FINDING B — an errored streaming flow emits a hollow terminator.
 //!     `FlowExecutionEvent::FlowError` carries an `error` string and
@@ -88,14 +89,15 @@ async fn hit_sse(app: &axum::Router, path: &str, body: &str) -> String {
 // ── §1 — FINDING A: the request body never reaches the flow ─────────
 
 /// A parameterised flow behind an `axonendpoint body: T`, hit with a
-/// well-formed body carrying the parameter value. The body value does
-/// NOT reach the flow — `${message}` (a declared flow parameter)
-/// interpolates to the LITERAL because nothing binds the request body
-/// to `DispatchCtx.let_bindings`.
+/// well-formed body carrying the parameter value. The body value
+/// reaches the flow — `${message}` (a declared flow parameter) binds
+/// from the body field `message` and interpolates.
 ///
-/// §Fase 37.b (D1) inverts this: the body value WILL reach the flow.
+/// §Fase 37.b (D1) SHIPPED — this assertion was inverted in place:
+/// it pinned the v1.35.0 broken state (body discarded) and is now a
+/// green regression guard for the Request Binding Contract.
 #[tokio::test]
-async fn s1_request_body_value_does_not_reach_the_flow() {
+async fn s1_request_body_value_reaches_the_flow() {
     let app = build_router(server_cfg());
     // `Echo` is a `stub_stream` tool — `StubStreamingTool` echoes its
     // argument verbatim, so the interpolated `ask` is observable on
@@ -118,20 +120,18 @@ async fn s1_request_body_value_does_not_reach_the_flow() {
     )
     .await;
 
-    // ── BROKEN STATE (v1.35.0) ─────────────────────────────────────
+    // ── §Fase 37.b SHIPPED — the Request Binding Contract ──────────
     assert!(
-        !wire.contains("SENTINEL_BODY_VALUE_37A"),
-        "§37.a FINDING A — the request body value reached the flow, \
-         but v1.35.0 has no request-body → flow-parameter binding. If \
-         this fails, 37.b already shipped — invert this assertion. \
-         Wire:\n{wire}"
+        wire.contains("SENTINEL_BODY_VALUE_37A"),
+        "§37.b D1 — the request body value MUST reach the flow: \
+         `${{message}}` is a declared parameter of `EchoFlow`, bound \
+         by name from the body field `message` and seeded into \
+         `DispatchCtx.let_bindings` before the flow walk. Wire:\n{wire}"
     );
     assert!(
-        wire.contains("${message}"),
-        "§37.a FINDING A — the flow parameter `${{message}}` must \
-         survive UN-interpolated to the wire (v1.35.0: `let_bindings` \
-         is empty, the request body is discarded, `interpolate_vars` \
-         leaves an unknown var literal). Wire:\n{wire}"
+        !wire.contains("${message}"),
+        "§37.b D1 — the literal `${{message}}` must NOT survive to the \
+         wire — it interpolated to the bound body value. Wire:\n{wire}"
     );
 }
 

@@ -131,6 +131,7 @@ async fn run_shape(
         Arc::new(Mutex::new(Vec::new())),
         Arc::new(Mutex::new(Vec::new())),
         None,
+        None,
     )
     .await;
     let mut events = Vec::new();
