@@ -137,6 +137,18 @@ pub async fn run_step(
     step: &IRStep,
     ctx: &mut DispatchCtx,
 ) -> Result<NodeOutcome, DispatchError> {
+    // §Fase 36.x.e (D4) — interpolate `${name}` / `$name` in the
+    // step's `ask` against the flow bindings BEFORE it becomes the
+    // prompt (legacy LLM path) or the tool argument (streaming-tool
+    // path). A `retrieve … as: alias` binds `alias`, a `let` binds
+    // its target, and a prior `step`'s output is bound under the step
+    // name (see `run_pure_shape` / `run_step_streaming_tool`). So the
+    // agent pattern's data threads — retrieve context → deliberate →
+    // persist — on the streaming dispatcher path, matching the
+    // synchronous path's interpolation contract (Fase 35.q).
+    let prompt =
+        crate::exec_context::interpolate_vars(&step.ask, &ctx.let_bindings);
+
     // §Fase 34.d — Streaming-tool branch. When the step's
     // `apply_ref` resolves to a tool flagged `is_streaming` in the
     // attached registry, bypass the LLM upstream entirely + invoke
@@ -155,7 +167,7 @@ pub async fn run_step(
         if let Some(registry) = ctx.tool_registry.clone() {
             if let Some(entry) = registry.get(&step.apply_ref) {
                 if entry.is_streaming {
-                    return run_step_streaming_tool(step, entry.clone(), ctx).await;
+                    return run_step_streaming_tool(step, entry.clone(), &prompt, ctx).await;
                 }
             }
         }
@@ -168,7 +180,7 @@ pub async fn run_step(
         } else {
             step.name.clone()
         },
-        user_prompt: step.ask.clone(),
+        user_prompt: prompt,
         framing_addendum: None,
         kind_slug: "step",
         tools,
@@ -222,6 +234,10 @@ pub async fn run_step(
 async fn run_step_streaming_tool(
     step: &IRStep,
     entry: crate::tool_registry::ToolEntry,
+    // §Fase 36.x.e (D4) — the step's `ask` already interpolated by
+    // `run_step` against `ctx.let_bindings`. Used as the tool's
+    // streaming argument so a `${retrieve_alias}` reaches the tool.
+    prompt: &str,
     ctx: &mut DispatchCtx,
 ) -> Result<NodeOutcome, DispatchError> {
     // §Fase 34.g convergence — the per-chunk drain loop now lives
@@ -291,7 +307,10 @@ async fn run_step_streaming_tool(
     //    granularity (real enforcement, not just slug-capture-in-
     //    audit) + returns a typed summary the caller uses to
     //    populate the audit row + decide the outcome.
-    let source = tool.stream(step.ask.clone(), tool_ctx).await;
+    // §Fase 36.x.e (D4) — the interpolated `prompt` is the tool
+    // argument (not the raw `step.ask`), so a `${retrieve_alias}`
+    // resolved upstream reaches the streaming tool.
+    let source = tool.stream(prompt.to_string(), tool_ctx).await;
     let summary = crate::flow_dispatcher::unified_stream::unified_stream_handler(
         source,
         policy,
@@ -368,6 +387,13 @@ async fn run_step_streaming_tool(
             message,
         });
     }
+
+    // §Fase 36.x.e (D4) — bind the tool's accumulated output under
+    // the step name so a downstream `persist` / `step` can reference
+    // it (`${StepName}`). Only on the success path — an
+    // error-terminated step (handled above) has no output to thread.
+    ctx.let_bindings
+        .insert(step_name.clone(), summary.accumulated.clone());
 
     Ok(NodeOutcome::Completed {
         output: summary.accumulated,
@@ -719,6 +745,14 @@ pub async fn run_pure_shape(
         let mut guard = ctx.step_audit_records.lock().await;
         guard.push(record);
     }
+
+    // §Fase 36.x.e (D4) — bind the step's output under its name so a
+    // downstream `persist` / `step` / interpolation site can
+    // reference it (`${StepName}`). The streaming dispatcher path
+    // threads a step's output through `ctx.let_bindings` exactly as a
+    // `retrieve … as: alias` threads a retrieved value.
+    ctx.let_bindings
+        .insert(shape.name.clone(), accumulated.clone());
 
     Ok(NodeOutcome::Completed {
         output: accumulated,
