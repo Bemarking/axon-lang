@@ -71,15 +71,24 @@ use futures::stream;
 ///
 /// | Provider | Impl | Behavior |
 /// |---|---|---|
+/// | _(empty)_ | [`StubStreamingTool`] | §Fase 36.x.e — an unspecified `provider:` resolves to the deterministic stub stream |
 /// | `stub` | [`StubStreamingTool`] | Deterministic 3-chunk stream |
 /// | `stub_stream` | [`StubStreamingTool`] | Alias for adopter clarity |
 /// | `native` | [`NativeWrappedTool`] | Wraps `tool_executor::dispatch` as 1-chunk |
 /// | `http` | [`crate::http_tool::HttpStreamingTool`] | Async reqwest + framing-aware drain (Fase 34.e) |
 /// | `mcp` | [`crate::emcp::McpStreamingTool`] | JSON-RPC 2.0 + notifications stream (Fase 34.f) |
 /// | _other_ | [`SyncFallbackTool`] | Synchronous fallback (unknown provider) |
+///
+/// §Fase 36.x.e — a `tool` declaring `effects: <stream:…>` but NO
+/// `provider:` is under-specified, not erroneous: it resolves to the
+/// deterministic stub stream (no external dependency) so the flow
+/// runs gracefully — the adopter adds a concrete `provider:` when
+/// ready. An unspecified streaming provider that hard-errored the
+/// flow (via the `SyncFallbackTool` `_other_` arm) was the masked
+/// regression the Fase 36.x.c terminator fix surfaced.
 pub fn resolve_streaming_tool(entry: &ToolEntry) -> Box<dyn Tool> {
-    match entry.provider.as_str() {
-        "stub" | "stub_stream" => {
+    match entry.provider.trim() {
+        "" | "stub" | "stub_stream" => {
             Box::new(StubStreamingTool::new(entry.name.clone()))
         }
         "native" => {
