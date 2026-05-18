@@ -23,20 +23,21 @@
 2. [Your first axonendpoint REST route](#your-first-axonendpoint-rest-route)
 3. [The axonendpoint declaration — every field](#the-axonendpoint-declaration--every-field)
 4. [Body schema validation (`body: T`, D4)](#body-schema-validation-body-t-d4)
-5. [Output schema validation (`output: T`, D5)](#output-schema-validation-output-t-d5)
-6. [Per-endpoint transport on dynamic routes (D6)](#per-endpoint-transport-on-dynamic-routes-d6)
-7. [Idempotency-Key — Stripe-compatible retries (D7)](#idempotency-key--stripe-compatible-retries-d7)
-8. [Auth scope — `requires:` field (D8)](#auth-scope--requires-field-d8)
-9. [Replay-token binding — regulator-grade audit (D9)](#replay-token-binding--regulator-grade-audit-d9)
-10. [Multi-endpoint deployment + path collision diagnostics (D2)](#multi-endpoint-deployment--path-collision-diagnostics-d2)
-11. [EventSource on arbitrary paths](#eventsource-on-arbitrary-paths)
-12. [Vertical cookbook — banking, government, legal, medicine](#vertical-cookbook--banking-government-legal-medicine)
-13. [Backwards compatibility — `/v1/execute` preserved (D10)](#backwards-compatibility--v1execute-preserved-d10)
-14. [Production deployment checklist](#production-deployment-checklist)
-15. [Troubleshooting](#troubleshooting)
-16. [Cross-stack contract: Python ↔ Rust (D11)](#cross-stack-contract-python--rust-d11)
-17. [Four-pillar trace](#four-pillar-trace)
-18. [Where to file bugs](#where-to-file-bugs)
+5. [The Request Binding Contract (v1.36.0)](#the-request-binding-contract-v1360)
+6. [Output schema validation (`output: T`, D5)](#output-schema-validation-output-t-d5)
+7. [Per-endpoint transport on dynamic routes (D6)](#per-endpoint-transport-on-dynamic-routes-d6)
+8. [Idempotency-Key — Stripe-compatible retries (D7)](#idempotency-key--stripe-compatible-retries-d7)
+9. [Auth scope — `requires:` field (D8)](#auth-scope--requires-field-d8)
+10. [Replay-token binding — regulator-grade audit (D9)](#replay-token-binding--regulator-grade-audit-d9)
+11. [Multi-endpoint deployment + path collision diagnostics (D2)](#multi-endpoint-deployment--path-collision-diagnostics-d2)
+12. [EventSource on arbitrary paths](#eventsource-on-arbitrary-paths)
+13. [Vertical cookbook — banking, government, legal, medicine](#vertical-cookbook--banking-government-legal-medicine)
+14. [Backwards compatibility — `/v1/execute` preserved (D10)](#backwards-compatibility--v1execute-preserved-d10)
+15. [Production deployment checklist](#production-deployment-checklist)
+16. [Troubleshooting](#troubleshooting)
+17. [Cross-stack contract: Python ↔ Rust (D11)](#cross-stack-contract-python--rust-d11)
+18. [Four-pillar trace](#four-pillar-trace)
+19. [Where to file bugs](#where-to-file-bugs)
 
 ---
 
@@ -211,6 +212,95 @@ Strict-mode rejection is a future opt-in.
 **D9 backwards-compat:** omit `body:` and the endpoint accepts free-
 form JSON. Existing v1.22.x axonendpoints without `body:` declarations
 keep current behavior.
+
+---
+
+## The Request Binding Contract (v1.36.0)
+
+Schema validation (above) checks that a request body *matches* `T`.
+The **Request Binding Contract** is the next step: the body's fields
+**populate the parameters of the flow** the endpoint executes.
+
+An AI agent is a function of its input. The canonical agent flow —
+retrieve context → deliberate → persist — is *parametric*: it takes a
+`message`, a `session_id`, a `tenant_id`. Those parameters arrive in
+the request body. v1.36.0 makes the binding from one to the other a
+**typed, compile-time-proven, runtime-delivered contract**.
+
+```axon
+type ChatRequest {
+    message:    String
+    session_id: String
+    tenant_id:  String
+}
+
+axonstore mem { backend: in_memory }
+
+flow ChatFlow(message: String, session_id: String, tenant_id: String) -> Unit {
+    retrieve mem { where: "tenant_id" as: history }
+    step Deliberate {
+        ask: "Tenant ${tenant_id}, session ${session_id}: ${message}"
+        output: Stream<Token>
+    }
+    persist into mem { session: "${session_id}" reply: "${Deliberate}" }
+}
+
+axonendpoint Chat {
+    method:  POST
+    path:    "/api/chat"
+    body:    ChatRequest
+    execute: ChatFlow
+    transport: sse
+}
+```
+
+`POST /api/chat` with `{"message": "…", "session_id": "…",
+"tenant_id": "…"}` binds each field to the same-named flow parameter.
+`${tenant_id}`, `${session_id}`, `${message}` then interpolate
+everywhere downstream — `where:` clauses, step `ask:` prompts,
+`persist`/`mutate` field blocks.
+
+### What the contract guarantees
+
+- **Binding by name (D1).** A body field binds to the flow parameter
+  of the *same name*. The runtime delivers it identically on the
+  `transport: sse` and `transport: json` routes.
+
+- **Compile-time totality (D2).** The type-checker proves *every*
+  required parameter of `execute: F` is covered by a same-named,
+  type-compatible field of `body: T`. An uncovered required parameter
+  is a **compile error** at `axon check` and `POST /v1/deploy` — not
+  a runtime surprise:
+
+  ```
+  error: axonendpoint 'Chat' executes flow 'ChatFlow' whose required
+  parameter 'tenant_id: String' has no matching field in body type
+  'ChatRequest' …
+  ```
+
+  This is what no mainstream framework offers — FastAPI, Spring
+  `@RequestBody`, NestJS DTOs all discover a missing field at runtime
+  (a `KeyError`, an `undefined`). AXON proves the binding total
+  *before the endpoint can deploy*. An optional parameter
+  (`note: String?`) is exempt — it need not be covered.
+
+- **Untrusted by birth (D3).** A value that crossed the network
+  boundary is `Untrusted`. Where a `${param}` reaches a store `where:`
+  clause it is compiled to a **`$N` bind parameter** — never spliced
+  into the filter source. A value carrying `'`, `;`, `--`, or
+  `OR '1'='1'` cannot inject: it is data, bound out-of-band. OWASP A03
+  is closed by construction, not by developer discipline.
+
+- **Only declared parameters bind (D4).** A body field that matches no
+  declared flow parameter is *not* injected into the interpolation
+  scope — so a typo'd `${tenat_id}` is a missing binding the totality
+  check catches, never a silently-empty surprise.
+
+### Backwards compatibility
+
+A flow with no parameters behind an endpoint with no `body:` is
+unchanged. `/v1/execute` is unchanged. The binding is purely additive
+(D5). Full upgrade detail: `docs/MIGRATION_v1.36.md`.
 
 ---
 
