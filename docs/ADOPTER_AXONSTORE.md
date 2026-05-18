@@ -35,6 +35,7 @@
 13. [Production checklist](#13-production-checklist)
 14. [Troubleshooting](#14-troubleshooting)
 15. [Where to file bugs](#15-where-to-file-bugs)
+16. [Streaming the agent pattern (v1.35.0)](#16-streaming-the-agent-pattern-v1350)
 
 ---
 
@@ -514,3 +515,88 @@ silently omitted:
 Open an issue at the axon-lang repository. Include the `axonstore`
 declaration, the failing flow step, and the exact error — every
 `axonstore` failure surfaces as a typed, named error.
+
+---
+
+## 16. Streaming the agent pattern (v1.35.0)
+
+> Introduced in **v1.35.0** (Fase 36.x — *Mixed-Flow Streaming
+> Integrity*). A real AI agent is not a single LLM call — it is a
+> SHAPE: **retrieve context → deliberate → persist the result**. In
+> axon that is a flow which mixes `axonstore` operations with a
+> `step`. v1.35.0 makes that shape a first-class, verified,
+> locally-runnable streaming primitive.
+
+### 16.1 The canonical agent flow
+
+```axon
+axonstore mem { backend: in_memory }
+
+flow ChatFlow() -> Unit {
+    retrieve mem { where: "kind = 'history'" as: history }
+    step Deliberate { ask: "Given ${history}, answer the user"
+                      output: Stream<Token> }
+    persist into mem { kind: "reply" content: "${Deliberate}" }
+}
+
+axonendpoint Chat {
+    method:    POST
+    path:      "/api/chat"
+    execute:   ChatFlow
+    backend:   stub          # a real provider in production (Fase 36)
+    transport: sse
+}
+```
+
+Deploy it, `POST /api/chat` with `Accept: text/event-stream`, and the
+endpoint streams the deliberation token-by-token — the `retrieve` and
+`persist` execute as real steps around it.
+
+### 16.2 `backend: in_memory` — runnable with zero infrastructure
+
+Before v1.35.0 a source-declared `axonstore` had to name `postgresql`
+— so the agent flow above could not run, or be tested, without a live
+database. v1.35.0 makes **`in_memory` a first-class declarable
+backend**: `axonstore mem { backend: in_memory }` type-checks and
+resolves to the in-process key-value path. `connection:` is optional
+for it. Develop and test the whole agent shape on a laptop; swap in
+`backend: postgresql` for production persistence with zero flow
+changes.
+
+### 16.3 The data threads — `${interpolation}`
+
+The agent pattern is a data pipeline, and the data flows through the
+flow's bindings:
+
+- a `retrieve … as: history` binds `history`;
+- a `step`'s `ask:` interpolates `${history}` (and `$history`) from
+  those bindings before it becomes the prompt;
+- a `step`'s output is bound under the **step name** — `${Deliberate}`
+  above resolves to what `step Deliberate` produced;
+- a `persist` field block interpolates `${…}` the same way.
+
+Interpolation is identical on the streaming dispatcher path and the
+synchronous path — an unknown `${name}` is left literal, never an
+error.
+
+### 16.4 The wire contract — exactly one terminator
+
+Every streaming response ends with **exactly one terminator**:
+
+- `event: axon.complete` — the flow ran to its end;
+- `event: axon.error` — a step (or a store op) failed.
+
+Never both, never neither. A store operation that fails mid-flow ends
+the stream with a single `axon.error`; it never emits a trailing,
+contradictory `axon.complete`. The `retrieve` / `persist` steps
+execute but add no wire frames of their own — a mixed flow's SSE
+event vocabulary is identical to a pure-step flow's (`axon.token` +
+the one terminator), so existing SSE clients are unaffected.
+
+### 16.5 Honest failure
+
+If a store cannot resolve — a `postgresql` store whose
+`connection:` env var is unset, or a backend with no runtime
+implementation — the flow fails with a structured `axon.error`
+naming the cause. It never silently degrades to an empty result.
+`in_memory` has no external dependency and never fails to resolve.
