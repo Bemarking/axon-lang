@@ -223,8 +223,8 @@ async fn s2_disjunct_b_apply_syntax_with_stream_effect_emits_openai_baseline() {
     eprintln!(
         "§2 disjunct (b) anchor (apply: stream-tool + stub baseline):\n\
          Content-Type: {ct}\n\
-         openai content-delta count = {content_chunks} (expected 1 — stub emits 1 chunk; \
-         tool body NOT invoked as stream; this is the 34.d gap)\n\
+         openai content-delta count = {content_chunks} (expected >1 — POST-34.d / \
+         36.i the streaming tool body IS invoked as a stream)\n\
          has role marker = {has_role_marker} (expected true — Q1 openai dialect)\n\
          has [DONE] sentinel = {has_done} (expected true — openai terminator)\n\
          axon.token count = {axon_tokens} (expected 0 — Q1 openai dialect; \
@@ -235,15 +235,17 @@ async fn s2_disjunct_b_apply_syntax_with_stream_effect_emits_openai_baseline() {
         body.chars().take(800).collect::<String>()
     );
 
-    // PRE-34 baseline: exactly 1 content-delta chunk (the tool body
-    // runs synchronously; only the LLM-upstream materialized result
-    // reaches the wire). POST-34: this should be > 1 when the tool
-    // declares a real stream-producing body.
-    assert_eq!(
-        content_chunks, 1,
-        "§2 disjunct (b) v1.28.0: tool runs synchronously — only 1 materialized \
-         content-delta reaches the wire from the LLM upstream. POST-34 (34.d) \
-         inverts this when the tool body itself produces a stream."
+    // §Fase 36.x.e.2 — POST-34.d / 36.i: the tool registry is wired,
+    // so `apply: <stream-tool>` routes through the streaming-tool
+    // path and the tool body itself produces the stream — MORE than
+    // the single pre-34 materialized content-delta. The gap the
+    // v1.28.0 comment pre-announced ("POST-34 inverts this") is
+    // closed; the test now asserts the inverted (correct) state.
+    assert!(
+        content_chunks > 1,
+        "§2 disjunct (b): the streaming tool body produces a real \
+         stream — more than one content-delta reaches the wire \
+         (POST-34.d / 36.i). Got {content_chunks}."
     );
     assert!(
         has_done,
@@ -308,18 +310,20 @@ async fn s3_disjunct_c_use_tool_syntax_collapses_to_apply_at_runtime() {
     eprintln!(
         "§3 disjunct (c) anchor (use_tool semantic equivalence to apply baseline):\n\
          Content-Type: {ct}\n\
-         openai content-delta count = {content_chunks} (expected 1 — \
-         same gap as disjunct (b); tool body runs synchronously)\n\
-         POST-34 expectation: both disjuncts (b) + (c) converge through \
-         unified_stream_handler invoking tool.stream() — chunk count >1 \
-         when the tool body produces a stream"
+         openai content-delta count = {content_chunks} (expected >1 — \
+         POST-34.d / 36.i both disjuncts (b) + (c) converge through \
+         unified_stream_handler invoking tool.stream())"
     );
 
-    assert_eq!(
-        content_chunks, 1,
-        "§3 disjunct (c) v1.28.0: use_tool syntax has the same synchronous-\
-         tool gap as disjunct (b) — exactly 1 materialized chunk. POST-34: \
-         both syntaxes route through unified_stream_handler."
+    // §Fase 36.x.e.2 — `use_tool` collapses to `apply:` at runtime;
+    // both route through `unified_stream_handler` invoking the tool's
+    // `stream()`. The streaming tool body produces a real multi-chunk
+    // stream — the v1.28.0 synchronous-tool gap is closed.
+    assert!(
+        content_chunks > 1,
+        "§3 disjunct (c): `use_tool` collapses to the streaming-tool \
+         path — the tool body streams more than one content-delta \
+         (POST-34.d / 36.i). Got {content_chunks}."
     );
 }
 

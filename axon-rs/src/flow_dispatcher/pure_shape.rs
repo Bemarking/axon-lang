@@ -320,6 +320,33 @@ async fn run_step_streaming_tool(
     )
     .await?;
 
+    // §Fase 36.x.e.2 — surface the enforcement summary. When the
+    // step's applied tool declared a `<stream:<policy>>` effect, the
+    // streaming-tool path runs the enforcer (via
+    // `unified_stream_handler`) exactly as the LLM-side path does in
+    // `run_pure_shape::drain_through_enforcer` — but pre-36.x.e.2 it
+    // never WROTE the result to `ctx.enforcement_summaries`, so the
+    // `axon.complete` envelope's `enforcement_summary` field stayed
+    // empty for an `apply:`-streaming-tool step. This closes that
+    // parity gap: the same `EnforcementSummaryWire` shape is keyed
+    // under the step name from the `ToolStreamSummary` metrics.
+    if let Some(p) = policy {
+        let wire = crate::axon_server::EnforcementSummaryWire {
+            policy_slug: p.slug().to_string(),
+            chunks_pushed: summary.chunks_pushed,
+            chunks_delivered: summary.chunks_delivered,
+            drop_oldest_hits: summary.chunks_dropped,
+            degrade_quality_hits: summary.chunks_degraded,
+            pause_upstream_blocks: summary.pause_upstream_blocks,
+            fail_overflows: summary.fail_overflows,
+            failed: !summary.success,
+        };
+        ctx.enforcement_summaries
+            .lock()
+            .await
+            .insert(step_name.clone(), wire);
+    }
+
     // 8. Cancel mid-stream → propagate. The accumulated chunks
     //    already reached the wire via the unified handler; the
     //    StepComplete + audit row are skipped (consumer chain

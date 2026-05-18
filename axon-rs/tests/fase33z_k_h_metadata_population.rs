@@ -704,9 +704,14 @@ mod e2e {
             .as_object()
             .expect("E2E openai: enforcement_summary.Generate MUST be populated");
         assert_eq!(summary["policy_slug"], "drop_oldest");
-        // Stub backend emits 1 chunk; enforcer pushes + delivers it.
-        assert_eq!(summary["chunks_pushed"], 1);
-        assert_eq!(summary["chunks_delivered"], 1);
+        // §Fase 36.x.e.2 — `apply:`-streaming-tool steps route through
+        // the streaming-tool path (Fase 36.i); the stub stream emits
+        // more than one chunk. Assert the canonical shape robustly:
+        // ≥1 chunk produced, every chunk delivered (no backpressure
+        // under the fast test consumer).
+        let pushed = summary["chunks_pushed"].as_u64().unwrap_or(0);
+        assert!(pushed >= 1, "36.x.e.2: the streaming tool produced chunks");
+        assert_eq!(summary["chunks_delivered"].as_u64(), Some(pushed));
 
         // §Fase 33.x.f — step_audit populated unconditionally.
         let audit = metadata["step_audit"]
@@ -715,7 +720,11 @@ mod e2e {
         assert_eq!(audit.len(), 1);
         assert_eq!(audit[0]["step_name"], "Generate");
         assert_eq!(audit[0]["effect_policy_applied"], "drop_oldest");
-        assert_eq!(audit[0]["tokens_emitted"], 1);
+        // §Fase 36.x.e.2 — the streaming-tool path (Fase 36.i) emits
+        // the tool body's own chunks; `tokens_emitted` is ≥1, not the
+        // single materialized chunk of the pre-36.i LLM-side path.
+        let emitted = audit[0]["tokens_emitted"].as_u64().unwrap_or(0);
+        assert!(emitted >= 1, "36.x.e.2: the streaming tool step emitted tokens");
     }
 
     // ────────────────────────────────────────────────────────────────
