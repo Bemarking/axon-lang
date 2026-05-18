@@ -677,6 +677,12 @@ pub fn parse_filter(
 /// D4: the column identifier is double-quoted (it is validated against
 /// `[A-Za-z_]\w*`, so it cannot carry a quote) and every value is a
 /// `$N` placeholder — no user value is ever interpolated into the SQL.
+///
+/// §v1.36.1 — every comparison renders the column as `"col"::text` so
+/// a `text`-bound value compares against ANY column type (`uuid`,
+/// `int`, `timestamptz`, …) without a `uuid = text`-style operator
+/// error. `=`/`!=`/`LIKE` are exact over the canonical text form;
+/// ordering operators are lexicographic over it.
 pub fn build_pg_where(
     expr: &str,
     param_offset: usize,
@@ -714,8 +720,21 @@ pub fn build_pg_where(
                 clause.push_str(&format!("\"{}\" {tail}", cond.column));
             }
             bound => {
+                // §v1.36.1 — typed-column filter. axon binds every
+                // value as `text` (D12 — the runtime carries no column
+                // schema), so `"id" = $1` against a `uuid` / `int` /
+                // `timestamptz` column fails: Postgres has no
+                // `uuid = text` operator and the runtime cannot cast
+                // the parameter (it does not know the column's type).
+                // Casting the COLUMN to `text` is type-agnostic —
+                // `<any type>::text` always exists — so the comparison
+                // is `text = text` for every column type. Equality
+                // (`=` / `!=`) and `LIKE` are exact over the canonical
+                // text form; ordering (`>` / `<` / …) is lexicographic
+                // over it (the honest consequence of the schema-less
+                // D12 model — see this module's header).
                 clause.push_str(&format!(
-                    "\"{}\" {} ${idx}",
+                    "\"{}\"::text {} ${idx}",
                     cond.column,
                     cond.op.as_sql()
                 ));
@@ -768,14 +787,14 @@ mod tests {
     #[test]
     fn single_integer_condition() {
         let (clause, params) = ok("id = 1");
-        assert_eq!(clause, "\"id\" = $1");
+        assert_eq!(clause, "\"id\"::text = $1");
         assert_eq!(params, vec![SqlValue::Integer(1)]);
     }
 
     #[test]
     fn single_string_condition_single_quoted() {
         let (clause, params) = ok("name = 'Alice'");
-        assert_eq!(clause, "\"name\" = $1");
+        assert_eq!(clause, "\"name\"::text = $1");
         assert_eq!(params, vec![SqlValue::Text("Alice".to_string())]);
     }
 
@@ -788,7 +807,7 @@ mod tests {
     #[test]
     fn negative_integer_value() {
         let (clause, params) = ok("balance >= -100");
-        assert_eq!(clause, "\"balance\" >= $1");
+        assert_eq!(clause, "\"balance\"::text >= $1");
         assert_eq!(params, vec![SqlValue::Integer(-100)]);
     }
 
@@ -815,26 +834,59 @@ mod tests {
 
     #[test]
     fn every_operator_renders_canonically() {
-        assert_eq!(ok("a = 1").0, "\"a\" = $1");
-        assert_eq!(ok("a != 1").0, "\"a\" != $1");
-        assert_eq!(ok("a > 1").0, "\"a\" > $1");
-        assert_eq!(ok("a >= 1").0, "\"a\" >= $1");
-        assert_eq!(ok("a < 1").0, "\"a\" < $1");
-        assert_eq!(ok("a <= 1").0, "\"a\" <= $1");
-        assert_eq!(ok("a LIKE 'x%'").0, "\"a\" LIKE $1");
+        assert_eq!(ok("a = 1").0, "\"a\"::text = $1");
+        assert_eq!(ok("a != 1").0, "\"a\"::text != $1");
+        assert_eq!(ok("a > 1").0, "\"a\"::text > $1");
+        assert_eq!(ok("a >= 1").0, "\"a\"::text >= $1");
+        assert_eq!(ok("a < 1").0, "\"a\"::text < $1");
+        assert_eq!(ok("a <= 1").0, "\"a\"::text <= $1");
+        assert_eq!(ok("a LIKE 'x%'").0, "\"a\"::text LIKE $1");
     }
 
     #[test]
     fn operator_aliases_normalize() {
         // `==` → `=`, `<>` → `!=`.
-        assert_eq!(ok("a == 1").0, "\"a\" = $1");
-        assert_eq!(ok("a <> 1").0, "\"a\" != $1");
+        assert_eq!(ok("a == 1").0, "\"a\"::text = $1");
+        assert_eq!(ok("a <> 1").0, "\"a\"::text != $1");
     }
 
     #[test]
     fn like_is_case_insensitive_and_renders_uppercase() {
-        assert_eq!(ok("a like 'x%'").0, "\"a\" LIKE $1");
-        assert_eq!(ok("a LiKe 'x%'").0, "\"a\" LIKE $1");
+        assert_eq!(ok("a like 'x%'").0, "\"a\"::text LIKE $1");
+        assert_eq!(ok("a LiKe 'x%'").0, "\"a\"::text LIKE $1");
+    }
+
+    // ── §v1.36.1 — typed-column filter ───────────────────────────────
+
+    /// Every value comparison casts the column to `text` so a
+    /// `text`-bound value (axon binds all values as text — D12)
+    /// compares against ANY column type. Without it, `WHERE "id" = $1`
+    /// against a `uuid` column fails — Postgres has no `uuid = text`
+    /// operator and the schema-less runtime cannot cast the parameter.
+    /// The `NULL` arm is NOT cast — `IS NULL` is type-agnostic already.
+    #[test]
+    fn typed_column_comparison_casts_the_column_to_text() {
+        // A uuid-shaped value, as it would arrive bound from a request
+        // parameter via the Fase 37 Request Binding Contract.
+        let b = std::collections::HashMap::from([(
+            "tid".to_string(),
+            "83d078e1-b372-42ba-9572-ff8dc521386e".to_string(),
+        )]);
+        let (clause, params) =
+            build_pg_where("id = '${tid}'", 0, &b).expect("compiles");
+        assert_eq!(
+            clause, "\"id\"::text = $1",
+            "the column is cast to text — `\"id\"::text = $1` compares \
+             against a uuid / int / text column alike"
+        );
+        assert_eq!(
+            params,
+            vec![SqlValue::Text(
+                "83d078e1-b372-42ba-9572-ff8dc521386e".to_string()
+            )]
+        );
+        // The NULL fold is uncast — `IS NULL` needs no column cast.
+        assert_eq!(ok("id = null").0, "\"id\" IS NULL");
     }
 
     // ── Connectors + multi-condition ─────────────────────────────────
@@ -842,7 +894,7 @@ mod tests {
     #[test]
     fn two_conditions_joined_by_and() {
         let (clause, params) = ok("id = 1 AND name = 'Alice'");
-        assert_eq!(clause, "\"id\" = $1 AND \"name\" = $2");
+        assert_eq!(clause, "\"id\"::text = $1 AND \"name\"::text = $2");
         assert_eq!(
             params,
             vec![SqlValue::Integer(1), SqlValue::Text("Alice".to_string())]
@@ -851,19 +903,22 @@ mod tests {
 
     #[test]
     fn two_conditions_joined_by_or() {
-        assert_eq!(ok("a = 1 OR b = 2").0, "\"a\" = $1 OR \"b\" = $2");
+        assert_eq!(ok("a = 1 OR b = 2").0, "\"a\"::text = $1 OR \"b\"::text = $2");
     }
 
     #[test]
     fn connectors_are_case_insensitive() {
-        assert_eq!(ok("a = 1 and b = 2").0, "\"a\" = $1 AND \"b\" = $2");
-        assert_eq!(ok("a = 1 Or b = 2").0, "\"a\" = $1 OR \"b\" = $2");
+        assert_eq!(ok("a = 1 and b = 2").0, "\"a\"::text = $1 AND \"b\"::text = $2");
+        assert_eq!(ok("a = 1 Or b = 2").0, "\"a\"::text = $1 OR \"b\"::text = $2");
     }
 
     #[test]
     fn three_condition_mixed_chain_preserves_order() {
         let (clause, params) = ok("a = 1 AND b = 2 OR c = 3");
-        assert_eq!(clause, "\"a\" = $1 AND \"b\" = $2 OR \"c\" = $3");
+        assert_eq!(
+            clause,
+            "\"a\"::text = $1 AND \"b\"::text = $2 OR \"c\"::text = $3"
+        );
         assert_eq!(params.len(), 3);
     }
 
@@ -887,7 +942,7 @@ mod tests {
     fn null_does_not_occupy_a_parameter_slot() {
         // `a` is NULL (folded, no slot) so `b` takes $1, not $2.
         let (clause, params) = ok("a = null AND b = 5");
-        assert_eq!(clause, "\"a\" IS NULL AND \"b\" = $1");
+        assert_eq!(clause, "\"a\" IS NULL AND \"b\"::text = $1");
         assert_eq!(params, vec![SqlValue::Integer(5)]);
     }
 
@@ -902,13 +957,13 @@ mod tests {
     #[test]
     fn param_offset_shifts_placeholder_numbering() {
         let (clause, _) = build_pg_where("id = 1", 2, &nb()).unwrap();
-        assert_eq!(clause, "\"id\" = $3");
+        assert_eq!(clause, "\"id\"::text = $3");
     }
 
     #[test]
     fn param_offset_shifts_every_placeholder() {
         let (clause, _) = build_pg_where("a = 1 AND b = 2", 5, &nb()).unwrap();
-        assert_eq!(clause, "\"a\" = $6 AND \"b\" = $7");
+        assert_eq!(clause, "\"a\"::text = $6 AND \"b\"::text = $7");
     }
 
     // ── D4 — SQL-injection resistance ────────────────────────────────
@@ -919,7 +974,7 @@ mod tests {
         // compiles to ONE harmless bound parameter. The SQL structure
         // is `"name" = $1`; the payload never reaches SQL text.
         let (clause, params) = ok("name = '; DROP TABLE users; --'");
-        assert_eq!(clause, "\"name\" = $1");
+        assert_eq!(clause, "\"name\"::text = $1");
         assert_eq!(
             params,
             vec![SqlValue::Text("; DROP TABLE users; --".to_string())]
