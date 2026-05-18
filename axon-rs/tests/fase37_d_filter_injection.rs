@@ -43,9 +43,10 @@ fn s1_placeholder_resolves_to_a_bind_parameter() {
     let (clause, params) =
         build_pg_where("id = '${tenant_id}'", 0, &b).expect("compiles");
     assert_eq!(
-        clause, "\"id\" = $1",
+        clause, "\"id\"::text = $1",
         "§37.d D3 — the `${{tenant_id}}` value is a $N placeholder, \
-         not spliced into the clause"
+         not spliced into the clause (the column is cast to text — \
+         §v1.36.1 typed-column compat)"
     );
     assert_eq!(
         params,
@@ -63,7 +64,7 @@ fn s2_sql_injection_payload_is_an_inert_bind_parameter() {
     let (clause, params) =
         build_pg_where("name = '${x}'", 0, &b).expect("compiles");
     assert_eq!(
-        clause, "\"name\" = $1",
+        clause, "\"name\"::text = $1",
         "§37.d D3 — the clause is EXACTLY one bound condition; the \
          payload did not become SQL. Clause: {clause}"
     );
@@ -88,7 +89,7 @@ fn s3_filter_logic_injection_cannot_add_a_condition() {
     let (clause, params) =
         build_pg_where("id = '${x}'", 0, &b).expect("compiles");
     assert_eq!(
-        clause, "\"id\" = $1",
+        clause, "\"id\"::text = $1",
         "§37.d D3 — the clause stays a SINGLE condition; the injected \
          `OR` did not become a connector. Clause: {clause}"
     );
@@ -109,7 +110,7 @@ fn s4_a_quote_in_the_value_cannot_escape_the_literal() {
     let (clause, params) =
         build_pg_where("col = '${x}'", 0, &b).expect("compiles");
     assert_eq!(
-        clause, "\"col\" = $1",
+        clause, "\"col\"::text = $1",
         "§37.d D3 — exactly one condition; the value's `'` did not \
          re-open the grammar. Clause: {clause}"
     );
@@ -128,7 +129,7 @@ fn s5_placeholder_embedded_in_a_like_pattern() {
     let b = binds(&[("q", " admin")]);
     let (clause, params) =
         build_pg_where("name LIKE '%${q}%'", 0, &b).expect("compiles");
-    assert_eq!(clause, "\"name\" LIKE $1");
+    assert_eq!(clause, "\"name\"::text LIKE $1");
     assert_eq!(
         params,
         vec![txt("% admin%")],
@@ -144,7 +145,7 @@ fn s6_multiple_placeholders_bind_in_order() {
     let b = binds(&[("a", "first"), ("c", "third")]);
     let (clause, params) =
         build_pg_where("x = '${a}' AND y = '${c}'", 0, &b).expect("compiles");
-    assert_eq!(clause, "\"x\" = $1 AND \"y\" = $2");
+    assert_eq!(clause, "\"x\"::text = $1 AND \"y\"::text = $2");
     assert_eq!(params, vec![txt("first"), txt("third")]);
 }
 
@@ -157,7 +158,7 @@ fn s7_unbound_placeholder_stays_literal_and_inert() {
     // compile error, never a splice.
     let (clause, params) =
         build_pg_where("id = '${missing}'", 0, &HashMap::new()).expect("compiles");
-    assert_eq!(clause, "\"id\" = $1");
+    assert_eq!(clause, "\"id\"::text = $1");
     assert_eq!(
         params,
         vec![txt("${missing}")],
@@ -175,7 +176,7 @@ fn s8_d5_empty_bindings_is_backwards_compatible() {
     let (clause, params) =
         build_pg_where("id = 'literal' AND n = 7", 0, &HashMap::new())
             .expect("compiles");
-    assert_eq!(clause, "\"id\" = $1 AND \"n\" = $2");
+    assert_eq!(clause, "\"id\"::text = $1 AND \"n\"::text = $2");
     assert_eq!(params, vec![txt("literal"), SqlValue::Integer(7)]);
 }
 
@@ -186,6 +187,6 @@ fn s9_braceless_dollar_form_resolves() {
     let b = binds(&[("session", "sess-42")]);
     let (clause, params) =
         build_pg_where("sid = '$session'", 0, &b).expect("compiles");
-    assert_eq!(clause, "\"sid\" = $1");
+    assert_eq!(clause, "\"sid\"::text = $1");
     assert_eq!(params, vec![txt("sess-42")]);
 }

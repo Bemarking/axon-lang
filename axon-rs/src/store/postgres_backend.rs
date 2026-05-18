@@ -828,7 +828,7 @@ mod tests {
     #[test]
     fn select_with_filter() {
         let (sql, params) = build_select_sql("users", "id = 1", &nb()).unwrap();
-        assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"id\" = $1");
+        assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"id\"::text = $1");
         assert_eq!(params, vec![SqlValue::Integer(1)]);
     }
 
@@ -861,7 +861,7 @@ mod tests {
     fn delete_with_filter() {
         let (sql, params) =
             build_delete_sql("sessions", "expired = true", &nb()).unwrap();
-        assert_eq!(sql, "DELETE FROM \"sessions\" WHERE \"expired\" = $1");
+        assert_eq!(sql, "DELETE FROM \"sessions\" WHERE \"expired\"::text = $1");
         assert_eq!(params, vec![SqlValue::Boolean(true)]);
     }
 
@@ -944,7 +944,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             sql,
-            "UPDATE \"users\" SET \"name\" = $1, \"age\" = $2 WHERE \"id\" = $3"
+            "UPDATE \"users\" SET \"name\" = $1, \"age\" = $2 WHERE \"id\"::text = $3"
         );
         assert_eq!(
             params,
@@ -966,7 +966,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             sql,
-            "UPDATE \"users\" SET \"name\" = NULL, \"age\" = $1 WHERE \"id\" = $2"
+            "UPDATE \"users\" SET \"name\" = NULL, \"age\" = $1 WHERE \"id\"::text = $2"
         );
         assert_eq!(params, vec![SqlValue::Integer(40), SqlValue::Integer(5)]);
     }
@@ -1010,7 +1010,7 @@ mod tests {
         let (sql, params) =
             build_select_sql("users", "name = '; DROP TABLE users; --'", &nb())
                 .unwrap();
-        assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"name\" = $1");
+        assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"name\"::text = $1");
         assert_eq!(
             params,
             vec![txt("; DROP TABLE users; --")]
