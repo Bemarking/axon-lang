@@ -38,6 +38,12 @@ use axon::store::registry::{StoreHandle, StoreRegistry};
 use axon::store::row_stream::stream_retrieve;
 use axon::stream_effect::BackpressurePolicy;
 
+/// §Fase 37.d — empty bindings: these Fase 35 integration tests use
+/// only literal `where` clauses (no `${name}` placeholders).
+fn nb() -> std::collections::HashMap<String, String> {
+    std::collections::HashMap::new()
+}
+
 // ── Harness ─────────────────────────────────────────────────────────
 
 /// Resolve the test database backend, or `None` to skip the test.
@@ -122,7 +128,7 @@ async fn t1_substrate_insert_then_query_round_trip() {
         .expect("insert");
     assert_eq!(inserted, 1, "one row persisted");
 
-    let rows = backend.query(table, "id = 7").await.expect("query");
+    let rows = backend.query(table, "id = 7", &nb()).await.expect("query");
     assert_eq!(rows.len(), 1, "the persisted row is retrievable");
     assert_eq!(rows[0].get("name"), Some(&serde_json::json!("alice")));
     assert_eq!(rows[0].get("active"), Some(&serde_json::json!(true)));
@@ -141,12 +147,12 @@ async fn t2_substrate_mutate_updates_real_rows() {
         .expect("seed");
 
     let affected = backend
-        .mutate(table, "id = 1", &[("status".into(), text("published"))])
+        .mutate(table, "id = 1", &[("status".into(), text("published"))], &nb())
         .await
         .expect("mutate");
     assert_eq!(affected, 1);
 
-    let rows = backend.query(table, "id = 1").await.expect("query");
+    let rows = backend.query(table, "id = 1", &nb()).await.expect("query");
     assert_eq!(rows[0].get("status"), Some(&serde_json::json!("published")));
 
     drop_table(&backend, table).await;
@@ -164,9 +170,9 @@ async fn t3_substrate_purge_deletes_real_rows() {
             .expect("seed");
     }
 
-    let purged = backend.purge(table, "id <= 3").await.expect("purge");
+    let purged = backend.purge(table, "id <= 3", &nb()).await.expect("purge");
     assert_eq!(purged, 3, "three rows deleted");
-    let survivors = backend.query(table, "").await.expect("query");
+    let survivors = backend.query(table, "", &nb()).await.expect("query");
     assert_eq!(survivors.len(), 2, "two rows survive");
 
     drop_table(&backend, table).await;
@@ -193,7 +199,7 @@ async fn t4_pillar_i_confidence_floor_filters_real_rows() {
     }
 
     let outcome =
-        stream_retrieve(&backend, table, "", BackpressurePolicy::DegradeQuality, 1000, &CancellationFlag::new())
+        stream_retrieve(&backend, table, "", BackpressurePolicy::DegradeQuality, 1000, &CancellationFlag::new(), &nb())
             .await
             .expect("stream_retrieve");
     assert_eq!(outcome.rows.len(), 5, "all five rows off the cursor");
@@ -231,6 +237,7 @@ async fn t5_pillar_iii_drop_oldest_bounds_a_real_cursor() {
 
     let outcome = stream_retrieve(
         &backend, table, "", BackpressurePolicy::DropOldest, 10, &CancellationFlag::new(),
+        &nb(),
     )
     .await
     .expect("stream_retrieve");
@@ -249,6 +256,7 @@ async fn t6_pillar_iii_pause_upstream_truncates_a_real_cursor() {
 
     let outcome = stream_retrieve(
         &backend, table, "", BackpressurePolicy::PauseUpstream, 10, &CancellationFlag::new(),
+        &nb(),
     )
     .await
     .expect("stream_retrieve");
@@ -266,6 +274,7 @@ async fn t7_pillar_iii_fail_errors_past_the_bound() {
 
     let result = stream_retrieve(
         &backend, table, "", BackpressurePolicy::Fail, 10, &CancellationFlag::new(),
+        &nb(),
     )
     .await;
     assert!(result.is_err(), "fail policy errors on an over-bound result");
@@ -283,6 +292,7 @@ async fn t8_pillar_iii_cancel_stops_the_real_drain() {
     cancel.cancel(); // pre-cancelled
     let outcome = stream_retrieve(
         &backend, table, "", BackpressurePolicy::DegradeQuality, 1000, &cancel,
+        &nb(),
     )
     .await
     .expect("stream_retrieve");
@@ -316,7 +326,7 @@ async fn t9_type_mapping_is_json_safe_for_every_supported_type() {
     )
     .await;
 
-    let rows = backend.query(table, "").await.expect("query");
+    let rows = backend.query(table, "", &nb()).await.expect("query");
     assert_eq!(rows.len(), 1);
     let r = &rows[0];
     // The kivi-reported Python pain — UUID / TIMESTAMPTZ / NUMERIC are
@@ -353,12 +363,12 @@ async fn t10_pillar_ii_audit_chain_records_real_mutations() {
     chain.record(StoreMutationKind::Persist, table, &format!("{n} row(s)"));
 
     let n = backend
-        .mutate(table, "id = 1", &[("v".into(), text("b"))])
+        .mutate(table, "id = 1", &[("v".into(), text("b"))], &nb())
         .await
         .expect("mutate");
     chain.record(StoreMutationKind::Mutate, table, &format!("{n} row(s)"));
 
-    let n = backend.purge(table, "id = 1").await.expect("purge");
+    let n = backend.purge(table, "id = 1", &nb()).await.expect("purge");
     chain.record(StoreMutationKind::Purge, table, &format!("{n} row(s)"));
 
     // The mutation history of three REAL operations verifies Intact.
@@ -434,11 +444,11 @@ async fn t12_d4_a_malicious_where_value_cannot_drop_a_real_table() {
     // build_pg_where parameterizes it — Postgres treats it as a literal
     // string to compare, NOT as SQL. The table survives.
     let malicious = format!("name = '; DROP TABLE {table}; --'");
-    let rows = backend.query(table, &malicious).await.expect("query runs");
+    let rows = backend.query(table, &malicious, &nb()).await.expect("query runs");
     assert!(rows.is_empty(), "no row literally named the payload");
 
     // The table is still here — the injection was inert.
-    let survivors = backend.query(table, "").await.expect("table intact");
+    let survivors = backend.query(table, "", &nb()).await.expect("table intact");
     assert_eq!(survivors.len(), 1, "the injection did NOT drop the table");
 
     drop_table(&backend, table).await;

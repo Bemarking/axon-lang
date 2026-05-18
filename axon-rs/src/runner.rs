@@ -817,11 +817,18 @@ where
 /// `retrieve`/`purge` are driven by the `where`-expression. D5 — the
 /// SAME `PostgresStoreBackend` the streaming dispatcher uses, so the
 /// two execution paths never diverge.
+///
+/// §Fase 37.d (D3) — `memory_expr` is the RAW `store:where` expression
+/// (NOT pre-interpolated). A `${name}` in the `where` clause is
+/// resolved by the filter compiler against `ctx.vars()` into a `$N`
+/// bind parameter — never string-spliced into the `where` source. The
+/// pre-37.d path interpolated the whole expression first, which let a
+/// request value carrying a `'` break a string-literal boundary.
 fn execute_sql_store_step(
     store_registry: &StoreRegistry,
     step_type: &str,
     store_name: &str,
-    interpolated_expr: &str,
+    memory_expr: &str,
     store_fields: Option<&[(String, String)]>,
     ctx: &ExecContext,
 ) -> Result<String, StoreError> {
@@ -834,11 +841,16 @@ fn execute_sql_store_step(
     // `memory_expression` is `"store:where"` for retrieve/mutate/purge
     // and the bare store name for persist — the where-expr is whatever
     // follows the first colon (empty when absent).
-    let where_expr = interpolated_expr
+    let where_expr = memory_expr
         .splitn(2, ':')
         .nth(1)
         .unwrap_or("")
         .to_string();
+    // §Fase 37.d (D3) — an OWNED copy of the flow's variable map, moved
+    // into the store-op task; the filter compiler resolves `${name}`
+    // in `where_expr` against it into `$N` bind parameters.
+    let where_bindings: std::collections::HashMap<String, String> =
+        ctx.vars().clone();
 
     // §Fase 35.o / 35.p — when the `persist` / `mutate` step declared a
     // `{ col: value }` block, the SQL row is exactly those columns with
@@ -882,6 +894,7 @@ fn execute_sql_store_step(
                     row_stream::DEFAULT_RETRIEVE_POLICY,
                     row_stream::DEFAULT_MAX_ROWS,
                     &cancel,
+                    &where_bindings,
                 )
                 .await?;
                 let metadata = row_stream::stream_metadata(
@@ -899,7 +912,9 @@ fn execute_sql_store_step(
                     .unwrap_or_else(|_| "{}".to_string()))
             }
             "purge" => {
-                let n = backend.purge(&store_name, &where_expr).await?;
+                let n = backend
+                    .purge(&store_name, &where_expr, &where_bindings)
+                    .await?;
                 Ok(format!("{n} row(s) purged"))
             }
             "persist" => {
@@ -914,7 +929,9 @@ fn execute_sql_store_step(
                 Ok(format!("{n} row(s) persisted"))
             }
             "mutate" => {
-                let n = backend.mutate(&store_name, &where_expr, &data).await?;
+                let n = backend
+                    .mutate(&store_name, &where_expr, &data, &where_bindings)
+                    .await?;
                 Ok(format!("{n} row(s) mutated"))
             }
             // The caller only routes the four store-op step types here.
@@ -1355,11 +1372,15 @@ fn execute_real(
                     && store_registry.backend_kind(&step.step_name)
                         == Some(StoreBackendKind::Postgresql)
                 {
+                    // §Fase 37.d (D3) — pass the RAW `store:where`
+                    // expression (NOT the pre-interpolated `expr`): the
+                    // filter compiler resolves `${name}` in the `where`
+                    // clause into `$N` bind parameters, never a splice.
                     let (result_text, ok) = match execute_sql_store_step(
                         store_registry,
                         &step.step_type,
                         &step.step_name,
-                        &expr,
+                        raw_expr,
                         step.store_fields.as_deref(),
                         &ctx,
                     ) {

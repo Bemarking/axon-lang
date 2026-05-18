@@ -517,6 +517,10 @@ pub async fn run_retrieve(
                 row_stream::DEFAULT_RETRIEVE_POLICY,
                 row_stream::DEFAULT_MAX_ROWS,
                 &ctx.cancel,
+                // §Fase 37.d (D3) — resolve `${name}` in the `where`
+                // clause to `$N` bind parameters via the filter
+                // compiler (never string-spliced into the SQL).
+                &ctx.let_bindings,
             )
             .await
             .map_err(sql_dispatch_error)?;
@@ -579,7 +583,7 @@ pub async fn run_mutate(
             // user-bindings form.
             let row = store_row(&node.fields, ctx);
             let n = backend
-                .mutate(&node.store_name, &node.where_expr, &row)
+                .mutate(&node.store_name, &node.where_expr, &row, &ctx.let_bindings)
                 .await
                 .map_err(sql_dispatch_error)?;
             format!("mutated {n} row(s) in `{}`", node.store_name)
@@ -629,7 +633,7 @@ pub async fn run_purge(
     let output = match resolve_pg_backend(ctx, &node.store_name) {
         Ok(Some((backend, _floor))) => {
             let n = backend
-                .purge(&node.store_name, &node.where_expr)
+                .purge(&node.store_name, &node.where_expr, &ctx.let_bindings)
                 .await
                 .map_err(sql_dispatch_error)?;
             format!("purged {n} row(s) from `{}`", node.store_name)
