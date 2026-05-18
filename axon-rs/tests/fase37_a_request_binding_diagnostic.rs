@@ -27,7 +27,8 @@
 //!     the producer populates it, but the `openai` wire dialect's
 //!     `FlowError` arm (`wire_format/openai_dialect.rs`) DROPS it —
 //!     the wire shows the flow errored (`terminal_reason: error`) but
-//!     never says WHY. §3 pins it. 37.e/D6 inverts §3.
+//!     never said WHY. §3 pinned it. §Fase 37.e/D6 SHIPPED — §3 was
+//!     inverted in place and is now a green regression guard.
 //!
 //! All three tests are deterministic + infra-free (stub backend,
 //! `sqlite`-registry-build failure for the error path — no DB, no
@@ -173,13 +174,14 @@ async fn s2_control_let_binding_does_interpolate() {
 /// A flow that errors on the streaming path (a `sqlite` axonstore
 /// type-checks but has no runtime backend → `StoreRegistry::build`
 /// fails → `FlowError`). The endpoint declares the `openai` SSE
-/// dialect. The `FlowError` carries the registry-build error string,
-/// but the openai dialect's `FlowError` arm DROPS it: the wire says
-/// the flow errored (`terminal_reason: error`) but never says WHY.
+/// dialect.
 ///
-/// §Fase 37.e (D6) inverts this: the error detail WILL reach the wire.
+/// §Fase 37.e (D6) SHIPPED — this assertion was inverted in place: it
+/// pinned the v1.35.0 hollow terminator (the openai dialect dropped
+/// `FlowError.error`) and is now a green regression guard — the wire
+/// names WHY the flow errored.
 #[tokio::test]
-async fn s3_errored_streaming_flow_emits_a_hollow_axon_error() {
+async fn s3_errored_streaming_flow_names_why_it_failed() {
     let app = build_router(server_cfg());
     // `Echo`'s `<stream:…>` effect makes the flow stream-producing so
     // `transport: sse` type-checks; the flow errors at registry build
@@ -209,15 +211,14 @@ async fn s3_errored_streaming_flow_emits_a_hollow_axon_error() {
          (`terminal_reason: error` in the axon_metadata frame). \
          Wire:\n{wire}"
     );
-    // ── BROKEN STATE (v1.35.0) ─────────────────────────────────────
-    // … but it never says WHY. The `FlowError.error` string for a
-    // failed store registry build is `axonstore registry: <detail>`;
-    // the openai dialect drops it.
+    // ── §Fase 37.e SHIPPED — honest failure ────────────────────────
+    // … and now it says WHY. The `FlowError.error` string for a failed
+    // store registry build (`axonstore registry: <detail>`) reaches
+    // the wire — the openai dialect surfaces it in the axon_metadata
+    // frame's `error` field.
     assert!(
-        !wire.contains("axonstore"),
-        "§37.a FINDING B — the error DETAIL reached the wire, but \
-         v1.35.0's openai dialect drops `FlowError.error`. If this \
-         fails, 37.e already shipped — invert this assertion. \
-         Wire:\n{wire}"
+        wire.contains("axonstore"),
+        "§37.e D6 — the error DETAIL must reach the wire: a streaming \
+         flow that fails names WHY, not just THAT. Wire:\n{wire}"
     );
 }

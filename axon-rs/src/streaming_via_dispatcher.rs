@@ -193,9 +193,19 @@ pub async fn run_streaming_via_dispatcher(
     let (ast_program, ir) = match crate::flow_plan::compile_source_to_ir(&source, &source_file) {
         Ok(pair) => pair,
         Err(plan_error) => {
+            // §Fase 37.e (D6) — honest failure: the diagnostic reaches
+            // the `axon.error` wire event (every dialect) AND a
+            // structured server log line. A stream that dies says why.
+            let detail = format!("compilation failed: {plan_error:?}");
+            tracing::error!(
+                flow = %flow_name,
+                source_file = %source_file,
+                detail = %detail,
+                "axon streaming flow failed — source did not compile"
+            );
             let _ = emit(FlowExecutionEvent::FlowError {
                 flow_name: flow_name.clone(),
-                error: format!("compilation failed: {plan_error:?}"),
+                error: detail,
                 timestamp_ms: now_ms(),
             });
             // §Fase 36.x.c (D1) — exactly one terminator: a
@@ -213,9 +223,16 @@ pub async fn run_streaming_via_dispatcher(
     ) {
         Ok(r) => std::sync::Arc::new(r),
         Err(reg_error) => {
+            // §Fase 37.e (D6) — honest failure: name the cause.
+            let detail = format!("axonstore registry: {reg_error}");
+            tracing::error!(
+                flow = %flow_name,
+                detail = %detail,
+                "axon streaming flow failed — axonstore registry build"
+            );
             let _ = emit(FlowExecutionEvent::FlowError {
                 flow_name: flow_name.clone(),
-                error: format!("axonstore registry: {reg_error}"),
+                error: detail,
                 timestamp_ms: now_ms(),
             });
             // §Fase 36.x.c (D1) — exactly one terminator: a registry
@@ -231,12 +248,20 @@ pub async fn run_streaming_via_dispatcher(
         Some(f) => f.clone(),
         None => {
             let available: Vec<String> = ir.flows.iter().map(|f| f.name.clone()).collect();
+            // §Fase 37.e (D6) — honest failure: name what was sought
+            // and what was available.
+            let detail = format!(
+                "flow '{}' not found in compiled IR; available: {:?}",
+                flow_name, available
+            );
+            tracing::error!(
+                flow = %flow_name,
+                detail = %detail,
+                "axon streaming flow failed — flow not found"
+            );
             let _ = emit(FlowExecutionEvent::FlowError {
                 flow_name: flow_name.clone(),
-                error: format!(
-                    "flow '{}' not found in compiled IR; available: {:?}",
-                    flow_name, available
-                ),
+                error: detail,
                 timestamp_ms: now_ms(),
             });
             // §Fase 36.x.c (D1) — exactly one terminator: a
@@ -414,9 +439,37 @@ pub async fn run_streaming_via_dispatcher(
                 // §Fase 36.x.c (D1) — `FlowError` is the terminator
                 // for this flow; §7 must NOT also emit `FlowComplete`.
                 flow_errored = true;
+                // §Fase 37.e (D6) — honest failure: name the FAILING
+                // NODE. Step + the four store ops carry a meaningful
+                // name; any other variant is named by its flow
+                // position. The diagnostic reaches the `axon.error`
+                // wire event AND a structured server log.
+                use crate::ir_nodes::IRFlowNode;
+                let node_label = match node {
+                    IRFlowNode::Step(s) if !s.name.is_empty() => {
+                        format!("step '{}'", s.name)
+                    }
+                    IRFlowNode::Retrieve(r) => {
+                        format!("retrieve from '{}'", r.store_name)
+                    }
+                    IRFlowNode::Persist(p) => {
+                        format!("persist into '{}'", p.store_name)
+                    }
+                    IRFlowNode::Mutate(m) => format!("mutate '{}'", m.store_name),
+                    IRFlowNode::Purge(p) => format!("purge '{}'", p.store_name),
+                    _ => format!("node #{}", steps_executed + 1),
+                };
+                let detail =
+                    format!("flow '{flow_name}' failed at {node_label}: {e:?}");
+                tracing::error!(
+                    flow = %flow_name,
+                    node = %node_label,
+                    detail = %detail,
+                    "axon streaming flow failed — node dispatch error"
+                );
                 let _ = emit(FlowExecutionEvent::FlowError {
                     flow_name: flow_name.clone(),
-                    error: format!("dispatcher error: {e:?}"),
+                    error: detail,
                     timestamp_ms: now_ms(),
                 });
                 break;
