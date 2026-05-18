@@ -126,6 +126,13 @@ pub struct OpenAIDialectAdapter {
     /// though OpenAI's `chat.completion.chunk` shape doesn't
     /// model multi-step flows.
     stashed_envelope: Option<CompleteEnvelope>,
+    /// §Fase 37.e (D6) — the `FlowError.error` diagnostic, stashed when
+    /// a `FlowError` is translated so `build_axon_metadata_frame()` can
+    /// surface it as the metadata frame's `error` field. Without this
+    /// the openai (and kimi / glm) wire signalled `terminal_reason:
+    /// error` but never said WHY — a hollow terminator. `None` on a
+    /// flow that did not error.
+    error_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -154,6 +161,7 @@ impl OpenAIDialectAdapter {
             tool_call_counter: 0,
             saw_terminal_reason: TerminalReason::None,
             stashed_envelope: None,
+            error_detail: None,
         }
     }
 
@@ -308,6 +316,13 @@ impl OpenAIDialectAdapter {
             "terminal_reason".to_string(),
             serde_json::json!(terminal_str),
         );
+        // §Fase 37.e (D6) — honest failure: when the flow errored,
+        // the metadata frame names WHY, not just THAT. The diagnostic
+        // string carries the failing node + cause (e.g. `flow node
+        // 'Lookup' failed: …`). Elided on a non-erroring flow.
+        if let Some(err) = self.error_detail.as_ref() {
+            metadata.insert("error".to_string(), serde_json::json!(err));
+        }
 
         let payload = serde_json::json!({ "axon_metadata": metadata });
         Event::default().data(serde_json::to_string(&payload).unwrap_or_default())
@@ -387,9 +402,13 @@ impl WireFormatAdapter for OpenAIDialectAdapter {
                     Some("stop"),
                 )]
             }
-            FlowExecutionEvent::FlowError { .. } => {
+            FlowExecutionEvent::FlowError { error, .. } => {
                 self.terminal_emitted = true;
                 self.saw_terminal_reason = TerminalReason::Error;
+                // §Fase 37.e (D6) — stash the diagnostic so the
+                // axon_metadata frame can surface it (the openai wire
+                // has no native error event).
+                self.error_detail = Some(error.clone());
                 // OpenAI doesn't have a dedicated "error" finish_reason
                 // — adopter SDKs treat the absence of the `[DONE]`
                 // sentinel OR a non-standard finish_reason as the

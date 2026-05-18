@@ -136,6 +136,13 @@ pub struct AnthropicDialectAdapter {
     /// this extension frame; anthropic-compat SDKs ignore unknown
     /// event names verbatim per Anthropic spec §Streaming.
     stashed_envelope: Option<CompleteEnvelope>,
+    /// §Fase 37.e (D6) — the `FlowError.error` diagnostic, stashed when
+    /// a `FlowError` is translated so `build_axon_metadata_frame()`
+    /// surfaces it as the metadata frame's `error` field. Anthropic
+    /// has no native error stop_reason; without this the wire signalled
+    /// `terminal_reason: error` but never said WHY. `None` on a flow
+    /// that did not error.
+    error_detail: Option<String>,
 }
 
 /// Closed-catalog terminal reason mirror (parallel to OpenAI dialect).
@@ -161,6 +168,7 @@ impl AnthropicDialectAdapter {
             terminal_emitted: false,
             saw_terminal_reason: TerminalReason::None,
             stashed_envelope: None,
+            error_detail: None,
         }
     }
 
@@ -371,6 +379,11 @@ impl AnthropicDialectAdapter {
             "terminal_reason".to_string(),
             serde_json::json!(terminal_str),
         );
+        // §Fase 37.e (D6) — honest failure: when the flow errored, the
+        // metadata frame names WHY. Elided on a non-erroring flow.
+        if let Some(err) = self.error_detail.as_ref() {
+            metadata.insert("error".to_string(), serde_json::json!(err));
+        }
 
         let payload = serde_json::json!({
             "type": "axon.metadata",
@@ -455,7 +468,7 @@ impl WireFormatAdapter for AnthropicDialectAdapter {
                 events.push(self.build_message_delta("end_turn"));
                 events
             }
-            FlowExecutionEvent::FlowError { .. } => {
+            FlowExecutionEvent::FlowError { error, .. } => {
                 // Anthropic has no native error stop_reason; the closest
                 // canonical value for an interrupted/failed stream is
                 // "stop_sequence" or simply omitting. We emit
@@ -464,6 +477,9 @@ impl WireFormatAdapter for AnthropicDialectAdapter {
                 // error signaling (terminal_reason: "error").
                 self.terminal_emitted = true;
                 self.saw_terminal_reason = TerminalReason::Error;
+                // §Fase 37.e (D6) — stash the diagnostic for the
+                // axon.metadata frame's `error` field.
+                self.error_detail = Some(error.clone());
                 let mut events = self.close_text_block_if_open();
                 events.push(self.build_message_delta("end_turn"));
                 events
