@@ -375,6 +375,12 @@ impl StoreRegistry {
         for name in pg_stores {
             match self.resolve(name) {
                 Ok(StoreHandle::Postgres(backend)) => {
+                    // §Fase 37.x.h (D6) — the masked DSN is the physical
+                    // connection context an operator needs to triage a
+                    // deploy-time failure; the credential is masked, so
+                    // the field is safe to surface in the deploy log + a
+                    // /v1/deploy response a CI operator sees.
+                    let masked = backend.masked_dsn();
                     match backend.warm_schema(name).await {
                         Ok(()) => report.verified.push(name.to_string()),
                         Err(
@@ -383,15 +389,17 @@ impl StoreRegistry {
                         ) => {
                             // Reachable store, table genuinely missing
                             // / ambiguous — a fatal deploy error.
-                            report
-                                .missing
-                                .push((name.to_string(), e.to_string()));
+                            report.missing.push((
+                                name.to_string(),
+                                format!("{e} (database: {masked})"),
+                            ));
                         }
                         Err(e) => {
                             // Unreachable / transient — non-fatal.
-                            report
-                                .unreachable
-                                .push((name.to_string(), e.to_string()));
+                            report.unreachable.push((
+                                name.to_string(),
+                                format!("{e} (database: {masked})"),
+                            ));
                         }
                     }
                 }
@@ -400,7 +408,10 @@ impl StoreRegistry {
                 Err(e) => {
                     // The connection could not even be resolved (a
                     // missing `env:` var, a malformed DSN) — non-fatal;
-                    // the store is unconfigured at deploy time.
+                    // the store is unconfigured at deploy time. No
+                    // backend was constructed, so no masked DSN to
+                    // append: the error text already names the
+                    // configuration site.
                     report
                         .unreachable
                         .push((name.to_string(), e.to_string()));

@@ -770,5 +770,28 @@ async fn t17_d8_deploy_verification_verified_and_missing() {
         "§37.x.g (D8) — a missing table on a reachable store FAILS the deploy"
     );
 
+    // §Fase 37.x.h (D6) — the `missing` diagnostic carries the masked DSN
+    // so a deploy-log operator can SEE which physical database resolved.
+    // The credential MUST be masked, never leaked.
+    let diag = &report.missing[0].1;
+    assert!(
+        diag.contains("database:"),
+        "§37.x.h (D6) — the missing diagnostic must surface the \
+         physical-database context, got: {diag}"
+    );
+    assert!(
+        diag.contains("***") || !diag.contains('@'),
+        "§37.x.h (D6) — when the DSN carries credentials they MUST be \
+         masked (`***`), got: {diag}"
+    );
+    // The actionable hint from `TableNotResolved`'s enriched Display is
+    // also threaded through unchanged.
+    assert!(
+        diag.contains("pg_catalog"),
+        "§37.x.h (D6) — the actionable hint (pg_catalog scan, so \
+         `search_path` is not the culprit) must survive composition \
+         with the masked DSN, got: {diag}"
+    );
+
     drop_table(&backend, real_table).await;
 }
