@@ -708,3 +708,67 @@ async fn t16_d9_write_self_heals_without_double_writing() {
 
     drop_table(&backend, table).await;
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  §Fase 37.x.g — deploy-time eager schema verification (D8)
+// ════════════════════════════════════════════════════════════════════
+
+/// §Fase 37.x.g (D8) — `verify_postgres_schemas` resolves a REAL table
+/// at "deploy" → `verified`; a non-existent table on the SAME reachable
+/// database → `missing` → `has_fatal()` → the deploy would FAIL.
+#[tokio::test]
+async fn t17_d8_deploy_verification_verified_and_missing() {
+    let backend = pg_or_skip!();
+    let dsn = std::env::var("AXON_TEST_DATABASE_URL").unwrap();
+
+    let real_table = "fase35l_t17_real";
+    fresh_table(&backend, real_table, "id integer").await;
+
+    // A registry with one store on a REAL table + one on a table that
+    // does not exist — both on the reachable test database.
+    let registry = StoreRegistry::build(&[
+        IRAxonStore {
+            node_type: "axonstore",
+            source_line: 0,
+            source_column: 0,
+            name: real_table.to_string(),
+            backend: "postgresql".to_string(),
+            connection: dsn.clone(),
+            confidence_floor: None,
+            isolation: String::new(),
+            on_breach: String::new(),
+            capability: String::new(),
+        },
+        IRAxonStore {
+            node_type: "axonstore",
+            source_line: 0,
+            source_column: 0,
+            name: "fase35l_t17_ghost_table".to_string(),
+            backend: "postgresql".to_string(),
+            connection: dsn.clone(),
+            confidence_floor: None,
+            isolation: String::new(),
+            on_breach: String::new(),
+            capability: String::new(),
+        },
+    ])
+    .expect("registry build");
+
+    let report = registry.verify_postgres_schemas().await;
+    assert!(
+        report.verified.contains(&real_table.to_string()),
+        "§37.x.g — the real table verified at deploy"
+    );
+    assert_eq!(
+        report.missing.len(),
+        1,
+        "§37.x.g — the ghost table is a fatal `missing` entry"
+    );
+    assert_eq!(report.missing[0].0, "fase35l_t17_ghost_table");
+    assert!(
+        report.has_fatal(),
+        "§37.x.g (D8) — a missing table on a reachable store FAILS the deploy"
+    );
+
+    drop_table(&backend, real_table).await;
+}
