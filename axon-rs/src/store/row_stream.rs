@@ -48,8 +48,8 @@ use serde_json::{json, Value as JsonValue};
 use crate::cancel_token::CancellationFlag;
 use crate::store::filter::SqlValue;
 use crate::store::postgres_backend::{
-    bind_value, build_select_sql, map_pg_row, PostgresStoreBackend, StoreError,
-    StoreRow,
+    bind_value, build_select_sql, introspect_conn, map_pg_row,
+    PostgresStoreBackend, StoreError, StoreRow,
 };
 use crate::stream_effect::BackpressurePolicy;
 
@@ -183,34 +183,76 @@ pub async fn stream_retrieve(
     // bind parameters (the Request Binding Contract on the filter path).
     bindings: &std::collections::HashMap<String, String>,
 ) -> Result<RowStreamOutcome, StoreError> {
-    // §Fase 37.x.b/c — resolve the table's schema + column types via
-    // the search-path-independent `resolve_table`; degrade to an
-    // un-qualified bare table + empty map on a resolution failure
-    // (§37.x.h / D6 surfaces the typed error in its place).
-    let resolved = backend.resolve_table(table).await;
+    // §Fase 37.x.d (D3) — a cache HIT: the cursor drains on the pool,
+    // no transaction (the cached resolution is correct and the SELECT
+    // is schema-qualified, so it resolves on any session).
+    if let Some(resolved) = backend.cached_schema(table) {
+        let (sql, params): (String, Vec<SqlValue>) = build_select_sql(
+            table,
+            Some(resolved.schema.as_str()),
+            where_expr,
+            bindings,
+            &resolved.column_types,
+        )?;
+        let mut query = sqlx::query(&sql);
+        for value in &params {
+            query = bind_value(query, value);
+        }
+        // `.fetch()` is the lazy cursor — rows are NOT all buffered.
+        let cursor = query.fetch(backend.pool()).map(|item| {
+            item.map_err(|e| StoreError::Query {
+                op: "retrieve",
+                source: e.to_string(),
+            })
+            .and_then(|pg_row| map_pg_row(&pg_row))
+        });
+        return drain_with_policy(cursor, policy, max_rows, cancel).await;
+    }
+
+    // §Fase 37.x.d (D3) — a cache MISS: the schema introspection AND
+    // the cursor drain run inside ONE transaction, so a transaction-
+    // mode pooler pins one physical backend for both. The transaction
+    // is held for the cursor's lifetime — bounded by `max_rows` (the
+    // `PauseUpstream` default caps the drain), so the held pooler
+    // backend is time-bounded; no pool starvation.
+    let mut tx = backend
+        .pool()
+        .begin()
+        .await
+        .map_err(|e| StoreError::Connect { source: e.to_string() })?;
+    let resolved = introspect_conn(&mut tx, table).await;
     let no_types = std::collections::HashMap::new();
+    // §37.x.h / D6 surfaces a resolution failure; here it degrades to
+    // an un-qualified bare table + empty type map.
     let (schema, column_types) = match &resolved {
         Ok(r) => (Some(r.schema.as_str()), &r.column_types),
         Err(_) => (None, &no_types),
     };
     let (sql, params): (String, Vec<SqlValue>) =
         build_select_sql(table, schema, where_expr, bindings, column_types)?;
-
     let mut query = sqlx::query(&sql);
     for value in &params {
         query = bind_value(query, value);
     }
-
-    // `.fetch()` is the lazy cursor — rows are NOT all buffered.
-    let cursor = query.fetch(backend.pool()).map(|item| {
-        item.map_err(|e| StoreError::Query {
-            op: "retrieve",
-            source: e.to_string(),
-        })
-        .and_then(|pg_row| map_pg_row(&pg_row))
-    });
-
-    drain_with_policy(cursor, policy, max_rows, cancel).await
+    // The cursor borrows the transaction for the drain; it is scoped so
+    // it is dropped before the transaction is committed.
+    let outcome = {
+        let cursor = query.fetch(&mut *tx).map(|item| {
+            item.map_err(|e| StoreError::Query {
+                op: "retrieve",
+                source: e.to_string(),
+            })
+            .and_then(|pg_row| map_pg_row(&pg_row))
+        });
+        drain_with_policy(cursor, policy, max_rows, cancel).await
+    };
+    tx.commit()
+        .await
+        .map_err(|e| StoreError::Connect { source: e.to_string() })?;
+    if let Ok(r) = resolved {
+        backend.cache_schema(table, r);
+    }
+    outcome
 }
 
 // ════════════════════════════════════════════════════════════════════
