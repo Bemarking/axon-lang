@@ -139,6 +139,17 @@ pub enum StoreError {
     /// more than one schema and the connection's `search_path` does not
     /// disambiguate it. Carries the schemas found, sorted.
     AmbiguousTable { table: String, schemas: Vec<String> },
+    /// §Fase 37.x.f (D9) — a store SQL statement failed with a
+    /// schema-drift SQLSTATE: the cached schema no longer matches the
+    /// live table (an `ALTER TABLE` ran since the cache was populated).
+    /// `42P01` undefined_table, `42703` undefined_column, `42804`
+    /// datatype_mismatch (a stale write cast), `42883` undefined
+    /// operator (a stale read cast). Triggers the D9 self-heal — the
+    /// `(dsn, table)` cache entry is evicted and the operation retried
+    /// once against fresh introspection. Safe: every one is a
+    /// parse/plan-time rejection, so the failed statement had ZERO side
+    /// effects (a retried `persist`/`mutate` cannot double-write).
+    SchemaDrift { op: &'static str, sqlstate: String, source: String },
 }
 
 impl fmt::Display for StoreError {
@@ -203,6 +214,11 @@ impl fmt::Display for StoreError {
                 schemas.len(),
                 schemas.join(", "),
             ),
+            StoreError::SchemaDrift { op, sqlstate, source } => write!(
+                f,
+                "axonstore `{op}` hit live schema drift (SQLSTATE \
+                 {sqlstate}) — the cached schema is stale: {source}"
+            ),
         }
     }
 }
@@ -214,6 +230,15 @@ impl std::error::Error for StoreError {
             StoreError::Epistemic(e) => Some(e),
             _ => None,
         }
+    }
+}
+
+impl StoreError {
+    /// §Fase 37.x.f (D9) — `true` iff this is a schema-drift failure
+    /// ([`StoreError::SchemaDrift`]) — the signal that triggers the
+    /// `(dsn, table)` cache self-heal (evict + retry once).
+    pub fn is_schema_drift(&self) -> bool {
+        matches!(self, StoreError::SchemaDrift { .. })
     }
 }
 
@@ -401,23 +426,90 @@ pub(crate) struct ResolvedTable {
     pub column_types: std::collections::HashMap<String, String>,
 }
 
-/// §Fase 37.x.b — process-global cache `(dsn, table) → ResolvedTable`.
+/// §Fase 37.x.f (D9) — capacity bound on the schema cache. A many-
+/// table / many-DSN / multi-tenant adopter cannot grow it unbounded; at
+/// the bound the OLDEST entry (smallest insertion sequence) is evicted.
+/// 10k matches the idempotency / replay store bound.
+const SCHEMA_CACHE_CAPACITY: usize = 10_000;
+
+/// §Fase 37.x.f (D9) — the process-global schema cache:
+/// `(dsn, table) → ResolvedTable`, capacity-bounded + self-healing.
+///
 /// A table's schema + column types are stable for a process lifetime,
-/// so one resolution per `(connection, table)` suffices. Only a
-/// successfully-resolved, non-empty entry is cached, so a transient
-/// introspection failure never poisons a `(dsn, table)` entry
-/// permanently (the §v1.36.5 rule, preserved). §Fase 37.x.f (D9) adds
-/// the bounded-LRU + schema-drift-invalidation discipline.
-static SCHEMA_CACHE: std::sync::LazyLock<
-    std::sync::Mutex<
-        std::collections::HashMap<
-            (String, String),
-            std::sync::Arc<ResolvedTable>,
-        >,
+/// so one resolution per `(connection, table)` suffices — but the table
+/// CAN drift (a live `ALTER TABLE`). D9 makes the cache self-heal: an
+/// operation that fails with a schema-drift SQLSTATE evicts the
+/// `(dsn, table)` entry ([`PostgresStoreBackend::evict_schema`]) and is
+/// retried once against fresh introspection. The cache is also
+/// capacity-bounded ([`SCHEMA_CACHE_CAPACITY`]) so it cannot grow
+/// without limit. Only a successfully-resolved, non-empty entry is
+/// cached (the §v1.36.5 don't-cache-failures rule, preserved).
+struct SchemaCache {
+    /// `(dsn, table)` → the resolution + its insertion sequence.
+    entries: std::collections::HashMap<
+        (String, String),
+        (std::sync::Arc<ResolvedTable>, u64),
     >,
-> = std::sync::LazyLock::new(|| {
-    std::sync::Mutex::new(std::collections::HashMap::new())
-});
+    /// Monotonic insertion counter — drives oldest-first eviction.
+    next_seq: u64,
+    /// The capacity bound. A field (not a hard-coded constant) so the
+    /// eviction logic is unit-testable with a small bound.
+    capacity: usize,
+}
+
+impl SchemaCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+            next_seq: 0,
+            capacity,
+        }
+    }
+
+    /// The cached resolution for `key`, or `None` on a miss.
+    fn get(
+        &self,
+        key: &(String, String),
+    ) -> Option<std::sync::Arc<ResolvedTable>> {
+        self.entries.get(key).map(|(arc, _)| std::sync::Arc::clone(arc))
+    }
+
+    /// Insert (or refresh) a resolution. §D9 — at capacity the oldest
+    /// entry (smallest sequence) is evicted first; a linear scan,
+    /// acceptable at the 10k bound (the idempotency store's approach).
+    fn insert(
+        &mut self,
+        key: (String, String),
+        resolved: std::sync::Arc<ResolvedTable>,
+    ) {
+        if self.entries.len() >= self.capacity
+            && !self.entries.contains_key(&key)
+        {
+            // Linear scan for the smallest insertion sequence.
+            let oldest = self
+                .entries
+                .iter()
+                .min_by_key(|item| (item.1).1)
+                .map(|item| item.0.clone());
+            if let Some(oldest) = oldest {
+                self.entries.remove(&oldest);
+            }
+        }
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        self.entries.insert(key, (resolved, seq));
+    }
+
+    /// §D9 — drop `key` so the next operation re-introspects.
+    fn evict(&mut self, key: &(String, String)) {
+        self.entries.remove(key);
+    }
+}
+
+static SCHEMA_CACHE: std::sync::LazyLock<std::sync::Mutex<SchemaCache>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Mutex::new(SchemaCache::new(SCHEMA_CACHE_CAPACITY))
+    });
 
 /// §Fase 37.x.b (D1) — the pure resolution core: group a flat
 /// `(schema, column, udt)` introspection result by schema and decide.
@@ -470,6 +562,49 @@ fn collect_triples(rows: &[PgRow]) -> Vec<(String, String, String)> {
         }
     }
     out
+}
+
+/// §Fase 37.x.f (D9) — `true` iff `code` is a schema-drift SQLSTATE: a
+/// store SQL statement that fails with one has hit a STALE cache.
+///
+///  - `42P01` undefined_table — the table was dropped / renamed / had
+///    its schema changed since the resolution was cached.
+///  - `42703` undefined_column — a column was dropped / renamed.
+///  - `42804` datatype_mismatch — a stale WRITE cast (`$N::<old>` into
+///    a column whose type changed).
+///  - `42883` undefined_function — a stale READ cast (`"col" = $N::<old>`
+///    whose operator no longer exists, e.g. `text = uuid`).
+///
+/// Every one is a PARSE / PLAN-time rejection — the statement never
+/// executed, so the failed operation had ZERO side effects and the D9
+/// retry cannot double-write.
+fn is_schema_drift_sqlstate(code: &str) -> bool {
+    matches!(code, "42P01" | "42703" | "42804" | "42883")
+}
+
+/// §Fase 37.x.f (D9) — classify a failed store SQL statement: a
+/// schema-drift SQLSTATE ([`is_schema_drift_sqlstate`]) yields
+/// [`StoreError::SchemaDrift`] (which triggers the cache self-heal);
+/// anything else is a plain [`StoreError::Query`]. `pub(crate)` so the
+/// `row_stream` cursor maps its errors through the same classifier.
+pub(crate) fn classify_sql_error(
+    op: &'static str,
+    err: sqlx::Error,
+) -> StoreError {
+    let sqlstate = err
+        .as_database_error()
+        .and_then(|db| db.code())
+        .map(|c| c.into_owned());
+    match sqlstate {
+        Some(code) if is_schema_drift_sqlstate(&code) => {
+            StoreError::SchemaDrift {
+                op,
+                sqlstate: code,
+                source: err.to_string(),
+            }
+        }
+        _ => StoreError::Query { op, source: err.to_string() },
+    }
 }
 
 /// §Fase 37.x.b/d (D1/D3) — the two-stage `pg_catalog` table resolution
@@ -1006,7 +1141,8 @@ impl PostgresStoreBackend {
         where_expr: &str,
         bindings: &std::collections::HashMap<String, String>,
     ) -> Result<Vec<StoreRow>, StoreError> {
-        // — cache HIT: the resolution is known; no transaction. —
+        // — cache HIT: operate with the cached resolution; no
+        //   transaction. §37.x.f (D9) self-heals a stale cache. —
         if let Some(resolved) = self.cached_schema(table) {
             let (sql, params) = build_select_sql(
                 table,
@@ -1019,12 +1155,22 @@ impl PostgresStoreBackend {
             for value in &params {
                 q = bind_value(q, value);
             }
-            let rows = q.fetch_all(&self.pool).await.map_err(|e| {
-                StoreError::Query { op: "retrieve", source: e.to_string() }
-            })?;
-            return rows.iter().map(map_pg_row).collect();
+            match q.fetch_all(&self.pool).await {
+                Ok(rows) => return rows.iter().map(map_pg_row).collect(),
+                Err(e) => {
+                    let err = classify_sql_error("retrieve", e);
+                    if !err.is_schema_drift() {
+                        return Err(err);
+                    }
+                    // §37.x.f (D9) — the cached schema is STALE; evict
+                    // and fall through to the miss path: the single
+                    // retry, with fresh introspection.
+                    self.evict_schema(table);
+                }
+            }
         }
-        // — cache MISS: resolve + operate in ONE transaction (D3). —
+        // — cache MISS, or the §37.x.f (D9) self-heal retry: resolve +
+        //   operate in ONE transaction (D3). —
         let mut tx = self.pool.begin().await.map_err(|e| {
             StoreError::Connect { source: e.to_string() }
         })?;
@@ -1042,9 +1188,10 @@ impl PostgresStoreBackend {
         for value in &params {
             q = bind_value(q, value);
         }
-        let rows = q.fetch_all(&mut *tx).await.map_err(|e| {
-            StoreError::Query { op: "retrieve", source: e.to_string() }
-        })?;
+        let rows = q
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| classify_sql_error("retrieve", e))?;
         tx.commit().await.map_err(|e| StoreError::Connect {
             source: e.to_string(),
         })?;
@@ -1065,7 +1212,7 @@ impl PostgresStoreBackend {
         table: &str,
     ) -> Option<std::sync::Arc<ResolvedTable>> {
         let key = (self.dsn.clone(), table.to_string());
-        SCHEMA_CACHE.lock().unwrap().get(&key).cloned()
+        SCHEMA_CACHE.lock().unwrap().get(&key)
     }
 
     /// §Fase 37.x.d (D3) — store a successful resolution in the
@@ -1086,6 +1233,16 @@ impl PostgresStoreBackend {
         }
     }
 
+    /// §Fase 37.x.f (D9) — evict `table`'s cached resolution so the
+    /// next operation re-introspects. Called by the self-heal path when
+    /// a store SQL statement fails with a schema-drift SQLSTATE — the
+    /// live table has drifted from the cached schema. `pub(crate)` so
+    /// the `row_stream` cursor drain shares the self-heal.
+    pub(crate) fn evict_schema(&self, table: &str) {
+        let key = (self.dsn.clone(), table.to_string());
+        SCHEMA_CACHE.lock().unwrap().evict(&key);
+    }
+
     /// `persist` — run `INSERT INTO "schema"."table" (…) VALUES (…)`.
     /// Returns the number of rows inserted. §Fase 37.x.d (D3) — on a
     /// cache MISS the resolution + the `INSERT` execute in ONE
@@ -1095,7 +1252,8 @@ impl PostgresStoreBackend {
         table: &str,
         data: &[(String, SqlValue)],
     ) -> Result<u64, StoreError> {
-        // — cache HIT: the resolution is known; no transaction. —
+        // — cache HIT: operate with the cached resolution; no
+        //   transaction. §37.x.f (D9) self-heals a stale cache. —
         if let Some(resolved) = self.cached_schema(table) {
             let (sql, params) = build_insert_sql(
                 table,
@@ -1107,12 +1265,23 @@ impl PostgresStoreBackend {
             for value in &params {
                 q = bind_value(q, value);
             }
-            let result = q.execute(&self.pool).await.map_err(|e| {
-                StoreError::Query { op: "persist", source: e.to_string() }
-            })?;
-            return Ok(result.rows_affected());
+            match q.execute(&self.pool).await {
+                Ok(result) => return Ok(result.rows_affected()),
+                Err(e) => {
+                    let err = classify_sql_error("persist", e);
+                    if !err.is_schema_drift() {
+                        return Err(err);
+                    }
+                    // §37.x.f (D9) — stale cache: evict + fall through
+                    // (the single retry). Safe — a drift SQLSTATE is a
+                    // parse/plan-time rejection, so this `INSERT` wrote
+                    // zero rows; the retry cannot double-write.
+                    self.evict_schema(table);
+                }
+            }
         }
-        // — cache MISS: resolve + operate in ONE transaction (D3). —
+        // — cache MISS, or the §37.x.f (D9) self-heal retry: resolve +
+        //   operate in ONE transaction (D3). —
         let mut tx = self.pool.begin().await.map_err(|e| {
             StoreError::Connect { source: e.to_string() }
         })?;
@@ -1127,9 +1296,10 @@ impl PostgresStoreBackend {
         for value in &params {
             q = bind_value(q, value);
         }
-        let result = q.execute(&mut *tx).await.map_err(|e| {
-            StoreError::Query { op: "persist", source: e.to_string() }
-        })?;
+        let result = q
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| classify_sql_error("persist", e))?;
         tx.commit().await.map_err(|e| StoreError::Connect {
             source: e.to_string(),
         })?;
@@ -1150,7 +1320,8 @@ impl PostgresStoreBackend {
         data: &[(String, SqlValue)],
         bindings: &std::collections::HashMap<String, String>,
     ) -> Result<u64, StoreError> {
-        // — cache HIT: the resolution is known; no transaction. —
+        // — cache HIT: operate with the cached resolution; no
+        //   transaction. §37.x.f (D9) self-heals a stale cache. —
         if let Some(resolved) = self.cached_schema(table) {
             let (sql, params) = build_update_sql(
                 table,
@@ -1164,12 +1335,23 @@ impl PostgresStoreBackend {
             for value in &params {
                 q = bind_value(q, value);
             }
-            let result = q.execute(&self.pool).await.map_err(|e| {
-                StoreError::Query { op: "mutate", source: e.to_string() }
-            })?;
-            return Ok(result.rows_affected());
+            match q.execute(&self.pool).await {
+                Ok(result) => return Ok(result.rows_affected()),
+                Err(e) => {
+                    let err = classify_sql_error("mutate", e);
+                    if !err.is_schema_drift() {
+                        return Err(err);
+                    }
+                    // §37.x.f (D9) — stale cache: evict + fall through
+                    // (the single retry). Safe — a drift SQLSTATE is a
+                    // parse/plan-time rejection, so this `UPDATE`
+                    // modified zero rows; the retry cannot double-write.
+                    self.evict_schema(table);
+                }
+            }
         }
-        // — cache MISS: resolve + operate in ONE transaction (D3). —
+        // — cache MISS, or the §37.x.f (D9) self-heal retry: resolve +
+        //   operate in ONE transaction (D3). —
         let mut tx = self.pool.begin().await.map_err(|e| {
             StoreError::Connect { source: e.to_string() }
         })?;
@@ -1186,9 +1368,10 @@ impl PostgresStoreBackend {
         for value in &params {
             q = bind_value(q, value);
         }
-        let result = q.execute(&mut *tx).await.map_err(|e| {
-            StoreError::Query { op: "mutate", source: e.to_string() }
-        })?;
+        let result = q
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| classify_sql_error("mutate", e))?;
         tx.commit().await.map_err(|e| StoreError::Connect {
             source: e.to_string(),
         })?;
@@ -1208,7 +1391,8 @@ impl PostgresStoreBackend {
         where_expr: &str,
         bindings: &std::collections::HashMap<String, String>,
     ) -> Result<u64, StoreError> {
-        // — cache HIT: the resolution is known; no transaction. —
+        // — cache HIT: operate with the cached resolution; no
+        //   transaction. §37.x.f (D9) self-heals a stale cache. —
         if let Some(resolved) = self.cached_schema(table) {
             let (sql, params) = build_delete_sql(
                 table,
@@ -1221,12 +1405,23 @@ impl PostgresStoreBackend {
             for value in &params {
                 q = bind_value(q, value);
             }
-            let result = q.execute(&self.pool).await.map_err(|e| {
-                StoreError::Query { op: "purge", source: e.to_string() }
-            })?;
-            return Ok(result.rows_affected());
+            match q.execute(&self.pool).await {
+                Ok(result) => return Ok(result.rows_affected()),
+                Err(e) => {
+                    let err = classify_sql_error("purge", e);
+                    if !err.is_schema_drift() {
+                        return Err(err);
+                    }
+                    // §37.x.f (D9) — stale cache: evict + fall through
+                    // (the single retry). Safe — a drift SQLSTATE is a
+                    // parse/plan-time rejection, so this `DELETE`
+                    // removed zero rows; the retry cannot double-delete.
+                    self.evict_schema(table);
+                }
+            }
         }
-        // — cache MISS: resolve + operate in ONE transaction (D3). —
+        // — cache MISS, or the §37.x.f (D9) self-heal retry: resolve +
+        //   operate in ONE transaction (D3). —
         let mut tx = self.pool.begin().await.map_err(|e| {
             StoreError::Connect { source: e.to_string() }
         })?;
@@ -1242,9 +1437,10 @@ impl PostgresStoreBackend {
         for value in &params {
             q = bind_value(q, value);
         }
-        let result = q.execute(&mut *tx).await.map_err(|e| {
-            StoreError::Query { op: "purge", source: e.to_string() }
-        })?;
+        let result = q
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| classify_sql_error("purge", e))?;
         tx.commit().await.map_err(|e| StoreError::Connect {
             source: e.to_string(),
         })?;
@@ -2060,6 +2256,106 @@ mod tests {
         );
     }
 
+    // ── §Fase 37.x.f — D9 self-healing bounded cache ─────────────────
+
+    #[test]
+    fn is_schema_drift_sqlstate_recognises_exactly_the_drift_codes() {
+        // The four parse/plan-time rejections that signal a stale cache.
+        for code in ["42P01", "42703", "42804", "42883"] {
+            assert!(
+                is_schema_drift_sqlstate(code),
+                "`{code}` must be a schema-drift SQLSTATE"
+            );
+        }
+        // Non-drift samples — unique-violation, syntax error, connection
+        // failure, check-violation, serialization failure, empty.
+        for code in ["23505", "42601", "08006", "23514", "40001", ""] {
+            assert!(
+                !is_schema_drift_sqlstate(code),
+                "`{code}` is NOT schema drift — must not trigger the \
+                 self-heal retry"
+            );
+        }
+    }
+
+    #[test]
+    fn store_error_is_schema_drift_predicate() {
+        assert!(StoreError::SchemaDrift {
+            op: "retrieve",
+            sqlstate: "42883".to_string(),
+            source: "operator does not exist: text = uuid".to_string(),
+        }
+        .is_schema_drift());
+        assert!(!StoreError::Query {
+            op: "retrieve",
+            source: "syntax error".to_string(),
+        }
+        .is_schema_drift());
+        assert!(!StoreError::TableNotResolved { table: "t".into() }
+            .is_schema_drift());
+    }
+
+    /// A small `ResolvedTable` for the cache tests.
+    fn rt(schema: &str) -> std::sync::Arc<ResolvedTable> {
+        std::sync::Arc::new(ResolvedTable {
+            schema: schema.to_string(),
+            column_types: std::collections::HashMap::from([(
+                "id".to_string(),
+                "uuid".to_string(),
+            )]),
+        })
+    }
+
+    #[test]
+    fn schema_cache_evicts_the_oldest_entry_at_capacity() {
+        // §D9 — the bound: a many-table adopter cannot grow the cache
+        // without limit; at capacity the OLDEST insertion is evicted.
+        let mut cache = SchemaCache::new(2);
+        let key = |t: &str| ("dsn".to_string(), t.to_string());
+        cache.insert(key("a"), rt("s_a"));
+        cache.insert(key("b"), rt("s_b"));
+        cache.insert(key("c"), rt("s_c")); // over capacity → evict `a`.
+        assert_eq!(cache.entries.len(), 2, "the cache is bounded at 2");
+        assert!(
+            cache.get(&key("a")).is_none(),
+            "the oldest entry was evicted"
+        );
+        assert_eq!(
+            cache.get(&key("b")).map(|r| r.schema.clone()),
+            Some("s_b".to_string())
+        );
+        assert_eq!(
+            cache.get(&key("c")).map(|r| r.schema.clone()),
+            Some("s_c".to_string())
+        );
+    }
+
+    #[test]
+    fn schema_cache_evict_drops_a_named_entry() {
+        // §D9 — the self-heal eviction primitive.
+        let mut cache = SchemaCache::new(10);
+        let key = ("dsn".to_string(), "t".to_string());
+        cache.insert(key.clone(), rt("public"));
+        assert!(cache.get(&key).is_some());
+        cache.evict(&key);
+        assert!(cache.get(&key).is_none(), "evict drops the entry");
+    }
+
+    #[test]
+    fn schema_cache_reinsert_of_a_key_does_not_evict_another() {
+        // Re-inserting an EXISTING key (a self-heal re-introspection)
+        // refreshes it in place — it must not evict another entry.
+        let mut cache = SchemaCache::new(2);
+        let ka = ("dsn".to_string(), "a".to_string());
+        let kb = ("dsn".to_string(), "b".to_string());
+        cache.insert(ka.clone(), rt("public"));
+        cache.insert(kb.clone(), rt("public"));
+        cache.insert(ka.clone(), rt("public")); // re-insert — no eviction.
+        assert_eq!(cache.entries.len(), 2);
+        assert!(cache.get(&ka).is_some());
+        assert!(cache.get(&kb).is_some(), "the re-insert evicted nothing");
+    }
+
     // ── StoreError display ───────────────────────────────────────────
 
     #[test]
@@ -2090,6 +2386,11 @@ mod tests {
             StoreError::AmbiguousTable {
                 table: "dup".into(),
                 schemas: vec!["a".into(), "b".into()],
+            },
+            StoreError::SchemaDrift {
+                op: "retrieve",
+                sqlstate: "42883".into(),
+                source: "operator does not exist: text = uuid".into(),
             },
         ];
         for e in errors {

@@ -48,8 +48,8 @@ use serde_json::{json, Value as JsonValue};
 use crate::cancel_token::CancellationFlag;
 use crate::store::filter::SqlValue;
 use crate::store::postgres_backend::{
-    bind_value, build_select_sql, introspect_conn, map_pg_row,
-    PostgresStoreBackend, StoreError, StoreRow,
+    bind_value, build_select_sql, classify_sql_error, introspect_conn,
+    map_pg_row, PostgresStoreBackend, StoreError, StoreRow,
 };
 use crate::stream_effect::BackpressurePolicy;
 
@@ -200,13 +200,19 @@ pub async fn stream_retrieve(
         }
         // `.fetch()` is the lazy cursor — rows are NOT all buffered.
         let cursor = query.fetch(backend.pool()).map(|item| {
-            item.map_err(|e| StoreError::Query {
-                op: "retrieve",
-                source: e.to_string(),
-            })
-            .and_then(|pg_row| map_pg_row(&pg_row))
+            item.map_err(|e| classify_sql_error("retrieve", e))
+                .and_then(|pg_row| map_pg_row(&pg_row))
         });
-        return drain_with_policy(cursor, policy, max_rows, cancel).await;
+        match drain_with_policy(cursor, policy, max_rows, cancel).await {
+            Ok(outcome) => return Ok(outcome),
+            Err(e) if e.is_schema_drift() => {
+                // §37.x.f (D9) — the cached schema is STALE; evict and
+                // fall through to the miss path: the single retry,
+                // with fresh introspection.
+                backend.evict_schema(table);
+            }
+            Err(e) => return Err(e),
+        }
     }
 
     // §Fase 37.x.d (D3) — a cache MISS: the schema introspection AND
@@ -238,11 +244,8 @@ pub async fn stream_retrieve(
     // it is dropped before the transaction is committed.
     let outcome = {
         let cursor = query.fetch(&mut *tx).map(|item| {
-            item.map_err(|e| StoreError::Query {
-                op: "retrieve",
-                source: e.to_string(),
-            })
-            .and_then(|pg_row| map_pg_row(&pg_row))
+            item.map_err(|e| classify_sql_error("retrieve", e))
+                .and_then(|pg_row| map_pg_row(&pg_row))
         });
         drain_with_policy(cursor, policy, max_rows, cancel).await
     };

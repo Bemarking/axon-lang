@@ -655,3 +655,56 @@ async fn t15_coherent_session_miss_then_hit() {
 
     drop_table(&backend, table).await;
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  §Fase 37.x.f — D9 self-healing schema cache
+// ════════════════════════════════════════════════════════════════════
+
+/// §Fase 37.x.f (D9) — a live `ALTER TABLE` between two writes drifts
+/// the cache; the second write hits the stale entry, fails with a
+/// schema-drift SQLSTATE, and SELF-HEALS (evict + retry once against
+/// fresh introspection). The retry is safe — a drift SQLSTATE is a
+/// parse/plan-time rejection, so the failed `INSERT` wrote ZERO rows:
+/// this proves it by asserting EXACTLY ONE row was added, not two.
+#[tokio::test]
+async fn t16_d9_write_self_heals_without_double_writing() {
+    let backend = pg_or_skip!();
+    let table = "fase35l_t16_selfheal";
+    fresh_table(&backend, table, "id integer").await;
+
+    // First write — a cache MISS — caches `{id: int4}`.
+    backend
+        .insert(table, &[("id".into(), SqlValue::Integer(1))])
+        .await
+        .expect("§37.x.f — the seed insert");
+
+    // A live migration: `id` becomes `text`. The cached `{id: int4}` is
+    // now stale; the existing row's `id` becomes the text `'1'`.
+    exec(
+        &backend,
+        &format!("ALTER TABLE {table} ALTER COLUMN id TYPE text USING id::text"),
+    )
+    .await;
+
+    // The next write hits the STALE cache → `INSERT … VALUES ($1::int4)`
+    // into the now-`text` column → SQLSTATE 42804 → D9 evicts + retries
+    // once with fresh introspection (`id` is now `text`) → succeeds.
+    let inserted = backend
+        .insert(table, &[("id".into(), text("3"))])
+        .await
+        .expect("§37.x.f (D9) — the write SELF-HEALS after the drift");
+    assert_eq!(inserted, 1, "the self-healed insert reports one row");
+
+    // The retry-safety proof: the drifted first attempt wrote ZERO rows
+    // (a parse/plan-time rejection), so the table holds EXACTLY the
+    // seed row + the one self-healed row — no double-write.
+    let rows = backend.query(table, "", &nb()).await.expect("count");
+    assert_eq!(
+        rows.len(),
+        2,
+        "§37.x.f — exactly one row was added by the self-healed write; \
+         a double-write would leave three"
+    );
+
+    drop_table(&backend, table).await;
+}
