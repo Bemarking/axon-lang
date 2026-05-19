@@ -31,6 +31,11 @@
 9. [Pillar IV — capability-typed access (`capability`)](#9-pillar-iv--capability-typed-access-capability)
 10. [The `in_memory` backend](#10-the-in_memory-backend)
 11. [Connecting to Postgres](#11-connecting-to-postgres)
+    - [11.1 Transaction-mode poolers (v1.36.3+)](#111-transaction-mode-poolers--works-out-of-the-box-v1363)
+    - [11.2 The Pooler-Coherent Store Contract (v1.37.0+)](#112-the-pooler-coherent-store-contract-v1370)
+    - [11.3 Recipe — legacy-schema table](#113-recipe--a-table-living-behind-a-legacy-schema)
+    - [11.4 Recipe — multi-schema same-name table (D6)](#114-recipe--a-same-name-table-in-multiple-schemas-d6)
+    - [11.5 Recipe — deploy-time verification (D8)](#115-recipe--deploy-time-store-schema-verification-d8)
 12. [Honest scope boundaries (v1.30.0)](#12-honest-scope-boundaries-v1300)
 13. [Production checklist](#13-production-checklist)
 14. [Troubleshooting](#14-troubleshooting)
@@ -473,6 +478,156 @@ Every axonstore connection also carries an `application_name` of
 at a glance in `pg_stat_activity`, your pooler's logs, and DBA
 dashboards.
 
+### 11.2 The Pooler-Coherent Store Contract (v1.37.0+)
+
+v1.36.3 closed *one* pooler-related defect — the prepared-statement
+cache collision. v1.37.0 closes the deeper one: a typed-column
+`retrieve`/`mutate`/`purge` on a session whose `search_path` did not
+disambiguate the table would die `operator does not exist: uuid =
+text` (or `text = bigint`, `<= timestamptz`, …). The five iterations
+1.36.1–1.36.5 each fixed a real healthy-session defect but none
+addressed that **the path itself was conditional on the session** —
+column-type introspection ran on a *different* pooled connection than
+the operation it typed.
+
+v1.37.0 makes the store path **unconditionally pooler-coherent**.
+Stated as a contract — the nine D-letters of Fase 37.x:
+
+| D-letter | Guarantee |
+|---|---|
+| **D1** | A store table is resolved via `pg_catalog` (`to_regclass` primary + cross-schema `relname` fallback), **never** the ambient `search_path` — a pooler-volatile per-connection GUC the pooler does not preserve across checkouts |
+| **D2** | Every operation's SQL is schema-qualified — `"schema"."table"` — so it resolves on **any** session regardless of `search_path` |
+| **D3** | On a cache miss the schema introspection AND the operation execute inside **one** `pool.begin()` transaction — a transaction-mode pooler pins ONE physical backend for both, never two |
+| **D4** | When the column type is genuinely unknown (introspection ran, returned no rows for that column) an equality filter falls back to `"col"::text = $N` — the column-side `::text` cast compares uniformly. Ordering / `LIKE` keep a bare `$N` (fail-loud) |
+| **D5** | The contract holds symmetrically across `retrieve` / `persist` / `mutate` / `purge` / `Stream<Row>`. Public signatures are byte-unchanged; a healthy direct connection is byte-identical to pre-v1.37 |
+| **D6** | An unresolvable or ambiguous table is a *typed, actionable* failure — the error names the table, the schemas searched, the masked DSN, and the concrete remedy; a structured `tracing::error!` lands in your logs |
+| **D7** | The CI lane `fase_37x_pooler_coherent_store.yml` exercises every contract above through PgBouncer `pool_mode=transaction` on every PR + master push — the regression is FORCED to surface in CI |
+| **D8** | `POST /v1/deploy` **eagerly resolves and introspects** every declared `postgresql` store — a missing table on a reachable database FAILS the deploy (not a request months later). An unreachable store is a non-fatal warning ("deploy is honest, never brittle") and the D9 runtime path still applies |
+| **D9** | The process-global `(dsn, table)` schema cache is **bounded** (10 000 entries, oldest-first eviction) and **self-healing** — a cache-hit operation that fails with a schema-drift SQLSTATE (`42P01` / `42703` / `42804` / `42883`) evicts the entry and retries once against fresh introspection. Provably safe: every drift SQLSTATE is a parse-time rejection (the failed statement had zero side effects, so a retried `persist`/`mutate` cannot double-write) |
+
+You do not configure any of this. The contract is the runtime; an
+adopter who never reads this section gets exactly the same behavior as
+one who memorizes it. The pooler-coherent contract is invisible when
+it works — which it now does on every session.
+
+> **What this means for an adopter:** drop in v1.37.0, point
+> `connection:` at your transaction-mode pooler URL (Supabase
+> `:6543`, RDS Proxy, Neon, PgBouncer transaction mode, …), and the
+> typed-column read/write that previously needed a lucky
+> direct-session smoke test now succeeds every time. The five
+> patches 1.36.1–1.36.5 are subsumed; you do not need their
+> workarounds.
+
+### 11.3 Recipe — a table living behind a legacy schema
+
+A common adopter shape: the application user's `search_path` is
+`public, app, audit` but the table you want lives in `legacy_v2`. Pre-37,
+this meant a `retrieve` from the table failed `relation "X" does not
+exist` on first run, then sometimes succeeded if you happened to `SET
+search_path` first.
+
+```axon
+axonstore claims {
+    backend: postgresql
+    connection: "env:DATABASE_URL"
+}
+
+flow LookupClaim(claim_id: String) -> Unit {
+    retrieve claims { where: "id = ${claim_id}" as: result }
+}
+```
+
+v1.37.0 — **`claims` resolves via `pg_catalog`** and finds the table
+in `legacy_v2` regardless of where it falls in (or out of) the
+session's `search_path`. The operation runs `SELECT * FROM
+"legacy_v2"."claims" WHERE "id" = $1::uuid` (or `::int4`, etc.,
+depending on `claims.id`'s introspected type). No DSN trick, no `SET
+search_path` boilerplate.
+
+Behind the scenes: the first request introspects + caches; the next
+20 000 reads are cache hits with a single round-trip. A live `ALTER
+TABLE legacy_v2.claims ALTER COLUMN id TYPE text` will cause the next
+read to fail SQLSTATE 42883 — and **self-heal** — the cache evicts,
+re-introspects, retries with `"id"::text = $1`, returns the row. No
+adopter intervention.
+
+### 11.4 Recipe — a same-name table in multiple schemas (D6)
+
+Some applications have the SAME table name in two schemas (a tenant-
+per-schema layout, a `staging.events` + `prod.events` topology). v1.37
+detects this and FAILS with a precise, actionable error — never
+silently picks the wrong one.
+
+```text
+axonstore table `events` is ambiguous — it exists in 2 schemas
+(prod, staging) and the connection's `search_path` does not
+disambiguate it; either narrow the role's `search_path` so exactly
+one of the resolving schemas is visible, or declare the target
+schema explicitly on the `axonstore` (the Fase 38 `schema:`
+declaration, incl. `schema: env:VAR` per-tenant)
+```
+
+Two remedies, named for you:
+
+1. **Narrow `search_path` for the role.** If exactly one of the
+   resolving schemas should be visible to this connection, set the
+   user's `search_path` to that schema only (`ALTER ROLE …`).
+2. **Declare the schema on the `axonstore`** (the genuinely-superior
+   remedy, the multi-schema case anchored to its compile-time half).
+   *Available in axon-lang Fase 38 — the compile-time-typed schema
+   companion to 37.x* (`axonstore claims { backend: postgresql ...
+   schema: env:TENANT_SCHEMA }`).
+
+Behind a transaction-mode pooler, remedy #1 is necessary anyway: the
+pooler does not preserve a session-local `SET search_path` across
+checkouts. Remedy #2 will let an adopter declare the schema *in
+source*, validated at compile time, per-tenant when the schema is an
+`env:` reference. Until then, narrow `search_path` at the role level.
+
+### 11.5 Recipe — deploy-time store-schema verification (D8)
+
+v1.37.0 wires the schema check into `POST /v1/deploy` (the `axon
+deploy` flow). A missing table on a reachable database now fails the
+**deploy**, not the first production request:
+
+```text
+POST /v1/deploy → 400 Bad Request
+{
+  "error": "deploy-time store-schema verification failed: 1 declared
+            postgresql store table(s) do not resolve on a reachable
+            database: `claims` — axonstore could not resolve table
+            `claims` to a relation in any schema of the database —
+            verify the table exists in the target database (a
+            deploy-time migration is the usual remedy) and that the
+            configured credentials can SELECT from it; … (database:
+            postgresql://app:***@db.host/prod)",
+  "phase": "store_schema_verification",
+  "d_letter": "D8"
+}
+```
+
+A store *unreachable* at deploy (the database is transiently down,
+the `env:` var is unset) is a NON-fatal warning — the deploy proceeds
+and the D9 runtime path still resolves the schema on the first live
+operation. "Deploy is honest, never brittle": a transient outage at
+deploy time does not block a rollout that an operator can re-resolve
+the moment the database returns.
+
+```json
+{
+  "deployed": true,
+  "store_warnings": [
+    { "store": "audit_log",
+      "diagnostic": "axonstore could not reach the database: ... (database: postgres://app:***@audit.host/prod)" }
+  ]
+}
+```
+
+The successful-resolution side-effect — the schema is now **warm in
+the process cache**, so the first runtime operation against a
+verified store is a cache hit. Cold-start latency for the first
+request after a deploy is one less round-trip.
+
 ---
 
 ## 12. Honest scope boundaries (v1.30.0)
@@ -529,7 +684,11 @@ silently omitted:
 | Endpoint fails `axon check` with "requiring capability" | A flow touches a `capability`-gated store; add the capability to the endpoint's `requires:`. |
 | `column 'X' has Postgres type 'Y', outside the v1.30.0 supported catalog` | See [§12](#12-honest-scope-boundaries-v1300) for the supported type catalog. |
 | `prepared statement "sqlx_s_1" already exists` | A transaction-mode pooler in front of an axonstore older than v1.36.3. Upgrade — v1.36.3+ disables the named-statement cache, so axonstore is pooler-safe with no configuration ([§11.1](#111-transaction-mode-poolers--works-out-of-the-box-v1363)). |
-| `operator does not exist: uuid = text` (or `text = bigint`, `<= timestamptz`, …) on a `retrieve`/`mutate`/`purge` `where:` | The `where`-clause value is not cast to the column's type. Upgrade to **v1.36.5+** — the filter casts each value to its introspected column type (`"id" = $1::uuid`). v1.36.5 specifically resolves the table via the connection's full `search_path` (not just `current_schema()`), so a table in a legacy schema behind `public` is introspected correctly. |
+| `operator does not exist: uuid = text` (or `text = bigint`, `<= timestamptz`, …) on a `retrieve`/`mutate`/`purge` `where:` | The `where`-clause value is not cast to the column's type behind a transaction-mode pooler. Upgrade to **v1.37.0+** — the *Pooler-Coherent Store Contract* makes the introspection + the operation share ONE pooled session and resolves the table via `pg_catalog` (never `search_path`), so the typed cast lands every time, not just on a lucky session ([§11.2](#112-the-pooler-coherent-store-contract-v1370)). The patch chain 1.36.1–1.36.5 is subsumed. |
+| `axonstore could not resolve table 'X' to a relation in any schema of the database` ([D6](#112-the-pooler-coherent-store-contract-v1370)) | The table genuinely does not exist on the target database, **or** the credential cannot `SELECT` from it (no schema USAGE / table SELECT GRANT). A deploy-time migration is the usual remedy. v1.37 introspects through `pg_catalog`, so `search_path` is NOT the culprit — the search is independent of it. |
+| `axonstore table 'X' is ambiguous — it exists in N schemas` ([D6](#114-recipe--a-same-name-table-in-multiple-schemas-d6)) | The same table name exists in ≥2 schemas this role can see. Either narrow the role's `search_path` so exactly one resolving schema is visible (`ALTER ROLE … SET search_path = …`), or declare the target schema on the `axonstore` (the Fase 38 `schema:` declaration). |
+| `axonstore 'X' hit live schema drift (SQLSTATE 42703/42804/42883/42P01)` ([D9](#112-the-pooler-coherent-store-contract-v1370)) | A live `ALTER TABLE` ran since the schema was cached. v1.37.0+ **self-heals**: the cache entry evicts, fresh introspection runs, the operation retries once and succeeds. If you see this error reach your client, the retry also failed — likely because the new schema is *itself* incompatible with the operation. Investigate the latest `ALTER`. |
+| `POST /v1/deploy → 400 deploy-time store-schema verification failed` ([D8](#115-recipe--deploy-time-store-schema-verification-d8)) | A declared `postgresql` store's table does not resolve on a *reachable* database — the deploy is failing on purpose. Run the schema migration, or fix the `connection:`/credentials, then re-deploy. An *unreachable* database at deploy is a non-fatal warning (the deploy proceeds; the D9 runtime path resolves later). |
 
 ---
 
