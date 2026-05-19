@@ -12,8 +12,9 @@
 //! load-bearing D4 invariant, fuzzed in 35.k.
 //!
 //! ```text
-//!   where "id = 1 AND name = 'Alice'"
-//!     →  ("\"id\" = $1 AND \"name\" = $2", [Integer(1), Text("Alice")])
+//!   where "id = 1 AND name = 'Alice'"          (column types unknown)
+//!     →  ("\"id\"::text = $1 AND \"name\"::text = $2",
+//!         [Integer(1), Text("Alice")])
 //! ```
 //!
 //! # Grammar (closed)
@@ -678,20 +679,24 @@ pub fn parse_filter(
 /// `[A-Za-z_]\w*`, so it cannot carry a quote) and every value is a
 /// `$N` placeholder — no user value is ever interpolated into the SQL.
 ///
-/// §v1.36.4 — every comparison renders `"col" {op} $N::<type>`, casting
-/// the **value** to the column's introspected Postgres type
-/// (`column_types`, the `column → udt_name` map from
-/// `information_schema`). This is the read-side mirror of v1.36.2's
-/// write cast: a `text`-bound value (`uuid`/`int`/`timestamptz` …)
-/// compares against its typed column with the native operator —
-/// `int = int`, `uuid = uuid` — so equality is exact AND ordering is
-/// numeric/temporal (not lexicographic). It replaces v1.36.1's
-/// `"col"::text` column cast, which fixed `uuid` columns but broke
-/// `int`/`numeric`/`timestamp` ones (`text = bigint` has no operator).
-/// When the column's type is unknown — `column_types` missed it, or
-/// introspection ran against a table outside `current_schema()` — the
-/// fallback is a bare `"col" {op} $N`: a same-type comparison still
-/// works, a cross-type one fails LOUDLY (no silent-wrong result).
+/// §v1.36.4 — when the column's Postgres type is KNOWN (`column_types`,
+/// the `column → udt_name` map), every comparison renders
+/// `"col" {op} $N::<type>`, casting the **value** to that type: a
+/// `text`-bound value (`uuid`/`int`/`timestamptz` …) compares against
+/// its typed column with the native operator — `int = int`,
+/// `uuid = uuid` — so equality is exact AND ordering is
+/// numeric/temporal (not lexicographic).
+///
+/// §Fase 37.x.e (D4) — when the column's type is UNKNOWN (introspection
+/// found nothing), the rendering depends on the operator. An EQUALITY
+/// comparison (`=` / `!=`) renders `"col"::text {op} $N` — casting the
+/// COLUMN to `text` so a `text`-bound value compares `text = text`
+/// against ANY column type. An ORDERING comparison (`< > <= >=`) and
+/// `LIKE` keep the bare `"col" {op} $N`: they need the real type, and a
+/// lexicographic ordering miscast is worse than an honest `operator
+/// does not exist` failure. The equality cast is a DEGRADED best-effort
+/// backstop (exact for canonical-form inputs) — the load-bearing path
+/// is the §37.x.b/d `pg_catalog` introspection.
 pub fn build_pg_where(
     expr: &str,
     param_offset: usize,
@@ -730,26 +735,46 @@ pub fn build_pg_where(
                 clause.push_str(&format!("\"{}\" {tail}", cond.column));
             }
             bound => {
-                // §v1.36.4 — typed-column filter. axon binds every
-                // value as a parameter, so `"tid" = $1` against a
-                // `uuid` column fails: Postgres has no `uuid = text`
-                // operator. The cure is the read-side mirror of
-                // v1.36.2's write cast — cast the VALUE placeholder to
-                // the column's introspected type: `"tid" = $1::uuid`.
-                // The column keeps its native type, so equality is
-                // exact and ordering is numeric/temporal. When the
-                // type is unknown the suffix is empty — a bare
-                // `"col" {op} $N`, which works for a same-type
-                // comparison and fails loudly for a cross-type one.
-                let cast = match column_types.get(&cond.column) {
-                    Some(udt) if is_safe_identifier(udt) => {
-                        format!("::{udt}")
+                // The column's introspected Postgres type, if known
+                // and a safe identifier — drives the cast.
+                let known_udt: Option<&str> =
+                    match column_types.get(&cond.column) {
+                        Some(udt) if is_safe_identifier(udt) => {
+                            Some(udt.as_str())
+                        }
+                        _ => None,
+                    };
+                // §v1.36.4 — KNOWN type → cast the VALUE to it
+                // (`"tid" = $1::uuid`): a `text`-bound value compares
+                // against its typed column with the native operator —
+                // equality exact, ordering numeric/temporal.
+                //
+                // §Fase 37.x.e (D4) — UNKNOWN type → the rendering
+                // depends on the operator:
+                //  - EQUALITY (`=` / `!=`) — cast the COLUMN to `text`
+                //    (`"col"::text = $N`): `text = text` compares
+                //    against ANY column type. Equality has no
+                //    lexicographic-vs-native distinction, so the cast
+                //    is exact for canonical-form inputs — a DEGRADED
+                //    best-effort backstop; the load-bearing path is the
+                //    §37.x.b/d `pg_catalog` introspection.
+                //  - ORDERING (`< > <= >=`) and `LIKE` — keep the bare
+                //    `"col" {op} $N`: they need the real type, and a
+                //    lexicographic ordering miscast is worse than an
+                //    honest `operator does not exist` failure.
+                let (column_sql, value_cast) = match (known_udt, cond.op) {
+                    (Some(udt), _) => {
+                        (format!("\"{}\"", cond.column), format!("::{udt}"))
                     }
-                    _ => String::new(),
+                    (None, Operator::Eq | Operator::Ne) => {
+                        (format!("\"{}\"::text", cond.column), String::new())
+                    }
+                    (None, _) => {
+                        (format!("\"{}\"", cond.column), String::new())
+                    }
                 };
                 clause.push_str(&format!(
-                    "\"{}\" {} ${idx}{cast}",
-                    cond.column,
+                    "{column_sql} {} ${idx}{value_cast}",
                     cond.op.as_sql()
                 ));
                 params.push(bound.clone());
@@ -809,15 +834,17 @@ mod tests {
 
     #[test]
     fn single_integer_condition() {
+        // §37.x.e (D4) — an unknown-type equality casts the column to
+        // `text`; the value still rides out as a `$N` bind parameter.
         let (clause, params) = ok("id = 1");
-        assert_eq!(clause, "\"id\" = $1");
+        assert_eq!(clause, "\"id\"::text = $1");
         assert_eq!(params, vec![SqlValue::Integer(1)]);
     }
 
     #[test]
     fn single_string_condition_single_quoted() {
         let (clause, params) = ok("name = 'Alice'");
-        assert_eq!(clause, "\"name\" = $1");
+        assert_eq!(clause, "\"name\"::text = $1");
         assert_eq!(params, vec![SqlValue::Text("Alice".to_string())]);
     }
 
@@ -857,8 +884,10 @@ mod tests {
 
     #[test]
     fn every_operator_renders_canonically() {
-        assert_eq!(ok("a = 1").0, "\"a\" = $1");
-        assert_eq!(ok("a != 1").0, "\"a\" != $1");
+        // §37.x.e (D4) — equality on an unknown-type column casts the
+        // column to `text`; ordering + LIKE keep the bare placeholder.
+        assert_eq!(ok("a = 1").0, "\"a\"::text = $1");
+        assert_eq!(ok("a != 1").0, "\"a\"::text != $1");
         assert_eq!(ok("a > 1").0, "\"a\" > $1");
         assert_eq!(ok("a >= 1").0, "\"a\" >= $1");
         assert_eq!(ok("a < 1").0, "\"a\" < $1");
@@ -868,9 +897,9 @@ mod tests {
 
     #[test]
     fn operator_aliases_normalize() {
-        // `==` → `=`, `<>` → `!=`.
-        assert_eq!(ok("a == 1").0, "\"a\" = $1");
-        assert_eq!(ok("a <> 1").0, "\"a\" != $1");
+        // `==` → `=`, `<>` → `!=`. Both are equality → D4 `::text`.
+        assert_eq!(ok("a == 1").0, "\"a\"::text = $1");
+        assert_eq!(ok("a <> 1").0, "\"a\"::text != $1");
     }
 
     #[test]
@@ -914,27 +943,78 @@ mod tests {
         assert_eq!(clause, "\"age\" >= $1::int4");
     }
 
-    /// An unknown column type falls back to a bare `"col" {op} $N` —
-    /// no cast. A same-type comparison still works; a cross-type one
-    /// fails loudly (no silent-wrong result).
+    // ── §Fase 37.x.e — D4 equality type-agnostic fallback ────────────
+
+    /// §37.x.e (D4) — an unknown-type EQUALITY (`=` / `!=`) casts the
+    /// COLUMN to `text`: `"col"::text = $N`. A `text`-bound value then
+    /// compares `text = text` against ANY column type (`uuid`, `int`,
+    /// `timestamptz`, `bool`, `text`) — equality has no
+    /// lexicographic-vs-native distinction, so the cast is exact for
+    /// canonical-form inputs. The degraded backstop for when
+    /// introspection found nothing.
     #[test]
-    fn unknown_column_type_renders_a_bare_placeholder() {
-        let (clause, _) =
-            build_pg_where("id = 1", 0, &nb(), &nt()).expect("compiles");
-        assert_eq!(clause, "\"id\" = $1");
+    fn d4_unknown_type_equality_casts_the_column_to_text() {
+        assert_eq!(ok("id == 'x'").0, "\"id\"::text = $1");
+        assert_eq!(ok("id != 'x'").0, "\"id\"::text != $1");
+        // `=` is the same operator as `==`.
+        assert_eq!(ok("id = 1").0, "\"id\"::text = $1");
     }
 
-    /// An unsafe `udt_name` (defensive — `information_schema` never
-    /// yields one) is dropped: the cast suffix is elided, never spliced.
+    /// §37.x.e (D4) — an unknown-type ORDERING comparison keeps the
+    /// bare `"col" {op} $N`: ordering genuinely needs the real type (a
+    /// lexicographic miscast is worse than an honest failure).
     #[test]
-    fn unsafe_column_type_name_is_not_spliced() {
+    fn d4_unknown_type_ordering_stays_a_bare_placeholder() {
+        assert_eq!(ok("age > 18").0, "\"age\" > $1");
+        assert_eq!(ok("age >= 18").0, "\"age\" >= $1");
+        assert_eq!(ok("age < 18").0, "\"age\" < $1");
+        assert_eq!(ok("age <= 18").0, "\"age\" <= $1");
+    }
+
+    /// §37.x.e (D4) — `LIKE` on an unknown-type column keeps the bare
+    /// placeholder (it needs a real text column type).
+    #[test]
+    fn d4_unknown_type_like_stays_a_bare_placeholder() {
+        assert_eq!(ok("name LIKE 'a%'").0, "\"name\" LIKE $1");
+    }
+
+    /// §37.x.e (D4) does NOT touch the known-type path — a known
+    /// column type still casts the VALUE (`$N::udt`), every operator.
+    #[test]
+    fn d4_a_known_type_keeps_the_v1_36_4_value_cast() {
+        let types = std::collections::HashMap::from([
+            ("id".to_string(), "uuid".to_string()),
+            ("n".to_string(), "int4".to_string()),
+        ]);
+        assert_eq!(
+            build_pg_where("id == 'x'", 0, &nb(), &types).unwrap().0,
+            "\"id\" = $1::uuid"
+        );
+        assert_eq!(
+            build_pg_where("n > 5", 0, &nb(), &types).unwrap().0,
+            "\"n\" > $1::int4"
+        );
+    }
+
+    /// §37.x.e (D4) — an unsafe `udt_name` (defensive — `pg_catalog`
+    /// never yields one) is treated as UNKNOWN: it is never spliced,
+    /// and an equality still works via the `"col"::text` fallback.
+    #[test]
+    fn d4_an_unsafe_udt_is_not_spliced_and_equality_still_works() {
         let types = std::collections::HashMap::from([(
             "id".to_string(),
             "int4; DROP TABLE x".to_string(),
         )]);
         let (clause, _) =
             build_pg_where("id = 1", 0, &nb(), &types).expect("compiles");
-        assert_eq!(clause, "\"id\" = $1");
+        assert_eq!(
+            clause, "\"id\"::text = $1",
+            "the unsafe udt is not spliced; equality falls back to ::text"
+        );
+        // An ordering comparison with the unsafe udt stays bare.
+        let (clause, _) =
+            build_pg_where("id > 1", 0, &nb(), &types).expect("compiles");
+        assert_eq!(clause, "\"id\" > $1");
     }
 
     #[test]
@@ -947,8 +1027,10 @@ mod tests {
 
     #[test]
     fn two_conditions_joined_by_and() {
+        // §37.x.e (D4) — each unknown-type equality casts its column to
+        // `text`; the connector rendering is unchanged.
         let (clause, params) = ok("id = 1 AND name = 'Alice'");
-        assert_eq!(clause, "\"id\" = $1 AND \"name\" = $2");
+        assert_eq!(clause, "\"id\"::text = $1 AND \"name\"::text = $2");
         assert_eq!(
             params,
             vec![SqlValue::Integer(1), SqlValue::Text("Alice".to_string())]
@@ -957,13 +1039,22 @@ mod tests {
 
     #[test]
     fn two_conditions_joined_by_or() {
-        assert_eq!(ok("a = 1 OR b = 2").0, "\"a\" = $1 OR \"b\" = $2");
+        assert_eq!(
+            ok("a = 1 OR b = 2").0,
+            "\"a\"::text = $1 OR \"b\"::text = $2"
+        );
     }
 
     #[test]
     fn connectors_are_case_insensitive() {
-        assert_eq!(ok("a = 1 and b = 2").0, "\"a\" = $1 AND \"b\" = $2");
-        assert_eq!(ok("a = 1 Or b = 2").0, "\"a\" = $1 OR \"b\" = $2");
+        assert_eq!(
+            ok("a = 1 and b = 2").0,
+            "\"a\"::text = $1 AND \"b\"::text = $2"
+        );
+        assert_eq!(
+            ok("a = 1 Or b = 2").0,
+            "\"a\"::text = $1 OR \"b\"::text = $2"
+        );
     }
 
     #[test]
@@ -971,7 +1062,7 @@ mod tests {
         let (clause, params) = ok("a = 1 AND b = 2 OR c = 3");
         assert_eq!(
             clause,
-            "\"a\" = $1 AND \"b\" = $2 OR \"c\" = $3"
+            "\"a\"::text = $1 AND \"b\"::text = $2 OR \"c\"::text = $3"
         );
         assert_eq!(params.len(), 3);
     }
@@ -995,8 +1086,10 @@ mod tests {
     #[test]
     fn null_does_not_occupy_a_parameter_slot() {
         // `a` is NULL (folded, no slot) so `b` takes $1, not $2.
+        // §37.x.e (D4) — `b = 5` casts the column to `text`; the NULL
+        // fold is type-agnostic already and is never cast.
         let (clause, params) = ok("a = null AND b = 5");
-        assert_eq!(clause, "\"a\" IS NULL AND \"b\" = $1");
+        assert_eq!(clause, "\"a\" IS NULL AND \"b\"::text = $1");
         assert_eq!(params, vec![SqlValue::Integer(5)]);
     }
 
@@ -1011,14 +1104,14 @@ mod tests {
     #[test]
     fn param_offset_shifts_placeholder_numbering() {
         let (clause, _) = build_pg_where("id = 1", 2, &nb(), &nt()).unwrap();
-        assert_eq!(clause, "\"id\" = $3");
+        assert_eq!(clause, "\"id\"::text = $3");
     }
 
     #[test]
     fn param_offset_shifts_every_placeholder() {
         let (clause, _) =
             build_pg_where("a = 1 AND b = 2", 5, &nb(), &nt()).unwrap();
-        assert_eq!(clause, "\"a\" = $6 AND \"b\" = $7");
+        assert_eq!(clause, "\"a\"::text = $6 AND \"b\"::text = $7");
     }
 
     // ── D4 — SQL-injection resistance ────────────────────────────────
@@ -1027,9 +1120,10 @@ mod tests {
     fn injection_payload_inside_a_quoted_string_is_an_inert_bind_param() {
         // The classic payload — fully contained in a string literal —
         // compiles to ONE harmless bound parameter. The SQL structure
-        // is `"name" = $1`; the payload never reaches SQL text.
+        // is `"name"::text = $1` (§37.x.e D4 equality cast); the
+        // payload never reaches SQL text.
         let (clause, params) = ok("name = '; DROP TABLE users; --'");
-        assert_eq!(clause, "\"name\" = $1");
+        assert_eq!(clause, "\"name\"::text = $1");
         assert_eq!(
             params,
             vec![SqlValue::Text("; DROP TABLE users; --".to_string())]

@@ -1446,7 +1446,8 @@ mod tests {
     fn select_with_filter() {
         let (sql, params) =
             build_select_sql("users", None, "id = 1", &nb(), &nb()).unwrap();
-        assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"id\" = $1");
+        // §37.x.e (D4) — unknown column type + equality → `::text`.
+        assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"id\"::text = $1");
         assert_eq!(params, vec![SqlValue::Integer(1)]);
     }
 
@@ -1494,7 +1495,7 @@ mod tests {
         let (sql, params) =
             build_delete_sql("sessions", None, "expired = true", &nb(), &nb())
                 .unwrap();
-        assert_eq!(sql, "DELETE FROM \"sessions\" WHERE \"expired\" = $1");
+        assert_eq!(sql, "DELETE FROM \"sessions\" WHERE \"expired\"::text = $1");
         assert_eq!(params, vec![SqlValue::Boolean(true)]);
     }
 
@@ -1583,7 +1584,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             sql,
-            "UPDATE \"users\" SET \"name\" = $1, \"age\" = $2 WHERE \"id\" = $3"
+            "UPDATE \"users\" SET \"name\" = $1, \"age\" = $2 \
+             WHERE \"id\"::text = $3"
         );
         assert_eq!(
             params,
@@ -1607,7 +1609,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             sql,
-            "UPDATE \"users\" SET \"name\" = NULL, \"age\" = $1 WHERE \"id\" = $2"
+            "UPDATE \"users\" SET \"name\" = NULL, \"age\" = $1 \
+             WHERE \"id\"::text = $2"
         );
         assert_eq!(params, vec![SqlValue::Integer(40), SqlValue::Integer(5)]);
     }
@@ -1711,10 +1714,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             sql,
-            "UPDATE \"t\" SET \"status\" = $1::uuid WHERE \"id\" = $2",
+            "UPDATE \"t\" SET \"status\" = $1::uuid WHERE \"id\"::text = $2",
             "§v1.36.2 — the SET value is cast to the column type; `id` \
-             is absent from the type map so its WHERE placeholder is \
-             bare (§v1.36.4 unknown-type fallback)"
+             is absent from the type map so §37.x.e (D4) casts the \
+             WHERE column to `text` for the equality"
         );
     }
 
@@ -1781,7 +1784,7 @@ mod tests {
             &nb(),
         )
         .unwrap();
-        assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"name\" = $1");
+        assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"name\"::text = $1");
         assert_eq!(
             params,
             vec![txt("; DROP TABLE users; --")]
@@ -1808,7 +1811,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             sql,
-            "SELECT * FROM \"public\".\"tenants\" WHERE \"id\" = $1"
+            "SELECT * FROM \"public\".\"tenants\" WHERE \"id\"::text = $1"
         );
     }
 

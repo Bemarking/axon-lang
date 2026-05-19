@@ -32,8 +32,8 @@
 //!
 //! This file pins what IS deterministic now:
 //!
-//!  - §1 — Finding C, infra-free: an unknown-type equality filter
-//!    compiles to a bare `$N` placeholder.        → 37.x.e inverts.
+//!  - §1 — D4 equality fallback, infra-free: an unknown-type equality
+//!    filter renders `"col"::text = $N`.    → inverted by 37.x.e (D4).
 //!  - §2 — schema-anchored operation SQL, infra-free: with a resolved
 //!    schema the operation SQL is `"schema"."table"`.
 //!                                          → inverted by 37.x.c (D2).
@@ -66,18 +66,22 @@ fn empty() -> HashMap<String, String> {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  §1 — Finding C (infra-free): an unknown-type equality filter
-//        compiles to a BARE `$N` placeholder.
+//  §1 — D4 equality type-agnostic fallback (infra-free). 37.x.e (D4)
+//        INVERTED this anchor: an unknown-type equality filter renders
+//        `"col"::text = $N` — the cast that makes it work against ANY
+//        column type without introspection.
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn s1_unknown_type_equality_filter_renders_a_bare_placeholder() {
+fn s1_unknown_type_equality_filter_casts_the_column_to_text() {
     // The canonical request-bound agent filter: `${tenant_id}` from the
     // request body (Fase 37) reaches the `where:` clause as a bind
-    // value. The column's type is unknown — `column_types` is empty
-    // (introspection saw nothing). `build_pg_where` then emits a bare
-    // `"id" = $1`: sqlx binds `$1` as Postgres `text`, so against a
-    // `uuid` column Postgres looks for `uuid = text` — and fails.
+    // value. The column's type is unknown — `column_types` is empty.
+    // §37.x.e (D4): for an EQUALITY comparison `build_pg_where` casts
+    // the COLUMN to `text` — `"id"::text = $1` — so a `text`-bound
+    // value compares `text = text` against a `uuid` column (or any
+    // type). The pre-37.x.e bare `"id" = $1` was the `uuid = text`
+    // failure this inverts.
     let bindings =
         HashMap::from([("tenant_id".to_string(), ADOPTER_UUID.to_string())]);
 
@@ -86,26 +90,20 @@ fn s1_unknown_type_equality_filter_renders_a_bare_placeholder() {
             .expect("the where-expression compiles");
 
     eprintln!(
-        "§1 anchor (Finding C — unknown-type equality → bare $N):\n\
+        "§1 (37.x.e — D4 equality type-agnostic fallback):\n\
          where-expr     = id == '${{tenant_id}}'\n\
-         column_types   = {{}}  (empty — introspection saw nothing)\n\
+         column_types   = {{}}  (empty — introspection found nothing)\n\
          rendered WHERE = {clause:?}\n\
          bound params   = {params:?}\n\
-         CONCLUSION: the clause is a BARE `\"id\" = $1`. $1 is bound as\n\
-         Postgres `text`; against a `uuid` column this is the adopter's\n\
-         `operator does not exist: uuid = text`.  37.x.e (D4) inverts\n\
-         this to the type-agnostic `\"id\"::text = $1` for equality."
+         CONCLUSION: the equality renders `\"id\"::text = $1` — the\n\
+         column is cast to `text`, so a `text`-bound value matches a\n\
+         `uuid` (or any-type) column. The D4 degraded backstop."
     );
 
     assert_eq!(
-        clause, "\"id\" = $1",
-        "§1: today an unknown-type equality renders a bare `$N` — no \
-         `::type` cast, no `::text` column cast. 37.x.e (D4) inverts it."
-    );
-    assert!(
-        !clause.contains("::"),
-        "§1: there is NO cast of any kind on the bare placeholder — the \
-         exact shape that fails `uuid = text`"
+        clause, "\"id\"::text = $1",
+        "§1 (D4): an unknown-type equality casts the COLUMN to `text` — \
+         `text = text` works against any column type"
     );
     assert_eq!(
         params,
@@ -125,9 +123,9 @@ fn s1_unknown_type_equality_filter_renders_a_bare_placeholder() {
 #[test]
 fn s2_operation_sql_is_schema_qualified_when_resolved() {
     // §37.x.c (D2) — given a resolved schema, the SELECT and INSERT name
-    // the relation SCHEMA-QUALIFIED. `None` (resolution failed) keeps
-    // the bare pre-37.x form. (The cast-less `$1` on an unknown-type
-    // column stays pinned for D1+D8 / 37.x.g.)
+    // the relation SCHEMA-QUALIFIED; `None` keeps the bare table. The
+    // SELECT's WHERE carries the §37.x.e D4 `::text` equality cast; the
+    // INSERT's `$1` stays cast-less (the write-side type cast is D1+D8).
     let (qualified, _) = build_select_sql(
         "tenants",
         Some("public"),
@@ -158,12 +156,14 @@ fn s2_operation_sql_is_schema_qualified_when_resolved() {
     );
 
     assert_eq!(
-        qualified, "SELECT * FROM \"public\".\"tenants\" WHERE \"id\" = $1",
-        "§2 (D2): a resolved schema → the SELECT is schema-qualified"
+        qualified,
+        "SELECT * FROM \"public\".\"tenants\" WHERE \"id\"::text = $1",
+        "§2 (D2): a resolved schema → the SELECT is schema-qualified \
+         (the WHERE carries the §37.x.e D4 equality `::text` cast)"
     );
     assert_eq!(
-        bare, "SELECT * FROM \"tenants\" WHERE \"id\" = $1",
-        "§2 (D5): a `None` schema → the bare pre-37.x form, unchanged"
+        bare, "SELECT * FROM \"tenants\" WHERE \"id\"::text = $1",
+        "§2 (D5): a `None` schema → the bare TABLE, pre-37.x form"
     );
     assert_eq!(
         insert_sql,
