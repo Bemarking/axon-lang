@@ -211,7 +211,7 @@ fn fuzz_s1_filter_compiler_is_total_and_injection_proof() {
         let _ = parse_filter(&expr, &nb());
 
         // `build_pg_where` is total; a compiled clause is injection-safe.
-        match build_pg_where(&expr, offset, &nb()) {
+        match build_pg_where(&expr, offset, &nb(), &nb()) {
             Ok((clause, params)) => {
                 assert_clause_injection_safe(&clause, &params, seed);
                 // Placeholders are sequential from `offset + 1`.
@@ -541,10 +541,14 @@ fn fuzz_s6_sql_builders_are_total_and_injection_proof() {
             .map(|_| (random_identifier_ish(&mut rng), random_sql_value(&mut rng)))
             .collect();
 
-        if let Ok((sql, params)) = build_select_sql(&table, &where_expr, &nb()) {
+        if let Ok((sql, params)) =
+            build_select_sql(&table, &where_expr, &nb(), &nb())
+        {
             assert_clause_injection_safe(&sql, &params, seed);
         }
-        if let Ok((sql, params)) = build_delete_sql(&table, &where_expr, &nb()) {
+        if let Ok((sql, params)) =
+            build_delete_sql(&table, &where_expr, &nb(), &nb())
+        {
             assert_clause_injection_safe(&sql, &params, seed);
         }
         if let Ok((sql, params)) = build_insert_sql(&table, &data, &nb()) {

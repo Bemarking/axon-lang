@@ -678,15 +678,25 @@ pub fn parse_filter(
 /// `[A-Za-z_]\w*`, so it cannot carry a quote) and every value is a
 /// `$N` placeholder — no user value is ever interpolated into the SQL.
 ///
-/// §v1.36.1 — every comparison renders the column as `"col"::text` so
-/// a `text`-bound value compares against ANY column type (`uuid`,
-/// `int`, `timestamptz`, …) without a `uuid = text`-style operator
-/// error. `=`/`!=`/`LIKE` are exact over the canonical text form;
-/// ordering operators are lexicographic over it.
+/// §v1.36.4 — every comparison renders `"col" {op} $N::<type>`, casting
+/// the **value** to the column's introspected Postgres type
+/// (`column_types`, the `column → udt_name` map from
+/// `information_schema`). This is the read-side mirror of v1.36.2's
+/// write cast: a `text`-bound value (`uuid`/`int`/`timestamptz` …)
+/// compares against its typed column with the native operator —
+/// `int = int`, `uuid = uuid` — so equality is exact AND ordering is
+/// numeric/temporal (not lexicographic). It replaces v1.36.1's
+/// `"col"::text` column cast, which fixed `uuid` columns but broke
+/// `int`/`numeric`/`timestamp` ones (`text = bigint` has no operator).
+/// When the column's type is unknown — `column_types` missed it, or
+/// introspection ran against a table outside `current_schema()` — the
+/// fallback is a bare `"col" {op} $N`: a same-type comparison still
+/// works, a cross-type one fails LOUDLY (no silent-wrong result).
 pub fn build_pg_where(
     expr: &str,
     param_offset: usize,
     bindings: &std::collections::HashMap<String, String>,
+    column_types: &std::collections::HashMap<String, String>,
 ) -> Result<(String, Vec<SqlValue>), FilterError> {
     if expr.trim().is_empty() {
         return Ok(("TRUE".to_string(), Vec::new()));
@@ -720,21 +730,25 @@ pub fn build_pg_where(
                 clause.push_str(&format!("\"{}\" {tail}", cond.column));
             }
             bound => {
-                // §v1.36.1 — typed-column filter. axon binds every
-                // value as `text` (D12 — the runtime carries no column
-                // schema), so `"id" = $1` against a `uuid` / `int` /
-                // `timestamptz` column fails: Postgres has no
-                // `uuid = text` operator and the runtime cannot cast
-                // the parameter (it does not know the column's type).
-                // Casting the COLUMN to `text` is type-agnostic —
-                // `<any type>::text` always exists — so the comparison
-                // is `text = text` for every column type. Equality
-                // (`=` / `!=`) and `LIKE` are exact over the canonical
-                // text form; ordering (`>` / `<` / …) is lexicographic
-                // over it (the honest consequence of the schema-less
-                // D12 model — see this module's header).
+                // §v1.36.4 — typed-column filter. axon binds every
+                // value as a parameter, so `"tid" = $1` against a
+                // `uuid` column fails: Postgres has no `uuid = text`
+                // operator. The cure is the read-side mirror of
+                // v1.36.2's write cast — cast the VALUE placeholder to
+                // the column's introspected type: `"tid" = $1::uuid`.
+                // The column keeps its native type, so equality is
+                // exact and ordering is numeric/temporal. When the
+                // type is unknown the suffix is empty — a bare
+                // `"col" {op} $N`, which works for a same-type
+                // comparison and fails loudly for a cross-type one.
+                let cast = match column_types.get(&cond.column) {
+                    Some(udt) if is_safe_identifier(udt) => {
+                        format!("::{udt}")
+                    }
+                    _ => String::new(),
+                };
                 clause.push_str(&format!(
-                    "\"{}\"::text {} ${idx}",
+                    "\"{}\" {} ${idx}{cast}",
                     cond.column,
                     cond.op.as_sql()
                 ));
@@ -762,12 +776,21 @@ mod tests {
         std::collections::HashMap::new()
     }
 
+    /// Empty `column_types` — the unknown-schema fallback (a bare
+    /// `"col" {op} $N`, no `::<type>` cast). The §v1.36.4 typed cast is
+    /// exercised by the dedicated `typed_*` tests below.
+    fn nt() -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
+    }
+
     fn ok(expr: &str) -> (String, Vec<SqlValue>) {
-        build_pg_where(expr, 0, &nb()).expect("expected the filter to compile")
+        build_pg_where(expr, 0, &nb(), &nt())
+            .expect("expected the filter to compile")
     }
 
     fn err(expr: &str) -> FilterError {
-        build_pg_where(expr, 0, &nb()).expect_err("expected a compile error")
+        build_pg_where(expr, 0, &nb(), &nt())
+            .expect_err("expected a compile error")
     }
 
     // ── Empty ────────────────────────────────────────────────────────
@@ -787,14 +810,14 @@ mod tests {
     #[test]
     fn single_integer_condition() {
         let (clause, params) = ok("id = 1");
-        assert_eq!(clause, "\"id\"::text = $1");
+        assert_eq!(clause, "\"id\" = $1");
         assert_eq!(params, vec![SqlValue::Integer(1)]);
     }
 
     #[test]
     fn single_string_condition_single_quoted() {
         let (clause, params) = ok("name = 'Alice'");
-        assert_eq!(clause, "\"name\"::text = $1");
+        assert_eq!(clause, "\"name\" = $1");
         assert_eq!(params, vec![SqlValue::Text("Alice".to_string())]);
     }
 
@@ -807,7 +830,7 @@ mod tests {
     #[test]
     fn negative_integer_value() {
         let (clause, params) = ok("balance >= -100");
-        assert_eq!(clause, "\"balance\"::text >= $1");
+        assert_eq!(clause, "\"balance\" >= $1");
         assert_eq!(params, vec![SqlValue::Integer(-100)]);
     }
 
@@ -834,50 +857,50 @@ mod tests {
 
     #[test]
     fn every_operator_renders_canonically() {
-        assert_eq!(ok("a = 1").0, "\"a\"::text = $1");
-        assert_eq!(ok("a != 1").0, "\"a\"::text != $1");
-        assert_eq!(ok("a > 1").0, "\"a\"::text > $1");
-        assert_eq!(ok("a >= 1").0, "\"a\"::text >= $1");
-        assert_eq!(ok("a < 1").0, "\"a\"::text < $1");
-        assert_eq!(ok("a <= 1").0, "\"a\"::text <= $1");
-        assert_eq!(ok("a LIKE 'x%'").0, "\"a\"::text LIKE $1");
+        assert_eq!(ok("a = 1").0, "\"a\" = $1");
+        assert_eq!(ok("a != 1").0, "\"a\" != $1");
+        assert_eq!(ok("a > 1").0, "\"a\" > $1");
+        assert_eq!(ok("a >= 1").0, "\"a\" >= $1");
+        assert_eq!(ok("a < 1").0, "\"a\" < $1");
+        assert_eq!(ok("a <= 1").0, "\"a\" <= $1");
+        assert_eq!(ok("a LIKE 'x%'").0, "\"a\" LIKE $1");
     }
 
     #[test]
     fn operator_aliases_normalize() {
         // `==` → `=`, `<>` → `!=`.
-        assert_eq!(ok("a == 1").0, "\"a\"::text = $1");
-        assert_eq!(ok("a <> 1").0, "\"a\"::text != $1");
+        assert_eq!(ok("a == 1").0, "\"a\" = $1");
+        assert_eq!(ok("a <> 1").0, "\"a\" != $1");
     }
 
     #[test]
     fn like_is_case_insensitive_and_renders_uppercase() {
-        assert_eq!(ok("a like 'x%'").0, "\"a\"::text LIKE $1");
-        assert_eq!(ok("a LiKe 'x%'").0, "\"a\"::text LIKE $1");
+        assert_eq!(ok("a like 'x%'").0, "\"a\" LIKE $1");
+        assert_eq!(ok("a LiKe 'x%'").0, "\"a\" LIKE $1");
     }
 
-    // ── §v1.36.1 — typed-column filter ───────────────────────────────
+    // ── §v1.36.4 — typed-column filter (value cast) ──────────────────
 
-    /// Every value comparison casts the column to `text` so a
-    /// `text`-bound value (axon binds all values as text — D12)
-    /// compares against ANY column type. Without it, `WHERE "id" = $1`
-    /// against a `uuid` column fails — Postgres has no `uuid = text`
-    /// operator and the schema-less runtime cannot cast the parameter.
-    /// The `NULL` arm is NOT cast — `IS NULL` is type-agnostic already.
+    /// A known column type casts the VALUE placeholder to that type —
+    /// `"tid" = $1::uuid` — so a `text`-bound value (e.g. a `${param}`
+    /// resolved from the Fase 37 Request Binding Contract) compares
+    /// against a `uuid` column with the native `uuid = uuid` operator.
+    /// This is the read-side mirror of v1.36.2's write cast.
     #[test]
-    fn typed_column_comparison_casts_the_column_to_text() {
-        // A uuid-shaped value, as it would arrive bound from a request
-        // parameter via the Fase 37 Request Binding Contract.
+    fn typed_column_comparison_casts_the_value_to_the_column_type() {
         let b = std::collections::HashMap::from([(
             "tid".to_string(),
             "83d078e1-b372-42ba-9572-ff8dc521386e".to_string(),
         )]);
+        let types = std::collections::HashMap::from([
+            ("tid".to_string(), "uuid".to_string()),
+            ("age".to_string(), "int4".to_string()),
+        ]);
         let (clause, params) =
-            build_pg_where("id = '${tid}'", 0, &b).expect("compiles");
+            build_pg_where("tid = '${tid}'", 0, &b, &types).expect("compiles");
         assert_eq!(
-            clause, "\"id\"::text = $1",
-            "the column is cast to text — `\"id\"::text = $1` compares \
-             against a uuid / int / text column alike"
+            clause, "\"tid\" = $1::uuid",
+            "the value is cast to the column's introspected type"
         );
         assert_eq!(
             params,
@@ -885,7 +908,38 @@ mod tests {
                 "83d078e1-b372-42ba-9572-ff8dc521386e".to_string()
             )]
         );
-        // The NULL fold is uncast — `IS NULL` needs no column cast.
+        // An `int4` column — ordering stays numeric, not lexicographic.
+        let (clause, _) =
+            build_pg_where("age >= 18", 0, &nb(), &types).expect("compiles");
+        assert_eq!(clause, "\"age\" >= $1::int4");
+    }
+
+    /// An unknown column type falls back to a bare `"col" {op} $N` —
+    /// no cast. A same-type comparison still works; a cross-type one
+    /// fails loudly (no silent-wrong result).
+    #[test]
+    fn unknown_column_type_renders_a_bare_placeholder() {
+        let (clause, _) =
+            build_pg_where("id = 1", 0, &nb(), &nt()).expect("compiles");
+        assert_eq!(clause, "\"id\" = $1");
+    }
+
+    /// An unsafe `udt_name` (defensive — `information_schema` never
+    /// yields one) is dropped: the cast suffix is elided, never spliced.
+    #[test]
+    fn unsafe_column_type_name_is_not_spliced() {
+        let types = std::collections::HashMap::from([(
+            "id".to_string(),
+            "int4; DROP TABLE x".to_string(),
+        )]);
+        let (clause, _) =
+            build_pg_where("id = 1", 0, &nb(), &types).expect("compiles");
+        assert_eq!(clause, "\"id\" = $1");
+    }
+
+    #[test]
+    fn typed_column_null_fold_is_not_cast() {
+        // The NULL fold is uncast — `IS NULL` is type-agnostic.
         assert_eq!(ok("id = null").0, "\"id\" IS NULL");
     }
 
@@ -894,7 +948,7 @@ mod tests {
     #[test]
     fn two_conditions_joined_by_and() {
         let (clause, params) = ok("id = 1 AND name = 'Alice'");
-        assert_eq!(clause, "\"id\"::text = $1 AND \"name\"::text = $2");
+        assert_eq!(clause, "\"id\" = $1 AND \"name\" = $2");
         assert_eq!(
             params,
             vec![SqlValue::Integer(1), SqlValue::Text("Alice".to_string())]
@@ -903,13 +957,13 @@ mod tests {
 
     #[test]
     fn two_conditions_joined_by_or() {
-        assert_eq!(ok("a = 1 OR b = 2").0, "\"a\"::text = $1 OR \"b\"::text = $2");
+        assert_eq!(ok("a = 1 OR b = 2").0, "\"a\" = $1 OR \"b\" = $2");
     }
 
     #[test]
     fn connectors_are_case_insensitive() {
-        assert_eq!(ok("a = 1 and b = 2").0, "\"a\"::text = $1 AND \"b\"::text = $2");
-        assert_eq!(ok("a = 1 Or b = 2").0, "\"a\"::text = $1 OR \"b\"::text = $2");
+        assert_eq!(ok("a = 1 and b = 2").0, "\"a\" = $1 AND \"b\" = $2");
+        assert_eq!(ok("a = 1 Or b = 2").0, "\"a\" = $1 OR \"b\" = $2");
     }
 
     #[test]
@@ -917,7 +971,7 @@ mod tests {
         let (clause, params) = ok("a = 1 AND b = 2 OR c = 3");
         assert_eq!(
             clause,
-            "\"a\"::text = $1 AND \"b\"::text = $2 OR \"c\"::text = $3"
+            "\"a\" = $1 AND \"b\" = $2 OR \"c\" = $3"
         );
         assert_eq!(params.len(), 3);
     }
@@ -942,7 +996,7 @@ mod tests {
     fn null_does_not_occupy_a_parameter_slot() {
         // `a` is NULL (folded, no slot) so `b` takes $1, not $2.
         let (clause, params) = ok("a = null AND b = 5");
-        assert_eq!(clause, "\"a\" IS NULL AND \"b\"::text = $1");
+        assert_eq!(clause, "\"a\" IS NULL AND \"b\" = $1");
         assert_eq!(params, vec![SqlValue::Integer(5)]);
     }
 
@@ -956,14 +1010,15 @@ mod tests {
 
     #[test]
     fn param_offset_shifts_placeholder_numbering() {
-        let (clause, _) = build_pg_where("id = 1", 2, &nb()).unwrap();
-        assert_eq!(clause, "\"id\"::text = $3");
+        let (clause, _) = build_pg_where("id = 1", 2, &nb(), &nt()).unwrap();
+        assert_eq!(clause, "\"id\" = $3");
     }
 
     #[test]
     fn param_offset_shifts_every_placeholder() {
-        let (clause, _) = build_pg_where("a = 1 AND b = 2", 5, &nb()).unwrap();
-        assert_eq!(clause, "\"a\"::text = $6 AND \"b\"::text = $7");
+        let (clause, _) =
+            build_pg_where("a = 1 AND b = 2", 5, &nb(), &nt()).unwrap();
+        assert_eq!(clause, "\"a\" = $6 AND \"b\" = $7");
     }
 
     // ── D4 — SQL-injection resistance ────────────────────────────────
@@ -974,7 +1029,7 @@ mod tests {
         // compiles to ONE harmless bound parameter. The SQL structure
         // is `"name" = $1`; the payload never reaches SQL text.
         let (clause, params) = ok("name = '; DROP TABLE users; --'");
-        assert_eq!(clause, "\"name\"::text = $1");
+        assert_eq!(clause, "\"name\" = $1");
         assert_eq!(
             params,
             vec![SqlValue::Text("; DROP TABLE users; --".to_string())]
@@ -1141,14 +1196,14 @@ mod tests {
     #[test]
     fn column_at_the_length_limit_compiles() {
         let col = "c".repeat(MAX_COLUMN_LEN);
-        assert!(build_pg_where(&format!("{col} = 1"), 0, &nb()).is_ok());
+        assert!(build_pg_where(&format!("{col} = 1"), 0, &nb(), &nt()).is_ok());
     }
 
     #[test]
     fn column_over_the_length_limit_errors() {
         let col = "c".repeat(MAX_COLUMN_LEN + 1);
         assert!(matches!(
-            build_pg_where(&format!("{col} = 1"), 0, &nb()),
+            build_pg_where(&format!("{col} = 1"), 0, &nb(), &nt()),
             Err(FilterError::ColumnTooLong { .. })
         ));
     }
@@ -1159,7 +1214,7 @@ mod tests {
             .map(|i| format!("c{i} = {i}"))
             .collect::<Vec<_>>()
             .join(" AND ");
-        let (_, params) = build_pg_where(&expr, 0, &nb()).unwrap();
+        let (_, params) = build_pg_where(&expr, 0, &nb(), &nt()).unwrap();
         assert_eq!(params.len(), MAX_CONDITIONS);
     }
 
@@ -1170,7 +1225,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" AND ");
         assert!(matches!(
-            build_pg_where(&expr, 0, &nb()),
+            build_pg_where(&expr, 0, &nb(), &nt()),
             Err(FilterError::TooManyConditions { .. })
         ));
     }

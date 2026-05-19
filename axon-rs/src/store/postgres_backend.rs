@@ -290,24 +290,33 @@ fn check_identifier(name: &str, kind: &'static str) -> Result<(), StoreError> {
 ///
 /// §Fase 37.d (D3) — `bindings` resolves `${name}` placeholders in the
 /// `where` expression to `$N` bind parameters (never string-spliced).
+/// §v1.36.4 — `column_types` (the `column → udt_name` map) lets
+/// [`build_pg_where`] cast each `where`-clause value to its column's
+/// Postgres type. Pass an empty map when the schema is unknown — the
+/// filter then renders bare `$N` placeholders.
 pub fn build_select_sql(
     table: &str,
     where_expr: &str,
     bindings: &std::collections::HashMap<String, String>,
+    column_types: &std::collections::HashMap<String, String>,
 ) -> Result<(String, Vec<SqlValue>), StoreError> {
     check_identifier(table, "table")?;
-    let (clause, params) = build_pg_where(where_expr, 0, bindings)?;
+    let (clause, params) = build_pg_where(where_expr, 0, bindings, column_types)?;
     Ok((format!("SELECT * FROM \"{table}\" WHERE {clause}"), params))
 }
 
 /// Build a parameterized `DELETE FROM "table" WHERE …` statement.
+///
+/// §v1.36.4 — `column_types` drives the `where`-clause value cast (see
+/// [`build_select_sql`]).
 pub fn build_delete_sql(
     table: &str,
     where_expr: &str,
     bindings: &std::collections::HashMap<String, String>,
+    column_types: &std::collections::HashMap<String, String>,
 ) -> Result<(String, Vec<SqlValue>), StoreError> {
     check_identifier(table, "table")?;
-    let (clause, params) = build_pg_where(where_expr, 0, bindings)?;
+    let (clause, params) = build_pg_where(where_expr, 0, bindings, column_types)?;
     Ok((format!("DELETE FROM \"{table}\" WHERE {clause}"), params))
 }
 
@@ -326,16 +335,17 @@ static SCHEMA_CACHE: std::sync::LazyLock<
     std::sync::Mutex::new(std::collections::HashMap::new())
 });
 
-/// §v1.36.2 — the `::<type>` cast suffix for a WRITE-position `$N`
-/// placeholder.
+/// §v1.36.2 — the `::<type>` cast suffix for a `$N` value placeholder.
 ///
-/// axon binds every value as `text` (D12 — no column schema). On the
-/// read side (`where` clause, 1.36.1) the COLUMN is cast (`"col"::text`)
-/// — an operand. A write TARGET column cannot be cast: it is the
-/// destination. So the value is cast to the column's type — `$N::uuid`
-/// is a valid explicit cast over the text-bound parameter
-/// (`'83d0…'::uuid` parses the text). The column's Postgres `udt_name`
-/// comes from a cached `information_schema` introspection.
+/// axon's runtime carries no column schema (D12), so a `text`-bound
+/// value cannot reach a `uuid` / `int` / `timestamptz` column: Postgres
+/// has no cross-type operator. The cure is to cast the VALUE to the
+/// column's type — `$N::uuid` is a valid explicit cast over the bound
+/// parameter (`'83d0…'::uuid` parses the text). v1.36.2 applies it to
+/// every WRITE placeholder (`INSERT` values, `UPDATE … SET`); §v1.36.4
+/// applies the identical cure to the read side via [`build_pg_where`]
+/// (`"col" {op} $N::<type>`). The column's Postgres `udt_name` comes
+/// from a cached `information_schema` introspection.
 ///
 /// Empty when the column type is unknown (introspection missed the
 /// column, or ran against a table outside `current_schema()`) or the
@@ -411,8 +421,9 @@ pub fn build_insert_sql(
 /// §v1.36.2 — each `SET` value placeholder is cast to its column's
 /// introspected type (`column_types`), the same `$N::<type>` cure
 /// `build_insert_sql` applies, so a `text`-bound value writes into a
-/// non-`text` column. The `WHERE` side is unchanged — `build_pg_where`
-/// already casts the COLUMN (`"col"::text`, 1.36.1).
+/// non-`text` column. §v1.36.4 — the same `column_types` map is now
+/// threaded into the `WHERE` side too, so a `where`-clause value is
+/// cast to its column's type (`"col" {op} $N::<type>`).
 pub fn build_update_sql(
     table: &str,
     where_expr: &str,
@@ -447,7 +458,7 @@ pub fn build_update_sql(
     // `idx - 1` SET placeholders were emitted; WHERE continues there.
     let set_param_count = idx - 1;
     let (clause, where_params) =
-        build_pg_where(where_expr, set_param_count, bindings)?;
+        build_pg_where(where_expr, set_param_count, bindings, column_types)?;
     params.extend(where_params);
 
     let sql = format!(
@@ -766,7 +777,9 @@ impl PostgresStoreBackend {
         where_expr: &str,
         bindings: &std::collections::HashMap<String, String>,
     ) -> Result<Vec<StoreRow>, StoreError> {
-        let (sql, params) = build_select_sql(table, where_expr, bindings)?;
+        let column_types = self.column_types(table).await;
+        let (sql, params) =
+            build_select_sql(table, where_expr, bindings, &column_types)?;
         let mut q = sqlx::query(&sql);
         for value in &params {
             q = bind_value(q, value);
@@ -784,7 +797,10 @@ impl PostgresStoreBackend {
     /// (permission, missing table, a table outside `current_schema()`)
     /// the map is empty — the SQL builders fall back to bare `$N`
     /// (no regression: `text` columns work, typed columns fail loudly).
-    async fn column_types(
+    ///
+    /// §v1.36.4 — `pub(crate)` so the `row_stream` cursor drain shares
+    /// the same introspection + cache as `query` / `mutate` / `purge`.
+    pub(crate) async fn column_types(
         &self,
         table: &str,
     ) -> std::sync::Arc<std::collections::HashMap<String, String>> {
@@ -866,7 +882,9 @@ impl PostgresStoreBackend {
         where_expr: &str,
         bindings: &std::collections::HashMap<String, String>,
     ) -> Result<u64, StoreError> {
-        let (sql, params) = build_delete_sql(table, where_expr, bindings)?;
+        let column_types = self.column_types(table).await;
+        let (sql, params) =
+            build_delete_sql(table, where_expr, bindings, &column_types)?;
         let mut q = sqlx::query(&sql);
         for value in &params {
             q = bind_value(q, value);
@@ -1067,14 +1085,28 @@ mod tests {
 
     #[test]
     fn select_with_filter() {
-        let (sql, params) = build_select_sql("users", "id = 1", &nb()).unwrap();
-        assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"id\"::text = $1");
+        let (sql, params) =
+            build_select_sql("users", "id = 1", &nb(), &nb()).unwrap();
+        assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"id\" = $1");
         assert_eq!(params, vec![SqlValue::Integer(1)]);
     }
 
     #[test]
+    fn select_casts_the_filter_value_to_its_introspected_column_type() {
+        // §v1.36.4 — a known column type casts the WHERE value, so the
+        // comparison uses the native operator (`int4 = int4`).
+        let types = std::collections::HashMap::from([(
+            "id".to_string(),
+            "int4".to_string(),
+        )]);
+        let (sql, _) =
+            build_select_sql("users", "id = 1", &nb(), &types).unwrap();
+        assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"id\" = $1::int4");
+    }
+
+    #[test]
     fn select_with_empty_filter_renders_where_true() {
-        let (sql, params) = build_select_sql("users", "", &nb()).unwrap();
+        let (sql, params) = build_select_sql("users", "", &nb(), &nb()).unwrap();
         assert_eq!(sql, "SELECT * FROM \"users\" WHERE TRUE");
         assert!(params.is_empty());
     }
@@ -1082,7 +1114,7 @@ mod tests {
     #[test]
     fn select_rejects_unsafe_table_name() {
         assert!(matches!(
-            build_select_sql("users; DROP TABLE x", "", &nb()),
+            build_select_sql("users; DROP TABLE x", "", &nb(), &nb()),
             Err(StoreError::InvalidIdentifier { kind: "table", .. })
         ));
     }
@@ -1090,7 +1122,7 @@ mod tests {
     #[test]
     fn select_propagates_filter_errors() {
         assert!(matches!(
-            build_select_sql("users", "id = 1 AND", &nb()),
+            build_select_sql("users", "id = 1 AND", &nb(), &nb()),
             Err(StoreError::Filter(_))
         ));
     }
@@ -1100,15 +1132,16 @@ mod tests {
     #[test]
     fn delete_with_filter() {
         let (sql, params) =
-            build_delete_sql("sessions", "expired = true", &nb()).unwrap();
-        assert_eq!(sql, "DELETE FROM \"sessions\" WHERE \"expired\"::text = $1");
+            build_delete_sql("sessions", "expired = true", &nb(), &nb())
+                .unwrap();
+        assert_eq!(sql, "DELETE FROM \"sessions\" WHERE \"expired\" = $1");
         assert_eq!(params, vec![SqlValue::Boolean(true)]);
     }
 
     #[test]
     fn delete_rejects_unsafe_table() {
         assert!(matches!(
-            build_delete_sql("evil\"table", "a = 1", &nb()),
+            build_delete_sql("evil\"table", "a = 1", &nb(), &nb()),
             Err(StoreError::InvalidIdentifier { .. })
         ));
     }
@@ -1187,7 +1220,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             sql,
-            "UPDATE \"users\" SET \"name\" = $1, \"age\" = $2 WHERE \"id\"::text = $3"
+            "UPDATE \"users\" SET \"name\" = $1, \"age\" = $2 WHERE \"id\" = $3"
         );
         assert_eq!(
             params,
@@ -1210,7 +1243,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             sql,
-            "UPDATE \"users\" SET \"name\" = NULL, \"age\" = $1 WHERE \"id\"::text = $2"
+            "UPDATE \"users\" SET \"name\" = NULL, \"age\" = $1 WHERE \"id\" = $2"
         );
         assert_eq!(params, vec![SqlValue::Integer(40), SqlValue::Integer(5)]);
     }
@@ -1304,9 +1337,32 @@ mod tests {
         .unwrap();
         assert_eq!(
             sql,
-            "UPDATE \"t\" SET \"status\" = $1::uuid WHERE \"id\"::text = $2",
-            "§v1.36.2 — the SET value is cast to the column type; the \
-             WHERE column is cast to text (1.36.1)"
+            "UPDATE \"t\" SET \"status\" = $1::uuid WHERE \"id\" = $2",
+            "§v1.36.2 — the SET value is cast to the column type; `id` \
+             is absent from the type map so its WHERE placeholder is \
+             bare (§v1.36.4 unknown-type fallback)"
+        );
+    }
+
+    #[test]
+    fn update_where_value_is_cast_to_its_column_type() {
+        // §v1.36.4 — when the WHERE column's type IS known, its value
+        // placeholder is cast too (the SET-side cure applied to WHERE).
+        let types = std::collections::HashMap::from([
+            ("status".to_string(), "text".to_string()),
+            ("id".to_string(), "int8".to_string()),
+        ]);
+        let (sql, _) = build_update_sql(
+            "t",
+            "id = 1",
+            &[("status".into(), txt("done"))],
+            &nb(),
+            &types,
+        )
+        .unwrap();
+        assert_eq!(
+            sql,
+            "UPDATE \"t\" SET \"status\" = $1::text WHERE \"id\" = $2::int8"
         );
     }
 
@@ -1343,9 +1399,14 @@ mod tests {
     #[test]
     fn injection_in_value_position_is_a_bound_parameter() {
         let (sql, params) =
-            build_select_sql("users", "name = '; DROP TABLE users; --'", &nb())
-                .unwrap();
-        assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"name\"::text = $1");
+            build_select_sql(
+                "users",
+                "name = '; DROP TABLE users; --'",
+                &nb(),
+                &nb(),
+            )
+            .unwrap();
+        assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"name\" = $1");
         assert_eq!(
             params,
             vec![txt("; DROP TABLE users; --")]
@@ -1355,7 +1416,7 @@ mod tests {
     #[test]
     fn injection_in_table_identifier_is_rejected_not_quoted() {
         assert!(matches!(
-            build_select_sql("users\" WHERE 1=1; --", "", &nb()),
+            build_select_sql("users\" WHERE 1=1; --", "", &nb(), &nb()),
             Err(StoreError::InvalidIdentifier { .. })
         ));
     }
