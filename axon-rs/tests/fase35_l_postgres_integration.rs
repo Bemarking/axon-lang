@@ -602,3 +602,56 @@ async fn t14_introspection_resolves_a_table_outside_current_schema() {
     exec(&backend, &format!("DROP TABLE IF EXISTS {qualified}")).await;
     exec(&backend, &format!("DROP SCHEMA IF EXISTS {schema} CASCADE")).await;
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  §Fase 37.x.d — one coherent introspect-and-operate session
+// ════════════════════════════════════════════════════════════════════
+
+/// §Fase 37.x.d (D3) — the first operation on a table is a cache MISS:
+/// the schema introspection and the operation execute inside ONE
+/// transaction. Every subsequent operation is a cache HIT and runs
+/// without a transaction. This exercises BOTH paths against a real
+/// database and asserts they produce identical, correct results.
+#[tokio::test]
+async fn t15_coherent_session_miss_then_hit() {
+    let backend = pg_or_skip!();
+    let table = "fase35l_t15_coherent";
+    fresh_table(&backend, table, "id integer, label text").await;
+
+    // First op — a cache MISS: resolve + INSERT in one transaction.
+    let inserted = backend
+        .insert(
+            table,
+            &[
+                ("id".into(), SqlValue::Integer(1)),
+                ("label".into(), text("miss")),
+            ],
+        )
+        .await
+        .expect("§37.x.d — the miss-path insert resolves + writes in one txn");
+    assert_eq!(inserted, 1);
+
+    // Second op — a cache HIT: runs without a transaction, and SEES the
+    // miss-path write (it was committed when the miss-path txn closed).
+    let rows = backend
+        .query(table, "id = 1", &nb())
+        .await
+        .expect("§37.x.d — the hit-path query needs no transaction");
+    assert_eq!(
+        rows.len(),
+        1,
+        "the miss-path write is visible to the hit-path read"
+    );
+    assert_eq!(rows[0].get("label"), Some(&serde_json::json!("miss")));
+
+    // A third op — still a HIT — mutates; the result is correct.
+    let updated = backend
+        .mutate(table, "id = 1", &[("label".into(), text("hit"))], &nb())
+        .await
+        .expect("§37.x.d — the hit-path mutate");
+    assert_eq!(updated, 1);
+    let rows = backend.query(table, "id = 1", &nb()).await.expect("query");
+    assert_eq!(rows[0].get("label"), Some(&serde_json::json!("hit")));
+
+    drop_table(&backend, table).await;
+}

@@ -42,7 +42,7 @@
 //!
 //! # §Fase 37.x.b — search-path-independent table resolution
 //!
-//! [`PostgresStoreBackend::resolve_table`] resolves a store table to
+//! [`introspect_conn`] resolves a store table to
 //! its schema + column types against `pg_catalog` — NOT via the
 //! ambient `search_path`, which a transaction-mode pooler does not
 //! preserve across checkouts. `to_regclass` is the search-path-correct
@@ -84,7 +84,7 @@ use std::time::Duration;
 use serde_json::Value as JsonValue;
 use sqlx::postgres::{PgArguments, PgConnectOptions, PgPoolOptions, PgRow};
 use sqlx::query::Query;
-use sqlx::{Column, PgPool, Postgres, Row, TypeInfo};
+use sqlx::{Column, PgConnection, PgPool, Postgres, Row, TypeInfo};
 
 use crate::store::epistemic::EpistemicError;
 use crate::store::filter::{self, build_pg_where, FilterError, SqlValue};
@@ -344,7 +344,7 @@ fn qualified_relation(schema: Option<&str>, table: &str) -> String {
 /// statement.
 ///
 /// §Fase 37.x.c (D2) — `schema` is the table's resolved schema (from
-/// [`PostgresStoreBackend::resolve_table`]); when `Some` and a safe
+/// [`introspect_conn`]); when `Some` and a safe
 /// identifier the relation is emitted SCHEMA-QUALIFIED so it resolves
 /// on any session regardless of the ambient `search_path`. `None`
 /// renders the bare `"table"` (the pre-37.x form — D5).
@@ -388,7 +388,7 @@ pub fn build_delete_sql(
 
 /// §Fase 37.x.b (D1) — a store table resolved against `pg_catalog`,
 /// independent of the ambient `search_path`. The product of
-/// [`PostgresStoreBackend::resolve_table`].
+/// [`introspect_conn`].
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedTable {
     /// The schema the table resolves to (e.g. `public`). §37.x.c (D2)
@@ -472,6 +472,82 @@ fn collect_triples(rows: &[PgRow]) -> Vec<(String, String, String)> {
     out
 }
 
+/// §Fase 37.x.b/d (D1/D3) — the two-stage `pg_catalog` table resolution
+/// run on a CALLER-PROVIDED connection, so it shares the operation's
+/// transaction (D3 — one coherent introspect-and-operate session).
+///
+///  1. **Primary — search-path-correct.** `to_regclass($1)` (the
+///     double-quoted table name) resolves the table exactly as an
+///     unqualified `SELECT * FROM "table"` would; the same query
+///     introspects its columns.
+///  2. **Fallback — search-path-INDEPENDENT.** When `to_regclass`
+///     yields NULL (the table is not on this session's `search_path`),
+///     a `pg_class` + `pg_namespace` scan keyed on `relname` finds the
+///     table in ANY user schema (system schemas excluded; only real
+///     relations — `relkind` table / view / matview / partitioned /
+///     foreign).
+///
+/// Exactly one schema resolves the table; zero is
+/// [`StoreError::TableNotResolved`], two or more is
+/// [`StoreError::AmbiguousTable`]. `pub(crate)` so `row_stream`'s
+/// cursor drain runs it inside the cursor's own transaction.
+pub(crate) async fn introspect_conn(
+    conn: &mut PgConnection,
+    table: &str,
+) -> Result<std::sync::Arc<ResolvedTable>, StoreError> {
+    // — Stage 1: primary, search-path-correct via `to_regclass`. —
+    let primary = sqlx::query(
+        "SELECT n.nspname AS schema_name, a.attname AS column_name, \
+         t.typname AS type_name \
+         FROM pg_catalog.pg_class c \
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid \
+         JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+         WHERE c.oid = to_regclass($1) \
+           AND a.attnum > 0 AND NOT a.attisdropped",
+    )
+    .bind(format!("\"{table}\""))
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|e| StoreError::Query {
+        op: "resolve",
+        source: e.to_string(),
+    })?;
+
+    let (schema, column_types) = {
+        let primary_rows = collect_triples(&primary);
+        if !primary_rows.is_empty() {
+            // `to_regclass` resolved — one relation, one schema.
+            resolve_from_rows(table, primary_rows)?
+        } else {
+            // — Stage 2: fallback, search-path-INDEPENDENT scan. —
+            let scan = sqlx::query(
+                "SELECT n.nspname AS schema_name, \
+                 a.attname AS column_name, t.typname AS type_name \
+                 FROM pg_catalog.pg_class c \
+                 JOIN pg_catalog.pg_namespace n \
+                   ON n.oid = c.relnamespace \
+                 JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid \
+                 JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+                 WHERE c.relname = $1 \
+                   AND c.relkind IN ('r', 'v', 'm', 'p', 'f') \
+                   AND left(n.nspname, 3) <> 'pg_' \
+                   AND n.nspname <> 'information_schema' \
+                   AND a.attnum > 0 AND NOT a.attisdropped",
+            )
+            .bind(table)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| StoreError::Query {
+                op: "resolve",
+                source: e.to_string(),
+            })?;
+            resolve_from_rows(table, collect_triples(&scan))?
+        }
+    };
+    Ok(std::sync::Arc::new(ResolvedTable { schema, column_types }))
+}
+
 /// §v1.36.2 — the `::<type>` cast suffix for a `$N` value placeholder.
 ///
 /// axon's runtime carries no column schema (D12), so a `text`-bound
@@ -483,7 +559,7 @@ fn collect_triples(rows: &[PgRow]) -> Vec<(String, String, String)> {
 /// applies the identical cure to the read side via [`build_pg_where`]
 /// (`"col" {op} $N::<type>`). The column's Postgres type name comes
 /// from a cached `to_regclass` + `pg_catalog` introspection
-/// ([`PostgresStoreBackend::resolve_table`]).
+/// ([`introspect_conn`]).
 ///
 /// Empty when the column type is unknown (introspection missed the
 /// column, or ran against a table outside `current_schema()`) or the
@@ -912,8 +988,15 @@ impl PostgresStoreBackend {
         &self.pool
     }
 
-    /// `retrieve` — run `SELECT * FROM table WHERE <where_expr>` and map
+    /// `retrieve` — run `SELECT * FROM "schema"."table" WHERE …` and map
     /// every row to a JSON-safe [`StoreRow`].
+    ///
+    /// §Fase 37.x.d (D3) — on a cache MISS the schema introspection and
+    /// the `SELECT` execute inside ONE transaction, so a
+    /// transaction-mode pooler pins one physical backend for both —
+    /// they cannot split across sessions. A cache HIT needs no
+    /// transaction: the cached resolution is already correct and the
+    /// `SELECT` is schema-qualified, so it resolves on any session.
     ///
     /// v1.30.0 materializes the full result (`fetch_all`); 35.i adds the
     /// backpressured `Stream<Row>` variant (Pillar III).
@@ -923,12 +1006,32 @@ impl PostgresStoreBackend {
         where_expr: &str,
         bindings: &std::collections::HashMap<String, String>,
     ) -> Result<Vec<StoreRow>, StoreError> {
-        // §Fase 37.x.b/c — resolve the table's schema + column types
-        // search-path-independently; degrade to an un-qualified bare
-        // table + empty map on a resolution failure (§37.x.h / D6
-        // surfaces the typed error in its place).
-        let resolved = self.resolve_table(table).await;
+        // — cache HIT: the resolution is known; no transaction. —
+        if let Some(resolved) = self.cached_schema(table) {
+            let (sql, params) = build_select_sql(
+                table,
+                Some(resolved.schema.as_str()),
+                where_expr,
+                bindings,
+                &resolved.column_types,
+            )?;
+            let mut q = sqlx::query(&sql);
+            for value in &params {
+                q = bind_value(q, value);
+            }
+            let rows = q.fetch_all(&self.pool).await.map_err(|e| {
+                StoreError::Query { op: "retrieve", source: e.to_string() }
+            })?;
+            return rows.iter().map(map_pg_row).collect();
+        }
+        // — cache MISS: resolve + operate in ONE transaction (D3). —
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            StoreError::Connect { source: e.to_string() }
+        })?;
+        let resolved = introspect_conn(&mut tx, table).await;
         let no_types = std::collections::HashMap::new();
+        // §37.x.h / D6 surfaces a resolution failure; here it degrades
+        // to an un-qualified bare table + empty type map.
         let (schema, column_types) = match &resolved {
             Ok(r) => (Some(r.schema.as_str()), &r.column_types),
             Err(_) => (None, &no_types),
@@ -939,131 +1042,81 @@ impl PostgresStoreBackend {
         for value in &params {
             q = bind_value(q, value);
         }
-        let rows = q.fetch_all(&self.pool).await.map_err(|e| {
+        let rows = q.fetch_all(&mut *tx).await.map_err(|e| {
             StoreError::Query { op: "retrieve", source: e.to_string() }
         })?;
+        tx.commit().await.map_err(|e| StoreError::Connect {
+            source: e.to_string(),
+        })?;
+        if let Ok(r) = resolved {
+            self.cache_schema(table, r);
+        }
         rows.iter().map(map_pg_row).collect()
     }
 
-    /// §Fase 37.x.b (D1) — resolve `table` to its schema + column
-    /// types **independent of the ambient `search_path`**, cached once
-    /// per `(dsn, table)`.
-    ///
-    /// A transaction-mode pooler does not preserve `search_path` across
-    /// checkouts, so a resolution that trusts it is non-deterministic.
-    /// `resolve_table` resolves against `pg_catalog` in two stages:
-    ///
-    ///  1. **Primary — search-path-correct.** `to_regclass($1)` (the
-    ///     double-quoted table name) resolves the table exactly as an
-    ///     unqualified `SELECT * FROM "table"` would; the same query
-    ///     introspects its columns.
-    ///  2. **Fallback — search-path-INDEPENDENT.** When `to_regclass`
-    ///     yields NULL (the table is not on this session's
-    ///     `search_path`), a `pg_class` join `pg_namespace` scan keyed
-    ///     on `relname` finds the table in ANY user schema. Exactly one
-    ///     match resolves it; zero is [`StoreError::TableNotResolved`],
-    ///     two or more is [`StoreError::AmbiguousTable`].
-    ///
-    /// The resolved schema is carried on [`ResolvedTable`] — §Fase
-    /// 37.x.c (D2) emits it as `"schema"."table"` so the operation
-    /// stops depending on the `search_path` entirely.
-    ///
-    /// Only a successfully-resolved, non-empty entry is cached (the
-    /// §v1.36.5 don't-cache-failures rule — a real relation always has
-    /// at least one column, so an empty result is a transient failure
-    /// to retry). `pub(crate)` so the `row_stream` cursor drain shares
-    /// the same resolution + cache as `query` / `insert` / `mutate` /
-    /// `purge`.
-    pub(crate) async fn resolve_table(
+    /// §Fase 37.x.d (D3) — the cached `(schema, column_types)`
+    /// resolution for `table`, or `None` on a cache miss. Pure — no
+    /// I/O. A HIT lets an operation skip the transaction; a MISS makes
+    /// the caller introspect ([`introspect_conn`]) inside the
+    /// operation's own transaction, so a transaction-mode pooler pins
+    /// one backend for resolution + operation.
+    pub(crate) fn cached_schema(
         &self,
         table: &str,
-    ) -> Result<std::sync::Arc<ResolvedTable>, StoreError> {
+    ) -> Option<std::sync::Arc<ResolvedTable>> {
         let key = (self.dsn.clone(), table.to_string());
-        if let Some(hit) = SCHEMA_CACHE.lock().unwrap().get(&key) {
-            return Ok(hit.clone());
-        }
-
-        // — Stage 1: primary, search-path-correct via `to_regclass`. —
-        // One query resolves the relation AND introspects its columns;
-        // every row carries the resolved schema name.
-        let primary = sqlx::query(
-            "SELECT n.nspname AS schema_name, a.attname AS column_name, \
-             t.typname AS type_name \
-             FROM pg_catalog.pg_class c \
-             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-             JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid \
-             JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
-             WHERE c.oid = to_regclass($1) \
-               AND a.attnum > 0 AND NOT a.attisdropped",
-        )
-        .bind(format!("\"{table}\""))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| StoreError::Query {
-            op: "resolve",
-            source: e.to_string(),
-        })?;
-
-        let (schema, column_types) = {
-            let primary_rows = collect_triples(&primary);
-            if !primary_rows.is_empty() {
-                // `to_regclass` resolved — one relation, one schema.
-                resolve_from_rows(table, primary_rows)?
-            } else {
-                // — Stage 2: fallback, search-path-INDEPENDENT scan. —
-                // `relname` is matched across every user schema; system
-                // schemas (`pg_*`, `information_schema`) are excluded,
-                // and only real relations are considered (`relkind`
-                // table / view / matview / partitioned / foreign).
-                let scan = sqlx::query(
-                    "SELECT n.nspname AS schema_name, \
-                     a.attname AS column_name, t.typname AS type_name \
-                     FROM pg_catalog.pg_class c \
-                     JOIN pg_catalog.pg_namespace n \
-                       ON n.oid = c.relnamespace \
-                     JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid \
-                     JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
-                     WHERE c.relname = $1 \
-                       AND c.relkind IN ('r', 'v', 'm', 'p', 'f') \
-                       AND left(n.nspname, 3) <> 'pg_' \
-                       AND n.nspname <> 'information_schema' \
-                       AND a.attnum > 0 AND NOT a.attisdropped",
-                )
-                .bind(table)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Query {
-                    op: "resolve",
-                    source: e.to_string(),
-                })?;
-                resolve_from_rows(table, collect_triples(&scan))?
-            }
-        };
-
-        let resolved =
-            std::sync::Arc::new(ResolvedTable { schema, column_types });
-        // §v1.36.5 rule preserved — cache only a non-empty resolution.
-        if !resolved.column_types.is_empty() {
-            SCHEMA_CACHE
-                .lock()
-                .unwrap()
-                .insert(key, std::sync::Arc::clone(&resolved));
-        }
-        Ok(resolved)
+        SCHEMA_CACHE.lock().unwrap().get(&key).cloned()
     }
 
-    /// `persist` — run `INSERT INTO table (…) VALUES (…)`. Returns the
-    /// number of rows inserted.
+    /// §Fase 37.x.d (D3) — store a successful resolution in the
+    /// process-global `(dsn, table)` cache.
+    ///
+    /// §v1.36.5 rule preserved — an EMPTY resolution is NEVER cached: a
+    /// real relation always has at least one column, so an empty map is
+    /// a transient failure that must be retried, never a poisoned
+    /// entry. §Fase 37.x.f (D9) adds the bounded-LRU + drift eviction.
+    pub(crate) fn cache_schema(
+        &self,
+        table: &str,
+        resolved: std::sync::Arc<ResolvedTable>,
+    ) {
+        if !resolved.column_types.is_empty() {
+            let key = (self.dsn.clone(), table.to_string());
+            SCHEMA_CACHE.lock().unwrap().insert(key, resolved);
+        }
+    }
+
+    /// `persist` — run `INSERT INTO "schema"."table" (…) VALUES (…)`.
+    /// Returns the number of rows inserted. §Fase 37.x.d (D3) — on a
+    /// cache MISS the resolution + the `INSERT` execute in ONE
+    /// transaction; a cache HIT needs no transaction.
     pub async fn insert(
         &self,
         table: &str,
         data: &[(String, SqlValue)],
     ) -> Result<u64, StoreError> {
-        // §Fase 37.x.b/c — resolve the table's schema + column types
-        // search-path-independently; degrade to an un-qualified bare
-        // table + empty map on a resolution failure (§37.x.h / D6
-        // surfaces the typed error in its place).
-        let resolved = self.resolve_table(table).await;
+        // — cache HIT: the resolution is known; no transaction. —
+        if let Some(resolved) = self.cached_schema(table) {
+            let (sql, params) = build_insert_sql(
+                table,
+                Some(resolved.schema.as_str()),
+                data,
+                &resolved.column_types,
+            )?;
+            let mut q = sqlx::query(&sql);
+            for value in &params {
+                q = bind_value(q, value);
+            }
+            let result = q.execute(&self.pool).await.map_err(|e| {
+                StoreError::Query { op: "persist", source: e.to_string() }
+            })?;
+            return Ok(result.rows_affected());
+        }
+        // — cache MISS: resolve + operate in ONE transaction (D3). —
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            StoreError::Connect { source: e.to_string() }
+        })?;
+        let resolved = introspect_conn(&mut tx, table).await;
         let no_types = std::collections::HashMap::new();
         let (schema, column_types) = match &resolved {
             Ok(r) => (Some(r.schema.as_str()), &r.column_types),
@@ -1074,14 +1127,22 @@ impl PostgresStoreBackend {
         for value in &params {
             q = bind_value(q, value);
         }
-        let result = q.execute(&self.pool).await.map_err(|e| {
+        let result = q.execute(&mut *tx).await.map_err(|e| {
             StoreError::Query { op: "persist", source: e.to_string() }
         })?;
+        tx.commit().await.map_err(|e| StoreError::Connect {
+            source: e.to_string(),
+        })?;
+        if let Ok(r) = resolved {
+            self.cache_schema(table, r);
+        }
         Ok(result.rows_affected())
     }
 
-    /// `mutate` — run `UPDATE table SET … WHERE …`. Returns the number
-    /// of rows affected.
+    /// `mutate` — run `UPDATE "schema"."table" SET … WHERE …`. Returns
+    /// the number of rows affected. §Fase 37.x.d (D3) — on a cache MISS
+    /// the resolution + the `UPDATE` execute in ONE transaction; a
+    /// cache HIT needs no transaction.
     pub async fn mutate(
         &self,
         table: &str,
@@ -1089,11 +1150,30 @@ impl PostgresStoreBackend {
         data: &[(String, SqlValue)],
         bindings: &std::collections::HashMap<String, String>,
     ) -> Result<u64, StoreError> {
-        // §Fase 37.x.b/c — resolve the table's schema + column types
-        // search-path-independently; degrade to an un-qualified bare
-        // table + empty map on a resolution failure (§37.x.h / D6
-        // surfaces the typed error in its place).
-        let resolved = self.resolve_table(table).await;
+        // — cache HIT: the resolution is known; no transaction. —
+        if let Some(resolved) = self.cached_schema(table) {
+            let (sql, params) = build_update_sql(
+                table,
+                Some(resolved.schema.as_str()),
+                where_expr,
+                data,
+                bindings,
+                &resolved.column_types,
+            )?;
+            let mut q = sqlx::query(&sql);
+            for value in &params {
+                q = bind_value(q, value);
+            }
+            let result = q.execute(&self.pool).await.map_err(|e| {
+                StoreError::Query { op: "mutate", source: e.to_string() }
+            })?;
+            return Ok(result.rows_affected());
+        }
+        // — cache MISS: resolve + operate in ONE transaction (D3). —
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            StoreError::Connect { source: e.to_string() }
+        })?;
+        let resolved = introspect_conn(&mut tx, table).await;
         let no_types = std::collections::HashMap::new();
         let (schema, column_types) = match &resolved {
             Ok(r) => (Some(r.schema.as_str()), &r.column_types),
@@ -1106,25 +1186,51 @@ impl PostgresStoreBackend {
         for value in &params {
             q = bind_value(q, value);
         }
-        let result = q.execute(&self.pool).await.map_err(|e| {
+        let result = q.execute(&mut *tx).await.map_err(|e| {
             StoreError::Query { op: "mutate", source: e.to_string() }
         })?;
+        tx.commit().await.map_err(|e| StoreError::Connect {
+            source: e.to_string(),
+        })?;
+        if let Ok(r) = resolved {
+            self.cache_schema(table, r);
+        }
         Ok(result.rows_affected())
     }
 
-    /// `purge` — run `DELETE FROM table WHERE …`. Returns the number of
-    /// rows deleted.
+    /// `purge` — run `DELETE FROM "schema"."table" WHERE …`. Returns the
+    /// number of rows deleted. §Fase 37.x.d (D3) — on a cache MISS the
+    /// resolution + the `DELETE` execute in ONE transaction; a cache
+    /// HIT needs no transaction.
     pub async fn purge(
         &self,
         table: &str,
         where_expr: &str,
         bindings: &std::collections::HashMap<String, String>,
     ) -> Result<u64, StoreError> {
-        // §Fase 37.x.b/c — resolve the table's schema + column types
-        // search-path-independently; degrade to an un-qualified bare
-        // table + empty map on a resolution failure (§37.x.h / D6
-        // surfaces the typed error in its place).
-        let resolved = self.resolve_table(table).await;
+        // — cache HIT: the resolution is known; no transaction. —
+        if let Some(resolved) = self.cached_schema(table) {
+            let (sql, params) = build_delete_sql(
+                table,
+                Some(resolved.schema.as_str()),
+                where_expr,
+                bindings,
+                &resolved.column_types,
+            )?;
+            let mut q = sqlx::query(&sql);
+            for value in &params {
+                q = bind_value(q, value);
+            }
+            let result = q.execute(&self.pool).await.map_err(|e| {
+                StoreError::Query { op: "purge", source: e.to_string() }
+            })?;
+            return Ok(result.rows_affected());
+        }
+        // — cache MISS: resolve + operate in ONE transaction (D3). —
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            StoreError::Connect { source: e.to_string() }
+        })?;
+        let resolved = introspect_conn(&mut tx, table).await;
         let no_types = std::collections::HashMap::new();
         let (schema, column_types) = match &resolved {
             Ok(r) => (Some(r.schema.as_str()), &r.column_types),
@@ -1136,9 +1242,15 @@ impl PostgresStoreBackend {
         for value in &params {
             q = bind_value(q, value);
         }
-        let result = q.execute(&self.pool).await.map_err(|e| {
+        let result = q.execute(&mut *tx).await.map_err(|e| {
             StoreError::Query { op: "purge", source: e.to_string() }
         })?;
+        tx.commit().await.map_err(|e| StoreError::Connect {
+            source: e.to_string(),
+        })?;
+        if let Ok(r) = resolved {
+            self.cache_schema(table, r);
+        }
         Ok(result.rows_affected())
     }
 
@@ -1890,6 +2002,59 @@ mod tests {
             ),
             Err(StoreError::AmbiguousTable { .. })
         ));
+    }
+
+    // ── §Fase 37.x.d — schema cache (D3) ─────────────────────────────
+
+    #[tokio::test]
+    async fn schema_cache_round_trips_a_resolution() {
+        // The cache surface that lets a coherent-session operation skip
+        // the transaction on a hit. `connect` is lazy — no database.
+        let backend = PostgresStoreBackend::connect(
+            "postgresql://u:p@localhost:5432/fase37xd_cache_rt",
+        )
+        .unwrap();
+        let table = "fase37xd_cache_probe";
+        assert!(
+            backend.cached_schema(table).is_none(),
+            "a cold cache is a miss"
+        );
+        let resolved = std::sync::Arc::new(ResolvedTable {
+            schema: "public".to_string(),
+            column_types: std::collections::HashMap::from([(
+                "id".to_string(),
+                "uuid".to_string(),
+            )]),
+        });
+        backend.cache_schema(table, std::sync::Arc::clone(&resolved));
+        let hit = backend
+            .cached_schema(table)
+            .expect("a warm cache is a hit");
+        assert_eq!(hit.schema, "public");
+        assert_eq!(hit.column_types.get("id"), Some(&"uuid".to_string()));
+    }
+
+    #[tokio::test]
+    async fn schema_cache_never_stores_an_empty_resolution() {
+        // §v1.36.5 rule preserved — a real relation always has ≥ 1
+        // column, so an empty map is a transient failure to retry,
+        // never a poisoned cache entry.
+        let backend = PostgresStoreBackend::connect(
+            "postgresql://u:p@localhost:5432/fase37xd_cache_empty",
+        )
+        .unwrap();
+        let table = "fase37xd_empty_probe";
+        backend.cache_schema(
+            table,
+            std::sync::Arc::new(ResolvedTable {
+                schema: "public".to_string(),
+                column_types: std::collections::HashMap::new(),
+            }),
+        );
+        assert!(
+            backend.cached_schema(table).is_none(),
+            "an empty resolution must never be cached"
+        );
     }
 
     // ── StoreError display ───────────────────────────────────────────
