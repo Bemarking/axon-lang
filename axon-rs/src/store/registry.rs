@@ -160,6 +160,61 @@ impl StoreHandle {
 }
 
 // ════════════════════════════════════════════════════════════════════
+//  §Fase 37.x.g (D8) — deploy-time schema-verification report
+// ════════════════════════════════════════════════════════════════════
+
+/// The outcome of [`StoreRegistry::verify_postgres_schemas`] — the
+/// eager, deploy-time check that every declared `postgresql` store's
+/// table resolves against the live database (D8). The failure of a
+/// store schema moves from the first production request to deploy.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct SchemaVerifyReport {
+    /// Stores whose table resolved + introspected cleanly at deploy.
+    /// Their schema is now a deploy-verified contract — warm in the
+    /// process cache before the first runtime operation.
+    pub verified: Vec<String>,
+    /// Stores REACHABLE at deploy whose table does not resolve —
+    /// `(store_name, diagnostic)`. A FATAL deploy error (D8
+    /// fail-closed): a flow's store table is genuinely missing /
+    /// ambiguous and would otherwise fail at runtime.
+    pub missing: Vec<(String, String)>,
+    /// Stores UNREACHABLE or unconfigured at deploy — `(store_name,
+    /// diagnostic)`. A NON-fatal warning: the deploy proceeds and
+    /// resolution defers to the D9 runtime path. "Deploy is honest,
+    /// never brittle" — a transiently-down database does not block a
+    /// deploy.
+    pub unreachable: Vec<(String, String)>,
+}
+
+impl SchemaVerifyReport {
+    /// `true` iff the deploy must FAIL — at least one reachable store
+    /// has a table that does not resolve (D8 fail-closed).
+    pub fn has_fatal(&self) -> bool {
+        !self.missing.is_empty()
+    }
+
+    /// A human-readable summary of the fatal failures, for the deploy
+    /// error response. Empty when there are none.
+    pub fn fatal_summary(&self) -> String {
+        if self.missing.is_empty() {
+            return String::new();
+        }
+        let detail = self
+            .missing
+            .iter()
+            .map(|(store, diag)| format!("`{store}` — {diag}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "deploy-time store-schema verification failed: {} declared \
+             postgresql store table(s) do not resolve on a reachable \
+             database: {detail}",
+            self.missing.len()
+        )
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
 //  Registered store entry
 // ════════════════════════════════════════════════════════════════════
 
@@ -288,6 +343,71 @@ impl StoreRegistry {
                 Ok(StoreHandle::Postgres(backend))
             }
         }
+    }
+
+    /// §Fase 37.x.g (D8) — EAGERLY verify every declared `postgresql`
+    /// store's schema against the live database, at deploy time.
+    ///
+    /// For each `postgresql` store — the table name is the store name
+    /// (D12) — the backend is resolved and the table introspected NOW:
+    /// the resolution + schema become a deploy-verified contract, warm
+    /// in the process cache before the first runtime operation.
+    ///
+    /// A store REACHABLE at deploy whose table does not resolve is a
+    /// FATAL [`SchemaVerifyReport::missing`] entry (the deploy fails —
+    /// D8 fail-closed); a store unreachable / unconfigured at deploy is
+    /// a non-fatal [`SchemaVerifyReport::unreachable`] warning (the
+    /// deploy proceeds — "honest, never brittle" — and the D9 runtime
+    /// resolution still applies). `in_memory` stores are skipped.
+    ///
+    /// Must be called within a Tokio runtime context.
+    pub async fn verify_postgres_schemas(&self) -> SchemaVerifyReport {
+        let mut report = SchemaVerifyReport::default();
+        // Deterministic order — a `HashMap` iterates unordered.
+        let mut pg_stores: Vec<&str> = self
+            .stores
+            .iter()
+            .filter(|(_, r)| r.kind == StoreBackendKind::Postgresql)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        pg_stores.sort_unstable();
+
+        for name in pg_stores {
+            match self.resolve(name) {
+                Ok(StoreHandle::Postgres(backend)) => {
+                    match backend.warm_schema(name).await {
+                        Ok(()) => report.verified.push(name.to_string()),
+                        Err(
+                            e @ (StoreError::TableNotResolved { .. }
+                            | StoreError::AmbiguousTable { .. }),
+                        ) => {
+                            // Reachable store, table genuinely missing
+                            // / ambiguous — a fatal deploy error.
+                            report
+                                .missing
+                                .push((name.to_string(), e.to_string()));
+                        }
+                        Err(e) => {
+                            // Unreachable / transient — non-fatal.
+                            report
+                                .unreachable
+                                .push((name.to_string(), e.to_string()));
+                        }
+                    }
+                }
+                // `kind` is Postgresql — `resolve` cannot yield InMemory.
+                Ok(StoreHandle::InMemory) => {}
+                Err(e) => {
+                    // The connection could not even be resolved (a
+                    // missing `env:` var, a malformed DSN) — non-fatal;
+                    // the store is unconfigured at deploy time.
+                    report
+                        .unreachable
+                        .push((name.to_string(), e.to_string()));
+                }
+            }
+        }
+        report
     }
 
     /// The declaration backing a store name, if any. The pillars
@@ -661,5 +781,56 @@ mod tests {
         for e in errors {
             assert!(!e.to_string().is_empty());
         }
+    }
+
+    // ── §Fase 37.x.g — deploy-time schema verification (D8) ──────────
+
+    #[test]
+    fn schema_verify_report_has_fatal_iff_a_table_is_missing() {
+        let mut report = SchemaVerifyReport::default();
+        assert!(!report.has_fatal(), "an empty report is not fatal");
+        assert!(report.fatal_summary().is_empty());
+        report.unreachable.push(("s".into(), "down".into()));
+        assert!(
+            !report.has_fatal(),
+            "an unreachable store is a non-fatal warning"
+        );
+        report.missing.push(("t".into(), "no such table".into()));
+        assert!(report.has_fatal(), "a missing table is fatal");
+        assert!(report.fatal_summary().contains("`t`"));
+    }
+
+    #[tokio::test]
+    async fn verify_postgres_schemas_skips_in_memory_and_warns_on_unreachable() {
+        // An `in_memory` store is skipped; a postgresql store with a
+        // malformed DSN cannot resolve → a non-fatal `unreachable`
+        // warning (NOT a `missing` fatal — the database was never
+        // reached, so the table's existence is unknown). D8 — "deploy
+        // is honest, never brittle".
+        let registry = StoreRegistry::build(&[
+            spec("cache", "in_memory", ""),
+            spec("tenants", "postgresql", "this is not a dsn"),
+        ])
+        .unwrap();
+        let report = registry.verify_postgres_schemas().await;
+        assert!(report.verified.is_empty());
+        assert!(
+            report.missing.is_empty(),
+            "an unreachable store must not be a fatal `missing` entry"
+        );
+        assert_eq!(report.unreachable.len(), 1);
+        assert_eq!(report.unreachable[0].0, "tenants");
+        assert!(
+            !report.has_fatal(),
+            "an unreachable store must NOT fail the deploy"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_postgres_schemas_empty_registry_is_clean() {
+        let report = StoreRegistry::empty().verify_postgres_schemas().await;
+        assert!(report.verified.is_empty());
+        assert!(report.missing.is_empty());
+        assert!(!report.has_fatal());
     }
 }

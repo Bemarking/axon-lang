@@ -1719,6 +1719,49 @@ async fn deploy_handler(
 
     let ir = crate::ir_generator::IRGenerator::new().generate(&program);
 
+    // §Fase 37.x.g (D8) — eager deploy-time store-schema verification.
+    // Every declared `postgresql` axonstore is resolved + introspected
+    // NOW, against the live database — the failure of a store schema
+    // moves from the first production request to deploy. A store
+    // reachable at deploy whose table does not resolve FAILS the
+    // deploy; an unreachable store is a non-fatal warning (resolution
+    // defers to the D9 runtime self-heal — deploy stays honest, never
+    // brittle). The successful resolutions warm the process schema
+    // cache, so the first runtime operation is a cache hit.
+    let store_report = match crate::store::registry::StoreRegistry::build(
+        &ir.axonstore_specs,
+    ) {
+        Ok(registry) => registry.verify_postgres_schemas().await,
+        Err(e) => {
+            let mut s = state.lock().unwrap();
+            s.metrics.total_errors += 1;
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": e.to_string(),
+                "phase": "store_registry",
+                "d_letter": "D8",
+            })));
+        }
+    };
+    if store_report.has_fatal() {
+        let mut s = state.lock().unwrap();
+        s.metrics.total_errors += 1;
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": store_report.fatal_summary(),
+            "phase": "store_schema_verification",
+            "d_letter": "D8",
+            "missing_tables": store_report
+                .missing
+                .iter()
+                .map(|(store, detail)| serde_json::json!({
+                    "store": store,
+                    "detail": detail,
+                }))
+                .collect::<Vec<serde_json::Value>>(),
+        })));
+    }
+
     // Extract flow names from IR and register as daemons
     let flow_names: Vec<String> = ir.flows.iter().map(|f| f.name.clone()).collect();
     let registered: Vec<String>;
@@ -1829,6 +1872,20 @@ async fn deploy_handler(
         // §Fase 36.k (D10) — deploy-time backend resolution warnings.
         // Empty when every route has a resolvable backend.
         "warnings": backend_deploy_warnings,
+        // §Fase 37.x.g (D8) — deploy-time store-schema warnings: a
+        // declared postgresql store unreachable at deploy. Empty when
+        // every declared store verified. Non-fatal — the D9 runtime
+        // resolution still applies.
+        "store_warnings": store_report
+            .unreachable
+            .iter()
+            .map(|(store, detail)| serde_json::json!({
+                "code": "store_unreachable_at_deploy",
+                "d_letter": "D8",
+                "store": store,
+                "detail": detail,
+            }))
+            .collect::<Vec<serde_json::Value>>(),
     })))
 }
 
@@ -27929,6 +27986,44 @@ run F() as P"#;
         let json = body_json(resp.into_body()).await;
         assert_eq!(json["success"], false);
         assert!(json["error"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn deploy_with_unreachable_store_warns_but_succeeds() {
+        // §Fase 37.x.g (D8) — a declared postgresql store unreachable
+        // at deploy is a NON-fatal warning: the deploy succeeds and the
+        // warning is surfaced. "Deploy is honest, never brittle."
+        let app = build_router(test_config());
+        let source = r#"axonstore tenants {
+  backend: postgresql
+  connection: "not a valid dsn"
+}
+persona P { tone: "analytical" }
+flow F() { step S { ask: "do" } }
+run F() as P"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/deploy")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "source": source }).to_string(),
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(
+            json["success"], true,
+            "§37.x.g — an unreachable store does not fail the deploy"
+        );
+        let warns = json["store_warnings"].as_array().unwrap();
+        assert_eq!(
+            warns.len(),
+            1,
+            "§37.x.g — the unreachable store surfaces one warning"
+        );
+        assert_eq!(warns[0]["store"], "tenants");
+        assert_eq!(warns[0]["d_letter"], "D8");
     }
 
     #[tokio::test]

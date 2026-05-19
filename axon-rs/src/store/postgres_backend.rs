@@ -1243,6 +1243,31 @@ impl PostgresStoreBackend {
         SCHEMA_CACHE.lock().unwrap().evict(&key);
     }
 
+    /// §Fase 37.x.g (D8) — EAGERLY resolve + introspect `table` against
+    /// the live database, populating the process-global schema cache.
+    /// The deploy-time verification entry point: a resolution failure
+    /// surfaces at DEPLOY, not at the first production request.
+    ///
+    /// A cache hit is a no-op `Ok`. Otherwise one connection is
+    /// acquired and the two-stage [`introspect_conn`] resolution runs;
+    /// the result is cached so the first runtime operation hits a warm
+    /// cache. The caller distinguishes the `Err`: a `TableNotResolved`
+    /// / `AmbiguousTable` means the table genuinely does not resolve on
+    /// a reachable store (a fatal deploy error); a `Connect` means the
+    /// store is unreachable (a non-fatal deploy warning — the D9
+    /// runtime resolution still applies).
+    pub(crate) async fn warm_schema(&self, table: &str) -> Result<(), StoreError> {
+        if self.cached_schema(table).is_some() {
+            return Ok(());
+        }
+        let mut conn = self.pool.acquire().await.map_err(|e| {
+            StoreError::Connect { source: e.to_string() }
+        })?;
+        let resolved = introspect_conn(&mut conn, table).await?;
+        self.cache_schema(table, resolved);
+        Ok(())
+    }
+
     /// `persist` — run `INSERT INTO "schema"."table" (…) VALUES (…)`.
     /// Returns the number of rows inserted. §Fase 37.x.d (D3) — on a
     /// cache MISS the resolution + the `INSERT` execute in ONE
