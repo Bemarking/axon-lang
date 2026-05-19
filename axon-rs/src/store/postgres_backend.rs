@@ -320,10 +320,11 @@ pub fn build_delete_sql(
     Ok((format!("DELETE FROM \"{table}\" WHERE {clause}"), params))
 }
 
-/// §v1.36.2 — process-global cache `(dsn, table) → {column → udt_name}`.
+/// §v1.36.2 — process-global cache `(dsn, table) → {column → type}`.
 /// A table's column types are stable for the lifetime of a process, so
-/// one `information_schema` introspection per `(connection, table)`
-/// suffices — the write path never re-queries.
+/// one introspection per `(connection, table)` suffices. §v1.36.5 —
+/// only a non-empty map is cached, so a transient introspection
+/// failure never poisons a `(dsn, table)` entry permanently.
 static SCHEMA_CACHE: std::sync::LazyLock<
     std::sync::Mutex<
         std::collections::HashMap<
@@ -344,8 +345,9 @@ static SCHEMA_CACHE: std::sync::LazyLock<
 /// parameter (`'83d0…'::uuid` parses the text). v1.36.2 applies it to
 /// every WRITE placeholder (`INSERT` values, `UPDATE … SET`); §v1.36.4
 /// applies the identical cure to the read side via [`build_pg_where`]
-/// (`"col" {op} $N::<type>`). The column's Postgres `udt_name` comes
-/// from a cached `information_schema` introspection.
+/// (`"col" {op} $N::<type>`). The column's Postgres type name comes
+/// from a cached `to_regclass` + `pg_catalog` introspection
+/// ([`PostgresStoreBackend::column_types`]).
 ///
 /// Empty when the column type is unknown (introspection missed the
 /// column, or ran against a table outside `current_schema()`) or the
@@ -790,16 +792,34 @@ impl PostgresStoreBackend {
         rows.iter().map(map_pg_row).collect()
     }
 
-    /// §v1.36.2 — the `column → udt_name` map for `table`,
-    /// introspected from `information_schema` once per `(dsn, table)`
-    /// and cached process-globally (a table's column types are
-    /// stable). Drives the `$N::<type>` write cast. On ANY error
-    /// (permission, missing table, a table outside `current_schema()`)
-    /// the map is empty — the SQL builders fall back to bare `$N`
-    /// (no regression: `text` columns work, typed columns fail loudly).
+    /// The `column → type-name` map for `table`, introspected once per
+    /// `(dsn, table)` and cached process-globally (a table's column
+    /// types are stable). Drives the `$N::<type>` cast on both the
+    /// write side (`build_insert_sql` / `build_update_sql` SET) and the
+    /// read side (`build_pg_where`, §v1.36.4).
     ///
-    /// §v1.36.4 — `pub(crate)` so the `row_stream` cursor drain shares
-    /// the same introspection + cache as `query` / `mutate` / `purge`.
+    /// §v1.36.5 — the introspection resolves `table` via
+    /// [`to_regclass`], which honours the connection's **full
+    /// `search_path`** — exactly the resolution an unqualified
+    /// `SELECT * FROM "table"` performs. The earlier query keyed on
+    /// `table_schema = current_schema()`, which is only the *first*
+    /// schema of the `search_path`: a table reachable via `search_path`
+    /// but living in a later schema (an adopter's legacy schema) was
+    /// invisible to introspection, so every typed column fell back to a
+    /// bare `$N` and a `uuid`/`int` filter failed with `operator does
+    /// not exist`. `to_regclass` + `pg_catalog` closes that gap.
+    ///
+    /// On ANY error — permission, a table that does not resolve — the
+    /// map is empty and the SQL builders fall back to bare `$N` (a
+    /// `text` column still works; a typed column fails loudly). §v1.36.5
+    /// — an **empty** map is NEVER cached: a real table always has ≥ 1
+    /// column, so an empty result is always a failure (a transient
+    /// introspection error, an unresolved name). Caching it would
+    /// poison every later lookup; leaving it uncached lets the next
+    /// operation retry.
+    ///
+    /// `pub(crate)` so the `row_stream` cursor drain shares the same
+    /// introspection + cache as `query` / `mutate` / `purge`.
     pub(crate) async fn column_types(
         &self,
         table: &str,
@@ -810,26 +830,38 @@ impl PostgresStoreBackend {
         }
         let mut map: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        // `to_regclass($1)` resolves the (double-quoted) table name via
+        // the session `search_path` — the SAME resolution the store's
+        // own `SELECT * FROM "table"` uses. `pg_attribute` + `pg_type`
+        // then yield every live column's type name (`uuid`, `int4`,
+        // `timestamptz`, …), each a valid `$N::<type>` cast target.
+        let regclass_arg = format!("\"{table}\"");
         let rows = sqlx::query(
-            "SELECT column_name, udt_name FROM information_schema.columns \
-             WHERE table_name = $1 AND table_schema = current_schema()",
+            "SELECT a.attname AS column_name, t.typname AS type_name \
+             FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+             WHERE a.attrelid = to_regclass($1) \
+               AND a.attnum > 0 AND NOT a.attisdropped",
         )
-        .bind(table)
+        .bind(regclass_arg)
         .fetch_all(&self.pool)
         .await
         .unwrap_or_default();
         for row in &rows {
             let col: String = row.try_get("column_name").unwrap_or_default();
-            let udt: String = row.try_get("udt_name").unwrap_or_default();
-            if !col.is_empty() && !udt.is_empty() {
-                map.insert(col, udt);
+            let ty: String = row.try_get("type_name").unwrap_or_default();
+            if !col.is_empty() && !ty.is_empty() {
+                map.insert(col, ty);
             }
         }
         let arc = std::sync::Arc::new(map);
-        SCHEMA_CACHE
-            .lock()
-            .unwrap()
-            .insert(key, std::sync::Arc::clone(&arc));
+        // §v1.36.5 — cache only a NON-EMPTY map (see the doc above).
+        if !arc.is_empty() {
+            SCHEMA_CACHE
+                .lock()
+                .unwrap()
+                .insert(key, std::sync::Arc::clone(&arc));
+        }
         arc
     }
 

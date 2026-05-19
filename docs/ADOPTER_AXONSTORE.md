@@ -529,7 +529,7 @@ silently omitted:
 | Endpoint fails `axon check` with "requiring capability" | A flow touches a `capability`-gated store; add the capability to the endpoint's `requires:`. |
 | `column 'X' has Postgres type 'Y', outside the v1.30.0 supported catalog` | See [§12](#12-honest-scope-boundaries-v1300) for the supported type catalog. |
 | `prepared statement "sqlx_s_1" already exists` | A transaction-mode pooler in front of an axonstore older than v1.36.3. Upgrade — v1.36.3+ disables the named-statement cache, so axonstore is pooler-safe with no configuration ([§11.1](#111-transaction-mode-poolers--works-out-of-the-box-v1363)). |
-| `operator does not exist: text = bigint` (or `= uuid`, `<= timestamptz`, …) on a `retrieve`/`mutate`/`purge` `where:` | An axonstore on v1.36.1–v1.36.3. The `where`-clause value is not cast to the column's type. Upgrade to **v1.36.4+** — the filter casts each value to its introspected column type (`"id" = $1::int4`), so the comparison uses the native operator. |
+| `operator does not exist: uuid = text` (or `text = bigint`, `<= timestamptz`, …) on a `retrieve`/`mutate`/`purge` `where:` | The `where`-clause value is not cast to the column's type. Upgrade to **v1.36.5+** — the filter casts each value to its introspected column type (`"id" = $1::uuid`). v1.36.5 specifically resolves the table via the connection's full `search_path` (not just `current_schema()`), so a table in a legacy schema behind `public` is introspected correctly. |
 
 ---
 

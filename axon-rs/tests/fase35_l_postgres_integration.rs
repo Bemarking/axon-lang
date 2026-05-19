@@ -506,3 +506,99 @@ async fn t13_typed_column_write_and_read_round_trip() {
 
     drop_table(&backend, table).await;
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  §v1.36.5 — introspection resolves a table outside current_schema()
+// ════════════════════════════════════════════════════════════════════
+
+/// An adopter's table can live in a schema reachable via `search_path`
+/// yet NOT be `current_schema()` — a legacy schema sitting behind
+/// `public`. Pre-v1.36.5 `column_types()` keyed introspection on
+/// `table_schema = current_schema()` (only the FIRST `search_path`
+/// entry), so such a table was invisible: every typed-column filter
+/// fell back to a bare `$N` and failed with the adopter-reported
+/// `operator does not exist: uuid = text`. v1.36.5 resolves the table
+/// via `to_regclass`, honouring the full `search_path` — the same
+/// resolution the store's own `SELECT * FROM "t"` performs.
+#[tokio::test]
+async fn t14_introspection_resolves_a_table_outside_current_schema() {
+    let base = match std::env::var("AXON_TEST_DATABASE_URL") {
+        Ok(d) if !d.trim().is_empty() => d,
+        _ => {
+            eprintln!("fase35_l t14: AXON_TEST_DATABASE_URL unset — skipping");
+            return;
+        }
+    };
+    // A backend whose search_path is `public, <legacy>` — current_schema()
+    // is `public`, but the fixture table lives in the legacy schema.
+    let schema = "axon_legacy_probe";
+    let sep = if base.contains('?') { '&' } else { '?' };
+    let dsn =
+        format!("{base}{sep}options=-c%20search_path%3Dpublic%2C{schema}");
+    let backend = match PostgresStoreBackend::connect(&dsn) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("fase35_l t14: connect failed ({e}) — skipping");
+            return;
+        }
+    };
+    if backend.ping().await.is_err() {
+        eprintln!("fase35_l t14: Postgres unreachable — skipping");
+        return;
+    }
+
+    let table = "t14_legacy_widgets";
+    let qualified = format!("{schema}.{table}");
+    exec(&backend, &format!("CREATE SCHEMA IF NOT EXISTS {schema}")).await;
+    exec(&backend, &format!("DROP TABLE IF EXISTS {qualified}")).await;
+    exec(
+        &backend,
+        &format!("CREATE TABLE {qualified} (tid uuid, label text)"),
+    )
+    .await;
+
+    // The bug needs the table reachable via `search_path` WITHOUT being
+    // `current_schema()`. If the harness did not honour the `options`
+    // search_path (some poolers drop it), the unqualified name will not
+    // resolve — skip, since search-path resolution is orthogonal to
+    // pooling and the direct-connection lane covers it unconditionally.
+    let unqualified_resolves: Option<String> =
+        sqlx::query_scalar(&format!("SELECT to_regclass('\"{table}\"')::text"))
+            .fetch_one(backend.pool())
+            .await
+            .unwrap_or(None);
+    if unqualified_resolves.is_none() {
+        eprintln!(
+            "fase35_l t14: search_path option not honoured here — skipping \
+             (covered by the direct-connection lane)"
+        );
+        exec(&backend, &format!("DROP SCHEMA IF EXISTS {schema} CASCADE")).await;
+        return;
+    }
+
+    let uuid = "83d078e1-b372-42ba-9572-ff8dc521386e";
+
+    // persist — the write path introspects via `to_regclass`, resolves
+    // the legacy schema and casts `$N::uuid` / `$N::text`.
+    backend
+        .insert(
+            table,
+            &[("tid".into(), text(uuid)), ("label".into(), text("probe"))],
+        )
+        .await
+        .expect("§v1.36.5 — persist resolves a table outside current_schema()");
+
+    // retrieve filtering on the `uuid` column — pre-v1.36.5 this is the
+    // adopter's exact failure (`operator does not exist: uuid = text`).
+    let rows = backend
+        .query(table, &format!("tid = '{uuid}'"), &nb())
+        .await
+        .expect(
+            "§v1.36.5 — retrieve resolves a uuid column outside current_schema()",
+        );
+    assert_eq!(rows.len(), 1, "the row in the legacy schema round-trips");
+    assert_eq!(rows[0].get("label"), Some(&serde_json::json!("probe")));
+
+    exec(&backend, &format!("DROP TABLE IF EXISTS {qualified}")).await;
+    exec(&backend, &format!("DROP SCHEMA IF EXISTS {schema} CASCADE")).await;
+}
