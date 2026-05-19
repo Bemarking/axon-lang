@@ -453,3 +453,56 @@ async fn t12_d4_a_malicious_where_value_cannot_drop_a_real_table() {
 
     drop_table(&backend, table).await;
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  §v1.36.2 — typed-column write + read against a real database
+// ════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn t13_typed_column_write_and_read_round_trip() {
+    let backend = pg_or_skip!();
+    let table = "fase35l_t13_typed";
+    // A table whose key is `uuid` and a counter is `integer` — the
+    // shape of any adopter with an existing Postgres schema.
+    fresh_table(&backend, table, "tid uuid, kind text, n integer").await;
+    let uuid = "83d078e1-b372-42ba-9572-ff8dc521386e";
+
+    // §v1.36.2 — `persist`: the text-bound values are cast to the
+    // introspected column types (`$N::uuid`, `$N::int4`), so the row
+    // writes into the `uuid` + `integer` columns. Pre-1.36.2 this
+    // failed: `column "tid" is of type uuid but expression is of
+    // type text`.
+    backend
+        .insert(
+            table,
+            &[
+                ("tid".into(), text(uuid)),
+                ("kind".into(), text("greeting")),
+                ("n".into(), text("7")),
+            ],
+        )
+        .await
+        .expect("§v1.36.2 — persist into a uuid + integer column");
+
+    // §1.36.1 — `retrieve` filtering on the `uuid` column: the column
+    // is cast to text in the `where` clause, the text value matches.
+    let rows = backend
+        .query(table, &format!("tid = '{uuid}'"), &nb())
+        .await
+        .expect("retrieve by uuid");
+    assert_eq!(rows.len(), 1, "the row written to the uuid column round-trips");
+
+    // §v1.36.2 — `mutate` the `integer` column: the SET value is cast.
+    let updated = backend
+        .mutate(
+            table,
+            &format!("tid = '{uuid}'"),
+            &[("n".into(), text("99"))],
+            &nb(),
+        )
+        .await
+        .expect("§v1.36.2 — mutate a typed column");
+    assert_eq!(updated, 1, "mutate updated the row via the typed where + set");
+
+    drop_table(&backend, table).await;
+}

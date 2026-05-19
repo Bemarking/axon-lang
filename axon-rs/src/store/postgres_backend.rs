@@ -264,15 +264,62 @@ pub fn build_delete_sql(
     Ok((format!("DELETE FROM \"{table}\" WHERE {clause}"), params))
 }
 
+/// §v1.36.2 — process-global cache `(dsn, table) → {column → udt_name}`.
+/// A table's column types are stable for the lifetime of a process, so
+/// one `information_schema` introspection per `(connection, table)`
+/// suffices — the write path never re-queries.
+static SCHEMA_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<
+            (String, String),
+            std::sync::Arc<std::collections::HashMap<String, String>>,
+        >,
+    >,
+> = std::sync::LazyLock::new(|| {
+    std::sync::Mutex::new(std::collections::HashMap::new())
+});
+
+/// §v1.36.2 — the `::<type>` cast suffix for a WRITE-position `$N`
+/// placeholder.
+///
+/// axon binds every value as `text` (D12 — no column schema). On the
+/// read side (`where` clause, 1.36.1) the COLUMN is cast (`"col"::text`)
+/// — an operand. A write TARGET column cannot be cast: it is the
+/// destination. So the value is cast to the column's type — `$N::uuid`
+/// is a valid explicit cast over the text-bound parameter
+/// (`'83d0…'::uuid` parses the text). The column's Postgres `udt_name`
+/// comes from a cached `information_schema` introspection.
+///
+/// Empty when the column type is unknown (introspection missed the
+/// column, or ran against a table outside `current_schema()`) or the
+/// type name is not a safe identifier — the builder then emits a bare
+/// `$N`: a `text` column still works, a typed column fails LOUDLY (no
+/// regression, no silent-wrong write).
+fn write_cast(
+    column_types: &std::collections::HashMap<String, String>,
+    column: &str,
+) -> String {
+    match column_types.get(column) {
+        Some(udt) if filter::is_safe_identifier(udt) => format!("::{udt}"),
+        _ => String::new(),
+    }
+}
+
 /// Build a parameterized `INSERT INTO "table" (…) VALUES (…)`.
 ///
 /// A `NULL` data value renders as the inline `NULL` keyword (a fixed
 /// SQL token, injection-safe) and consumes no `$N` placeholder — the
 /// same discipline 35.b applies to `NULL` in a `where` clause. Postgres
 /// infers the column type for an inline `NULL`.
+///
+/// §v1.36.2 — each `$N` value placeholder is cast to its column's
+/// introspected type (`column_types`) so a `text`-bound value writes
+/// into a `uuid` / `int` / `timestamptz` column. An empty
+/// `column_types` map emits bare `$N` (the pre-1.36.2 behaviour).
 pub fn build_insert_sql(
     table: &str,
     data: &[(String, SqlValue)],
+    column_types: &std::collections::HashMap<String, String>,
 ) -> Result<(String, Vec<SqlValue>), StoreError> {
     check_identifier(table, "table")?;
     if data.is_empty() {
@@ -290,7 +337,7 @@ pub fn build_insert_sql(
         match val {
             SqlValue::Null => value_frags.push("NULL".to_string()),
             bound => {
-                value_frags.push(format!("${idx}"));
+                value_frags.push(format!("${idx}{}", write_cast(column_types, col)));
                 params.push(bound.clone());
                 idx += 1;
             }
@@ -313,11 +360,18 @@ pub fn build_insert_sql(
 /// offset is the count of non-`NULL` `SET` values. (The frozen Python
 /// reference offsets by column count and so mis-numbers the moment a
 /// `SET` value is `NULL`.)
+///
+/// §v1.36.2 — each `SET` value placeholder is cast to its column's
+/// introspected type (`column_types`), the same `$N::<type>` cure
+/// `build_insert_sql` applies, so a `text`-bound value writes into a
+/// non-`text` column. The `WHERE` side is unchanged — `build_pg_where`
+/// already casts the COLUMN (`"col"::text`, 1.36.1).
 pub fn build_update_sql(
     table: &str,
     where_expr: &str,
     data: &[(String, SqlValue)],
     bindings: &std::collections::HashMap<String, String>,
+    column_types: &std::collections::HashMap<String, String>,
 ) -> Result<(String, Vec<SqlValue>), StoreError> {
     check_identifier(table, "table")?;
     if data.is_empty() {
@@ -333,7 +387,10 @@ pub fn build_update_sql(
         match val {
             SqlValue::Null => set_frags.push(format!("\"{col}\" = NULL")),
             bound => {
-                set_frags.push(format!("\"{col}\" = ${idx}"));
+                set_frags.push(format!(
+                    "\"{col}\" = ${idx}{}",
+                    write_cast(column_types, col)
+                ));
                 params.push(bound.clone());
                 idx += 1;
             }
@@ -639,6 +696,46 @@ impl PostgresStoreBackend {
         rows.iter().map(map_pg_row).collect()
     }
 
+    /// §v1.36.2 — the `column → udt_name` map for `table`,
+    /// introspected from `information_schema` once per `(dsn, table)`
+    /// and cached process-globally (a table's column types are
+    /// stable). Drives the `$N::<type>` write cast. On ANY error
+    /// (permission, missing table, a table outside `current_schema()`)
+    /// the map is empty — the SQL builders fall back to bare `$N`
+    /// (no regression: `text` columns work, typed columns fail loudly).
+    async fn column_types(
+        &self,
+        table: &str,
+    ) -> std::sync::Arc<std::collections::HashMap<String, String>> {
+        let key = (self.dsn.clone(), table.to_string());
+        if let Some(hit) = SCHEMA_CACHE.lock().unwrap().get(&key) {
+            return hit.clone();
+        }
+        let mut map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let rows = sqlx::query(
+            "SELECT column_name, udt_name FROM information_schema.columns \
+             WHERE table_name = $1 AND table_schema = current_schema()",
+        )
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+        for row in &rows {
+            let col: String = row.try_get("column_name").unwrap_or_default();
+            let udt: String = row.try_get("udt_name").unwrap_or_default();
+            if !col.is_empty() && !udt.is_empty() {
+                map.insert(col, udt);
+            }
+        }
+        let arc = std::sync::Arc::new(map);
+        SCHEMA_CACHE
+            .lock()
+            .unwrap()
+            .insert(key, std::sync::Arc::clone(&arc));
+        arc
+    }
+
     /// `persist` — run `INSERT INTO table (…) VALUES (…)`. Returns the
     /// number of rows inserted.
     pub async fn insert(
@@ -646,7 +743,8 @@ impl PostgresStoreBackend {
         table: &str,
         data: &[(String, SqlValue)],
     ) -> Result<u64, StoreError> {
-        let (sql, params) = build_insert_sql(table, data)?;
+        let column_types = self.column_types(table).await;
+        let (sql, params) = build_insert_sql(table, data, &column_types)?;
         let mut q = sqlx::query(&sql);
         for value in &params {
             q = bind_value(q, value);
@@ -666,7 +764,9 @@ impl PostgresStoreBackend {
         data: &[(String, SqlValue)],
         bindings: &std::collections::HashMap<String, String>,
     ) -> Result<u64, StoreError> {
-        let (sql, params) = build_update_sql(table, where_expr, data, bindings)?;
+        let column_types = self.column_types(table).await;
+        let (sql, params) =
+            build_update_sql(table, where_expr, data, bindings, &column_types)?;
         let mut q = sqlx::query(&sql);
         for value in &params {
             q = bind_value(q, value);
@@ -880,6 +980,7 @@ mod tests {
         let (sql, params) = build_insert_sql(
             "users",
             &[("name".into(), txt("Alice")), ("age".into(), SqlValue::Integer(30))],
+            &nb(),
         )
         .unwrap();
         assert_eq!(
@@ -898,6 +999,7 @@ mod tests {
                 ("b".into(), SqlValue::Null),
                 ("c".into(), txt("x")),
             ],
+            &nb(),
         )
         .unwrap();
         assert_eq!(
@@ -910,7 +1012,7 @@ mod tests {
     #[test]
     fn insert_empty_data_errors() {
         assert_eq!(
-            build_insert_sql("t", &[]),
+            build_insert_sql("t", &[], &nb()),
             Err(StoreError::EmptyData { op: "insert" })
         );
     }
@@ -918,7 +1020,7 @@ mod tests {
     #[test]
     fn insert_rejects_unsafe_column_name() {
         assert!(matches!(
-            build_insert_sql("t", &[("a\"; DROP".into(), SqlValue::Integer(1))]),
+            build_insert_sql("t", &[("a\"; DROP".into(), SqlValue::Integer(1))], &nb()),
             Err(StoreError::InvalidIdentifier { kind: "column", .. })
         ));
     }
@@ -926,7 +1028,7 @@ mod tests {
     #[test]
     fn insert_rejects_unsafe_table_name() {
         assert!(matches!(
-            build_insert_sql("t t", &[("a".into(), SqlValue::Integer(1))]),
+            build_insert_sql("t t", &[("a".into(), SqlValue::Integer(1))], &nb()),
             Err(StoreError::InvalidIdentifier { kind: "table", .. })
         ));
     }
@@ -939,6 +1041,7 @@ mod tests {
             "users",
             "id = 5",
             &[("name".into(), txt("Bob")), ("age".into(), SqlValue::Integer(40))],
+            &nb(),
             &nb(),
         )
         .unwrap();
@@ -962,6 +1065,7 @@ mod tests {
             "id = 5",
             &[("name".into(), SqlValue::Null), ("age".into(), SqlValue::Integer(40))],
             &nb(),
+            &nb(),
         )
         .unwrap();
         assert_eq!(
@@ -974,7 +1078,7 @@ mod tests {
     #[test]
     fn update_with_empty_where_targets_all_rows() {
         let (sql, _) =
-            build_update_sql("t", "", &[("a".into(), SqlValue::Integer(1))], &nb())
+            build_update_sql("t", "", &[("a".into(), SqlValue::Integer(1))], &nb(), &nb())
                 .unwrap();
         assert_eq!(sql, "UPDATE \"t\" SET \"a\" = $1 WHERE TRUE");
     }
@@ -982,7 +1086,7 @@ mod tests {
     #[test]
     fn update_empty_data_errors() {
         assert_eq!(
-            build_update_sql("t", "id = 1", &[], &nb()),
+            build_update_sql("t", "id = 1", &[], &nb(), &nb()),
             Err(StoreError::EmptyData { op: "mutate" })
         );
     }
@@ -990,7 +1094,13 @@ mod tests {
     #[test]
     fn update_rejects_unsafe_column() {
         assert!(matches!(
-            build_update_sql("t", "id = 1", &[("a-b".into(), SqlValue::Integer(1))], &nb()),
+            build_update_sql(
+                "t",
+                "id = 1",
+                &[("a-b".into(), SqlValue::Integer(1))],
+                &nb(),
+                &nb(),
+            ),
             Err(StoreError::InvalidIdentifier { kind: "column", .. })
         ));
     }
@@ -998,9 +1108,94 @@ mod tests {
     #[test]
     fn update_propagates_filter_errors() {
         assert!(matches!(
-            build_update_sql("t", "bad ;", &[("a".into(), SqlValue::Integer(1))], &nb()),
+            build_update_sql(
+                "t",
+                "bad ;",
+                &[("a".into(), SqlValue::Integer(1))],
+                &nb(),
+                &nb(),
+            ),
             Err(StoreError::Filter(_))
         ));
+    }
+
+    // ── §v1.36.2 — typed-column write cast ───────────────────────────
+
+    #[test]
+    fn insert_casts_each_value_to_its_introspected_column_type() {
+        let types = std::collections::HashMap::from([
+            ("tenant_id".to_string(), "uuid".to_string()),
+            ("note".to_string(), "text".to_string()),
+            ("n".to_string(), "int4".to_string()),
+        ]);
+        let (sql, _) = build_insert_sql(
+            "chat_history",
+            &[
+                ("tenant_id".into(), txt("83d078e1-b372-42ba-9572-ff8dc521386e")),
+                ("note".into(), txt("hi")),
+                ("n".into(), SqlValue::Integer(3)),
+            ],
+            &types,
+        )
+        .unwrap();
+        assert_eq!(
+            sql,
+            "INSERT INTO \"chat_history\" (\"tenant_id\", \"note\", \"n\") \
+             VALUES ($1::uuid, $2::text, $3::int4)",
+            "§v1.36.2 — each value placeholder is cast to its column's \
+             introspected type so a text-bound value writes into a \
+             uuid / int column"
+        );
+    }
+
+    #[test]
+    fn update_set_casts_each_value_to_its_introspected_column_type() {
+        let types = std::collections::HashMap::from([(
+            "status".to_string(),
+            "uuid".to_string(),
+        )]);
+        let (sql, _) = build_update_sql(
+            "t",
+            "id = 1",
+            &[("status".into(), txt("83d078e1-b372-42ba-9572-ff8dc521386e"))],
+            &nb(),
+            &types,
+        )
+        .unwrap();
+        assert_eq!(
+            sql,
+            "UPDATE \"t\" SET \"status\" = $1::uuid WHERE \"id\"::text = $2",
+            "§v1.36.2 — the SET value is cast to the column type; the \
+             WHERE column is cast to text (1.36.1)"
+        );
+    }
+
+    #[test]
+    fn unknown_column_type_falls_back_to_a_bare_placeholder() {
+        // An empty type map (introspection missed the table / column)
+        // → bare `$N`, the pre-1.36.2 behaviour: a `text` column still
+        // works, a typed column fails LOUDLY — no regression, no
+        // silent-wrong write.
+        let (sql, _) =
+            build_insert_sql("t", &[("x".into(), txt("v"))], &nb()).unwrap();
+        assert_eq!(sql, "INSERT INTO \"t\" (\"x\") VALUES ($1)");
+    }
+
+    #[test]
+    fn an_unsafe_column_type_name_is_not_spliced_into_sql() {
+        // Defense in depth: `udt_name` comes from Postgres, but a type
+        // name that is not a safe identifier is never spliced — the
+        // builder falls back to a bare `$N`.
+        let types = std::collections::HashMap::from([(
+            "x".to_string(),
+            "uuid; DROP TABLE t".to_string(),
+        )]);
+        let (sql, _) =
+            build_insert_sql("t", &[("x".into(), txt("v"))], &types).unwrap();
+        assert_eq!(
+            sql, "INSERT INTO \"t\" (\"x\") VALUES ($1)",
+            "an unsafe type name yields no cast — never a splice"
+        );
     }
 
     // ── D4 — injection resistance, end to end ────────────────────────
