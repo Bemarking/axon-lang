@@ -37,9 +37,9 @@
 //!  - §2 — schema-anchored operation SQL, infra-free: with a resolved
 //!    schema the operation SQL is `"schema"."table"`.
 //!                                          → inverted by 37.x.c (D2).
-//!  - §3 — the stale schema cache, real-Postgres: a `(dsn, table)`
-//!    entry survives a live `ALTER TABLE` and miscasts the next
-//!    operation.                                  → 37.x.f / D9 inverts.
+//!  - §3 — the self-healing schema cache, real-Postgres: a live
+//!    `ALTER TABLE` drift triggers the D9 evict + retry, and the
+//!    operation succeeds.                  → inverted by 37.x.f (D9).
 //!  - §4 — multi-schema resolution, real-Postgres: a table present in
 //!    two schemas resolves silently by `search_path` order, with no
 //!    ambiguity signal.                  → 37.x.b / D1 + D5 invert/keep.
@@ -264,12 +264,15 @@ async fn exec(backend: &PostgresStoreBackend, sql: &str) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  §3 — The stale schema cache (real-Postgres): a `(dsn, table)` entry
-//        survives a live `ALTER TABLE` and miscasts the next operation.
+//  §3 — The self-healing schema cache (real-Postgres). 37.x.f (D9)
+//        INVERTED this anchor: a live `ALTER TABLE` no longer poisons
+//        the cache — the next operation hits the stale entry, fails
+//        with a schema-drift SQLSTATE, EVICTS the entry, and retries
+//        once against fresh introspection — and succeeds.
 // ════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
-async fn s3_schema_cache_is_stale_after_a_live_alter_table() {
+async fn s3_schema_cache_self_heals_after_a_live_alter_table() {
     let backend = match test_backend().await {
         Some(b) => b,
         None => return,
@@ -279,9 +282,9 @@ async fn s3_schema_cache_is_stale_after_a_live_alter_table() {
     exec(&backend, &format!("DROP TABLE IF EXISTS {table}")).await;
     exec(&backend, &format!("CREATE TABLE {table} (probe uuid, label text)")).await;
 
-    // Seed + a first retrieve: this populates the process-global
-    // `SCHEMA_CACHE` for `(dsn, table)` with `{probe: uuid, label: text}`
-    // and the typed-column filter works (`"probe" = $1::uuid`).
+    // Seed + a first retrieve: this populates the process-global schema
+    // cache for `(dsn, table)` with `{probe: uuid, label: text}` and
+    // the typed-column filter works (`"probe" = $1::uuid`).
     backend
         .insert(
             table,
@@ -295,7 +298,6 @@ async fn s3_schema_cache_is_stale_after_a_live_alter_table() {
     let before = backend
         .query(table, &format!("probe = '{ADOPTER_UUID}'"), &empty())
         .await;
-    eprintln!("§3 anchor — query BEFORE the ALTER: {:?}", before.is_ok());
     assert!(
         before.is_ok(),
         "§3 precondition: the typed-column filter works before the \
@@ -310,25 +312,26 @@ async fn s3_schema_cache_is_stale_after_a_live_alter_table() {
     )
     .await;
 
-    // The next retrieve hits the STALE cache → casts `$1::uuid` against
-    // a column that is now `text` → `operator does not exist: text = uuid`.
+    // §37.x.f (D9) — the next retrieve hits the STALE cache → casts
+    // `$1::uuid` against the now-`text` column → `operator does not
+    // exist: text = uuid` (SQLSTATE 42883) → the self-heal evicts the
+    // `(dsn, table)` entry and retries once with fresh introspection
+    // (`probe` is now `text`) → the retry succeeds.
     let after = backend
         .query(table, &format!("probe = '{ADOPTER_UUID}'"), &empty())
         .await;
     eprintln!(
-        "§3 anchor (stale schema cache after ALTER TABLE):\n\
+        "§3 (37.x.f — D9 self-healing schema cache):\n\
          after-ALTER query result = {after:?}\n\
-         CONCLUSION: the cached `{{probe: uuid}}` entry survived the\n\
-         ALTER; the next op miscasts `$1::uuid` against the now-`text`\n\
-         column and FAILS. The cache has no invalidation. 37.x.f (D9)\n\
-         inverts: a schema-drift SQLSTATE evicts the entry + retries."
+         CONCLUSION: the stale `{{probe: uuid}}` cast failed `text =\n\
+         uuid`; D9 evicted the `(dsn, table)` entry and retried with\n\
+         fresh introspection — the operation self-healed."
     );
-    assert!(
-        after.is_err(),
-        "§3: after a live `ALTER COLUMN ... TYPE`, the next operation \
-         fails on the STALE cached column type — the cache has no \
-         invalidation. 37.x.f (D9) makes it self-heal."
+    let rows = after.expect(
+        "§37.x.f (D9): the operation SELF-HEALS — a schema-drift \
+         SQLSTATE evicts the stale cache entry and retries once",
     );
+    assert_eq!(rows.len(), 1, "§3: the self-healed retrieve returns the row");
 
     exec(&backend, &format!("DROP TABLE IF EXISTS {table}")).await;
 }
