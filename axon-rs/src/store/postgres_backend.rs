@@ -531,7 +531,11 @@ static SCHEMA_CACHE: std::sync::LazyLock<std::sync::Mutex<SchemaCache>> =
 /// search-path-correct primary resolution and the search-path-
 /// independent `pg_catalog` fallback feed their rows through this one
 /// function, so the resolution verdict is computed identically.
-fn resolve_from_rows(
+/// `pub` so 37.x.i's property/fuzz pack can drive it across arbitrary
+/// schema topologies — same exposure rationale as [`build_pg_where`] /
+/// [`build_select_sql`] / [`classify_pg_type`] (pure totals worth
+/// exhaustive external test).
+pub fn resolve_from_rows(
     table: &str,
     rows: Vec<(String, String, String)>,
 ) -> Result<(String, std::collections::HashMap<String, String>), StoreError> {
@@ -586,8 +590,10 @@ fn collect_triples(rows: &[PgRow]) -> Vec<(String, String, String)> {
 ///
 /// Every one is a PARSE / PLAN-time rejection — the statement never
 /// executed, so the failed operation had ZERO side effects and the D9
-/// retry cannot double-write.
-fn is_schema_drift_sqlstate(code: &str) -> bool {
+/// retry cannot double-write. `pub` so 37.x.i's property/fuzz pack
+/// drives it across all ASCII inputs (the closed-set membership test
+/// must be total + never panic).
+pub fn is_schema_drift_sqlstate(code: &str) -> bool {
     matches!(code, "42P01" | "42703" | "42804" | "42883")
 }
 
