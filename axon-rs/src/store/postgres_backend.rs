@@ -17,11 +17,28 @@
 //! # D7 — pooling + honest typed failure surface
 //!
 //! [`PostgresStoreBackend::connect`] builds ONE lazy, bounded
-//! `sqlx::PgPool` (`connect_lazy` — no connection is opened until the
-//! first operation). Every failure path — empty connection, missing
+//! `sqlx::PgPool` (`connect_lazy_with` — no connection is opened until
+//! the first operation). Every failure path — empty connection, missing
 //! env var, malformed DSN, connect failure, SQL error, an unsupported
 //! column type, a decode failure — surfaces as a typed [`StoreError`].
 //! No panic; no silent empty result masking a failed query.
+//!
+//! # Gap 3 (v1.36.3) — transaction-mode pooler safety
+//!
+//! The pool's `PgConnectOptions` set `statement_cache_capacity(0)`
+//! unconditionally. sqlx otherwise caches server-side prepared
+//! statements under generated names (`sqlx_s_1`, …); behind a
+//! transaction-mode pooler — PgBouncer `pool_mode=transaction`,
+//! Supabase Supavisor (`:6543`), Neon, RDS Proxy — successive
+//! operations land on different physical sessions, so a name minted on
+//! one collides on the next (`prepared statement "sqlx_s_1" already
+//! exists`). Capacity 0 routes every query through the *unnamed*
+//! prepared statement — collision-free by construction, harmless on a
+//! direct/session-mode connection. An axonstore DSN is pooler-agnostic
+//! with no knob to misconfigure. Each connection also carries an
+//! `application_name` of `axon-store/<store>` so every session is
+//! attributable to its declaration in `pg_stat_activity`, pooler logs
+//! and DBA dashboards.
 //!
 //! # D4 — injection-proof, identifiers included
 //!
@@ -51,10 +68,11 @@
 //! a clear [`StoreError::UnsupportedColumnType`], not a silent miss.
 
 use std::fmt;
+use std::str::FromStr;
 use std::time::Duration;
 
 use serde_json::Value as JsonValue;
-use sqlx::postgres::{PgArguments, PgPoolOptions, PgRow};
+use sqlx::postgres::{PgArguments, PgConnectOptions, PgPoolOptions, PgRow};
 use sqlx::query::Query;
 use sqlx::{Column, PgPool, Postgres, Row, TypeInfo};
 
@@ -220,6 +238,35 @@ fn mask_dsn(dsn: &str) -> String {
         }
     }
     dsn.to_string()
+}
+
+/// The `application_name` stamped on an axonstore's Postgres
+/// connections (Gap 3 bonus, v1.36.3).
+///
+/// `axon-store/<store_name>` makes every session attributable to its
+/// `axonstore` declaration in `pg_stat_activity`, pooler logs and DBA
+/// dashboards; a bare `axon-store` when no store name is available.
+///
+/// Total and bounded: Postgres caps `application_name` at
+/// `NAMEDATALEN - 1` (63 bytes) and *silently truncates* a longer
+/// value. This caps it ourselves on a UTF-8 char boundary so the
+/// stamped name is exactly what a DBA sees — never a server-mangled
+/// suffix.
+fn application_name_for(store_name: &str) -> String {
+    const MAX: usize = 63;
+    let full = if store_name.is_empty() {
+        "axon-store".to_string()
+    } else {
+        format!("axon-store/{store_name}")
+    };
+    if full.len() <= MAX {
+        return full;
+    }
+    let mut cut = MAX;
+    while cut > 0 && !full.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    full[..cut].to_string()
 }
 
 /// Validate a table / column identifier, mapping a failure to a typed
@@ -640,27 +687,61 @@ impl fmt::Debug for PostgresStoreBackend {
 impl PostgresStoreBackend {
     /// Resolve `connection` and build a lazy, bounded connection pool.
     ///
-    /// Synchronous and cheap: `connect_lazy` validates the DSN format
-    /// but opens **no** connection — the first real connection is made
-    /// on the first operation (D7 — lazy). A malformed DSN is a typed
-    /// [`StoreError::PoolInit`].
+    /// Equivalent to [`connect_named`](Self::connect_named) with no
+    /// store name — the connection's `application_name` is the bare
+    /// `axon-store`. Prefer `connect_named` so each session is
+    /// attributable to its declaring `axonstore`.
+    pub fn connect(connection: &str) -> Result<Self, StoreError> {
+        Self::connect_named(connection, "")
+    }
+
+    /// Resolve `connection` and build a lazy, bounded connection pool,
+    /// stamping each connection's `application_name` with `store_name`.
+    ///
+    /// Synchronous and cheap: the DSN is parsed into a
+    /// [`PgConnectOptions`] (a malformed DSN is a typed
+    /// [`StoreError::PoolInit`]) but `connect_lazy_with` opens **no**
+    /// connection — the first real connection is made on the first
+    /// operation (D7 — lazy).
+    ///
+    /// Two production-grade properties are set on every connection:
+    ///
+    /// - **`statement_cache_capacity(0)`** (Gap 3) — disables sqlx's
+    ///   named server-side prepared-statement cache so the backend is
+    ///   safe behind a transaction-mode pooler (PgBouncer
+    ///   `pool_mode=transaction`, Supabase Supavisor `:6543`, Neon, RDS
+    ///   Proxy), where a cached name minted on one physical session
+    ///   collides on the next (`prepared statement "sqlx_s_1" already
+    ///   exists`). Applied unconditionally — harmless on a direct
+    ///   connection, and there is no knob to misconfigure.
+    /// - **`application_name`** — `axon-store/<store_name>` (bare
+    ///   `axon-store` when `store_name` is empty), capped at the
+    ///   Postgres 63-byte `NAMEDATALEN-1` limit on a char boundary, so
+    ///   every axon-owned session is identifiable in `pg_stat_activity`,
+    ///   pooler logs and DBA dashboards.
     ///
     /// Must be called within a Tokio runtime context: a well-formed DSN
     /// registers a background connection reaper. In production this is
     /// always satisfied — the registry (35.d) is built while the axum
     /// server's runtime is live.
-    pub fn connect(connection: &str) -> Result<Self, StoreError> {
+    pub fn connect_named(
+        connection: &str,
+        store_name: &str,
+    ) -> Result<Self, StoreError> {
         let dsn = resolve_dsn(connection)?;
+        let opts = PgConnectOptions::from_str(&dsn)
+            .map_err(|e| StoreError::PoolInit {
+                dsn_masked: mask_dsn(&dsn),
+                source: e.to_string(),
+            })?
+            .statement_cache_capacity(0)
+            .application_name(&application_name_for(store_name));
         let pool = PgPoolOptions::new()
             .max_connections(MAX_POOL_CONNECTIONS)
             .min_connections(0)
             .acquire_timeout(Duration::from_secs(ACQUIRE_TIMEOUT_SECS))
             .idle_timeout(Duration::from_secs(IDLE_TIMEOUT_SECS))
-            .connect_lazy(&dsn)
-            .map_err(|e| StoreError::PoolInit {
-                dsn_masked: mask_dsn(&dsn),
-                source: e.to_string(),
-            })?;
+            .connect_lazy_with(opts);
         Ok(Self { dsn, pool })
     }
 
@@ -921,6 +1002,65 @@ mod tests {
             PostgresStoreBackend::connect("not a valid dsn at all"),
             Err(StoreError::PoolInit { .. })
         ));
+    }
+
+    // ── Gap 3 (v1.36.3) — pooler safety + application_name ───────────
+
+    #[tokio::test]
+    async fn connect_named_with_valid_dsn_is_lazy_and_succeeds() {
+        // `connect_named` builds the same lazy pool — Gap 3 only adds
+        // `statement_cache_capacity(0)` + `application_name`, neither of
+        // which opens a connection.
+        let backend = PostgresStoreBackend::connect_named(
+            "postgresql://u:p@localhost:5432/db",
+            "claims",
+        )
+        .expect("a well-formed DSN builds a lazy pool");
+        let _ = format!("{backend:?}");
+    }
+
+    #[test]
+    fn connect_named_malformed_dsn_errors() {
+        assert!(matches!(
+            PostgresStoreBackend::connect_named("not a dsn", "claims"),
+            Err(StoreError::PoolInit { .. })
+        ));
+    }
+
+    #[test]
+    fn application_name_carries_the_store_name() {
+        assert_eq!(application_name_for("claims"), "axon-store/claims");
+        assert_eq!(
+            application_name_for("tenant_audit_log"),
+            "axon-store/tenant_audit_log"
+        );
+    }
+
+    #[test]
+    fn application_name_empty_store_is_bare() {
+        // `connect` delegates with no store name — the bare label, with
+        // no dangling slash.
+        assert_eq!(application_name_for(""), "axon-store");
+    }
+
+    #[test]
+    fn application_name_capped_at_postgres_namedatalen() {
+        // Postgres silently truncates `application_name` past 63 bytes;
+        // we cap it ourselves so the stamped name is exactly observed.
+        let long = "s".repeat(200);
+        let name = application_name_for(&long);
+        assert!(name.len() <= 63, "must fit NAMEDATALEN-1, got {}", name.len());
+        assert!(name.starts_with("axon-store/s"));
+    }
+
+    #[test]
+    fn application_name_truncation_respects_char_boundaries() {
+        // A multi-byte tail must never be cut mid-codepoint — the result
+        // is always valid UTF-8 (`String` guarantees it, but the cut
+        // must land on a boundary or the slice panics).
+        let name = application_name_for(&"é".repeat(100));
+        assert!(name.len() <= 63);
+        assert!(name.is_char_boundary(name.len()));
     }
 
     // ── build_select_sql ─────────────────────────────────────────────

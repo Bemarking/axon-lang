@@ -452,6 +452,27 @@ axonstore orders {
   (no connection until the first operation), bounded (max 10
   connections), and reused. Stores that share a DSN share one pool.
 
+### 11.1 Transaction-mode poolers — works out of the box (v1.36.3+)
+
+Managed Postgres almost always sits behind a **transaction-mode
+connection pooler** — PgBouncer `pool_mode=transaction`, Supabase
+**Supavisor** (the `:6543` port), Neon, AWS RDS Proxy. These multiplex
+many logical sessions over a few physical connections, so two
+consecutive store operations can land on different backend sessions.
+
+axonstore is **safe behind a transaction-mode pooler with no
+configuration**. The connection pool disables the client-side named
+prepared-statement cache (`statement_cache_capacity(0)`), so every
+query uses the unnamed prepared statement — collision-free by
+construction. You point `connection:` at the pooler DSN (e.g. the
+Supabase `:6543` URL) and it just works. There is no knob to set and
+no knob to get wrong.
+
+Every axonstore connection also carries an `application_name` of
+`axon-store/<store name>` — so an axon-owned session is identifiable
+at a glance in `pg_stat_activity`, your pooler's logs, and DBA
+dashboards.
+
 ---
 
 ## 12. Honest scope boundaries (v1.30.0)
@@ -507,6 +528,7 @@ silently omitted:
 | `persist … blocked: un-elevated write` | A `confidence_floor` store received a `persist` with no `_confidence`. Bind a `_confidence` ≥ the floor. |
 | Endpoint fails `axon check` with "requiring capability" | A flow touches a `capability`-gated store; add the capability to the endpoint's `requires:`. |
 | `column 'X' has Postgres type 'Y', outside the v1.30.0 supported catalog` | See [§12](#12-honest-scope-boundaries-v1300) for the supported type catalog. |
+| `prepared statement "sqlx_s_1" already exists` | A transaction-mode pooler in front of an axonstore older than v1.36.3. Upgrade — v1.36.3+ disables the named-statement cache, so axonstore is pooler-safe with no configuration ([§11.1](#111-transaction-mode-poolers--works-out-of-the-box-v1363)). |
 
 ---
 

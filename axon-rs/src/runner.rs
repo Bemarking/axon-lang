@@ -878,7 +878,8 @@ fn execute_sql_store_step(
     let step_type = step_type.to_string();
 
     block_on_store(async move {
-        let backend = PostgresStoreBackend::connect(&connection)?;
+        let backend =
+            PostgresStoreBackend::connect_named(&connection, &store_name)?;
         match step_type.as_str() {
             "retrieve" => {
                 // §35.i Pillar III — retrieve drains off a lazy cursor,
