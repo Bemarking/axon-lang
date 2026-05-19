@@ -280,8 +280,10 @@ impl StoreRegistry {
                 if let Some(backend) = cache.get(&dsn) {
                     return Ok(StoreHandle::Postgres(backend.clone()));
                 }
-                let backend =
-                    PostgresStoreBackend::connect(&registered.spec.connection)?;
+                let backend = PostgresStoreBackend::connect_named(
+                    &registered.spec.connection,
+                    store_name,
+                )?;
                 cache.insert(dsn, backend.clone());
                 Ok(StoreHandle::Postgres(backend))
             }
