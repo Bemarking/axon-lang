@@ -247,7 +247,10 @@ fn surface_b_build_pg_where_is_total_and_injection_resistant() {
         let (template, bindings, k, values) = gen_where(&mut lcg);
 
         // Total — never panics for any template × adversarial values.
-        let result = build_pg_where(&template, 0, &bindings);
+        // §v1.36.4 — empty `column_types`: the structural invariants
+        // below (K params, K `$N`, no value leak) hold regardless of
+        // the cast suffix.
+        let result = build_pg_where(&template, 0, &bindings, &HashMap::new());
 
         // Every generated template is well-formed → always compiles.
         let (clause, params) = result.unwrap_or_else(|e| {
@@ -304,6 +307,11 @@ fn surface_b_unbound_and_empty_bindings_never_panic() {
     let mut lcg = Lcg(0x3737_6700_456D_7074);
     for _ in 0..500u64 {
         let (template, _, _, _) = gen_where(&mut lcg);
-        let _ = build_pg_where(&template, lcg.n(32) as usize, &HashMap::new());
+        let _ = build_pg_where(
+            &template,
+            lcg.n(32) as usize,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
     }
 }
