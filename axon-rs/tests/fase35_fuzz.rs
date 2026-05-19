@@ -547,11 +547,11 @@ fn fuzz_s6_sql_builders_are_total_and_injection_proof() {
         if let Ok((sql, params)) = build_delete_sql(&table, &where_expr, &nb()) {
             assert_clause_injection_safe(&sql, &params, seed);
         }
-        if let Ok((sql, params)) = build_insert_sql(&table, &data) {
+        if let Ok((sql, params)) = build_insert_sql(&table, &data, &nb()) {
             assert_clause_injection_safe(&sql, &params, seed);
         }
         if let Ok((sql, params)) =
-            build_update_sql(&table, &where_expr, &data, &nb())
+            build_update_sql(&table, &where_expr, &data, &nb(), &nb())
         {
             assert_clause_injection_safe(&sql, &params, seed);
         }
