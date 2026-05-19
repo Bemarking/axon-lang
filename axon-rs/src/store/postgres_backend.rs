@@ -204,13 +204,22 @@ impl fmt::Display for StoreError {
             StoreError::TableNotResolved { table } => write!(
                 f,
                 "axonstore could not resolve table `{table}` to a \
-                 relation in any schema of the database"
+                 relation in any schema of the database — verify the \
+                 table exists in the target database (a deploy-time \
+                 migration is the usual remedy) and that the configured \
+                 credentials can SELECT from it; the introspection scans \
+                 `pg_catalog` independent of `search_path`, so the table \
+                 is genuinely absent on every schema this role can see"
             ),
             StoreError::AmbiguousTable { table, schemas } => write!(
                 f,
                 "axonstore table `{table}` is ambiguous — it exists in \
                  {} schemas ({}) and the connection's `search_path` does \
-                 not disambiguate it",
+                 not disambiguate it; either narrow the role's \
+                 `search_path` so exactly one of the resolving schemas \
+                 is visible, or declare the target schema explicitly on \
+                 the `axonstore` (the Fase 38 `schema:` declaration, \
+                 incl. `schema: env:VAR` per-tenant)",
                 schemas.len(),
                 schemas.join(", "),
             ),
@@ -649,11 +658,11 @@ pub(crate) async fn introspect_conn(
         source: e.to_string(),
     })?;
 
-    let (schema, column_types) = {
+    let resolution: Result<(String, std::collections::HashMap<String, String>), StoreError> = {
         let primary_rows = collect_triples(&primary);
         if !primary_rows.is_empty() {
             // `to_regclass` resolved — one relation, one schema.
-            resolve_from_rows(table, primary_rows)?
+            resolve_from_rows(table, primary_rows)
         } else {
             // — Stage 2: fallback, search-path-INDEPENDENT scan. —
             let scan = sqlx::query(
@@ -677,10 +686,59 @@ pub(crate) async fn introspect_conn(
                 op: "resolve",
                 source: e.to_string(),
             })?;
-            resolve_from_rows(table, collect_triples(&scan))?
+            resolve_from_rows(table, collect_triples(&scan))
         }
     };
-    Ok(std::sync::Arc::new(ResolvedTable { schema, column_types }))
+    // §Fase 37.x.h (D6) — every resolution failure logs as a structured
+    // `tracing::error!` so an adopter's operator can SEE it in production
+    // logs / journald, not only in the propagated `StoreError`. The
+    // Display hint (the `TableNotResolved` / `AmbiguousTable` arms above)
+    // is the actionable line; the structured fields here are the index
+    // for log search.
+    match resolution {
+        Ok((schema, column_types)) => {
+            Ok(std::sync::Arc::new(ResolvedTable { schema, column_types }))
+        }
+        Err(err) => {
+            match &err {
+                StoreError::TableNotResolved { table } => {
+                    tracing::error!(
+                        target: "axon::store::resolve",
+                        store_table = %table,
+                        kind = "table_not_resolved",
+                        d_letter = "D6",
+                        "axonstore could not resolve `{table}` on any \
+                         schema visible to this role — see StoreError \
+                         Display for the actionable remedy"
+                    );
+                }
+                StoreError::AmbiguousTable { table, schemas } => {
+                    tracing::error!(
+                        target: "axon::store::resolve",
+                        store_table = %table,
+                        kind = "ambiguous_table",
+                        schemas = %schemas.join(","),
+                        d_letter = "D6",
+                        "axonstore `{table}` resolved in {n} schemas — \
+                         declare the target schema or narrow \
+                         `search_path`",
+                        n = schemas.len(),
+                    );
+                }
+                other => {
+                    tracing::error!(
+                        target: "axon::store::resolve",
+                        store_table = %table,
+                        kind = "resolve_failed",
+                        d_letter = "D6",
+                        "axonstore resolution of `{table}` failed: \
+                         {other}"
+                    );
+                }
+            }
+            Err(err)
+        }
+    }
 }
 
 /// §v1.36.2 — the `::<type>` cast suffix for a `$N` value placeholder.
@@ -1241,6 +1299,22 @@ impl PostgresStoreBackend {
     pub(crate) fn evict_schema(&self, table: &str) {
         let key = (self.dsn.clone(), table.to_string());
         SCHEMA_CACHE.lock().unwrap().evict(&key);
+        // §Fase 37.x.h (D6) — observability of the D9 self-heal. A live
+        // `ALTER TABLE` is the expected trigger; a flood of these from
+        // one `(masked_dsn, table)` means a misconfiguration (a migration
+        // never finished, two services racing against the same table) and
+        // an operator needs to SEE the eviction. The masked DSN gives the
+        // physical-store context without ever leaking a credential.
+        tracing::warn!(
+            target: "axon::store::cache",
+            store_table = %table,
+            masked_dsn = %mask_dsn(&self.dsn),
+            kind = "schema_drift_evict",
+            d_letter = "D9",
+            "axonstore evicted cached schema for `{table}` after a \
+             schema-drift SQLSTATE — the next operation will \
+             re-introspect against the live table"
+        );
     }
 
     /// §Fase 37.x.g (D8) — EAGERLY resolve + introspect `table` against
@@ -2434,5 +2508,89 @@ mod tests {
     fn filter_error_converts_into_store_error() {
         let e: StoreError = FilterError::TooManyConditions { limit: 256 }.into();
         assert!(matches!(e, StoreError::Filter(_)));
+    }
+
+    // ── §Fase 37.x.h — D6 honest, actionable failure ─────────────────
+
+    #[test]
+    fn d6_table_not_resolved_display_carries_an_actionable_hint() {
+        // The Display of `TableNotResolved` is the user-facing surface of
+        // the D1 resolution failure — it MUST tell an adopter (a) what
+        // happened, (b) the table involved, and (c) at least one concrete
+        // remedy. A bare "could not resolve" is the *un-actionable* form
+        // 37.x.h replaces.
+        let err = StoreError::TableNotResolved {
+            table: "claims".into(),
+        };
+        let text = err.to_string();
+        assert!(
+            text.contains("`claims`"),
+            "the table name must appear verbatim, got: {text}"
+        );
+        assert!(
+            text.contains("pg_catalog"),
+            "the message must disclose pg_catalog (so an adopter knows \
+             `search_path` is not the culprit), got: {text}"
+        );
+        assert!(
+            text.contains("migration") || text.contains("SELECT"),
+            "the message must name at least one concrete remedy \
+             (migration / SELECT permission), got: {text}"
+        );
+    }
+
+    #[test]
+    fn d6_ambiguous_table_display_points_at_fase_38_schema_declaration() {
+        // The Display of `AmbiguousTable` MUST tell an adopter both the
+        // schemas the table resolved into AND the two real remedies —
+        // narrow `search_path` OR declare the target schema explicitly
+        // (the Fase 38 `schema:` declaration the gap report names).
+        let err = StoreError::AmbiguousTable {
+            table: "rates".into(),
+            schemas: vec!["finance".into(), "legacy".into()],
+        };
+        let text = err.to_string();
+        assert!(text.contains("`rates`"), "table name must appear");
+        assert!(
+            text.contains("finance") && text.contains("legacy"),
+            "every resolving schema must appear, got: {text}"
+        );
+        assert!(
+            text.contains("search_path"),
+            "the search_path remedy must appear, got: {text}"
+        );
+        assert!(
+            text.contains("schema:"),
+            "the Fase 38 `schema:` declaration must be named (the \
+             genuinely-superior remedy), got: {text}"
+        );
+        assert!(
+            text.contains("Fase 38"),
+            "the message must anchor the remedy to Fase 38, got: {text}"
+        );
+    }
+
+    #[test]
+    fn d6_display_does_not_leak_internal_sqlstates_or_internal_paths() {
+        // The Display is operator-facing prose, not a stack trace —
+        // SQLSTATE codes belong on `SchemaDrift` (where they ARE the
+        // diagnostic), not on a resolution failure. A regression would
+        // be code spilling into the friendly arms.
+        let nr = StoreError::TableNotResolved { table: "t".into() }.to_string();
+        let amb = StoreError::AmbiguousTable {
+            table: "t".into(),
+            schemas: vec!["a".into()],
+        }
+        .to_string();
+        for code in ["42P01", "42703", "42804", "42883"] {
+            assert!(
+                !nr.contains(code),
+                "TableNotResolved must not leak SQLSTATE {code}"
+            );
+            assert!(
+                !amb.contains(code),
+                "AmbiguousTable must not leak SQLSTATE {code}"
+            );
+        }
     }
 }
