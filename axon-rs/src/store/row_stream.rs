@@ -183,17 +183,18 @@ pub async fn stream_retrieve(
     // bind parameters (the Request Binding Contract on the filter path).
     bindings: &std::collections::HashMap<String, String>,
 ) -> Result<RowStreamOutcome, StoreError> {
-    // §Fase 37.x.b — resolve the table (schema + column types) via the
-    // search-path-independent `resolve_table`; degrade to an empty map
-    // on a resolution failure (§37.x.h / D6 surfaces the typed error).
+    // §Fase 37.x.b/c — resolve the table's schema + column types via
+    // the search-path-independent `resolve_table`; degrade to an
+    // un-qualified bare table + empty map on a resolution failure
+    // (§37.x.h / D6 surfaces the typed error in its place).
     let resolved = backend.resolve_table(table).await;
     let no_types = std::collections::HashMap::new();
-    let column_types = match &resolved {
-        Ok(r) => &r.column_types,
-        Err(_) => &no_types,
+    let (schema, column_types) = match &resolved {
+        Ok(r) => (Some(r.schema.as_str()), &r.column_types),
+        Err(_) => (None, &no_types),
     };
     let (sql, params): (String, Vec<SqlValue>) =
-        build_select_sql(table, where_expr, bindings, column_types)?;
+        build_select_sql(table, schema, where_expr, bindings, column_types)?;
 
     let mut query = sqlx::query(&sql);
     for value in &params {
