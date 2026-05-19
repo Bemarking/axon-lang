@@ -34,17 +34,18 @@
 //!
 //!  - §1 — Finding C, infra-free: an unknown-type equality filter
 //!    compiles to a bare `$N` placeholder.        → 37.x.e inverts.
-//!  - §2 — the structural gap, infra-free: the operation SQL is NOT
-//!    schema-qualified, and a value cast is absent whenever the column
-//!    type is unknown.                            → 37.x.c / D1 invert.
+//!  - §2 — schema-anchored operation SQL, infra-free: with a resolved
+//!    schema the operation SQL is `"schema"."table"`.
+//!                                          → inverted by 37.x.c (D2).
 //!  - §3 — the stale schema cache, real-Postgres: a `(dsn, table)`
 //!    entry survives a live `ALTER TABLE` and miscasts the next
 //!    operation.                                  → 37.x.f / D9 inverts.
 //!  - §4 — multi-schema resolution, real-Postgres: a table present in
 //!    two schemas resolves silently by `search_path` order, with no
 //!    ambiguity signal.                  → 37.x.b / D1 + D5 invert/keep.
-//!  - §5 — totality, infra-free: ALL FOUR pure SQL builders emit an
-//!    un-qualified table today.                   → 37.x.c / D2 inverts.
+//!  - §5 — totality, infra-free: ALL FOUR pure SQL builders emit the
+//!    schema-qualified relation when a schema resolved.
+//!                                          → inverted by 37.x.c (D2).
 
 use std::collections::HashMap;
 
@@ -114,93 +115,108 @@ fn s1_unknown_type_equality_filter_renders_a_bare_placeholder() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  §2 — The structural gap (infra-free): the operation SQL is NOT
-//        schema-qualified, and a value cast is absent whenever the
-//        column type is unknown.
+//  §2 — Schema-anchored operation SQL (infra-free). 37.x.c (D2)
+//        INVERTED this anchor: with a resolved schema the operation SQL
+//        is emitted SCHEMA-QUALIFIED — `"public"."tenants"` — so it no
+//        longer rides the ambient `search_path`. A `None` schema keeps
+//        the bare pre-37.x form (D5).
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn s2_operation_sql_is_not_schema_qualified() {
-    // The architectural defect D1/D2/D3 close: an `axonstore` operation
-    // depends on ambient session state. The SELECT names the table
-    // UN-qualified (`"tenants"`, not `"public"."tenants"`), so its
-    // resolution rides on the connection's `search_path`. The INSERT
-    // value carries no `::type` cast when the column type is unknown,
-    // so a `text`-bound value cannot reach a `uuid` column.
-    let (select_sql, _) =
-        build_select_sql("tenants", "id == '${t}'", &empty(), &empty())
+fn s2_operation_sql_is_schema_qualified_when_resolved() {
+    // §37.x.c (D2) — given a resolved schema, the SELECT and INSERT name
+    // the relation SCHEMA-QUALIFIED. `None` (resolution failed) keeps
+    // the bare pre-37.x form. (The cast-less `$1` on an unknown-type
+    // column stays pinned for D1+D8 / 37.x.g.)
+    let (qualified, _) = build_select_sql(
+        "tenants",
+        Some("public"),
+        "id == '${t}'",
+        &empty(),
+        &empty(),
+    )
+    .expect("build_select_sql");
+    let (bare, _) =
+        build_select_sql("tenants", None, "id == '${t}'", &empty(), &empty())
             .expect("build_select_sql");
     let (insert_sql, _) = build_insert_sql(
         "chat_history",
+        Some("public"),
         &[("tenant_id".to_string(), SqlValue::Text(ADOPTER_UUID.to_string()))],
         &empty(),
     )
     .expect("build_insert_sql");
 
     eprintln!(
-        "§2 anchor (structural gap — un-qualified table, no value cast):\n\
-         SELECT = {select_sql:?}\n\
-         INSERT = {insert_sql:?}\n\
-         CONCLUSION: the table is named BARE — `\"tenants\"`, never\n\
-         `\"public\".\"tenants\"`. Resolution depends on the ambient\n\
-         `search_path` of whichever pooled session served the op.\n\
-         The INSERT placeholder is a bare `$1` — no `::uuid`. D2 emits\n\
-         a schema-qualified table; D1+D8 make the column type known."
+        "§2 (37.x.c — D2 schema-anchored operation SQL):\n\
+         SELECT (schema resolved) = {qualified:?}\n\
+         SELECT (schema absent)   = {bare:?}\n\
+         INSERT (schema resolved) = {insert_sql:?}\n\
+         CONCLUSION: a resolved schema renders `\"public\".\"tenants\"` —\n\
+         the operation no longer rides the ambient `search_path`. A\n\
+         `None` schema (resolution failed) keeps the bare form (D5)."
     );
 
     assert_eq!(
-        select_sql, "SELECT * FROM \"tenants\" WHERE \"id\" = $1",
-        "§2: the SELECT names the table UN-qualified — D2 (37.x.c) \
-         inverts to `\"schema\".\"tenants\"`"
-    );
-    assert!(
-        !select_sql.contains("\".\""),
-        "§2: there is NO `\"schema\".\"table\"` qualification today"
+        qualified, "SELECT * FROM \"public\".\"tenants\" WHERE \"id\" = $1",
+        "§2 (D2): a resolved schema → the SELECT is schema-qualified"
     );
     assert_eq!(
-        insert_sql, "INSERT INTO \"chat_history\" (\"tenant_id\") VALUES ($1)",
-        "§2: the INSERT value placeholder is a bare `$1` when the column \
-         type is unknown — D1+D8 make the type known so it casts `$1::uuid`"
+        bare, "SELECT * FROM \"tenants\" WHERE \"id\" = $1",
+        "§2 (D5): a `None` schema → the bare pre-37.x form, unchanged"
+    );
+    assert_eq!(
+        insert_sql,
+        "INSERT INTO \"public\".\"chat_history\" (\"tenant_id\") VALUES ($1)",
+        "§2 (D2): the INSERT is schema-qualified too; the cast-less `$1` \
+         on an unknown-type column stays pinned for D1+D8 (37.x.g)"
     );
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  §5 — Totality (infra-free): ALL FOUR pure SQL builders emit an
-//        un-qualified table today. D2 must flip every one.
+//  §5 — Totality (infra-free). 37.x.c (D2) INVERTED this anchor: ALL
+//        FOUR pure SQL builders now emit the SCHEMA-QUALIFIED relation
+//        when a schema resolved — D2 flipped every one, not three.
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn s5_all_four_sql_builders_emit_an_unqualified_table() {
-    // The store-op SQL surface is exactly four pure builders. The D2
-    // schema-qualification is not done by ANY of them today — this pins
-    // the totality so 37.x.c cannot fix three and miss the fourth.
+fn s5_all_four_sql_builders_qualify_with_a_resolved_schema() {
+    // The store-op SQL surface is exactly four pure builders. §37.x.c
+    // (D2) — each emits `"schema"."t"` given a resolved schema; this
+    // guards the totality so a regression cannot fix three and miss the
+    // fourth.
     let data = [("v".to_string(), SqlValue::Integer(1))];
     let sqls: Vec<(&str, String)> = vec![
         (
             "build_select_sql",
-            build_select_sql("t", "", &empty(), &empty()).unwrap().0,
+            build_select_sql("t", Some("app"), "", &empty(), &empty())
+                .unwrap()
+                .0,
         ),
         (
             "build_delete_sql",
-            build_delete_sql("t", "", &empty(), &empty()).unwrap().0,
+            build_delete_sql("t", Some("app"), "", &empty(), &empty())
+                .unwrap()
+                .0,
         ),
         (
             "build_insert_sql",
-            build_insert_sql("t", &data, &empty()).unwrap().0,
+            build_insert_sql("t", Some("app"), &data, &empty()).unwrap().0,
         ),
         (
             "build_update_sql",
-            build_update_sql("t", "", &data, &empty(), &empty()).unwrap().0,
+            build_update_sql("t", Some("app"), "", &data, &empty(), &empty())
+                .unwrap()
+                .0,
         ),
     ];
 
     for (name, sql) in &sqls {
-        eprintln!("§5 anchor ({name}): {sql:?}");
+        eprintln!("§5 ({name}): {sql:?}");
         assert!(
-            sql.contains("\"t\"") && !sql.contains("\".\""),
-            "§5: `{name}` emits the bare table `\"t\"`, never a \
-             `\"schema\".\"table\"` qualification — D2 (37.x.c) must \
-             invert ALL FOUR builders"
+            sql.contains("\"app\".\"t\""),
+            "§5 (D2): `{name}` must emit the schema-qualified \
+             `\"app\".\"t\"` — D2 flips ALL FOUR builders"
         );
     }
     assert_eq!(sqls.len(), 4, "§5: the store-op SQL surface is 4 builders");

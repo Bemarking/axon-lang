@@ -312,12 +312,42 @@ fn check_identifier(name: &str, kind: &'static str) -> Result<(), StoreError> {
     }
 }
 
+/// §Fase 37.x.c (D2) — render the SCHEMA-QUALIFIED relation reference
+/// for an operation's SQL: `"schema"."table"` when the schema resolved
+/// to a safe identifier, the bare `"table"` otherwise.
+///
+/// A schema-qualified reference resolves on ANY session regardless of
+/// the ambient `search_path` — the D2 guarantee. The schema name is
+/// discovered from `pg_catalog` (37.x.b's `resolve_table`); it is
+/// validated with [`filter::is_safe_identifier`] before being
+/// double-quoted (D4 — no untrusted identifier reaches SQL), exactly
+/// as the table name is. When the schema is absent (`None` — the
+/// resolution failed) or is not a safe identifier (an exotic quoted
+/// schema name `pg_catalog` could yield), the reference falls back to
+/// the bare `"table"` — never an unsafe splice, never a false error;
+/// `search_path` then resolves it as in the pre-37.x behaviour. The
+/// `table` is assumed already [`check_identifier`]-validated.
+fn qualified_relation(schema: Option<&str>, table: &str) -> String {
+    match schema {
+        Some(s) if filter::is_safe_identifier(s) => {
+            format!("\"{s}\".\"{table}\"")
+        }
+        _ => format!("\"{table}\""),
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════
 //  Pure SQL builders (no I/O — exhaustively unit-tested)
 // ════════════════════════════════════════════════════════════════════
 
-/// Build a parameterized `SELECT * FROM "table" WHERE …` statement.
+/// Build a parameterized `SELECT * FROM "schema"."table" WHERE …`
+/// statement.
 ///
+/// §Fase 37.x.c (D2) — `schema` is the table's resolved schema (from
+/// [`PostgresStoreBackend::resolve_table`]); when `Some` and a safe
+/// identifier the relation is emitted SCHEMA-QUALIFIED so it resolves
+/// on any session regardless of the ambient `search_path`. `None`
+/// renders the bare `"table"` (the pre-37.x form — D5).
 /// §Fase 37.d (D3) — `bindings` resolves `${name}` placeholders in the
 /// `where` expression to `$N` bind parameters (never string-spliced).
 /// §v1.36.4 — `column_types` (the `column → udt_name` map) lets
@@ -326,28 +356,34 @@ fn check_identifier(name: &str, kind: &'static str) -> Result<(), StoreError> {
 /// filter then renders bare `$N` placeholders.
 pub fn build_select_sql(
     table: &str,
+    schema: Option<&str>,
     where_expr: &str,
     bindings: &std::collections::HashMap<String, String>,
     column_types: &std::collections::HashMap<String, String>,
 ) -> Result<(String, Vec<SqlValue>), StoreError> {
     check_identifier(table, "table")?;
     let (clause, params) = build_pg_where(where_expr, 0, bindings, column_types)?;
-    Ok((format!("SELECT * FROM \"{table}\" WHERE {clause}"), params))
+    let relation = qualified_relation(schema, table);
+    Ok((format!("SELECT * FROM {relation} WHERE {clause}"), params))
 }
 
-/// Build a parameterized `DELETE FROM "table" WHERE …` statement.
+/// Build a parameterized `DELETE FROM "schema"."table" WHERE …`
+/// statement.
 ///
-/// §v1.36.4 — `column_types` drives the `where`-clause value cast (see
-/// [`build_select_sql`]).
+/// §Fase 37.x.c (D2) — `schema` schema-qualifies the relation (see
+/// [`build_select_sql`]). §v1.36.4 — `column_types` drives the
+/// `where`-clause value cast.
 pub fn build_delete_sql(
     table: &str,
+    schema: Option<&str>,
     where_expr: &str,
     bindings: &std::collections::HashMap<String, String>,
     column_types: &std::collections::HashMap<String, String>,
 ) -> Result<(String, Vec<SqlValue>), StoreError> {
     check_identifier(table, "table")?;
     let (clause, params) = build_pg_where(where_expr, 0, bindings, column_types)?;
-    Ok((format!("DELETE FROM \"{table}\" WHERE {clause}"), params))
+    let relation = qualified_relation(schema, table);
+    Ok((format!("DELETE FROM {relation} WHERE {clause}"), params))
 }
 
 /// §Fase 37.x.b (D1) — a store table resolved against `pg_catalog`,
@@ -355,11 +391,9 @@ pub fn build_delete_sql(
 /// [`PostgresStoreBackend::resolve_table`].
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedTable {
-    /// The schema the table resolves to (e.g. `public`). §37.x.b
-    /// resolves + caches it; §37.x.c (D2) emits the schema-qualified
-    /// `"schema"."table"` so an operation stops depending on the
-    /// connection's `search_path`.
-    #[allow(dead_code)]
+    /// The schema the table resolves to (e.g. `public`). §37.x.c (D2)
+    /// emits the schema-qualified `"schema"."table"` so an operation
+    /// stops depending on the connection's `search_path`.
     pub schema: String,
     /// The `column → udt_name` map driving the `$N::<type>` cast on
     /// both the write side (`build_insert_sql` / `build_update_sql`)
@@ -477,8 +511,11 @@ fn write_cast(
 /// introspected type (`column_types`) so a `text`-bound value writes
 /// into a `uuid` / `int` / `timestamptz` column. An empty
 /// `column_types` map emits bare `$N` (the pre-1.36.2 behaviour).
+/// §Fase 37.x.c (D2) — `schema` schema-qualifies the relation
+/// (`INSERT INTO "schema"."table"`); `None` renders the bare `"table"`.
 pub fn build_insert_sql(
     table: &str,
+    schema: Option<&str>,
     data: &[(String, SqlValue)],
     column_types: &std::collections::HashMap<String, String>,
 ) -> Result<(String, Vec<SqlValue>), StoreError> {
@@ -506,7 +543,8 @@ pub fn build_insert_sql(
     }
 
     let sql = format!(
-        "INSERT INTO \"{table}\" ({}) VALUES ({})",
+        "INSERT INTO {} ({}) VALUES ({})",
+        qualified_relation(schema, table),
         columns.join(", "),
         value_frags.join(", "),
     );
@@ -528,8 +566,11 @@ pub fn build_insert_sql(
 /// non-`text` column. §v1.36.4 — the same `column_types` map is now
 /// threaded into the `WHERE` side too, so a `where`-clause value is
 /// cast to its column's type (`"col" {op} $N::<type>`).
+/// §Fase 37.x.c (D2) — `schema` schema-qualifies the relation
+/// (`UPDATE "schema"."table"`); `None` renders the bare `"table"`.
 pub fn build_update_sql(
     table: &str,
+    schema: Option<&str>,
     where_expr: &str,
     data: &[(String, SqlValue)],
     bindings: &std::collections::HashMap<String, String>,
@@ -566,7 +607,8 @@ pub fn build_update_sql(
     params.extend(where_params);
 
     let sql = format!(
-        "UPDATE \"{table}\" SET {} WHERE {clause}",
+        "UPDATE {} SET {} WHERE {clause}",
+        qualified_relation(schema, table),
         set_frags.join(", "),
     );
     Ok((sql, params))
@@ -881,17 +923,18 @@ impl PostgresStoreBackend {
         where_expr: &str,
         bindings: &std::collections::HashMap<String, String>,
     ) -> Result<Vec<StoreRow>, StoreError> {
-        // §Fase 37.x.b — resolve the table (schema + column types)
-        // search-path-independently; degrade to an empty map on a
-        // resolution failure (§37.x.h / D6 surfaces the typed error).
+        // §Fase 37.x.b/c — resolve the table's schema + column types
+        // search-path-independently; degrade to an un-qualified bare
+        // table + empty map on a resolution failure (§37.x.h / D6
+        // surfaces the typed error in its place).
         let resolved = self.resolve_table(table).await;
         let no_types = std::collections::HashMap::new();
-        let column_types = match &resolved {
-            Ok(r) => &r.column_types,
-            Err(_) => &no_types,
+        let (schema, column_types) = match &resolved {
+            Ok(r) => (Some(r.schema.as_str()), &r.column_types),
+            Err(_) => (None, &no_types),
         };
         let (sql, params) =
-            build_select_sql(table, where_expr, bindings, column_types)?;
+            build_select_sql(table, schema, where_expr, bindings, column_types)?;
         let mut q = sqlx::query(&sql);
         for value in &params {
             q = bind_value(q, value);
@@ -1016,16 +1059,17 @@ impl PostgresStoreBackend {
         table: &str,
         data: &[(String, SqlValue)],
     ) -> Result<u64, StoreError> {
-        // §Fase 37.x.b — resolve the table (schema + column types)
-        // search-path-independently; degrade to an empty map on a
-        // resolution failure (§37.x.h / D6 surfaces the typed error).
+        // §Fase 37.x.b/c — resolve the table's schema + column types
+        // search-path-independently; degrade to an un-qualified bare
+        // table + empty map on a resolution failure (§37.x.h / D6
+        // surfaces the typed error in its place).
         let resolved = self.resolve_table(table).await;
         let no_types = std::collections::HashMap::new();
-        let column_types = match &resolved {
-            Ok(r) => &r.column_types,
-            Err(_) => &no_types,
+        let (schema, column_types) = match &resolved {
+            Ok(r) => (Some(r.schema.as_str()), &r.column_types),
+            Err(_) => (None, &no_types),
         };
-        let (sql, params) = build_insert_sql(table, data, column_types)?;
+        let (sql, params) = build_insert_sql(table, schema, data, column_types)?;
         let mut q = sqlx::query(&sql);
         for value in &params {
             q = bind_value(q, value);
@@ -1045,17 +1089,19 @@ impl PostgresStoreBackend {
         data: &[(String, SqlValue)],
         bindings: &std::collections::HashMap<String, String>,
     ) -> Result<u64, StoreError> {
-        // §Fase 37.x.b — resolve the table (schema + column types)
-        // search-path-independently; degrade to an empty map on a
-        // resolution failure (§37.x.h / D6 surfaces the typed error).
+        // §Fase 37.x.b/c — resolve the table's schema + column types
+        // search-path-independently; degrade to an un-qualified bare
+        // table + empty map on a resolution failure (§37.x.h / D6
+        // surfaces the typed error in its place).
         let resolved = self.resolve_table(table).await;
         let no_types = std::collections::HashMap::new();
-        let column_types = match &resolved {
-            Ok(r) => &r.column_types,
-            Err(_) => &no_types,
+        let (schema, column_types) = match &resolved {
+            Ok(r) => (Some(r.schema.as_str()), &r.column_types),
+            Err(_) => (None, &no_types),
         };
-        let (sql, params) =
-            build_update_sql(table, where_expr, data, bindings, column_types)?;
+        let (sql, params) = build_update_sql(
+            table, schema, where_expr, data, bindings, column_types,
+        )?;
         let mut q = sqlx::query(&sql);
         for value in &params {
             q = bind_value(q, value);
@@ -1074,17 +1120,18 @@ impl PostgresStoreBackend {
         where_expr: &str,
         bindings: &std::collections::HashMap<String, String>,
     ) -> Result<u64, StoreError> {
-        // §Fase 37.x.b — resolve the table (schema + column types)
-        // search-path-independently; degrade to an empty map on a
-        // resolution failure (§37.x.h / D6 surfaces the typed error).
+        // §Fase 37.x.b/c — resolve the table's schema + column types
+        // search-path-independently; degrade to an un-qualified bare
+        // table + empty map on a resolution failure (§37.x.h / D6
+        // surfaces the typed error in its place).
         let resolved = self.resolve_table(table).await;
         let no_types = std::collections::HashMap::new();
-        let column_types = match &resolved {
-            Ok(r) => &r.column_types,
-            Err(_) => &no_types,
+        let (schema, column_types) = match &resolved {
+            Ok(r) => (Some(r.schema.as_str()), &r.column_types),
+            Err(_) => (None, &no_types),
         };
         let (sql, params) =
-            build_delete_sql(table, where_expr, bindings, column_types)?;
+            build_delete_sql(table, schema, where_expr, bindings, column_types)?;
         let mut q = sqlx::query(&sql);
         for value in &params {
             q = bind_value(q, value);
@@ -1286,7 +1333,7 @@ mod tests {
     #[test]
     fn select_with_filter() {
         let (sql, params) =
-            build_select_sql("users", "id = 1", &nb(), &nb()).unwrap();
+            build_select_sql("users", None, "id = 1", &nb(), &nb()).unwrap();
         assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"id\" = $1");
         assert_eq!(params, vec![SqlValue::Integer(1)]);
     }
@@ -1300,13 +1347,14 @@ mod tests {
             "int4".to_string(),
         )]);
         let (sql, _) =
-            build_select_sql("users", "id = 1", &nb(), &types).unwrap();
+            build_select_sql("users", None, "id = 1", &nb(), &types).unwrap();
         assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"id\" = $1::int4");
     }
 
     #[test]
     fn select_with_empty_filter_renders_where_true() {
-        let (sql, params) = build_select_sql("users", "", &nb(), &nb()).unwrap();
+        let (sql, params) =
+            build_select_sql("users", None, "", &nb(), &nb()).unwrap();
         assert_eq!(sql, "SELECT * FROM \"users\" WHERE TRUE");
         assert!(params.is_empty());
     }
@@ -1314,7 +1362,7 @@ mod tests {
     #[test]
     fn select_rejects_unsafe_table_name() {
         assert!(matches!(
-            build_select_sql("users; DROP TABLE x", "", &nb(), &nb()),
+            build_select_sql("users; DROP TABLE x", None, "", &nb(), &nb()),
             Err(StoreError::InvalidIdentifier { kind: "table", .. })
         ));
     }
@@ -1322,7 +1370,7 @@ mod tests {
     #[test]
     fn select_propagates_filter_errors() {
         assert!(matches!(
-            build_select_sql("users", "id = 1 AND", &nb(), &nb()),
+            build_select_sql("users", None, "id = 1 AND", &nb(), &nb()),
             Err(StoreError::Filter(_))
         ));
     }
@@ -1332,7 +1380,7 @@ mod tests {
     #[test]
     fn delete_with_filter() {
         let (sql, params) =
-            build_delete_sql("sessions", "expired = true", &nb(), &nb())
+            build_delete_sql("sessions", None, "expired = true", &nb(), &nb())
                 .unwrap();
         assert_eq!(sql, "DELETE FROM \"sessions\" WHERE \"expired\" = $1");
         assert_eq!(params, vec![SqlValue::Boolean(true)]);
@@ -1341,7 +1389,7 @@ mod tests {
     #[test]
     fn delete_rejects_unsafe_table() {
         assert!(matches!(
-            build_delete_sql("evil\"table", "a = 1", &nb(), &nb()),
+            build_delete_sql("evil\"table", None, "a = 1", &nb(), &nb()),
             Err(StoreError::InvalidIdentifier { .. })
         ));
     }
@@ -1352,6 +1400,7 @@ mod tests {
     fn insert_basic() {
         let (sql, params) = build_insert_sql(
             "users",
+            None,
             &[("name".into(), txt("Alice")), ("age".into(), SqlValue::Integer(30))],
             &nb(),
         )
@@ -1367,6 +1416,7 @@ mod tests {
     fn insert_renders_null_inline_consuming_no_placeholder() {
         let (sql, params) = build_insert_sql(
             "t",
+            None,
             &[
                 ("a".into(), SqlValue::Integer(1)),
                 ("b".into(), SqlValue::Null),
@@ -1385,7 +1435,7 @@ mod tests {
     #[test]
     fn insert_empty_data_errors() {
         assert_eq!(
-            build_insert_sql("t", &[], &nb()),
+            build_insert_sql("t", None, &[], &nb()),
             Err(StoreError::EmptyData { op: "insert" })
         );
     }
@@ -1393,7 +1443,7 @@ mod tests {
     #[test]
     fn insert_rejects_unsafe_column_name() {
         assert!(matches!(
-            build_insert_sql("t", &[("a\"; DROP".into(), SqlValue::Integer(1))], &nb()),
+            build_insert_sql("t", None, &[("a\"; DROP".into(), SqlValue::Integer(1))], &nb()),
             Err(StoreError::InvalidIdentifier { kind: "column", .. })
         ));
     }
@@ -1401,7 +1451,7 @@ mod tests {
     #[test]
     fn insert_rejects_unsafe_table_name() {
         assert!(matches!(
-            build_insert_sql("t t", &[("a".into(), SqlValue::Integer(1))], &nb()),
+            build_insert_sql("t t", None, &[("a".into(), SqlValue::Integer(1))], &nb()),
             Err(StoreError::InvalidIdentifier { kind: "table", .. })
         ));
     }
@@ -1412,6 +1462,7 @@ mod tests {
     fn update_basic_where_offset_continues_after_set() {
         let (sql, params) = build_update_sql(
             "users",
+            None,
             "id = 5",
             &[("name".into(), txt("Bob")), ("age".into(), SqlValue::Integer(40))],
             &nb(),
@@ -1435,6 +1486,7 @@ mod tests {
         // not the column count (2). `id` must be $2, not $3.
         let (sql, params) = build_update_sql(
             "users",
+            None,
             "id = 5",
             &[("name".into(), SqlValue::Null), ("age".into(), SqlValue::Integer(40))],
             &nb(),
@@ -1450,16 +1502,22 @@ mod tests {
 
     #[test]
     fn update_with_empty_where_targets_all_rows() {
-        let (sql, _) =
-            build_update_sql("t", "", &[("a".into(), SqlValue::Integer(1))], &nb(), &nb())
-                .unwrap();
+        let (sql, _) = build_update_sql(
+            "t",
+            None,
+            "",
+            &[("a".into(), SqlValue::Integer(1))],
+            &nb(),
+            &nb(),
+        )
+        .unwrap();
         assert_eq!(sql, "UPDATE \"t\" SET \"a\" = $1 WHERE TRUE");
     }
 
     #[test]
     fn update_empty_data_errors() {
         assert_eq!(
-            build_update_sql("t", "id = 1", &[], &nb(), &nb()),
+            build_update_sql("t", None, "id = 1", &[], &nb(), &nb()),
             Err(StoreError::EmptyData { op: "mutate" })
         );
     }
@@ -1469,6 +1527,7 @@ mod tests {
         assert!(matches!(
             build_update_sql(
                 "t",
+                None,
                 "id = 1",
                 &[("a-b".into(), SqlValue::Integer(1))],
                 &nb(),
@@ -1483,6 +1542,7 @@ mod tests {
         assert!(matches!(
             build_update_sql(
                 "t",
+                None,
                 "bad ;",
                 &[("a".into(), SqlValue::Integer(1))],
                 &nb(),
@@ -1503,6 +1563,7 @@ mod tests {
         ]);
         let (sql, _) = build_insert_sql(
             "chat_history",
+            None,
             &[
                 ("tenant_id".into(), txt("83d078e1-b372-42ba-9572-ff8dc521386e")),
                 ("note".into(), txt("hi")),
@@ -1529,6 +1590,7 @@ mod tests {
         )]);
         let (sql, _) = build_update_sql(
             "t",
+            None,
             "id = 1",
             &[("status".into(), txt("83d078e1-b372-42ba-9572-ff8dc521386e"))],
             &nb(),
@@ -1554,6 +1616,7 @@ mod tests {
         ]);
         let (sql, _) = build_update_sql(
             "t",
+            None,
             "id = 1",
             &[("status".into(), txt("done"))],
             &nb(),
@@ -1573,7 +1636,7 @@ mod tests {
         // works, a typed column fails LOUDLY — no regression, no
         // silent-wrong write.
         let (sql, _) =
-            build_insert_sql("t", &[("x".into(), txt("v"))], &nb()).unwrap();
+            build_insert_sql("t", None, &[("x".into(), txt("v"))], &nb()).unwrap();
         assert_eq!(sql, "INSERT INTO \"t\" (\"x\") VALUES ($1)");
     }
 
@@ -1587,7 +1650,7 @@ mod tests {
             "uuid; DROP TABLE t".to_string(),
         )]);
         let (sql, _) =
-            build_insert_sql("t", &[("x".into(), txt("v"))], &types).unwrap();
+            build_insert_sql("t", None, &[("x".into(), txt("v"))], &types).unwrap();
         assert_eq!(
             sql, "INSERT INTO \"t\" (\"x\") VALUES ($1)",
             "an unsafe type name yields no cast — never a splice"
@@ -1598,14 +1661,14 @@ mod tests {
 
     #[test]
     fn injection_in_value_position_is_a_bound_parameter() {
-        let (sql, params) =
-            build_select_sql(
-                "users",
-                "name = '; DROP TABLE users; --'",
-                &nb(),
-                &nb(),
-            )
-            .unwrap();
+        let (sql, params) = build_select_sql(
+            "users",
+            None,
+            "name = '; DROP TABLE users; --'",
+            &nb(),
+            &nb(),
+        )
+        .unwrap();
         assert_eq!(sql, "SELECT * FROM \"users\" WHERE \"name\" = $1");
         assert_eq!(
             params,
@@ -1616,9 +1679,91 @@ mod tests {
     #[test]
     fn injection_in_table_identifier_is_rejected_not_quoted() {
         assert!(matches!(
-            build_select_sql("users\" WHERE 1=1; --", "", &nb(), &nb()),
+            build_select_sql("users\" WHERE 1=1; --", None, "", &nb(), &nb()),
             Err(StoreError::InvalidIdentifier { .. })
         ));
+    }
+
+    // ── §Fase 37.x.c — schema-anchored relation (D2) ─────────────────
+
+    #[test]
+    fn select_with_a_resolved_schema_is_qualified() {
+        // §37.x.c (D2) — a resolved schema renders `"schema"."table"`,
+        // so the SELECT resolves on any session regardless of the
+        // ambient `search_path`.
+        let (sql, _) =
+            build_select_sql("tenants", Some("public"), "id = 1", &nb(), &nb())
+                .unwrap();
+        assert_eq!(
+            sql,
+            "SELECT * FROM \"public\".\"tenants\" WHERE \"id\" = $1"
+        );
+    }
+
+    #[test]
+    fn every_builder_qualifies_with_a_resolved_schema() {
+        // D2 must flip ALL FOUR builders, not three.
+        let data = [("v".to_string(), SqlValue::Integer(1))];
+        let (sel, _) =
+            build_select_sql("t", Some("app"), "", &nb(), &nb()).unwrap();
+        let (del, _) =
+            build_delete_sql("t", Some("app"), "", &nb(), &nb()).unwrap();
+        let (ins, _) = build_insert_sql("t", Some("app"), &data, &nb()).unwrap();
+        let (upd, _) =
+            build_update_sql("t", Some("app"), "", &data, &nb(), &nb()).unwrap();
+        assert!(sel.contains("FROM \"app\".\"t\""), "SELECT: {sel}");
+        assert!(del.contains("FROM \"app\".\"t\""), "DELETE: {del}");
+        assert!(ins.contains("INTO \"app\".\"t\""), "INSERT: {ins}");
+        assert!(upd.starts_with("UPDATE \"app\".\"t\""), "UPDATE: {upd}");
+    }
+
+    #[test]
+    fn no_resolved_schema_renders_the_bare_table() {
+        // D5 backwards-compat — `schema = None` (resolution failed or
+        // not attempted) renders the pre-37.x un-qualified `"table"`.
+        let (sql, _) = build_select_sql("t", None, "", &nb(), &nb()).unwrap();
+        assert_eq!(sql, "SELECT * FROM \"t\" WHERE TRUE");
+    }
+
+    #[test]
+    fn an_unsafe_schema_name_is_not_spliced_and_falls_back_to_bare_table() {
+        // Defense in depth (D4) — a schema name from `pg_catalog` that
+        // is not a safe identifier is NEVER spliced; the builder falls
+        // back to the bare `"table"` (search_path resolves it), exactly
+        // as an unsafe `udt_name` yields no cast.
+        for unsafe_schema in ["a\"; DROP TABLE x", "my schema", "1schema"] {
+            let (sql, _) =
+                build_select_sql("t", Some(unsafe_schema), "", &nb(), &nb())
+                    .unwrap();
+            assert_eq!(
+                sql, "SELECT * FROM \"t\" WHERE TRUE",
+                "unsafe schema `{unsafe_schema}` must not be spliced"
+            );
+        }
+    }
+
+    #[test]
+    fn a_qualified_table_still_casts_and_offsets_correctly() {
+        // §37.x.c composes with §v1.36.2/§v1.36.4 — schema-qualification
+        // is orthogonal to the value cast + the WHERE param offset.
+        let types = std::collections::HashMap::from([
+            ("status".to_string(), "uuid".to_string()),
+            ("id".to_string(), "int8".to_string()),
+        ]);
+        let (sql, _) = build_update_sql(
+            "t",
+            Some("public"),
+            "id = 1",
+            &[("status".into(), txt("done"))],
+            &nb(),
+            &types,
+        )
+        .unwrap();
+        assert_eq!(
+            sql,
+            "UPDATE \"public\".\"t\" SET \"status\" = $1::uuid \
+             WHERE \"id\" = $2::int8"
+        );
     }
 
     // ── classify_pg_type ─────────────────────────────────────────────
