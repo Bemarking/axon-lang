@@ -541,21 +541,26 @@ fn fuzz_s6_sql_builders_are_total_and_injection_proof() {
             .map(|_| (random_identifier_ish(&mut rng), random_sql_value(&mut rng)))
             .collect();
 
+        // §Fase 37.x.c — the four builders gained a `schema:
+        // Option<&str>` parameter; `None` renders the bare table (this
+        // §6 fuzz exercises builder totality + injection-safety, which
+        // is orthogonal to schema-qualification).
         if let Ok((sql, params)) =
-            build_select_sql(&table, &where_expr, &nb(), &nb())
+            build_select_sql(&table, None, &where_expr, &nb(), &nb())
         {
             assert_clause_injection_safe(&sql, &params, seed);
         }
         if let Ok((sql, params)) =
-            build_delete_sql(&table, &where_expr, &nb(), &nb())
+            build_delete_sql(&table, None, &where_expr, &nb(), &nb())
         {
             assert_clause_injection_safe(&sql, &params, seed);
         }
-        if let Ok((sql, params)) = build_insert_sql(&table, &data, &nb()) {
+        if let Ok((sql, params)) = build_insert_sql(&table, None, &data, &nb())
+        {
             assert_clause_injection_safe(&sql, &params, seed);
         }
         if let Ok((sql, params)) =
-            build_update_sql(&table, &where_expr, &data, &nb(), &nb())
+            build_update_sql(&table, None, &where_expr, &data, &nb(), &nb())
         {
             assert_clause_injection_safe(&sql, &params, seed);
         }
