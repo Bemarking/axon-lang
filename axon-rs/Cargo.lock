@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "axon-frontend"
-version = "0.19.2"
+version = "0.19.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -548,7 +548,7 @@ dependencies = [
 
 [[package]]
 name = "axon-lang"
-version = "1.38.4"
+version = "1.38.5"
 dependencies = [
  "async-trait",
  "aws-config",

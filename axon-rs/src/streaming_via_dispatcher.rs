@@ -162,6 +162,12 @@ pub async fn run_streaming_via_dispatcher(
     // direct hit) — the flow then runs with only its own `let` / step
     // bindings (D5 backwards-compat).
     request_body: Option<serde_json::Value>,
+    // §Fase 37.y (D3) — URL path captures from the dynamic-route
+    // dispatcher (empty for non-dynamic-route callers). Threaded to
+    // `bind_request` alongside body + query.
+    request_path: std::collections::HashMap<String, String>,
+    // §Fase 37.y (D3) — URL query string parsed name → value.
+    request_query: std::collections::HashMap<String, String>,
 ) {
     // Cancel-safety helper — mirrors the legacy path's `emit` closure.
     // Returns `Err(())` when the producer should exit early (cancel
@@ -328,14 +334,26 @@ pub async fn run_streaming_via_dispatcher(
     // flow's declared parameters from the parsed request body BEFORE
     // the flow walk, so `${param}` resolves everywhere downstream — a
     // `retrieve` / `mutate` / `purge` `where:` clause, a `step` `ask:`
-    // prompt, a `persist` / `mutate` field block. `bind_request_body`
-    // binds ONLY declared parameters (D4): a body field that matches
-    // no parameter is never silently injected. A flow-body `let` that
-    // shadows a parameter name overwrites it later in the walk — the
-    // author's explicit `let` wins, by construction.
-    for (name, value) in
-        crate::request_binding::bind_request_body(&flow, request_body.as_ref())
-    {
+    // prompt, a `persist` / `mutate` field block.
+    //
+    // §Fase 37.y (D3) — extended to THREE binding sources: URL path
+    // captures + URL query string + parsed JSON body. The compile-time
+    // D3 + D4 check (`axon-T901`) guarantees every flow parameter
+    // resolves to EXACTLY ONE source — collisions are compile errors
+    // — so the runtime merge order (path > query > body) is
+    // semantically irrelevant; it's just the lookup precedence.
+    //
+    // `bind_request` binds ONLY declared parameters (D4): an
+    // unrelated path capture / query value / body field is never
+    // silently injected. A flow-body `let` that shadows a parameter
+    // name overwrites it later in the walk — the author's explicit
+    // `let` wins, by construction.
+    for (name, value) in crate::request_binding::bind_request(
+        &flow,
+        &request_path,
+        &request_query,
+        request_body.as_ref(),
+    ) {
         ctx.let_bindings.insert(name, value);
     }
 
@@ -544,6 +562,8 @@ mod tests {
             warnings,
             None,
             None,
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
         )
         .await;
 
@@ -595,6 +615,8 @@ mod tests {
             warnings,
             None,
             None,
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
         )
         .await;
 
@@ -654,6 +676,8 @@ mod tests {
             warnings,
             None,
             None,
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
         )
         .await;
 
@@ -695,6 +719,8 @@ mod tests {
             warnings,
             None,
             None,
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
         )
         .await;
 

@@ -3370,40 +3370,201 @@ impl<'a> TypeChecker<'a> {
         // D2 theorem (honest scope). An OPTIONAL parameter need not be
         // covered. Type-compatibility is exact: same type name + same
         // generic parameter.
-        if !node.body_type.is_empty() && !node.execute_flow.is_empty() {
-            if let (Some(flow), Some(body)) = (
-                self.find_flow(&node.execute_flow),
-                find_type_by_name(self.program, &node.body_type),
-            ) {
+        //
+        // §Fase 37.y (D3) — D2 totality UNION over three binding sources:
+        // path_params (typed `Text` by HTTP convention), query_params
+        // (declared type from the closed catalog), body type fields
+        // (existing v1.36.0 surface). Each required flow param must be
+        // covered by EXACTLY ONE source — zero coverage emits the
+        // legacy missing-binding error (extended to mention all three
+        // sources); multi-source coverage emits the new `axon-T901`
+        // collision error (D4).
+        //
+        // The gate now runs when `execute_flow` is set AND at least
+        // one binding source is declared. An endpoint with NO sources
+        // and NO required flow params is a no-op for the contract
+        // (matches v1.36.0 honest-scope behavior).
+        if !node.execute_flow.is_empty() {
+            let has_any_source = !node.body_type.is_empty()
+                || !node.path_params.is_empty()
+                || !node.query_params.is_empty();
+            if !has_any_source {
+                // No declared binding sources — honest scope. The
+                // runtime binder will deliver an empty map; the flow
+                // must accept that (any required param would fail at
+                // request time, which is the v1.36.0 behavior).
+                return;
+            }
+            let body_opt = if node.body_type.is_empty() {
+                None
+            } else {
+                find_type_by_name(self.program, &node.body_type)
+            };
+            if let Some(flow) = self.find_flow(&node.execute_flow) {
                 for param in &flow.parameters {
                     if param.type_expr.optional {
                         continue; // an optional parameter need not bind.
                     }
-                    match body.fields.iter().find(|f| f.name == param.name) {
-                        None => self.emit(
+                    // — Resolve binding sources for this param name. —
+                    let path_hit =
+                        node.path_params.iter().any(|p| p == &param.name);
+                    let query_hit = node
+                        .query_params
+                        .iter()
+                        .find(|f| f.name == param.name);
+                    let body_hit = body_opt
+                        .and_then(|b| b.fields.iter().find(|f| f.name == param.name));
+                    let source_count = (path_hit as usize)
+                        + (query_hit.is_some() as usize)
+                        + (body_hit.is_some() as usize);
+
+                    if source_count == 0 {
+                        // ── D3 (extended) — no coverage. The hint
+                        // now names ALL THREE candidate sources so the
+                        // adopter knows where to add the field.
+                        let body_clause = if node.body_type.is_empty() {
+                            "(declare a body type via `body: T` or)".to_string()
+                        } else {
+                            format!(
+                                "add a field '{}: {}' to '{}', or",
+                                param.name,
+                                fmt_type_expr(&param.type_expr),
+                                node.body_type,
+                            )
+                        };
+                        self.emit(
                             format!(
                                 "axonendpoint '{}' executes flow '{}' whose \
                                  required parameter '{}: {}' has no matching \
-                                 field in body type '{}'. The Request Binding \
-                                 Contract binds a flow parameter from the \
-                                 same-named body field — add a field '{}: {}' \
-                                 to '{}', or make the parameter optional \
-                                 (Fase 37 D2).",
+                                 binding source. The Request Binding Contract \
+                                 (Fase 37 + 37.y D3) binds a flow parameter \
+                                 from a same-named path placeholder \
+                                 (`{{{}}}` in the `path:` string), query \
+                                 param (`query: {{ {}: {} }}`), or body \
+                                 field. Either {} add a `{{{}}}` placeholder \
+                                 to the path, or declare `{}: {}` in the \
+                                 `query: {{ … }}` block — or make the \
+                                 parameter optional (Fase 37.y D3).",
                                 node.name,
                                 node.execute_flow,
                                 param.name,
                                 fmt_type_expr(&param.type_expr),
-                                node.body_type,
+                                param.name,
                                 param.name,
                                 fmt_type_expr(&param.type_expr),
-                                node.body_type,
+                                body_clause,
+                                param.name,
+                                param.name,
+                                fmt_type_expr(&param.type_expr),
                             ),
                             &node.loc,
-                        ),
-                        Some(field)
-                            if field.type_expr.name != param.type_expr.name
-                                || field.type_expr.generic_param
-                                    != param.type_expr.generic_param =>
+                        );
+                        continue;
+                    }
+
+                    if source_count > 1 {
+                        // ── D4 — collision. The new `axon-T901`
+                        // error: an adopter who declares the same
+                        // name in two+ sources MUST disambiguate
+                        // before the build can pass. The runtime
+                        // merge order would otherwise mask which
+                        // source the value came from.
+                        let mut sources: Vec<&str> = Vec::new();
+                        if path_hit {
+                            sources.push("path");
+                        }
+                        if query_hit.is_some() {
+                            sources.push("query");
+                        }
+                        if body_hit.is_some() {
+                            sources.push("body");
+                        }
+                        let where_phrase = if sources.len() == 2 {
+                            format!("{} and {}", sources[0], sources[1])
+                        } else {
+                            format!(
+                                "{}, {}, and {}",
+                                sources[0], sources[1], sources[2]
+                            )
+                        };
+                        self.emit(
+                            format!(
+                                "axon-T901 axonendpoint '{}' parameter '{}' \
+                                 is declared in MORE than one binding source \
+                                 ({where_phrase}). The Request Binding Contract \
+                                 forbids a name in multiple sources to keep \
+                                 the runtime binding unambiguous. Remove the \
+                                 declaration from {} of the sources so '{}' \
+                                 resolves uniquely. (Fase 37.y D4)",
+                                node.name,
+                                param.name,
+                                sources.len() - 1,
+                                param.name,
+                            ),
+                            &node.loc,
+                        );
+                        continue;
+                    }
+
+                    // ── source_count == 1: type-compatibility check. —
+                    if path_hit {
+                        // Path params bind as `Text` (HTTP convention).
+                        // The flow param must be `Text` (with no generic).
+                        if param.type_expr.name != "Text"
+                            || !param.type_expr.generic_param.is_empty()
+                        {
+                            self.emit(
+                                format!(
+                                    "axonendpoint '{}' parameter '{}' is bound \
+                                     from path placeholder `{{{}}}` (HTTP path \
+                                     segments are `Text` by convention), but \
+                                     the flow declares '{}: {}'. Either change \
+                                     the flow parameter to `{}: Text` and \
+                                     parse/validate inside the flow, or move \
+                                     the binding to `query: {{ {}: {} }}` if \
+                                     the type matters at the wire (Fase 37.y D3).",
+                                    node.name,
+                                    param.name,
+                                    param.name,
+                                    param.name,
+                                    fmt_type_expr(&param.type_expr),
+                                    param.name,
+                                    param.name,
+                                    fmt_type_expr(&param.type_expr),
+                                ),
+                                &node.loc,
+                            );
+                        }
+                    } else if let Some(qf) = query_hit {
+                        // Query param: exact-match type check (same as
+                        // the body branch — uniform contract).
+                        if qf.type_expr.name != param.type_expr.name
+                            || qf.type_expr.generic_param
+                                != param.type_expr.generic_param
+                        {
+                            self.emit(
+                                format!(
+                                    "axonendpoint '{}' executes flow '{}' \
+                                     whose parameter '{}' is '{}', but the \
+                                     `query: {{ … }}` block declares '{}' as \
+                                     '{}' — the types must match for the \
+                                     Request Binding Contract to bind it \
+                                     (Fase 37.y D3).",
+                                    node.name,
+                                    node.execute_flow,
+                                    param.name,
+                                    fmt_type_expr(&param.type_expr),
+                                    qf.name,
+                                    fmt_type_expr(&qf.type_expr),
+                                ),
+                                &node.loc,
+                            );
+                        }
+                    } else if let Some(field) = body_hit {
+                        // Body field — preserved v1.36.0 logic verbatim.
+                        if field.type_expr.name != param.type_expr.name
+                            || field.type_expr.generic_param
+                                != param.type_expr.generic_param
                         {
                             self.emit(
                                 format!(
@@ -3423,7 +3584,6 @@ impl<'a> TypeChecker<'a> {
                                 &node.loc,
                             );
                         }
-                        Some(_) => {}
                     }
                 }
             }
@@ -5142,6 +5302,339 @@ mod fase35j_capability_tests {
         assert!(
             Parser::new(tokens).parse().is_err(),
             "an uppercase capability slug must be rejected at parse time"
+        );
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  §Fase 37.y.4 — D3 union-coverage + D4 T901 collision rejection
+// ════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod fase37y_d3_d4_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn check_errors(src: &str) -> Vec<TypeError> {
+        let tokens = Lexer::new(src, "<test>").tokenize().expect("lex");
+        let prog = Parser::new(tokens).parse().expect("parse");
+        TypeChecker::new(&prog).check()
+    }
+
+    #[test]
+    fn d3_path_only_param_passes_d2_totality() {
+        let src = r#"
+            type SecretWriteRequest { value: Text }
+            type WriteResult { ok: Bool }
+            axonendpoint write_secret {
+                method: POST
+                path: "/api/tenants/{tenant_id}/secrets/{secret_name}"
+                body: SecretWriteRequest
+                execute: WriteSecret
+            }
+            flow WriteSecret(tenant_id: Text, secret_name: Text, value: Text) -> WriteResult {
+                step Echo { reason: "ok" output: WriteResult }
+            }
+        "#;
+        let errs = check_errors(src);
+        let binding_errs: Vec<&TypeError> = errs
+            .iter()
+            .filter(|e| {
+                e.message.contains("tenant_id")
+                    || e.message.contains("secret_name")
+                    || e.message.contains("Request Binding")
+            })
+            .collect();
+        assert!(
+            binding_errs.is_empty(),
+            "D3 — path-only params must satisfy D2 totality. Got: {binding_errs:#?}"
+        );
+    }
+
+    #[test]
+    fn d3_query_only_param_passes_d2_totality() {
+        let src = r#"
+            type UserList { count: Int }
+            axonendpoint list_users {
+                method: GET
+                path: "/api/users"
+                query: { status: Text }
+                execute: ListUsers
+            }
+            flow ListUsers(status: Text) -> UserList {
+                step Build { reason: "list" output: UserList }
+            }
+        "#;
+        let errs = check_errors(src);
+        let binding_errs: Vec<&TypeError> = errs
+            .iter()
+            .filter(|e| e.message.contains("status") || e.message.contains("Request Binding"))
+            .collect();
+        assert!(
+            binding_errs.is_empty(),
+            "D3 — query-only params must satisfy D2 totality. Got: {binding_errs:#?}"
+        );
+    }
+
+    #[test]
+    fn d3_mixed_path_query_body_coverage_passes() {
+        let src = r#"
+            type CreateRequest { content: Text }
+            type CreateResult { id: Uuid }
+            axonendpoint create_item {
+                method: POST
+                path: "/api/orgs/{org_id}/items"
+                query: { dry_run: Bool? }
+                body: CreateRequest
+                execute: CreateItem
+            }
+            flow CreateItem(org_id: Text, dry_run: Bool?, content: Text) -> CreateResult {
+                step Build { reason: "create" output: CreateResult }
+            }
+        "#;
+        let errs = check_errors(src);
+        let binding_errs: Vec<&TypeError> = errs
+            .iter()
+            .filter(|e| e.message.contains("Request Binding") || e.message.contains("axon-T901"))
+            .collect();
+        assert!(
+            binding_errs.is_empty(),
+            "D3 — mixed coverage must satisfy D2. Got: {binding_errs:#?}"
+        );
+    }
+
+    #[test]
+    fn d3_missing_param_extended_hint_names_all_three_sources() {
+        let src = r#"
+            type Empty { ok: Bool }
+            axonendpoint x {
+                method: POST
+                path: "/api/x"
+                body: Empty
+                execute: X
+            }
+            flow X(missing: Text) -> Empty {
+                step S { reason: "x" output: Empty }
+            }
+        "#;
+        let errs = check_errors(src);
+        let hint = errs.iter().find(|e| e.message.contains("missing")).expect(
+            "missing-binding error must surface",
+        );
+        assert!(hint.message.contains("path placeholder"), "hint names path: {}", hint.message);
+        assert!(hint.message.contains("query"), "hint names query: {}", hint.message);
+        assert!(hint.message.contains("body"), "hint names body: {}", hint.message);
+    }
+
+    #[test]
+    fn d4_t901_collision_path_and_body() {
+        let src = r#"
+            type SecretWriteRequest { tenant_id: Text, value: Text }
+            type WriteResult { ok: Bool }
+            axonendpoint write {
+                method: POST
+                path: "/api/tenants/{tenant_id}"
+                body: SecretWriteRequest
+                execute: Write
+            }
+            flow Write(tenant_id: Text, value: Text) -> WriteResult {
+                step S { reason: "x" output: WriteResult }
+            }
+        "#;
+        let errs = check_errors(src);
+        let t901 = errs.iter().find(|e| e.message.contains("axon-T901"));
+        assert!(
+            t901.is_some(),
+            "D4 — path+body collision must emit axon-T901. Errors: {errs:#?}"
+        );
+        let msg = &t901.unwrap().message;
+        assert!(msg.contains("path and body"), "names both sources: {msg}");
+        assert!(msg.contains("tenant_id"), "names the colliding param: {msg}");
+    }
+
+    #[test]
+    fn d4_t901_collision_path_and_query() {
+        let src = r#"
+            type Empty { ok: Bool }
+            axonendpoint x {
+                method: GET
+                path: "/api/users/{id}"
+                query: { id: Text }
+                execute: X
+            }
+            flow X(id: Text) -> Empty {
+                step S { reason: "x" output: Empty }
+            }
+        "#;
+        let errs = check_errors(src);
+        let t901 = errs.iter().find(|e| e.message.contains("axon-T901"));
+        assert!(t901.is_some(), "D4 — path+query collision. Errs: {errs:#?}");
+        assert!(
+            t901.unwrap().message.contains("path and query"),
+            "names path AND query"
+        );
+    }
+
+    #[test]
+    fn d4_t901_collision_query_and_body() {
+        let src = r#"
+            type Req { status: Text }
+            type Empty { ok: Bool }
+            axonendpoint x {
+                method: POST
+                path: "/api/x"
+                query: { status: Text }
+                body: Req
+                execute: X
+            }
+            flow X(status: Text) -> Empty {
+                step S { reason: "x" output: Empty }
+            }
+        "#;
+        let errs = check_errors(src);
+        let t901 = errs.iter().find(|e| e.message.contains("axon-T901"));
+        assert!(t901.is_some(), "D4 — query+body collision. Errs: {errs:#?}");
+        assert!(
+            t901.unwrap().message.contains("query and body"),
+            "names query AND body"
+        );
+    }
+
+    #[test]
+    fn d4_t901_collision_triple_source() {
+        let src = r#"
+            type Req { id: Text }
+            type Empty { ok: Bool }
+            axonendpoint x {
+                method: POST
+                path: "/api/{id}"
+                query: { id: Text }
+                body: Req
+                execute: X
+            }
+            flow X(id: Text) -> Empty {
+                step S { reason: "x" output: Empty }
+            }
+        "#;
+        let errs = check_errors(src);
+        let t901 = errs.iter().find(|e| e.message.contains("axon-T901"));
+        assert!(t901.is_some(), "D4 — triple collision. Errs: {errs:#?}");
+        let msg = &t901.unwrap().message;
+        assert!(
+            msg.contains("path, query, and body"),
+            "names all three sources with Oxford comma: {msg}"
+        );
+        assert!(
+            msg.contains("Remove the declaration from 2 of the sources"),
+            "explicit count of removals needed: {msg}"
+        );
+    }
+
+    #[test]
+    fn d3_path_param_typed_non_text_emits_error() {
+        let src = r#"
+            type Empty { ok: Bool }
+            axonendpoint x {
+                method: GET
+                path: "/api/users/{id}"
+                execute: X
+            }
+            flow X(id: Uuid) -> Empty {
+                step S { reason: "x" output: Empty }
+            }
+        "#;
+        let errs = check_errors(src);
+        let type_err = errs.iter().find(|e| {
+            e.message.contains("path placeholder") && e.message.contains("Text")
+        });
+        assert!(
+            type_err.is_some(),
+            "path-binding type mismatch must surface. Errs: {errs:#?}"
+        );
+    }
+
+    #[test]
+    fn d3_query_param_type_mismatch_emits_error() {
+        let src = r#"
+            type Empty { ok: Bool }
+            axonendpoint x {
+                method: GET
+                path: "/api/x"
+                query: { limit: Int }
+                execute: X
+            }
+            flow X(limit: Text) -> Empty {
+                step S { reason: "x" output: Empty }
+            }
+        "#;
+        let errs = check_errors(src);
+        let type_err = errs.iter().find(|e| {
+            e.message.contains("query: {") && e.message.contains("Int")
+        });
+        assert!(
+            type_err.is_some(),
+            "query-binding type mismatch must surface. Errs: {errs:#?}"
+        );
+    }
+
+    #[test]
+    fn d5_body_only_endpoint_legacy_behavior_intact() {
+        let src_passes = r#"
+            type Req { value: Text }
+            type Empty { ok: Bool }
+            axonendpoint x {
+                method: POST
+                path: "/api/x"
+                body: Req
+                execute: X
+            }
+            flow X(value: Text) -> Empty {
+                step S { reason: "x" output: Empty }
+            }
+        "#;
+        let errs = check_errors(src_passes);
+        assert!(
+            errs.iter().all(|e| !e.message.contains("Request Binding")
+                && !e.message.contains("axon-T901")),
+            "D5 — body-only happy path passes unchanged. Errs: {errs:#?}"
+        );
+    }
+
+    #[test]
+    fn d3_kivi_secret_write_passes_post_37y() {
+        // The exact kivi adopter case — pre-37.y this was the
+        // blocking bug. Post-37.y the build is green.
+        let src = r#"
+            type SecretWriteRequest { value: Text }
+            type WriteResult { ok: Bool }
+            axonendpoint write_secret {
+                method: POST
+                path: "/api/tenants/{tenant_id}/secrets/{secret_name}"
+                query: { dry_run: Bool?, overwrite: Bool? }
+                body: SecretWriteRequest
+                execute: WriteSecret
+            }
+            flow WriteSecret(
+                tenant_id: Text,
+                secret_name: Text,
+                dry_run: Bool?,
+                overwrite: Bool?,
+                value: Text
+            ) -> WriteResult {
+                step S { reason: "x" output: WriteResult }
+            }
+        "#;
+        let errs = check_errors(src);
+        let binding_errs: Vec<&TypeError> = errs
+            .iter()
+            .filter(|e| {
+                e.message.contains("Request Binding") || e.message.contains("axon-T901")
+            })
+            .collect();
+        assert!(
+            binding_errs.is_empty(),
+            "Kivi corpus must pass post-37.y. Got: {binding_errs:#?}"
         );
     }
 }

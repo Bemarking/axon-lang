@@ -1977,6 +1977,16 @@ pub struct ExecuteRequest {
     /// `{flow, backend}` (D5 backwards-compat).
     #[serde(default)]
     pub request_body: Option<serde_json::Value>,
+    /// §Fase 37.y (D3) — URL path captures from the dynamic-route
+    /// dispatcher (e.g. `{"tenant_id": "acme"}` for a route
+    /// `/api/tenants/{tenant_id}`). Empty for the legacy
+    /// `/v1/execute` RPC path (D5 backwards-compat).
+    #[serde(default)]
+    pub request_path: HashMap<String, String>,
+    /// §Fase 37.y (D3) — URL query string parsed name → value.
+    /// Empty for callers without a query string.
+    #[serde(default)]
+    pub request_query: HashMap<String, String>,
 }
 
 fn default_execute_backend() -> String {
@@ -2096,6 +2106,13 @@ fn server_execute(
     // §Fase 37.b (D1) — the parsed request body for the Request
     // Binding Contract; `None` for callers with no HTTP request body.
     request_body: Option<&serde_json::Value>,
+    // §Fase 37.y (D3) — URL path captures (from axum's dynamic-route
+    // `Path<HashMap>` extractor). Empty map for callers without a
+    // dynamic route (D5 backwards-compat).
+    request_path: &std::collections::HashMap<String, String>,
+    // §Fase 37.y (D3) — URL query string parsed as name → value.
+    // Empty map for callers with no query string.
+    request_query: &std::collections::HashMap<String, String>,
 ) -> Result<ServerExecutionResult, String> {
     let start = Instant::now();
 
@@ -2118,7 +2135,14 @@ fn server_execute(
 
     // Execute via runner
     let run_res = crate::runner::execute_server_flow(
-        &ir, flow_name, backend, source_file, api_key_override, request_body,
+        &ir,
+        flow_name,
+        backend,
+        source_file,
+        api_key_override,
+        request_body,
+        request_path,
+        request_query,
     )?;
 
     // Count anchors from IR
@@ -2191,10 +2215,16 @@ async fn execute_handler(
     // request body of a JSON dynamic-route hit; the flow's declared
     // parameters bind from it (the Request Binding Contract). `None`
     // for a legacy `/v1/execute` RPC call (D5 backwards-compat).
+    // §Fase 37.y (D3) — `payload.request_path` + `payload.request_query`
+    // carry the URL captures + query string parsed by the dynamic-route
+    // dispatcher. Both default to empty (D5 backwards-compat) for the
+    // legacy `/v1/execute` RPC path.
     let (result, actual_backend) = execute_with_fallback(
         &state, &source, &source_file, &payload.flow,
         &effective_backend, resolved_key.as_deref(),
         payload.request_body.as_ref(),
+        &payload.request_path,
+        &payload.request_query,
     );
 
     match result {
@@ -13331,10 +13361,22 @@ fn execute_with_fallback(
     // §Fase 37.b (D1) — the parsed request body for the Request
     // Binding Contract, threaded through to `runner::execute_server_flow`.
     request_body: Option<&serde_json::Value>,
+    // §Fase 37.y (D3) — path + query maps threaded alongside the body
+    // so the runner's binder sees the full three-source set.
+    request_path: &std::collections::HashMap<String, String>,
+    request_query: &std::collections::HashMap<String, String>,
 ) -> (Result<ServerExecutionResult, String>, String) {
     // Try primary
-    let result =
-        server_execute(source, source_file, flow_name, primary_backend, primary_key, request_body);
+    let result = server_execute(
+        source,
+        source_file,
+        flow_name,
+        primary_backend,
+        primary_key,
+        request_body,
+        request_path,
+        request_query,
+    );
     if result.is_ok() {
         return (result, primary_backend.to_string());
     }
@@ -13359,7 +13401,14 @@ fn execute_with_fallback(
             resolve_backend_key(&s, fallback_backend).ok()
         };
         let fb_result = server_execute(
-            source, source_file, flow_name, fallback_backend, fb_key.as_deref(), request_body,
+            source,
+            source_file,
+            flow_name,
+            fallback_backend,
+            fb_key.as_deref(),
+            request_body,
+            request_path,
+            request_query,
         );
         if fb_result.is_ok() {
             return (fb_result, fallback_backend.clone());
@@ -13406,9 +13455,15 @@ fn server_execute_full(
     // Execute with fallback chain. §Fase 37.b — `server_execute_full`
     // serves non-dynamic-route callers (CLI-style RPC, batch, pipeline
     // stages); there is no HTTP request body to bind, so `None`.
+    // §Fase 37.y — non-dynamic-route callers also have no path or
+    // query captures; empty maps.
+    let empty_path = std::collections::HashMap::new();
+    let empty_query = std::collections::HashMap::new();
     let (result, actual_backend) = execute_with_fallback(
         state, source, source_file, flow_name, &effective_backend, resolved_key.as_deref(),
         None,
+        &empty_path,
+        &empty_query,
     );
 
     // Record metrics
@@ -14905,8 +14960,14 @@ async fn mcp_handler(
             };
 
             // Execute
+            // §Fase 37.y — async-fetch path serves non-dynamic-route
+            // callers; empty path + query maps.
+            let empty_path = std::collections::HashMap::new();
+            let empty_query = std::collections::HashMap::new();
             let result = server_execute(
                 &source, &source_file, flow_name, backend, resolved_key.as_deref(), None,
+                &empty_path,
+                &empty_query,
             );
 
             match result {
@@ -15983,7 +16044,14 @@ async fn mcp_stream_handler(
     };
 
     // Execute
-    match server_execute(&source, &source_file, flow_name, backend, resolved_key.as_deref(), None) {
+    // §Fase 37.y — this path serves non-dynamic-route callers; pass
+    // empty path + query maps.
+    let empty_path = std::collections::HashMap::new();
+    let empty_query = std::collections::HashMap::new();
+    match server_execute(
+        &source, &source_file, flow_name, backend, resolved_key.as_deref(), None,
+        &empty_path, &empty_query,
+    ) {
         Ok(mut er) => {
             // Record trace
             let mut trace_entry = crate::trace_store::build_trace(
@@ -18222,6 +18290,13 @@ pub struct StreamExecuteRequest {
     /// direct hit that sends only `{flow_name, backend}` (D5).
     #[serde(default)]
     pub request_body: Option<serde_json::Value>,
+    /// §Fase 37.y (D3) — URL path captures (same shape as
+    /// `ExecuteRequest.request_path`).
+    #[serde(default)]
+    pub request_path: HashMap<String, String>,
+    /// §Fase 37.y (D3) — URL query string parsed name → value.
+    #[serde(default)]
+    pub request_query: HashMap<String, String>,
 }
 
 /// POST /v1/execute/stream — execute a flow with algebraic effect streaming.
@@ -18601,6 +18676,11 @@ fn server_execute_streaming(
     // dispatcher so the flow's declared parameters bind from it (the
     // Request Binding Contract). `None` for a request with no body.
     request_body: Option<serde_json::Value>,
+    // §Fase 37.y (D3) — URL path captures from the dynamic-route
+    // dispatcher. Empty map for non-dynamic-route callers.
+    request_path: HashMap<String, String>,
+    // §Fase 37.y (D3) — URL query string parsed name → value.
+    request_query: HashMap<String, String>,
 ) -> StreamingExecution {
     use crate::flow_execution_event::FlowExecutionEvent;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FlowExecutionEvent>();
@@ -18726,6 +18806,9 @@ fn server_execute_streaming(
             warnings_for_dispatcher,
             held_capabilities,
             request_body,
+            // §Fase 37.y — path + query into the dispatcher.
+            request_path,
+            request_query,
         )
         .await;
         exited_for_dispatcher.notify_waiters();
@@ -18902,6 +18985,10 @@ async fn execute_sse_handler_inner(
             // §Fase 37.b (D1) — the parsed request body for the
             // Request Binding Contract, moved into the spawned task.
             let request_body_for_task = payload.request_body.clone();
+            // §Fase 37.y — path captures + query string move into the
+            // spawned executor task alongside the body.
+            let request_path_for_task = payload.request_path.clone();
+            let request_query_for_task = payload.request_query.clone();
             // §Fase 33.z.k.g.2 — clone the wire-format dialect for
             // the spawned task. The adapter is constructed inside
             // the spawn closure once `trace_id` is reserved + drives
@@ -18973,6 +19060,9 @@ async fn execute_sse_handler_inner(
                     // §Fase 37.b — the parsed request body for the
                     // Request Binding Contract.
                     request_body_for_task,
+                    // §Fase 37.y — path captures + query string.
+                    request_path_for_task,
+                    request_query_for_task,
                 );
 
                 // §Fase 33.z.k.g.2 — Construct the wire-format adapter
@@ -20025,6 +20115,173 @@ pub struct DynamicEndpointRoute {
     /// shared with every sibling field — rather than introducing a
     /// lone `Option<String>`.)
     pub backend: String,
+    /// §Fase 37.y (D1) — Path-parameter names extracted from the
+    /// route's path string (mirrors `AxonEndpointDefinition.path_params`).
+    /// Empty Vec when the path has no `{name}` placeholders. Used by
+    /// `match_path_template` to (a) gate template matching only on
+    /// routes that DECLARED placeholders and (b) skip the linear scan
+    /// for legacy (placeholder-less) routes that go through the fast
+    /// exact-string lookup path (D5 backwards-compat — pre-37.y route
+    /// performance preserved).
+    pub path_params: Vec<String>,
+}
+
+/// §Fase 37.y (D1) — Match a registered axonendpoint path template
+/// against an incoming request URL path; on match, return the captured
+/// path-parameter values.
+///
+/// The template uses `{name}` placeholders (the same shape the parser
+/// extracts into `AxonEndpointDefinition.path_params`); the actual URL
+/// is the request's `uri.path()`. A segment that is NOT a placeholder
+/// must match byte-identical between template and actual. A segment
+/// that IS a placeholder matches any non-empty actual segment and
+/// captures the actual value into the returned map.
+///
+/// Returns `Some(captures)` when:
+///   - segment count matches (no `*` wildcards in v1.38.5; multi-
+///     segment captures are honest-deferred per plan vivo §7);
+///   - every non-placeholder segment matches byte-for-byte;
+///   - every placeholder segment captures a non-empty actual segment.
+///
+/// Returns `None` otherwise.
+///
+/// Pure + total (no panics, no allocs beyond the captures map).
+/// Empty template + empty actual returns `Some(empty)`; templates
+/// without placeholders reduce to byte-equality check, so the helper
+/// is also a drop-in replacement for the legacy exact-string lookup
+/// when `path_params` is empty.
+pub(crate) fn match_path_template(
+    template: &str,
+    actual: &str,
+) -> Option<HashMap<String, String>> {
+    // Split on '/' — both URLs use canonical path separators. We
+    // tolerate trailing slashes by treating both `/api/x` and `/api/x/`
+    // as equivalent: each splits into 3 segments with an empty last
+    // segment.
+    let tpl_parts: Vec<&str> = template.split('/').collect();
+    let act_parts: Vec<&str> = actual.split('/').collect();
+    if tpl_parts.len() != act_parts.len() {
+        return None;
+    }
+    let mut captures: HashMap<String, String> = HashMap::new();
+    for (tpl, act) in tpl_parts.iter().zip(act_parts.iter()) {
+        if tpl.starts_with('{') && tpl.ends_with('}') && tpl.len() > 2 {
+            let name = &tpl[1..tpl.len() - 1];
+            // Validate the placeholder's identifier shape — the parser
+            // already enforced it, but defense-in-depth catches a
+            // malformed registered route (e.g. from a hand-edited
+            // `dynamic_routes` map).
+            let valid = !name.is_empty()
+                && name.bytes().enumerate().all(|(idx, b)| {
+                    if idx == 0 {
+                        b.is_ascii_alphabetic() || b == b'_'
+                    } else {
+                        b.is_ascii_alphanumeric() || b == b'_'
+                    }
+                });
+            if !valid {
+                // Template malformed — treat as exact-string mismatch.
+                if tpl != act {
+                    return None;
+                }
+            } else {
+                // Empty actual segment fails — `/api/{id}` must not
+                // match `/api/` (the URL would have an empty `id`).
+                if act.is_empty() {
+                    return None;
+                }
+                captures.insert(name.to_string(), act.to_string());
+            }
+        } else if tpl != act {
+            return None;
+        }
+    }
+    Some(captures)
+}
+
+/// §Fase 37.y (D2) — Parse a URL query string into a single-value
+/// name → value map. Multi-value query keys (`?tag=a&tag=b`) collapse
+/// to the FIRST value per v1.38.5 honest-scope semantics (multi-value
+/// query binding deferred per plan vivo §7).
+///
+/// URL-decoding follows the standard `application/x-www-form-urlencoded`
+/// rules: `+` decodes to space, `%XX` decodes to the byte. Malformed
+/// encodings keep the raw bytes (never panics).
+///
+/// Returns an empty map when `query` is `None` or empty.
+pub(crate) fn parse_query_string(query: Option<&str>) -> HashMap<String, String> {
+    let mut out: HashMap<String, String> = HashMap::new();
+    let Some(q) = query else {
+        return out;
+    };
+    if q.is_empty() {
+        return out;
+    }
+    for pair in q.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (raw_name, raw_value) = match pair.find('=') {
+            Some(idx) => (&pair[..idx], &pair[idx + 1..]),
+            None => (pair, ""),
+        };
+        let name = url_decode(raw_name);
+        if name.is_empty() {
+            continue;
+        }
+        // First-value semantics: don't overwrite if a name already
+        // appeared earlier in the query string.
+        if !out.contains_key(&name) {
+            out.insert(name, url_decode(raw_value));
+        }
+    }
+    out
+}
+
+/// Minimal URL-decode for query-string values. `%XX` → byte;
+/// `+` → space; everything else verbatim. Never panics on malformed
+/// input — invalid `%XX` sequences pass through unchanged.
+fn url_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = bytes[i + 1];
+                let lo = bytes[i + 2];
+                let from_hex = |b: u8| -> Option<u8> {
+                    match b {
+                        b'0'..=b'9' => Some(b - b'0'),
+                        b'a'..=b'f' => Some(b - b'a' + 10),
+                        b'A'..=b'F' => Some(b - b'A' + 10),
+                        _ => None,
+                    }
+                };
+                match (from_hex(hi), from_hex(lo)) {
+                    (Some(h), Some(l)) => {
+                        out.push((h << 4) | l);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            other => {
+                out.push(other);
+                i += 1;
+            }
+        }
+    }
+    // Lossy decode from bytes — malformed UTF-8 from a hostile client
+    // gets replacement chars rather than panic.
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Walk the program's AxonEndpoint declarations and produce the
@@ -20112,6 +20369,9 @@ pub fn collect_axonendpoint_routes(
                     // an explicit `DeployRequest.backend` as a
                     // deploy-scoped default.
                     backend: ae.backend.clone(),
+                    // §Fase 37.y (D1) — Path-parameter names extracted
+                    // by the parser. Copied verbatim from the AST.
+                    path_params: ae.path_params.clone(),
                 },
             );
         }
@@ -20398,10 +20658,65 @@ async fn dynamic_endpoint_handler(
     let method_str = method.as_str().to_ascii_uppercase();
     let path_str = uri.path().to_string();
 
-    // Snapshot the route metadata while holding the lock briefly.
-    let route_opt: Option<DynamicEndpointRoute> = {
+    // §Fase 37.y (D2) — Parse the URL query string into a HashMap so
+    // query params bind alongside path captures + body fields. The
+    // map is empty when the request has no query string. Built ONCE
+    // outside the route lookup so the response path can also consult
+    // it (e.g. for diagnostic headers).
+    let request_query: HashMap<String, String> =
+        parse_query_string(uri.query());
+
+    // §Fase 37.y (D1) — Two-step route lookup:
+    //   (1) Fast path: exact (method, path) match on a route with no
+    //       placeholders. Preserves the v1.38.4 hot-path performance
+    //       for legacy endpoints (D5 backwards-compat absolute).
+    //   (2) Template-match fallback: for routes whose `path_params` is
+    //       non-empty, run `match_path_template` against the actual
+    //       URL; on first match, capture the path-param values and
+    //       use that route. The map is also empty for legacy routes
+    //       (so the runtime binder sees the same empty map as v1.38.4).
+    let (route_opt, path_captures): (
+        Option<DynamicEndpointRoute>,
+        HashMap<String, String>,
+    ) = {
         let s = state.lock().unwrap();
-        s.dynamic_routes.get(&(method_str.clone(), path_str.clone())).cloned()
+        // (1) Exact lookup.
+        if let Some(r) =
+            s.dynamic_routes.get(&(method_str.clone(), path_str.clone()))
+        {
+            (Some(r.clone()), HashMap::new())
+        } else {
+            // (2) Template match — iterate routes with the same method
+            // and a non-empty `path_params` (placeholder-bearing routes).
+            // First match wins; the parser's intra-program collision
+            // check (Fase 32 D2 — same exact `path:` string under the
+            // same method is a deploy-time error) means two TEMPLATES
+            // that capture the same actual URL is structurally
+            // impossible within a single deploy. Cross-deploy collisions
+            // are caught by `merge_dynamic_routes`. Linear scan is fine
+            // — adopters have O(100) routes typically; the trade-off is
+            // O(routes) per dynamic-route request, equivalent to axum's
+            // own routing tree's worst case.
+            let mut matched: Option<(DynamicEndpointRoute, HashMap<String, String>)> = None;
+            for ((m, template), route) in &s.dynamic_routes {
+                if m != &method_str {
+                    continue;
+                }
+                if route.path_params.is_empty() {
+                    // No placeholders — already covered by the exact
+                    // lookup above. Skip.
+                    continue;
+                }
+                if let Some(caps) = match_path_template(template, &path_str) {
+                    matched = Some((route.clone(), caps));
+                    break;
+                }
+            }
+            match matched {
+                Some((r, caps)) => (Some(r), caps),
+                None => (None, HashMap::new()),
+            }
+        }
     };
 
     let route = match route_opt {
@@ -20804,6 +21119,11 @@ async fn dynamic_endpoint_handler(
                 flow_name: route.flow_name.clone(),
                 backend: resolved_backend.clone(),
                 request_body: request_body_json.clone(),
+                // §Fase 37.y (D3) — path captures + query string
+                // travel alongside the body so the runner's binder
+                // sees the full three-source set.
+                request_path: path_captures.clone(),
+                request_query: request_query.clone(),
             };
             // §Fase 33.x.f — Build the replay context when the
             // route declares `replay: true`. The inner handler
@@ -20848,6 +21168,9 @@ async fn dynamic_endpoint_handler(
                 flow: route.flow_name.clone(),
                 backend: resolved_backend.clone(),
                 request_body: request_body_json.clone(),
+                // §Fase 37.y (D3) — path + query travel alongside body.
+                request_path: path_captures.clone(),
+                request_query: request_query.clone(),
             };
             let mut resp = execute_handler(State(state.clone()), headers.clone(), Json(exec_req))
                 .await
@@ -21354,10 +21677,14 @@ async fn execute_handler_with_negotiation(
         // §Fase 37.b — carry the request body across the JSON→SSE
         // content-negotiation promotion so the Request Binding
         // Contract holds on the promoted transport too.
+        // §Fase 37.y — path + query carry too so the 3-source binder
+        // sees the full set on the promoted transport.
         let stream_req = StreamExecuteRequest {
             flow_name: payload.flow,
             backend: payload.backend,
             request_body: payload.request_body,
+            request_path: payload.request_path,
+            request_query: payload.request_query,
         };
         return execute_sse_handler(State(state), headers, Json(stream_req))
             .await
@@ -27287,7 +27614,13 @@ async fn execute_warm_handler(
         }
 
         // Execute to warm
-        match server_execute(source, source_file, flow_name, "stub", None, None) {
+        // §Fase 37.y — warmup path has no HTTP request; empty path + query.
+        let empty_path = std::collections::HashMap::new();
+        let empty_query = std::collections::HashMap::new();
+        match server_execute(
+            source, source_file, flow_name, "stub", None, None,
+            &empty_path, &empty_query,
+        ) {
             Ok(er) => {
                 let mut entry = crate::trace_store::build_trace(&er.flow_name, &er.source_file, &er.backend, &client,
                     if er.success { crate::trace_store::TraceStatus::Success } else { crate::trace_store::TraceStatus::Partial },

@@ -1057,6 +1057,26 @@ impl IRGenerator {
             retries: n.retries.unwrap_or(0),
             timeout: n.timeout.clone(),
             compliance: n.compliance.clone(),
+            // §Fase 37.y (D1) — IR mirror of `AxonEndpointDefinition.path_params`.
+            // Direct clone (Vec<String>); the IR JSON omits the field
+            // when the path has no placeholders (D5 backwards-compat).
+            path_params: n.path_params.clone(),
+            // §Fase 37.y (D2) — Lower each AST `TypeField` to an
+            // `IRTypeField`. The catalog validation already happened
+            // at parse time; the IR layer just shape-translates.
+            query_params: n
+                .query_params
+                .iter()
+                .map(|f| crate::ir_nodes::IRTypeField {
+                    node_type: "type_field",
+                    source_line: f.loc.line,
+                    source_column: f.loc.column,
+                    name: f.name.clone(),
+                    type_name: f.type_expr.name.clone(),
+                    generic_param: f.type_expr.generic_param.clone(),
+                    optional: f.type_expr.optional,
+                })
+                .collect(),
         }
     }
 
@@ -1633,5 +1653,154 @@ mod fase19_ir_tests {
         let json = serde_json::to_string(&body).expect("serialize");
         assert!(json.contains(r#""node_type":"break""#));
         assert!(json.contains(r#""node_type":"continue""#));
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  §Fase 37.y.3 — IR mirror for path_params + query_params + D5
+//  IR-JSON byte-identity backwards-compat.
+// ════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod fase37y_ir_mirror_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn lower_endpoint(src: &str) -> crate::ir_nodes::IRAxonEndpoint {
+        let tokens = Lexer::new(src, "<test>").tokenize().expect("lex");
+        let prog = Parser::new(tokens).parse().expect("parse");
+        let ir = IRGenerator::new().generate(&prog);
+        ir.endpoints
+            .into_iter()
+            .next()
+            .expect("at least one endpoint in IR")
+    }
+
+    #[test]
+    fn ir_carries_path_params_from_ast() {
+        let src = r#"
+            axonendpoint write {
+                method: POST
+                path: "/api/tenants/{tenant_id}/secrets/{secret_name}"
+                body: SecretWriteRequest
+                execute: Write
+            }
+        "#;
+        let ep = lower_endpoint(src);
+        assert_eq!(
+            ep.path_params,
+            vec!["tenant_id".to_string(), "secret_name".to_string()],
+            "IR.path_params mirrors AST.path_params 1:1"
+        );
+    }
+
+    #[test]
+    fn ir_carries_query_params_with_type_field_shape() {
+        let src = r#"
+            axonendpoint list {
+                method: GET
+                path: "/api/users"
+                query: { status: Text, limit: Int?, after: Uuid? }
+                execute: ListUsers
+            }
+        "#;
+        let ep = lower_endpoint(src);
+        assert_eq!(ep.query_params.len(), 3);
+        assert_eq!(ep.query_params[0].name, "status");
+        assert_eq!(ep.query_params[0].type_name, "Text");
+        assert!(!ep.query_params[0].optional);
+        assert_eq!(ep.query_params[1].name, "limit");
+        assert_eq!(ep.query_params[1].type_name, "Int");
+        assert!(ep.query_params[1].optional);
+        assert_eq!(ep.query_params[2].name, "after");
+        assert_eq!(ep.query_params[2].type_name, "Uuid");
+        assert!(ep.query_params[2].optional);
+        // node_type stays canonical for downstream JSON consumers.
+        assert_eq!(ep.query_params[0].node_type, "type_field");
+    }
+
+    #[test]
+    fn d5_byte_identity_when_no_path_or_query() {
+        // The load-bearing D5 backwards-compat assertion: an endpoint
+        // with no path placeholders AND no query block produces IR
+        // JSON byte-identical to the pre-v1.38.5 output. The new
+        // fields use `skip_serializing_if = Vec::is_empty` so they
+        // simply don't appear in the JSON.
+        let src = r#"
+            axonendpoint hello {
+                method: GET
+                path: "/api/hello"
+                body: HelloRequest
+                execute: Hello
+            }
+        "#;
+        let ep = lower_endpoint(src);
+        let json = serde_json::to_string(&ep).expect("serialize");
+        assert!(
+            !json.contains("path_params"),
+            "D5: absent `path_params` key when empty. Got: {json}"
+        );
+        assert!(
+            !json.contains("query_params"),
+            "D5: absent `query_params` key when empty. Got: {json}"
+        );
+    }
+
+    #[test]
+    fn ir_json_emits_path_params_when_present() {
+        let src = r#"
+            axonendpoint x {
+                method: GET
+                path: "/api/users/{id}"
+                execute: X
+            }
+        "#;
+        let ep = lower_endpoint(src);
+        let json = serde_json::to_string(&ep).expect("serialize");
+        assert!(
+            json.contains(r#""path_params":["id"]"#),
+            "path_params present in JSON. Got: {json}"
+        );
+    }
+
+    #[test]
+    fn ir_json_emits_query_params_as_type_field_array() {
+        let src = r#"
+            axonendpoint x {
+                method: GET
+                path: "/api/x"
+                query: { status: Text? }
+                execute: X
+            }
+        "#;
+        let ep = lower_endpoint(src);
+        let json = serde_json::to_string(&ep).expect("serialize");
+        assert!(json.contains("query_params"), "key present: {json}");
+        assert!(json.contains(r#""name":"status""#), "field name: {json}");
+        assert!(json.contains(r#""type_name":"Text""#), "type_name: {json}");
+        assert!(json.contains(r#""optional":true"#), "optional: {json}");
+    }
+
+    #[test]
+    fn ir_round_trips_kivi_corpus() {
+        // The end-to-end combined corpus from the kivi adopter report —
+        // both 37.y.1 (path) and 37.y.2 (query) round-trip through IR.
+        let src = r#"
+            axonendpoint write_secret {
+                method: POST
+                path: "/api/tenants/{tenant_id}/secrets/{secret_name}"
+                query: { dry_run: Bool?, overwrite: Bool? }
+                body: SecretWriteRequest
+                execute: WriteSecret
+            }
+        "#;
+        let ep = lower_endpoint(src);
+        assert_eq!(ep.path_params, vec!["tenant_id", "secret_name"]);
+        assert_eq!(ep.query_params.len(), 2);
+        assert_eq!(ep.query_params[0].name, "dry_run");
+        assert!(ep.query_params[0].optional);
+        assert_eq!(ep.body_type, "SecretWriteRequest");
+        assert_eq!(ep.method, "POST");
     }
 }

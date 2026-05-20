@@ -593,6 +593,99 @@ fn axonendpoint_is_valid_keepalive(s: &str) -> bool {
     AXONENDPOINT_KEEPALIVE_VALUES.iter().any(|&v| v == s)
 }
 
+/// §Fase 37.y (D2) — Closed type catalog for query parameters.
+///
+/// Query values arrive over HTTP as URL-encoded strings; the catalog
+/// is the set of types axon will validate / coerce them into for the
+/// Request Binding Contract. Hand-curated, intentionally small:
+///   - `Text` — the raw string (always succeeds)
+///   - `Int` — `i64` parseable
+///   - `Float` — `f64` parseable, finite
+///   - `Bool` — case-insensitive `{true, false, 1, 0, yes, no, on, off}`
+///   - `Uuid` — RFC 4122 textual form
+///
+/// Extending the catalog is a future axon-T?nn surface; v1.38.5 ships
+/// the 5 types covering ~95% of REST query patterns. Lists / dates /
+/// datetimes / enums are honest deferrals (see §7 of the plan vivo).
+pub const AXONENDPOINT_QUERY_PARAM_TYPES: &[&str] =
+    &["Text", "Int", "Float", "Bool", "Uuid"];
+
+/// `true` iff `s` is one of the §Fase 37.y (D2) query-param catalog
+/// entries — exact case-sensitive match (axon types are PascalCase).
+#[inline]
+pub(crate) fn axonendpoint_is_valid_query_param_type(s: &str) -> bool {
+    AXONENDPOINT_QUERY_PARAM_TYPES.iter().any(|&v| v == s)
+}
+
+/// §Fase 37.y (D1) — Extract `{name}` placeholder names from an
+/// `axonendpoint` `path:` string, in left-to-right declaration order.
+///
+/// Recognized placeholder grammar (single-segment, no nested braces):
+/// `{NAME}` where `NAME` matches `[A-Za-z_][A-Za-z0-9_]*`. Anything
+/// inside braces that does NOT match the identifier shape is silently
+/// IGNORED — it's either an adopter typo (caught later by axum at
+/// route registration) or a literal brace in the URL pattern.
+///
+/// Returns `Err(duplicate_name)` when the same `{name}` appears more
+/// than once in the path — HTTP route patterns reject duplicates
+/// structurally (`axum` would panic at registration), so surfacing
+/// the error at parse time is the right place.
+///
+/// Pure + total: never panics; deterministic over its single string
+/// argument. Hand-rolled scanner (no regex dep at parser layer).
+///
+/// # Examples
+///
+/// - `"/api/users"` → `Ok(vec![])`
+/// - `"/api/users/{id}"` → `Ok(vec!["id"])`
+/// - `"/api/tenants/{tenant_id}/secrets/{secret_name}"`
+///   → `Ok(vec!["tenant_id", "secret_name"])`
+/// - `"/api/users/{id}/posts/{id}"` → `Err("id")` (duplicate)
+/// - `"/api/{not valid}"` → `Ok(vec![])` (malformed brace content
+///   silently ignored; axum surfaces the error at registration)
+pub(crate) fn extract_path_param_names(path: &str) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    let bytes = path.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'{' {
+            i += 1;
+            continue;
+        }
+        // Find the matching close brace; if none, the open brace is
+        // a literal — leave it alone.
+        let start = i + 1;
+        let mut end = start;
+        while end < bytes.len() && bytes[end] != b'}' {
+            end += 1;
+        }
+        if end == bytes.len() {
+            // Unterminated — give up; downstream parser/runtime
+            // surface the malformed path elsewhere.
+            break;
+        }
+        let raw = &path[start..end];
+        // Validate identifier shape: [A-Za-z_][A-Za-z0-9_]*
+        let valid = !raw.is_empty()
+            && raw.bytes().enumerate().all(|(idx, b)| {
+                if idx == 0 {
+                    b.is_ascii_alphabetic() || b == b'_'
+                } else {
+                    b.is_ascii_alphanumeric() || b == b'_'
+                }
+            });
+        if valid {
+            let name = raw.to_string();
+            if out.iter().any(|existing| existing == &name) {
+                return Err(name);
+            }
+            out.push(name);
+        }
+        i = end + 1;
+    }
+    Ok(out)
+}
+
 /// §Fase 32.g (D8) — Closed capability-slug grammar. Validates a
 /// `requires:` slug per `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`.
 ///
@@ -628,6 +721,573 @@ fn is_valid_slug_segment(seg: &str) -> bool {
         return false;
     }
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  §Fase 37.y (D1) — `extract_path_param_names` unit tests
+// ════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════
+//  §Fase 37.y (D2) — `axonendpoint_is_valid_query_param_type` + the
+//  inline `query: { … }` parser, end-to-end through the lexer.
+// ════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod query_param_catalog_tests {
+    use super::{axonendpoint_is_valid_query_param_type, AXONENDPOINT_QUERY_PARAM_TYPES};
+
+    #[test]
+    fn accepts_every_catalog_entry() {
+        for ty in AXONENDPOINT_QUERY_PARAM_TYPES {
+            assert!(
+                axonendpoint_is_valid_query_param_type(ty),
+                "catalog entry `{ty}` must validate"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_off_catalog_types() {
+        for off in &[
+            "Timestamp",    // not in v1.38.5 — list/dates deferred
+            "Date",
+            "DateTime",
+            "List<Text>",   // multi-value query params deferred (§7)
+            "Jsonb",        // store-only types not query-applicable
+            "Bytea",
+            "text",         // lowercase rejected (axon types are PascalCase)
+            "TEXT",
+            "Number",       // not in axon's type catalog at all
+            "",             // empty
+            " ",            // whitespace
+        ] {
+            assert!(
+                !axonendpoint_is_valid_query_param_type(off),
+                "off-catalog `{off}` must reject"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_size_matches_design() {
+        // The plan vivo D2 states a closed 5-type catalog. A future
+        // axon-T?nn surface may extend it; that requires updating BOTH
+        // the catalog AND the plan vivo §7 honest-scope note.
+        assert_eq!(AXONENDPOINT_QUERY_PARAM_TYPES.len(), 5);
+    }
+}
+
+#[cfg(test)]
+mod query_param_parser_tests {
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn parse_endpoint_source(src: &str) -> Result<crate::ast::AxonEndpointDefinition, String> {
+        let tokens = Lexer::new(src, "test.axon")
+            .tokenize()
+            .map_err(|e| format!("lex: {}", e.message))?;
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse().map_err(|e| format!("parse: {}", e.message))?;
+        program
+            .declarations
+            .into_iter()
+            .find_map(|d| match d {
+                crate::ast::Declaration::AxonEndpoint(e) => Some(e),
+                _ => None,
+            })
+            .ok_or_else(|| "no axonendpoint in program".to_string())
+    }
+
+    #[test]
+    fn endpoint_with_no_query_block_keeps_empty_vec() {
+        let src = r#"
+            axonendpoint write_secret {
+                method: POST
+                path: "/api/users"
+                body: SecretWriteRequest
+                execute: WriteSecret
+            }
+        "#;
+        let ep = parse_endpoint_source(src).expect("parses");
+        assert!(
+            ep.query_params.is_empty(),
+            "D5 — no `query:` block ⇒ empty query_params"
+        );
+    }
+
+    #[test]
+    fn single_query_param_required() {
+        let src = r#"
+            axonendpoint list_users {
+                method: GET
+                path: "/api/users"
+                query: { status: Text }
+                execute: ListUsers
+            }
+        "#;
+        let ep = parse_endpoint_source(src).expect("parses");
+        assert_eq!(ep.query_params.len(), 1);
+        assert_eq!(ep.query_params[0].name, "status");
+        assert_eq!(ep.query_params[0].type_expr.name, "Text");
+        assert!(!ep.query_params[0].type_expr.optional);
+    }
+
+    #[test]
+    fn optional_query_param_via_question_suffix() {
+        let src = r#"
+            axonendpoint list_users {
+                method: GET
+                path: "/api/users"
+                query: { limit: Int? }
+                execute: ListUsers
+            }
+        "#;
+        let ep = parse_endpoint_source(src).expect("parses");
+        assert_eq!(ep.query_params.len(), 1);
+        assert_eq!(ep.query_params[0].name, "limit");
+        assert_eq!(ep.query_params[0].type_expr.name, "Int");
+        assert!(
+            ep.query_params[0].type_expr.optional,
+            "`?` suffix sets optional"
+        );
+    }
+
+    #[test]
+    fn multiple_query_params_preserve_declaration_order() {
+        let src = r#"
+            axonendpoint search {
+                method: GET
+                path: "/api/search"
+                query: { q: Text, page: Int?, limit: Int?, exact: Bool? }
+                execute: Search
+            }
+        "#;
+        let ep = parse_endpoint_source(src).expect("parses");
+        let names: Vec<&str> = ep.query_params.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["q", "page", "limit", "exact"]);
+        let types: Vec<&str> = ep
+            .query_params
+            .iter()
+            .map(|f| f.type_expr.name.as_str())
+            .collect();
+        assert_eq!(types, vec!["Text", "Int", "Int", "Bool"]);
+        let optionals: Vec<bool> = ep
+            .query_params
+            .iter()
+            .map(|f| f.type_expr.optional)
+            .collect();
+        assert_eq!(optionals, vec![false, true, true, true]);
+    }
+
+    #[test]
+    fn duplicate_query_param_is_parse_error() {
+        let src = r#"
+            axonendpoint bad {
+                method: GET
+                path: "/api/x"
+                query: { name: Text, name: Int? }
+                execute: Bad
+            }
+        "#;
+        let err = parse_endpoint_source(src).expect_err("must fail");
+        assert!(
+            err.contains("duplicate query param 'name'"),
+            "error must name the duplicate. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn off_catalog_type_with_smart_suggest_hint() {
+        // `Strng` is one edit away from `Text` (would suggest `Text`?
+        // Actually edit distance to `Text` is 4; to `Int` is 5. Likely
+        // no smart suggestion within distance 2. The error still names
+        // the catalog explicitly.)
+        let src = r#"
+            axonendpoint bad {
+                method: GET
+                path: "/api/x"
+                query: { value: Strng }
+                execute: Bad
+            }
+        "#;
+        let err = parse_endpoint_source(src).expect_err("must fail");
+        assert!(
+            err.contains("unsupported type 'Strng'"),
+            "error must name the bad type. Got: {err}"
+        );
+        assert!(
+            err.contains("Expected one of: Text | Int | Float | Bool | Uuid"),
+            "error must list the closed catalog. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn close_typo_gets_did_you_mean_hint() {
+        // `Txt` → edit distance 1 from `Text` → smart-suggest should
+        // surface the hint.
+        let src = r#"
+            axonendpoint bad {
+                method: GET
+                path: "/api/x"
+                query: { value: Txt }
+                execute: Bad
+            }
+        "#;
+        let err = parse_endpoint_source(src).expect_err("must fail");
+        assert!(
+            err.contains("Did you mean") && err.contains("`Text`"),
+            "smart-suggest must hint `Text`. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn every_catalog_type_parses_cleanly() {
+        // Round-trip smoke for all 5 catalog entries.
+        for ty in &["Text", "Int", "Float", "Bool", "Uuid"] {
+            let src = format!(
+                r#"
+                    axonendpoint x {{
+                        method: GET
+                        path: "/api/x"
+                        query: {{ v: {ty} }}
+                        execute: X
+                    }}
+                "#
+            );
+            let ep = parse_endpoint_source(&src)
+                .unwrap_or_else(|e| panic!("`{ty}` should parse: {e}"));
+            assert_eq!(ep.query_params[0].type_expr.name, *ty);
+        }
+    }
+
+    #[test]
+    fn comma_optional_between_params() {
+        // The plan vivo design accepts both comma-separated and
+        // whitespace-separated query params (existing parser style is
+        // forgiving). Whitespace-only:
+        let src = r#"
+            axonendpoint x {
+                method: GET
+                path: "/api/x"
+                query: { a: Text b: Int? }
+                execute: X
+            }
+        "#;
+        let ep = parse_endpoint_source(src).expect("parses without commas");
+        assert_eq!(ep.query_params.len(), 2);
+    }
+
+    // ─── Robustness hardening (37.y.2 100% robust closure) ──────────
+
+    #[test]
+    fn double_query_block_is_parse_error() {
+        // An adopter who copy-pastes the `query:` block twice should
+        // see a clear parse error, not a silent merge that produces
+        // an unexpectedly-augmented endpoint with both blocks fused.
+        let src = r#"
+            axonendpoint x {
+                method: GET
+                path: "/api/x"
+                query: { a: Text }
+                query: { b: Int? }
+                execute: X
+            }
+        "#;
+        let err = parse_endpoint_source(src).expect_err("must fail");
+        assert!(
+            err.contains("declares `query: { … }` more than once"),
+            "error must call out the duplicate block. Got: {err}"
+        );
+        assert!(
+            err.contains("combine all params into a single block"),
+            "error must hint the canonical fix. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn optional_generic_type_is_parse_error_with_canonical_hint() {
+        // `Optional<Text>` is the wrong way to declare an optional
+        // query param. The canonical syntax is `Text?` (the `?`
+        // suffix). The error must surface this with a literal example.
+        let src = r#"
+            axonendpoint x {
+                method: GET
+                path: "/api/x"
+                query: { value: Optional<Text> }
+                execute: X
+            }
+        "#;
+        let err = parse_endpoint_source(src).expect_err("must fail");
+        assert!(
+            err.contains("generic type `Optional<Text>`"),
+            "error must name the generic type literally. Got: {err}"
+        );
+        assert!(
+            err.contains("Use `Text?` (the `?` suffix)"),
+            "error must hint the canonical `Text?` syntax. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn list_generic_type_is_parse_error_with_deferral_hint() {
+        // Multi-value query params (`?tag=a&tag=b`) are honest-
+        // deferred per the plan vivo §7. Adopters who write
+        // `List<Text>` should see a clear error explaining the
+        // deferral, not a confusing "type `List` not in catalog".
+        let src = r#"
+            axonendpoint x {
+                method: GET
+                path: "/api/x"
+                query: { tags: List<Text> }
+                execute: X
+            }
+        "#;
+        let err = parse_endpoint_source(src).expect_err("must fail");
+        assert!(
+            err.contains("generic type `List<Text>`"),
+            "error must name the generic type. Got: {err}"
+        );
+        assert!(
+            err.contains("Multi-value query params")
+                && err.contains("honest-deferred"),
+            "error must mention the multi-value deferral. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn other_generic_types_caught_generically() {
+        // Generic types beyond `Optional` and `List` get the
+        // generic-rejection message without a canonical-syntax hint
+        // (the catalog list is the canonical guidance).
+        let src = r#"
+            axonendpoint x {
+                method: GET
+                path: "/api/x"
+                query: { value: Stream<Int> }
+                execute: X
+            }
+        "#;
+        let err = parse_endpoint_source(src).expect_err("must fail");
+        assert!(
+            err.contains("generic type `Stream<Int>`"),
+            "error must name the generic type. Got: {err}"
+        );
+        assert!(
+            err.contains("Text | Int | Float | Bool | Uuid"),
+            "error must list the closed catalog. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn uuid_optional_parses_cleanly() {
+        // Hardening companion — `Uuid?` is in the catalog AND
+        // optional. The two features compose without surprise.
+        let src = r#"
+            axonendpoint find {
+                method: GET
+                path: "/api/x"
+                query: { after: Uuid? }
+                execute: Find
+            }
+        "#;
+        let ep = parse_endpoint_source(src).expect("parses");
+        assert_eq!(ep.query_params.len(), 1);
+        assert_eq!(ep.query_params[0].name, "after");
+        assert_eq!(ep.query_params[0].type_expr.name, "Uuid");
+        assert!(ep.query_params[0].type_expr.optional);
+        assert_eq!(ep.query_params[0].type_expr.generic_param, "");
+    }
+
+    #[test]
+    fn empty_query_block_yields_empty_vec() {
+        // `query: { }` is grammatically valid but semantically a
+        // no-op (equivalent to omitting the block). Don't error;
+        // just record an empty Vec.
+        let src = r#"
+            axonendpoint x {
+                method: GET
+                path: "/api/x"
+                query: { }
+                execute: X
+            }
+        "#;
+        let ep = parse_endpoint_source(src).expect("empty block parses");
+        assert!(ep.query_params.is_empty());
+    }
+
+    #[test]
+    fn kivi_secret_write_path_plus_query() {
+        // Combined path-param + query-param test: an endpoint that
+        // takes IDs in the URL AND optional filters in the query
+        // string. This is the natural REST shape Fase 37.y serves.
+        let src = r#"
+            axonendpoint write_secret {
+                method: POST
+                path: "/api/tenants/{tenant_id}/secrets/{secret_name}"
+                query: { dry_run: Bool?, overwrite: Bool? }
+                body: SecretWriteRequest
+                execute: WriteSecret
+            }
+        "#;
+        let ep = parse_endpoint_source(src).expect("parses");
+        // Path params populated (from 37.y.1):
+        assert_eq!(ep.path_params, vec!["tenant_id", "secret_name"]);
+        // Query params populated (from this sub-fase 37.y.2):
+        assert_eq!(ep.query_params.len(), 2);
+        assert_eq!(ep.query_params[0].name, "dry_run");
+        assert_eq!(ep.query_params[0].type_expr.name, "Bool");
+        assert!(ep.query_params[0].type_expr.optional);
+        assert_eq!(ep.query_params[1].name, "overwrite");
+        // Body still works:
+        assert_eq!(ep.body_type, "SecretWriteRequest");
+    }
+}
+
+#[cfg(test)]
+mod path_param_extraction_tests {
+    use super::extract_path_param_names;
+
+    #[test]
+    fn empty_path_no_placeholders() {
+        assert_eq!(extract_path_param_names("/api/users"), Ok(vec![]));
+        assert_eq!(extract_path_param_names("/"), Ok(vec![]));
+        assert_eq!(extract_path_param_names(""), Ok(vec![]));
+    }
+
+    #[test]
+    fn single_placeholder() {
+        assert_eq!(
+            extract_path_param_names("/api/users/{id}"),
+            Ok(vec!["id".to_string()])
+        );
+    }
+
+    #[test]
+    fn multiple_placeholders_in_declaration_order() {
+        assert_eq!(
+            extract_path_param_names(
+                "/api/tenants/{tenant_id}/secrets/{secret_name}"
+            ),
+            Ok(vec![
+                "tenant_id".to_string(),
+                "secret_name".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn kivi_chat_history_path_pattern() {
+        // The exact pattern the kivi adopter reported (2026-05-20):
+        // POST /api/tenants/{tenant_id}/secrets/{secret_name}
+        // Both names extracted in source order.
+        let names = extract_path_param_names(
+            "/api/tenants/{tenant_id}/secrets/{secret_name}",
+        );
+        assert_eq!(
+            names,
+            Ok(vec![
+                "tenant_id".to_string(),
+                "secret_name".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn duplicate_placeholder_returns_err() {
+        assert_eq!(
+            extract_path_param_names("/api/users/{id}/posts/{id}"),
+            Err("id".to_string())
+        );
+    }
+
+    #[test]
+    fn underscore_and_numeric_in_name() {
+        assert_eq!(
+            extract_path_param_names("/api/{user_id}/items/{item_2}"),
+            Ok(vec!["user_id".to_string(), "item_2".to_string()])
+        );
+    }
+
+    #[test]
+    fn leading_underscore_accepted() {
+        // Identifiers in HTTP paths often start with letters but the
+        // grammar permits leading underscore (parity with Rust identifier
+        // rules). The flow parameter name on the binding side has to
+        // match exactly, so adopters with `_internal_id` in the path
+        // can pair it with a same-named flow param.
+        assert_eq!(
+            extract_path_param_names("/api/{_internal}"),
+            Ok(vec!["_internal".to_string()])
+        );
+    }
+
+    #[test]
+    fn malformed_placeholder_silently_ignored() {
+        // Content inside `{...}` that does not match the identifier
+        // grammar is skipped at this layer. axum surfaces the route
+        // registration failure if the literal text is invalid.
+        assert_eq!(
+            extract_path_param_names("/api/{not valid}"),
+            Ok(vec![])
+        );
+        // Empty braces — same: skip silently.
+        assert_eq!(extract_path_param_names("/api/{}"), Ok(vec![]));
+        // Mixed: malformed brace skipped, valid placeholder kept.
+        assert_eq!(
+            extract_path_param_names("/api/{tenant id}/users/{id}"),
+            Ok(vec!["id".to_string()])
+        );
+    }
+
+    #[test]
+    fn unterminated_brace_returns_clean() {
+        // Open brace with no close brace — give up without panicking.
+        // (axum surfaces the malformed-route error at registration.)
+        assert_eq!(extract_path_param_names("/api/{id"), Ok(vec![]));
+    }
+
+    #[test]
+    fn placeholders_at_path_boundaries() {
+        // Placeholder as the very first segment AND the very last
+        // segment — both should be extracted.
+        assert_eq!(
+            extract_path_param_names("{prefix}/api/users/{id}"),
+            Ok(vec!["prefix".to_string(), "id".to_string()])
+        );
+        assert_eq!(
+            extract_path_param_names("/api/{id}"),
+            Ok(vec!["id".to_string()])
+        );
+    }
+
+    #[test]
+    fn deduplication_detects_non_adjacent_duplicates() {
+        // The duplicate-detection sweep is global, not just adjacent.
+        assert_eq!(
+            extract_path_param_names(
+                "/api/orgs/{org_id}/teams/{team_id}/repos/{org_id}"
+            ),
+            Err("org_id".to_string())
+        );
+    }
+
+    #[test]
+    fn never_panics_on_arbitrary_input() {
+        // Light fuzz: a handful of weird inputs return cleanly.
+        for input in &[
+            "{",
+            "}",
+            "{}",
+            "{{}}",
+            "{{{",
+            "/api/{}/{id}",
+            "////",
+            "\u{1F4A1}",        // emoji (lightbulb)
+            "\u{0000}",         // null byte
+        ] {
+            let _ = extract_path_param_names(input); // must not panic
+        }
+    }
 }
 
 #[cfg(test)]
@@ -5236,6 +5896,16 @@ impl Parser {
             // ladder). A non-empty value is validated against the
             // closed `AXONENDPOINT_BACKEND_VALUES` catalog below.
             backend: String::new(),
+            // §Fase 37.y (D1) — Path-param names extracted from the
+            // `path:` string AFTER the field is parsed. Initialized
+            // empty; populated by `extract_path_param_names` after
+            // the `path:` field is read in the loop below.
+            path_params: Vec::new(),
+            // §Fase 37.y (D2) — Inline `query: { name: Type, name: Type? }`
+            // block. Initialized empty; populated by the `"query"` arm
+            // in the field loop below. Closed catalog enforced at parse
+            // time per `axonendpoint_is_valid_query_param_type`.
+            query_params: Vec::new(),
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -5288,8 +5958,201 @@ impl Parser {
                         }
                         node.method = value_upper;
                     }
-                    "path" => node.path = self.consume(TokenType::StringLit)?.value.clone(),
+                    "path" => {
+                        node.path = self.consume(TokenType::StringLit)?.value.clone();
+                        // §Fase 37.y (D1) — extract `{name}` placeholders
+                        // for the Request Binding Contract's path-param
+                        // source. Duplicate `{name}` in the same path
+                        // is rejected at parse time (HTTP route patterns
+                        // structurally reject duplicates; surfacing the
+                        // error here is friendlier than letting axum
+                        // panic at registration).
+                        match extract_path_param_names(&node.path) {
+                            Ok(names) => node.path_params = names,
+                            Err(dup) => {
+                                let cur = self.current().clone();
+                                return Err(ParseError {
+                                    message: format!(
+                                        "axonendpoint '{}' declares path '{}' \
+                                         containing duplicate placeholder '{{{}}}'. \
+                                         Each `{{name}}` in a `path:` must be \
+                                         unique — the runtime cannot bind two \
+                                         path segments to the same name (Fase 37.y D1).",
+                                        node.name, node.path, dup,
+                                    ),
+                                    line: cur.line,
+                                    column: cur.column,
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    },
                     "body" => node.body_type = self.consume_any_ident_or_kw()?.value.clone(),
+                    "query" => {
+                        // §Fase 37.y (D2) — Inline query-parameter block.
+                        // Grammar: `query: { name: Type [, name: Type?]* }`.
+                        // Closed type catalog
+                        // `AXONENDPOINT_QUERY_PARAM_TYPES = {Text, Int,
+                        // Float, Bool, Uuid}`. Optional via `?` suffix
+                        // reuses `TypeExpr.optional` semantics already in
+                        // use for flow parameters + body type fields. A
+                        // duplicate field name in the same block is a
+                        // parse error (HTTP query strings DO allow
+                        // multi-value but v1.38.5 binds the first value
+                        // only — see plan vivo §7 forward-compat).
+                        //
+                        // §Fase 37.y (D2 robustness) — declaring `query:`
+                        // twice on the same axonendpoint silently merged
+                        // params pre-hardening. Now it's a parse error
+                        // so an adopter typo / copy-paste mistake
+                        // surfaces with line + column instead of
+                        // producing an unexpectedly-augmented endpoint.
+                        let lbrace_tok = self.consume(TokenType::LBrace)?;
+                        let block_line = lbrace_tok.line;
+                        if !node.query_params.is_empty() {
+                            return Err(ParseError {
+                                message: format!(
+                                    "axonendpoint '{}' declares `query: {{ … }}` \
+                                     more than once. The query-parameter block \
+                                     is unique per endpoint; combine all params \
+                                     into a single block (Fase 37.y D2).",
+                                    node.name,
+                                ),
+                                line: lbrace_tok.line,
+                                column: lbrace_tok.column,
+                                ..Default::default()
+                            });
+                        }
+                        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                            let name_tok = self.consume(TokenType::Identifier)?;
+                            let field_name = name_tok.value.clone();
+                            // Duplicate detection within the block.
+                            if node
+                                .query_params
+                                .iter()
+                                .any(|f| f.name == field_name)
+                            {
+                                return Err(ParseError {
+                                    message: format!(
+                                        "axonendpoint '{}' declares duplicate \
+                                         query param '{}' inside `query: {{ … }}`. \
+                                         Each name must appear at most once \
+                                         (Fase 37.y D2).",
+                                        node.name, field_name,
+                                    ),
+                                    line: name_tok.line,
+                                    column: name_tok.column,
+                                    ..Default::default()
+                                });
+                            }
+                            self.consume(TokenType::Colon)?;
+                            let type_expr = self.parse_type_expr()?;
+                            // §Fase 37.y (D2 robustness) — reject generic
+                            // type expressions on query params. The
+                            // closed catalog is 5 primitives; container
+                            // types (`Optional<T>`, `List<T>`, etc.)
+                            // would mislead the adopter into thinking
+                            // they bind multi-value query strings
+                            // (deferred per plan vivo §7) or that
+                            // `Optional<Text>` is the canonical way to
+                            // declare an optional query (it's NOT —
+                            // `Text?` is). Surface the canonical syntax
+                            // verbatim so the fix is obvious.
+                            if !type_expr.generic_param.is_empty() {
+                                let canonical_hint = if type_expr.name == "Optional" {
+                                    format!(
+                                        " Use `{}?` (the `?` suffix) for an \
+                                         optional query param instead of \
+                                         `Optional<{}>`.",
+                                        type_expr.generic_param,
+                                        type_expr.generic_param,
+                                    )
+                                } else if type_expr.name == "List" {
+                                    " Multi-value query params (e.g. `?tag=a&tag=b`) \
+                                     are honest-deferred from v1.38.5; bind a \
+                                     single-value `Text` query param and parse \
+                                     the value inside the flow."
+                                        .to_string()
+                                } else {
+                                    String::new()
+                                };
+                                return Err(ParseError {
+                                    message: format!(
+                                        "axonendpoint '{}' query param '{}' uses \
+                                         a generic type `{}<{}>`. Query params \
+                                         take a primitive type from the closed \
+                                         catalog ({}); the `?` suffix marks \
+                                         optional.{} (Fase 37.y D2).",
+                                        node.name,
+                                        field_name,
+                                        type_expr.name,
+                                        type_expr.generic_param,
+                                        AXONENDPOINT_QUERY_PARAM_TYPES.join(" | "),
+                                        canonical_hint,
+                                    ),
+                                    line: type_expr.loc.line,
+                                    column: type_expr.loc.column,
+                                    ..Default::default()
+                                });
+                            }
+                            // Validate against the closed catalog. A
+                            // miss surfaces a Fase 28-style smart-suggest
+                            // hint when within edit-distance 2.
+                            if !axonendpoint_is_valid_query_param_type(&type_expr.name) {
+                                // `smart_suggest::suggest_for` returns
+                                // pre-formatted prose like
+                                // "Did you mean `Text`?" or
+                                // "Did you mean `Text` or `Int`?" (empty
+                                // when no candidate within edit-distance
+                                // 2). Concatenate without re-wrapping.
+                                let hint = crate::smart_suggest::suggest_for(
+                                    &type_expr.name,
+                                    AXONENDPOINT_QUERY_PARAM_TYPES,
+                                );
+                                let hint_text = if hint.is_empty() {
+                                    format!(
+                                        " Expected one of: {}.",
+                                        AXONENDPOINT_QUERY_PARAM_TYPES.join(" | ")
+                                    )
+                                } else {
+                                    format!(
+                                        " {} Expected one of: {}.",
+                                        hint,
+                                        AXONENDPOINT_QUERY_PARAM_TYPES.join(" | ")
+                                    )
+                                };
+                                return Err(ParseError {
+                                    message: format!(
+                                        "axonendpoint '{}' query param '{}' has \
+                                         unsupported type '{}'.{} (Fase 37.y D2).",
+                                        node.name, field_name, type_expr.name,
+                                        hint_text,
+                                    ),
+                                    line: type_expr.loc.line,
+                                    column: type_expr.loc.column,
+                                    ..Default::default()
+                                });
+                            }
+                            node.query_params.push(TypeField {
+                                name: field_name,
+                                type_expr,
+                                loc: Loc {
+                                    line: name_tok.line,
+                                    column: name_tok.column,
+                                },
+                            });
+                            // Trailing comma is optional; the next loop
+                            // iteration handles `}` cleanly. Accept both
+                            // `name: Type, name: Type` AND `name: Type
+                            // name: Type` (the existing parser style is
+                            // forgiving about list separators).
+                            if self.check(TokenType::Comma) {
+                                self.advance();
+                            }
+                            let _ = block_line; // suppress unused warning
+                        }
+                        self.consume(TokenType::RBrace)?;
+                    },
                     "execute" => node.execute_flow = self.consume_any_ident_or_kw()?.value.clone(),
                     "output" => node.output_type = self.consume_any_ident_or_kw()?.value.clone(),
                     "shield" => node.shield_ref = self.consume_any_ident_or_kw()?.value.clone(),

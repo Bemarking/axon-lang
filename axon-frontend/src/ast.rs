@@ -856,6 +856,48 @@ pub struct AxonEndpointDefinition {
     /// error. A declared `backend:` is rung 2 of the resolution
     /// contract.
     pub backend: String,
+    /// §Fase 37.y (D1) — Path parameter names extracted from the
+    /// `path:` string at parse time. For `path: "/api/tenants/{tenant_id}/secrets/{secret_name}"`
+    /// this is `["tenant_id", "secret_name"]`. Empty Vec when the
+    /// path has no `{name}` placeholders (D5 backwards-compat — an
+    /// endpoint without path params produces byte-identical IR to
+    /// v1.38.4).
+    ///
+    /// Names are deduplicated + recorded in declaration order. A
+    /// duplicate `{tenant_id}` in the same path is a parse error
+    /// (HTTP route patterns reject duplicates structurally — `axum`
+    /// would panic at registration). Type binding is always `Text`
+    /// in v1.38.5 (HTTP path-segment convention); a future Fase 37.z
+    /// may add per-placeholder type-override grammar `{tenant_id: Uuid}`.
+    ///
+    /// The Fase 37 D2 totality check (extended by 37.y D3) treats
+    /// every name here as covering an equivalent flow parameter
+    /// declared `Text`. Collision with a body field of the same name
+    /// is a compile error (`axon-T901`, D4).
+    pub path_params: Vec<String>,
+    /// §Fase 37.y (D2) — Query parameters declared via the inline
+    /// `query: { name: Type, name: Type? }` block on the endpoint.
+    /// Empty Vec when the source omits the block (D5 backwards-compat).
+    ///
+    /// Closed type catalog (parser-enforced):
+    /// `{Text, Int, Float, Bool, Uuid}`. The runtime receives every
+    /// query value as a textual `String` and binds it to the same-named
+    /// flow parameter; the closed catalog enables future per-type
+    /// parsing/validation without breaking the manifest format.
+    ///
+    /// The optional flag (`?` suffix in the source) reuses
+    /// `TypeExpr.optional`. An optional query param need not be
+    /// covered by a flow parameter (D3 totality is over required
+    /// params); a required query param missing from the flow signature
+    /// is a `axon-T?nn` future arm. For v1.38.5 the totality check
+    /// treats every query param as a binding-source candidate for any
+    /// same-named flow param.
+    ///
+    /// Reusing `TypeField` (shared with body type declarations) keeps
+    /// the D2 totality check uniform — the same `field.type_expr.name
+    /// == param.type_expr.name` comparator works for body fields AND
+    /// query params.
+    pub query_params: Vec<TypeField>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

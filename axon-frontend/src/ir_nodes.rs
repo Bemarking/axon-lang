@@ -570,7 +570,7 @@ pub struct IRMemory {
 
 // ── Type ─────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IRTypeField {
     pub node_type: &'static str,
     pub source_line: u32,
@@ -1372,6 +1372,23 @@ pub struct IRAxonEndpoint {
     pub timeout: String,
     /// §ESK Fase 6.1 — κ regulatory class on the boundary.
     pub compliance: Vec<String>,
+    /// §Fase 37.y (D1) — Path parameter names extracted from the
+    /// `path:` string. Mirrors `AxonEndpointDefinition.path_params`.
+    /// **`skip_serializing_if = Vec::is_empty`** so a pre-v1.38.5 IR
+    /// JSON snapshot (without the field) is byte-identical to a
+    /// v1.38.5 IR JSON for the same endpoint — D5 backwards-compat
+    /// absolute. The runtime + adopter tools that consume the IR
+    /// JSON parse `path_params` as an absent key → empty Vec via
+    /// serde's `default` semantics.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_params: Vec<String>,
+    /// §Fase 37.y (D2) — Query parameters from the inline
+    /// `query: { … }` block. Mirrors `AxonEndpointDefinition.query_params`
+    /// using `IRTypeField` (shared with body type fields → uniform
+    /// downstream tooling). **`skip_serializing_if = Vec::is_empty`**
+    /// — same D5 IR-JSON byte-identity guarantee as `path_params`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub query_params: Vec<IRTypeField>,
 }
 
 // ── §λ-L-E Fase 13 — Mobile Typed Channels IR ───────────────────────────────
