@@ -2183,6 +2183,16 @@ pub fn execute_server_flow(
     // Binding Contract) and seed each `ExecContext` before the step
     // walk. `None` for a caller with no request body (D5).
     request_body: Option<&serde_json::Value>,
+    // §Fase 37.y (D3) — the URL path captures (e.g. for
+    // `/api/tenants/{tenant_id}` the map is `{tenant_id: "acme"}`).
+    // Empty map for callers without a dynamic route (D5 backwards-
+    // compat). Passed to `bind_request` alongside `request_body`.
+    request_path: &std::collections::HashMap<String, String>,
+    // §Fase 37.y (D3) — the URL query string parsed into name → value.
+    // Single-value semantics in v1.38.5 (multi-value query keys
+    // deferred per plan vivo §7); axum's `Query<HashMap>` extractor
+    // provides this shape.
+    request_query: &std::collections::HashMap<String, String>,
 ) -> Result<ServerRunnerMetrics, String> {
     let mut target_run = None;
     for run in &ir.runs {
@@ -2206,10 +2216,18 @@ pub fn execute_server_flow(
             resolved_anchors: run.resolved_anchors.clone(),
             // §Fase 37.b (D1) — bind the request body to the resolved
             // flow's declared parameters.
+            // §Fase 37.y (D3) — extended to bind from path + query
+            // sources too; the runtime merge respects the D4
+            // compile-time collision rejection (axon-T901).
             param_bindings: run
                 .resolved_flow
                 .as_ref()
-                .map(|f| crate::request_binding::bind_request_body(f, request_body))
+                .map(|f| crate::request_binding::bind_request(
+                    f,
+                    request_path,
+                    request_query,
+                    request_body,
+                ))
                 .unwrap_or_default(),
         });
     } else {
@@ -2275,8 +2293,12 @@ pub fn execute_server_flow(
             resolved_anchors: run.resolved_anchors.clone(),
             // §Fase 37.b (D1) — bind the request body to the flow's
             // declared parameters (the dynamic-route execution path).
-            param_bindings: crate::request_binding::bind_request_body(
+            // §Fase 37.y (D3) — extended to bind from path + query
+            // sources too.
+            param_bindings: crate::request_binding::bind_request(
                 target_flow,
+                request_path,
+                request_query,
                 request_body,
             ),
         });
