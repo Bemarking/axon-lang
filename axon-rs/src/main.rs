@@ -49,6 +49,20 @@ enum Commands {
         /// removal (see docs/migration_fase_13.md).
         #[arg(long)]
         strict: bool,
+        /// §Fase 38.x.d (D3) — directory containing axon-schema
+        /// manifests (`.axon-schema.json`) for form (b) `manifest_ref`
+        /// and form (c) `env_var` compile-time proof. When set,
+        /// `axon check` loads + merges every manifest under the path
+        /// and feeds it to the type-checker via
+        /// `TypeChecker::with_manifest`. T801-T805 + T803 run against
+        /// the resolved column sets for non-inline schemas.
+        ///
+        /// Without this flag, forms (b)/(c) silently skip at compile
+        /// time exactly as in v1.38.3 (D5 backwards-compat absolute).
+        /// Mirror of `axon serve --schemas-dir` from Fase 38.j; the
+        /// runtime flag stays unchanged.
+        #[arg(long, env = "AXON_SCHEMAS_DIR")]
+        schemas_dir: Option<String>,
     },
     /// Compile an .axon file to IR JSON.
     Compile {
@@ -320,7 +334,9 @@ fn main() {
             println!("axon-lang {AXON_VERSION}");
             0
         }
-        Commands::Check { file, no_color, strict } => checker::run_check(&file, no_color, strict),
+        Commands::Check { file, no_color, strict, schemas_dir } => {
+            checker::run_check(&file, no_color, strict, schemas_dir.as_deref())
+        }
         Commands::Compile {
             file,
             backend,

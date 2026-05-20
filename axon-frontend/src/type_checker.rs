@@ -212,12 +212,18 @@ pub struct TypeChecker<'a> {
     /// TypeChecker.warnings property.
     warnings: Vec<TypeError>,
     /// §Fase 38.d (D2) — store-name → ColumnSet built from each
-    /// `axonstore` declaration that carries an INLINE `schema: { … }`
-    /// block. Forms (b) manifest_ref and (c) env_var are NOT populated
-    /// here; their compile-time proof needs filesystem context (the
-    /// `axon check` working dir → manifest discovery via §38.c). That
-    /// integration lands when the type-checker is invoked with a
-    /// source-file context (§38.h CLI + §38.j CI lane).
+    /// `axonstore` declaration's `schema:` declaration form.
+    ///
+    /// §Fase 38.x.d (D2) extends this to ALL THREE forms when a
+    /// `manifest` is supplied via [`TypeChecker::with_manifest`]:
+    /// form (a) inline (always populated, no manifest needed),
+    /// form (b) manifest_ref (populated from `manifest.lookup(qualified_name)`),
+    /// form (c) env_var (populated via first-match heuristic
+    /// `<env_var>.<store_name>` then fallback `*.<store_name>`).
+    ///
+    /// When no manifest is supplied (the v1.38.3 default), forms
+    /// (b)/(c) silently skip exactly as they did pre-v1.38.4 (D5
+    /// absolute backwards-compat).
     store_inline_column_sets:
         std::collections::HashMap<String, crate::store_column_proof::ColumnSet>,
     /// §Fase 38.d (D2) — the current flow's parameter-name → axon-
@@ -226,6 +232,12 @@ pub struct TypeChecker<'a> {
     /// `where:` clauses. Cleared between flows so a parameter in one
     /// flow cannot leak into the proof for another.
     current_flow_params: crate::store_column_proof::FlowParamTypes,
+    /// §Fase 38.x.d (D2) — optional manifest supplied at construction
+    /// for forms (b)/(c) compile-time proof. `None` means form (b)/(c)
+    /// silently skip (v1.38.3-compatible default). When `Some`, the
+    /// `register_declarations` pass uses it to populate
+    /// `store_inline_column_sets` for the non-inline forms.
+    manifest: Option<&'a crate::store_schema_manifest::Manifest>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -237,6 +249,34 @@ impl<'a> TypeChecker<'a> {
             warnings: Vec::new(),
             store_inline_column_sets: std::collections::HashMap::new(),
             current_flow_params: crate::store_column_proof::FlowParamTypes::new(),
+            manifest: None,
+        }
+    }
+
+    /// §Fase 38.x.d (D2) — construct a TypeChecker that consults the
+    /// supplied manifest when an `axonstore` declares its schema via
+    /// form (b) `manifest_ref` or form (c) `env_var`. Form (a) inline
+    /// is unaffected (populated identically with or without manifest).
+    ///
+    /// Adopters using `axon check --schemas-dir <path>` reach this
+    /// constructor via `axon-rs/src/main.rs::cmd_check`. Adopters
+    /// embedding the type-checker programmatically pass their own
+    /// `Manifest` (e.g. constructed from `load_and_merge_manifests`).
+    ///
+    /// When `manifest` is None, behavior is byte-identical to
+    /// [`Self::new`] (D5 backwards-compat absolute).
+    pub fn with_manifest(
+        program: &'a Program,
+        manifest: &'a crate::store_schema_manifest::Manifest,
+    ) -> Self {
+        TypeChecker {
+            program,
+            symbols: SymbolTable::new(),
+            errors: Vec::new(),
+            warnings: Vec::new(),
+            store_inline_column_sets: std::collections::HashMap::new(),
+            current_flow_params: crate::store_column_proof::FlowParamTypes::new(),
+            manifest: Some(manifest),
         }
     }
 
@@ -424,15 +464,86 @@ impl<'a> TypeChecker<'a> {
                     // §Fase 38.d (D2) — when this axonstore carries an
                     // INLINE `schema: { … }` block, build its ColumnSet
                     // now so `check_flow_steps` can prove `where:`
-                    // clauses against it. Forms (b)/(c) need filesystem
-                    // context (38.h/38.j) and are silently skipped at
-                    // this layer — the deploy-time D8 (38.f) is their
-                    // gate.
+                    // clauses against it.
+                    //
+                    // §Fase 38.x.d (D2, D4) — when this axonstore uses
+                    // form (b) `manifest_ref` OR form (c) `env_var`
+                    // AND `self.manifest` is set (the adopter passed
+                    // `--schemas-dir <path>` to `axon check`), resolve
+                    // the manifest entry NOW and populate the same
+                    // `store_inline_column_sets` HashMap. The
+                    // downstream proof paths (T801-T805 + T803) read
+                    // from the HashMap uniformly — no code-path
+                    // divergence between inline and manifest-loaded
+                    // forms.
+                    //
+                    // Without `--schemas-dir`, `self.manifest` is None
+                    // and forms (b)/(c) silently skip exactly as they
+                    // did in v1.38.3 (D5 backwards-compat absolute).
                     if let Some(schema) = &n.column_schema {
-                        if let Some(cs) =
-                            crate::store_column_proof::ColumnSet::from_inline_schema(schema)
-                        {
-                            self.store_inline_column_sets.insert(n.name.clone(), cs);
+                        match schema {
+                            crate::store_schema::StoreColumnSchema::Inline { .. } => {
+                                if let Some(cs) =
+                                    crate::store_column_proof::ColumnSet::from_inline_schema(
+                                        schema,
+                                    )
+                                {
+                                    self.store_inline_column_sets
+                                        .insert(n.name.clone(), cs);
+                                }
+                            }
+                            crate::store_schema::StoreColumnSchema::ManifestRef {
+                                qualified_name,
+                                ..
+                            } => {
+                                if let Some(manifest) = self.manifest {
+                                    if let Some(ms) = manifest.lookup(qualified_name) {
+                                        let cs =
+                                            crate::store_column_proof::ColumnSet::from_manifest_store(
+                                                ms,
+                                            );
+                                        self.store_inline_column_sets
+                                            .insert(n.name.clone(), cs);
+                                    }
+                                }
+                            }
+                            crate::store_schema::StoreColumnSchema::EnvVar {
+                                var_name,
+                                ..
+                            } => {
+                                if let Some(manifest) = self.manifest {
+                                    // First-match heuristic mirrors
+                                    // §Fase 38.d's `load_columns_for_schema`
+                                    // + §Fase 38.f's `declared_columns_for`:
+                                    // try exact `<var_name>.<store_name>`
+                                    // first, then fall back to any
+                                    // `*.<store_name>` (the manifest
+                                    // ships the same shape for every
+                                    // per-tenant namespace).
+                                    let exact_key = format!("{}.{}", var_name, n.name);
+                                    let resolved = manifest
+                                        .lookup(&exact_key)
+                                        .or_else(|| {
+                                            // Suffix scan — find any
+                                            // store ending in `.<n.name>`.
+                                            let suffix = format!(".{}", n.name);
+                                            for (key, store) in &manifest.stores {
+                                                if key.ends_with(&suffix) {
+                                                    return Some(store);
+                                                }
+                                            }
+                                            None
+                                        });
+                                    if let Some(ms) = resolved {
+                                        let cs =
+                                            crate::store_column_proof::ColumnSet::from_manifest_store(
+                                                ms,
+                                            );
+                                        self.store_inline_column_sets
+                                            .insert(n.name.clone(), cs);
+                                    }
+                                }
+                            }
                         }
                     }
                 }

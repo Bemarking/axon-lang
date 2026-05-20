@@ -1,10 +1,10 @@
 [package]
 name = "axon-frontend"
-version = "0.19.1"
+version = "0.19.2"
 edition = "2021"
 rust-version = "1.95"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
-description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator. Zero runtime dependencies. v0.19.1 adds IDENTITY column recognition — `GENERATED ALWAYS/BY DEFAULT AS IDENTITY` columns parsed via `pg_attribute.attidentity`; T803 NOT-NULL-omission proof skips identity columns since Postgres auto-fills them (Fase 38.x.c). v0.19.0 adds the Declared & Compile-Time-Typed Store Schema — `axonstore` declares columns inline/by-manifest/per-tenant; `axon check` proves every where/persist/mutate/purge with 6 error codes (T801–T805 + T807) plus Levenshtein suggestions (Fase 38). v0.18.0 the Request Binding Contract totality check (Fase 37). v0.17.0 `in_memory` axonstore backend (Fase 36.x). v0.12.0 wire-format adapter. v0.11.0 Fase 32 REST. v0.10.0 type-driven wire. v0.9.0 HTTP. v0.2.0–v0.8.0 earlier cycles."
+description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator. Zero runtime dependencies. v0.19.2 closes IDENTITY recognition end-to-end at compile time: inline parser accepts `identity` keyword + `TypeChecker::with_manifest` consults the manifest for forms (b) `manifest_ref` and (c) `env_var` so T801-T805 fire compile-time on those forms too (Fase 38.x.d). v0.19.1 plumbed `identity: bool` through the AST + manifest + introspect (Fase 38.x.c). v0.19.0 the Declared & Compile-Time-Typed Store Schema (Fase 38). v0.18.0 Request Binding Contract totality (Fase 37). v0.17.0 `in_memory` axonstore (Fase 36.x). v0.12.0 wire-format adapter. v0.11.0 Fase 32 REST. v0.10.0 type-driven wire. v0.9.0 HTTP. v0.2.0–v0.8.0 earlier cycles."
 license = "MIT"
 repository = "https://github.com/Bemarking/axon-lang"
 readme = "README.md"

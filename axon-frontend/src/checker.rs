@@ -70,7 +70,12 @@ fn count_declarations(decls: &[Declaration]) -> usize {
 ///
 /// `strict = true` (Fase 13.e D4) promotes warnings (e.g. legacy
 /// string-topic listeners) to errors so the check exits non-zero.
-pub fn run_check(file: &str, no_color: bool, strict: bool) -> i32 {
+pub fn run_check(
+    file: &str,
+    no_color: bool,
+    strict: bool,
+    schemas_dir: Option<&str>,
+) -> i32 {
     let use_color = !no_color && io::stdout().is_terminal();
     let c = Colors::new(use_color);
 
@@ -137,7 +142,32 @@ pub fn run_check(file: &str, no_color: bool, strict: bool) -> i32 {
     let declaration_count = count_declarations(&program.declarations);
 
     // ── 6. Type check ────────────────────────────────────────────
-    let (type_errors, type_warnings) = TypeChecker::new(&program).check_with_warnings();
+    // §Fase 38.x.d (D2, D3) — when `--schemas-dir <path>` is supplied
+    // (or `AXON_SCHEMAS_DIR` env var), load + merge every
+    // `.axon-schema.json` under the path and feed the resulting
+    // `Manifest` to the type-checker. T801-T805 + T803 run against
+    // forms (b) `manifest_ref` and (c) `env_var` exactly as they do
+    // for form (a) inline. Without the flag, behavior is byte-
+    // identical to v1.38.3 (D5 backwards-compat absolute).
+    let manifest_owned: Option<crate::store_schema_manifest::Manifest> = match schemas_dir {
+        Some(path) if !path.trim().is_empty() => {
+            match crate::store_schema_manifest::load_and_merge_manifests(Path::new(path)) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    eprintln!(
+                        "{}X {filename}{}  schemas-dir load error: {e}",
+                        c.red_bold, c.reset
+                    );
+                    return 1;
+                }
+            }
+        }
+        _ => None,
+    };
+    let (type_errors, type_warnings) = match &manifest_owned {
+        Some(m) => TypeChecker::with_manifest(&program, m).check_with_warnings(),
+        None => TypeChecker::new(&program).check_with_warnings(),
+    };
 
     if !type_errors.is_empty() {
         eprintln!(
