@@ -150,6 +150,19 @@ pub enum StoreError {
     /// parse/plan-time rejection, so the failed statement had ZERO side
     /// effects (a retried `persist`/`mutate` cannot double-write).
     SchemaDrift { op: &'static str, sqlstate: String, source: String },
+    /// §Fase 38.f (D3) — `axon-T806`. A `postgresql` store declared
+    /// `schema: env:VAR` and the named env var is unset at deploy
+    /// time. Never falls back silently — the deploy fails, the
+    /// operator either exports the var or fixes the declaration.
+    MissingPerTenantSchemaEnv { store: String, var: String },
+    /// §Fase 38.f (D8 strengthening) — `axon-T807`. A declared column
+    /// schema and the live introspected columns disagree at deploy
+    /// time. Carries a human-readable drift summary (which columns
+    /// are missing on the live DB, which have a type mismatch). The
+    /// remedy is named in the message: run `axon store introspect
+    /// <store>` to refresh the manifest, run the missing migration,
+    /// or fix the declaration.
+    DeclaredVsLiveDrift { store: String, drift: String },
 }
 
 impl fmt::Display for StoreError {
@@ -227,6 +240,26 @@ impl fmt::Display for StoreError {
                 f,
                 "axonstore `{op}` hit live schema drift (SQLSTATE \
                  {sqlstate}) — the cached schema is stale: {source}"
+            ),
+            StoreError::MissingPerTenantSchemaEnv { store, var } => write!(
+                f,
+                "axon-T806 axonstore `{store}` declares `schema: env:{var}` \
+                 but environment variable `{var}` is not set at deploy \
+                 time. The per-tenant schema namespace is required to \
+                 resolve the store's column manifest entry. Either \
+                 export `{var}` with the SQL schema name (e.g. \
+                 `tenant_42`), or declare the schema differently \
+                 (inline `schema {{ … }}` block, or manifest reference \
+                 `schema: \"qualified.name\"`). Never a silent fallback."
+            ),
+            StoreError::DeclaredVsLiveDrift { store, drift } => write!(
+                f,
+                "axon-T807 axonstore `{store}` declared column schema \
+                 disagrees with the live database: {drift}. The deploy \
+                 fails fail-closed (D8 strengthening). Remedy: run `axon \
+                 store introspect {store}` to refresh the manifest, run \
+                 the missing migration on the database, or fix the \
+                 declared `schema:` block to match the live shape."
             ),
         }
     }
@@ -317,11 +350,39 @@ fn mask_dsn(dsn: &str) -> String {
 /// stamped name is exactly what a DBA sees — never a server-mangled
 /// suffix.
 fn application_name_for(store_name: &str) -> String {
+    application_name_for_with_namespace(store_name, None)
+}
+
+/// §Fase 38.f (D3) — `application_name` stamping that optionally
+/// carries a resolved per-tenant schema namespace (Gap-3 inheritance):
+///
+///   * `application_name_for_with_namespace("claims", None)` →
+///     `"axon-store/claims"` (the existing v1.36.3 shape — preserved
+///     byte-for-byte for non-namespace stores).
+///   * `application_name_for_with_namespace("claims", Some("tenant_42"))`
+///     → `"axon-store/claims/tenant_42"`.
+///
+/// A DBA reading `pg_stat_activity` or pooler logs sees both the
+/// `axonstore` declaration AND the tenant namespace at a glance —
+/// triaging a multi-tenant slow query stops requiring a join through
+/// adopter telemetry.
+///
+/// Total + bounded: caps the result at `NAMEDATALEN - 1` (63 bytes)
+/// on a UTF-8 char boundary, as v1.36.3 already does, so the stamped
+/// name is exactly what Postgres records.
+pub(crate) fn application_name_for_with_namespace(
+    store_name: &str,
+    namespace: Option<&str>,
+) -> String {
     const MAX: usize = 63;
-    let full = if store_name.is_empty() {
+    let base = if store_name.is_empty() {
         "axon-store".to_string()
     } else {
         format!("axon-store/{store_name}")
+    };
+    let full = match namespace {
+        Some(ns) if !ns.is_empty() => format!("{base}/{ns}"),
+        _ => base,
     };
     if full.len() <= MAX {
         return full;
@@ -1160,6 +1221,25 @@ impl PostgresStoreBackend {
         connection: &str,
         store_name: &str,
     ) -> Result<Self, StoreError> {
+        Self::connect_named_with_namespace(connection, store_name, None)
+    }
+
+    /// §Fase 38.f (D3) — same as [`Self::connect_named`] but stamps an
+    /// OPTIONAL per-tenant schema namespace into `application_name`.
+    ///
+    /// `connect_named_with_namespace("env:DB", "claims", Some("tenant_42"))`
+    /// produces a pool whose every session's `application_name` reads
+    /// `axon-store/claims/tenant_42` — so a DBA reading
+    /// `pg_stat_activity`, pooler logs, or RDS Performance Insights
+    /// sees both the `axonstore` declaration AND the resolved tenant.
+    ///
+    /// `None` for `namespace` is the pre-38 shape (`axon-store/<store>`,
+    /// byte-identical to `connect_named`).
+    pub fn connect_named_with_namespace(
+        connection: &str,
+        store_name: &str,
+        namespace: Option<&str>,
+    ) -> Result<Self, StoreError> {
         let dsn = resolve_dsn(connection)?;
         let opts = PgConnectOptions::from_str(&dsn)
             .map_err(|e| StoreError::PoolInit {
@@ -1167,7 +1247,9 @@ impl PostgresStoreBackend {
                 source: e.to_string(),
             })?
             .statement_cache_capacity(0)
-            .application_name(&application_name_for(store_name));
+            .application_name(&application_name_for_with_namespace(
+                store_name, namespace,
+            ));
         let pool = PgPoolOptions::new()
             .max_connections(MAX_POOL_CONNECTIONS)
             .min_connections(0)
