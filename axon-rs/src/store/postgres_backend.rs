@@ -337,6 +337,13 @@ fn mask_dsn(dsn: &str) -> String {
     dsn.to_string()
 }
 
+/// §Fase 38.h — public alias of [`mask_dsn`] so the introspection
+/// CLI (`store::introspect_cli`) can render error messages with
+/// masked credentials without re-implementing the routine.
+pub fn mask_dsn_pub(dsn: &str) -> String {
+    mask_dsn(dsn)
+}
+
 /// The `application_name` stamped on an axonstore's Postgres
 /// connections (Gap 3 bonus, v1.36.3).
 ///

@@ -246,6 +246,49 @@ enum Commands {
         #[arg(long, default_value = "")]
         note: String,
     },
+    /// §Fase 38.h (D10) — `axonstore` schema introspection / manifest export.
+    Store {
+        #[command(subcommand)]
+        action: StoreCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum StoreCommands {
+    /// Introspect one (or more) `postgresql` axonstore's live schema
+    /// and emit a canonical `.axon-schema.json` manifest. The manifest
+    /// is the §Fase 38.c durable contract between an adopter's
+    /// `schema: "qualified.name"` (form b) / `schema: env:VAR` (form
+    /// c) declaration and the columns the type-checker proves against
+    /// (38.d / 38.e). Unmappable Postgres types (`enum`, `domain`,
+    /// array, `citext`, PostGIS, custom composites) are HONESTLY
+    /// omitted with a `# omitted: …` comment line — NEVER silently
+    /// lossily mapped (D10 / D6).
+    Introspect {
+        /// Store names to introspect. At least one required.
+        #[arg(required = true)]
+        store_names: Vec<String>,
+        /// Postgres connection string OR `env:VAR`. (The runtime's
+        /// `resolve_dsn` accepts both shapes.)
+        #[arg(long)]
+        connection: String,
+        /// Optional path to write the manifest. When omitted, the
+        /// manifest is written to stdout.
+        #[arg(long)]
+        output: Option<String>,
+        /// Optional path to an existing manifest. When set, the CLI
+        /// emits a structural diff instead of the new manifest —
+        /// added/removed columns + type changes + constraint flips.
+        #[arg(long)]
+        diff: Option<String>,
+        /// §Fase 38.h forward-compat — `--json` is the default + only
+        /// supported output format today; `--yaml` (a future
+        /// `yaml-manifest` Cargo feature) is documented in §38.c.2.
+        /// Accepting the flag now so adopters can pin it before YAML
+        /// support lands.
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -367,7 +410,116 @@ fn main() {
         Commands::EvidencePackage { file, output, note } => {
             audit_cli::run_evidence_package(&file, output.as_deref(), &note)
         }
+        Commands::Store { action } => run_store_command(action),
     };
 
     process::exit(exit_code);
+}
+
+/// §Fase 38.h (D10) — `axon store …` subcommand dispatcher. Spins a
+/// one-shot Tokio runtime (the CLI runs in a sync `fn main`; the
+/// introspection uses `sqlx::PgConnection` which is async).
+fn run_store_command(action: StoreCommands) -> i32 {
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("axon-lang: failed to start async runtime: {e}");
+            return 2;
+        }
+    };
+    match action {
+        StoreCommands::Introspect {
+            store_names,
+            connection,
+            output,
+            diff,
+            format,
+        } => {
+            if format != "json" {
+                eprintln!(
+                    "axon-lang: `--format {format}` is not yet supported. \
+                     v1.38.0 ships canonical JSON only; YAML (`--format \
+                     yaml`) is committed for a 38.c.2 follow-on behind \
+                     the `yaml-manifest` Cargo feature."
+                );
+                return 2;
+            }
+            runtime.block_on(async move {
+                run_store_introspect(&store_names, &connection, output.as_deref(), diff.as_deref())
+                    .await
+            })
+        }
+    }
+}
+
+/// The actual introspection + emission. Returns the process exit code.
+async fn run_store_introspect(
+    store_names: &[String],
+    connection: &str,
+    output: Option<&str>,
+    diff_path: Option<&str>,
+) -> i32 {
+    use axon::store::introspect_cli::{
+        introspect_stores, render_introspection_output,
+    };
+    use axon::store_introspect::{format_manifest_diff, manifest_diff};
+    use axon::store_schema_manifest::Manifest;
+
+    let (manifest, omissions) = match introspect_stores(connection, store_names).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("axon-lang: introspection failed — {e}");
+            return 1;
+        }
+    };
+
+    // — Diff mode: compare against an existing manifest. —
+    if let Some(existing_path) = diff_path {
+        let existing_src = match std::fs::read_to_string(existing_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "axon-lang: failed to read existing manifest at \
+                     `{existing_path}`: {e}"
+                );
+                return 1;
+            }
+        };
+        let existing = match Manifest::parse_json(&existing_src) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!(
+                    "axon-lang: failed to parse existing manifest at \
+                     `{existing_path}` — {e}"
+                );
+                return 1;
+            }
+        };
+        let diff = manifest_diff(&existing, &manifest);
+        if diff.is_empty() {
+            println!("manifest is up to date — no drift between live database and `{existing_path}`.");
+            return 0;
+        }
+        print!("{}", format_manifest_diff(&diff));
+        for omission in &omissions {
+            println!("{}", omission.as_comment_line());
+        }
+        return 0;
+    }
+
+    // — Default mode: emit the manifest. —
+    let rendered = render_introspection_output(&manifest, &omissions);
+    match output {
+        Some(path) => match std::fs::write(path, &rendered) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("axon-lang: failed to write manifest to `{path}`: {e}");
+                1
+            }
+        },
+        None => {
+            println!("{rendered}");
+            0
+        }
+    }
 }

@@ -23,6 +23,7 @@ pub mod audit_chain;
 pub mod capability;
 pub mod epistemic;
 pub mod filter;
+pub mod introspect_cli;
 pub mod postgres_backend;
 pub mod registry;
 pub mod row_stream;
