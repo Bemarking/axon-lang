@@ -714,6 +714,13 @@ pub(crate) async fn introspect_conn(
     table: &str,
 ) -> Result<std::sync::Arc<ResolvedTable>, StoreError> {
     // — Stage 1: primary, search-path-correct via `to_regclass`. —
+    // §Fase 38.x.a (D1) — `.persistent(false)` issues an UNNAMED PARSE
+    // (empty name `""`), which Postgres auto-discards/replaces on the
+    // next unnamed PARSE — structurally collision-free behind every
+    // transaction-mode pooler. Setting `statement_cache_capacity(0)`
+    // on the pool's `PgConnectOptions` is necessary but NOT sufficient;
+    // sqlx's named PARSE protocol (`sqlx_s_N`) leaks across logical
+    // sessions when the physical conn behind the pooler is reused.
     let primary = sqlx::query(
         "SELECT n.nspname AS schema_name, a.attname AS column_name, \
          t.typname AS type_name \
@@ -724,6 +731,7 @@ pub(crate) async fn introspect_conn(
          WHERE c.oid = to_regclass($1) \
            AND a.attnum > 0 AND NOT a.attisdropped",
     )
+    .persistent(false)
     .bind(format!("\"{table}\""))
     .fetch_all(&mut *conn)
     .await
@@ -753,6 +761,7 @@ pub(crate) async fn introspect_conn(
                    AND n.nspname <> 'information_schema' \
                    AND a.attnum > 0 AND NOT a.attisdropped",
             )
+            .persistent(false)
             .bind(table)
             .fetch_all(&mut *conn)
             .await
@@ -1257,11 +1266,46 @@ impl PostgresStoreBackend {
             .application_name(&application_name_for_with_namespace(
                 store_name, namespace,
             ));
+        // §Fase 38.x.a (D2) — `DEALLOCATE ALL` on every released conn.
+        //
+        // This is the SECOND layer of pooler-coherent transaction safety,
+        // composing with the per-query `.persistent(false)` (D1). If a
+        // future code path accidentally omits `.persistent(false)`, the
+        // named prepared statement it allocated would otherwise survive
+        // on the physical Postgres conn across logical sessions through a
+        // transaction-mode pooler (Supabase Supavisor `:6543`, PgBouncer
+        // `pool_mode=transaction`, Neon, RDS Proxy). The next logical
+        // session that lands on the same physical conn would collide on
+        // `PARSE sqlx_s_N` → Postgres `42710` `duplicate_prepared_statement`.
+        //
+        // Running `DEALLOCATE ALL` on `after_release` wipes every prepared
+        // statement (named + unnamed) from the physical conn BEFORE the
+        // pooler returns it to its pool. Belt-and-suspenders: D1 prevents
+        // the bug at the source; D2 catches anything that slips past.
+        //
+        // The cleanup query itself uses `.persistent(false)` — the
+        // meta-invariant: even the cleanup is unnamed, so no prepared
+        // statement can ever survive a connection release.
         let pool = PgPoolOptions::new()
             .max_connections(MAX_POOL_CONNECTIONS)
             .min_connections(0)
             .acquire_timeout(Duration::from_secs(ACQUIRE_TIMEOUT_SECS))
             .idle_timeout(Duration::from_secs(IDLE_TIMEOUT_SECS))
+            .after_release(|conn, _meta| Box::pin(async move {
+                // `DEALLOCATE ALL` clears every prepared statement —
+                // named (`sqlx_s_N`) AND unnamed (`""`) — from the
+                // physical Postgres connection. Cheap (<1ms typically).
+                sqlx::query("DEALLOCATE ALL")
+                    .persistent(false)
+                    .execute(&mut *conn)
+                    .await?;
+                // `Ok(true)` keeps the conn alive in the pool for reuse.
+                // We never drop a conn on `DEALLOCATE` failure because a
+                // failure here means something more fundamental is wrong
+                // (lost socket, server-side crash); the next acquire will
+                // surface the real error.
+                Ok(true)
+            }))
             .connect_lazy_with(opts);
         Ok(Self { dsn, pool })
     }
@@ -1304,7 +1348,8 @@ impl PostgresStoreBackend {
                 bindings,
                 &resolved.column_types,
             )?;
-            let mut q = sqlx::query(&sql);
+            // §Fase 38.x.a (D1) — see `introspect_conn` for the full rationale.
+            let mut q = sqlx::query(&sql).persistent(false);
             for value in &params {
                 q = bind_value(q, value);
             }
@@ -1331,13 +1376,40 @@ impl PostgresStoreBackend {
         let no_types = std::collections::HashMap::new();
         // §37.x.h / D6 surfaces a resolution failure; here it degrades
         // to an un-qualified bare table + empty type map.
+        // §Fase 38.x.a (D3) — emit the PRIMARY introspection error as a
+        // structured `tracing::warn!` BEFORE the fall-through. Without
+        // this log, the adopter sees only the SECONDARY cascade error
+        // (typically `25P02 in_failed_sql_transaction` or `42703 column
+        // does not exist`) and has no way to diagnose what actually failed.
         let (schema, column_types) = match &resolved {
             Ok(r) => (Some(r.schema.as_str()), &r.column_types),
-            Err(_) => (None, &no_types),
+            Err(e) => {
+                tracing::warn!(
+                    target: "axon::store",
+                    table = %table,
+                    op = "introspect_in_tx",
+                    error = %e,
+                    d_letter = "D3+38.x.a",
+                    "store introspection failed inside the operation \
+                     transaction; falling back to bare-table SQL — the \
+                     operation will likely fail with the same root cause. \
+                     If the error mentions `prepared statement \"sqlx_s_N\" \
+                     already exists`, the deployment is behind a \
+                     transaction-mode pooler and this axon-lang version \
+                     should already mitigate via `.persistent(false)` (D1) \
+                     + `DEALLOCATE ALL` after release (D2); check the \
+                     pooler logs."
+                );
+                (None, &no_types)
+            }
         };
         let (sql, params) =
             build_select_sql(table, schema, where_expr, bindings, column_types)?;
-        let mut q = sqlx::query(&sql);
+        // §Fase 38.x.a (D1) — `.persistent(false)` is mandatory inside the
+        // `pool.begin()` transaction: the named PARSE protocol leaks across
+        // logical sessions when the physical conn behind the pooler is
+        // reused. See `introspect_conn` for the full rationale.
+        let mut q = sqlx::query(&sql).persistent(false);
         for value in &params {
             q = bind_value(q, value);
         }
@@ -1455,7 +1527,8 @@ impl PostgresStoreBackend {
                 data,
                 &resolved.column_types,
             )?;
-            let mut q = sqlx::query(&sql);
+            // §Fase 38.x.a (D1) — see `introspect_conn` for the full rationale.
+            let mut q = sqlx::query(&sql).persistent(false);
             for value in &params {
                 q = bind_value(q, value);
             }
@@ -1481,12 +1554,26 @@ impl PostgresStoreBackend {
         })?;
         let resolved = introspect_conn(&mut tx, table).await;
         let no_types = std::collections::HashMap::new();
+        // §Fase 38.x.a (D3) — see `query()` above for the full rationale.
         let (schema, column_types) = match &resolved {
             Ok(r) => (Some(r.schema.as_str()), &r.column_types),
-            Err(_) => (None, &no_types),
+            Err(e) => {
+                tracing::warn!(
+                    target: "axon::store",
+                    table = %table,
+                    op = "introspect_in_tx_persist",
+                    error = %e,
+                    d_letter = "D3+38.x.a",
+                    "store introspection failed inside the persist \
+                     transaction; falling back to bare-table INSERT — \
+                     the persist will likely fail with the same root cause."
+                );
+                (None, &no_types)
+            }
         };
         let (sql, params) = build_insert_sql(table, schema, data, column_types)?;
-        let mut q = sqlx::query(&sql);
+        // §Fase 38.x.a (D1) — mandatory inside the `pool.begin()` tx.
+        let mut q = sqlx::query(&sql).persistent(false);
         for value in &params {
             q = bind_value(q, value);
         }
@@ -1525,7 +1612,8 @@ impl PostgresStoreBackend {
                 bindings,
                 &resolved.column_types,
             )?;
-            let mut q = sqlx::query(&sql);
+            // §Fase 38.x.a (D1) — see `introspect_conn` for the full rationale.
+            let mut q = sqlx::query(&sql).persistent(false);
             for value in &params {
                 q = bind_value(q, value);
             }
@@ -1551,14 +1639,28 @@ impl PostgresStoreBackend {
         })?;
         let resolved = introspect_conn(&mut tx, table).await;
         let no_types = std::collections::HashMap::new();
+        // §Fase 38.x.a (D3) — see `query()` above for the full rationale.
         let (schema, column_types) = match &resolved {
             Ok(r) => (Some(r.schema.as_str()), &r.column_types),
-            Err(_) => (None, &no_types),
+            Err(e) => {
+                tracing::warn!(
+                    target: "axon::store",
+                    table = %table,
+                    op = "introspect_in_tx_mutate",
+                    error = %e,
+                    d_letter = "D3+38.x.a",
+                    "store introspection failed inside the mutate \
+                     transaction; falling back to bare-table UPDATE — \
+                     the mutate will likely fail with the same root cause."
+                );
+                (None, &no_types)
+            }
         };
         let (sql, params) = build_update_sql(
             table, schema, where_expr, data, bindings, column_types,
         )?;
-        let mut q = sqlx::query(&sql);
+        // §Fase 38.x.a (D1) — mandatory inside the `pool.begin()` tx.
+        let mut q = sqlx::query(&sql).persistent(false);
         for value in &params {
             q = bind_value(q, value);
         }
@@ -1595,7 +1697,8 @@ impl PostgresStoreBackend {
                 bindings,
                 &resolved.column_types,
             )?;
-            let mut q = sqlx::query(&sql);
+            // §Fase 38.x.a (D1) — see `introspect_conn` for the full rationale.
+            let mut q = sqlx::query(&sql).persistent(false);
             for value in &params {
                 q = bind_value(q, value);
             }
@@ -1621,13 +1724,27 @@ impl PostgresStoreBackend {
         })?;
         let resolved = introspect_conn(&mut tx, table).await;
         let no_types = std::collections::HashMap::new();
+        // §Fase 38.x.a (D3) — see `query()` above for the full rationale.
         let (schema, column_types) = match &resolved {
             Ok(r) => (Some(r.schema.as_str()), &r.column_types),
-            Err(_) => (None, &no_types),
+            Err(e) => {
+                tracing::warn!(
+                    target: "axon::store",
+                    table = %table,
+                    op = "introspect_in_tx_purge",
+                    error = %e,
+                    d_letter = "D3+38.x.a",
+                    "store introspection failed inside the purge \
+                     transaction; falling back to bare-table DELETE — \
+                     the purge will likely fail with the same root cause."
+                );
+                (None, &no_types)
+            }
         };
         let (sql, params) =
             build_delete_sql(table, schema, where_expr, bindings, column_types)?;
-        let mut q = sqlx::query(&sql);
+        // §Fase 38.x.a (D1) — mandatory inside the `pool.begin()` tx.
+        let mut q = sqlx::query(&sql).persistent(false);
         for value in &params {
             q = bind_value(q, value);
         }
@@ -1646,7 +1763,13 @@ impl PostgresStoreBackend {
 
     /// Verify database reachability with `SELECT 1`.
     pub async fn ping(&self) -> Result<(), StoreError> {
+        // §Fase 38.x.a (D1) — even the trivial reachability probe carries
+        // `.persistent(false)`: a `SELECT 1` PARSE collision is rare but
+        // possible behind an aggressive transaction-mode pooler, and the
+        // grep §-assertion in `fase38x_a_pooler_prepared_statement_regression.rs`
+        // enforces the invariant uniformly.
         sqlx::query("SELECT 1")
+            .persistent(false)
             .execute(&self.pool)
             .await
             .map(|_| ())
