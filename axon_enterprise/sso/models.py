@@ -195,7 +195,7 @@ class SsoAssertionSeen(Base):
     tenant_id: Mapped[str] = mapped_column(
         String(64),
         ForeignKey(
-            "public.tenants.tenant_id",
+            "axon_admin.tenants.tenant_id",
             ondelete="CASCADE",
             onupdate="CASCADE",
         ),

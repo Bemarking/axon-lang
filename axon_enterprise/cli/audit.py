@@ -38,7 +38,7 @@ def verify(
                 tenants = [tenant_id]
             else:
                 rows = (
-                    await db.execute(text("SELECT tenant_id FROM public.tenants"))
+                    await db.execute(text("SELECT tenant_id FROM axon_admin.tenants"))
                 ).all()
                 tenants = [r[0] for r in rows]
 

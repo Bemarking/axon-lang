@@ -71,7 +71,7 @@ focused on intent, not formatting.
 
 Every tenant-scoped table carries:
 
-- `tenant_id TEXT NOT NULL REFERENCES public.tenants(tenant_id)`
+- `tenant_id TEXT NOT NULL REFERENCES axon_admin.tenants(tenant_id)`
 - RLS enabled **and forced** (`FORCE ROW LEVEL SECURITY`)
 - Two policies emitted by `rls_policies.full_policy_set_sql()`:
   - `tenant_isolation` — `tenant_id = current_setting('axon.current_tenant', true)`
@@ -147,7 +147,7 @@ Sampling to a metrics backend happens in Fase 10.i.
 ## Testing
 
 Integration tests spin up an ephemeral Postgres 16 via testcontainers.
-The session-scoped fixture applies a minimal `public.tenants` seed
+The session-scoped fixture applies a minimal `axon_admin.tenants` seed
 (standing in for the Rust M1 migration) and runs `alembic upgrade head`
 before yielding a live engine. Tests are selected with:
 

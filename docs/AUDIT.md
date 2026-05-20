@@ -32,7 +32,7 @@ that refuse any UPDATE or DELETE at the storage layer.
 ```
 axon_control.audit_events
     event_id         UUID PK
-    tenant_id        TEXT FK → public.tenants
+    tenant_id        TEXT FK → axon_admin.tenants
     sequence_number  BIGINT  (monotonic per tenant, starts at 1)
     event_type       TEXT    (AuditEventType enum — see below)
     actor_user_id    UUID?

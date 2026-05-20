@@ -57,7 +57,7 @@ async def _clean_slate(migrated_db: AsyncEngine) -> AsyncIterator[None]:
             # Remove test tenants (keep the three seeded by Rust fixture).
             await session.execute(
                 text(
-                    "DELETE FROM public.tenants WHERE tenant_id NOT IN "
+                    "DELETE FROM axon_admin.tenants WHERE tenant_id NOT IN "
                     "('default', 'alpha', 'beta')"
                 )
             )

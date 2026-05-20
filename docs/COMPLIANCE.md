@@ -24,7 +24,7 @@ residency, legal holds, and SOC 2 evidence bundle generation.
   Partial index on `(status, scheduled_for)` keeps worker claims fast.
 - `axon_control.legal_holds` — at most one ACTIVE hold per
   `(tenant_id, subject_email)` enforced by a partial unique index.
-- `public.tenants.data_region` — region slug consumed by the
+- `axon_admin.tenants.data_region` — region slug consumed by the
   residency middleware; default `us-east-1`.
 
 ## Subject Access Request (GDPR Art. 15)

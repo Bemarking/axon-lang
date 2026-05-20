@@ -28,7 +28,7 @@ async def session_probe(migrated_db: AsyncEngine) -> AsyncIterator[str]:
                 f"""
                 CREATE TABLE axon_control.{table} (
                     item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    tenant_id TEXT NOT NULL REFERENCES public.tenants(tenant_id),
+                    tenant_id TEXT NOT NULL REFERENCES axon_admin.tenants(tenant_id),
                     payload TEXT NOT NULL
                 );
                 """

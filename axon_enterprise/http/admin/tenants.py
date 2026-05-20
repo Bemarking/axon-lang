@@ -46,7 +46,7 @@ async def _create_tenant(request: Request) -> JSONResponse:
     async with admin_session() as db:
         # Does a tenant by this slug already exist?
         existing = await db.execute(
-            text("SELECT tenant_id FROM public.tenants WHERE tenant_id = :s"),
+            text("SELECT tenant_id FROM axon_admin.tenants WHERE tenant_id = :s"),
             {"s": slug},
         )
         if existing.scalar() is not None:
@@ -64,7 +64,7 @@ async def _create_tenant(request: Request) -> JSONResponse:
         # Create the tenants row (in public schema — owned by the Rust plane).
         await db.execute(
             text(
-                "INSERT INTO public.tenants (tenant_id, name, plan, status) "
+                "INSERT INTO axon_admin.tenants (tenant_id, name, plan, status) "
                 "VALUES (:s, :n, :p, 'active')"
             ),
             {"s": slug, "n": name, "p": plan_id},
@@ -123,7 +123,7 @@ async def _list_tenants(request: Request) -> JSONResponse:
     async with admin_session() as db:
         stmt = text(
             "SELECT tenant_id, name, plan, status, created_at "
-            "FROM public.tenants "
+            "FROM axon_admin.tenants "
             + ("WHERE status = :status " if status_filter else "")
             + "ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
         )
@@ -133,7 +133,7 @@ async def _list_tenants(request: Request) -> JSONResponse:
         rows = (await db.execute(stmt, bind)).mappings().all()
 
         count_stmt = text(
-            "SELECT COUNT(*) FROM public.tenants "
+            "SELECT COUNT(*) FROM axon_admin.tenants "
             + ("WHERE status = :status" if status_filter else "")
         )
         total = (await db.execute(count_stmt, bind)).scalar_one()
@@ -163,7 +163,7 @@ async def _get_tenant(request: Request) -> JSONResponse:
             await db.execute(
                 text(
                     "SELECT tenant_id, name, plan, status, created_at "
-                    "FROM public.tenants WHERE tenant_id = :t"
+                    "FROM axon_admin.tenants WHERE tenant_id = :t"
                 ),
                 {"t": tenant_id},
             )
@@ -193,7 +193,7 @@ async def _suspend_tenant(request: Request) -> Response:
     async with admin_session() as db:
         updated = await db.execute(
             text(
-                "UPDATE public.tenants SET status = 'suspended' "
+                "UPDATE axon_admin.tenants SET status = 'suspended' "
                 "WHERE tenant_id = :t AND status != 'deleted' "
                 "RETURNING tenant_id"
             ),
@@ -215,7 +215,7 @@ async def _resume_tenant(request: Request) -> Response:
     async with admin_session() as db:
         updated = await db.execute(
             text(
-                "UPDATE public.tenants SET status = 'active' "
+                "UPDATE axon_admin.tenants SET status = 'active' "
                 "WHERE tenant_id = :t AND status = 'suspended' "
                 "RETURNING tenant_id"
             ),
