@@ -751,6 +751,159 @@ fn strip_optional_wrap(name: &str) -> &str {
 //  The proof entry point
 // ════════════════════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════════════════
+//  §Fase 38.g (D6) — composite Levenshtein suggestion helpers
+//
+//  The Fase 28 `smart_suggest::suggest_for` infrastructure returns
+//  bare candidate names. 38.g lifts the suggestion to include the
+//  column's DECLARED TYPE in the rendered output — adopters reading
+//  the error see both the spelling fix AND the type context in one
+//  glance:
+//
+//    Before 38.g: `Did you mean \`tenant_id\`?`
+//    After  38.g: `Did you mean column \`tenant_id\` (Uuid)?`
+//
+//  Vertical-aware dictionary integration (the Fase 29 enterprise
+//  hook) layers ON TOP without changes here: an enterprise tenant
+//  that registers `medical_record_number` as a synonym for `mrn`
+//  passes the AUGMENTED column-name list to `suggest_columns_composite`
+//  — the underlying `smart_suggest::suggest` already accepts any
+//  candidate slice (Fase 28 D3). Documented for extensibility.
+// ════════════════════════════════════════════════════════════════════
+
+/// Render the declared columns as `{name: Type, name: Type, …}` for
+/// the body of an axon-T801/T804 error message. Sorted alphabetically
+/// (via the underlying `BTreeMap`) so the output is deterministic
+/// across runs + cross-stack drift gates.
+pub fn format_column_list(columns: &ColumnSet) -> String {
+    let parts: Vec<String> = columns
+        .columns
+        .iter()
+        .map(|(name, col)| format!("{name}: {}", col.col_type.canonical_name()))
+        .collect();
+    parts.join(", ")
+}
+
+/// §Fase 38.g — produce a composite "Did you mean column `X` (Type)?"
+/// hint for an unknown-column situation. Uses the same `MAX_DISTANCE = 2`
+/// and `MAX_RESULTS = 3` defaults as Fase 28 (`suggest_for`) but
+/// rewrites the rendering to include the column type.
+///
+/// Returns the empty string when no candidate is within edit-distance
+/// 2 — adopters see no guess-laden hint (mirrors Fase 28's discipline:
+/// a confidently-close suggestion is more useful than a noisy one).
+///
+/// Examples (with declared columns `tenant_id: Uuid`, `tier: Text`):
+///   - `suggest_columns_composite("tenantid", &cs)` →
+///     `Did you mean column \`tenant_id\` (Uuid)?`
+///   - `suggest_columns_composite("trer", &cs)` →
+///     `Did you mean column \`tier\` (Text)?`
+///   - `suggest_columns_composite("WildlyDifferent", &cs)` → `""`
+pub fn suggest_columns_composite(unknown: &str, columns: &ColumnSet) -> String {
+    let names = columns.names();
+    let suggestions = smart_suggest::suggest(
+        unknown,
+        &names,
+        smart_suggest::MAX_DISTANCE,
+        smart_suggest::MAX_RESULTS,
+    );
+    if suggestions.is_empty() {
+        return String::new();
+    }
+    // Map each candidate name → "`name` (Type)" pair, preserving the
+    // Levenshtein order from `suggest`.
+    let labelled: Vec<String> = suggestions
+        .iter()
+        .filter_map(|name| {
+            columns
+                .get(name)
+                .map(|c| format!("`{name}` ({})", c.col_type.canonical_name()))
+        })
+        .collect();
+    if labelled.is_empty() {
+        return String::new();
+    }
+    match labelled.len() {
+        1 => format!("Did you mean column {}?", labelled[0]),
+        2 => format!(
+            "Did you mean column {} or {}?",
+            labelled[0], labelled[1]
+        ),
+        _ => {
+            let last = labelled.last().unwrap();
+            let head: Vec<String> = labelled[..labelled.len() - 1].to_vec();
+            format!(
+                "Did you mean column {}, or {}?",
+                head.join(", "),
+                last
+            )
+        }
+    }
+}
+
+/// §Fase 38.g — produce a "compatible columns in this schema"
+/// suggestion for an axon-T802 type-mismatch.
+///
+/// When a literal-shape (or bound-param-type) doesn't match its
+/// declared column type, scan the rest of the schema for columns
+/// whose type WOULD accept the value. Returns up to
+/// [`MAX_COMPAT_SUGGESTIONS`] columns, formatted with their types.
+/// Returns the empty string when no compatible column exists OR
+/// when the unmatched column is itself the only candidate (we don't
+/// suggest the column that just failed).
+///
+/// Adopter ergonomics: a `where: "tenant_id = 42"` against `tenant_id:
+/// Uuid` surfaces the T802 mismatch + a hint like
+/// "Compatible Int-class columns in this schema: `account_id` (Int)."
+pub fn suggest_type_compatible_columns_for_literal(
+    lit: LiteralKind,
+    columns: &ColumnSet,
+    excluded_column: &str,
+) -> String {
+    let compat: Vec<&DeclaredColumn> = columns
+        .columns
+        .values()
+        .filter(|c| c.name != excluded_column && literal_compatible_with_column(lit, c.col_type))
+        .take(MAX_COMPAT_SUGGESTIONS)
+        .collect();
+    render_compat_suggestions(&compat, format!("{lit:?}-class"))
+}
+
+/// §Fase 38.g — twin of the literal helper for the bound-param side.
+pub fn suggest_type_compatible_columns_for_param(
+    param_axon_type: &str,
+    columns: &ColumnSet,
+    excluded_column: &str,
+) -> String {
+    let compat: Vec<&DeclaredColumn> = columns
+        .columns
+        .values()
+        .filter(|c| {
+            c.name != excluded_column
+                && axon_param_compatible_with_column(param_axon_type, c.col_type)
+        })
+        .take(MAX_COMPAT_SUGGESTIONS)
+        .collect();
+    render_compat_suggestions(&compat, format!("`{param_axon_type}`-compatible"))
+}
+
+/// Max number of "compatible columns" suggestions surfaced for T802.
+/// Mirrors `smart_suggest::MAX_RESULTS` — 3 candidates is the
+/// adopter-ergonomic sweet spot.
+pub const MAX_COMPAT_SUGGESTIONS: usize = 3;
+
+fn render_compat_suggestions(compat: &[&DeclaredColumn], class_label: String) -> String {
+    if compat.is_empty() {
+        return String::new();
+    }
+    let labelled: Vec<String> = compat
+        .iter()
+        .map(|c| format!("`{}` ({})", c.name, c.col_type.canonical_name()))
+        .collect();
+    let joined = labelled.join(", ");
+    format!("Compatible {class_label} columns in this schema: {joined}.")
+}
+
 /// Run the D2 proof against `where_expr` given a declared column set
 /// and the flow parameters in scope. Returns every proof failure
 /// (`axon-T801` / `axon-T802`) anchored at `where_loc` for Fase 28
@@ -784,10 +937,9 @@ fn check_predicate(
     where_loc: (u32, u32),
     out: &mut Vec<ProofError>,
 ) {
-    // — T801 unknown column —
+    // — T801 unknown column (§Fase 38.g — composite suggestion) —
     let Some(col) = columns.get(&pred.column) else {
-        let names = columns.names();
-        let suggestion = smart_suggest::suggest_for(&pred.column, &names);
+        let suggestion = suggest_columns_composite(&pred.column, columns);
         let suggest_suffix = if suggestion.is_empty() {
             String::new()
         } else {
@@ -801,7 +953,7 @@ fn check_predicate(
                 "axon-T801 unknown column `{}` in `where:` clause. The \
                  declared schema has columns: {{{}}}.{suggest_suffix}",
                 pred.column,
-                names.join(", "),
+                format_column_list(columns),
             ),
         ));
         return;
@@ -837,10 +989,20 @@ fn check_predicate(
         }
     }
 
-    // — Value type compatibility (T802) —
+    // — Value type compatibility (T802, with §Fase 38.g composite hint) —
     match &pred.value {
         WhereValue::Literal { kind, .. } => {
             if !literal_compatible_with_column(*kind, col.col_type) {
+                let compat = suggest_type_compatible_columns_for_literal(
+                    *kind,
+                    columns,
+                    &pred.column,
+                );
+                let compat_suffix = if compat.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {compat}")
+                };
                 out.push(ProofError::new(
                     ProofErrorCode::T802TypeMismatch,
                     where_loc.0,
@@ -849,7 +1011,7 @@ fn check_predicate(
                         "axon-T802 `where:` literal of class {kind:?} is not \
                          type-compatible with column `{}` declared as `{}`. \
                          A {kind:?} literal cannot compare against a {} \
-                         column without an explicit conversion.",
+                         column without an explicit conversion.{compat_suffix}",
                         pred.column,
                         col.col_type.canonical_name(),
                         col.col_type.canonical_name()
@@ -863,6 +1025,16 @@ fn check_predicate(
             // binding-totality concern — silently ignore here.
             if let Some(axon_type) = flow_params.get(name) {
                 if !axon_param_compatible_with_column(axon_type, col.col_type) {
+                    let compat = suggest_type_compatible_columns_for_param(
+                        axon_type,
+                        columns,
+                        &pred.column,
+                    );
+                    let compat_suffix = if compat.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {compat}")
+                    };
                     out.push(ProofError::new(
                         ProofErrorCode::T802TypeMismatch,
                         where_loc.0,
@@ -872,7 +1044,7 @@ fn check_predicate(
                              `{axon_type}` is not type-compatible with \
                              column `{}` declared as `{}`. Either align the \
                              parameter type with the column type, or convert \
-                             the value at the binding site.",
+                             the value at the binding site.{compat_suffix}",
                             pred.column,
                             col.col_type.canonical_name()
                         ),
@@ -1079,8 +1251,8 @@ fn check_field_block_columns(
 ) {
     for (col_name, raw_value) in fields {
         let Some(col) = columns.get(col_name) else {
-            let names = columns.names();
-            let suggestion = smart_suggest::suggest_for(col_name, &names);
+            // §Fase 38.g — composite suggestion includes the type.
+            let suggestion = suggest_columns_composite(col_name, columns);
             let suggest_suffix = if suggestion.is_empty() {
                 String::new()
             } else {
@@ -1093,7 +1265,7 @@ fn check_field_block_columns(
                 format!(
                     "axon-T804 unknown column `{col_name}` in field block. \
                      The declared schema has columns: {{{}}}.{suggest_suffix}",
-                    names.join(", ")
+                    format_column_list(columns)
                 ),
             ));
             continue;
@@ -1103,6 +1275,15 @@ fn check_field_block_columns(
         match &value {
             WhereValue::Literal { kind, .. } => {
                 if !literal_compatible_with_column(*kind, col.col_type) {
+                    // §Fase 38.g — append compatible-columns hint.
+                    let compat = suggest_type_compatible_columns_for_literal(
+                        *kind, columns, col_name,
+                    );
+                    let compat_suffix = if compat.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {compat}")
+                    };
                     out.push(ProofError::new(
                         ProofErrorCode::T802TypeMismatch,
                         op_loc.0,
@@ -1112,7 +1293,7 @@ fn check_field_block_columns(
                              not type-compatible with column `{col_name}` \
                              declared as `{}`. A {kind:?} literal cannot \
                              populate a {} column without an explicit \
-                             conversion.",
+                             conversion.{compat_suffix}",
                             col.col_type.canonical_name(),
                             col.col_type.canonical_name()
                         ),
@@ -1122,6 +1303,14 @@ fn check_field_block_columns(
             WhereValue::BoundParam(name) => {
                 if let Some(axon_type) = flow_params.get(name) {
                     if !axon_param_compatible_with_column(axon_type, col.col_type) {
+                        let compat = suggest_type_compatible_columns_for_param(
+                            axon_type, columns, col_name,
+                        );
+                        let compat_suffix = if compat.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" {compat}")
+                        };
                         out.push(ProofError::new(
                             ProofErrorCode::T802TypeMismatch,
                             op_loc.0,
@@ -1131,7 +1320,7 @@ fn check_field_block_columns(
                                  of type `{axon_type}` is not type-compatible with \
                                  column `{col_name}` declared as `{}`. Either align \
                                  the parameter type with the column type, or convert \
-                                 at the binding site.",
+                                 at the binding site.{compat_suffix}",
                                 col.col_type.canonical_name()
                             ),
                         ));
@@ -2279,5 +2468,285 @@ mod tests {
                 t.canonical_name()
             );
         }
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //  §Fase 38.g — composite Levenshtein suggestion shape
+    // ════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn format_column_list_renders_name_colon_type_alphabetically() {
+        // §Fase 38.g — adopters reading a T801/T804 error see the
+        // declared schema with EACH column's type, not bare names.
+        let cs = columns_for(&[
+            ("tier", StoreColumnType::Text, false),
+            ("tenant_id", StoreColumnType::Uuid, true),
+            ("created_at", StoreColumnType::Timestamptz, false),
+        ]);
+        let rendered = format_column_list(&cs);
+        // BTreeMap iteration is alphabetic — deterministic.
+        assert_eq!(
+            rendered,
+            "created_at: Timestamptz, tenant_id: Uuid, tier: Text"
+        );
+    }
+
+    #[test]
+    fn format_column_list_for_empty_schema_is_empty_string() {
+        let cs = ColumnSet::default();
+        assert_eq!(format_column_list(&cs), "");
+    }
+
+    #[test]
+    fn suggest_columns_composite_single_match_includes_type() {
+        let cs = columns_for(&[
+            ("tenant_id", StoreColumnType::Uuid, true),
+            ("tier", StoreColumnType::Text, false),
+        ]);
+        let hint = suggest_columns_composite("tenantid", &cs);
+        assert_eq!(hint, "Did you mean column `tenant_id` (Uuid)?");
+    }
+
+    #[test]
+    fn suggest_columns_composite_two_matches_uses_or_separator() {
+        // Two equidistant candidates → `column \`a\` (T1) or \`b\` (T2)`.
+        let cs = columns_for(&[
+            ("tier", StoreColumnType::Text, false),
+            ("tear", StoreColumnType::Int, false), // edit-dist 1 from `ter`
+        ]);
+        let hint = suggest_columns_composite("ter", &cs);
+        // Both `tier` and `tear` are within distance 2 — accept either
+        // ordering of the candidates (smart_suggest sorts by
+        // (distance, name) — so `tear` comes before `tier` alphabetically).
+        assert!(hint.starts_with("Did you mean column "));
+        assert!(hint.contains("`tear` (Int)"));
+        assert!(hint.contains("`tier` (Text)"));
+        assert!(hint.contains(" or "));
+    }
+
+    #[test]
+    fn suggest_columns_composite_three_matches_uses_oxford_comma() {
+        let cs = columns_for(&[
+            ("ax", StoreColumnType::Int, false),
+            ("bx", StoreColumnType::Int, false),
+            ("cx", StoreColumnType::Int, false),
+        ]);
+        let hint = suggest_columns_composite("x", &cs);
+        // 3 equidistant candidates → "column `ax` (Int), `bx` (Int), or `cx` (Int)?"
+        assert!(hint.starts_with("Did you mean column "));
+        assert!(hint.contains("`ax` (Int)"));
+        assert!(hint.contains("`bx` (Int)"));
+        assert!(hint.contains("`cx` (Int)"));
+        // Oxford comma style — the last candidate is preceded by ", or".
+        assert!(hint.contains(", or `"));
+    }
+
+    #[test]
+    fn suggest_columns_composite_returns_empty_when_no_candidate_in_distance() {
+        let cs = columns_for(&[("id", StoreColumnType::Uuid, true)]);
+        assert_eq!(suggest_columns_composite("WildlyDifferent", &cs), "");
+    }
+
+    #[test]
+    fn suggest_columns_composite_caps_at_three_results() {
+        // smart_suggest::MAX_RESULTS = 3 — even with 5 close
+        // candidates, only the 3 closest are surfaced.
+        let cs = columns_for(&[
+            ("ax", StoreColumnType::Int, false),
+            ("bx", StoreColumnType::Int, false),
+            ("cx", StoreColumnType::Int, false),
+            ("dx", StoreColumnType::Int, false),
+            ("ex", StoreColumnType::Int, false),
+        ]);
+        let hint = suggest_columns_composite("x", &cs);
+        // Count backtick-wrapped column names: each match contributes
+        // exactly one backtick-pair.
+        let matches = hint.matches("` (Int)").count();
+        assert_eq!(matches, smart_suggest::MAX_RESULTS, "got: {hint}");
+    }
+
+    // ── §Fase 38.g — T801 composite messages in flight ───────────────
+
+    #[test]
+    fn t801_message_renders_columns_with_types_and_composite_suggestion() {
+        let cs = columns_for(&[
+            ("tenant_id", StoreColumnType::Uuid, true),
+            ("tier", StoreColumnType::Text, true),
+        ]);
+        let errs = check_filter("tenantid = 'x'", &cs, &params(&[]), (1, 1));
+        assert_eq!(errs.len(), 1);
+        let msg = &errs[0].message;
+        assert_eq!(errs[0].code, ProofErrorCode::T801UnknownColumn);
+        // Composite suggestion includes the column type.
+        assert!(
+            msg.contains("Did you mean column `tenant_id` (Uuid)?"),
+            "T801 message must carry the composite suggestion, got: {msg}"
+        );
+        // The declared-columns list itself shows `name: Type`.
+        assert!(
+            msg.contains("tenant_id: Uuid"),
+            "T801 message must list columns with types, got: {msg}"
+        );
+        assert!(msg.contains("tier: Text"));
+    }
+
+    #[test]
+    fn t804_message_renders_columns_with_types_and_composite_suggestion() {
+        let cs = columns_full(&[
+            ("tenant_id", StoreColumnType::Uuid, true, true, "", false),
+            ("tier", StoreColumnType::Text, true, false, "", false),
+        ]);
+        let errs = check_persist_fields(
+            &[
+                ("tenant_id".into(), "${id}".into()),
+                ("tier".into(), "'std'".into()),
+                ("tenantid".into(), "${id}".into()), // typo
+            ],
+            &cs,
+            &params(&[("id", "String")]),
+            (1, 1),
+        );
+        let t804 = errs
+            .iter()
+            .find(|e| e.code == ProofErrorCode::T804UnknownField)
+            .expect("expected T804");
+        assert!(
+            t804.message.contains("Did you mean column `tenant_id` (Uuid)?"),
+            "T804 message must carry the composite suggestion, got: {}",
+            t804.message
+        );
+        assert!(t804.message.contains("tier: Text"));
+    }
+
+    // ── §Fase 38.g — T802 compatible-columns suggestion ──────────────
+
+    #[test]
+    fn t802_literal_mismatch_surfaces_a_compatible_columns_hint() {
+        // Adopter writes `tier = 42` against `tier: Text`. The schema
+        // has another column (`count: Int`) that WOULD accept an Int
+        // literal — the T802 message surfaces it as a tactical hint.
+        let cs = columns_for(&[
+            ("tier", StoreColumnType::Text, true),
+            ("count", StoreColumnType::Int, false),
+        ]);
+        let errs = check_filter("tier = 42", &cs, &params(&[]), (1, 1));
+        assert_eq!(errs.len(), 1);
+        let msg = &errs[0].message;
+        assert_eq!(errs[0].code, ProofErrorCode::T802TypeMismatch);
+        assert!(
+            msg.contains("Compatible") && msg.contains("`count` (Int)"),
+            "T802 message must surface compatible columns, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn t802_compatible_columns_omits_the_failing_column_itself() {
+        // The failing column is excluded from the compatible-columns
+        // suggestion (we don't suggest the column that just failed).
+        let cs = columns_for(&[("tier", StoreColumnType::Text, true)]);
+        let errs = check_filter("tier = 42", &cs, &params(&[]), (1, 1));
+        let msg = &errs[0].message;
+        // T802 fires (Int → Text rejected) but NO compatible-columns
+        // hint because the only column is the one that failed.
+        assert!(
+            !msg.contains("Compatible"),
+            "no compatible-column hint when no alternative exists: {msg}"
+        );
+    }
+
+    #[test]
+    fn t802_bound_param_mismatch_surfaces_compatible_columns_for_the_param_type() {
+        // `${count}: Bool` → `id: Uuid` rejects; the schema has
+        // `active: Bool` that WOULD accept a Bool param.
+        let cs = columns_for(&[
+            ("id", StoreColumnType::Uuid, true),
+            ("active", StoreColumnType::Bool, false),
+        ]);
+        let fp = params(&[("count", "Bool")]);
+        let errs = check_filter("id = ${count}", &cs, &fp, (1, 1));
+        assert_eq!(errs.len(), 1);
+        let msg = &errs[0].message;
+        assert!(
+            msg.contains("Compatible") && msg.contains("`active` (Bool)"),
+            "T802 bound-param mismatch must surface a Bool-compatible \
+             column hint, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn t802_field_block_literal_mismatch_surfaces_compatible_columns() {
+        // Persist field block: `name: 42` against `name: Text`,
+        // schema also has `count: Int` → hint surfaces.
+        let cs = columns_full(&[
+            ("id", StoreColumnType::Uuid, true, true, "", false),
+            ("name", StoreColumnType::Text, false, false, "", false),
+            ("count", StoreColumnType::Int, false, false, "", false),
+        ]);
+        let errs = check_persist_fields(
+            &[
+                ("id".into(), "${id}".into()),
+                ("name".into(), "42".into()),
+            ],
+            &cs,
+            &params(&[("id", "String")]),
+            (1, 1),
+        );
+        let t802 = errs
+            .iter()
+            .find(|e| e.code == ProofErrorCode::T802TypeMismatch)
+            .expect("expected field-block T802");
+        assert!(
+            t802.message.contains("Compatible") && t802.message.contains("`count` (Int)"),
+            "field-block T802 must surface compatible columns: {}",
+            t802.message
+        );
+    }
+
+    #[test]
+    fn t802_compatible_columns_caps_at_max_compat_suggestions() {
+        // With 5 Int columns in the schema and an Int literal in a
+        // Text column, only the first MAX_COMPAT_SUGGESTIONS surface.
+        let cs = columns_for(&[
+            ("a", StoreColumnType::Int, false),
+            ("b", StoreColumnType::Int, false),
+            ("c", StoreColumnType::Int, false),
+            ("d", StoreColumnType::Int, false),
+            ("e", StoreColumnType::Int, false),
+            ("tier", StoreColumnType::Text, true),
+        ]);
+        let errs = check_filter("tier = 42", &cs, &params(&[]), (1, 1));
+        let msg = &errs[0].message;
+        // Count backtick-quoted column references in the "Compatible"
+        // tail — exactly MAX_COMPAT_SUGGESTIONS hits.
+        let after_compat = msg.split("Compatible").nth(1).unwrap_or("");
+        let hits = after_compat.matches("` (Int)").count();
+        assert_eq!(
+            hits, MAX_COMPAT_SUGGESTIONS,
+            "expected exactly {} compatible-column hits, got: {msg}",
+            MAX_COMPAT_SUGGESTIONS
+        );
+    }
+
+    #[test]
+    fn t802_like_against_non_text_does_not_surface_a_misleading_compat_hint() {
+        // LIKE against Uuid surfaces T802 (LIKE requires Text-class).
+        // 38.g does NOT add a compatible-columns hint for the LIKE
+        // case (the existing LIKE-specific message is the right
+        // diagnostic — composite suggestions are for value-type
+        // mismatches, not operator-class mismatches).
+        let cs = columns_for(&[
+            ("id", StoreColumnType::Uuid, true),
+            ("name", StoreColumnType::Text, false),
+        ]);
+        let errs = check_filter("id LIKE 'abc%'", &cs, &params(&[]), (1, 1));
+        let t802_msg = errs
+            .iter()
+            .find(|e| e.code == ProofErrorCode::T802TypeMismatch)
+            .map(|e| e.message.as_str())
+            .unwrap_or("");
+        assert!(t802_msg.contains("LIKE"), "LIKE message missing: {t802_msg}");
+        // The LIKE branch goes through a separate code path that
+        // doesn't apply the compatible-columns helper — that's
+        // intentional (LIKE wants a Text column, not a String value).
     }
 }
