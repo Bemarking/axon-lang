@@ -2674,6 +2674,7 @@ mod fase35e_tests {
             isolation: String::new(),
             on_breach: String::new(),
             capability: String::new(),
+            column_schema: None,
         }
     }
 

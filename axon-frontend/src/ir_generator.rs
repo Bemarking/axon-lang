@@ -10,6 +10,39 @@ use std::collections::HashMap;
 
 use crate::ast::*;
 use crate::ir_nodes::*;
+use crate::store_schema::{StoreColumn, StoreColumnSchema};
+
+/// §Fase 38.b (D1) — lower the parsed AST schema declaration to its
+/// IR mirror. Pure + total — every AST variant has an IR variant.
+fn lower_column_schema(s: &StoreColumnSchema) -> IRStoreColumnSchema {
+    match s {
+        StoreColumnSchema::Inline { columns, .. } => IRStoreColumnSchema::Inline {
+            columns: columns.iter().map(lower_column).collect(),
+        },
+        StoreColumnSchema::ManifestRef { qualified_name, .. } => {
+            IRStoreColumnSchema::ManifestRef {
+                qualified_name: qualified_name.clone(),
+            }
+        }
+        StoreColumnSchema::EnvVar { var_name, .. } => IRStoreColumnSchema::EnvVar {
+            var_name: var_name.clone(),
+        },
+    }
+}
+
+fn lower_column(c: &StoreColumn) -> IRStoreColumn {
+    IRStoreColumn {
+        name: c.name.clone(),
+        // The IR carries the canonical PascalCase name; the alias the
+        // adopter wrote in source is already normalised at parse time.
+        col_type: c.col_type.canonical_name().to_string(),
+        primary_key: c.primary_key,
+        auto_increment: c.auto_increment,
+        not_null: c.not_null,
+        unique: c.unique,
+        default_value: c.default_value.clone(),
+    }
+}
 
 pub struct IRGenerator {
     personas: HashMap<String, IRPersona>,
@@ -998,6 +1031,11 @@ impl IRGenerator {
             isolation: n.isolation.clone(),
             on_breach: n.on_breach.clone(),
             capability: n.capability.clone(),
+            // §Fase 38.b (D1) — thread the parsed column-schema
+            // declaration (if any) through to the IR. The IR mirror
+            // preserves the tagged-union shape (inline / manifest_ref /
+            // env_var) and the canonical PascalCase column-type name.
+            column_schema: n.column_schema.as_ref().map(lower_column_schema),
         }
     }
 

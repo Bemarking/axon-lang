@@ -1737,6 +1737,33 @@ class IRStoreSchema(IRNode):
 
 
 @dataclass(frozen=True)
+class IRStoreSchemaRef(IRNode):
+    """§Fase 38.b (D1) — IR mirror of
+    :class:`axon.compiler.ast_nodes.StoreSchemaRefNode`.
+
+    Form (b) — manifest reference (``schema: "qualified.name"``). The
+    actual columns resolve at ``axon check`` time against the
+    referenced ``.axon-schema.yml`` / ``.axon-schema.json`` manifest.
+    """
+    node_type: str = "store_schema_ref"
+    qualified_name: str = ""
+
+
+@dataclass(frozen=True)
+class IRStoreSchemaEnvVar(IRNode):
+    """§Fase 38.b (D1) — IR mirror of
+    :class:`axon.compiler.ast_nodes.StoreSchemaEnvVarNode`.
+
+    Form (c) — per-tenant env-var schema namespace
+    (``schema: env:VAR``). The schema namespace resolves at deploy time
+    from the named environment variable; the manifest then provides
+    the columns for ``<namespace>.<table>``.
+    """
+    node_type: str = "store_schema_env_var"
+    var_name: str = ""
+
+
+@dataclass(frozen=True)
 class IRAxonStore(IRNode):
     """Compiled axonstore definition — HoTT transactional transducer.
 
@@ -1747,12 +1774,18 @@ class IRAxonStore(IRNode):
 
     confidence_floor: epistemic threshold below which operations
     are rejected (HoTT path collapses → AnchorBreachError).
+
+    §Fase 38.b (D1) — `schema` is now a union of the three closed
+    declaration forms (:class:`IRStoreSchema` inline,
+    :class:`IRStoreSchemaRef` manifest, :class:`IRStoreSchemaEnvVar`
+    per-tenant) OR ``None``. ``None`` runs the 37.x runtime+deploy
+    path verbatim (D5 absolute).
     """
     node_type: str = "axonstore"
     name: str = ""
     backend: str = "sqlite"
     connection: str = ""
-    schema: IRStoreSchema | None = None
+    schema: IRStoreSchema | IRStoreSchemaRef | IRStoreSchemaEnvVar | None = None
     confidence_floor: float = 0.9
     isolation: str = "serializable"
     on_breach: str = "rollback"

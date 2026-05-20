@@ -32,6 +32,7 @@ pub mod ir_nodes;
 pub mod lexer;
 pub mod parser;
 pub mod smart_suggest;
+pub mod store_schema;
 pub mod tokens;
 pub mod type_checker;
 

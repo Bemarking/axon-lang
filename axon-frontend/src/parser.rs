@@ -3834,6 +3834,7 @@ impl Parser {
             isolation: String::new(),
             on_breach: String::new(),
             capability: String::new(),
+            column_schema: None,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -3845,12 +3846,15 @@ impl Parser {
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field = self.current().clone();
             let field_name = field.value.clone();
-            // schema block — skip structurally
+            // §Fase 38.b (D1) — `schema:` declaration in three closed
+            // forms: inline column block, manifest reference (string
+            // literal), or env-var schema namespace (`env:VAR` —
+            // unquoted or quoted). Parse the form; the §38.d / §38.e
+            // type-checker consumes the resulting AST.
             if field.ttype == TokenType::Schema {
                 self.advance();
-                if self.check(TokenType::LBrace) {
-                    self.skip_braced_block()?;
-                }
+                let parsed = self.parse_store_schema_declaration(&node.name, field.line, field.column)?;
+                node.column_schema = Some(parsed);
                 continue;
             }
             self.advance();
@@ -3894,6 +3898,242 @@ impl Parser {
         }
         self.consume(TokenType::RBrace)?;
         Ok(node)
+    }
+
+    /// §Fase 38.b (D1) — parse the three closed forms of an `axonstore`
+    /// `schema:` declaration:
+    ///
+    ///   * form (a) **inline** — `schema { col: Type [constraint…], … }`
+    ///   * form (b) **manifest reference** — `schema: "qualified.name"`
+    ///     (string literal that does NOT start with `env:`)
+    ///   * form (c) **env-var schema namespace** — `schema: env:VAR`
+    ///     (unquoted) OR `schema: "env:VAR"` (quoted; the literal
+    ///     starts with `env:`)
+    ///
+    /// Called immediately AFTER `schema` is consumed.
+    fn parse_store_schema_declaration(
+        &mut self,
+        store_name: &str,
+        sch_line: u32,
+        sch_col: u32,
+    ) -> Result<crate::store_schema::StoreColumnSchema, ParseError> {
+        use crate::store_schema::{StoreColumn, StoreColumnSchema, StoreColumnType};
+
+        // — Form (a) — inline column block: `schema { ... }`. —
+        if self.check(TokenType::LBrace) {
+            self.consume(TokenType::LBrace)?;
+            let mut columns: Vec<StoreColumn> = Vec::new();
+            while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                let col_tok = self.current().clone();
+                let col_name = self.consume_any_ident_or_kw()?.value.clone();
+                self.consume(TokenType::Colon)?;
+                let type_tok = self.consume_any_ident_or_kw()?.clone();
+                let col_type = StoreColumnType::from_token(&type_tok.value).ok_or_else(|| {
+                    let names = StoreColumnType::all_canonical_names();
+                    let suggestion =
+                        crate::smart_suggest::suggest_for(&type_tok.value, &names);
+                    let suggest_suffix = if suggestion.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {suggestion}")
+                    };
+                    let known = names.join(", ");
+                    ParseError {
+                        message: format!(
+                            "Unknown column type `{}` for column `{}` in \
+                             axonstore `{}` `schema:` block. The closed \
+                             v1.38.0 column-type catalog (Fase 38.b D1) \
+                             is {{{known}}} (plus common lowercase \
+                             aliases — `int`/`integer`/`int4` for \
+                             `Int`, `bool`/`boolean` for `Bool`, etc.).\
+                             {suggest_suffix}",
+                            type_tok.value, col_name, store_name
+                        ),
+                        line: type_tok.line,
+                        column: type_tok.column,
+                        ..Default::default()
+                    }
+                })?;
+
+                let mut col = StoreColumn {
+                    name: col_name,
+                    col_type,
+                    primary_key: false,
+                    auto_increment: false,
+                    not_null: false,
+                    unique: false,
+                    default_value: String::new(),
+                    line: col_tok.line,
+                    column: col_tok.column,
+                };
+
+                // Trailing constraints (position-independent), matching
+                // the Python `_parse_store_column` surface.
+                while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                    if self.current().ttype != TokenType::Identifier {
+                        // The next column starts with a non-identifier
+                        // (rare) — stop the constraint scan.
+                        break;
+                    }
+                    let constraint = self.current().value.clone();
+                    match constraint.as_str() {
+                        "primary_key" => {
+                            col.primary_key = true;
+                            self.advance();
+                        }
+                        "auto_increment" => {
+                            col.auto_increment = true;
+                            self.advance();
+                        }
+                        "not_null" => {
+                            col.not_null = true;
+                            self.advance();
+                        }
+                        "unique" => {
+                            col.unique = true;
+                            self.advance();
+                        }
+                        "default" => {
+                            self.advance();
+                            let dv = self.current().clone();
+                            if matches!(
+                                dv.ttype,
+                                TokenType::StringLit
+                                    | TokenType::Integer
+                                    | TokenType::Float
+                            ) {
+                                col.default_value = dv.value.clone();
+                                self.advance();
+                            } else {
+                                col.default_value =
+                                    self.consume_any_ident_or_kw()?.value.clone();
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+
+                columns.push(col);
+            }
+            self.consume(TokenType::RBrace)?;
+            return Ok(StoreColumnSchema::Inline {
+                columns,
+                leading_trivia: Vec::new(),
+                line: sch_line,
+                column: sch_col,
+            });
+        }
+
+        // — Forms (b) + (c) require a `:` separator. —
+        if !self.check(TokenType::Colon) {
+            let cur = self.current().clone();
+            return Err(ParseError {
+                message: format!(
+                    "axonstore `{store_name}` `schema:` declaration expects \
+                     `{{ … }}` (inline columns), `: \"manifest.ref\"` \
+                     (manifest reference), or `: env:VAR` (per-tenant schema \
+                     namespace). Got `{}` instead.",
+                    cur.value
+                ),
+                line: cur.line,
+                column: cur.column,
+                ..Default::default()
+            });
+        }
+        self.consume(TokenType::Colon)?;
+
+        // — Form (b) or (c)-quoted — string literal value. —
+        if self.check(TokenType::StringLit) {
+            let lit = self.consume(TokenType::StringLit)?.clone();
+            let value = lit.value.clone();
+            if let Some(var) = value.strip_prefix("env:") {
+                let var = var.trim();
+                if var.is_empty() {
+                    return Err(ParseError {
+                        message: format!(
+                            "axonstore `{store_name}` `schema: \"env:\"` is \
+                             missing the variable name after the `env:` \
+                             prefix."
+                        ),
+                        line: lit.line,
+                        column: lit.column,
+                        ..Default::default()
+                    });
+                }
+                return Ok(StoreColumnSchema::EnvVar {
+                    var_name: var.to_string(),
+                    line: sch_line,
+                    column: sch_col,
+                });
+            }
+            // Plain string → manifest reference.
+            if value.trim().is_empty() {
+                return Err(ParseError {
+                    message: format!(
+                        "axonstore `{store_name}` `schema:` manifest reference \
+                         is empty. Expected `\"qualified.name\"` — e.g. \
+                         `\"public.tenants\"`."
+                    ),
+                    line: lit.line,
+                    column: lit.column,
+                    ..Default::default()
+                });
+            }
+            return Ok(StoreColumnSchema::ManifestRef {
+                qualified_name: value,
+                line: sch_line,
+                column: sch_col,
+            });
+        }
+
+        // — Form (c) unquoted — `env:VAR`. The lexer emits `env` as an
+        //   identifier, then `:`, then the identifier var name. —
+        let env_tok = self.current().clone();
+        if env_tok.value == "env" {
+            self.advance();
+            if !self.check(TokenType::Colon) {
+                return Err(ParseError {
+                    message: format!(
+                        "axonstore `{store_name}` `schema: env` is missing the \
+                         `:` separator. Expected `schema: env:VAR`."
+                    ),
+                    line: env_tok.line,
+                    column: env_tok.column,
+                    ..Default::default()
+                });
+            }
+            self.advance(); // past ':'
+            let var_tok = self.consume_any_ident_or_kw()?.clone();
+            if var_tok.value.trim().is_empty() {
+                return Err(ParseError {
+                    message: format!(
+                        "axonstore `{store_name}` `schema: env:` is missing \
+                         the variable name."
+                    ),
+                    line: var_tok.line,
+                    column: var_tok.column,
+                    ..Default::default()
+                });
+            }
+            return Ok(StoreColumnSchema::EnvVar {
+                var_name: var_tok.value.clone(),
+                line: sch_line,
+                column: sch_col,
+            });
+        }
+
+        Err(ParseError {
+            message: format!(
+                "axonstore `{store_name}` `schema:` declaration expects \
+                 `{{ … }}` (inline columns), `\"manifest.ref\"` (manifest \
+                 reference), or `env:VAR` (per-tenant schema namespace). \
+                 Got `{}` instead.",
+                env_tok.value
+            ),
+            line: env_tok.line,
+            column: env_tok.column,
+            ..Default::default()
+        })
     }
 
     // ── §λ-L-E Fase 1 — Resource primitive ────────────────────────
