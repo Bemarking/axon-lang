@@ -531,6 +531,7 @@ fn store_introspect_public_surface_is_reachable() {
         primary_key: true,
         unique: false,
         default_expression: String::new(),
+        identity_kind: None,
     }];
     let (store, omissions) = build_manifest_store(&rows);
     assert_eq!(store.columns.len(), 1);

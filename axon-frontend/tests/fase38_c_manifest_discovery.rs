@@ -197,6 +197,7 @@ fn programmatic_construct_then_serialize_then_reparse_is_byte_identical() {
             not_null: false,
             unique: false,
             default_value: String::new(),
+            identity: false,
         },
     );
     tenants_cols.insert(
@@ -208,6 +209,7 @@ fn programmatic_construct_then_serialize_then_reparse_is_byte_identical() {
             not_null: true,
             unique: false,
             default_value: String::new(),
+            identity: false,
         },
     );
     tenants_cols.insert(
@@ -219,6 +221,7 @@ fn programmatic_construct_then_serialize_then_reparse_is_byte_identical() {
             not_null: true,
             unique: false,
             default_value: "now()".to_string(),
+            identity: false,
         },
     );
     m.stores.insert(

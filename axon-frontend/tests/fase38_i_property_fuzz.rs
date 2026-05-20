@@ -406,6 +406,7 @@ fn random_constructed_manifest(rng: &mut Lcg) -> Manifest {
                     not_null: rng.next_bool(),
                     unique: rng.next_bool(),
                     default_value,
+                    identity: rng.next_bool(),
                 },
             );
         }
