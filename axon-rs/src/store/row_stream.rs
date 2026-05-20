@@ -194,7 +194,12 @@ pub async fn stream_retrieve(
             bindings,
             &resolved.column_types,
         )?;
-        let mut query = sqlx::query(&sql);
+        // §Fase 38.x.a (D1) — see `postgres_backend::introspect_conn` for
+        // the full rationale on `.persistent(false)`. The unnamed PARSE
+        // protocol is structurally collision-free behind transaction-mode
+        // poolers; the named protocol leaks `sqlx_s_N` across logical
+        // sessions when the physical conn is reused.
+        let mut query = sqlx::query(&sql).persistent(false);
         for value in &params {
             query = bind_value(query, value);
         }
@@ -230,13 +235,27 @@ pub async fn stream_retrieve(
     let no_types = std::collections::HashMap::new();
     // §37.x.h / D6 surfaces a resolution failure; here it degrades to
     // an un-qualified bare table + empty type map.
+    // §Fase 38.x.a (D3) — see `postgres_backend::query()` for full rationale.
     let (schema, column_types) = match &resolved {
         Ok(r) => (Some(r.schema.as_str()), &r.column_types),
-        Err(_) => (None, &no_types),
+        Err(e) => {
+            tracing::warn!(
+                target: "axon::store",
+                table = %table,
+                op = "introspect_in_tx_stream",
+                error = %e,
+                d_letter = "D3+38.x.a",
+                "store introspection failed inside the stream-cursor \
+                 transaction; falling back to bare-table cursor — the \
+                 drain will likely fail with the same root cause."
+            );
+            (None, &no_types)
+        }
     };
     let (sql, params): (String, Vec<SqlValue>) =
         build_select_sql(table, schema, where_expr, bindings, column_types)?;
-    let mut query = sqlx::query(&sql);
+    // §Fase 38.x.a (D1) — mandatory inside the `pool.begin()` tx.
+    let mut query = sqlx::query(&sql).persistent(false);
     for value in &params {
         query = bind_value(query, value);
     }

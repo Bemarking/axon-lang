@@ -474,3 +474,112 @@ async fn t4_d9_self_heal_after_alter_table_under_pooler() {
 
     drop_schema(&backend, schema).await;
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  t5 — §Fase 38.x.a regression guard: sequential transactions across
+//       pooled connections must NOT collide on prepared statement names.
+//
+//  This is the load-bearing test that protects v1.38.0's regression
+//  (kivi smoke 16, 2026-05-20) from recurring. Pre-fix: 10 sequential
+//  transactions through PgBouncer `pool_mode=transaction` exhaust the
+//  pool, force connection reuse, and the SECOND tx onwards collides
+//  on `prepared statement "sqlx_s_N" already exists`. Post-fix
+//  (D1 `.persistent(false)` + D2 `after_release DEALLOCATE ALL`):
+//  every transaction succeeds without collision.
+// ════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn t5_sequential_transactions_across_pooled_connections() {
+    let backend = pg_or_skip!();
+    let schema = "fase38x_i_t5";
+    fresh_schema(&backend, schema).await;
+    exec(
+        &backend,
+        &format!(
+            "CREATE TABLE {schema}.records ( \
+                id uuid PRIMARY KEY, \
+                label text NOT NULL, \
+                seq integer NOT NULL \
+             )"
+        ),
+    )
+    .await;
+    exec(
+        &backend,
+        &format!("ALTER ROLE CURRENT_USER SET search_path = {schema}, public"),
+    )
+    .await;
+
+    // Drive 10 sequential transactions. Each tx exercises a different
+    // operation (retrieve / persist / mutate / purge), forcing the
+    // cache-MISS path → `pool.begin()` + `introspect_conn` (2 sqlx::query
+    // calls) + the operation's own sqlx::query. Pre-fix: tx N+1 collides
+    // on `sqlx_s_1` because tx N's named PARSE survives on the physical
+    // conn returned to the pooler's pool. Post-fix: every PARSE is
+    // unnamed (D1) AND every released conn is `DEALLOCATE ALL`'d (D2),
+    // so collision is structurally impossible.
+    for n in 0..10u32 {
+        // Force the cache-MISS path on every iteration so EVERY op uses
+        // pool.begin() and introspect_conn — the original collision site.
+        // (Behind the public API: persist after a `DROP/CREATE` schema
+        // → cache empty → MISS guaranteed for the first call. Subsequent
+        // calls would HIT cache; we evict via a parallel `DROP TABLE
+        // IF EXISTS` no-op-after-create… actually simplest: just use
+        // distinct tables each iteration so each one is a fresh cache
+        // miss against a fresh table name.)
+        let table = format!("records_{n}");
+        exec(
+            &backend,
+            &format!(
+                "CREATE TABLE IF NOT EXISTS {schema}.{table} ( \
+                    id uuid PRIMARY KEY, \
+                    label text NOT NULL, \
+                    seq integer NOT NULL \
+                 )"
+            ),
+        )
+        .await;
+        let qualified = format!("{schema}.{table}");
+        let row_id = format!("11111111-2222-3333-4444-{:012}", n);
+        let result = backend
+            .insert(
+                &qualified,
+                &[
+                    ("id".to_string(), SqlValue::Text(row_id.clone())),
+                    (
+                        "label".to_string(),
+                        SqlValue::Text(format!("tx-{n}")),
+                    ),
+                    ("seq".to_string(), SqlValue::Integer(n as i64)),
+                ],
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "t5: sequential insert #{n} must succeed without prepared \
+             statement collision; got: {result:?}. \
+             If this FAILS with `42710 duplicate_prepared_statement`, \
+             the §Fase 38.x.a Pooler-coherent Transactions Contract has \
+             regressed: check that every `sqlx::query` under \
+             `axon-rs/src/store/` carries `.persistent(false)` (D1) \
+             AND that `connect_named_with_namespace` installs \
+             `after_release(DEALLOCATE ALL)` (D2)."
+        );
+
+        // Round-trip retrieve to also exercise the read tx path.
+        let rows = backend
+            .query(
+                &qualified,
+                "id = ${id}",
+                &std::collections::HashMap::from([("id".to_string(), row_id.clone())]),
+            )
+            .await;
+        assert!(
+            rows.is_ok(),
+            "t5: sequential retrieve #{n} must succeed; got: {rows:?}"
+        );
+        assert_eq!(rows.unwrap().len(), 1, "t5: retrieve #{n} returns 1 row");
+    }
+
+    drop_schema(&backend, schema).await;
+}

@@ -154,12 +154,18 @@ async fn resolve_table_schema(
     table: &str,
 ) -> Result<Option<String>, StoreError> {
     // Primary — search-path-correct.
+    // §Fase 38.x.a (D1) — `.persistent(false)` on every `sqlx::query` /
+    // `sqlx::query_as` call. An adopter who points `axon store introspect`
+    // at a transaction-mode pooler endpoint (Supavisor `:6543`) needs the
+    // same collision-safety guarantee as the runtime store path. See
+    // `postgres_backend::introspect_conn` for the full rationale.
     let primary: Option<(String,)> = sqlx::query_as(
         "SELECT n.nspname \
          FROM pg_catalog.pg_class c \
          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
          WHERE c.oid = to_regclass($1)",
     )
+    .persistent(false)
     .bind(format!("\"{table}\""))
     .fetch_optional(&mut *conn)
     .await
@@ -182,6 +188,7 @@ async fn resolve_table_schema(
            AND n.nspname <> 'information_schema' \
          ORDER BY n.nspname",
     )
+    .persistent(false)
     .bind(table)
     .fetch_all(&mut *conn)
     .await
@@ -244,6 +251,7 @@ async fn fetch_introspection_rows(
            AND NOT a.attisdropped \
          ORDER BY a.attnum",
     )
+    .persistent(false)
     .bind(qualified)
     .fetch_all(&mut *conn)
     .await
