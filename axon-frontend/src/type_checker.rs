@@ -211,6 +211,21 @@ pub struct TypeChecker<'a> {
     /// without failing unless `--strict` is set.  Mirrors the Python
     /// TypeChecker.warnings property.
     warnings: Vec<TypeError>,
+    /// §Fase 38.d (D2) — store-name → ColumnSet built from each
+    /// `axonstore` declaration that carries an INLINE `schema: { … }`
+    /// block. Forms (b) manifest_ref and (c) env_var are NOT populated
+    /// here; their compile-time proof needs filesystem context (the
+    /// `axon check` working dir → manifest discovery via §38.c). That
+    /// integration lands when the type-checker is invoked with a
+    /// source-file context (§38.h CLI + §38.j CI lane).
+    store_inline_column_sets:
+        std::collections::HashMap<String, crate::store_column_proof::ColumnSet>,
+    /// §Fase 38.d (D2) — the current flow's parameter-name → axon-
+    /// language-type-name map, set while `check_flow` runs so
+    /// `check_flow_steps` can run the §38.d D2 proof against
+    /// `where:` clauses. Cleared between flows so a parameter in one
+    /// flow cannot leak into the proof for another.
+    current_flow_params: crate::store_column_proof::FlowParamTypes,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -220,6 +235,8 @@ impl<'a> TypeChecker<'a> {
             symbols: SymbolTable::new(),
             errors: Vec::new(),
             warnings: Vec::new(),
+            store_inline_column_sets: std::collections::HashMap::new(),
+            current_flow_params: crate::store_column_proof::FlowParamTypes::new(),
         }
     }
 
@@ -404,6 +421,20 @@ impl<'a> TypeChecker<'a> {
                         n.loc.line,
                         n.loc.clone(),
                     ));
+                    // §Fase 38.d (D2) — when this axonstore carries an
+                    // INLINE `schema: { … }` block, build its ColumnSet
+                    // now so `check_flow_steps` can prove `where:`
+                    // clauses against it. Forms (b)/(c) need filesystem
+                    // context (38.h/38.j) and are silently skipped at
+                    // this layer — the deploy-time D8 (38.f) is their
+                    // gate.
+                    if let Some(schema) = &n.column_schema {
+                        if let Some(cs) =
+                            crate::store_column_proof::ColumnSet::from_inline_schema(schema)
+                        {
+                            self.store_inline_column_sets.insert(n.name.clone(), cs);
+                        }
+                    }
                 }
                 Declaration::AxonEndpoint(n) => {
                     registrations.push((
@@ -1022,6 +1053,16 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_flow(&mut self, node: &FlowDefinition) {
+        // §Fase 38.d (D2) — capture the flow's parameter-name → type
+        // map for the duration of this flow's body check. Cleared
+        // before/after so one flow's params can't leak into another's
+        // §38.d proof.
+        self.current_flow_params = crate::store_column_proof::FlowParamTypes::new();
+        for param in &node.parameters {
+            self.current_flow_params
+                .insert(param.name.clone(), param.type_expr.name.clone());
+        }
+
         // Validate parameter types
         for param in &node.parameters {
             self.check_type_reference(&param.type_expr.name, &param.loc);
@@ -3503,15 +3544,20 @@ impl<'a> TypeChecker<'a> {
                 }
                 FlowStep::Persist(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
+                    // §Fase 38.d: 38.e ships the `persist`/`mutate`
+                    // field-block proof. 38.d covers only `where:`.
                 }
                 FlowStep::Retrieve(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
+                    self.run_38d_where_proof(&n.store_name, &n.where_expr, &n.loc);
                 }
                 FlowStep::Mutate(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
+                    self.run_38d_where_proof(&n.store_name, &n.where_expr, &n.loc);
                 }
                 FlowStep::Purge(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
+                    self.run_38d_where_proof(&n.store_name, &n.where_expr, &n.loc);
                 }
                 FlowStep::ComputeApply(n) => {
                     if !n.compute_name.is_empty() {
@@ -3565,6 +3611,31 @@ impl<'a> TypeChecker<'a> {
                 ),
                 _ => {}
             }
+        }
+    }
+
+    /// §Fase 38.d (D2) — run the `where:` column-type proof against
+    /// the store's declared INLINE schema (form a). Forms (b)/(c)
+    /// silently skip at this layer (they're proven at deploy time —
+    /// D8, in 38.f — when filesystem context for manifest discovery
+    /// exists). Every proof failure is converted to a `TypeError`
+    /// anchored at the store-op's source location.
+    fn run_38d_where_proof(&mut self, store_name: &str, where_expr: &str, loc: &Loc) {
+        if store_name.is_empty() || where_expr.trim().is_empty() {
+            return;
+        }
+        let cs = match self.store_inline_column_sets.get(store_name) {
+            Some(cs) => cs.clone(),
+            None => return, // no inline schema declared → 38.d silently skips
+        };
+        let errors = crate::store_column_proof::check_filter(
+            where_expr,
+            &cs,
+            &self.current_flow_params,
+            (loc.line, loc.column),
+        );
+        for err in errors {
+            self.emit(err.message, loc);
         }
     }
 

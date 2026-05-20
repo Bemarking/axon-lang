@@ -66,7 +66,11 @@ fn check_errors(src: &str) -> Vec<String> {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn s1_column_name_typo_in_where_currently_passes_axon_check() {
+fn s1_column_name_typo_in_where_is_rejected_with_axon_t801_and_levenshtein_hint() {
+    // §1 INVERTED in place by 38.d's `StoreColumnProof::check_filter`
+    // pass. The column reference `tenantid` (no underscore) does NOT
+    // exist in the declared schema; axon check now rejects with
+    // axon-T801 + a Levenshtein "Did you mean `tenant_id`?" hint.
     let src = r#"
         axonstore tenants {
             backend: postgresql
@@ -81,23 +85,22 @@ fn s1_column_name_typo_in_where_currently_passes_axon_check() {
             retrieve tenants { where: "tenantid = ${tenant_id}" as: result }
         }
     "#;
-    // The column reference `tenantid` (no underscore) does NOT exist in
-    // the declared schema. The current type-checker passes it — that's
-    // the bug 38.d closes.
+    let errs = check_errors(src);
     assert!(
-        check_passes(src),
-        "§1: pre-38 type-checker passes a column-name typo through. \
-         If THIS assertion ever fails (i.e. the type-checker REJECTS \
-         the typo), 38.d/D2 has already inverted this anchor in place. \
-         Update the test to assert the typed `axon-T801` error."
+        errs.iter().any(|m| m.contains("axon-T801")),
+        "§1 INVERTED: a column-name typo must surface axon-T801. \
+         Errors observed: {errs:?}"
     );
-    // Once 38.d ships, the inverted assertion becomes:
-    //
-    //   let errs = check_errors(src);
-    //   assert!(errs.iter().any(|m| m.contains("axon-T801")
-    //           && m.contains("tenantid") && m.contains("tenant_id")),
-    //           "§1 INVERTED: column typo must fail axon check with T801 \
-    //            + Levenshtein suggestion");
+    assert!(
+        errs.iter().any(|m| m.contains("tenantid")),
+        "§1: axon-T801 must name the offending typo `tenantid`. \
+         Errors observed: {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|m| m.contains("tenant_id")),
+        "§1: axon-T801 must surface the Levenshtein-closest column \
+         `tenant_id` as the suggestion. Errors observed: {errs:?}"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -113,7 +116,12 @@ fn s1_column_name_typo_in_where_currently_passes_axon_check() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn s2_where_value_type_mismatch_currently_passes_axon_check() {
+fn s2_where_value_type_mismatch_is_rejected_with_axon_t802() {
+    // §2 INVERTED in place by 38.d's `StoreColumnProof::check_filter`
+    // pass. The flow parameter type `Int` is not compatible with a
+    // `Uuid` column per the closed compat matrix; axon check now
+    // rejects with axon-T802 + names the parameter, its type, the
+    // column, and the column's type.
     let src = r#"
         axonstore tenants {
             backend: postgresql
@@ -128,17 +136,20 @@ fn s2_where_value_type_mismatch_currently_passes_axon_check() {
             retrieve tenants { where: "tenant_id = ${tenant_id}" as: result }
         }
     "#;
-    // The parameter type `Int` cannot represent a `Uuid` value. The
-    // current type-checker accepts this — at runtime the 37.x D4
-    // type-agnostic equality fallback would render `"tenant_id"::text
-    // = $N::int` which fails. 38.d catches it at compile time.
+    let errs = check_errors(src);
     assert!(
-        check_passes(src),
-        "§2: pre-38 type-checker passes an Int → Uuid binding through. \
-         If THIS assertion ever fails, 38.d/D2 has already inverted \
-         the anchor; update the test to assert the typed `axon-T802` \
-         error."
+        errs.iter().any(|m| m.contains("axon-T802")),
+        "§2 INVERTED: an Int → Uuid binding must surface axon-T802. \
+         Errors observed: {errs:?}"
     );
+    assert!(
+        errs.iter().any(|m| m.contains("tenant_id") && m.contains("Int") && m.contains("Uuid")),
+        "§2: axon-T802 must name the parameter, its declared type \
+         `Int`, and the column type `Uuid`. Errors observed: {errs:?}"
+    );
+    // Reference `check_passes` so the helper stays exercised + the
+    // import warning stays quiet (the helper now serves other §-tests).
+    let _: fn(&str) -> bool = check_passes;
 }
 
 // ════════════════════════════════════════════════════════════════════
