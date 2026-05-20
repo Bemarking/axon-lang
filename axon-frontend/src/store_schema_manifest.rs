@@ -1,0 +1,1055 @@
+//! §Fase 38.c (D4, D6) — The `.axon-schema.json` manifest format +
+//! resolver.
+//!
+//! When an `axonstore` declares `schema: "qualified.name"` (form (b) —
+//! manifest reference) OR `schema: env:VAR` (form (c) — per-tenant
+//! namespace), the column schema does NOT live in the `.axon` source.
+//! It lives in a checked-in manifest. This module is the manifest
+//! authority: format definition, parser, canonical serializer,
+//! content-hash verifier, and discovery resolver.
+//!
+//! # The canonical format (D4)
+//!
+//! A manifest is one JSON document with the fixed top-level shape:
+//!
+//! ```json
+//! {
+//!   "version": 1,
+//!   "stores": {
+//!     "<qualified.name>": {
+//!       "columns": {
+//!         "<col_name>": {
+//!           "type": "<CanonicalPascalCaseType>",
+//!           "primary_key":   <bool>?,
+//!           "auto_increment": <bool>?,
+//!           "not_null":      <bool>?,
+//!           "unique":        <bool>?,
+//!           "default_value": "<literal>"?
+//!         },
+//!         ...
+//!       }
+//!     },
+//!     ...
+//!   },
+//!   "content_hash": "sha256:<hex>"?
+//! }
+//! ```
+//!
+//! **Canonical** means byte-deterministic — keys sorted ASCII-ascending
+//! at every level, no whitespace between tokens, UTF-8 + LF newlines,
+//! no trailing newline. Two adopters who introspect the same database
+//! produce byte-identical manifests; the SHA-256 `content_hash` is
+//! stable + verifiable.
+//!
+//! Column types are validated against the closed 15-type catalog from
+//! §Fase 38.b (D1). An unknown type is rejected at parse time.
+//!
+//! # Content hash (D6 — axon-T805 — D4)
+//!
+//! The OPTIONAL `content_hash` field, when present, MUST equal the
+//! SHA-256 (lowercase hex, prefixed `sha256:`) of the canonical
+//! serialization of the manifest WITH the `content_hash` field
+//! REMOVED. Verification is total: a mismatch is the typed
+//! [`ManifestError::ContentHashMismatch`] (`axon-T805`).
+//!
+//! # YAML format
+//!
+//! Honest scope (§Fase 38.c.1): YAML support (`.axon-schema.yml`) is
+//! deferred to a 38.c.2 follow-on, gated behind an opt-in
+//! `yaml-manifest` Cargo feature that pulls `serde_yaml`. The
+//! canonical-hash anchor STAYS on canonical JSON: a YAML file, when
+//! supported, parses → converts to canonical JSON → hashes that. So
+//! the format-mixing path will not break adopter hashes.
+//!
+//! # Cross-stack stance (D9)
+//!
+//! The Rust frontend is authoritative. The Python frontend reads the
+//! parsed manifest indirectly via the IR (§Fase 38.b lowered the
+//! manifest_ref / env_var nodes), so no Python mirror of this module
+//! is needed for the Fase 38 lifecycle. When Python is retired in a
+//! future cycle, this module continues unchanged.
+//!
+//! # Zero-runtime-dep discipline
+//!
+//! The axon-frontend crate forbids new runtime deps. SHA-256 is
+//! hand-rolled here against FIPS 180-4 (`sha256_hex`) — ~150 LOC of
+//! stable, byte-deterministic reference math, no `sha2` crate
+//! addition. JSON serialisation uses the existing `serde_json`.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use crate::smart_suggest;
+use crate::store_schema::StoreColumnType;
+
+/// The current manifest format version. Future versions go through a
+/// plan ratification — 38.c locks the v1 shape.
+pub const MANIFEST_VERSION: u32 = 1;
+
+/// The default location an adopter is expected to place their manifest
+/// files. `axon check` walks this directory plus the working dir for
+/// `*.axon-schema.json` entries (§Fase 38.c discovery).
+pub const DEFAULT_MANIFEST_DIR: &str = "schemas";
+
+/// File extension marking a Fase 38 store-schema manifest.
+pub const MANIFEST_EXTENSION: &str = "axon-schema.json";
+
+// ════════════════════════════════════════════════════════════════════
+//  The parsed manifest shape
+// ════════════════════════════════════════════════════════════════════
+
+/// One column entry in a manifest's `columns` map. Mirror of
+/// [`crate::store_schema::StoreColumn`] without source positions
+/// (manifests have no `.axon` line/column to anchor to).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestColumn {
+    pub col_type: StoreColumnType,
+    pub primary_key: bool,
+    pub auto_increment: bool,
+    pub not_null: bool,
+    pub unique: bool,
+    pub default_value: String,
+}
+
+/// One store entry in a manifest. The columns map is keyed by column
+/// name (preserved as-given for diagnostic clarity).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestStore {
+    /// Column-name → column entry. `BTreeMap` so iteration is sorted
+    /// (canonical serialization relies on this).
+    pub columns: BTreeMap<String, ManifestColumn>,
+}
+
+/// A parsed `.axon-schema.json` manifest. The store map is keyed by
+/// qualified name (e.g. `"public.tenants"`) OR by bare store name
+/// (e.g. `"tenants"`) — the lookup caller composes the right key
+/// from the IR's `manifest_ref`/`env_var` variants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Manifest {
+    /// Format version (`MANIFEST_VERSION`).
+    pub version: u32,
+    /// Qualified-name → store entry. `BTreeMap` for canonical order.
+    pub stores: BTreeMap<String, ManifestStore>,
+    /// The optional `content_hash` field as it appeared in the input,
+    /// `None` when absent. The verifier checks this against a freshly-
+    /// computed hash of the canonical content.
+    pub content_hash: Option<String>,
+}
+
+impl Manifest {
+    /// Construct an empty manifest (used by the introspection CLI at
+    /// §Fase 38.h to populate before serializing).
+    pub fn new() -> Self {
+        Self {
+            version: MANIFEST_VERSION,
+            stores: BTreeMap::new(),
+            content_hash: None,
+        }
+    }
+
+    /// Look up a store by qualified name (or by bare store name —
+    /// the manifest's key choice). Returns the store's columns map
+    /// when present.
+    pub fn lookup(&self, qualified_name: &str) -> Option<&ManifestStore> {
+        self.stores.get(qualified_name)
+    }
+
+    /// `true` iff the manifest contains an entry under `qualified_name`.
+    pub fn contains(&self, qualified_name: &str) -> bool {
+        self.stores.contains_key(qualified_name)
+    }
+}
+
+impl Default for Manifest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  Error catalog (D6 — axon-T80x family)
+// ════════════════════════════════════════════════════════════════════
+
+/// Every way a manifest can fail to load or verify. Each variant maps
+/// to a Fase 28 source-context-block-style diagnostic at `axon check`
+/// time (§Fase 38.j integration).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManifestError {
+    /// The input is not valid JSON.
+    InvalidJson { detail: String },
+    /// The top-level structure does not match the manifest format
+    /// (missing `version` / `stores`, wrong types, etc.).
+    InvalidStructure { detail: String },
+    /// The manifest's `version` is outside the supported range
+    /// (currently exactly `MANIFEST_VERSION`).
+    UnsupportedVersion { found: u32 },
+    /// A column type is not in the closed 15-type catalog (§Fase 38.b
+    /// D1). Carries the offending column + type + a Levenshtein
+    /// suggestion when one fits.
+    UnknownColumnType {
+        store: String,
+        column: String,
+        observed_type: String,
+        suggestion: String,
+    },
+    /// `axon-T805` — the manifest's `content_hash` does not match the
+    /// SHA-256 of its canonical content (the manifest has been
+    /// hand-edited without re-computing the hash, or was tampered).
+    ContentHashMismatch { expected: String, observed: String },
+    /// Two manifest files declare the same qualified store name. The
+    /// discovery layer surfaces this so adopter tooling never silently
+    /// picks the wrong file.
+    DuplicateStore {
+        store: String,
+        path_a: PathBuf,
+        path_b: PathBuf,
+    },
+}
+
+impl std::fmt::Display for ManifestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidJson { detail } => {
+                write!(f, "store-schema manifest is not valid JSON: {detail}")
+            }
+            Self::InvalidStructure { detail } => write!(
+                f,
+                "store-schema manifest has an invalid top-level structure: \
+                 {detail}. Expected {{\"version\": 1, \"stores\": {{...}}, \
+                 \"content_hash\"?: \"sha256:...\"}}."
+            ),
+            Self::UnsupportedVersion { found } => write!(
+                f,
+                "store-schema manifest declares version {found}; this \
+                 axon supports version {MANIFEST_VERSION}. Manifests from \
+                 a newer axon are not back-compatible. Either update axon \
+                 OR regenerate the manifest with `axon store introspect` \
+                 against this version."
+            ),
+            Self::UnknownColumnType {
+                store,
+                column,
+                observed_type,
+                suggestion,
+            } => {
+                let suggest_suffix = if suggestion.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {suggestion}")
+                };
+                let known = StoreColumnType::all_canonical_names().join(", ");
+                write!(
+                    f,
+                    "store-schema manifest entry `{store}` column `{column}` \
+                     declares unknown type `{observed_type}`. The closed \
+                     v1.38.0 column-type catalog is {{{known}}}.{suggest_suffix}"
+                )
+            }
+            Self::ContentHashMismatch { expected, observed } => write!(
+                f,
+                "store-schema manifest `content_hash` mismatch (axon-T805). \
+                 The hash on disk is `{expected}`, but the canonical \
+                 content currently hashes to `{observed}`. Either the \
+                 manifest was hand-edited without recomputing the hash, \
+                 or the file was tampered. Regenerate with \
+                 `axon store introspect <store> > <file>`."
+            ),
+            Self::DuplicateStore { store, path_a, path_b } => write!(
+                f,
+                "store-schema manifest entry `{store}` is declared in two \
+                 manifest files at once: `{}` and `{}`. Manifest files \
+                 must own disjoint store sets. Either merge the files OR \
+                 remove the duplicate entry from one.",
+                path_a.display(),
+                path_b.display(),
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ManifestError {}
+
+// ════════════════════════════════════════════════════════════════════
+//  Parsing — JSON canonical input
+// ════════════════════════════════════════════════════════════════════
+
+impl Manifest {
+    /// Parse a `.axon-schema.json` manifest from a UTF-8 string.
+    ///
+    /// The input is NOT required to be canonical — adopters often
+    /// hand-edit a manifest (adding a column, renaming a default) and
+    /// re-save with their editor's preferred formatting. The parser
+    /// accepts any JSON that matches the format shape. The
+    /// `content_hash` (when present) is verified against the
+    /// CANONICAL serialization, not the input bytes — so hand-editing
+    /// without recomputing the hash is what triggers `axon-T805`.
+    pub fn parse_json(src: &str) -> Result<Manifest, ManifestError> {
+        let value: serde_json::Value =
+            serde_json::from_str(src).map_err(|e| ManifestError::InvalidJson {
+                detail: e.to_string(),
+            })?;
+        Self::from_value(value)
+    }
+
+    /// Construct a [`Manifest`] from an already-parsed
+    /// [`serde_json::Value`]. Useful for tests and for the
+    /// introspection CLI (§38.h).
+    pub fn from_value(value: serde_json::Value) -> Result<Manifest, ManifestError> {
+        let obj = value.as_object().ok_or_else(|| ManifestError::InvalidStructure {
+            detail: "root must be an object".to_string(),
+        })?;
+
+        let version = obj
+            .get("version")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| ManifestError::InvalidStructure {
+                detail: "missing `version: <u32>`".to_string(),
+            })? as u32;
+        if version != MANIFEST_VERSION {
+            return Err(ManifestError::UnsupportedVersion { found: version });
+        }
+
+        let stores_obj = obj.get("stores").and_then(|v| v.as_object()).ok_or_else(
+            || ManifestError::InvalidStructure {
+                detail: "missing `stores: {...}`".to_string(),
+            },
+        )?;
+
+        let mut stores: BTreeMap<String, ManifestStore> = BTreeMap::new();
+        for (store_name, store_value) in stores_obj.iter() {
+            let store_obj = store_value.as_object().ok_or_else(|| {
+                ManifestError::InvalidStructure {
+                    detail: format!(
+                        "stores.{store_name} must be an object {{\"columns\": {{...}}}}"
+                    ),
+                }
+            })?;
+            let columns_obj = store_obj
+                .get("columns")
+                .and_then(|v| v.as_object())
+                .ok_or_else(|| ManifestError::InvalidStructure {
+                    detail: format!("stores.{store_name}.columns must be an object"),
+                })?;
+
+            let mut columns: BTreeMap<String, ManifestColumn> = BTreeMap::new();
+            for (col_name, col_value) in columns_obj.iter() {
+                let col_obj = col_value.as_object().ok_or_else(|| {
+                    ManifestError::InvalidStructure {
+                        detail: format!(
+                            "stores.{store_name}.columns.{col_name} must be an \
+                             object"
+                        ),
+                    }
+                })?;
+                let type_str = col_obj
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ManifestError::InvalidStructure {
+                        detail: format!(
+                            "stores.{store_name}.columns.{col_name} missing \
+                             `type: \"<CatalogType>\"`"
+                        ),
+                    })?;
+                let col_type = StoreColumnType::from_token(type_str).ok_or_else(|| {
+                    let names = StoreColumnType::all_canonical_names();
+                    let suggestion = smart_suggest::suggest_for(type_str, &names);
+                    ManifestError::UnknownColumnType {
+                        store: store_name.clone(),
+                        column: col_name.clone(),
+                        observed_type: type_str.to_string(),
+                        suggestion,
+                    }
+                })?;
+                columns.insert(
+                    col_name.clone(),
+                    ManifestColumn {
+                        col_type,
+                        primary_key: bool_field(col_obj, "primary_key"),
+                        auto_increment: bool_field(col_obj, "auto_increment"),
+                        not_null: bool_field(col_obj, "not_null"),
+                        unique: bool_field(col_obj, "unique"),
+                        default_value: string_field(col_obj, "default_value"),
+                    },
+                );
+            }
+            stores.insert(store_name.clone(), ManifestStore { columns });
+        }
+
+        let content_hash = obj
+            .get("content_hash")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(Manifest {
+            version,
+            stores,
+            content_hash,
+        })
+    }
+}
+
+fn bool_field(obj: &serde_json::Map<String, serde_json::Value>, name: &str) -> bool {
+    obj.get(name).and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+fn string_field(obj: &serde_json::Map<String, serde_json::Value>, name: &str) -> String {
+    obj.get(name)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_default()
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  Canonical serialization — byte-deterministic JSON
+// ════════════════════════════════════════════════════════════════════
+
+impl Manifest {
+    /// Render the manifest as canonical JSON — keys sorted
+    /// ASCII-ascending at every level, no whitespace, UTF-8, no
+    /// trailing newline. The byte-deterministic form that
+    /// `content_hash` is computed over (without the field itself).
+    ///
+    /// When `include_hash` is `true`, the `content_hash` field is
+    /// emitted at the end (lexically last because of the BTreeMap
+    /// ordering — `content_hash` < `stores` < `version` is the ASCII
+    /// order, so the actual emission is `content_hash`, `stores`,
+    /// `version`; `axon store introspect` reads this — it's the
+    /// adopter-facing on-disk form). When `false`, the field is
+    /// omitted — this is the form we hash.
+    pub fn canonical_serialize(&self, include_hash: bool) -> String {
+        let value = self.to_canonical_value(include_hash);
+        emit_canonical_json(&value)
+    }
+
+    fn to_canonical_value(&self, include_hash: bool) -> serde_json::Value {
+        use serde_json::Value;
+        let mut root = serde_json::Map::new();
+        root.insert("version".to_string(), Value::from(self.version as u64));
+
+        let mut stores = serde_json::Map::new();
+        for (name, store) in &self.stores {
+            let mut store_obj = serde_json::Map::new();
+            let mut cols = serde_json::Map::new();
+            for (col_name, col) in &store.columns {
+                let mut col_obj = serde_json::Map::new();
+                col_obj.insert("type".to_string(), Value::from(col.col_type.canonical_name()));
+                if col.primary_key {
+                    col_obj.insert("primary_key".to_string(), Value::Bool(true));
+                }
+                if col.auto_increment {
+                    col_obj.insert("auto_increment".to_string(), Value::Bool(true));
+                }
+                if col.not_null {
+                    col_obj.insert("not_null".to_string(), Value::Bool(true));
+                }
+                if col.unique {
+                    col_obj.insert("unique".to_string(), Value::Bool(true));
+                }
+                if !col.default_value.is_empty() {
+                    col_obj
+                        .insert("default_value".to_string(), Value::from(col.default_value.clone()));
+                }
+                cols.insert(col_name.clone(), Value::Object(col_obj));
+            }
+            store_obj.insert("columns".to_string(), Value::Object(cols));
+            stores.insert(name.clone(), Value::Object(store_obj));
+        }
+        root.insert("stores".to_string(), Value::Object(stores));
+
+        if include_hash {
+            if let Some(h) = &self.content_hash {
+                root.insert("content_hash".to_string(), Value::from(h.clone()));
+            }
+        }
+
+        Value::Object(root)
+    }
+
+    /// Compute the SHA-256 content hash over the manifest's canonical
+    /// content (NOT including the `content_hash` field itself).
+    /// Returned in the canonical `sha256:<lowercase-hex>` form.
+    pub fn compute_content_hash(&self) -> String {
+        let canonical = self.canonical_serialize(false);
+        format!("sha256:{}", sha256_hex(canonical.as_bytes()))
+    }
+
+    /// Verify the manifest's declared `content_hash` against a fresh
+    /// computation. `Ok(())` when no hash was declared OR when the
+    /// declared hash matches; `Err(ContentHashMismatch)` otherwise
+    /// (`axon-T805`).
+    pub fn verify_content_hash(&self) -> Result<(), ManifestError> {
+        let Some(expected) = &self.content_hash else {
+            return Ok(());
+        };
+        let observed = self.compute_content_hash();
+        if &observed == expected {
+            Ok(())
+        } else {
+            Err(ManifestError::ContentHashMismatch {
+                expected: expected.clone(),
+                observed,
+            })
+        }
+    }
+
+    /// Replace the `content_hash` field with a fresh computation —
+    /// useful for `axon store introspect` (§38.h) before serializing
+    /// the manifest to disk.
+    pub fn refresh_content_hash(&mut self) {
+        self.content_hash = Some(self.compute_content_hash());
+    }
+}
+
+/// Emit a `serde_json::Value` as canonical JSON: keys sorted
+/// ASCII-ascending at every level, no whitespace between tokens, no
+/// trailing newline. Pure + total — every JSON value has exactly one
+/// canonical form.
+fn emit_canonical_json(value: &serde_json::Value) -> String {
+    let mut out = String::new();
+    write_canonical_value(value, &mut out);
+    out
+}
+
+fn write_canonical_value(value: &serde_json::Value, out: &mut String) {
+    use serde_json::Value;
+    match value {
+        Value::Null => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Number(n) => out.push_str(&n.to_string()),
+        Value::String(s) => write_canonical_string(s, out),
+        Value::Array(arr) => {
+            out.push('[');
+            for (i, v) in arr.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical_value(v, out);
+            }
+            out.push(']');
+        }
+        Value::Object(map) => {
+            // Sort keys ASCII-ascending for canonical order.
+            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            out.push('{');
+            for (i, (k, v)) in entries.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical_string(k, out);
+                out.push(':');
+                write_canonical_value(v, out);
+            }
+            out.push('}');
+        }
+    }
+}
+
+fn write_canonical_string(s: &str, out: &mut String) {
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  SHA-256 — hand-rolled FIPS 180-4, zero-dep
+// ════════════════════════════════════════════════════════════════════
+
+/// Compute the SHA-256 digest of `input` and return it as a lowercase
+/// 64-char hex string. Hand-rolled per FIPS 180-4 to honor the
+/// axon-frontend zero-runtime-dep discipline.
+pub fn sha256_hex(input: &[u8]) -> String {
+    let digest = sha256(input);
+    let mut hex = String::with_capacity(64);
+    for byte in &digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex
+}
+
+fn sha256(input: &[u8]) -> [u8; 32] {
+    // FIPS 180-4 §4.2.2 — initial hash values H(0).
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+    ];
+
+    // FIPS 180-4 §5.1.1 — padding.
+    let bit_len: u64 = (input.len() as u64).wrapping_mul(8);
+    let mut padded: Vec<u8> = Vec::with_capacity(input.len() + 72);
+    padded.extend_from_slice(input);
+    padded.push(0x80);
+    while padded.len() % 64 != 56 {
+        padded.push(0);
+    }
+    padded.extend_from_slice(&bit_len.to_be_bytes());
+
+    // FIPS 180-4 §6.2.2 — block-wise compression.
+    for chunk in padded.chunks_exact(64) {
+        let mut w = [0u32; 64];
+        for i in 0..16 {
+            let start = i * 4;
+            w[i] = u32::from_be_bytes([
+                chunk[start],
+                chunk[start + 1],
+                chunk[start + 2],
+                chunk[start + 3],
+            ]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7)
+                ^ w[i - 15].rotate_right(18)
+                ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17)
+                ^ w[i - 2].rotate_right(19)
+                ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+
+        let mut a = h[0];
+        let mut b = h[1];
+        let mut c = h[2];
+        let mut d = h[3];
+        let mut e = h[4];
+        let mut f = h[5];
+        let mut g = h[6];
+        let mut hh = h[7];
+
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let temp1 = hh
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(SHA256_K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = s0.wrapping_add(maj);
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+        h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g);
+        h[7] = h[7].wrapping_add(hh);
+    }
+
+    let mut out = [0u8; 32];
+    for (i, word) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    }
+    out
+}
+
+/// FIPS 180-4 §4.2.2 — SHA-256 round constants (first 32 bits of the
+/// fractional parts of the cube roots of the first 64 primes).
+const SHA256_K: [u32; 64] = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
+    0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+    0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+    0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+    0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+    0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+];
+
+// ════════════════════════════════════════════════════════════════════
+//  Discovery — locate manifest files an adopter committed
+// ════════════════════════════════════════════════════════════════════
+
+/// §Fase 38.c discovery — find every `*.axon-schema.json` file under
+/// `start_dir` (the working directory of `axon check`) and its
+/// `./schemas/` subdirectory. Returns paths in sorted order for
+/// determinism. Honest-scope: the plan vivo §38.c row mentions
+/// `[axon] schema_path` in `axonproject.toml` as a configurable
+/// override; THAT integration is deferred to a 38.c.2 follow-on
+/// (adding a `toml` dep violates the axon-frontend zero-runtime-dep
+/// rule, so a hand-rolled minimal TOML reader OR a Cargo feature
+/// gate is the right shape — neither is in 38.c's scope).
+pub fn discover_manifest_files(start_dir: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    collect_manifest_files(start_dir, &mut out);
+    let schemas_dir = start_dir.join(DEFAULT_MANIFEST_DIR);
+    if schemas_dir.is_dir() {
+        collect_manifest_files(&schemas_dir, &mut out);
+    }
+    out.sort();
+    out
+}
+
+fn collect_manifest_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    if !dir.is_dir() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                if name.ends_with(".axon-schema.json")
+                    || name == "axon-schema.json"
+                {
+                    out.push(path);
+                }
+            }
+        }
+    }
+}
+
+/// Load every manifest file under `start_dir` (via
+/// [`discover_manifest_files`]) and merge their `stores` maps into one
+/// unified manifest. Duplicate store names across files produce a
+/// typed [`ManifestError::DuplicateStore`]. The merge is total when
+/// every file parses + every store name is unique.
+pub fn load_and_merge_manifests(start_dir: &Path) -> Result<Manifest, ManifestError> {
+    let files = discover_manifest_files(start_dir);
+    let mut merged = Manifest::new();
+    let mut origin: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path).map_err(|e| ManifestError::InvalidJson {
+            detail: format!("reading {}: {e}", path.display()),
+        })?;
+        let parsed = Manifest::parse_json(&text)?;
+        parsed.verify_content_hash()?;
+        for (store_name, store) in parsed.stores {
+            if let Some(prev_path) = origin.get(&store_name) {
+                return Err(ManifestError::DuplicateStore {
+                    store: store_name,
+                    path_a: prev_path.clone(),
+                    path_b: path.clone(),
+                });
+            }
+            origin.insert(store_name.clone(), path.clone());
+            merged.stores.insert(store_name, store);
+        }
+    }
+    // The merged manifest has no single source-of-truth hash —
+    // callers compute one if they want to checkpoint the merged view.
+    Ok(merged)
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  Unit tests — 14 cases (>12 plan-vivo target)
+// ════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture_basic_manifest_json() -> &'static str {
+        // Hand-written, deliberately not canonical: arbitrary key
+        // order and indentation. Parser must accept it; canonical
+        // serializer must produce the deterministic form.
+        r#"{
+            "stores": {
+                "tenants": {
+                    "columns": {
+                        "tier":      { "type": "Text", "not_null": true },
+                        "tenant_id": { "type": "Uuid", "primary_key": true }
+                    }
+                }
+            },
+            "version": 1
+        }"#
+    }
+
+    #[test]
+    fn parse_accepts_a_well_formed_manifest_with_arbitrary_key_order() {
+        let m = Manifest::parse_json(fixture_basic_manifest_json()).expect("parse");
+        assert_eq!(m.version, 1);
+        assert_eq!(m.stores.len(), 1);
+        let s = m.lookup("tenants").expect("tenants store present");
+        assert_eq!(s.columns.len(), 2);
+        let tenant_id = s.columns.get("tenant_id").expect("tenant_id");
+        assert_eq!(tenant_id.col_type, StoreColumnType::Uuid);
+        assert!(tenant_id.primary_key);
+        let tier = s.columns.get("tier").expect("tier");
+        assert_eq!(tier.col_type, StoreColumnType::Text);
+        assert!(tier.not_null);
+    }
+
+    #[test]
+    fn parse_rejects_missing_top_level_version() {
+        let err = Manifest::parse_json(r#"{"stores": {}}"#).expect_err("must reject");
+        assert!(matches!(err, ManifestError::InvalidStructure { .. }));
+    }
+
+    #[test]
+    fn parse_rejects_unsupported_version() {
+        let err = Manifest::parse_json(r#"{"version": 2, "stores": {}}"#)
+            .expect_err("must reject");
+        match err {
+            ManifestError::UnsupportedVersion { found } => assert_eq!(found, 2),
+            other => panic!("expected UnsupportedVersion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_rejects_unknown_column_type_with_levenshtein_suggestion() {
+        // `Uudi` is edit-distance 2 from `Uuid` (one transposition,
+        // counted as two edits in classical Levenshtein) — within the
+        // Fase 28 `MAX_DISTANCE` cap. A typo further than 2 fails
+        // without a hint; that's correct Fase 28 behaviour.
+        let src = r#"{
+            "version": 1,
+            "stores": {
+                "tenants": {
+                    "columns": {
+                        "tenant_id": { "type": "Uudi" }
+                    }
+                }
+            }
+        }"#;
+        let err = Manifest::parse_json(src).expect_err("must reject");
+        match err {
+            ManifestError::UnknownColumnType { store, column, observed_type, suggestion } => {
+                assert_eq!(store, "tenants");
+                assert_eq!(column, "tenant_id");
+                assert_eq!(observed_type, "Uudi");
+                assert!(
+                    suggestion.contains("Uuid"),
+                    "expected a Levenshtein hint pointing at `Uuid`, got {suggestion:?}"
+                );
+            }
+            other => panic!("expected UnknownColumnType, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_rejects_unknown_column_type_without_a_suggestion_when_distance_exceeds_cap() {
+        // A wildly-off type name (edit distance > 2 from every catalog
+        // entry) yields an UnknownColumnType with an EMPTY suggestion.
+        // This is the Fase 28 behaviour — only confidently-close
+        // suggestions surface; a bad-guess hint is worse than none.
+        let src = r#"{
+            "version": 1,
+            "stores": {
+                "tenants": {
+                    "columns": {
+                        "tenant_id": { "type": "MoneyAmount" }
+                    }
+                }
+            }
+        }"#;
+        let err = Manifest::parse_json(src).expect_err("must reject");
+        match err {
+            ManifestError::UnknownColumnType { suggestion, .. } => {
+                assert!(
+                    suggestion.is_empty(),
+                    "an out-of-distance type must NOT surface a guess; \
+                     got {suggestion:?}"
+                );
+            }
+            other => panic!("expected UnknownColumnType, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn canonical_serialize_is_byte_deterministic_across_input_whitespace_variants() {
+        let src_a = r#"{"version":1,"stores":{"tenants":{"columns":{"id":{"type":"Uuid"}}}}}"#;
+        let src_b = r#"{
+            "version": 1,
+            "stores": {
+                "tenants": {
+                    "columns": {
+                        "id": { "type": "Uuid" }
+                    }
+                }
+            }
+        }"#;
+        let a = Manifest::parse_json(src_a).unwrap().canonical_serialize(false);
+        let b = Manifest::parse_json(src_b).unwrap().canonical_serialize(false);
+        assert_eq!(a, b, "canonical form must be byte-deterministic");
+        // The exact canonical bytes — pin them so a serializer
+        // regression is caught.
+        assert_eq!(
+            a,
+            r#"{"stores":{"tenants":{"columns":{"id":{"type":"Uuid"}}}},"version":1}"#
+        );
+    }
+
+    #[test]
+    fn canonical_serialize_emits_constraints_only_when_true() {
+        let src = r#"{
+            "version": 1,
+            "stores": {
+                "tenants": {
+                    "columns": {
+                        "id": { "type": "Uuid", "primary_key": true, "not_null": false }
+                    }
+                }
+            }
+        }"#;
+        let m = Manifest::parse_json(src).unwrap();
+        let canonical = m.canonical_serialize(false);
+        assert!(canonical.contains(r#""primary_key":true"#));
+        assert!(
+            !canonical.contains("not_null"),
+            "false constraints are OMITTED from canonical form (skip-when-default \
+             discipline matching the IR serialization)"
+        );
+    }
+
+    #[test]
+    fn content_hash_is_stable_across_whitespace_and_key_order() {
+        let src_a = r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Uuid"}}}}}"#;
+        let src_b = r#"{
+            "stores": { "t": { "columns": { "id": { "type": "Uuid" } } } },
+            "version": 1
+        }"#;
+        let h_a = Manifest::parse_json(src_a).unwrap().compute_content_hash();
+        let h_b = Manifest::parse_json(src_b).unwrap().compute_content_hash();
+        assert_eq!(h_a, h_b);
+        assert!(h_a.starts_with("sha256:"));
+        assert_eq!(h_a.len(), "sha256:".len() + 64);
+    }
+
+    #[test]
+    fn verify_content_hash_passes_when_hash_matches_canonical_content() {
+        let mut m = Manifest::parse_json(
+            r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Uuid"}}}}}"#,
+        )
+        .unwrap();
+        m.refresh_content_hash();
+        // Round-trip through canonical serialization with-hash, parse,
+        // re-verify.
+        let serialized = m.canonical_serialize(true);
+        let parsed = Manifest::parse_json(&serialized).unwrap();
+        parsed.verify_content_hash().expect("verifies");
+    }
+
+    #[test]
+    fn verify_content_hash_fails_when_hash_mismatches_canonical_content() {
+        // A manifest claiming a hash that does NOT match its content
+        // is the axon-T805 trigger.
+        let src = r#"{
+            "version": 1,
+            "stores": { "t": { "columns": { "id": { "type": "Uuid" } } } },
+            "content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }"#;
+        let m = Manifest::parse_json(src).unwrap();
+        let err = m.verify_content_hash().expect_err("must mismatch");
+        assert!(matches!(err, ManifestError::ContentHashMismatch { .. }));
+    }
+
+    #[test]
+    fn verify_content_hash_is_noop_when_field_absent() {
+        // No declared hash = nothing to verify = Ok. Adopters can
+        // commit a manifest without a hash if they don't want the
+        // axon-T805 gate (the deploy-time D8 verification + the
+        // type-checker still catch column mismatches).
+        let m = Manifest::parse_json(
+            r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Uuid"}}}}}"#,
+        )
+        .unwrap();
+        m.verify_content_hash().expect("absent hash is Ok");
+    }
+
+    #[test]
+    fn multi_store_manifest_round_trips_through_canonical_form() {
+        let src = r#"{
+            "version": 1,
+            "stores": {
+                "tenants": { "columns": { "id": { "type": "Uuid", "primary_key": true } } },
+                "audit_log": { "columns": { "event_id": { "type": "Uuid" }, "actor": { "type": "Text", "not_null": true } } },
+                "rates": { "columns": { "amount": { "type": "Numeric" } } }
+            }
+        }"#;
+        let m1 = Manifest::parse_json(src).unwrap();
+        let canonical = m1.canonical_serialize(false);
+        // Re-parse + re-canonicalise must match byte-for-byte.
+        let m2 = Manifest::parse_json(&canonical).unwrap();
+        assert_eq!(canonical, m2.canonical_serialize(false));
+        assert_eq!(m1, m2);
+        // Stores keys appear sorted in canonical form.
+        let pos_audit = canonical.find(r#""audit_log""#).expect("audit_log present");
+        let pos_rates = canonical.find(r#""rates""#).expect("rates present");
+        let pos_tenants = canonical.find(r#""tenants""#).expect("tenants present");
+        assert!(pos_audit < pos_rates && pos_rates < pos_tenants, "stores must be sorted");
+    }
+
+    #[test]
+    fn lookup_by_qualified_name_returns_the_store_when_present() {
+        let m = Manifest::parse_json(
+            r#"{"version":1,"stores":{"public.tenants":{"columns":{"id":{"type":"Uuid"}}}}}"#,
+        )
+        .unwrap();
+        assert!(m.lookup("public.tenants").is_some());
+        assert!(m.lookup("tenants").is_none());
+        assert!(m.contains("public.tenants"));
+    }
+
+    #[test]
+    fn aliases_in_manifest_input_normalize_to_canonical_type_name() {
+        // 38.b's alias map (`int` → `Int`, `boolean` → `Bool`, etc.)
+        // is consumed by `from_token` — the parser accepts the alias
+        // and the canonical type name lands on the AST.
+        let src = r#"{
+            "version": 1,
+            "stores": {
+                "t": { "columns": { "id": { "type": "int", "primary_key": true } } }
+            }
+        }"#;
+        let m = Manifest::parse_json(src).unwrap();
+        let col = m.lookup("t").unwrap().columns.get("id").unwrap();
+        assert_eq!(col.col_type, StoreColumnType::Int);
+        // Canonical serialize emits PascalCase, NOT the input alias.
+        let canonical = m.canonical_serialize(false);
+        assert!(canonical.contains(r#""type":"Int""#));
+        assert!(!canonical.contains(r#""type":"int""#));
+    }
+
+    #[test]
+    fn sha256_hex_matches_known_test_vectors() {
+        // FIPS 180-4 reference vectors — if these ever break, the
+        // hand-rolled SHA-256 is wrong and the entire content-hash
+        // contract is invalid.
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        // 64-byte boundary case (exercises the padding logic).
+        let long = b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+        assert_eq!(
+            sha256_hex(long),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+    }
+}
