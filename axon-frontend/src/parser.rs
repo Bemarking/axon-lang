@@ -3963,13 +3963,10 @@ impl Parser {
                     not_null: false,
                     unique: false,
                     default_value: String::new(),
-                    // §Fase 38.x.c — `identity:` is not yet a source-level
-                    // declaration keyword (the AST field exists for
-                    // manifest round-trip + introspect output); inline
-                    // `schema { col: Type identity }` syntax is a 38.x.d
-                    // candidate. Today inline columns set `identity:
-                    // false` and rely on the manifest path for the
-                    // IDENTITY pillar.
+                    // §Fase 38.x.d (D1) — `identity` is now a recognized
+                    // inline keyword (see the constraint loop below).
+                    // Defaults to false; set to true when the adopter
+                    // writes `id: BigInt primary_key identity`.
                     identity: false,
                     line: col_tok.line,
                     column: col_tok.column,
@@ -3999,6 +3996,20 @@ impl Parser {
                         }
                         "unique" => {
                             col.unique = true;
+                            self.advance();
+                        }
+                        // §Fase 38.x.d (D1) — `identity` marks a column
+                        // as `GENERATED ALWAYS/BY DEFAULT AS IDENTITY`.
+                        // Distinct from `auto_increment` (legacy SERIAL
+                        // via `nextval(...)` default). T803 skips
+                        // identity columns from the NOT-NULL-omission
+                        // check because Postgres auto-fills them; the
+                        // distinction matters because IDENTITY ALWAYS
+                        // also rejects user-supplied values, where
+                        // SERIAL accepts them (a future 38.x.e arm in
+                        // T802 may surface this).
+                        "identity" => {
+                            col.identity = true;
                             self.advance();
                         }
                         "default" => {
