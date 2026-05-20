@@ -48,6 +48,7 @@ fn server_cfg(strict: bool) -> ServerConfig {
         config_path: None,
         strict_type_driven_transport: strict,
         default_backend: None,
+        schemas_dir: None,
     }
 }
 

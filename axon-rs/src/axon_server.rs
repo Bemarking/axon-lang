@@ -251,6 +251,34 @@ pub struct ServerConfig {
     /// (`parser::AXONENDPOINT_BACKEND_VALUES`) at `run_serve` startup —
     /// an unknown name fails fast, before the first request is served.
     pub default_backend: Option<String>,
+    /// §Fase 38.j (D3 + D7 + D8) — Directory containing declared store-
+    /// schema manifests (`*.axon-schema.json` files at the project root
+    /// and/or under a `schemas/` subdirectory).
+    ///
+    /// When `Some(path)`, `POST /v1/deploy` loads and merges every
+    /// manifest under the directory before running the deploy-time
+    /// store verification pass. The declared columns of every Fase 38
+    /// `schema:` form (a/b/c) are then proven AGAINST the live Postgres
+    /// introspection — any drift fails the deploy with structured
+    /// axon-T807 (DeclaredVsLiveDrift) diagnostics. axon-T805 (manifest
+    /// hash mismatch) and axon-T806 (missing per-tenant env var) also
+    /// surface here.
+    ///
+    /// `None` ≡ no manifest loading — the v1.37.0 verify behavior is
+    /// preserved verbatim (D5 absolute backwards-compat). An adopter
+    /// who never adopts Fase 38's compile-time schema observes ZERO
+    /// behavior change at deploy.
+    ///
+    /// Adopters set it via three converging surfaces (D7 — mirrors the
+    /// `default_backend` precedence):
+    ///   * CLI:     `axon serve --schemas-dir <path>`
+    ///   * Env var: `AXON_SCHEMAS_DIR=<path>`
+    ///   * Programmatic: this field.
+    /// The CLI flag wins when both CLI and env are set. An empty value
+    /// collapses to `None`. The directory's existence is NOT verified
+    /// at startup — a missing dir resolves to "no manifest files" the
+    /// same way an empty dir does (`load_and_merge_manifests` is total).
+    pub schemas_dir: Option<String>,
 }
 
 impl ServerConfig {
@@ -1728,10 +1756,53 @@ async fn deploy_handler(
     // defers to the D9 runtime self-heal — deploy stays honest, never
     // brittle). The successful resolutions warm the process schema
     // cache, so the first runtime operation is a cache hit.
+    //
+    // §Fase 38.j (D3 + D8) — When `ServerConfig.schemas_dir` is set,
+    // load + merge every `*.axon-schema.json` manifest under the
+    // directory BEFORE verification, and pass the merged manifest into
+    // `verify_postgres_schemas_with_manifest`. This activates the
+    // compile-time-declared store schema as the authoritative shape:
+    // any drift between the declared columns (form a/b/c) and the live
+    // Postgres introspection raises axon-T807 and fails the deploy.
+    // Adopters who never set `--schemas-dir` observe ZERO behavior
+    // change — `None` falls through to the v1.37.0 path verbatim (D5).
+    let schemas_dir_opt = {
+        let s = state.lock().unwrap();
+        s.config.schemas_dir.clone()
+    };
+    let loaded_manifest: Option<axon_frontend::store_schema_manifest::Manifest> =
+        match schemas_dir_opt.as_deref() {
+            None => None,
+            Some(dir) => {
+                let path = std::path::Path::new(dir);
+                match axon_frontend::store_schema_manifest::load_and_merge_manifests(path) {
+                    Ok(m) => Some(m),
+                    Err(e) => {
+                        let mut s = state.lock().unwrap();
+                        s.metrics.total_errors += 1;
+                        return Ok(Json(serde_json::json!({
+                            "success": false,
+                            "error": format!(
+                                "failed to load store-schema manifests from `{}`: {}",
+                                dir, e,
+                            ),
+                            "phase": "store_schema_manifest_load",
+                            "d_letter": "D3+D8",
+                            "schemas_dir": dir,
+                        })));
+                    }
+                }
+            }
+        };
+
     let store_report = match crate::store::registry::StoreRegistry::build(
         &ir.axonstore_specs,
     ) {
-        Ok(registry) => registry.verify_postgres_schemas().await,
+        Ok(registry) => {
+            registry
+                .verify_postgres_schemas_with_manifest(loaded_manifest.as_ref())
+                .await
+        }
         Err(e) => {
             let mut s = state.lock().unwrap();
             s.metrics.total_errors += 1;
@@ -27839,6 +27910,7 @@ mod tests {
             config_path: None,
             strict_type_driven_transport: false,
             default_backend: None,
+            schemas_dir: None,
         }
     }
 
@@ -27855,6 +27927,7 @@ mod tests {
             config_path: None,
             strict_type_driven_transport: false,
             default_backend: None,
+            schemas_dir: None,
         }
     }
 

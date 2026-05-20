@@ -146,6 +146,25 @@ enum Commands {
         /// providers).
         #[arg(long)]
         backend: Option<String>,
+        /// §Fase 38.j (D3 + D7 + D8) — Directory containing declared
+        /// store-schema manifests (`*.axon-schema.json` files at the
+        /// project root and/or under a `schemas/` subdirectory).
+        ///
+        /// When set, `POST /v1/deploy` loads and merges every manifest
+        /// under the directory before running the deploy-time store
+        /// verification pass. Declared columns (Fase 38 schema forms
+        /// a/b/c) become the authoritative shape — any drift between
+        /// the manifest and the LIVE Postgres introspection raises
+        /// axon-T807 (DeclaredVsLiveDrift) and fails the deploy.
+        ///
+        /// Also readable from the env var `AXON_SCHEMAS_DIR`; the CLI
+        /// flag wins when both are set. Unset ≡ no manifest loading —
+        /// the v1.37.0 verify_postgres_schemas behavior is preserved
+        /// verbatim (D5 absolute backwards-compat: an adopter who has
+        /// not adopted Fase 38's compile-time schema observes ZERO
+        /// behavior change at deploy).
+        #[arg(long)]
+        schemas_dir: Option<String>,
     },
     /// Lambda Data (ΛD) epistemic codec: encode, decode, inspect.
     Ld {
@@ -332,6 +351,7 @@ fn main() {
             database_url,
             strict_type_driven_transport,
             backend,
+            schemas_dir,
         } => axon_server::run_serve(axon_server::ServerConfig {
             host,
             port,
@@ -372,6 +392,25 @@ fn main() {
             // `run_serve` startup — an unknown name fails fast.
             default_backend: backend
                 .or_else(|| std::env::var("AXON_DEFAULT_BACKEND").ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            // §Fase 38.j (D3 + D7 + D8) — Resolution order for the
+            // declared store-schema manifest directory (highest
+            // precedence first):
+            //   1. CLI flag `--schemas-dir <path>` (explicit at run-
+            //      time; common in dev + `docker run` overrides).
+            //   2. Env var `AXON_SCHEMAS_DIR` (12-factor app pattern;
+            //      common in k8s/docker `Deployment` manifests).
+            //   3. `None` — no manifest loading; v1.37.0 deploy-time
+            //      verify is preserved verbatim (D5 absolute).
+            // An empty string from either surface collapses to `None`.
+            // The directory's existence is NOT verified at startup —
+            // a missing dir resolves to "no manifest files" the same
+            // way an empty dir does (`load_and_merge_manifests` is
+            // total). Failures, if any, surface at deploy time as
+            // structured T805/T807/duplicate-store errors.
+            schemas_dir: schemas_dir
+                .or_else(|| std::env::var("AXON_SCHEMAS_DIR").ok())
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
         }),

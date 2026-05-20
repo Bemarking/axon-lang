@@ -336,6 +336,7 @@ fn server_cfg() -> ServerConfig {
         config_path: None,
         strict_type_driven_transport: false,
         default_backend: None,
+        schemas_dir: None,
     }
 }
 

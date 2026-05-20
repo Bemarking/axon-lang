@@ -77,6 +77,7 @@ fn server_cfg(default_backend: Option<&str>) -> ServerConfig {
         config_path: None,
         strict_type_driven_transport: false,
         default_backend: default_backend.map(|s| s.to_string()),
+        schemas_dir: None,
     }
 }
 

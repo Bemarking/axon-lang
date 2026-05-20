@@ -99,6 +99,7 @@ fn server_cfg() -> ServerConfig {
         // effects WITHOUT requiring strict mode.
         strict_type_driven_transport: false,
         default_backend: None,
+        schemas_dir: None,
     }
 }
 
