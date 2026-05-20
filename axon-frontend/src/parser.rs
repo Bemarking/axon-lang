@@ -3963,6 +3963,14 @@ impl Parser {
                     not_null: false,
                     unique: false,
                     default_value: String::new(),
+                    // §Fase 38.x.c — `identity:` is not yet a source-level
+                    // declaration keyword (the AST field exists for
+                    // manifest round-trip + introspect output); inline
+                    // `schema { col: Type identity }` syntax is a 38.x.d
+                    // candidate. Today inline columns set `identity:
+                    // false` and rely on the manifest path for the
+                    // IDENTITY pillar.
+                    identity: false,
                     line: col_tok.line,
                     column: col_tok.column,
                 };

@@ -1376,6 +1376,7 @@ mod tests {
                     not_null: false,
                     unique: false,
                     default_value: String::new(),
+                    identity: false,
                 },
                 crate::ir_nodes::IRStoreColumn {
                     name: "tier".to_string(),
@@ -1385,6 +1386,7 @@ mod tests {
                     not_null: true,
                     unique: false,
                     default_value: String::new(),
+                    identity: false,
                 },
             ],
         };
@@ -1407,6 +1409,7 @@ mod tests {
                 not_null: false,
                 unique: false,
                 default_value: String::new(),
+                identity: false,
             }],
         };
         let result = declared_columns_for("tenants", Some(&schema), None, None);

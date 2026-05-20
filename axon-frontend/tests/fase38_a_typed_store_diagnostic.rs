@@ -327,6 +327,7 @@ fn s5_axon_store_introspect_frontend_surface_is_live_with_pure_api() {
             primary_key: true,
             unique: false,
             default_expression: String::new(),
+            identity_kind: None,
         },
         IntrospectionRow {
             column_name: "tier".into(),
@@ -335,6 +336,7 @@ fn s5_axon_store_introspect_frontend_surface_is_live_with_pure_api() {
             primary_key: false,
             unique: false,
             default_expression: String::new(),
+            identity_kind: None,
         },
     ];
     let (store, omissions) = build_manifest_store(&rows);

@@ -41,6 +41,8 @@ fn lower_column(c: &StoreColumn) -> IRStoreColumn {
         not_null: c.not_null,
         unique: c.unique,
         default_value: c.default_value.clone(),
+        // §Fase 38.x.c (D2) — round-trip the IDENTITY marker through IR.
+        identity: c.identity,
     }
 }
 

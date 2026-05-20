@@ -219,6 +219,13 @@ async fn fetch_introspection_rows(
     table: &str,
 ) -> Result<Vec<IntrospectionRow>, StoreError> {
     let qualified = format!("\"{schema}\".\"{table}\"");
+    // §Fase 38.x.c (D1) — added `a.attidentity AS identity_kind` to
+    // the SELECT list. Postgres represents auto-fill via TWO channels:
+    // `pg_attrdef.adbin` (legacy SERIAL → `nextval(...)` default) and
+    // `pg_attribute.attidentity` (`'a'` = ALWAYS, `'d'` = BY DEFAULT,
+    // empty = not identity). The pre-v1.38.3 query read only channel
+    // #1; this query reads BOTH. `decode_introspection_row` maps the
+    // text-returned attidentity to `Option<char>`.
     let pg_rows = sqlx::query(
         "SELECT \
              a.attname AS column_name, \
@@ -230,6 +237,7 @@ async fn fetch_introspection_rows(
                   WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum), \
                  '' \
              ) AS default_expression, \
+             a.attidentity::text AS identity_kind, \
              EXISTS ( \
                  SELECT 1 FROM pg_catalog.pg_constraint c \
                  WHERE c.conrelid = a.attrelid \
@@ -301,6 +309,20 @@ fn decode_introspection_row(row: &PgRow) -> Result<IntrospectionRow, StoreError>
         pg_type: "bool".into(),
         source: e.to_string(),
     })?;
+    // §Fase 38.x.c (D1) — `pg_attribute.attidentity` ships as PG's
+    // single-char `name`/`text`. Empty string ('') = not an identity
+    // column; 'a' / 'd' = ALWAYS / BY DEFAULT.
+    let identity_kind_text: String =
+        row.try_get("identity_kind").map_err(|e| StoreError::Decode {
+            column: "identity_kind".into(),
+            pg_type: "text".into(),
+            source: e.to_string(),
+        })?;
+    let identity_kind: Option<char> = match identity_kind_text.chars().next() {
+        Some('a') => Some('a'),
+        Some('d') => Some('d'),
+        Some(_) | None => None, // empty string OR any non-identity marker
+    };
     Ok(IntrospectionRow {
         column_name,
         pg_udt,
@@ -308,6 +330,7 @@ fn decode_introspection_row(row: &PgRow) -> Result<IntrospectionRow, StoreError>
         primary_key,
         unique: unique_col,
         default_expression,
+        identity_kind,
     })
 }
 

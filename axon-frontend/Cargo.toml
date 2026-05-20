@@ -1,10 +1,10 @@
 [package]
 name = "axon-frontend"
-version = "0.19.0"
+version = "0.19.1"
 edition = "2021"
 rust-version = "1.95"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
-description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator. Zero runtime dependencies. v0.19.0 adds the Declared & Compile-Time-Typed Store Schema — an `axonstore` may declare its columns inline, by manifest reference, or per-tenant via env-var; `axon check` proves every `where:`, `persist`, `mutate`, `purge` against declared columns with 6 error codes (T801–T805 + T807) plus Levenshtein-suggested names + type-compatible alternatives (Fase 38). v0.18.0 adds the Request Binding Contract totality check — an axonendpoint's `execute:` flow parameters must be covered by its `body:` type at compile time (Fase 37). v0.17.0 adds `in_memory` to the axonstore backend catalog (Fase 36.x). v0.12.0 ships the wire-format adapter cycle. v0.11.0 Fase 32 REST routes. v0.10.0 Fase 31 type-driven wire. v0.9.0 Fase 30 HTTP. v0.2.0–v0.8.0 earlier compiler cycles."
+description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator. Zero runtime dependencies. v0.19.1 adds IDENTITY column recognition — `GENERATED ALWAYS/BY DEFAULT AS IDENTITY` columns parsed via `pg_attribute.attidentity`; T803 NOT-NULL-omission proof skips identity columns since Postgres auto-fills them (Fase 38.x.c). v0.19.0 adds the Declared & Compile-Time-Typed Store Schema — `axonstore` declares columns inline/by-manifest/per-tenant; `axon check` proves every where/persist/mutate/purge with 6 error codes (T801–T805 + T807) plus Levenshtein suggestions (Fase 38). v0.18.0 the Request Binding Contract totality check (Fase 37). v0.17.0 `in_memory` axonstore backend (Fase 36.x). v0.12.0 wire-format adapter. v0.11.0 Fase 32 REST. v0.10.0 type-driven wire. v0.9.0 HTTP. v0.2.0–v0.8.0 earlier cycles."
 license = "MIT"
 repository = "https://github.com/Bemarking/axon-lang"
 readme = "README.md"
