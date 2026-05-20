@@ -729,6 +729,12 @@ pub struct AxonStoreDefinition {
     /// parse time against the closed slug grammar (shared with the
     /// Fase 32.g `requires:` grammar).
     pub capability: String,
+    /// §Fase 38.b (D1) — the OPTIONAL column-schema declaration. Three
+    /// closed forms (inline / manifest-ref / env-var); `None` means the
+    /// 37.x runtime+deploy path applies verbatim (D5 absolute). The
+    /// §38.d / §38.e `StoreColumnProof` pass consumes this; the §38.h
+    /// CLI exports it.
+    pub column_schema: Option<crate::store_schema::StoreColumnSchema>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

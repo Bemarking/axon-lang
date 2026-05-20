@@ -108,6 +108,10 @@ from .ast_nodes import (
     StepNode,
     StoreColumnNode,
     StoreSchemaNode,
+    StoreSchemaRefNode,
+    StoreSchemaEnvVarNode,
+    STORE_COLUMN_TYPE_CATALOG,
+    canonicalize_store_column_type,
     TopologyDefinition,
     TopologyEdge,
     StreamDefinition,
@@ -4862,7 +4866,7 @@ class Parser:
             field_name = inner.value
             if inner.type == TokenType.SCHEMA:
                 self._advance()
-                node.schema = self._parse_store_schema(tok)
+                node.schema = self._parse_store_schema_declaration(name.value, inner)
             elif field_name in (
                 "backend", "connection", "confidence_floor",
                 "isolation", "on_breach",
@@ -5774,8 +5778,114 @@ class Parser:
         self._consume(TokenType.RBRACE)
         return node
 
+    def _parse_store_schema_declaration(
+        self,
+        store_name: str,
+        schema_tok: Token,
+    ) -> StoreSchemaNode | StoreSchemaRefNode | StoreSchemaEnvVarNode:
+        """§Fase 38.b (D1) — dispatch the three closed `axonstore`
+        ``schema:`` declaration forms:
+
+        * form (a) **inline** — ``schema { col: Type [constraint…], … }``
+        * form (b) **manifest reference** — ``schema: "qualified.name"``
+          (string literal that does NOT start with ``env:``)
+        * form (c) **env-var schema namespace** — ``schema: env:VAR``
+          (unquoted) OR ``schema: "env:VAR"`` (quoted)
+
+        Called immediately AFTER the ``schema`` token is consumed.
+        Mirror of Rust's ``Parser::parse_store_schema_declaration``.
+        """
+        # Form (a) — inline column block.
+        if self._check(TokenType.LBRACE):
+            return self._parse_store_schema(schema_tok)
+
+        # Forms (b) + (c) require a `:` separator.
+        if not self._check(TokenType.COLON):
+            cur = self._current()
+            raise AxonParseError(
+                f"axonstore '{store_name}' `schema:` declaration expects "
+                f"`{{ … }}` (inline columns), `: \"manifest.ref\"` "
+                f"(manifest reference), or `: env:VAR` (per-tenant schema "
+                f"namespace). Got `{cur.value}` instead.",
+                line=cur.line,
+                column=cur.column,
+                expected="{ … } | : \"manifest.ref\" | : env:VAR",
+                found=cur.value,
+            )
+        self._advance()  # past ':'
+
+        # Form (b) or quoted form (c) — string literal value.
+        if self._check(TokenType.STRING):
+            lit = self._advance()
+            value = lit.value
+            if value.startswith("env:"):
+                var = value[len("env:"):].strip()
+                if not var:
+                    raise AxonParseError(
+                        f"axonstore '{store_name}' `schema: \"env:\"` is "
+                        f"missing the variable name after the `env:` prefix.",
+                        line=lit.line,
+                        column=lit.column,
+                    )
+                return StoreSchemaEnvVarNode(
+                    var_name=var,
+                    line=schema_tok.line,
+                    column=schema_tok.column,
+                )
+            if not value.strip():
+                raise AxonParseError(
+                    f"axonstore '{store_name}' `schema:` manifest reference "
+                    f"is empty. Expected `\"qualified.name\"` — e.g. "
+                    f"`\"public.tenants\"`.",
+                    line=lit.line,
+                    column=lit.column,
+                )
+            return StoreSchemaRefNode(
+                qualified_name=value,
+                line=schema_tok.line,
+                column=schema_tok.column,
+            )
+
+        # Form (c) unquoted — `env:VAR`. The lexer emits `env` as an
+        # identifier, then `:`, then the var name as an identifier.
+        env_tok = self._current()
+        if env_tok.value == "env":
+            self._advance()
+            if not self._check(TokenType.COLON):
+                raise AxonParseError(
+                    f"axonstore '{store_name}' `schema: env` is missing the "
+                    f"`:` separator. Expected `schema: env:VAR`.",
+                    line=env_tok.line,
+                    column=env_tok.column,
+                )
+            self._advance()  # past ':'
+            var_tok = self._consume_any_identifier_or_keyword()
+            if not var_tok.value.strip():
+                raise AxonParseError(
+                    f"axonstore '{store_name}' `schema: env:` is missing "
+                    f"the variable name.",
+                    line=var_tok.line,
+                    column=var_tok.column,
+                )
+            return StoreSchemaEnvVarNode(
+                var_name=var_tok.value,
+                line=schema_tok.line,
+                column=schema_tok.column,
+            )
+
+        raise AxonParseError(
+            f"axonstore '{store_name}' `schema:` declaration expects "
+            f"`{{ … }}` (inline columns), `\"manifest.ref\"` (manifest "
+            f"reference), or `env:VAR` (per-tenant schema namespace). "
+            f"Got `{env_tok.value}` instead.",
+            line=env_tok.line,
+            column=env_tok.column,
+            expected="{ … } | \"manifest.ref\" | env:VAR",
+            found=env_tok.value,
+        )
+
     def _parse_store_schema(self, parent_tok: Token) -> StoreSchemaNode:
-        """Parse: schema { col: type constraints, ... }"""
+        """Parse: schema { col: Type constraints, ... } (inline form)."""
         node = StoreSchemaNode(line=parent_tok.line, column=parent_tok.column)
         self._consume(TokenType.LBRACE)
 
@@ -5787,12 +5897,38 @@ class Parser:
         return node
 
     def _parse_store_column(self) -> StoreColumnNode:
-        """Parse: col_name: col_type [primary_key] [auto_increment] [not_null] [unique] [default V]"""
+        """Parse: col_name: col_type [primary_key] [auto_increment] [not_null] [unique] [default V]
+
+        §Fase 38.b (D1) — `col_type` is validated against the closed
+        15-type catalog (canonical PascalCase + common lowercase
+        aliases). An unknown type is a parse error with a Levenshtein
+        "Did you mean X?" hint (Fase 28 inheritance).
+        """
         col_tok = self._current()
         col_name = self._consume_any_identifier_or_keyword().value
         node = StoreColumnNode(col_name=col_name, line=col_tok.line, column=col_tok.column)
         self._consume(TokenType.COLON)
-        node.col_type = self._consume_any_identifier_or_keyword().value
+        type_tok = self._consume_any_identifier_or_keyword()
+        canonical = canonicalize_store_column_type(type_tok.value)
+        if canonical is None:
+            hint = suggest_for(type_tok.value, STORE_COLUMN_TYPE_CATALOG)
+            base = (
+                f"Unknown column type '{type_tok.value}' for column "
+                f"'{col_name}' in `schema:` block. The closed v1.38.0 "
+                f"column-type catalog (Fase 38.b D1) is "
+                f"{{{', '.join(STORE_COLUMN_TYPE_CATALOG)}}} (plus common "
+                f"lowercase aliases — `int`/`integer`/`int4` for `Int`, "
+                f"`bool`/`boolean` for `Bool`, etc.)."
+            )
+            msg = f"{base} {hint}" if hint else base
+            raise AxonParseError(
+                msg,
+                line=type_tok.line,
+                column=type_tok.column,
+                expected=" | ".join(STORE_COLUMN_TYPE_CATALOG),
+                found=type_tok.value,
+            )
+        node.col_type = canonical
 
         # Parse trailing column constraints (position-independent)
         while not self._check(TokenType.RBRACE) and self._current().type == TokenType.IDENTIFIER:

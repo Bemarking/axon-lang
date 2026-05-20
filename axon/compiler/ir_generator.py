@@ -100,6 +100,8 @@ from axon.compiler.ir_nodes import (
     IRShieldApply,
     IRStoreColumn,
     IRStoreSchema,
+    IRStoreSchemaRef,
+    IRStoreSchemaEnvVar,
     IRStreamSpec,
     IRToolSpec,
     IRTrail,
@@ -2353,9 +2355,16 @@ class IRGenerator:
 
         Registers the store in the symbol table so that CRUD
         operations (persist/retrieve/mutate/purge) can reference it.
+
+        §Fase 38.b (D1) — lowers the three closed `schema:` declaration
+        forms (inline / manifest-ref / env-var) to their IR mirrors
+        (:class:`IRStoreSchema` / :class:`IRStoreSchemaRef` /
+        :class:`IRStoreSchemaEnvVar`). ``None`` ⇒ 37.x runtime+deploy
+        path applies verbatim (D5 absolute).
         """
-        schema_ir: IRStoreSchema | None = None
-        if node.schema:
+        schema_ir: IRStoreSchema | IRStoreSchemaRef | IRStoreSchemaEnvVar | None = None
+        if isinstance(node.schema, ast.StoreSchemaNode):
+            # Form (a) — inline column block.
             columns = tuple(
                 IRStoreColumn(
                     source_line=col.line,
@@ -2374,6 +2383,20 @@ class IRGenerator:
                 source_line=node.schema.line,
                 source_column=node.schema.column,
                 columns=columns,
+            )
+        elif isinstance(node.schema, ast.StoreSchemaRefNode):
+            # Form (b) — manifest reference.
+            schema_ir = IRStoreSchemaRef(
+                source_line=node.schema.line,
+                source_column=node.schema.column,
+                qualified_name=node.schema.qualified_name,
+            )
+        elif isinstance(node.schema, ast.StoreSchemaEnvVarNode):
+            # Form (c) — per-tenant env-var schema namespace.
+            schema_ir = IRStoreSchemaEnvVar(
+                source_line=node.schema.line,
+                source_column=node.schema.column,
+                var_name=node.schema.var_name,
             )
 
         ir_store = IRAxonStore(

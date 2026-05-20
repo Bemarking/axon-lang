@@ -2032,19 +2032,25 @@ class AxonEndpointDefinition(ASTNode):
 @dataclass
 class StoreColumnNode(ASTNode):
     """
-    id: integer primary_key auto_increment
-    name: text not_null
-    balance: decimal default 0.00
+    id: Uuid primary_key
+    name: Text not_null
+    balance: Numeric default 0.00
 
-    A single column in an ``axonstore`` schema.
+    A single column in an ``axonstore`` schema (inline form).
 
     HoTT interpretation: each column is a fiber in the dependent
     type family  Σ(c : ColName). ColType(c) , where constraints
     (primary_key, not_null, unique) restrict the fiber's
     inhabitants.
+
+    §Fase 38.b (D1) — `col_type` is normalized at parse time to one
+    of the 15 canonical PascalCase names in
+    :data:`STORE_COLUMN_TYPE_CATALOG`. Common aliases (`int`/`integer`/
+    `int4` → `Int`, `boolean` → `Bool`, …) are accepted by the parser
+    and rewritten to the canonical form on this AST node.
     """
     col_name: str = ""
-    col_type: str = ""                                # integer | text | decimal | timestamp | boolean
+    col_type: str = ""                                # one of STORE_COLUMN_TYPE_CATALOG (PascalCase)
     primary_key: bool = False
     auto_increment: bool = False
     not_null: bool = False
@@ -2052,16 +2058,75 @@ class StoreColumnNode(ASTNode):
     default_value: str = ""                           # literal default value
 
 
+# §Fase 38.b (D1) — the closed 15-type column-schema catalog. Mirror of
+# `axon_frontend::store_schema::StoreColumnType`. Exactly the 15 types
+# named in plan vivo §4 D1, in declaration order. An adopter declares
+# these as PascalCase identifiers in a `schema:` block; the alias map
+# below accepts common lowercase forms for ergonomic compatibility,
+# normalising to the canonical PascalCase form in the AST.
+STORE_COLUMN_TYPE_CATALOG: tuple[str, ...] = (
+    "Uuid",
+    "Text",
+    "Int",
+    "BigInt",
+    "Float",
+    "Double",
+    "Bool",
+    "Timestamptz",
+    "Timestamp",
+    "Date",
+    "Time",
+    "Jsonb",
+    "Json",
+    "Bytea",
+    "Numeric",
+)
+
+
+# §Fase 38.b (D1) — alias table (case-insensitive on the alias side).
+# Keys are lowercased; values are canonical PascalCase names.
+STORE_COLUMN_TYPE_ALIASES: dict[str, str] = {
+    "int": "Int", "integer": "Int", "int4": "Int",
+    "bigint": "BigInt", "int8": "BigInt",
+    "bool": "Bool", "boolean": "Bool",
+    "text": "Text", "varchar": "Text", "string": "Text",
+    "uuid": "Uuid",
+    "float": "Float", "float4": "Float", "real": "Float",
+    "double": "Double", "float8": "Double",
+    "timestamptz": "Timestamptz",
+    "timestamp": "Timestamp",
+    "date": "Date",
+    "time": "Time",
+    "jsonb": "Jsonb",
+    "json": "Json",
+    "bytea": "Bytea",
+    "numeric": "Numeric", "decimal": "Numeric",
+}
+
+
+def canonicalize_store_column_type(name: str) -> str | None:
+    """§Fase 38.b (D1) — resolve a source-level type token to its
+    canonical PascalCase form. Returns ``None`` if outside the closed
+    catalog. Mirror of Rust's ``StoreColumnType::from_token``.
+    """
+    if name in STORE_COLUMN_TYPE_CATALOG:
+        return name
+    return STORE_COLUMN_TYPE_ALIASES.get(name.lower())
+
+
 @dataclass
 class StoreSchemaNode(ASTNode):
     """
     schema {
-        id: integer primary_key auto_increment
-        name: text not_null
-        email: text unique not_null
+        id: Uuid primary_key
+        name: Text not_null
+        email: Text unique not_null
     }
 
-    The schema sub-block inside an ``axonstore`` definition.
+    The **inline** column-block form of an ``axonstore`` schema
+    declaration — form (a) of Fase 38.b D1's three closed forms. The
+    other two are :class:`StoreSchemaRefNode` (manifest reference) and
+    :class:`StoreSchemaEnvVarNode` (per-tenant env-var namespace).
 
     HoTT interpretation: the schema is a **product type**
     (record type) whose univalence path to the DB schema
@@ -2070,6 +2135,35 @@ class StoreSchemaNode(ASTNode):
       (AxonType ≃ DBSchema) ≃ (AxonType = DBSchema)
     """
     columns: list[StoreColumnNode] = field(default_factory=list)
+
+
+@dataclass
+class StoreSchemaRefNode(ASTNode):
+    """§Fase 38.b (D1) — form (b): manifest reference.
+
+    ``schema: "qualified.name"`` — the column schema lives in a
+    checked-in ``.axon-schema.yml`` / ``.axon-schema.json`` manifest,
+    referenced by qualified name. The actual columns are resolved at
+    ``axon check`` time (Fase 38.d / 38.e).
+    """
+    qualified_name: str = ""
+
+
+@dataclass
+class StoreSchemaEnvVarNode(ASTNode):
+    """§Fase 38.b (D1) — form (c): per-tenant env-var namespace.
+
+    ``schema: env:VAR`` (unquoted) or ``schema: "env:VAR"`` (quoted) —
+    the schema NAMESPACE (a Postgres schema name like ``tenant_42``)
+    is resolved at deploy time from the named environment variable;
+    the manifest entry keyed on ``<namespace>.<table>`` provides the
+    column set.
+    """
+    var_name: str = ""
+
+
+# Union type alias for any of the three closed declaration forms.
+StoreSchemaDeclaration = StoreSchemaNode | StoreSchemaRefNode | StoreSchemaEnvVarNode
 
 
 @dataclass
@@ -2110,7 +2204,12 @@ class AxonStoreDefinition(ASTNode):
     name: str = ""
     backend: str = "sqlite"                    # sqlite | postgresql | mysql
     connection: str = ""                       # connection string or env ref
-    schema: StoreSchemaNode | None = None
+    # §Fase 38.b (D1) — three closed declaration forms (inline /
+    # manifest-ref / env-var) OR `None`. When `None` the 37.x runtime+
+    # deploy path applies verbatim (D5 absolute). The §38.d / §38.e
+    # type-checker (Rust-authoritative) consumes this; the Python
+    # runtime parses-but-skips-proof per D9.
+    schema: StoreSchemaNode | StoreSchemaRefNode | StoreSchemaEnvVarNode | None = None
     confidence_floor: float = 0.9              # HoTT epistemic threshold
     isolation: str = "serializable"            # read_committed | repeatable_read | serializable
     on_breach: str = "rollback"                # rollback | raise | log

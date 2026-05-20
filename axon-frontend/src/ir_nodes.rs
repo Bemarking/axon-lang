@@ -1304,6 +1304,48 @@ pub struct IRAxonStore {
     /// §Fase 35.j (D11) — Pillar IV: the capability slug required to
     /// access this store (empty = no gate).
     pub capability: String,
+    /// §Fase 38.b (D1) — the OPTIONAL column-schema declaration. Three
+    /// closed forms (inline / manifest-ref / env-var). `None` means the
+    /// 37.x runtime+deploy path applies verbatim (D5 absolute). The
+    /// §38.d / §38.e type-checker proves every store reference against
+    /// this when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_schema: Option<IRStoreColumnSchema>,
+}
+
+/// §Fase 38.b (D1) — IR mirror of [`crate::store_schema::StoreColumnSchema`].
+/// Serializes as a tagged union: `{"form": "inline" | "manifest_ref" |
+/// "env_var", …}`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "form", rename_all = "snake_case")]
+pub enum IRStoreColumnSchema {
+    Inline { columns: Vec<IRStoreColumn> },
+    ManifestRef { qualified_name: String },
+    EnvVar { var_name: String },
+}
+
+/// §Fase 38.b (D1) — IR mirror of [`crate::store_schema::StoreColumn`].
+/// The serialized `col_type` is the canonical PascalCase name (e.g.
+/// `"Uuid"`, `"Int"`, `"Timestamptz"`).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRStoreColumn {
+    pub name: String,
+    pub col_type: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub primary_key: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_increment: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub not_null: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unique: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub default_value: String,
+}
+
+#[inline]
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug, Clone, Serialize)]
