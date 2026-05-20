@@ -222,3 +222,44 @@ additive (opt-in, backwards-compatible).
 *Resolution authored 2026-05-19 by the AXON Language + Runtime team.
 Triggered by adopter gap report `AXON_GAP_store_typed_columns` (kivi),
 smoke iterations 13–15, 2026-05-18/19.*
+
+---
+
+## Closing — the compile-time half (v1.38.0)
+
+The deferred compile-time end-state landed in **axon-lang v1.38.0**
+as the Fase 38 cycle — *The Declared & Compile-Time-Typed Store
+Schema*. Ten ratified D-letters (D1-D10), ten sub-fases (38.a-j),
+five parallel CI lanes, three closed `schema:` declaration forms
+(inline / manifest-ref / per-tenant env-var), seven new diagnostic
+codes (T801-T807), one new CLI (`axon store introspect`), one new
+flag (`axon serve --schemas-dir`).
+
+The full v1.37.x runtime contract is now book-ended at compile time
++ deploy time:
+
+| Layer | Surface | What v1.37.x said | What v1.38.0 adds |
+|---|---|---|---|
+| **Compile time** (`axon check`) | column existence + type matching in `where:` / `persist into { … }` / `mutate SET { … }` | Silent — every typo + type mismatch compiled fine | **T801** unknown column in where, **T802** type mismatch, **T803** persist NOT-NULL omission, **T804** unknown field in block. Levenshtein composite suggestions: `Did you mean column \`email\` (Text)?` |
+| **Deploy time** (`POST /v1/deploy`) | declared columns vs live introspection | Silent — only table existence was proven (37.x D8) | **T805** manifest hash mismatch, **T806** missing per-tenant env var, **T807** declared-vs-live drift. The deploy fails with structured `phase: store_schema_verification` + `d_letter: D8`. |
+| **Runtime** (pooled session) | typed I/O on a typed column | Works on every session (37.x D1+D3+D4) | Unchanged — D5 absolute |
+
+**Adopter-visible surfaces:**
+
+- **Migration guide:** [`docs/MIGRATION_v1.38.md`](../MIGRATION_v1.38.md) (6 scenarios A-F)
+- **Adopter recipes:** [`docs/ADOPTER_AXONSTORE.md`](../ADOPTER_AXONSTORE.md) §17 (5 recipes)
+- **Deep-dive:** [`docs/ADOPTER_TYPED_STORE.md`](../ADOPTER_TYPED_STORE.md) (the five-pillar architectural story)
+- **CI workflow:** [`.github/workflows/fase_38_typed_store_schema.yml`](../../.github/workflows/fase_38_typed_store_schema.yml) (5 lanes)
+- **Plan vivo:** [`docs/fase/fase_38_declared_compile_time_typed_store_schema.md`](./fase_38_declared_compile_time_typed_store_schema.md)
+- **Reverse CLI:** `axon store introspect <store>` — live → manifest
+- **Boot flag:** `axon serve --schemas-dir <path>` (or `AXON_SCHEMAS_DIR=<path>`)
+
+A v1.37.x adopter who never adopts Fase 38's compile-time schema
+observes ZERO behavior change — **D5 absolute** is preserved at the
+boot flag, at the manifest-load surface, at the verify call.
+TypedColumn is opt-in by store, by directory, by deploy.
+
+*Compile-time half closed 2026-05-20 by axon-lang v1.38.0. The
+typed-column store's SHAPE is now a declared, verifiable, compile-
+time-proven property — completing the contract whose runtime half
+v1.37.x established.*

@@ -3418,6 +3418,7 @@ async fn server_health_endpoint() {
         config_path: None,
         strict_type_driven_transport: false,
         default_backend: None,
+        schemas_dir: None,
     });
 
     let req = Request::builder()
@@ -3454,6 +3455,7 @@ async fn server_deploy_and_list_daemons() {
         config_path: None,
         strict_type_driven_transport: false,
         default_backend: None,
+        schemas_dir: None,
     };
 
     // Deploy a valid source
@@ -3495,6 +3497,7 @@ async fn server_auth_enforcement() {
         config_path: None,
         strict_type_driven_transport: false,
         default_backend: None,
+        schemas_dir: None,
     });
 
     // No auth → 401
@@ -3593,6 +3596,7 @@ async fn deploy_to_live_server() {
         config_path: None,
         strict_type_driven_transport: false,
         default_backend: None,
+        schemas_dir: None,
     };
 
     let app = build_router(config);
@@ -3697,6 +3701,7 @@ async fn server_event_publish_and_supervisor() {
         config_path: None,
         strict_type_driven_transport: false,
         default_backend: None,
+        schemas_dir: None,
     };
 
     let app = build_router(config);
@@ -7310,6 +7315,7 @@ fn trace_auto_record_on_server_state() {
         config_path: None,
         strict_type_driven_transport: false,
         default_backend: None,
+        schemas_dir: None,
     };
 
     let (_router, state) = axon::axon_server::build_router_with_state(config);
@@ -7675,6 +7681,7 @@ fn daemon_executor_state_sync_with_server() {
         config_path: None,
         strict_type_driven_transport: false,
         default_backend: None,
+        schemas_dir: None,
     };
 
     let (_router, state) = axon::axon_server::build_router_with_state(config);
@@ -7814,6 +7821,7 @@ fn daemon_trigger_topic_binding() {
         config_path: None,
         strict_type_driven_transport: false,
         default_backend: None,
+        schemas_dir: None,
     };
 
     let (_router, state) = axon::axon_server::build_router_with_state(config);
@@ -27988,6 +27996,7 @@ async fn test_k5_server_config_new_fields() {
         config_path: None,
         strict_type_driven_transport: false,
         default_backend: None,
+        schemas_dir: None,
     };
 
     assert_eq!(config.bind_addr(), "0.0.0.0:8420");
@@ -28016,6 +28025,7 @@ fn test_k5_server_state_has_storage_and_resilient_backend() {
         config_path: None,
         strict_type_driven_transport: false,
         default_backend: None,
+        schemas_dir: None,
     };
 
     let (_router, state) = build_router_with_state(config);
@@ -28050,6 +28060,7 @@ async fn test_k5_health_endpoint_with_tracing_middleware() {
         config_path: None,
         strict_type_driven_transport: false,
         default_backend: None,
+        schemas_dir: None,
     };
 
     let app = build_router(config);

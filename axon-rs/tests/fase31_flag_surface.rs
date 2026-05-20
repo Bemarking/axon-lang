@@ -107,6 +107,7 @@ fn server_config_default_is_false() {
         config_path: None,
         strict_type_driven_transport: false,
         default_backend: None,
+        schemas_dir: None,
     };
     assert!(!cfg.strict_type_driven_transport);
 }
@@ -125,6 +126,7 @@ fn server_config_explicit_true_takes_effect() {
         config_path: None,
         strict_type_driven_transport: true,
         default_backend: None,
+        schemas_dir: None,
     };
     assert!(cfg.strict_type_driven_transport);
 }
