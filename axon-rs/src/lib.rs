@@ -25,6 +25,8 @@ pub use axon_frontend::{
     lexer,
     parser,
     refinement,
+    store_schema,
+    store_schema_manifest,
     stream_effect,
     tokens,
     type_checker,
