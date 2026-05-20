@@ -8,7 +8,7 @@ correct regional hostname when ``residency_redirect_base`` is
 configured, otherwise respond 421 Misdirected Request.
 
 The middleware runs AFTER ``AuthMiddleware`` because it needs
-``principal.tenant_id``; it looks up ``public.tenants.data_region``
+``principal.tenant_id``; it looks up ``axon_admin.tenants.data_region``
 lazily via an admin_session (cached in-process per tenant for 60
 seconds to keep the hot path fast).
 
@@ -59,7 +59,7 @@ class TenantRegionCache:
         async with admin_session() as db:
             region = await db.scalar(
                 text(
-                    "SELECT data_region FROM public.tenants "
+                    "SELECT data_region FROM axon_admin.tenants "
                     "WHERE tenant_id = :t"
                 ),
                 {"t": tenant_id},

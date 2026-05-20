@@ -33,7 +33,7 @@ layer.
 
 | Column | Meaning |
 |---|---|
-| `tenant_id` | FK to `public.tenants`, part of PK |
+| `tenant_id` | FK to `axon_admin.tenants`, part of PK |
 | `key` | Canonical name (lowercased, matches `^[a-z0-9][a-z0-9_-]*$`) |
 | `backend` | `aws_sm` or `memory` |
 | `storage_path` | Full backend path (e.g. `axon/tenants/acme/openai_api_key`) |

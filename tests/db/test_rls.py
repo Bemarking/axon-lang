@@ -2,7 +2,7 @@
 
 Creates a disposable table under ``axon_control`` with:
 
-    - ``tenant_id`` FK to ``public.tenants``
+    - ``tenant_id`` FK to ``axon_admin.tenants``
     - RLS enabled + FORCED
     - ``tenant_isolation`` policy
 
@@ -40,7 +40,7 @@ async def rls_probe_table(migrated_db: AsyncEngine) -> AsyncIterator[str]:
     create_sql = f"""
     CREATE TABLE axon_control.{TABLE} (
         widget_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        tenant_id TEXT NOT NULL REFERENCES public.tenants(tenant_id),
+        tenant_id TEXT NOT NULL REFERENCES axon_admin.tenants(tenant_id),
         label     TEXT NOT NULL
     );
     """

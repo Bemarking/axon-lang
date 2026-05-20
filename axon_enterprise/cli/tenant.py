@@ -34,7 +34,7 @@ def create(
             existing = (
                 await db.execute(
                     text(
-                        "SELECT 1 FROM public.tenants WHERE tenant_id = :s"
+                        "SELECT 1 FROM axon_admin.tenants WHERE tenant_id = :s"
                     ),
                     {"s": slug},
                 )
@@ -53,7 +53,7 @@ def create(
 
             await db.execute(
                 text(
-                    "INSERT INTO public.tenants "
+                    "INSERT INTO axon_admin.tenants "
                     "(tenant_id, name, plan, status) VALUES (:s, :n, :p, 'active')"
                 ),
                 {"s": slug, "n": name, "p": plan},
@@ -100,7 +100,7 @@ def list_tenants(
         async with admin_session() as db:
             sql = (
                 "SELECT tenant_id, name, plan, status, created_at "
-                "FROM public.tenants "
+                "FROM axon_admin.tenants "
                 + ("WHERE status = :status " if status else "")
                 + "ORDER BY created_at DESC LIMIT :limit"
             )
@@ -138,7 +138,7 @@ def suspend(
         async with admin_session() as db:
             updated = await db.execute(
                 text(
-                    "UPDATE public.tenants SET status='suspended' "
+                    "UPDATE axon_admin.tenants SET status='suspended' "
                     "WHERE tenant_id=:s AND status != 'deleted' RETURNING tenant_id"
                 ),
                 {"s": slug},
@@ -161,7 +161,7 @@ def resume(slug: str = typer.Argument(..., help="Tenant to reactivate.")) -> Non
         async with admin_session() as db:
             updated = await db.execute(
                 text(
-                    "UPDATE public.tenants SET status='active' "
+                    "UPDATE axon_admin.tenants SET status='active' "
                     "WHERE tenant_id=:s AND status='suspended' RETURNING tenant_id"
                 ),
                 {"s": slug},

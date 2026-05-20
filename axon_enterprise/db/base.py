@@ -87,7 +87,7 @@ class TimestampMixin:
 
 
 class TenantScopedMixin:
-    """Adds ``tenant_id`` with a cross-schema FK to ``public.tenants``.
+    """Adds ``tenant_id`` with a cross-schema FK to ``axon_admin.tenants``.
 
     Any table inheriting this mixin MUST be covered by an RLS policy
     declared via ``rls_policies.tenant_isolation_policy_sql``. The helper
@@ -98,7 +98,7 @@ class TenantScopedMixin:
     tenant_id: Mapped[str] = mapped_column(
         String(64),
         ForeignKey(
-            "public.tenants.tenant_id",
+            "axon_admin.tenants.tenant_id",
             # Rust owns the tenants table; we read it but don't cascade.
             # Deleting a tenant is a multi-step workflow (soft-delete first,
             # then purge), so a hard cascade would hide bugs.

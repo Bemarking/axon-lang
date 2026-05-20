@@ -7,7 +7,7 @@ Three classes of tests are supported here:
   RLS SQL shape, password hashing, TOTP, envelope crypto).
 
 - **integration** (``-m integration``): spins up an ephemeral Postgres
-  via testcontainers, applies the Rust M1 baseline (``public.tenants``)
+  via testcontainers, applies the Rust M1 baseline (``axon_admin.tenants``)
   and the Python Alembic chain, and exercises real queries + RLS.
 
 - **slow** (``-m slow``): for load / large-data paths.
@@ -128,10 +128,10 @@ def _set_axon_db_env(
     get_settings.cache_clear()
 
 
-# ── Rust data-plane fixture (public.tenants stand-in) ─────────────────
+# ── Rust data-plane fixture (axon_admin.tenants stand-in) ─────────────────
 
 _RUST_DATA_PLANE_FIXTURE_SQL = """
-CREATE TABLE IF NOT EXISTS public.tenants (
+CREATE TABLE IF NOT EXISTS axon_admin.tenants (
     tenant_id   TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
     plan        TEXT NOT NULL DEFAULT 'starter',
@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS public.tenants (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-INSERT INTO public.tenants (tenant_id, name, plan) VALUES
+INSERT INTO axon_admin.tenants (tenant_id, name, plan) VALUES
     ('default', 'Default Tenant', 'enterprise'),
     ('alpha',   'Alpha Tenant',   'enterprise'),
     ('beta',    'Beta Tenant',    'enterprise')

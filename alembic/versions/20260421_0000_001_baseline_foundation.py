@@ -39,12 +39,24 @@ depends_on: Union[str, Sequence[str], None] = None
 _ASSERT_TENANTS_TABLE = """
 DO $$
 BEGIN
+    -- §Fase 38.x.b (axon-lang v1.38.2+) — the M1 tenants table moved
+    -- from `public.tenants` to `axon_admin.tenants`. This precondition
+    -- accepts EITHER location: a v1.38.2+ fresh install satisfies via
+    -- axon_admin; a legacy deploy on v1.38.1 or earlier (or a deploy
+    -- mid-upgrade where the v1.29.1 alembic 013 has not yet run)
+    -- satisfies via public. The check passes if at least one of the
+    -- two exists.
+    --
+    -- A v1.29.1+ enterprise deploy that has run BOTH alembic 013 and
+    -- the v1.38.2+ Rust M1 will see axon_admin.tenants exist; the
+    -- legacy public.tenants is left alive but never written to by axon.
     IF NOT EXISTS (
         SELECT 1 FROM pg_tables
-        WHERE schemaname = 'public' AND tablename = 'tenants'
+        WHERE (schemaname = 'public' AND tablename = 'tenants')
+           OR (schemaname = 'axon_admin' AND tablename = 'tenants')
     ) THEN
         RAISE EXCEPTION
-            'Required table public.tenants is missing. Run the Rust data-plane migrations first: axon-rs/migrations/003_add_tenants.sql (Fase M1).';
+            'Required tenants table is missing. Run the Rust data-plane migrations first: axon-rs/migrations/003_add_tenants.sql. v1.38.2+ creates axon_admin.tenants; v1.38.1 and earlier created public.tenants. Either one satisfies this precondition.';
     END IF;
 END
 $$;
