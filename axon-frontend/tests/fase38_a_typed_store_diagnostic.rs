@@ -164,7 +164,13 @@ fn s2_where_value_type_mismatch_is_rejected_with_axon_t802() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn s3_persist_field_typo_currently_passes_axon_check() {
+fn s3_persist_field_typo_is_rejected_with_axon_t804() {
+    // §3 INVERTED in place by 38.e's `check_persist_fields` pass. The
+    // field name `tenantid` (no underscore) is a typo — the declared
+    // column is `tenant_id`. axon check now rejects with axon-T804 +
+    // a Levenshtein "Did you mean `tenant_id`?" hint at compile time,
+    // no live database required (the offline-checkable gap 37.x D8
+    // alone couldn't close).
     let src = r#"
         axonstore tenants {
             backend: postgresql
@@ -179,16 +185,23 @@ fn s3_persist_field_typo_currently_passes_axon_check() {
             persist into tenants { tenantid: "${tenant_id}" tier: "${tier}" }
         }
     "#;
-    // The field name `tenantid` (no underscore) is a typo — the
-    // declared column is `tenant_id`. The current type-checker passes
-    // it. 38.e closes this offline-checkable gap.
+    let errs = check_errors(src);
     assert!(
-        check_passes(src),
-        "§3: pre-38 type-checker passes a persist field-name typo \
-         through. If THIS assertion ever fails, 38.e/D2 has already \
-         inverted the anchor; update the test to assert the typed \
-         `axon-T804` error."
+        errs.iter().any(|m| m.contains("axon-T804")),
+        "§3 INVERTED: a persist field-name typo must surface axon-T804. \
+         Errors observed: {errs:?}"
     );
+    assert!(
+        errs.iter().any(|m| m.contains("tenantid")),
+        "§3: axon-T804 must name the offending typo `tenantid`. \
+         Errors observed: {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|m| m.contains("tenant_id")),
+        "§3: axon-T804 must surface the Levenshtein-closest column \
+         `tenant_id` as the suggestion. Errors observed: {errs:?}"
+    );
+    let _: fn(&str) -> bool = check_passes;
 }
 
 // ════════════════════════════════════════════════════════════════════

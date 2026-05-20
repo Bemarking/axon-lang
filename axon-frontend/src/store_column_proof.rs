@@ -75,11 +75,19 @@ use crate::store_schema_manifest::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProofErrorCode {
     /// `axon-T801` — a `where:` column reference doesn't exist in the
-    /// declared schema.
+    /// declared schema. Surfaces a Levenshtein "Did you mean X?" hint.
     T801UnknownColumn,
-    /// `axon-T802` — a `where:` value type doesn't match its column's
-    /// declared type.
+    /// `axon-T802` — a `where:`-clause OR field-block value type
+    /// doesn't match its column's declared type.
     T802TypeMismatch,
+    /// `axon-T803` — a `persist` omits a NOT-NULL column that has no
+    /// default. The row would fail at the database with a NOT NULL
+    /// constraint violation; 38.e catches it at compile time.
+    T803NotNullOmitted,
+    /// `axon-T804` — a `persist`/`mutate` field-block column reference
+    /// doesn't exist in the declared schema. Surfaces a Levenshtein
+    /// "Did you mean X?" hint.
+    T804UnknownField,
     /// `axon-T805` — propagated from the manifest layer when its
     /// `content_hash` mismatches the canonical content.
     T805ManifestHashMismatch,
@@ -92,6 +100,8 @@ impl ProofErrorCode {
         match self {
             Self::T801UnknownColumn => "axon-T801",
             Self::T802TypeMismatch => "axon-T802",
+            Self::T803NotNullOmitted => "axon-T803",
+            Self::T804UnknownField => "axon-T804",
             Self::T805ManifestHashMismatch => "axon-T805",
         }
     }
@@ -123,14 +133,25 @@ impl ProofError {
 //  The unified "declared columns" view
 // ════════════════════════════════════════════════════════════════════
 
-/// One declared column — type + nullable flag + whether it's a
-/// primary key (informational; the proof uses `not_null` for the
-/// nullable check).
+/// One declared column — type + nullable flag + whether it carries a
+/// default (so the §38.e `axon-T803` NOT-NULL-omission check knows
+/// whether the column can be safely omitted from a `persist` block).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredColumn {
     pub name: String,
     pub col_type: StoreColumnType,
+    /// `true` iff the column is declared `not_null` OR `primary_key`
+    /// (primary keys are implicitly NOT NULL).
     pub not_null: bool,
+    /// `true` iff a `default <value>` constraint was declared OR the
+    /// column is `auto_increment` (the DB supplies the value). A
+    /// NOT-NULL column with `has_default = true` is safe to omit from
+    /// a `persist`.
+    pub has_default: bool,
+    /// Informational — the column is a primary key. The proof does
+    /// not USE this for T803/T804 (the `not_null` derivation already
+    /// covers it), but adopter-facing diagnostics name it.
+    pub primary_key: bool,
 }
 
 /// The proof's view of a store's declared columns. Built from either
@@ -157,12 +178,15 @@ impl ColumnSet {
     pub fn from_inline_columns(columns: &[StoreColumn]) -> ColumnSet {
         let mut out = BTreeMap::new();
         for col in columns {
+            let has_default = !col.default_value.is_empty() || col.auto_increment;
             out.insert(
                 col.name.clone(),
                 DeclaredColumn {
                     name: col.name.clone(),
                     col_type: col.col_type,
                     not_null: col.not_null || col.primary_key,
+                    has_default,
+                    primary_key: col.primary_key,
                 },
             );
         }
@@ -173,12 +197,15 @@ impl ColumnSet {
     pub fn from_manifest_store(store: &ManifestStore) -> ColumnSet {
         let mut out = BTreeMap::new();
         for (name, mc) in &store.columns {
+            let has_default = !mc.default_value.is_empty() || mc.auto_increment;
             out.insert(
                 name.clone(),
                 DeclaredColumn {
                     name: name.clone(),
                     col_type: mc.col_type,
                     not_null: mc.not_null || mc.primary_key,
+                    has_default,
+                    primary_key: mc.primary_key,
                 },
             );
         }
@@ -863,6 +890,276 @@ fn check_predicate(
 }
 
 // ════════════════════════════════════════════════════════════════════
+//  §Fase 38.e (D2 — second half) — field-block proof for
+//  `persist into <store> { col: value … }` and
+//  `mutate <store> { where: … col: value … }` SET assignments
+// ════════════════════════════════════════════════════════════════════
+
+/// Classify a `persist`/`mutate` field-block value string into its
+/// proof-relevant shape. The runtime parser preserves the value as
+/// a single token's string (the token's `.value`); for a
+/// `tenant_id: "${tenant_id}"` field the value is `${tenant_id}` —
+/// unquoted, with the parameter reference syntactically intact.
+///
+/// Pure + total — every string maps to exactly one classification.
+pub fn classify_field_value(raw: &str) -> WhereValue {
+    let trimmed = raw.trim();
+
+    // Bound-parameter forms: `${name}`, `$name`, or — special-case —
+    // a literal-string token like `"${name}"` is captured by the
+    // parser with the outer quotes stripped, leaving the raw bytes
+    // `${name}` which our matcher catches the same way.
+    if let Some(rest) = trimmed.strip_prefix('$') {
+        let (inner, has_braces) = match rest.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+            Some(inner) => (inner, true),
+            None => (rest, false),
+        };
+        if !inner.is_empty()
+            && inner
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && inner
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_alphabetic() || c == '_')
+                .unwrap_or(false)
+        {
+            let _ = has_braces;
+            return WhereValue::BoundParam(inner.to_string());
+        }
+    }
+
+    // Empty value — surfaces as Text "" so the column-existence check
+    // still runs; the type-compat against an empty Text is benign.
+    if trimmed.is_empty() {
+        return WhereValue::Literal {
+            kind: LiteralKind::Text,
+            raw: String::new(),
+        };
+    }
+
+    // Integer / float literal.
+    if let Some(stripped) = trimmed.strip_prefix('-') {
+        if !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit()) {
+            return WhereValue::Literal {
+                kind: LiteralKind::Int,
+                raw: trimmed.to_string(),
+            };
+        }
+    } else if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return WhereValue::Literal {
+            kind: LiteralKind::Int,
+            raw: trimmed.to_string(),
+        };
+    }
+    if let Ok(_) = trimmed.parse::<f64>() {
+        if trimmed.contains('.') {
+            return WhereValue::Literal {
+                kind: LiteralKind::Float,
+                raw: trimmed.to_string(),
+            };
+        }
+    }
+
+    // Bool.
+    if trimmed.eq_ignore_ascii_case("true") || trimmed.eq_ignore_ascii_case("false") {
+        return WhereValue::Literal {
+            kind: LiteralKind::Bool,
+            raw: trimmed.to_string(),
+        };
+    }
+
+    // NULL keyword.
+    if trimmed.eq_ignore_ascii_case("null") {
+        return WhereValue::NullKeyword;
+    }
+
+    // Default: Text literal (catches `'literal'`-stripped strings,
+    // multi-interpolation values like `prefix ${a} suffix`, raw
+    // identifiers used as values, etc.).
+    WhereValue::Literal {
+        kind: LiteralKind::Text,
+        raw: trimmed.to_string(),
+    }
+}
+
+/// §Fase 38.e — run the D2 proof against a `persist` field block.
+///
+/// Three error code surfaces:
+///   - `axon-T803` for every NOT-NULL column without a default that
+///     was OMITTED from `fields` (the row would otherwise fail at the
+///     database with a NOT NULL constraint violation).
+///   - `axon-T804` for every field whose column doesn't exist in the
+///     declared schema (with Levenshtein "Did you mean X?" hint).
+///   - `axon-T802` (reused from 38.d) for every value whose
+///     classified shape is not type-compatible with its column's
+///     declared type.
+///
+/// Honest scope: when `fields.is_empty()` the persist has no block —
+/// the runtime falls back to writing the flow's user bindings (the
+/// v1.30.0 backwards-compat path). 38.e treats an empty block as
+/// "don't prove" — D5 absolute preservation for adopters who use the
+/// blockless form.
+pub fn check_persist_fields(
+    fields: &[(String, String)],
+    columns: &ColumnSet,
+    flow_params: &FlowParamTypes,
+    op_loc: (u32, u32),
+) -> Vec<ProofError> {
+    let mut out: Vec<ProofError> = Vec::new();
+    if fields.is_empty() {
+        return out;
+    }
+
+    // — T803 NOT-NULL omission —
+    let provided: std::collections::BTreeSet<&str> =
+        fields.iter().map(|(c, _)| c.as_str()).collect();
+    for (col_name, col) in &columns.columns {
+        if col.not_null && !col.has_default && !provided.contains(col_name.as_str()) {
+            let pk_hint = if col.primary_key {
+                " (primary key)"
+            } else {
+                ""
+            };
+            out.push(ProofError::new(
+                ProofErrorCode::T803NotNullOmitted,
+                op_loc.0,
+                op_loc.1,
+                format!(
+                    "axon-T803 `persist` omits NOT-NULL column `{col_name}`{pk_hint} \
+                     declared as `{}` with no default. The row would fail at \
+                     the database with a NOT NULL constraint violation. \
+                     Either bind a value in the persist field block, declare \
+                     a `default <value>` on the column, or make the column \
+                     nullable.",
+                    col.col_type.canonical_name()
+                ),
+            ));
+        }
+    }
+
+    // — T804 + T802 per field —
+    check_field_block_columns(fields, columns, flow_params, op_loc, &mut out);
+    out
+}
+
+/// §Fase 38.e — run the D2 proof against a `mutate` SET field block.
+///
+/// `mutate` SETs are an UPDATE, not an INSERT — so NOT-NULL omission
+/// (T803) does NOT apply (the existing row's NOT-NULL columns stay
+/// populated unless explicitly nulled, which our grammar doesn't
+/// express). T804 + T802 apply identically to persist.
+///
+/// The `where:` clause of a `mutate` is proven by 38.d's
+/// `check_filter` separately — `check_mutate_fields` covers only the
+/// SET-assignment side.
+pub fn check_mutate_fields(
+    fields: &[(String, String)],
+    columns: &ColumnSet,
+    flow_params: &FlowParamTypes,
+    op_loc: (u32, u32),
+) -> Vec<ProofError> {
+    let mut out: Vec<ProofError> = Vec::new();
+    if fields.is_empty() {
+        return out;
+    }
+    check_field_block_columns(fields, columns, flow_params, op_loc, &mut out);
+    out
+}
+
+/// Shared helper — T804 unknown column + T802 value-type mismatch for
+/// every field in the block. Used by both `check_persist_fields` and
+/// `check_mutate_fields`.
+fn check_field_block_columns(
+    fields: &[(String, String)],
+    columns: &ColumnSet,
+    flow_params: &FlowParamTypes,
+    op_loc: (u32, u32),
+    out: &mut Vec<ProofError>,
+) {
+    for (col_name, raw_value) in fields {
+        let Some(col) = columns.get(col_name) else {
+            let names = columns.names();
+            let suggestion = smart_suggest::suggest_for(col_name, &names);
+            let suggest_suffix = if suggestion.is_empty() {
+                String::new()
+            } else {
+                format!(" {suggestion}")
+            };
+            out.push(ProofError::new(
+                ProofErrorCode::T804UnknownField,
+                op_loc.0,
+                op_loc.1,
+                format!(
+                    "axon-T804 unknown column `{col_name}` in field block. \
+                     The declared schema has columns: {{{}}}.{suggest_suffix}",
+                    names.join(", ")
+                ),
+            ));
+            continue;
+        };
+
+        let value = classify_field_value(raw_value);
+        match &value {
+            WhereValue::Literal { kind, .. } => {
+                if !literal_compatible_with_column(*kind, col.col_type) {
+                    out.push(ProofError::new(
+                        ProofErrorCode::T802TypeMismatch,
+                        op_loc.0,
+                        op_loc.1,
+                        format!(
+                            "axon-T802 field-block literal of class {kind:?} is \
+                             not type-compatible with column `{col_name}` \
+                             declared as `{}`. A {kind:?} literal cannot \
+                             populate a {} column without an explicit \
+                             conversion.",
+                            col.col_type.canonical_name(),
+                            col.col_type.canonical_name()
+                        ),
+                    ));
+                }
+            }
+            WhereValue::BoundParam(name) => {
+                if let Some(axon_type) = flow_params.get(name) {
+                    if !axon_param_compatible_with_column(axon_type, col.col_type) {
+                        out.push(ProofError::new(
+                            ProofErrorCode::T802TypeMismatch,
+                            op_loc.0,
+                            op_loc.1,
+                            format!(
+                                "axon-T802 field-block flow parameter `${{{name}}}` \
+                                 of type `{axon_type}` is not type-compatible with \
+                                 column `{col_name}` declared as `{}`. Either align \
+                                 the parameter type with the column type, or convert \
+                                 at the binding site.",
+                                col.col_type.canonical_name()
+                            ),
+                        ));
+                    }
+                }
+                // Undeclared param → silently pass (Fase 37 D2 concern,
+                // mirroring 38.d's policy).
+            }
+            WhereValue::NullKeyword => {
+                if col.not_null {
+                    out.push(ProofError::new(
+                        ProofErrorCode::T802TypeMismatch,
+                        op_loc.0,
+                        op_loc.1,
+                        format!(
+                            "axon-T802 field-block writes `NULL` into NOT-NULL \
+                             column `{col_name}` declared as `{}`. Either provide \
+                             a non-null value or make the column nullable.",
+                            col.col_type.canonical_name()
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
 //  Manifest-form resolution (forms b/c — first-match heuristic)
 // ════════════════════════════════════════════════════════════════════
 
@@ -1463,9 +1760,524 @@ mod tests {
     // ── Error code slugs (LSP / JSON output) ─────────────────────────
 
     #[test]
-    fn error_code_slugs_match_the_axon_t801_t802_t805_namespace() {
+    fn error_code_slugs_match_the_axon_t801_through_t805_namespace() {
         assert_eq!(ProofErrorCode::T801UnknownColumn.slug(), "axon-T801");
         assert_eq!(ProofErrorCode::T802TypeMismatch.slug(), "axon-T802");
+        assert_eq!(ProofErrorCode::T803NotNullOmitted.slug(), "axon-T803");
+        assert_eq!(ProofErrorCode::T804UnknownField.slug(), "axon-T804");
         assert_eq!(ProofErrorCode::T805ManifestHashMismatch.slug(), "axon-T805");
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //  §Fase 38.e — `persist` / `mutate` field-block proof
+    // ════════════════════════════════════════════════════════════════
+
+    fn col_full(
+        name: &str,
+        ty: StoreColumnType,
+        not_null: bool,
+        primary_key: bool,
+        default_value: &str,
+        auto_increment: bool,
+    ) -> StoreColumn {
+        StoreColumn {
+            name: name.to_string(),
+            col_type: ty,
+            primary_key,
+            auto_increment,
+            not_null,
+            unique: false,
+            default_value: default_value.to_string(),
+            line: 0,
+            column: 0,
+        }
+    }
+
+    fn columns_full(
+        specs: &[(&str, StoreColumnType, bool, bool, &str, bool)],
+    ) -> ColumnSet {
+        let inline: Vec<StoreColumn> = specs
+            .iter()
+            .map(|(n, t, nn, pk, dv, ai)| col_full(n, *t, *nn, *pk, dv, *ai))
+            .collect();
+        ColumnSet::from_inline_columns(&inline)
+    }
+
+    // ── classify_field_value — the value-shape classifier ────────────
+
+    #[test]
+    fn classify_field_value_recognises_braced_bound_param() {
+        assert_eq!(
+            classify_field_value("${tenant_id}"),
+            WhereValue::BoundParam("tenant_id".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_field_value_recognises_bare_bound_param() {
+        assert_eq!(
+            classify_field_value("$tenant_id"),
+            WhereValue::BoundParam("tenant_id".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_field_value_recognises_int_literal() {
+        assert_eq!(
+            classify_field_value("42"),
+            WhereValue::Literal {
+                kind: LiteralKind::Int,
+                raw: "42".to_string()
+            }
+        );
+        assert_eq!(
+            classify_field_value("-7"),
+            WhereValue::Literal {
+                kind: LiteralKind::Int,
+                raw: "-7".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn classify_field_value_recognises_float_literal() {
+        match classify_field_value("3.14") {
+            WhereValue::Literal { kind: LiteralKind::Float, raw } => assert_eq!(raw, "3.14"),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_field_value_recognises_bool_literal() {
+        for src in ["true", "false", "TRUE", "False"] {
+            match classify_field_value(src) {
+                WhereValue::Literal { kind: LiteralKind::Bool, .. } => {}
+                other => panic!("`{src}` → {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn classify_field_value_recognises_null_keyword() {
+        assert_eq!(classify_field_value("null"), WhereValue::NullKeyword);
+        assert_eq!(classify_field_value("NULL"), WhereValue::NullKeyword);
+    }
+
+    #[test]
+    fn classify_field_value_falls_back_to_text_for_multi_interpolation_or_raw() {
+        // A value like `prefix ${a} suffix` is sent as a single string
+        // by the runtime — classify as Text.
+        match classify_field_value("prefix ${a} suffix") {
+            WhereValue::Literal { kind: LiteralKind::Text, .. } => {}
+            other => panic!("got {other:?}"),
+        }
+        // A naked identifier (used as a value) → Text.
+        match classify_field_value("standard") {
+            WhereValue::Literal { kind: LiteralKind::Text, .. } => {}
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_field_value_empty_string_is_a_text_literal() {
+        assert_eq!(
+            classify_field_value(""),
+            WhereValue::Literal {
+                kind: LiteralKind::Text,
+                raw: String::new()
+            }
+        );
+    }
+
+    // ── check_persist_fields — T803 NOT-NULL omission ────────────────
+
+    #[test]
+    fn t803_persist_omits_not_null_column_with_no_default() {
+        let cs = columns_full(&[
+            ("tenant_id", StoreColumnType::Uuid, true, true, "", false), // PK = NOT NULL
+            ("tier", StoreColumnType::Text, true, false, "", false),     // NOT NULL, no default
+        ]);
+        let errs = check_persist_fields(
+            &[("tenant_id".into(), "${tenant_id}".into())],
+            &cs,
+            &params(&[("tenant_id", "String")]),
+            (1, 1),
+        );
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].code, ProofErrorCode::T803NotNullOmitted);
+        assert!(errs[0].message.contains("tier"));
+        assert!(errs[0].message.contains("NOT NULL"));
+    }
+
+    #[test]
+    fn t803_skips_not_null_column_with_default() {
+        let cs = columns_full(&[
+            ("id", StoreColumnType::Uuid, true, true, "", false),
+            ("created_at", StoreColumnType::Timestamptz, true, false, "now()", false),
+        ]);
+        let errs = check_persist_fields(
+            &[("id".into(), "${id}".into())],
+            &cs,
+            &params(&[("id", "String")]),
+            (1, 1),
+        );
+        // `created_at` has a default → safe to omit.
+        assert!(
+            errs.is_empty(),
+            "default-bearing NOT-NULL column must be omittable: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn t803_skips_auto_increment_column() {
+        let cs = columns_full(&[
+            ("id", StoreColumnType::Int, true, true, "", true), // auto_increment
+            ("name", StoreColumnType::Text, false, false, "", false),
+        ]);
+        let errs = check_persist_fields(
+            &[("name".into(), "'Alice'".into())],
+            &cs,
+            &params(&[]),
+            (1, 1),
+        );
+        // The auto_increment PK can be omitted.
+        assert!(errs.is_empty(), "auto_increment column must be omittable: {errs:?}");
+    }
+
+    #[test]
+    fn t803_nullable_column_can_be_omitted() {
+        let cs = columns_full(&[
+            ("id", StoreColumnType::Uuid, true, true, "", false),
+            ("notes", StoreColumnType::Text, false, false, "", false), // nullable
+        ]);
+        let errs = check_persist_fields(
+            &[("id".into(), "${id}".into())],
+            &cs,
+            &params(&[("id", "String")]),
+            (1, 1),
+        );
+        assert!(errs.is_empty());
+    }
+
+    #[test]
+    fn t803_multiple_omitted_not_null_columns_each_surface_an_error() {
+        let cs = columns_full(&[
+            ("a", StoreColumnType::Text, true, false, "", false),
+            ("b", StoreColumnType::Text, true, false, "", false),
+            ("c", StoreColumnType::Text, false, false, "", false), // nullable
+        ]);
+        let errs = check_persist_fields(&[], &cs, &params(&[]), (1, 1));
+        // Empty fields = blockless persist = SKIP (D5 backward-compat).
+        assert!(errs.is_empty());
+        // With ANY field populated, omitted ones surface.
+        let errs2 = check_persist_fields(
+            &[("a".into(), "'x'".into())],
+            &cs,
+            &params(&[]),
+            (1, 1),
+        );
+        assert_eq!(errs2.len(), 1);
+        assert_eq!(errs2[0].code, ProofErrorCode::T803NotNullOmitted);
+        assert!(errs2[0].message.contains("`b`"));
+    }
+
+    // ── check_persist_fields — T804 unknown field ────────────────────
+
+    #[test]
+    fn t804_persist_field_typo_with_levenshtein_hint() {
+        let cs = columns_full(&[
+            ("tenant_id", StoreColumnType::Uuid, true, true, "", false),
+            ("tier", StoreColumnType::Text, true, false, "", false),
+        ]);
+        let errs = check_persist_fields(
+            &[
+                ("tenant_id".into(), "${tid}".into()),
+                ("tier".into(), "'std'".into()),
+                ("tenantid".into(), "${tid}".into()), // typo
+            ],
+            &cs,
+            &params(&[("tid", "String")]),
+            (1, 1),
+        );
+        let t804: Vec<&ProofError> = errs
+            .iter()
+            .filter(|e| e.code == ProofErrorCode::T804UnknownField)
+            .collect();
+        assert_eq!(t804.len(), 1);
+        assert!(t804[0].message.contains("tenantid"));
+        assert!(t804[0].message.contains("tenant_id"));
+    }
+
+    #[test]
+    fn t804_persist_unknown_field_without_suggestion_when_too_far() {
+        let cs = columns_full(&[("id", StoreColumnType::Uuid, true, true, "", false)]);
+        let errs = check_persist_fields(
+            &[
+                ("id".into(), "${id}".into()),
+                ("CompletelyDifferent".into(), "'x'".into()),
+            ],
+            &cs,
+            &params(&[("id", "String")]),
+            (1, 1),
+        );
+        let t804: Vec<&ProofError> = errs
+            .iter()
+            .filter(|e| e.code == ProofErrorCode::T804UnknownField)
+            .collect();
+        assert_eq!(t804.len(), 1);
+        assert!(!t804[0].message.contains("Did you mean"));
+    }
+
+    // ── check_persist_fields — T802 value-type mismatch in field block
+
+    #[test]
+    fn t802_persist_int_literal_against_text_column() {
+        let cs = columns_full(&[
+            ("id", StoreColumnType::Int, true, true, "", true),
+            ("name", StoreColumnType::Text, true, false, "", false),
+        ]);
+        let errs = check_persist_fields(
+            &[("name".into(), "42".into())],
+            &cs,
+            &params(&[]),
+            (1, 1),
+        );
+        let t802: Vec<&ProofError> = errs
+            .iter()
+            .filter(|e| e.code == ProofErrorCode::T802TypeMismatch)
+            .collect();
+        assert_eq!(t802.len(), 1);
+        assert!(t802[0].message.contains("Int"));
+        assert!(t802[0].message.contains("Text"));
+    }
+
+    #[test]
+    fn t802_persist_bound_param_type_mismatch_in_field_block() {
+        // `String` is universally compatible per the D4-fallback
+        // mirror — to trigger T802, use a parameter type that
+        // GENUINELY clashes with the column type. `Bool` param
+        // against an `Int` column is the cleanest case.
+        let cs = columns_full(&[
+            ("id", StoreColumnType::Uuid, true, true, "", false),
+            ("count", StoreColumnType::Int, true, false, "", false),
+        ]);
+        let errs = check_persist_fields(
+            &[
+                ("id".into(), "${id}".into()),
+                ("count".into(), "${flag}".into()),
+            ],
+            &cs,
+            &params(&[("id", "String"), ("flag", "Bool")]),
+            (1, 1),
+        );
+        let t802: Vec<&ProofError> = errs
+            .iter()
+            .filter(|e| e.code == ProofErrorCode::T802TypeMismatch)
+            .collect();
+        assert_eq!(t802.len(), 1, "expected exactly one T802, got: {errs:?}");
+        assert!(t802[0].message.contains("flag"));
+        assert!(t802[0].message.contains("Bool"));
+        assert!(t802[0].message.contains("Int"));
+    }
+
+    #[test]
+    fn persist_bool_param_into_bool_column_passes() {
+        let cs = columns_full(&[
+            ("id", StoreColumnType::Uuid, true, true, "", false),
+            ("active", StoreColumnType::Bool, true, false, "", false),
+        ]);
+        let errs = check_persist_fields(
+            &[
+                ("id".into(), "${id}".into()),
+                ("active".into(), "${active}".into()),
+            ],
+            &cs,
+            &params(&[("id", "String"), ("active", "Bool")]),
+            (1, 1),
+        );
+        assert!(errs.is_empty());
+    }
+
+    #[test]
+    fn t802_persist_null_into_not_null_column_is_rejected() {
+        let cs = columns_full(&[
+            ("id", StoreColumnType::Uuid, true, true, "", false),
+            ("name", StoreColumnType::Text, true, false, "", false),
+        ]);
+        let errs = check_persist_fields(
+            &[
+                ("id".into(), "${id}".into()),
+                ("name".into(), "null".into()),
+            ],
+            &cs,
+            &params(&[("id", "String")]),
+            (1, 1),
+        );
+        let t802: Vec<&ProofError> = errs
+            .iter()
+            .filter(|e| e.code == ProofErrorCode::T802TypeMismatch)
+            .collect();
+        assert_eq!(t802.len(), 1);
+        assert!(t802[0].message.contains("NULL"));
+        assert!(t802[0].message.contains("NOT-NULL"));
+    }
+
+    #[test]
+    fn persist_null_into_nullable_column_passes() {
+        let cs = columns_full(&[
+            ("id", StoreColumnType::Uuid, true, true, "", false),
+            ("notes", StoreColumnType::Text, false, false, "", false),
+        ]);
+        let errs = check_persist_fields(
+            &[
+                ("id".into(), "${id}".into()),
+                ("notes".into(), "null".into()),
+            ],
+            &cs,
+            &params(&[("id", "String")]),
+            (1, 1),
+        );
+        assert!(errs.is_empty());
+    }
+
+    // ── check_persist_fields — happy path + D5 absolute ──────────────
+
+    #[test]
+    fn well_formed_persist_passes_with_zero_errors() {
+        let cs = columns_full(&[
+            ("tenant_id", StoreColumnType::Uuid, true, true, "", false),
+            ("tier", StoreColumnType::Text, true, false, "", false),
+            ("active", StoreColumnType::Bool, false, false, "", false),
+        ]);
+        let errs = check_persist_fields(
+            &[
+                ("tenant_id".into(), "${tid}".into()),
+                ("tier".into(), "'standard'".into()),
+            ],
+            &cs,
+            &params(&[("tid", "String")]),
+            (1, 1),
+        );
+        assert!(errs.is_empty(), "got {errs:?}");
+    }
+
+    #[test]
+    fn d5_blockless_persist_is_skipped() {
+        // Empty field-list = the v1.30.0 blockless `persist <store>`
+        // form (runtime writes user bindings). 38.e MUST skip it
+        // — D5 absolute backwards-compat.
+        let cs = columns_full(&[
+            ("a", StoreColumnType::Text, true, false, "", false),
+            ("b", StoreColumnType::Text, true, false, "", false),
+        ]);
+        let errs = check_persist_fields(&[], &cs, &params(&[]), (1, 1));
+        assert!(errs.is_empty());
+    }
+
+    // ── check_mutate_fields — T803 does NOT apply ────────────────────
+
+    #[test]
+    fn mutate_does_not_emit_t803_for_omitted_not_null_columns() {
+        // UPDATE preserves existing row values; omitted NOT-NULL
+        // columns stay populated. T803 doesn't apply.
+        let cs = columns_full(&[
+            ("id", StoreColumnType::Uuid, true, true, "", false),
+            ("tier", StoreColumnType::Text, true, false, "", false),
+            ("active", StoreColumnType::Bool, true, false, "", false),
+        ]);
+        let errs = check_mutate_fields(
+            &[("tier".into(), "'premium'".into())],
+            &cs,
+            &params(&[]),
+            (1, 1),
+        );
+        let t803: Vec<&ProofError> = errs
+            .iter()
+            .filter(|e| e.code == ProofErrorCode::T803NotNullOmitted)
+            .collect();
+        assert!(t803.is_empty(), "mutate must not emit T803: {errs:?}");
+    }
+
+    #[test]
+    fn t804_mutate_field_typo_with_levenshtein() {
+        let cs = columns_full(&[
+            ("tenant_id", StoreColumnType::Uuid, true, true, "", false),
+            ("tier", StoreColumnType::Text, true, false, "", false),
+        ]);
+        let errs = check_mutate_fields(
+            &[("teir".into(), "'premium'".into())],
+            &cs,
+            &params(&[]),
+            (1, 1),
+        );
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].code, ProofErrorCode::T804UnknownField);
+        assert!(errs[0].message.contains("teir"));
+        assert!(errs[0].message.contains("tier"));
+    }
+
+    #[test]
+    fn t802_mutate_value_type_mismatch() {
+        let cs = columns_full(&[
+            ("id", StoreColumnType::Uuid, true, true, "", false),
+            ("count", StoreColumnType::Int, false, false, "", false),
+        ]);
+        let errs = check_mutate_fields(
+            &[("count".into(), "'not_an_int'".into())],
+            &cs,
+            &params(&[]),
+            (1, 1),
+        );
+        let t802: Vec<&ProofError> = errs
+            .iter()
+            .filter(|e| e.code == ProofErrorCode::T802TypeMismatch)
+            .collect();
+        assert_eq!(t802.len(), 1);
+    }
+
+    #[test]
+    fn well_formed_mutate_set_block_passes() {
+        let cs = columns_full(&[
+            ("id", StoreColumnType::Uuid, true, true, "", false),
+            ("tier", StoreColumnType::Text, true, false, "", false),
+        ]);
+        let errs = check_mutate_fields(
+            &[("tier".into(), "${new_tier}".into())],
+            &cs,
+            &params(&[("new_tier", "String")]),
+            (1, 1),
+        );
+        assert!(errs.is_empty());
+    }
+
+    #[test]
+    fn d5_blockless_mutate_is_skipped() {
+        let cs = columns_full(&[("a", StoreColumnType::Text, true, false, "", false)]);
+        let errs = check_mutate_fields(&[], &cs, &params(&[]), (1, 1));
+        assert!(errs.is_empty());
+    }
+
+    // ── 15-type catalog smoke for persist ────────────────────────────
+
+    #[test]
+    fn persist_string_param_accepted_against_every_catalog_type() {
+        // Mirror of the §38.d catalog smoke — at the field-block side
+        // a String param maps to every column type via the D4
+        // fallback.
+        let fp = params(&[("p", "String")]);
+        for &t in StoreColumnType::ALL {
+            let cs = columns_full(&[("col", t, false, false, "", false)]);
+            let errs = check_persist_fields(
+                &[("col".into(), "${p}".into())],
+                &cs,
+                &fp,
+                (1, 1),
+            );
+            assert!(
+                errs.is_empty(),
+                "persist String → {} rejected: {errs:?}",
+                t.canonical_name()
+            );
+        }
     }
 }

@@ -3544,8 +3544,10 @@ impl<'a> TypeChecker<'a> {
                 }
                 FlowStep::Persist(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
-                    // §Fase 38.d: 38.e ships the `persist`/`mutate`
-                    // field-block proof. 38.d covers only `where:`.
+                    // §Fase 38.e — D2 second half: persist field-block
+                    // proof (axon-T803 NOT-NULL omission + axon-T804
+                    // unknown field + axon-T802 value-type mismatch).
+                    self.run_38e_persist_proof(&n.store_name, &n.fields, &n.loc);
                 }
                 FlowStep::Retrieve(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
@@ -3554,6 +3556,12 @@ impl<'a> TypeChecker<'a> {
                 FlowStep::Mutate(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
                     self.run_38d_where_proof(&n.store_name, &n.where_expr, &n.loc);
+                    // §Fase 38.e — D2 second half: mutate SET-block
+                    // proof (axon-T804 unknown field + axon-T802
+                    // value-type mismatch). NOT-NULL omission (T803)
+                    // does NOT apply to mutate (UPDATE preserves
+                    // existing values for omitted columns).
+                    self.run_38e_mutate_proof(&n.store_name, &n.fields, &n.loc);
                 }
                 FlowStep::Purge(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
@@ -3630,6 +3638,63 @@ impl<'a> TypeChecker<'a> {
         };
         let errors = crate::store_column_proof::check_filter(
             where_expr,
+            &cs,
+            &self.current_flow_params,
+            (loc.line, loc.column),
+        );
+        for err in errors {
+            self.emit(err.message, loc);
+        }
+    }
+
+    /// §Fase 38.e (D2 — second half) — run the `persist` field-block
+    /// proof: axon-T803 NOT-NULL omission + axon-T804 unknown field +
+    /// axon-T802 value-type mismatch. An empty fields block (the
+    /// v1.30.0 blockless `persist <store>` form that writes user
+    /// bindings) is silently skipped per D5 absolute.
+    fn run_38e_persist_proof(
+        &mut self,
+        store_name: &str,
+        fields: &[(String, String)],
+        loc: &Loc,
+    ) {
+        if store_name.is_empty() || fields.is_empty() {
+            return;
+        }
+        let cs = match self.store_inline_column_sets.get(store_name) {
+            Some(cs) => cs.clone(),
+            None => return,
+        };
+        let errors = crate::store_column_proof::check_persist_fields(
+            fields,
+            &cs,
+            &self.current_flow_params,
+            (loc.line, loc.column),
+        );
+        for err in errors {
+            self.emit(err.message, loc);
+        }
+    }
+
+    /// §Fase 38.e (D2 — second half) — run the `mutate` SET-block
+    /// proof: axon-T804 unknown field + axon-T802 value-type mismatch.
+    /// NOT-NULL omission (T803) does NOT apply to mutate (UPDATE
+    /// preserves existing values for omitted columns).
+    fn run_38e_mutate_proof(
+        &mut self,
+        store_name: &str,
+        fields: &[(String, String)],
+        loc: &Loc,
+    ) {
+        if store_name.is_empty() || fields.is_empty() {
+            return;
+        }
+        let cs = match self.store_inline_column_sets.get(store_name) {
+            Some(cs) => cs.clone(),
+            None => return,
+        };
+        let errors = crate::store_column_proof::check_mutate_fields(
+            fields,
             &cs,
             &self.current_flow_params,
             (loc.line, loc.column),
