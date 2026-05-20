@@ -307,3 +307,104 @@ fn s5_d2_installation_after_release_runs_deallocate_all() {
         window
     );
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  §6 — Fase 38.x.b D1: every axon-owned table lives in `axon_admin`
+// ════════════════════════════════════════════════════════════════════
+
+/// §6 — pin the kivi-specific regression class structurally: no
+/// migration under `axon-rs/migrations/` may create a `tenants` table
+/// outside the `axon_admin` schema.
+///
+/// **Scope (intentional):** the §-assertion is narrow — `tenants` only,
+/// not every axon-owned admin table. `tenants` is the specific
+/// adopter-collision class kivi reported (a common adopter-app table
+/// name; the legacy M1 migration's `CREATE TABLE IF NOT EXISTS tenants`
+/// would silently land on the adopter's table and produce
+/// `column "plan" does not exist` at the first read).
+///
+/// Other legacy axon-owned tables in `public` (`traces`, `sessions`,
+/// `daemons`, `audit_log`, `axon_stores`, …) are operational tables
+/// with axon-specific names that have NOT generated collision reports
+/// against adopter apps. A future Fase 39+ may extend this invariant
+/// to other tables on a per-name basis as collision reports arrive.
+///
+/// A future PR that creates `public.tenants` or unqualified `tenants`
+/// in a new migration file (or revives the legacy v1.38.1 M1) turns
+/// this test RED.
+#[test]
+fn s6_d1_kivi_tenants_collision_class_closed() {
+    let migrations_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations");
+    let entries = fs::read_dir(&migrations_dir)
+        .expect("migrations dir readable");
+
+    let mut tenants_in_public_or_bare: Vec<String> = Vec::new();
+    let mut tenants_in_axon_admin_count: usize = 0;
+
+    for entry in entries {
+        let entry = entry.expect("dir entry readable");
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("sql") {
+            continue;
+        }
+        let body = fs::read_to_string(&path).expect("file readable");
+        // Strip line comments so we only look at executable SQL.
+        let stripped: String = body
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (line_idx, line) in stripped.lines().enumerate() {
+            let upper = line.to_uppercase();
+            if !upper.contains("CREATE TABLE") {
+                continue;
+            }
+            if line.contains("EXECUTE") || line.contains("||") {
+                continue;
+            }
+            // We care about lines that target the `tenants` table —
+            // either as `tenants`, `public.tenants`, or
+            // `axon_admin.tenants`.
+            let table_part = upper
+                .split("CREATE TABLE")
+                .nth(1)
+                .unwrap_or("")
+                .trim_start_matches(" IF NOT EXISTS")
+                .trim();
+            let mentions_tenants = table_part.starts_with("TENANTS")
+                || table_part.starts_with("PUBLIC.TENANTS")
+                || table_part.starts_with("AXON_ADMIN.TENANTS");
+            if !mentions_tenants {
+                continue;
+            }
+            if table_part.starts_with("AXON_ADMIN.TENANTS") {
+                tenants_in_axon_admin_count += 1;
+            } else {
+                tenants_in_public_or_bare.push(format!(
+                    "{}:{}: {}",
+                    path.display(),
+                    line_idx + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        tenants_in_public_or_bare.is_empty(),
+        "D1 invariant violated — `tenants` MUST be created in the \
+         `axon_admin` schema (never unqualified or in `public`). The \
+         kivi 2026-05-20 smoke-16 report named `public.tenants` as the \
+         collision class against adopter-owned tables. Violations:\n{}",
+        tenants_in_public_or_bare.join("\n")
+    );
+    assert!(
+        tenants_in_axon_admin_count >= 1,
+        "D1 positive invariant — the M1 migration (axon-rs/migrations/\
+         003_add_tenants.sql) MUST contain at least one \
+         `CREATE TABLE IF NOT EXISTS axon_admin.tenants`. Found {} \
+         matching CREATE statements.",
+        tenants_in_axon_admin_count
+    );
+}
