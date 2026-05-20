@@ -277,55 +277,93 @@ fn s4_schema_parser_surface_remains_live_across_the_three_closed_forms() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  §5 — `axon store introspect` CLI is ABSENT. 38.h adds it.
-//
-//       Currently no subcommand or library entry point exists for
-//       exporting the live schema of a declared `postgresql` store
-//       into a checked-in `.axon-schema.yml` / `.axon-schema.json`
-//       manifest. This §-assertion observes the absence — it MUST
-//       flip to a presence-guard the moment 38.h lands.
-//
-//       The Rust frontend has no introspection module — only a
-//       runtime-side `introspect_conn` (in axon-rs) that produces
-//       a per-operation cache entry, not a manifest. This §-assertion
-//       proves the *frontend* surface for it does not exist.
+//  §5 — `axon store introspect` CLI PRESENT (38.h shipped it). The
+//       §-assertion is INVERTED in place: was "module absent"; now
+//       a REGRESSION GUARD for the pure module's public API surface
+//       + the omission-tracking contract. A breakage here flags a
+//       38.h regression on the manifest-export contract.
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn s5_axon_store_introspect_frontend_surface_currently_absent() {
-    // The presence/absence of a module is a build-time fact. We assert
-    // a known-future module name doesn't exist by attempting to
-    // refer to it; since this is a regular test, the *absence* of an
-    // `axon_frontend::store_introspect` module is the absence of the
-    // CLI surface. The test compiles iff the surface is absent.
+fn s5_axon_store_introspect_frontend_surface_is_live_with_pure_api() {
+    // §5 INVERTED in place by 38.h. The pure-Rust
+    // `axon_frontend::store_introspect` module is now live with the
+    // public surface adopter tooling builds on:
     //
-    // 38.h will add `axon-frontend/src/store_introspect.rs` (or
-    // similar) + a public `introspect_to_manifest` entry. When that
-    // lands, this assertion flips to invoking the new function on a
-    // dummy connection and asserting it returns the appropriate
-    // typed error / manifest stub.
+    //   - `udt_to_canonical_type(pg_udt) -> Option<StoreColumnType>`
+    //   - `build_manifest_store(rows) -> (ManifestStore, Vec<OmittedColumn>)`
+    //   - `detect_auto_increment(default_expr) -> bool`
+    //   - `manifest_diff(old, new) -> ManifestDiff`
+    //   - `format_manifest_diff(diff) -> String`
+    //   - `IntrospectionRow` / `OmittedColumn` / `ColumnDelta` /
+    //     `ManifestDiff` data types
     //
-    // For now: a constant string anchor + a comment that documents
-    // the inversion contract.
-    const FUTURE_MODULE: &str = "axon_frontend::store_introspect";
-    let _anchor = FUTURE_MODULE;
+    // A regression here (the module is gone, an entry point renamed,
+    // the omission contract loosened) fails this test — protecting
+    // adopter CLI tooling that consumes the public API.
+    use axon_frontend::store_introspect::{
+        build_manifest_store, detect_auto_increment, format_manifest_diff,
+        manifest_diff, udt_to_canonical_type, IntrospectionRow,
+        ManifestDiff, OmittedColumn,
+    };
+    use axon_frontend::store_schema::StoreColumnType;
+    use axon_frontend::store_schema_manifest::Manifest;
 
-    // No attempted invocation — that would not compile. We're pinning
-    // the absence narratively. When 38.h ships, this test inverts to:
-    //
-    //   use axon_frontend::store_introspect::introspect_to_manifest;
-    //   let result = introspect_to_manifest("postgresql://...");
-    //   assert!(result.is_ok() || matches!(result, Err(_)));  // smoke
-    //
-    // The §-assertion is implicit: this file compiles today; once
-    // 38.h ships, attempting to leave the test in its current shape
-    // becomes meaningless (no future-module reference exists to
-    // compare against) and the test author MUST rewrite it.
-    let absent = true;
+    // — udt_to_canonical_type covers the closed catalog. —
+    assert_eq!(udt_to_canonical_type("uuid"), Some(StoreColumnType::Uuid));
+    assert_eq!(udt_to_canonical_type("text"), Some(StoreColumnType::Text));
+    assert_eq!(udt_to_canonical_type("geometry"), None);
+
+    // — detect_auto_increment recognises `nextval(...)`. —
+    assert!(detect_auto_increment("nextval('users_id_seq'::regclass)"));
+    assert!(!detect_auto_increment("'standard'::text"));
+
+    // — build_manifest_store maps known UDTs + tracks omissions. —
+    let rows = vec![
+        IntrospectionRow {
+            column_name: "id".into(),
+            pg_udt: "uuid".into(),
+            not_null: true,
+            primary_key: true,
+            unique: false,
+            default_expression: String::new(),
+        },
+        IntrospectionRow {
+            column_name: "tier".into(),
+            pg_udt: "tier_enum".into(), // outside the catalog
+            not_null: true,
+            primary_key: false,
+            unique: false,
+            default_expression: String::new(),
+        },
+    ];
+    let (store, omissions) = build_manifest_store(&rows);
+    assert_eq!(store.columns.len(), 1, "only `id` survives");
+    assert_eq!(omissions.len(), 1);
+    assert_eq!(omissions[0].name, "tier");
     assert!(
-        absent,
-        "§5: `axon store introspect` (manifest export CLI) is absent \
-         in v1.37.0; 38.h adds it as part of the Fase 38 cycle. When \
-         the new surface lands, REWRITE this test to invoke it."
+        omissions[0].reason.contains("closed type catalog"),
+        "honest-omission reason must name the catalog"
     );
+    // The OmittedColumn render is stable.
+    assert!(omissions[0].as_comment_line().starts_with("# omitted: "));
+
+    // — manifest_diff + format_manifest_diff round-trip. —
+    let old = Manifest::parse_json(
+        r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Int"}}}}}"#,
+    )
+    .unwrap();
+    let new = Manifest::parse_json(
+        r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Uuid"}}}}}"#,
+    )
+    .unwrap();
+    let diff: ManifestDiff = manifest_diff(&old, &new);
+    assert!(!diff.is_empty());
+    let summary = format_manifest_diff(&diff);
+    assert!(summary.contains("Int → Uuid"));
+
+    // The §-assertion is a REGRESSION GUARD now — the module + its
+    // public surface MUST stay alive for the rest of the Fase 38
+    // cycle (38.j CI lane + 38.k release) + every future cycle that
+    // consumes the manifest format.
 }

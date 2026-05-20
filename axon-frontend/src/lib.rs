@@ -33,6 +33,7 @@ pub mod lexer;
 pub mod parser;
 pub mod smart_suggest;
 pub mod store_column_proof;
+pub mod store_introspect;
 pub mod store_schema;
 pub mod store_schema_manifest;
 pub mod tokens;

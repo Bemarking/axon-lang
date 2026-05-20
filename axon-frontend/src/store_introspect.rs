@@ -1,0 +1,837 @@
+//! §Fase 38.h (D10) — pure manifest-building logic for the
+//! `axon store introspect <store>` CLI.
+//!
+//! This module is the first runtime CONSUMER of the §Fase 38.c
+//! manifest format. It takes the rows a live `pg_catalog`
+//! introspection produces (the impure half lives in
+//! `axon-rs/src/store/introspect_cli.rs` because it needs `sqlx`)
+//! and builds a canonical [`ManifestStore`] from them — mapping
+//! Postgres UDTs to the closed 15-type axon catalog, capturing
+//! constraints, tracking columns OMITTED because their type is
+//! outside the catalog.
+//!
+//! Architectural split:
+//!
+//!   - **Pure (here)** — UDT → axon type mapping, manifest building,
+//!     diff. Zero crate deps beyond `serde`/`serde_json` (already in
+//!     axon-frontend). Fully unit-testable without a database.
+//!
+//!   - **Impure (axon-rs)** — `sqlx`-based introspection query that
+//!     produces [`IntrospectionRow`] values; calls into this module
+//!     to build the manifest.
+//!
+//! Honest scope:
+//!
+//!   - The 37.x runtime `introspect_conn` query captures only
+//!     `(schema, column_name, type_name)`. THIS module needs more
+//!     (constraints + nullable + default). The 38.h impure side
+//!     ships a deeper introspection query — independent of the 37.x
+//!     runtime cache (no Hot-path bloat). Documented in
+//!     `axon-rs/src/store/introspect_cli.rs`.
+//!
+//!   - Postgres types OUTSIDE the closed 15-type catalog (`enum`,
+//!     `domain`, array, `citext`, PostGIS, custom composites) are
+//!     **honestly omitted** from the manifest with a comment-side
+//!     note — NEVER silently lossily mapped (`tier_enum` ≠ `Text`,
+//!     even though they look alike at the wire).
+
+use std::collections::BTreeMap;
+
+use crate::store_schema::StoreColumnType;
+use crate::store_schema_manifest::{
+    Manifest, ManifestColumn, ManifestStore,
+};
+
+// ════════════════════════════════════════════════════════════════════
+//  Postgres UDT → axon StoreColumnType reverse mapping
+// ════════════════════════════════════════════════════════════════════
+
+/// Map a live Postgres UDT name (the `pg_type.typname` value) to its
+/// canonical axon [`StoreColumnType`]. Returns `None` when the UDT is
+/// outside the closed 15-type v1.30.0 catalog — the caller surfaces
+/// that as a typed [`OmittedColumn`] in the manifest output.
+///
+/// Case-insensitive — Postgres typname is conventionally lowercase
+/// but a hand-crafted manifest snapshot might use mixed case.
+///
+/// Mirror (inverse) of `axon-rs::store::registry::pg_udt_matches_catalog_type`:
+/// every UDT this function recognises is one the registry-side check
+/// would accept against the corresponding `StoreColumnType`, and vice
+/// versa.
+pub fn udt_to_canonical_type(pg_udt: &str) -> Option<StoreColumnType> {
+    use StoreColumnType as C;
+    match pg_udt.to_ascii_lowercase().as_str() {
+        "uuid" => Some(C::Uuid),
+        "text" | "varchar" | "bpchar" | "name" => Some(C::Text),
+        "int4" | "integer" => Some(C::Int),
+        "int8" | "bigint" => Some(C::BigInt),
+        "float4" | "real" => Some(C::Float),
+        "float8" | "double precision" => Some(C::Double),
+        "bool" | "boolean" => Some(C::Bool),
+        "timestamptz" => Some(C::Timestamptz),
+        "timestamp" => Some(C::Timestamp),
+        "date" => Some(C::Date),
+        "time" => Some(C::Time),
+        "jsonb" => Some(C::Jsonb),
+        "json" => Some(C::Json),
+        "bytea" => Some(C::Bytea),
+        "numeric" | "decimal" => Some(C::Numeric),
+        _ => None,
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  Introspection input row
+// ════════════════════════════════════════════════════════════════════
+
+/// One column row produced by the deep `pg_catalog` introspection
+/// the §Fase 38.h impure side runs. Carries everything the manifest
+/// needs to faithfully reproduce the column declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntrospectionRow {
+    pub column_name: String,
+    /// The raw `pg_type.typname` value — case-preserved so the
+    /// adopter-facing omission diagnostic names the EXACT live type.
+    pub pg_udt: String,
+    /// `true` iff the column is `NOT NULL` per `pg_attribute.attnotnull`.
+    pub not_null: bool,
+    /// `true` iff this column is part of the table's primary key.
+    pub primary_key: bool,
+    /// `true` iff a `UNIQUE` constraint covers this column alone.
+    pub unique: bool,
+    /// Verbatim `pg_get_expr(adbin, adrelid)` text — empty when the
+    /// column has no default. `nextval(...)` substrings are how the
+    /// auto_increment heuristic ([`detect_auto_increment`]) decides.
+    pub default_expression: String,
+}
+
+/// `true` iff the column's `default_expression` resembles a Postgres
+/// serial / identity sequence — `nextval('<schema>.<seq>'::regclass)`
+/// or `nextval('<seq>')`. The runtime's `serial` / `bigserial` macro
+/// expands to a default-expression of that shape; a column declared
+/// `GENERATED ... AS IDENTITY` does NOT appear in
+/// `pg_attrdef` (Postgres handles identity separately), and adopter-
+/// authored sequences via `DEFAULT nextval(...)` round-trip here too.
+///
+/// Pure + total — case-insensitive substring match on `nextval(`.
+pub fn detect_auto_increment(default_expression: &str) -> bool {
+    default_expression
+        .to_ascii_lowercase()
+        .contains("nextval(")
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  Manifest building — honest, omissions tracked
+// ════════════════════════════════════════════════════════════════════
+
+/// A column the introspection observed but could NOT map to the
+/// closed 15-type catalog. The CLI surfaces these in a sidecar
+/// section so the adopter sees exactly which columns the manifest
+/// dropped (and why).
+///
+/// Examples:
+///   - `OmittedColumn { name: "tier", pg_udt: "tier_enum", reason:
+///     "outside the v1.38.0 closed type catalog" }`
+///   - `OmittedColumn { name: "shape", pg_udt: "geometry", reason: …  }`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OmittedColumn {
+    pub name: String,
+    pub pg_udt: String,
+    pub reason: String,
+}
+
+impl OmittedColumn {
+    /// Render this omission as a `# omitted: <name> <pg_udt> — <reason>`
+    /// comment line — the shape the §Fase 38.h CLI emits beside the
+    /// manifest's canonical JSON.
+    pub fn as_comment_line(&self) -> String {
+        format!(
+            "# omitted: column `{}` (pg type `{}`) — {}",
+            self.name, self.pg_udt, self.reason
+        )
+    }
+}
+
+/// §Fase 38.h — build a [`ManifestStore`] from a vector of
+/// [`IntrospectionRow`] entries.
+///
+/// Returns the manifest store + a side list of [`OmittedColumn`]
+/// entries for columns whose Postgres type was outside the closed
+/// 15-type catalog. Pure + total — every input shape yields exactly
+/// one `(store, omissions)` pair.
+pub fn build_manifest_store(
+    rows: &[IntrospectionRow],
+) -> (ManifestStore, Vec<OmittedColumn>) {
+    let mut columns: BTreeMap<String, ManifestColumn> = BTreeMap::new();
+    let mut omissions: Vec<OmittedColumn> = Vec::new();
+
+    for row in rows {
+        let Some(col_type) = udt_to_canonical_type(&row.pg_udt) else {
+            omissions.push(OmittedColumn {
+                name: row.column_name.clone(),
+                pg_udt: row.pg_udt.clone(),
+                reason:
+                    "outside the v1.38.0 closed type catalog \
+                     (enum/domain/array/citext/PostGIS/custom \
+                     composites are honest-omitted, never silently \
+                     lossily mapped — `tier_enum` ≠ `Text` even \
+                     though they look alike at the wire)"
+                        .to_string(),
+            });
+            continue;
+        };
+        let auto_increment = detect_auto_increment(&row.default_expression);
+        columns.insert(
+            row.column_name.clone(),
+            ManifestColumn {
+                col_type,
+                primary_key: row.primary_key,
+                auto_increment,
+                not_null: row.not_null,
+                unique: row.unique,
+                // §Fase 38.h: when the default IS a sequence, omit the
+                // `default_value` from the manifest — auto_increment
+                // already encodes "the DB supplies it"; carrying the
+                // raw `nextval(...)` expression would couple the
+                // manifest to a specific sequence object. Hand-coded
+                // defaults (`CURRENT_TIMESTAMP`, `'standard'`, …) DO
+                // round-trip through.
+                default_value: if auto_increment {
+                    String::new()
+                } else {
+                    row.default_expression.clone()
+                },
+            },
+        );
+    }
+
+    (ManifestStore { columns }, omissions)
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  Manifest diff — for `axon store introspect --diff`
+// ════════════════════════════════════════════════════════════════════
+
+/// One per-column change between an OLD manifest and a freshly-
+/// introspected NEW manifest. Used by `axon store introspect --diff`
+/// to emit a concise drift summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColumnDelta {
+    /// Column present in the new manifest but absent in the old.
+    Added {
+        column: String,
+        new_type: StoreColumnType,
+    },
+    /// Column present in the old manifest but absent in the new.
+    Removed {
+        column: String,
+        old_type: StoreColumnType,
+    },
+    /// Column present in both with a different declared type.
+    TypeChanged {
+        column: String,
+        old_type: StoreColumnType,
+        new_type: StoreColumnType,
+    },
+    /// Column present in both with the same type but a different
+    /// constraint (primary_key / not_null / unique / default_value /
+    /// auto_increment). Carries the offending facet name + the old
+    /// and new boolean (or default-expression text).
+    ConstraintChanged {
+        column: String,
+        facet: &'static str,
+        old: String,
+        new: String,
+    },
+}
+
+/// A diff between two manifests, per-store.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ManifestDiff {
+    /// Per-store ordered list of column changes. Stores appear in
+    /// alphabetic order; columns within a store also alphabetic.
+    pub per_store: BTreeMap<String, Vec<ColumnDelta>>,
+    /// Stores added in the new manifest (not in the old).
+    pub added_stores: Vec<String>,
+    /// Stores removed in the new manifest (in the old, not in new).
+    pub removed_stores: Vec<String>,
+}
+
+impl ManifestDiff {
+    /// `true` iff every facet matches (no per-store columns, no
+    /// added/removed stores).
+    pub fn is_empty(&self) -> bool {
+        self.per_store.values().all(|deltas| deltas.is_empty())
+            && self.added_stores.is_empty()
+            && self.removed_stores.is_empty()
+    }
+}
+
+/// Compute a [`ManifestDiff`] between an OLD manifest (the
+/// adopter's checked-in `.axon-schema.json`) and a freshly-
+/// introspected NEW manifest. Pure + total.
+pub fn manifest_diff(old: &Manifest, new: &Manifest) -> ManifestDiff {
+    let mut diff = ManifestDiff::default();
+
+    // Added / removed stores.
+    for store_name in new.stores.keys() {
+        if !old.stores.contains_key(store_name) {
+            diff.added_stores.push(store_name.clone());
+        }
+    }
+    for store_name in old.stores.keys() {
+        if !new.stores.contains_key(store_name) {
+            diff.removed_stores.push(store_name.clone());
+        }
+    }
+    diff.added_stores.sort();
+    diff.removed_stores.sort();
+
+    // Per-store column deltas (only for stores in BOTH old and new).
+    for store_name in new.stores.keys() {
+        let Some(new_store) = new.stores.get(store_name) else { continue };
+        let Some(old_store) = old.stores.get(store_name) else { continue };
+        let deltas = diff_store_columns(old_store, new_store);
+        if !deltas.is_empty() {
+            diff.per_store.insert(store_name.clone(), deltas);
+        }
+    }
+    diff
+}
+
+fn diff_store_columns(old: &ManifestStore, new: &ManifestStore) -> Vec<ColumnDelta> {
+    let mut deltas: Vec<ColumnDelta> = Vec::new();
+
+    // Added columns.
+    for (col_name, new_col) in &new.columns {
+        if !old.columns.contains_key(col_name) {
+            deltas.push(ColumnDelta::Added {
+                column: col_name.clone(),
+                new_type: new_col.col_type,
+            });
+        }
+    }
+    // Removed columns.
+    for (col_name, old_col) in &old.columns {
+        if !new.columns.contains_key(col_name) {
+            deltas.push(ColumnDelta::Removed {
+                column: col_name.clone(),
+                old_type: old_col.col_type,
+            });
+        }
+    }
+    // Type-changed columns + constraint-changed columns.
+    for (col_name, new_col) in &new.columns {
+        let Some(old_col) = old.columns.get(col_name) else { continue };
+        if new_col.col_type != old_col.col_type {
+            deltas.push(ColumnDelta::TypeChanged {
+                column: col_name.clone(),
+                old_type: old_col.col_type,
+                new_type: new_col.col_type,
+            });
+            continue; // type change subsumes constraint changes for the diff
+        }
+        // Constraint facets — surface ONE delta per facet that
+        // differs (rare in practice; explicit so the operator
+        // sees every drift).
+        if old_col.primary_key != new_col.primary_key {
+            deltas.push(ColumnDelta::ConstraintChanged {
+                column: col_name.clone(),
+                facet: "primary_key",
+                old: old_col.primary_key.to_string(),
+                new: new_col.primary_key.to_string(),
+            });
+        }
+        if old_col.not_null != new_col.not_null {
+            deltas.push(ColumnDelta::ConstraintChanged {
+                column: col_name.clone(),
+                facet: "not_null",
+                old: old_col.not_null.to_string(),
+                new: new_col.not_null.to_string(),
+            });
+        }
+        if old_col.unique != new_col.unique {
+            deltas.push(ColumnDelta::ConstraintChanged {
+                column: col_name.clone(),
+                facet: "unique",
+                old: old_col.unique.to_string(),
+                new: new_col.unique.to_string(),
+            });
+        }
+        if old_col.auto_increment != new_col.auto_increment {
+            deltas.push(ColumnDelta::ConstraintChanged {
+                column: col_name.clone(),
+                facet: "auto_increment",
+                old: old_col.auto_increment.to_string(),
+                new: new_col.auto_increment.to_string(),
+            });
+        }
+        if old_col.default_value != new_col.default_value {
+            deltas.push(ColumnDelta::ConstraintChanged {
+                column: col_name.clone(),
+                facet: "default_value",
+                old: old_col.default_value.clone(),
+                new: new_col.default_value.clone(),
+            });
+        }
+    }
+    deltas
+}
+
+/// Render a [`ManifestDiff`] as a human-readable summary — the shape
+/// `axon store introspect --diff` emits on stdout. Empty diff returns
+/// the empty string (the CLI then prints "manifest is up to date").
+pub fn format_manifest_diff(diff: &ManifestDiff) -> String {
+    if diff.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for store in &diff.added_stores {
+        out.push_str(&format!("+ store `{store}` (added)\n"));
+    }
+    for store in &diff.removed_stores {
+        out.push_str(&format!("- store `{store}` (removed)\n"));
+    }
+    for (store, deltas) in &diff.per_store {
+        out.push_str(&format!("~ store `{store}`:\n"));
+        for d in deltas {
+            match d {
+                ColumnDelta::Added { column, new_type } => out.push_str(&format!(
+                    "    + column `{column}` ({})\n",
+                    new_type.canonical_name()
+                )),
+                ColumnDelta::Removed { column, old_type } => out.push_str(&format!(
+                    "    - column `{column}` (was {})\n",
+                    old_type.canonical_name()
+                )),
+                ColumnDelta::TypeChanged {
+                    column,
+                    old_type,
+                    new_type,
+                } => out.push_str(&format!(
+                    "    ~ column `{column}` type: {} → {}\n",
+                    old_type.canonical_name(),
+                    new_type.canonical_name()
+                )),
+                ColumnDelta::ConstraintChanged {
+                    column,
+                    facet,
+                    old,
+                    new,
+                } => out.push_str(&format!(
+                    "    ~ column `{column}` {facet}: {old} → {new}\n"
+                )),
+            }
+        }
+    }
+    out
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  Unit tests — 26 cases (>20 plan-vivo target)
+// ════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(name: &str, udt: &str) -> IntrospectionRow {
+        IntrospectionRow {
+            column_name: name.to_string(),
+            pg_udt: udt.to_string(),
+            not_null: false,
+            primary_key: false,
+            unique: false,
+            default_expression: String::new(),
+        }
+    }
+
+    // ── udt_to_canonical_type ────────────────────────────────────────
+
+    #[test]
+    fn udt_recognises_every_catalog_type_canonically() {
+        for (udt, expected) in [
+            ("uuid", StoreColumnType::Uuid),
+            ("text", StoreColumnType::Text),
+            ("varchar", StoreColumnType::Text),
+            ("bpchar", StoreColumnType::Text),
+            ("name", StoreColumnType::Text),
+            ("int4", StoreColumnType::Int),
+            ("integer", StoreColumnType::Int),
+            ("int8", StoreColumnType::BigInt),
+            ("bigint", StoreColumnType::BigInt),
+            ("float4", StoreColumnType::Float),
+            ("real", StoreColumnType::Float),
+            ("float8", StoreColumnType::Double),
+            ("double precision", StoreColumnType::Double),
+            ("bool", StoreColumnType::Bool),
+            ("boolean", StoreColumnType::Bool),
+            ("timestamptz", StoreColumnType::Timestamptz),
+            ("timestamp", StoreColumnType::Timestamp),
+            ("date", StoreColumnType::Date),
+            ("time", StoreColumnType::Time),
+            ("jsonb", StoreColumnType::Jsonb),
+            ("json", StoreColumnType::Json),
+            ("bytea", StoreColumnType::Bytea),
+            ("numeric", StoreColumnType::Numeric),
+            ("decimal", StoreColumnType::Numeric),
+        ] {
+            assert_eq!(
+                udt_to_canonical_type(udt),
+                Some(expected),
+                "expected `{udt}` → `{}`",
+                expected.canonical_name()
+            );
+        }
+    }
+
+    #[test]
+    fn udt_recognition_is_case_insensitive() {
+        assert_eq!(udt_to_canonical_type("UUID"), Some(StoreColumnType::Uuid));
+        assert_eq!(udt_to_canonical_type("TEXT"), Some(StoreColumnType::Text));
+        assert_eq!(udt_to_canonical_type("Int4"), Some(StoreColumnType::Int));
+    }
+
+    #[test]
+    fn udt_outside_catalog_returns_none() {
+        for udt in [
+            "enum", "geometry", "citext", "tier_enum", "_int4",
+            "money", "interval", "cidr", "macaddr", "geography",
+        ] {
+            assert_eq!(udt_to_canonical_type(udt), None, "`{udt}` must be unmapped");
+        }
+    }
+
+    // ── detect_auto_increment ────────────────────────────────────────
+
+    #[test]
+    fn detect_auto_increment_recognises_nextval_call() {
+        for expr in [
+            "nextval('users_id_seq'::regclass)",
+            "nextval('public.events_id_seq'::regclass)",
+            "NEXTVAL('s')",
+        ] {
+            assert!(
+                detect_auto_increment(expr),
+                "expected `{expr}` to indicate auto_increment"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_auto_increment_rejects_static_defaults() {
+        for expr in [
+            "",
+            "0",
+            "'standard'::text",
+            "now()",
+            "CURRENT_TIMESTAMP",
+            "gen_random_uuid()",
+            "'{}'::jsonb",
+        ] {
+            assert!(!detect_auto_increment(expr), "`{expr}` must NOT be auto");
+        }
+    }
+
+    // ── build_manifest_store ─────────────────────────────────────────
+
+    #[test]
+    fn build_manifest_store_maps_every_catalog_udt_to_canonical_type() {
+        let rows = vec![
+            row("id", "uuid"),
+            row("name", "varchar"),
+            row("count", "int4"),
+            row("balance", "numeric"),
+            row("active", "boolean"),
+        ];
+        let (store, omitted) = build_manifest_store(&rows);
+        assert_eq!(store.columns.len(), 5);
+        assert!(omitted.is_empty());
+        assert_eq!(
+            store.columns.get("id").unwrap().col_type,
+            StoreColumnType::Uuid
+        );
+        assert_eq!(
+            store.columns.get("name").unwrap().col_type,
+            StoreColumnType::Text
+        );
+    }
+
+    #[test]
+    fn build_manifest_store_omits_unmappable_types_with_reason() {
+        let rows = vec![
+            row("id", "uuid"),
+            row("tier", "tier_enum"), // unmappable
+            row("shape", "geometry"), // unmappable
+        ];
+        let (store, omitted) = build_manifest_store(&rows);
+        assert_eq!(store.columns.len(), 1, "only `id` survives");
+        assert_eq!(omitted.len(), 2);
+        let names: Vec<&str> = omitted.iter().map(|o| o.name.as_str()).collect();
+        assert!(names.contains(&"tier"));
+        assert!(names.contains(&"shape"));
+        // Reason mentions the closed catalog — adopter knows why.
+        assert!(omitted[0].reason.contains("closed type catalog"));
+    }
+
+    #[test]
+    fn build_manifest_store_threads_constraints_through() {
+        let rows = vec![IntrospectionRow {
+            column_name: "id".into(),
+            pg_udt: "uuid".into(),
+            not_null: true,
+            primary_key: true,
+            unique: true,
+            default_expression: "gen_random_uuid()".into(),
+        }];
+        let (store, _) = build_manifest_store(&rows);
+        let col = store.columns.get("id").unwrap();
+        assert!(col.primary_key);
+        assert!(col.not_null);
+        assert!(col.unique);
+        assert!(!col.auto_increment); // gen_random_uuid is NOT a sequence
+        assert_eq!(col.default_value, "gen_random_uuid()");
+    }
+
+    #[test]
+    fn build_manifest_store_marks_serial_columns_auto_increment_and_drops_nextval_expr() {
+        // `SERIAL` / `BIGSERIAL` columns carry `nextval(...)` defaults;
+        // the manifest sets `auto_increment: true` and DROPS the
+        // `nextval(...)` expression (it's a sequence reference,
+        // adopter-private).
+        let rows = vec![IntrospectionRow {
+            column_name: "id".into(),
+            pg_udt: "int4".into(),
+            not_null: true,
+            primary_key: true,
+            unique: false,
+            default_expression:
+                "nextval('public.users_id_seq'::regclass)".into(),
+        }];
+        let (store, _) = build_manifest_store(&rows);
+        let col = store.columns.get("id").unwrap();
+        assert!(col.auto_increment);
+        assert!(col.default_value.is_empty(), "auto_increment drops the sequence expr");
+    }
+
+    #[test]
+    fn build_manifest_store_preserves_static_defaults() {
+        let rows = vec![IntrospectionRow {
+            column_name: "tier".into(),
+            pg_udt: "text".into(),
+            not_null: true,
+            primary_key: false,
+            unique: false,
+            default_expression: "'standard'::text".into(),
+        }];
+        let (store, _) = build_manifest_store(&rows);
+        assert_eq!(
+            store.columns.get("tier").unwrap().default_value,
+            "'standard'::text"
+        );
+    }
+
+    #[test]
+    fn build_manifest_store_columns_sort_alphabetically() {
+        let rows = vec![
+            row("tier", "text"),
+            row("active", "boolean"),
+            row("tenant_id", "uuid"),
+        ];
+        let (store, _) = build_manifest_store(&rows);
+        let order: Vec<&str> = store.columns.keys().map(|s| s.as_str()).collect();
+        assert_eq!(order, vec!["active", "tenant_id", "tier"]);
+    }
+
+    #[test]
+    fn build_manifest_store_empty_rows_yields_empty_store() {
+        let (store, omitted) = build_manifest_store(&[]);
+        assert!(store.columns.is_empty());
+        assert!(omitted.is_empty());
+    }
+
+    // ── OmittedColumn rendering ──────────────────────────────────────
+
+    #[test]
+    fn omitted_column_renders_as_human_readable_comment_line() {
+        let o = OmittedColumn {
+            name: "tier".into(),
+            pg_udt: "tier_enum".into(),
+            reason: "outside the v1.38.0 closed type catalog".into(),
+        };
+        let line = o.as_comment_line();
+        assert!(line.starts_with("# omitted: "));
+        assert!(line.contains("`tier`"));
+        assert!(line.contains("`tier_enum`"));
+        assert!(line.contains("closed type catalog"));
+    }
+
+    // ── manifest_diff ────────────────────────────────────────────────
+
+    fn manifest_from_json(src: &str) -> Manifest {
+        Manifest::parse_json(src).expect("parse manifest fixture")
+    }
+
+    #[test]
+    fn manifest_diff_empty_when_manifests_match() {
+        let m = manifest_from_json(
+            r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Uuid","primary_key":true}}}}}"#,
+        );
+        let diff = manifest_diff(&m, &m);
+        assert!(diff.is_empty());
+        assert_eq!(format_manifest_diff(&diff), "");
+    }
+
+    #[test]
+    fn manifest_diff_detects_added_store() {
+        let old = manifest_from_json(
+            r#"{"version":1,"stores":{"a":{"columns":{"id":{"type":"Uuid"}}}}}"#,
+        );
+        let new = manifest_from_json(
+            r#"{"version":1,"stores":{"a":{"columns":{"id":{"type":"Uuid"}}},"b":{"columns":{"x":{"type":"Int"}}}}}"#,
+        );
+        let diff = manifest_diff(&old, &new);
+        assert!(!diff.is_empty());
+        assert_eq!(diff.added_stores, vec!["b"]);
+        assert!(diff.removed_stores.is_empty());
+    }
+
+    #[test]
+    fn manifest_diff_detects_removed_store() {
+        let old = manifest_from_json(
+            r#"{"version":1,"stores":{"a":{"columns":{"id":{"type":"Uuid"}}},"b":{"columns":{"x":{"type":"Int"}}}}}"#,
+        );
+        let new = manifest_from_json(
+            r#"{"version":1,"stores":{"a":{"columns":{"id":{"type":"Uuid"}}}}}"#,
+        );
+        let diff = manifest_diff(&old, &new);
+        assert_eq!(diff.removed_stores, vec!["b"]);
+    }
+
+    #[test]
+    fn manifest_diff_detects_added_column() {
+        let old = manifest_from_json(
+            r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Uuid"}}}}}"#,
+        );
+        let new = manifest_from_json(
+            r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Uuid"},"tier":{"type":"Text"}}}}}"#,
+        );
+        let diff = manifest_diff(&old, &new);
+        let deltas = diff.per_store.get("t").expect("t store has deltas");
+        assert_eq!(deltas.len(), 1);
+        matches!(
+            &deltas[0],
+            ColumnDelta::Added { column, new_type }
+                if column == "tier" && *new_type == StoreColumnType::Text
+        );
+    }
+
+    #[test]
+    fn manifest_diff_detects_removed_column() {
+        let old = manifest_from_json(
+            r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Uuid"},"tier":{"type":"Text"}}}}}"#,
+        );
+        let new = manifest_from_json(
+            r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Uuid"}}}}}"#,
+        );
+        let diff = manifest_diff(&old, &new);
+        let deltas = diff.per_store.get("t").expect("t store has deltas");
+        assert!(matches!(
+            &deltas[0],
+            ColumnDelta::Removed { column, .. } if column == "tier"
+        ));
+    }
+
+    #[test]
+    fn manifest_diff_detects_column_type_change() {
+        let old = manifest_from_json(
+            r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Int"}}}}}"#,
+        );
+        let new = manifest_from_json(
+            r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Uuid"}}}}}"#,
+        );
+        let diff = manifest_diff(&old, &new);
+        let deltas = diff.per_store.get("t").unwrap();
+        assert!(matches!(
+            &deltas[0],
+            ColumnDelta::TypeChanged { column, old_type, new_type }
+                if column == "id"
+                    && *old_type == StoreColumnType::Int
+                    && *new_type == StoreColumnType::Uuid
+        ));
+    }
+
+    #[test]
+    fn manifest_diff_type_change_subsumes_constraint_changes_on_same_column() {
+        // A type change is the dominant fact; constraint flips on the
+        // same column are NOT separately reported — adopter applies
+        // the type change first, then any remaining constraint drift
+        // surfaces on the next introspect.
+        let old = manifest_from_json(
+            r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Int","primary_key":true}}}}}"#,
+        );
+        let new = manifest_from_json(
+            r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Uuid"}}}}}"#,
+        );
+        let diff = manifest_diff(&old, &new);
+        let deltas = diff.per_store.get("t").unwrap();
+        assert_eq!(deltas.len(), 1, "exactly one delta — type change");
+    }
+
+    #[test]
+    fn manifest_diff_detects_each_constraint_facet_independently() {
+        // primary_key, not_null, unique, default_value, auto_increment
+        // — each surfaces as its own ColumnDelta.
+        let old = manifest_from_json(
+            r#"{
+                "version": 1,
+                "stores": { "t": { "columns": {
+                    "x": { "type": "Int", "primary_key": false, "not_null": false,
+                            "unique": false }
+                }}}
+            }"#,
+        );
+        let new = manifest_from_json(
+            r#"{
+                "version": 1,
+                "stores": { "t": { "columns": {
+                    "x": { "type": "Int", "primary_key": true, "not_null": true,
+                            "unique": true }
+                }}}
+            }"#,
+        );
+        let diff = manifest_diff(&old, &new);
+        let deltas = diff.per_store.get("t").unwrap();
+        let facets: std::collections::BTreeSet<&str> = deltas
+            .iter()
+            .filter_map(|d| match d {
+                ColumnDelta::ConstraintChanged { facet, .. } => Some(*facet),
+                _ => None,
+            })
+            .collect();
+        assert!(facets.contains("primary_key"));
+        assert!(facets.contains("not_null"));
+        assert!(facets.contains("unique"));
+    }
+
+    #[test]
+    fn format_manifest_diff_emits_a_human_readable_summary() {
+        let old = manifest_from_json(
+            r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Int"}}}}}"#,
+        );
+        let new = manifest_from_json(
+            r#"{"version":1,"stores":{"t":{"columns":{"id":{"type":"Uuid"},"tier":{"type":"Text"}}}}}"#,
+        );
+        let diff = manifest_diff(&old, &new);
+        let text = format_manifest_diff(&diff);
+        assert!(text.contains("~ store `t`"));
+        assert!(text.contains("+ column `tier` (Text)"));
+        assert!(text.contains("~ column `id` type: Int → Uuid"));
+    }
+
+    #[test]
+    fn format_manifest_diff_empty_diff_yields_empty_string() {
+        let diff = ManifestDiff::default();
+        assert_eq!(format_manifest_diff(&diff), "");
+    }
+}
