@@ -1,6 +1,6 @@
 ---
 title: "Plan vivo: Fase 37.x.j — Connection-Pinned Flow Execution (closing the unnamed-prepared-statement race against transaction-mode poolers)"
-status: ✅ CLOSED 2026-05-21 — axon-lang v1.39.0 (initial) + v1.40.0 (38.x.f cycle) + **v1.40.1 (37.x.j.10 hotfix)** LIVE cross-stack. axon-enterprise v1.30.0 / v1.31.0 / **v1.31.1** catch-ups LIVE in lockstep. ⚠️ **REOPENED again 2026-05-21 for hotfix sub-fase 37.x.j.11** — `query()`/`insert()`/`mutate()`/`purge()` introspect error masking; fix ships as axon-lang v1.40.2 + enterprise v1.31.2 alongside Fase 38.x.f.9 (generic-aware body validation).
+status: ✅ CLOSED 2026-05-21 — axon-lang v1.39.0 (initial) + v1.40.0 (38.x.f cycle) + v1.40.1 (37.x.j.10 hotfix) + v1.40.2 (37.x.j.11 + 38.x.f.9 hotfix) + **v1.40.3 (37.x.j.12 + 38.x.f.10 hotfix)** LIVE cross-stack. axon-enterprise v1.30.0 / v1.31.0 / v1.31.1 / v1.31.2 / **v1.31.3** catch-ups LIVE in lockstep. ⚠️ **REOPENED 2026-05-21 for hotfix sub-fase 37.x.j.12** — `row_stream.rs` introspect error masking site missed by 37.x.j.11 (5th of 5 stores-crate sites); fix ships as axon-lang v1.40.3 + enterprise v1.31.3 alongside Fase 38.x.f.10 (Python parity of §0 generic-aware preamble).
 owner: AXON Language + Runtime Team
 created: 2026-05-20
 target: |
@@ -376,3 +376,50 @@ Closed when:
   refspec mapping + GitHub Release + ECR Private image)
 - The kivi adopter smoke 18+ on v1.39.0 green end-to-end — 6 steps,
   17 SSE tokens, zero `unnamed prepared statement` errors
+
+# ▶ 10. Sub-fase 37.x.j.12 — `row_stream.rs` introspect propagation (v1.40.3 hotfix)
+
+**Diagnosed 2026-05-21** (same day as 37.x.j.11 ship, post-v1.40.2
+deploy). The 37.x.j.11 fix covered the 4 cache-MISS sites in
+[axon-rs/src/store/postgres_backend.rs](../../axon-rs/src/store/postgres_backend.rs)
+(`query` / `insert` / `mutate` / `purge`). The **5th site** — the
+Pillar III lazy cursor path in
+[axon-rs/src/store/row_stream.rs](../../axon-rs/src/store/row_stream.rs)
+line ~263 — was missed. `transport: sse` retrieves that exercise
+the streaming cursor exhibited the SAME cascade-error masking class.
+
+**Symptom**: an `axonendpoint` with `transport: sse` + a `retrieve`
+step whose tail is a real-table cursor logged
+`tracing::warn!(target: "axon::store", op = "introspect_in_tx_stream", ...)`
+on introspect failure, then re-used the poisoned tx with bare-table
+SELECT, cascading to the same misleading `relation X does not exist`
+the 4 CRUD sites used to surface.
+
+**Fix — same shape as 37.x.j.11**: explicit `match introspect_conn(&mut tx, …).await { Ok(r) => r, Err(introspect_err) => { tracing::warn! with d_letter="37.x.j.12" + let _ = tx.rollback().await; return Err(introspect_err); } }`. `backend.cache_schema(table, resolved)` moved out of the `if let Ok(r) = resolved` conditional into a direct unconditional call (resolved is now `Ok(...)` by construction on the success path).
+
+**Anchor — new test file**
+[axon-rs/tests/fase37xj_11_12_introspect_propagation.rs](../../axon-rs/tests/fase37xj_11_12_introspect_propagation.rs)
+with 4 §-assertions:
+- `s_no_fall_through_to_bare_no_types_in_store_crate` — STATIC grep
+  gate scanning PRODUCTION code under `axon-rs/src/store/` for the
+  forbidden masking patterns `(None, &no_types)` and `Err(_) => (None,`.
+- `s_every_introspect_conn_site_rollbacks_on_error` — counts
+  `introspect_conn(&mut tx, …)` calls vs `tx.rollback().await`
+  occurrences; the latter MUST be ≥ the former.
+- `s_row_stream_site_carries_37xj12_d_letter` — the new site carries
+  `d_letter = "37.x.j.12"` for log correlation.
+- `s_postgres_backend_carries_37xj11_d_letter` — the 4 CRUD sites
+  preserve `d_letter = "37.x.j.11"` (regression guard against
+  v1.40.2 rollback).
+
+The grep gate is the **structural enforcement**: any future PR that
+adds a 6th store-introspect site without the explicit ROLLBACK +
+propagate pattern turns this test RED before merge — same shape as
+the §4 grep gate that locked `.persistent(false)` after Fase 38.x.a.
+
+**Status**: ✅ SHIPPED 2026-05-21 — converted `row_stream::drain_stream`
+to the explicit propagation pattern; 4 new §-assertions all green;
+2114/2114 lib + 12/12 anchor 37.x.j + 12/12 anchor 38.x.f preserved.
+Ships as axon-lang **v1.40.3 PATCH** + axon-enterprise **v1.31.3**
+catch-up alongside Fase 38.x.f.10 (Python parity of §0 generic-aware
+preamble).

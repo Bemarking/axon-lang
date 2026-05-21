@@ -214,6 +214,46 @@ def _validate_value(
     table: dict[str, TypeSchema],
     body_type: str,
 ) -> BodyValidationError | None:
+    # §0 — §Fase 38.x.f.10 (POST-CLOSE HOTFIX 2026-05-21) — generic-
+    # aware parsing. Python mirror of the Rust §0 preamble in
+    # axon-rs/src/route_schema.rs::validate_value (shipped in v1.40.2
+    # as 38.x.f.9). v1.40.2 closed the Rust path; this v1.40.3
+    # closes the Python path. Founder principle: "axon es un lenguaje,
+    # no varios, sino uno solo" — cross-runtime semantic parity on
+    # the same .axon source.
+    #
+    # When the caller passes the raw type string with an embedded
+    # generic param (e.g. "List<TenantRecord>" from validate_body or
+    # from _validate_struct's field-type recursion) AND generic_param
+    # is empty, strip the <Inner> and recurse with the head + inner
+    # as separate args. This closes the T9XX-to-D5 dead-end the
+    # 38.x.f cardinality cycle left open: the compile-time gate
+    # suggests output: List<T> as remedy, the adopter applies it,
+    # and the runtime D5 then recognizes "List" + generic_param "T"
+    # properly (§3 below) — pre-hotfix the unsplit "List<T>" string
+    # fell through to §5 unknown_type.
+    #
+    # Recursive — handles nested List<List<T>> because the inner
+    # recursion lands here again with type_name = "List<T>" and
+    # strips ANOTHER layer.
+    #
+    # Closed grammar today: List<Inner> + Stream<Inner>. Other
+    # future generics (Map<K,V>, Optional<T>, etc.) extend this §0
+    # additively without touching §1–§5.
+    if not generic_param:
+        if type_name.startswith("List<") and type_name.endswith(">"):
+            inner = type_name[len("List<"):-1].strip()
+            return _validate_value(v, "List", inner, field_path, table, body_type)
+        if type_name.startswith("Stream<") and type_name.endswith(">"):
+            # §Fase 38.x.f.10 — Stream<T> body validation is
+            # structurally unreachable from the production path
+            # (SSE responses route through the streaming wire
+            # which validates chunks, not the full body). When
+            # we DO observe it at the body validator layer
+            # (defensive), return None (Ok) early — the runtime
+            # SSE path is the canonical validation surface for
+            # temporal cardinality.
+            return None
     # §1 — primitives
     if type_name in BUILTIN_PRIMITIVES:
         return _validate_primitive(v, type_name, field_path, body_type)
