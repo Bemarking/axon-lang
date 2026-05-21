@@ -826,6 +826,18 @@ where
 /// request value carrying a `'` break a string-literal boundary.
 fn execute_sql_store_step(
     store_registry: &StoreRegistry,
+    // §Fase 37.x.j (D1) — pinned-connection map shared across the flow
+    // execution. Keyed by axonstore name; when the entry exists the
+    // store op routes its SQL through that exact physical Postgres
+    // connection (held since `execute_server_flow` start). When the
+    // entry is absent the op falls back to `StoreConn::Pool` (legacy
+    // pre-37.x.j behavior) — keeping CLI tests + non-server callers
+    // working unchanged. The map is passed in by `&mut` so the pin
+    // moves OUT of the map for the duration of the async dispatch
+    // and is moved BACK on return (the typical scope-wrap idiom for
+    // a non-Clone `PoolConnection` threaded through a `block_on_store`
+    // async boundary).
+    pinned_conns: &mut std::collections::HashMap<String, sqlx::pool::PoolConnection<sqlx::Postgres>>,
     step_type: &str,
     store_name: &str,
     memory_expr: &str,
@@ -835,8 +847,16 @@ fn execute_sql_store_step(
     // The connection + confidence_floor live on the `IRAxonStore` the
     // registry validated.
     let spec = store_registry.spec(store_name);
-    let connection = spec.map(|s| s.connection.clone()).unwrap_or_default();
+    let _connection = spec.map(|s| s.connection.clone()).unwrap_or_default();
     let confidence_floor = spec.and_then(|s| s.confidence_floor);
+
+    // §Fase 37.x.j (D1) — the SHARED backend is resolved from the
+    // registry cache INSIDE the `block_on_store` async block below
+    // (the registry's `resolve` may need a tokio context when it
+    // lazily builds the PgPool on first reference). Pre-37.x.j the
+    // runner created a fresh `PgPool` per `connect_named` call — a
+    // pre-existing inefficiency that 37.x.j fixes en passant by
+    // routing through the cached pool.
 
     // `memory_expression` is `"store:where"` for retrieve/mutate/purge
     // and the bare store name for persist — the where-expr is whatever
@@ -876,10 +896,63 @@ fn execute_sql_store_step(
 
     let store_name = store_name.to_string();
     let step_type = step_type.to_string();
+    // §Fase 37.x.j (D1) — keep an owned copy of the store name for the
+    // post-async-block re-insertion path; the async move below
+    // consumes `store_name` along with the rest of the captured locals.
+    let store_name_for_reinsert = store_name.clone();
 
-    block_on_store(async move {
-        let backend =
-            PostgresStoreBackend::connect_named(&connection, &store_name)?;
+    // §Fase 37.x.j (D1) — move the pin (if any) OUT of the shared map
+    // for the duration of this async dispatch. The async block takes
+    // ownership of the `Option<PoolConnection>`; on completion it
+    // returns the option back so the map can re-insert it for the
+    // next store op against this same store. This is the standard
+    // scope-wrap idiom for threading a non-Clone resource through a
+    // `block_on_store(async move { ... })` boundary.
+    let pin_owned: Option<sqlx::pool::PoolConnection<sqlx::Postgres>> =
+        pinned_conns.remove(&store_name);
+
+    let (result, pin_back): (
+        Result<String, StoreError>,
+        Option<sqlx::pool::PoolConnection<sqlx::Postgres>>,
+    ) = block_on_store(async move {
+        // §Fase 37.x.j (D1) — resolve the SHARED backend from the
+        // registry cache (NOT a fresh `connect_named`-from-scratch
+        // per op). The registry caches `PostgresStoreBackend` by
+        // resolved DSN; the backend's inner `PgPool` is `Arc<...>` so
+        // the clone shares pool state with every other call AND with
+        // the eagerly-acquired pin in `pinned_conns`. This is the
+        // critical prerequisite for pinning to work: the pin and the
+        // dispatch must hit the SAME pool, otherwise the pin routes
+        // to one backend while the dispatch acquires a fresh one
+        // from another pool — and the unnamed-statement race re-opens.
+        let backend = match store_registry.resolve(&store_name) {
+            Ok(crate::store::registry::StoreHandle::Postgres(b)) => b,
+            Ok(_) => {
+                return (
+                    Err(StoreError::Connect {
+                        source: format!(
+                            "axonstore `{store_name}` expected to resolve to \
+                             a postgresql backend but the registry returned \
+                             `in_memory`. Routing bug — the SQL gate in \
+                             `execute_real` should have skipped this step."
+                        ),
+                    }),
+                    pin_owned,
+                );
+            }
+            Err(e) => return (Err(e), pin_owned),
+        };
+        // §Fase 37.x.j (D1) — `pin_owned` is moved into this block.
+        // Below it's bound `mut` so we can take a `&mut` for the
+        // `StoreConn::Pinned` variant. After dispatch we return it
+        // so the outer scope re-inserts it.
+        let mut pin = pin_owned;
+        // §Fase 37.x.j (D1) — the dispatch body is wrapped in a
+        // nested `async { ... }` block that returns
+        // `Result<String, StoreError>` so the existing `?` propagation
+        // patterns survive verbatim. The outer block then pairs the
+        // result with the (still owned) `pin` for the return tuple.
+        let result: Result<String, StoreError> = async {
         match step_type.as_str() {
             "retrieve" => {
                 // §35.i Pillar III — retrieve drains off a lazy cursor,
@@ -888,12 +961,17 @@ fn execute_sql_store_step(
                 // confidence_floor filters sub-floor rows. The result
                 // is an epistemic envelope carrying both dispositions.
                 let cancel = crate::cancel_token::CancellationFlag::new();
-                // §Fase 37.x.j (D1) — wrap the backend pool in a
-                // `StoreConn`. Sub-fase 37.x.j.4 will switch this to
-                // `StoreConn::Pinned(...)` from `ExecContext.pinned_conns`
-                // so the retrieve runs on the flow-pinned physical
-                // Postgres connection.
-                let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
+                // §Fase 37.x.j (D1) — build `StoreConn::Pinned` when a
+                // pin is held for this store (the post-37.x.j default
+                // for server-driven flows), else `StoreConn::Pool`
+                // (legacy path for CLI / pre-server callers). The
+                // Pinned variant routes the SELECT through the exact
+                // physical Postgres backend connection acquired at
+                // flow start — Supavisor/PgBouncer cannot swap.
+                let mut store_conn = match &mut pin {
+                    Some(p) => crate::store::store_conn::StoreConn::Pinned(p),
+                    None => crate::store::store_conn::StoreConn::Pool(backend.pool()),
+                };
                 let stream_outcome = row_stream::stream_retrieve(
                     &backend,
                     &mut store_conn,
@@ -920,10 +998,11 @@ fn execute_sql_store_step(
                     .unwrap_or_else(|_| "{}".to_string()))
             }
             "purge" => {
-                // §Fase 37.x.j (D1) — wrap the backend pool in a
-                // `StoreConn` (legacy path). 37.x.j.4 lifts this to
-                // the pinned variant from `ExecContext.pinned_conns`.
-                let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
+                // §Fase 37.x.j (D1) — pinned/pool dispatch (see retrieve).
+                let mut store_conn = match &mut pin {
+                    Some(p) => crate::store::store_conn::StoreConn::Pinned(p),
+                    None => crate::store::store_conn::StoreConn::Pool(backend.pool()),
+                };
                 let n = backend
                     .purge(&mut store_conn, &store_name, &where_expr, &where_bindings)
                     .await?;
@@ -937,16 +1016,20 @@ fn execute_sql_store_step(
                     confidence_floor,
                     &store_name,
                 )?;
-                // §Fase 37.x.j (D1) — see other call sites for the
-                // StoreConn::Pool legacy wrapper rationale.
-                let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
+                // §Fase 37.x.j (D1) — pinned/pool dispatch.
+                let mut store_conn = match &mut pin {
+                    Some(p) => crate::store::store_conn::StoreConn::Pinned(p),
+                    None => crate::store::store_conn::StoreConn::Pool(backend.pool()),
+                };
                 let n = backend.insert(&mut store_conn, &store_name, &data).await?;
                 Ok(format!("{n} row(s) persisted"))
             }
             "mutate" => {
-                // §Fase 37.x.j (D1) — see other call sites for the
-                // StoreConn::Pool legacy wrapper rationale.
-                let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
+                // §Fase 37.x.j (D1) — pinned/pool dispatch.
+                let mut store_conn = match &mut pin {
+                    Some(p) => crate::store::store_conn::StoreConn::Pinned(p),
+                    None => crate::store::store_conn::StoreConn::Pool(backend.pool()),
+                };
                 let n = backend
                     .mutate(&mut store_conn, &store_name, &where_expr, &data, &where_bindings)
                     .await?;
@@ -958,7 +1041,21 @@ fn execute_sql_store_step(
                 source: format!("unsupported store step type `{other}`"),
             }),
         }
-    })
+        }.await;
+        (result, pin)
+    });
+
+    // §Fase 37.x.j (D1) — re-insert the pin so the next store op
+    // against this store reuses it. If `pin_back` is `None` either
+    // we ran the legacy Pool path (no pin ever held) or the pin was
+    // never populated for this store, both indistinguishable here —
+    // the .remove() above was a no-op and the .insert() is unconditional
+    // and idempotent.
+    if let Some(p) = pin_back {
+        pinned_conns.insert(store_name_for_reinsert, p);
+    }
+
+    result
 }
 
 fn execute_real(
@@ -972,6 +1069,12 @@ fn execute_real(
     report: &mut ReportBuilder,
     registry: &ToolRegistry,
     store_registry: &StoreRegistry,
+    // §Fase 37.x.j (D1) — flow-scoped pinned connection map, populated
+    // by `execute_server_flow` (server-driven flows) and empty for
+    // CLI / pre-37.x.j callers. Threaded to `execute_sql_store_step`
+    // for each SQL store op so the dispatch routes through
+    // `StoreConn::Pinned` when a pin is held.
+    pinned_conns: &mut std::collections::HashMap<String, sqlx::pool::PoolConnection<sqlx::Postgres>>,
     api_key_override: Option<&str>,
 ) -> Result<(bool, Vec<TraceEvent>), backend::BackendError> {
     let api_key = match api_key_override {
@@ -1396,6 +1499,10 @@ fn execute_real(
                     // clause into `$N` bind parameters, never a splice.
                     let (result_text, ok) = match execute_sql_store_step(
                         store_registry,
+                        // §Fase 37.x.j (D1) — thread the flow's pinned
+                        // connection map through to the per-step
+                        // dispatch.
+                        pinned_conns,
                         &step.step_type,
                         &step.step_name,
                         raw_expr,
@@ -2330,6 +2437,85 @@ pub fn execute_server_flow(
     let store_registry = StoreRegistry::build(&ir.axonstore_specs)
         .map_err(|e| format!("axonstore registry: {e}"))?;
 
+    // §Fase 37.x.j (D1) — Eager acquire one PoolConnection per
+    // postgresql-backed axonstore referenced in the flow body BEFORE
+    // executing any step. Each pin is held for the whole flow
+    // execution and released on `pinned_conns` drop at the end of
+    // this function (Rust handles the drop order: HashMap drops →
+    // every PoolConnection drops → the per-conn `after_release
+    // DEALLOCATE ALL` hook from Fase 38.x.a D2 runs → conn returns
+    // to the pool clean).
+    //
+    // The discovery walk filters `step.step_type` to the four SQL
+    // store ops + checks the registry's `backend_kind` to skip
+    // in_memory stores (no race, no pin needed). The set is
+    // deduplicated by store_name — multiple steps against the same
+    // store share ONE pin (the D1 invariant).
+    //
+    // Acquire failure is non-fatal: the flow proceeds with an empty
+    // pin map, which falls back to the legacy `StoreConn::Pool`
+    // path. This preserves resilience against transient pool
+    // saturation (a deploy-time `verify_postgres_schemas` failure
+    // is the right gate for "store unreachable", not flow-time).
+    let mut pinned_conns: std::collections::HashMap<
+        String,
+        sqlx::pool::PoolConnection<sqlx::Postgres>,
+    > = std::collections::HashMap::new();
+    {
+        let mut needed: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for unit in &execution_units {
+            for step in &unit.steps {
+                if matches!(
+                    step.step_type.as_str(),
+                    "persist" | "retrieve" | "mutate" | "purge"
+                ) && store_registry.backend_kind(&step.step_name)
+                    == Some(crate::store::registry::StoreBackendKind::Postgresql)
+                {
+                    needed.insert(step.step_name.clone());
+                }
+            }
+        }
+        for store_name in &needed {
+            match store_registry.resolve(store_name) {
+                Ok(crate::store::registry::StoreHandle::Postgres(backend)) => {
+                    match block_on_store(async move { backend.acquire_pin().await }) {
+                        Ok(conn) => {
+                            pinned_conns.insert(store_name.clone(), conn);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "axon::store::pin",
+                                store_name = %store_name,
+                                error = %e,
+                                d_letter = "37.x.j.D1",
+                                "failed to acquire flow pin; falling back \
+                                 to per-step pool acquisition (legacy path) \
+                                 for this store. Adopter under transaction-\
+                                 mode pooler may observe the unnamed-\
+                                 prepared-statement race."
+                            );
+                        }
+                    }
+                }
+                Ok(_) => {
+                    // Non-postgresql variant — discovery filter should
+                    // have excluded this; defensive no-op.
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "axon::store::pin",
+                        store_name = %store_name,
+                        error = %e,
+                        d_letter = "37.x.j.D1",
+                        "failed to resolve axonstore for flow pin; falling \
+                         back to per-step pool acquisition (legacy path)."
+                    );
+                }
+            }
+        }
+    }
+
     let (success, _events) = if backend == "stub" {
         let result = execute_stub(&execution_units, false, false);
         // §Fase 33.b Layer 1 — close the steps_executed:0 hollow-wire bug.
@@ -2381,6 +2567,10 @@ pub fn execute_server_flow(
             &mut report,
             &registry,
             &store_registry,
+            // §Fase 37.x.j (D1) — pass the flow-scoped pinned-conn map
+            // built above. Every SQL store op routes through these
+            // pins until the function returns + the map drops.
+            &mut pinned_conns,
             api_key_override,
         ).map_err(|e| format!("Backend error: {:?}", e))?
     };
@@ -2596,8 +2786,16 @@ pub fn run_run(
         return 0;
     }
 
+    // §Fase 37.x.j (D1) — CLI path: no flow-scoped pinning (the CLI
+    // runs one flow per process invocation; the legacy per-step
+    // `StoreConn::Pool` fallback is acceptable for one-shot runs and
+    // keeps CLI smoke tests byte-identical to pre-37.x.j).
+    let mut cli_pinned_conns: std::collections::HashMap<
+        String,
+        sqlx::pool::PoolConnection<sqlx::Postgres>,
+    > = std::collections::HashMap::new();
     let (success, events) = if tool_mode == "real" {
-        match execute_real(&units, backend, file, use_color, trace, stream, output_fmt, &mut report, &registry, &store_registry, None) {
+        match execute_real(&units, backend, file, use_color, trace, stream, output_fmt, &mut report, &registry, &store_registry, &mut cli_pinned_conns, None) {
             Ok((s, e)) => (s, e),
             Err(err) => {
                 eprintln!(
@@ -2746,8 +2944,10 @@ mod fase35e_tests {
         )])
         .unwrap();
         let ctx = ExecContext::new("F", "P", 0);
+        let mut pin_map = std::collections::HashMap::new();
         let result = execute_sql_store_step(
             &registry,
+            &mut pin_map,
             "retrieve",
             "logs",
             "logs:id = 1",
@@ -2767,8 +2967,9 @@ mod fase35e_tests {
         let registry = StoreRegistry::build(&[store]).unwrap();
         let mut ctx = ExecContext::new("F", "P", 0);
         ctx.set("amount", "100"); // a user binding, but no `_confidence`
+        let mut pin_map = std::collections::HashMap::new();
         let result =
-            execute_sql_store_step(&registry, "persist", "ledger", "ledger", None, &ctx);
+            execute_sql_store_step(&registry, &mut pin_map, "persist", "ledger", "ledger", None, &ctx);
         assert!(matches!(result, Err(StoreError::Epistemic(_))));
     }
 
@@ -2783,8 +2984,9 @@ mod fase35e_tests {
             StoreRegistry::build(&[pg_store("events", "not a dsn")]).unwrap();
         let mut ctx = ExecContext::new("F", "P", 0);
         ctx.set("event_kind", "login");
+        let mut pin_map = std::collections::HashMap::new();
         let result =
-            execute_sql_store_step(&registry, "persist", "events", "events", None, &ctx);
+            execute_sql_store_step(&registry, &mut pin_map, "persist", "events", "events", None, &ctx);
         assert!(matches!(result, Err(StoreError::PoolInit { .. })));
     }
 
@@ -2808,8 +3010,10 @@ mod fase35e_tests {
             ("content".to_string(), "${message}".to_string()),
             ("tenant_id".to_string(), "${tenant_id}".to_string()),
         ];
+        let mut pin_map = std::collections::HashMap::new();
         let result = execute_sql_store_step(
             &registry,
+            &mut pin_map,
             "persist",
             "chat_history",
             "chat_history",
@@ -2837,8 +3041,10 @@ mod fase35e_tests {
             ("balance".to_string(), "${new_balance}".to_string()),
             ("status".to_string(), "active".to_string()),
         ];
+        let mut pin_map = std::collections::HashMap::new();
         let result = execute_sql_store_step(
             &registry,
+            &mut pin_map,
             "mutate",
             "accounts",
             "accounts:id = 1",

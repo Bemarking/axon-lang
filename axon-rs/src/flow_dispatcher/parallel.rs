@@ -225,6 +225,26 @@ pub async fn run_branches_concurrently(
         // for every branch. Branches can set their own per-branch
         // policy by mutating their ctx clone before the helper.
         bc.pending_effect_policy = None;
+        // §Fase 37.x.j (D6.a) — Per-branch sub-pin isolation. Each
+        // par branch gets a FRESH (independent) `pinned_conns` Arc so
+        // branches do NOT serialize on the parent's pin map mutex.
+        // When the first store op in a branch runs, the wire-
+        // integration handler's take-pin-out logic finds the map
+        // empty and lazily acquires a NEW `PoolConnection` for the
+        // branch — so each branch's ops on the same store share a
+        // single pin within the branch, but DIFFERENT branches use
+        // different physical Postgres backends. This preserves
+        // par-block concurrency (no false serialization) while
+        // still closing the unnamed-statement race WITHIN each
+        // branch's linear walk.
+        //
+        // D6.b (`par(serialized: true)`) would skip this replacement
+        // so branches share the parent's Arc<Mutex<>> and serialize
+        // on the lock — an honest deferral to a future fase that
+        // also lands the parser + AST grammar for `par(serialized:)`.
+        bc.pinned_conns = std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        ));
         branch_ctxs.push(bc);
     }
 

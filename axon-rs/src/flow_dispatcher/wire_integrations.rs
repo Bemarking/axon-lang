@@ -454,16 +454,40 @@ pub async fn run_persist(
             // confidence-floored store is a typed error.
             epistemic::enforce_persist_floor(&row, floor, &node.store_name)
                 .map_err(|e| sql_dispatch_error(StoreError::from(e)))?;
-            // §Fase 37.x.j (D1) — wrap the backend pool in a `StoreConn`
-            // and dispatch through it. Sub-fases 37.x.j.4/5 will switch
-            // this to `StoreConn::Pinned(&mut ctx.pinned_conn)` so the
-            // insert runs on the same physical Postgres backend as every
-            // other op against this store in the flow.
-            let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
-            let n = backend
-                .insert(&mut store_conn, &node.store_name, &row)
-                .await
-                .map_err(sql_dispatch_error)?;
+            // §Fase 37.x.j (D2, D6.a) — Take the pin OUT of the shared
+            // map (if any). On a MISS (empty map ≡ this is a par-branch
+            // sub-context post-clone, or a non-eager-acquired path),
+            // lazily acquire a fresh pin for the branch — D6.a default
+            // per-branch sub-pin. Return the pin on the tail so the
+            // next op against the same store in this same ctx reuses
+            // it. The shared `Arc<Mutex<HashMap>>` lock is held only
+            // across the take + insert (microseconds); the SQL dispatch
+            // itself runs without the mutex.
+            let mut pin: Option<sqlx::pool::PoolConnection<sqlx::Postgres>> = {
+                ctx.pinned_conns.lock().unwrap().remove(&node.store_name)
+            };
+            if pin.is_none() {
+                // D6.a lazy acquire — see retrieve site for full rationale.
+                if let Ok(p) = backend.acquire_pin().await {
+                    pin = Some(p);
+                }
+            }
+            let n = {
+                let mut store_conn = match &mut pin {
+                    Some(p) => crate::store::store_conn::StoreConn::Pinned(p),
+                    None => crate::store::store_conn::StoreConn::Pool(backend.pool()),
+                };
+                backend
+                    .insert(&mut store_conn, &node.store_name, &row)
+                    .await
+                    .map_err(sql_dispatch_error)?
+            };
+            if let Some(p) = pin {
+                ctx.pinned_conns
+                    .lock()
+                    .unwrap()
+                    .insert(node.store_name.clone(), p);
+            }
             format!("persisted {n} row(s) to `{}`", node.store_name)
         }
         Ok(None) => {
@@ -516,25 +540,51 @@ pub async fn run_retrieve(
             // set). §35.g Pillar I — every tuple born Untrusted,
             // confidence_floor filters sub-floor rows. The bound value
             // is an epistemic envelope carrying both dispositions.
-            // §Fase 37.x.j (D1) — wrap the backend pool in a `StoreConn`.
-            // 37.x.j.5 will switch this to `StoreConn::Pinned(...)` from
-            // `ctx.pinned_conns` so the retrieve runs on the flow-pinned
-            // physical connection.
-            let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
-            let stream_outcome = row_stream::stream_retrieve(
-                &backend,
-                &mut store_conn,
-                &node.store_name,
-                &node.where_expr,
-                row_stream::DEFAULT_RETRIEVE_POLICY,
-                row_stream::DEFAULT_MAX_ROWS,
-                &ctx.cancel,
-                // §Fase 37.d (D3) — resolve `${name}` in the `where`
-                // clause to `$N` bind parameters via the filter
-                // compiler (never string-spliced into the SQL).
-                &ctx.let_bindings,
-            )
-            .await
+            // §Fase 37.x.j (D2, D6.a) — Take the pin OUT of the shared
+            // map. On a MISS (empty map = this is a par-branch sub-
+            // context with a fresh Arc post-clone in `parallel.rs`, or
+            // simply a non-eager-acquired path), lazily acquire a
+            // fresh pin so this branch's ops still share a single
+            // physical Postgres backend connection — closing the
+            // unnamed-statement race per-branch (D6.a). When acquire
+            // also fails (pool exhausted, etc.) the dispatch falls
+            // through to `StoreConn::Pool` (legacy degraded path,
+            // still functional; only the race protection is lost).
+            let mut pin: Option<sqlx::pool::PoolConnection<sqlx::Postgres>> = {
+                ctx.pinned_conns.lock().unwrap().remove(&node.store_name)
+            };
+            if pin.is_none() {
+                if let Ok(p) = backend.acquire_pin().await {
+                    pin = Some(p);
+                }
+            }
+            let stream_outcome_result = {
+                let mut store_conn = match &mut pin {
+                    Some(p) => crate::store::store_conn::StoreConn::Pinned(p),
+                    None => crate::store::store_conn::StoreConn::Pool(backend.pool()),
+                };
+                row_stream::stream_retrieve(
+                    &backend,
+                    &mut store_conn,
+                    &node.store_name,
+                    &node.where_expr,
+                    row_stream::DEFAULT_RETRIEVE_POLICY,
+                    row_stream::DEFAULT_MAX_ROWS,
+                    &ctx.cancel,
+                    // §Fase 37.d (D3) — resolve `${name}` in the `where`
+                    // clause to `$N` bind parameters via the filter
+                    // compiler (never string-spliced into the SQL).
+                    &ctx.let_bindings,
+                )
+                .await
+            };
+            if let Some(p) = pin {
+                ctx.pinned_conns
+                    .lock()
+                    .unwrap()
+                    .insert(node.store_name.clone(), p);
+            }
+            let stream_outcome = stream_outcome_result
             .map_err(sql_dispatch_error)?;
             let metadata = row_stream::stream_metadata(
                 row_stream::DEFAULT_RETRIEVE_POLICY,
@@ -594,13 +644,33 @@ pub async fn run_mutate(
             // `{ col: value }` block when present; else the v1.31.0
             // user-bindings form.
             let row = store_row(&node.fields, ctx);
-            // §Fase 37.x.j (D1) — see `insert` call site above for the
-            // StoreConn::Pool legacy wrapper rationale.
-            let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
-            let n = backend
-                .mutate(&mut store_conn, &node.store_name, &node.where_expr, &row, &ctx.let_bindings)
-                .await
-                .map_err(sql_dispatch_error)?;
+            // §Fase 37.x.j (D2, D6.a) — take-pin / lazy-acquire-on-miss
+            // / dispatch / return-pin; see `run_persist` and
+            // `run_retrieve` sites for the full rationale.
+            let mut pin: Option<sqlx::pool::PoolConnection<sqlx::Postgres>> = {
+                ctx.pinned_conns.lock().unwrap().remove(&node.store_name)
+            };
+            if pin.is_none() {
+                if let Ok(p) = backend.acquire_pin().await {
+                    pin = Some(p);
+                }
+            }
+            let n = {
+                let mut store_conn = match &mut pin {
+                    Some(p) => crate::store::store_conn::StoreConn::Pinned(p),
+                    None => crate::store::store_conn::StoreConn::Pool(backend.pool()),
+                };
+                backend
+                    .mutate(&mut store_conn, &node.store_name, &node.where_expr, &row, &ctx.let_bindings)
+                    .await
+                    .map_err(sql_dispatch_error)?
+            };
+            if let Some(p) = pin {
+                ctx.pinned_conns
+                    .lock()
+                    .unwrap()
+                    .insert(node.store_name.clone(), p);
+            }
             format!("mutated {n} row(s) in `{}`", node.store_name)
         }
         Ok(None) => {
@@ -647,13 +717,32 @@ pub async fn run_purge(
 
     let output = match resolve_pg_backend(ctx, &node.store_name) {
         Ok(Some((backend, _floor))) => {
-            // §Fase 37.x.j (D1) — see other call sites in this file
-            // for the StoreConn::Pool legacy wrapper rationale.
-            let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
-            let n = backend
-                .purge(&mut store_conn, &node.store_name, &node.where_expr, &ctx.let_bindings)
-                .await
-                .map_err(sql_dispatch_error)?;
+            // §Fase 37.x.j (D2, D6.a) — take-pin / lazy-acquire-on-miss
+            // / dispatch / return-pin; see other sites for full rationale.
+            let mut pin: Option<sqlx::pool::PoolConnection<sqlx::Postgres>> = {
+                ctx.pinned_conns.lock().unwrap().remove(&node.store_name)
+            };
+            if pin.is_none() {
+                if let Ok(p) = backend.acquire_pin().await {
+                    pin = Some(p);
+                }
+            }
+            let n = {
+                let mut store_conn = match &mut pin {
+                    Some(p) => crate::store::store_conn::StoreConn::Pinned(p),
+                    None => crate::store::store_conn::StoreConn::Pool(backend.pool()),
+                };
+                backend
+                    .purge(&mut store_conn, &node.store_name, &node.where_expr, &ctx.let_bindings)
+                    .await
+                    .map_err(sql_dispatch_error)?
+            };
+            if let Some(p) = pin {
+                ctx.pinned_conns
+                    .lock()
+                    .unwrap()
+                    .insert(node.store_name.clone(), p);
+            }
             format!("purged {n} row(s) from `{}`", node.store_name)
         }
         Ok(None) => {

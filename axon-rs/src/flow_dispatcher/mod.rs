@@ -303,6 +303,38 @@ pub struct DispatchCtx {
     /// verifiable fingerprint of the flow's complete mutation history.
     pub audit_chain:
         std::sync::Arc<std::sync::Mutex<crate::store::audit_chain::StoreAuditChain>>,
+    /// §Fase 37.x.j (D2) — Per-flow pinned Postgres connections.
+    /// Populated at stream start by `run_streaming_via_dispatcher`:
+    /// the IR is walked, every postgresql-backed `axonstore` referenced
+    /// by the flow body has ONE `PoolConnection<Postgres>` acquired,
+    /// and the map holds them by axonstore name for the flow's
+    /// lifetime. The map drops at the end of the streaming task,
+    /// returning every conn to the pool via the `after_release
+    /// DEALLOCATE ALL` hook (Fase 38.x.a D2 composing with 37.x.j D1).
+    ///
+    /// Wire-integration store handlers consult this map per op:
+    /// `take` the pin out → run the SQL via `StoreConn::Pinned(&mut pin)`
+    /// → `insert` the pin back. The take/return discipline preserves
+    /// the Arc<Mutex<>> sharing pattern across cloned (par-branched)
+    /// contexts while keeping individual ops borrow-checker friendly.
+    ///
+    /// Empty map ≡ no pinning held (legacy path) → handlers fall back
+    /// to `StoreConn::Pool(backend.pool())`. This is the case for
+    /// callers that haven't eager-acquired (non-streaming RPC paths,
+    /// CLI tests, etc.) — D5 byte-identical backwards-compat.
+    ///
+    /// Per D6.b (sub-fase 37.x.j.6): `par {}` branches that share this
+    /// Arc serialize on its mutex. The D6.a default (per-branch
+    /// sub-pin) replaces this Arc with a fresh empty map at par-branch
+    /// clone time so branches do NOT serialize on the parent's pins.
+    pub pinned_conns: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                String,
+                sqlx::pool::PoolConnection<sqlx::Postgres>,
+            >,
+        >,
+    >,
 }
 
 impl DispatchCtx {
@@ -341,7 +373,33 @@ impl DispatchCtx {
             audit_chain: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::store::audit_chain::StoreAuditChain::new(),
             )),
+            // §Fase 37.x.j (D2) — empty pin map by default; populated
+            // by `run_streaming_via_dispatcher` via `with_pinned_conns`.
+            pinned_conns: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         }
+    }
+
+    /// §Fase 37.x.j (D2) — Builder: attach an Arc-shared pinned
+    /// connection map populated by the caller. `run_streaming_via_dispatcher`
+    /// uses this to install the eagerly-acquired flow-scoped pins
+    /// BEFORE the dispatcher walks any node. Returns `self` so the
+    /// builder pattern chains with `with_store_registry`, `with_pem`,
+    /// `with_tool_registry`, `with_held_capabilities`.
+    pub fn with_pinned_conns(
+        mut self,
+        conns: std::sync::Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<
+                    String,
+                    sqlx::pool::PoolConnection<sqlx::Postgres>,
+                >,
+            >,
+        >,
+    ) -> Self {
+        self.pinned_conns = conns;
+        self
     }
 
     /// §Fase 35.f — Builder: attach the `axonstore` registry so the
