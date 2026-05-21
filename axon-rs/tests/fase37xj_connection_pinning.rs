@@ -165,10 +165,15 @@ fn s_static_grep_runner_eager_pin_acquire() {
     // bearing entry point: without it, `pinned_conns` stays empty
     // and every store op falls back to `StoreConn::Pool` (legacy).
     let src = include_str!("../src/runner.rs");
+    // §Fase 37.x.j.10 — the variable name binding the backend handle
+    // varies (pre-hotfix: `backend`; post-hotfix: `backend_pool` to
+    // avoid shadowing inside the single outer `block_on_store`). What
+    // matters structurally is the call `.acquire_pin().await` inside
+    // `runner.rs` — the method invocation, not the receiver name.
     assert!(
-        src.contains("backend.acquire_pin().await"),
-        "§37.x.j §S — `runner.rs` MUST invoke `acquire_pin()` to \
-         populate the flow-scoped pin map at execution start. A \
+        src.contains(".acquire_pin().await"),
+        "§37.x.j §S — `runner.rs` MUST invoke `.acquire_pin().await` \
+         to populate the flow-scoped pin map at execution start. A \
          future refactor that drops this call would silently regress \
          the sync path's pin protection."
     );
