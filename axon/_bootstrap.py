@@ -30,7 +30,10 @@ import os
 import platform
 import stat
 import sys
+import tarfile
+import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path
 
 # Bumped in lockstep with the release (Cargo.toml + pyproject.toml).
@@ -40,20 +43,45 @@ _VERSION = "2.0.0"
 _RELEASE_BASE = "https://github.com/Bemarking/axon-lang/releases/download"
 
 
-def _platform_slug() -> str:
-    """Resolve the `<os>-<arch>` slug matching the release asset names."""
-    osname = platform.system().lower()
-    arch = platform.machine().lower()
-    # Normalise arch aliases to the release-asset convention.
-    if arch in ("x86_64", "amd64"):
-        arch = "x86_64"
-    elif arch in ("arm64", "aarch64"):
-        arch = "aarch64"
-    return f"{osname}-{arch}"
+def _os_name() -> str:
+    """Resolve the OS token matching the release asset names.
+
+    `platform.system()` returns "Darwin" on macOS, but the release
+    assets use "macos" — map it. Linux + Windows pass through.
+    """
+    s = platform.system().lower()
+    if s == "darwin":
+        return "macos"
+    return s
+
+
+def _arch() -> str:
+    """Resolve the arch token matching the release asset names."""
+    a = platform.machine().lower()
+    if a in ("x86_64", "amd64"):
+        return "x86_64"
+    if a in ("arm64", "aarch64"):
+        return "aarch64"
+    return a
+
+
+def _is_windows() -> bool:
+    return platform.system().lower() == "windows"
+
+
+def _archive_asset() -> str:
+    """The release asset filename for the host platform.
+
+    rust_release.yml publishes `.tar.gz` archives for Linux/macOS and
+    a `.zip` for Windows — NOT raw binaries. The launcher downloads
+    the archive then extracts the `axon` binary.
+    """
+    slug = f"{_os_name()}-{_arch()}"
+    return f"axon-{slug}.zip" if _is_windows() else f"axon-{slug}.tar.gz"
 
 
 def _binary_name() -> str:
-    return "axon.exe" if platform.system().lower() == "windows" else "axon"
+    return "axon.exe" if _is_windows() else "axon"
 
 
 def _cache_dir() -> Path:
@@ -66,35 +94,72 @@ def _binary_path() -> Path:
     return _cache_dir() / _binary_name()
 
 
-def _download_binary(target: Path) -> None:
-    """Fetch the native binary for the host platform into *target*."""
-    slug = _platform_slug()
-    ext = ".exe" if platform.system().lower() == "windows" else ""
-    asset = f"axon-{slug}{ext}"
+def _download_and_extract(target: Path) -> None:
+    """Fetch + extract the native binary for the host platform.
+
+    Downloads the platform archive (`.tar.gz` / `.zip`) from the
+    matching GitHub Release, extracts the `axon` binary into the
+    cache dir at *target*, and marks it executable on POSIX.
+    """
+    asset = _archive_asset()
     url = f"{_RELEASE_BASE}/v{_VERSION}/{asset}"
     target.parent.mkdir(parents=True, exist_ok=True)
-    sys.stderr.write(f"axon-lang: fetching native binary {asset} (v{_VERSION})...\n")
+    sys.stderr.write(
+        f"axon-lang: fetching native binary archive {asset} (v{_VERSION})...\n"
+    )
+    binary_name = _binary_name()
     try:
-        with urllib.request.urlopen(url) as resp, open(target, "wb") as out:
-            out.write(resp.read())
+        with tempfile.NamedTemporaryFile(
+            suffix=Path(asset).suffix, delete=False
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            with urllib.request.urlopen(url) as resp:
+                tmp.write(resp.read())
+        # Extract the `axon` binary from the archive.
+        if asset.endswith(".zip"):
+            with zipfile.ZipFile(tmp_path) as zf:
+                _extract_member(zf.namelist(), binary_name, zf, target, is_zip=True)
+        else:
+            with tarfile.open(tmp_path, "r:gz") as tf:
+                _extract_member(tf.getnames(), binary_name, tf, target, is_zip=False)
+        tmp_path.unlink(missing_ok=True)
     except Exception as exc:  # pragma: no cover — network/IO defensive
         sys.stderr.write(
-            f"axon-lang: failed to download native binary from {url}: {exc}\n"
-            f"axon-lang: install the binary manually from "
-            f"{_RELEASE_BASE}/v{_VERSION} or use `cargo install axon-lang`.\n"
+            f"axon-lang: failed to fetch/extract native binary from {url}: {exc}\n"
+            f"axon-lang: install manually from {_RELEASE_BASE}/v{_VERSION} "
+            f"or use `cargo install axon-lang`.\n"
         )
         raise SystemExit(2)
-    # Mark executable on POSIX — owner-only (least privilege; the
-    # cached binary lives under the user's own cache dir).
-    if platform.system().lower() != "windows":
+    if not _is_windows():
         mode = os.stat(target).st_mode
         os.chmod(target, mode | stat.S_IEXEC)
+
+
+def _extract_member(names, binary_name, archive, target: Path, *, is_zip: bool) -> None:
+    """Extract the entry whose basename matches *binary_name* to *target*."""
+    member = next(
+        (n for n in names if Path(n).name == binary_name),
+        None,
+    )
+    if member is None:
+        raise FileNotFoundError(
+            f"archive does not contain a `{binary_name}` entry (found: {names})"
+        )
+    if is_zip:
+        data = archive.read(member)
+    else:
+        extracted = archive.extractfile(member)
+        if extracted is None:
+            raise FileNotFoundError(f"could not read `{member}` from tar archive")
+        data = extracted.read()
+    with open(target, "wb") as out:
+        out.write(data)
 
 
 def _resolve_binary() -> Path:
     binary = _binary_path()
     if not binary.exists():
-        _download_binary(binary)
+        _download_and_extract(binary)
     return binary
 
 
