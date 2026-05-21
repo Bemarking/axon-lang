@@ -84,4 +84,4 @@ futures = "0.3"
 # only via the `stream` feature; pinning a direct dep keeps the surface
 # stable across reqwest minor bumps.
 bytes = "1"
-axon-csys = { path = "../axon-csys", version = "=0.1.2" }
+axon-csys = { path = "../axon-csys", version = "=0.2.0" }
