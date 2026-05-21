@@ -137,7 +137,14 @@ jobs:
             echo "value=${{ inputs.bump_type }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Pre-bump Python tests (lockstep guard)
+      # §Fase 39.i — the Cat 3 CLI contract tests subprocess-invoke the
+      # native binary (`axon-rs/target/debug/axon`). Build it before
+      # running them. Post-purga there is no Python language runtime;
+      # pytest only drives the binary.
+      - name: Build native binary (for Cat 3 CLI contract tests)
+        run: cd axon-rs && cargo build
+
+      - name: Pre-bump Cat 3 CLI contract tests (lockstep guard)
         run: |
           # Run the version-pinning tests at the *current* version BEFORE
           # the bump — they must be green so we know the bump's only delta
@@ -171,7 +178,12 @@ jobs:
             git commit --amend --no-edit
           fi
 
-      - name: Post-bump Python tests
+      # §Fase 39.i — rebuild the binary at the NEW version so the Cat 3
+      # version-pinning assertions (`axon-lang <new>`) see it.
+      - name: Rebuild native binary at new version
+        run: cd axon-rs && cargo build
+
+      - name: Post-bump Cat 3 CLI contract tests
         run: |
           python -m pytest tests/test_cli_mvp_smoke.py tests/test_frontend_contract_golden.py -q
 

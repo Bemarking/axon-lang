@@ -7,8 +7,8 @@ build-backend = "hatchling.build"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-lang"
-version = "1.40.3"
-description = "AXON v1.5.1 — Lockstep cross-stack release. axon-lang Python + axon-lang Rust crate (renamed from axon-rs, now on crates.io) ship the same version every release, eliminating compatibility-matrix questions. Bumps coordinated via bump-my-version + a GitHub Actions workflow. Functional surface unchanged from v1.5.0: typed channels with pi-calculus mobility, second-order session types, runtime TypedEventBus, migration path from legacy string topics. See paper_mobile_channels.md."
+version = "2.0.0"
+description = "AXON — the formal cognitive language. Native Rust + C23 runtime (v2.0.0 Pure Silicon Cognition). This PyPI package is a thin launcher that fetches + execs the precompiled native `axon` binary; the lexer, parser, type-checker, IR generator, runtime, server, and CLI are all native Rust + C23. `pip install axon-lang && axon check x.axon` works exactly like the native binary. Alternatives: `cargo install axon-lang`, GitHub Release binaries, or the axon-enterprise Docker image."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
@@ -48,163 +48,44 @@ Issues = "https://github.com/bemarking/axon-constructor/issues"
 Changelog = "https://github.com/bemarking/axon-constructor/blob/main/.axon-dev/CHANGELOG.md"
 
 # ──────────────────────────────────────────────────────────────────
-# CLI entrypoint
+# CLI entrypoint — §Fase 39.h
+#
+# Points at the native-binary launcher (`axon/_bootstrap.py` via the
+# `axon:main` re-export). `pip install axon-lang` + `axon ...` fetches
+# and execs the precompiled Rust binary. There is NO Python language
+# runtime behind this entry point anymore.
 # ──────────────────────────────────────────────────────────────────
 [project.scripts]
-axon = "axon.cli:main"
+axon = "axon:main"
 
 # ──────────────────────────────────────────────────────────────────
-# Optional dependencies — install what you need
+# Optional dependencies — §Fase 39.h
 #
-#   pip install axon-lang              → compiler + runtime (zero deps)
-#   pip install axon-lang[tools]       → real tool backends (httpx)
-#   pip install axon-lang[anthropic]   → Claude backend
-#   pip install axon-lang[openai]      → GPT backend
-#   pip install axon-lang[gemini]      → Gemini backend
-#   pip install axon-lang[ollama]      → Ollama backend
-#   pip install axon-lang[kafka]       → Kafka event channel
-#   pip install axon-lang[rabbitmq]    → RabbitMQ event channel
-#   pip install axon-lang[aws]         → AWS EventBridge channel
-#   pip install axon-lang[redis]       → Redis state backend
-#   pip install axon-lang[server]      → AxonServer (HTTP + WS)
-#   pip install axon-lang[all]         → everything
-#   pip install axon-lang[dev]         → test + lint + build
+# The v1.x runtime extras (anthropic / openai / kafka / postgresql /
+# server / pq / fhe / …) are GONE: the language runtime is native
+# Rust + C23, so there are no Python runtime dependencies to install.
+# The native binary bundles every backend + transport + crypto path.
+#
+# The ONLY surviving extra is `dev`, needed for:
+#   - the 2 Cat 3 subprocess tests (pytest) that anchor the public
+#     CLI contract against the native binary
+#   - cross-stack version coordination (bump-my-version)
+#
+#   pip install axon-lang        → native binary launcher (zero runtime deps)
+#   pip install axon-lang[dev]   → + pytest + bump-my-version
 # ──────────────────────────────────────────────────────────────────
 [project.optional-dependencies]
-tools = [
-    "httpx>=0.27",
-    "PyMuPDF>=1.24",
-]
-anthropic = [
-    "anthropic>=0.40",
-]
-openai = [
-    "openai>=1.50",
-]
-gemini = [
-    "google-generativeai>=0.8",
-]
-ollama = [
-    "ollama>=0.4",
-]
-# Fase 22 — Kimi/Moonshot uses the OpenAI SDK with a Moonshot base_url.
-kimi = [
-    "openai>=1.50",
-]
-# Fase 22 — Zhipu GLM v4 endpoint accepts the OpenAI SDK with the
-# Zhipu base_url; the JWT auth quirk is handled at transport time.
-glm = [
-    "openai>=1.50",
-]
-# Fase 22 — OpenRouter is OpenAI-compatible; one SDK, model slugs
-# select the underlying provider.
-openrouter = [
-    "openai>=1.50",
-]
-kafka = [
-    "aiokafka>=0.11",
-]
-rabbitmq = [
-    "aio-pika>=9.4",
-]
-postgresql = [
-    "asyncpg>=0.29",
-]
-sqlite-async = [
-    "aiosqlite>=0.20",
-]
-aws = [
-    "aiobotocore>=2.15",
-    "boto3>=1.34",
-    "botocore>=1.34",
-]
-docker = [
-    "docker>=7.0",
-]
-kubernetes = [
-    "kubernetes>=30.1",
-]
-redis = [
-    "redis[hiredis]>=5.2",
-]
-# ── ESK Fase 6 optional crypto backends ───────────────────────────
-pq = [
-    # Post-Quantum signatures (ML-DSA-65 / Dilithium3, FIPS 204).
-    # Requires liboqs (Open Quantum Safe) native library — see
-    # https://github.com/open-quantum-safe/liboqs for build instructions.
-    "liboqs-python>=0.10",
-]
-fhe = [
-    # Homomorphic Encryption (CKKS) via Microsoft SEAL binding.
-    "tenseal>=0.3",
-]
-vault = [
-    # HashiCorp Vault secret provider.
-    "hvac>=2.0",
-]
-keyvault = [
-    # Azure Key Vault secret provider.
-    "azure-keyvault-secrets>=4.7",
-    "azure-identity>=1.15",
-]
-grpc = [
-    # gRPC handler for the Free-Monad Handler protocol (Fase 2).
-    "grpcio>=1.60",
-    "grpcio-tools>=1.60",
-]
-server = [
-    "uvicorn[standard]>=0.32",
-    "starlette>=0.41",
-    "httpx>=0.27",
-]
-all = [
-    "axon-lang[tools]",
-    "axon-lang[anthropic]",
-    "axon-lang[openai]",
-    "axon-lang[gemini]",
-    "axon-lang[ollama]",
-    "axon-lang[kafka]",
-    "axon-lang[rabbitmq]",
-    "axon-lang[postgresql]",
-    "axon-lang[sqlite-async]",
-    "axon-lang[aws]",
-    "axon-lang[docker]",
-    "axon-lang[kubernetes]",
-    "axon-lang[redis]",
-    "axon-lang[server]",
-    "axon-lang[pq]",
-    "axon-lang[fhe]",
-    "axon-lang[vault]",
-    "axon-lang[keyvault]",
-    "axon-lang[grpc]",
-]
 dev = [
     "pytest>=8.0",
-    "pytest-asyncio>=0.24",
-    "pytest-mock>=3.14",
-    "pytest-cov>=6.0",
-    "numpy>=1.26",
     "ruff>=0.8",
     "build>=1.2",
-    "pyinstaller>=6.13",
     "twine>=6.0",
-    # Property-based + fuzz testing — used by Fase 19 (Hibernate CPS,
-    # Drill/Trail PIX, Par ContextView, break/continue) and Fase 20
-    # (Production Shield Runtime adversarial fuzz). Without this, the
-    # following test modules fail to collect (since v1.16.0):
-    #   tests/test_fase19_fuzz_nesting.py
-    #   tests/test_fase19_property_tests.py
-    #   tests/test_fase20_property_and_fuzz.py
-    # Pinned to >=6 because Fase 20.j uses HealthCheck.suppress_health_check
-    # which landed in 6.x.
-    "hypothesis>=6.0",
-    # Coordinated cross-stack version bumping. See [tool.bumpversion] block
-    # below + .github/workflows/coordinated-release.yml — invoked as
-    # `bump-my-version bump {patch|minor|major}` to atomically update
-    # pyproject.toml + axon/__init__.py + axon-rs/Cargo.toml + the test
-    # asserts that pin the version, then commit. Eliminates the drift that
-    # previously had the version literal scattered across five Rust files
-    # (now consolidated to a single env!("CARGO_PKG_VERSION") in runner.rs).
+    # Coordinated cross-stack version bumping. See [tool.bumpversion]
+    # block below + .github/workflows/coordinated-release.yml —
+    # invoked as `bump-my-version bump {patch|minor|major}` to
+    # atomically update pyproject.toml + axon/__init__.py +
+    # axon/_bootstrap.py + axon-rs/Cargo.toml + the test asserts that
+    # pin the version, then commit.
     "bump-my-version>=0.28",
 ]
 
@@ -244,7 +125,8 @@ markers = [
 # ──────────────────────────────────────────────────────────────────
 [tool.coverage.run]
 source = ["axon"]
-omit = ["axon/cli/*"]
+# §Fase 39.h — only the distribution shim remains; nothing to omit.
+omit = []
 
 [tool.coverage.report]
 show_missing = true
@@ -303,7 +185,7 @@ known-first-party = ["axon"]
 # `workflow_dispatch` invocation away.
 # ──────────────────────────────────────────────────────────────────
 [tool.bumpversion]
-current_version = "1.40.3"
+current_version = "2.0.0"
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 search = "{current_version}"
@@ -333,6 +215,14 @@ replace = 'version = "{new_version}"'
 filename = "axon/__init__.py"
 search = '__version__ = "{current_version}"'
 replace = '__version__ = "{new_version}"'
+
+# §Fase 39.h — the native-binary launcher's `_VERSION` constant
+# determines which GitHub Release tarball `pip install` fetches; it
+# MUST bump in lockstep with the package version.
+[[tool.bumpversion.files]]
+filename = "axon/_bootstrap.py"
+search = '_VERSION = "{current_version}"'
+replace = '_VERSION = "{new_version}"'
 
 # Rust crate version (axon-rs/Cargo.toml [package].version). The dep
 # `axon-frontend = { path, version = "=0.2.0" }` deliberately uses a

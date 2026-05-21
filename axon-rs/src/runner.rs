@@ -2400,6 +2400,36 @@ pub struct ServerRunnerMetrics {
     pub step_results: Vec<String>,
     /// Per-step token chunks for streaming (simulated from step results).
     pub per_step_chunks: Vec<Vec<String>>,
+    /// §Fase 39.c.y — semantic provenance events captured during
+    /// flow execution. Each entry is a `kind:identifier` slug
+    /// (closed taxonomy enforced by producer sites):
+    ///   - `retrieve:<store>`         — Pillar II store read
+    ///   - `persist:<store>`          — Pillar II store insert
+    ///   - `mutate:<store>`           — Pillar II store update
+    ///   - `purge:<store>`            — Pillar II store delete
+    ///   - `shield:<name>@<step>`     — Pillar I shield invocation
+    ///   - `ots:<name>@<step>`        — OTS apply
+    ///   - `mandate:<name>@<step>`    — mandate apply
+    ///   - `compute:<name>@<step>`    — compute apply
+    ///   - `lambda_apply:<name>@<step>` — lambda data apply
+    /// The wire envelope's `provenance_chain` is built from
+    /// `[flow:F, …events…, step:S0, step:S1, …, backend:B]`.
+    /// Empty for trivial flows; populated by [`emit_provenance_event`]
+    /// at the runtime sites.
+    pub provenance_events: Vec<String>,
+    /// §Fase 39.c.z — closed-catalog blame attribution from runtime
+    /// degradation events. Populated when:
+    ///   - an anchor with severity != "error" fires (degraded path
+    ///     proceeds)
+    ///   - a shield flags content but flow proceeds
+    ///   - a store mutation chain verification fails AND flow
+    ///     proceeds with prior-state read
+    ///   - a backend returns truncated / partial response
+    ///   - D5 detects a recoverable type mismatch
+    /// `None` on the clean happy path. The first surfaced blame
+    /// wins (subsequent events are recorded in audit_log but do
+    /// not overwrite the primary attribution).
+    pub blame_attribution: Option<crate::wire_envelope::BlameContext>,
 }
 
 pub fn execute_server_flow(
@@ -2719,6 +2749,14 @@ pub fn execute_server_flow(
 
     let hooks = crate::hooks::HookManager::new();
     let r = report.build(success, &hooks);
+
+    // §Fase 39.c.z — derive blame from the report BEFORE the
+    // partial-move loop below. The producer walks the units +
+    // steps by reference; the loop afterward consumes them. We
+    // must extract any structured observability from `r` first.
+    let blame_attribution =
+        crate::wire_envelope_producers::derive_blame_from_report(&r);
+
     let mut steps_executed = 0;
     let mut tokens_input = 0;
     let mut tokens_output = 0;
@@ -2751,6 +2789,32 @@ pub fn execute_server_flow(
         }
     }).collect();
 
+    // §Fase 39.c.y — derive semantic provenance events from the IR
+    // walk. Each store-touching step + each shield/ots/mandate/compute
+    // apply emits a `kind:identifier` slug into the chain. The slug
+    // taxonomy is closed (see ServerRunnerMetrics.provenance_events
+    // doc + wire_envelope_producers module). This is the FOUNDATION
+    // of Pillar II audit lineage on the wire envelope.
+    let provenance_walk: Vec<(String, String)> = execution_units
+        .iter()
+        .flat_map(|u| {
+            u.steps
+                .iter()
+                .map(|s| (s.step_type.clone(), s.step_name.clone()))
+        })
+        .collect();
+    let provenance_events =
+        crate::wire_envelope_producers::collect_provenance_events_from(
+            &provenance_walk,
+        );
+
+    // §Fase 39.c.z — blame_attribution was derived BEFORE the
+    // partial-move loop above (the report's units/steps are
+    // consumed into step_names/step_results by that loop). The
+    // priority order is: anchor breach > shield rejection > store
+    // breach > backend soft-fail > type mismatch. The first
+    // surfaced wins per `merge_blame`'s stable tie-break.
+
     Ok(ServerRunnerMetrics {
         success,
         steps_executed,
@@ -2760,6 +2824,8 @@ pub fn execute_server_flow(
         step_names,
         step_results,
         per_step_chunks,
+        provenance_events,
+        blame_attribution,
     })
 }
 

@@ -213,6 +213,20 @@ pub mod cancel_token;
 // to translate internal FlowExecutionEvents into the dialect-
 // specific wire shape adopters' SDKs expect.
 pub mod wire_format;
+// §Fase 39.b — Pure Silicon Cognition wire envelope. The canonical
+// `FlowEnvelope` payload for `transport: json` axonendpoint responses
+// + legacy `POST /v1/execute`. Isomorphic serialization of the
+// ψ-vector `⟨T, V, E⟩`. See `docs/fase/fase_39_pure_silicon_cognition.md`.
+pub mod wire_envelope;
+// §Fase 39.c — Wire envelope producer helpers. Closed-taxonomy
+// translators from runtime execution metadata into the wire envelope's
+// epistemic fields (`provenance_chain` + `blame_attribution`).
+pub mod wire_envelope_producers;
+// §Fase 39.f — Rust CLI binary parity. New subcommands that closed
+// the gap vs the Python CLI (`axon parse` aggregator + `axon fmt`
+// round-trip formatter).
+pub mod cli_parse;
+pub mod cli_fmt;
 // §λ-L-E Fase 11.b — Zero-Copy Multimodal Buffers.
 // `buffer` defines ZeroCopyBuffer (Arc<[u8]>-backed) + BufferKind
 // (open registry) + BufferPool (slab allocator with per-tenant
