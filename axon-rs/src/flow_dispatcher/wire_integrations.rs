@@ -454,8 +454,14 @@ pub async fn run_persist(
             // confidence-floored store is a typed error.
             epistemic::enforce_persist_floor(&row, floor, &node.store_name)
                 .map_err(|e| sql_dispatch_error(StoreError::from(e)))?;
+            // §Fase 37.x.j (D1) — wrap the backend pool in a `StoreConn`
+            // and dispatch through it. Sub-fases 37.x.j.4/5 will switch
+            // this to `StoreConn::Pinned(&mut ctx.pinned_conn)` so the
+            // insert runs on the same physical Postgres backend as every
+            // other op against this store in the flow.
+            let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
             let n = backend
-                .insert(&node.store_name, &row)
+                .insert(&mut store_conn, &node.store_name, &row)
                 .await
                 .map_err(sql_dispatch_error)?;
             format!("persisted {n} row(s) to `{}`", node.store_name)
@@ -510,8 +516,14 @@ pub async fn run_retrieve(
             // set). §35.g Pillar I — every tuple born Untrusted,
             // confidence_floor filters sub-floor rows. The bound value
             // is an epistemic envelope carrying both dispositions.
+            // §Fase 37.x.j (D1) — wrap the backend pool in a `StoreConn`.
+            // 37.x.j.5 will switch this to `StoreConn::Pinned(...)` from
+            // `ctx.pinned_conns` so the retrieve runs on the flow-pinned
+            // physical connection.
+            let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
             let stream_outcome = row_stream::stream_retrieve(
                 &backend,
+                &mut store_conn,
                 &node.store_name,
                 &node.where_expr,
                 row_stream::DEFAULT_RETRIEVE_POLICY,
@@ -582,8 +594,11 @@ pub async fn run_mutate(
             // `{ col: value }` block when present; else the v1.31.0
             // user-bindings form.
             let row = store_row(&node.fields, ctx);
+            // §Fase 37.x.j (D1) — see `insert` call site above for the
+            // StoreConn::Pool legacy wrapper rationale.
+            let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
             let n = backend
-                .mutate(&node.store_name, &node.where_expr, &row, &ctx.let_bindings)
+                .mutate(&mut store_conn, &node.store_name, &node.where_expr, &row, &ctx.let_bindings)
                 .await
                 .map_err(sql_dispatch_error)?;
             format!("mutated {n} row(s) in `{}`", node.store_name)
@@ -632,8 +647,11 @@ pub async fn run_purge(
 
     let output = match resolve_pg_backend(ctx, &node.store_name) {
         Ok(Some((backend, _floor))) => {
+            // §Fase 37.x.j (D1) — see other call sites in this file
+            // for the StoreConn::Pool legacy wrapper rationale.
+            let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
             let n = backend
-                .purge(&node.store_name, &node.where_expr, &ctx.let_bindings)
+                .purge(&mut store_conn, &node.store_name, &node.where_expr, &ctx.let_bindings)
                 .await
                 .map_err(sql_dispatch_error)?;
             format!("purged {n} row(s) from `{}`", node.store_name)
