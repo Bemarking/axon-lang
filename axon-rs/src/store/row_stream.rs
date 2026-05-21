@@ -174,6 +174,14 @@ where
 /// Cancel-aware via `cancel`; bounded by `policy` + `max_rows`.
 pub async fn stream_retrieve(
     backend: &PostgresStoreBackend,
+    // §Fase 37.x.j (D1) — the connection source. See the equivalent
+    // parameter on `PostgresStoreBackend::query()` for the rationale:
+    // `StoreConn::Pool(&backend.pool())` for legacy callers,
+    // `StoreConn::Pinned(conn)` for the flow-pinned execution where
+    // the caller acquired the conn at flow start. Either variant routes
+    // the cursor + the cache-MISS transaction through the same
+    // physical Postgres backend connection.
+    conn: &mut crate::store::store_conn::StoreConn<'_>,
     table: &str,
     where_expr: &str,
     policy: BackpressurePolicy,
@@ -183,7 +191,7 @@ pub async fn stream_retrieve(
     // bind parameters (the Request Binding Contract on the filter path).
     bindings: &std::collections::HashMap<String, String>,
 ) -> Result<RowStreamOutcome, StoreError> {
-    // §Fase 37.x.d (D3) — a cache HIT: the cursor drains on the pool,
+    // §Fase 37.x.d (D3) — a cache HIT: the cursor drains on the conn,
     // no transaction (the cached resolution is correct and the SELECT
     // is schema-qualified, so it resolves on any session).
     if let Some(resolved) = backend.cached_schema(table) {
@@ -203,12 +211,30 @@ pub async fn stream_retrieve(
         for value in &params {
             query = bind_value(query, value);
         }
-        // `.fetch()` is the lazy cursor — rows are NOT all buffered.
-        let cursor = query.fetch(backend.pool()).map(|item| {
-            item.map_err(|e| classify_sql_error("retrieve", e))
-                .and_then(|pg_row| map_pg_row(&pg_row))
-        });
-        match drain_with_policy(cursor, policy, max_rows, cancel).await {
+        // §Fase 37.x.j (D1) — `.fetch()` is the lazy cursor; the
+        // Pool/Pinned dispatch happens inline here because the
+        // returned `BoxStream` borrows the executor for its lifetime
+        // and we can't unify the two stream types through a single
+        // wrapper method without erasing the lifetime + boxing every
+        // call site. Inline dispatch keeps the cursor's borrow
+        // checker-friendly while still routing through the StoreConn.
+        let drain_result = match conn {
+            crate::store::store_conn::StoreConn::Pool(p) => {
+                let cursor = query.fetch(*p).map(|item| {
+                    item.map_err(|e| classify_sql_error("retrieve", e))
+                        .and_then(|pg_row| map_pg_row(&pg_row))
+                });
+                drain_with_policy(cursor, policy, max_rows, cancel).await
+            }
+            crate::store::store_conn::StoreConn::Pinned(c) => {
+                let cursor = query.fetch(&mut ***c).map(|item| {
+                    item.map_err(|e| classify_sql_error("retrieve", e))
+                        .and_then(|pg_row| map_pg_row(&pg_row))
+                });
+                drain_with_policy(cursor, policy, max_rows, cancel).await
+            }
+        };
+        match drain_result {
             Ok(outcome) => return Ok(outcome),
             Err(e) if e.is_schema_drift() => {
                 // §37.x.f (D9) — the cached schema is STALE; evict and
@@ -226,8 +252,11 @@ pub async fn stream_retrieve(
     // is held for the cursor's lifetime — bounded by `max_rows` (the
     // `PauseUpstream` default caps the drain), so the held pooler
     // backend is time-bounded; no pool starvation.
-    let mut tx = backend
-        .pool()
+    // §Fase 37.x.j (D1) — `conn.begin()` runs on the same physical
+    // backend as the cache-HIT attempt above when on the Pinned
+    // variant; on the Pool variant it acquires a fresh logical
+    // connection (legacy behavior).
+    let mut tx = conn
         .begin()
         .await
         .map_err(|e| StoreError::Connect { source: e.to_string() })?;

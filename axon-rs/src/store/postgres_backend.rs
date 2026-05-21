@@ -1320,6 +1320,43 @@ impl PostgresStoreBackend {
         &self.pool
     }
 
+    /// §Fase 37.x.j (D1) — Acquire ONE physical Postgres connection
+    /// from the pool to be held for the duration of a flow execution
+    /// ([`crate::runner::ExecContext`] for the sync path,
+    /// [`crate::flow_dispatcher::DispatchCtx`] for the async streaming
+    /// path).
+    ///
+    /// The returned [`sqlx::pool::PoolConnection`] is wrapped by the
+    /// caller in [`crate::store::store_conn::StoreConn::Pinned`] and
+    /// passed to every operation (`query` / `insert` / `mutate` /
+    /// `purge` / `ping`) against this axonstore for the flow lifetime.
+    /// Because every op runs against the same physical Postgres backend
+    /// connection, a transaction-mode pooler (Supabase Supavisor,
+    /// PgBouncer, Neon, RDS Proxy) cannot swap the backend between
+    /// queries — the D3 "unnamed prepared statement does not exist"
+    /// race that Fase 37.x.j closes.
+    ///
+    /// The connection is released back to the pool on `Drop` of the
+    /// returned `PoolConnection`. The existing
+    /// `after_release(DEALLOCATE ALL)` hook (Fase 38.x.a D2) wipes any
+    /// prepared statements before the conn is reused — composing
+    /// cleanly with the per-flow pinning of 37.x.j.
+    ///
+    /// Failure modes:
+    ///   - `StoreError::Connect` if the pool's `acquire_timeout`
+    ///     elapses (no conn becomes available — pool exhausted or
+    ///     Postgres unreachable).
+    ///   - `StoreError::Connect` if the pool is in a permanently-bad
+    ///     state (TLS handshake failure, DNS resolution failure, etc.).
+    pub async fn acquire_pin(
+        &self,
+    ) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, StoreError> {
+        self.pool
+            .acquire()
+            .await
+            .map_err(|e| StoreError::Connect { source: e.to_string() })
+    }
+
     /// `retrieve` — run `SELECT * FROM "schema"."table" WHERE …` and map
     /// every row to a JSON-safe [`StoreRow`].
     ///
@@ -1334,6 +1371,16 @@ impl PostgresStoreBackend {
     /// backpressured `Stream<Row>` variant (Pillar III).
     pub async fn query(
         &self,
+        // §Fase 37.x.j (D1) — the connection source for this op.
+        // `StoreConn::Pool(&self.pool)` for legacy callers (the
+        // v1.38.5 and earlier behavior); `StoreConn::Pinned(conn)` for
+        // 37.x.j flow-pinned execution where the caller acquired a
+        // `PoolConnection` at flow start via `acquire_pin()`. Both
+        // variants run the cache-HIT SELECT + cache-MISS introspect+
+        // SELECT-in-tx paths identically; the pinned variant
+        // additionally guarantees the same physical Postgres backend
+        // services every op against this store for the flow lifetime.
+        conn: &mut crate::store::store_conn::StoreConn<'_>,
         table: &str,
         where_expr: &str,
         bindings: &std::collections::HashMap<String, String>,
@@ -1353,7 +1400,10 @@ impl PostgresStoreBackend {
             for value in &params {
                 q = bind_value(q, value);
             }
-            match q.fetch_all(&self.pool).await {
+            // §Fase 37.x.j (D1) — dispatch through the StoreConn so
+            // a pinned variant routes through the same physical conn
+            // as every other op against this store for the flow.
+            match conn.fetch_all(q).await {
                 Ok(rows) => return rows.iter().map(map_pg_row).collect(),
                 Err(e) => {
                     let err = classify_sql_error("retrieve", e);
@@ -1369,7 +1419,11 @@ impl PostgresStoreBackend {
         }
         // — cache MISS, or the §37.x.f (D9) self-heal retry: resolve +
         //   operate in ONE transaction (D3). —
-        let mut tx = self.pool.begin().await.map_err(|e| {
+        // §Fase 37.x.j (D1) — `conn.begin()` borrows the `StoreConn`
+        // mutably for the transaction's lifetime; on the Pinned variant
+        // the transaction runs on the same physical backend as the
+        // cache-HIT attempt above (D3 invariant preserved).
+        let mut tx = conn.begin().await.map_err(|e| {
             StoreError::Connect { source: e.to_string() }
         })?;
         let resolved = introspect_conn(&mut tx, table).await;
@@ -1515,6 +1569,9 @@ impl PostgresStoreBackend {
     /// transaction; a cache HIT needs no transaction.
     pub async fn insert(
         &self,
+        // §Fase 37.x.j (D1) — see `query()` for the rationale on the
+        // `StoreConn` connection-source parameter.
+        conn: &mut crate::store::store_conn::StoreConn<'_>,
         table: &str,
         data: &[(String, SqlValue)],
     ) -> Result<u64, StoreError> {
@@ -1532,7 +1589,8 @@ impl PostgresStoreBackend {
             for value in &params {
                 q = bind_value(q, value);
             }
-            match q.execute(&self.pool).await {
+            // §Fase 37.x.j (D1) — dispatch through StoreConn.
+            match conn.execute(q).await {
                 Ok(result) => return Ok(result.rows_affected()),
                 Err(e) => {
                     let err = classify_sql_error("persist", e);
@@ -1549,7 +1607,8 @@ impl PostgresStoreBackend {
         }
         // — cache MISS, or the §37.x.f (D9) self-heal retry: resolve +
         //   operate in ONE transaction (D3). —
-        let mut tx = self.pool.begin().await.map_err(|e| {
+        // §Fase 37.x.j (D1) — see `query()` for the begin() rationale.
+        let mut tx = conn.begin().await.map_err(|e| {
             StoreError::Connect { source: e.to_string() }
         })?;
         let resolved = introspect_conn(&mut tx, table).await;
@@ -1596,6 +1655,8 @@ impl PostgresStoreBackend {
     /// cache HIT needs no transaction.
     pub async fn mutate(
         &self,
+        // §Fase 37.x.j (D1) — see `query()` for the rationale.
+        conn: &mut crate::store::store_conn::StoreConn<'_>,
         table: &str,
         where_expr: &str,
         data: &[(String, SqlValue)],
@@ -1617,7 +1678,8 @@ impl PostgresStoreBackend {
             for value in &params {
                 q = bind_value(q, value);
             }
-            match q.execute(&self.pool).await {
+            // §Fase 37.x.j (D1) — dispatch through StoreConn.
+            match conn.execute(q).await {
                 Ok(result) => return Ok(result.rows_affected()),
                 Err(e) => {
                     let err = classify_sql_error("mutate", e);
@@ -1634,7 +1696,8 @@ impl PostgresStoreBackend {
         }
         // — cache MISS, or the §37.x.f (D9) self-heal retry: resolve +
         //   operate in ONE transaction (D3). —
-        let mut tx = self.pool.begin().await.map_err(|e| {
+        // §Fase 37.x.j (D1) — see `query()` for the begin() rationale.
+        let mut tx = conn.begin().await.map_err(|e| {
             StoreError::Connect { source: e.to_string() }
         })?;
         let resolved = introspect_conn(&mut tx, table).await;
@@ -1683,6 +1746,8 @@ impl PostgresStoreBackend {
     /// HIT needs no transaction.
     pub async fn purge(
         &self,
+        // §Fase 37.x.j (D1) — see `query()` for the rationale.
+        conn: &mut crate::store::store_conn::StoreConn<'_>,
         table: &str,
         where_expr: &str,
         bindings: &std::collections::HashMap<String, String>,
@@ -1702,7 +1767,8 @@ impl PostgresStoreBackend {
             for value in &params {
                 q = bind_value(q, value);
             }
-            match q.execute(&self.pool).await {
+            // §Fase 37.x.j (D1) — dispatch through StoreConn.
+            match conn.execute(q).await {
                 Ok(result) => return Ok(result.rows_affected()),
                 Err(e) => {
                     let err = classify_sql_error("purge", e);
@@ -1719,7 +1785,8 @@ impl PostgresStoreBackend {
         }
         // — cache MISS, or the §37.x.f (D9) self-heal retry: resolve +
         //   operate in ONE transaction (D3). —
-        let mut tx = self.pool.begin().await.map_err(|e| {
+        // §Fase 37.x.j (D1) — see `query()` for the begin() rationale.
+        let mut tx = conn.begin().await.map_err(|e| {
             StoreError::Connect { source: e.to_string() }
         })?;
         let resolved = introspect_conn(&mut tx, table).await;

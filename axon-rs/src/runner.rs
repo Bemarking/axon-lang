@@ -888,8 +888,15 @@ fn execute_sql_store_step(
                 // confidence_floor filters sub-floor rows. The result
                 // is an epistemic envelope carrying both dispositions.
                 let cancel = crate::cancel_token::CancellationFlag::new();
+                // §Fase 37.x.j (D1) — wrap the backend pool in a
+                // `StoreConn`. Sub-fase 37.x.j.4 will switch this to
+                // `StoreConn::Pinned(...)` from `ExecContext.pinned_conns`
+                // so the retrieve runs on the flow-pinned physical
+                // Postgres connection.
+                let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
                 let stream_outcome = row_stream::stream_retrieve(
                     &backend,
+                    &mut store_conn,
                     &store_name,
                     &where_expr,
                     row_stream::DEFAULT_RETRIEVE_POLICY,
@@ -913,8 +920,12 @@ fn execute_sql_store_step(
                     .unwrap_or_else(|_| "{}".to_string()))
             }
             "purge" => {
+                // §Fase 37.x.j (D1) — wrap the backend pool in a
+                // `StoreConn` (legacy path). 37.x.j.4 lifts this to
+                // the pinned variant from `ExecContext.pinned_conns`.
+                let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
                 let n = backend
-                    .purge(&store_name, &where_expr, &where_bindings)
+                    .purge(&mut store_conn, &store_name, &where_expr, &where_bindings)
                     .await?;
                 Ok(format!("{n} row(s) purged"))
             }
@@ -926,12 +937,18 @@ fn execute_sql_store_step(
                     confidence_floor,
                     &store_name,
                 )?;
-                let n = backend.insert(&store_name, &data).await?;
+                // §Fase 37.x.j (D1) — see other call sites for the
+                // StoreConn::Pool legacy wrapper rationale.
+                let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
+                let n = backend.insert(&mut store_conn, &store_name, &data).await?;
                 Ok(format!("{n} row(s) persisted"))
             }
             "mutate" => {
+                // §Fase 37.x.j (D1) — see other call sites for the
+                // StoreConn::Pool legacy wrapper rationale.
+                let mut store_conn = crate::store::store_conn::StoreConn::Pool(backend.pool());
                 let n = backend
-                    .mutate(&store_name, &where_expr, &data, &where_bindings)
+                    .mutate(&mut store_conn, &store_name, &where_expr, &data, &where_bindings)
                     .await?;
                 Ok(format!("{n} row(s) mutated"))
             }
