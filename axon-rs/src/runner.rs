@@ -2481,6 +2481,14 @@ pub fn execute_server_flow(
                 Ok(crate::store::registry::StoreHandle::Postgres(backend)) => {
                     match block_on_store(async move { backend.acquire_pin().await }) {
                         Ok(conn) => {
+                            // §Fase 37.x.j (D4) — emit acquire event.
+                            crate::store::pin_observability::emit_pin_acquire(
+                                store_name,
+                                &flow_name,
+                                "", // sync runner has no request trace_id
+                                "eager",
+                                None,
+                            );
                             pinned_conns.insert(store_name.clone(), conn);
                         }
                         Err(e) => {

@@ -26,5 +26,6 @@ pub mod filter;
 pub mod introspect_cli;
 pub mod postgres_backend;
 pub mod registry;
+pub mod pin_observability;
 pub mod row_stream;
 pub mod store_conn;

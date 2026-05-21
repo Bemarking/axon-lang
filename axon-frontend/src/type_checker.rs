@@ -3588,6 +3588,76 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+
+        // §Fase 38.x.e (D1, D3) — Retrieve Cardinality vs Output
+        // Singularity Gate.
+        //
+        // The cardinality of a flow's tail expression is known at
+        // compile time. A flow whose tail is `retrieve … as x` always
+        // produces `List<StoreRow>` (a plural value); a flow whose
+        // tail is `step S { ... }` returning T or `return result[0]`
+        // produces a singular T. The axonendpoint's `output:` type
+        // declares the contract with HTTP clients. When the flow's
+        // tail cardinality disagrees with the endpoint's declared
+        // output cardinality, the runtime D5 output-schema gate
+        // (Fase 32.d) rejects the response at REQUEST TIME with a
+        // generic `internal_validation_error`. v1.39.0 catches this
+        // class of bug at BUILD TIME via `axon-T9xx
+        // retrieve_cardinality_mismatch` with an actionable hint.
+        //
+        // v1.39.0 ships the D1 gate as a WARNING (axon-W003) unless
+        // `--strict-cardinality` is on; v1.40.0 flips to default-on
+        // (D5 migration window).
+        //
+        // Scope of v1.39.0 detection (honest, narrow): we detect ONLY
+        // the canonical kivi-shape — endpoint declares `output: T`
+        // (singular, no `List<...>` wrapper) AND the executed flow's
+        // tail FlowStep is `Retrieve` (always plural). Other
+        // cardinality patterns (singular-tail + List<T>-output, branch
+        // disagreement) are honest deferrals to Fase 38.x.f.
+        if !node.execute_flow.is_empty() && !node.output_type.is_empty() {
+            if let Some(flow) = self.find_flow(&node.execute_flow) {
+                let endpoint_output_is_singular =
+                    !node.output_type.starts_with("List<")
+                        && !node.output_type.starts_with("Stream<")
+                        && node.output_type != "Unit";
+                let tail_is_retrieve = matches!(
+                    flow.body.last(),
+                    Some(FlowStep::Retrieve(_))
+                );
+                if endpoint_output_is_singular && tail_is_retrieve {
+                    self.emit(
+                        format!(
+                            "axon-T9XX axonendpoint '{}' declares `output: {}` \
+                             (singular), but flow '{}' produces a `List<{}>` \
+                             tail expression — the flow ends with a `retrieve` \
+                             step, which always returns a list of rows from \
+                             the store. The runtime D5 output-schema gate \
+                             (Fase 32.d) would reject the response as a \
+                             shape mismatch. \
+                             Either: \
+                             (a) change the endpoint to `output: List<{}>` if \
+                                 it is intentionally returning a collection \
+                                 (REST `GET /api/{{resource}}`-style); OR \
+                             (b) collapse the tail to a singular element — \
+                                 e.g. add `step Project {{ return result[0] }}` \
+                                 (or any step that emits the singular shape) \
+                                 BEFORE the implicit tail, OR add an explicit \
+                                 `return result[0]` at the end of the flow if \
+                                 the retrieve's `where:` filter is guaranteed \
+                                 to yield exactly one row. \
+                             (Fase 38.x.e D1)",
+                            node.name,
+                            node.output_type,
+                            node.execute_flow,
+                            node.output_type,
+                            node.output_type,
+                        ),
+                        &node.loc,
+                    );
+                }
+            }
+        }
     }
 
     /// §Fase 35.j — Resolve a flow declaration by name.
@@ -5635,6 +5705,198 @@ mod fase37y_d3_d4_tests {
         assert!(
             binding_errs.is_empty(),
             "Kivi corpus must pass post-37.y. Got: {binding_errs:#?}"
+        );
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  §Fase 38.x.e — Retrieve Cardinality vs Output Singularity Gate
+// ════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod fase38xe_cardinality_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn check_errors(src: &str) -> Vec<TypeError> {
+        let tokens = Lexer::new(src, "<test>").tokenize().expect("lex");
+        let prog = Parser::new(tokens).parse().expect("parse");
+        TypeChecker::new(&prog).check()
+    }
+
+    #[test]
+    fn retrieve_tail_with_singular_output_emits_t9xx() {
+        // The kivi-shape regression: endpoint declares `output: T`
+        // (singular), but the flow's tail is a `retrieve` (always
+        // plural). Pre-38.x.e this passed `axon check` and failed at
+        // runtime with the opaque D5 `internal_validation_error`.
+        // Post-38.x.e it fires `axon-T9XX retrieve_cardinality_mismatch`
+        // at compile time with an actionable hint.
+        let src = r#"
+            type TenantRecord { id: Text }
+            axonstore tenants { backend: in_memory }
+            axonendpoint get_tenant {
+                method: GET
+                path: "/api/tenants/{tenant_id}"
+                output: TenantRecord
+                execute: GetTenant
+            }
+            flow GetTenant(tenant_id: Text) -> TenantRecord {
+                retrieve tenants { where: "id = ${tenant_id}" as: result }
+            }
+        "#;
+        let errs = check_errors(src);
+        let t9xx: Vec<&TypeError> = errs
+            .iter()
+            .filter(|e| e.message.contains("axon-T9XX"))
+            .collect();
+        assert!(
+            !t9xx.is_empty(),
+            "§Fase 38.x.e D1 — a retrieve-tail flow with singular \
+             endpoint output MUST emit `axon-T9XX retrieve_cardinality_mismatch`. \
+             All errors: {errs:#?}"
+        );
+        // The hint must name the actual mismatch + the actionable
+        // remediation.
+        let err = t9xx[0];
+        assert!(
+            err.message.contains("List<TenantRecord>")
+                && err.message.contains("TenantRecord"),
+            "§Fase 38.x.e D1 — the hint must name both the inferred \
+             `List<T>` tail shape AND the declared singular `T` output. \
+             Got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("output: List<")
+                && err.message.contains("return result[0]"),
+            "§Fase 38.x.e D1 — the hint must name BOTH remediation \
+             paths: (a) change to `output: List<T>`, OR (b) `return \
+             result[0]` to collapse to a singular. Got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn retrieve_tail_with_list_output_passes() {
+        // D5 — the symmetric well-formed case: retrieve-tail flow
+        // with `output: List<T>` endpoint. No T9XX fires.
+        let src = r#"
+            type TenantRecord { id: Text }
+            axonstore tenants { backend: in_memory }
+            axonendpoint list_tenants {
+                method: GET
+                path: "/api/tenants"
+                output: List<TenantRecord>
+                execute: ListTenants
+            }
+            flow ListTenants() -> List<TenantRecord> {
+                retrieve tenants { where: "1 = 1" as: result }
+            }
+        "#;
+        let errs = check_errors(src);
+        let t9xx: Vec<&TypeError> = errs
+            .iter()
+            .filter(|e| e.message.contains("axon-T9XX"))
+            .collect();
+        assert!(
+            t9xx.is_empty(),
+            "§Fase 38.x.e D1 — a retrieve-tail flow with `output: \
+             List<T>` is the well-formed case. No T9XX should fire. \
+             Got: {t9xx:#?}"
+        );
+    }
+
+    #[test]
+    fn step_tail_with_singular_output_passes() {
+        // The other well-formed case: flow's tail is a `step` returning
+        // a singular type, matching the endpoint's singular output. No
+        // T9XX fires (the step's return shape is the contract).
+        let src = r#"
+            type WriteResult { ok: Bool }
+            axonendpoint write_secret {
+                method: POST
+                path: "/api/secrets"
+                output: WriteResult
+                execute: WriteSecret
+            }
+            flow WriteSecret() -> WriteResult {
+                step Echo { reason: "ok" output: WriteResult }
+            }
+        "#;
+        let errs = check_errors(src);
+        let t9xx: Vec<&TypeError> = errs
+            .iter()
+            .filter(|e| e.message.contains("axon-T9XX"))
+            .collect();
+        assert!(
+            t9xx.is_empty(),
+            "§Fase 38.x.e D1 — a step-tail flow with matching singular \
+             output is well-formed; no cardinality mismatch. Got: \
+             {t9xx:#?}"
+        );
+    }
+
+    #[test]
+    fn no_output_declared_skips_gate() {
+        // D1 honest scope — when the endpoint omits `output:` entirely
+        // (empty string), the gate cannot determine the expected
+        // cardinality and silently passes. Adopters who don't declare
+        // output are NOT protected by this gate; the runtime path is
+        // their only check. Documented as future Fase 38.x.f scope.
+        let src = r#"
+            type TenantRecord { id: Text }
+            axonstore tenants { backend: in_memory }
+            axonendpoint get_tenant_loose {
+                method: GET
+                path: "/api/tenants/{tenant_id}"
+                execute: GetTenantLoose
+            }
+            flow GetTenantLoose(tenant_id: Text) -> Unit {
+                retrieve tenants { where: "id = ${tenant_id}" as: result }
+            }
+        "#;
+        let errs = check_errors(src);
+        let t9xx: Vec<&TypeError> = errs
+            .iter()
+            .filter(|e| e.message.contains("axon-T9XX"))
+            .collect();
+        assert!(
+            t9xx.is_empty(),
+            "§Fase 38.x.e D1 — endpoint with no `output:` declared \
+             skips the cardinality gate (honest scope). Got: {t9xx:#?}"
+        );
+    }
+
+    #[test]
+    fn stream_output_skips_gate() {
+        // Stream<T> is its own cardinality concept (Plural<T> over
+        // time, not a List). The v1.39.0 gate doesn't reason about
+        // Stream — honestly deferred to Fase 38.x.f. Endpoints
+        // declaring `output: Stream<T>` are NOT compared against the
+        // flow tail.
+        let src = r#"
+            type Token { text: Text }
+            axonendpoint stream_chat {
+                method: POST
+                path: "/api/stream"
+                output: Stream<Token>
+                execute: StreamChat
+            }
+            flow StreamChat() -> Stream<Token> {
+                step Generate { ask: "stream" output: Stream<Token> }
+            }
+        "#;
+        let errs = check_errors(src);
+        let t9xx: Vec<&TypeError> = errs
+            .iter()
+            .filter(|e| e.message.contains("axon-T9XX"))
+            .collect();
+        assert!(
+            t9xx.is_empty(),
+            "§Fase 38.x.e D1 — Stream<T> output skips the gate \
+             (v1.39.0 honest scope). Got: {t9xx:#?}"
         );
     }
 }

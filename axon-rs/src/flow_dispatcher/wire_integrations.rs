@@ -555,6 +555,23 @@ pub async fn run_retrieve(
             };
             if pin.is_none() {
                 if let Ok(p) = backend.acquire_pin().await {
+                    // §Fase 37.x.j (D4 + D6.c) — emit lazy acquire
+                    // event. `branch_index` is derived from the depth
+                    // of `ctx.branch_path` (non-empty ≡ inside a par-
+                    // block); the field is `None` for a linear parent
+                    // path's lazy acquire (rare — usually parent path
+                    // has eager pins from the dispatcher startup walk).
+                    crate::store::pin_observability::emit_pin_acquire(
+                        &node.store_name,
+                        &ctx.flow_name,
+                        "",
+                        "lazy",
+                        if ctx.branch_path.is_empty() {
+                            None
+                        } else {
+                            Some(ctx.branch_path.len())
+                        },
+                    );
                     pin = Some(p);
                 }
             }
@@ -652,6 +669,23 @@ pub async fn run_mutate(
             };
             if pin.is_none() {
                 if let Ok(p) = backend.acquire_pin().await {
+                    // §Fase 37.x.j (D4 + D6.c) — emit lazy acquire
+                    // event. `branch_index` is derived from the depth
+                    // of `ctx.branch_path` (non-empty ≡ inside a par-
+                    // block); the field is `None` for a linear parent
+                    // path's lazy acquire (rare — usually parent path
+                    // has eager pins from the dispatcher startup walk).
+                    crate::store::pin_observability::emit_pin_acquire(
+                        &node.store_name,
+                        &ctx.flow_name,
+                        "",
+                        "lazy",
+                        if ctx.branch_path.is_empty() {
+                            None
+                        } else {
+                            Some(ctx.branch_path.len())
+                        },
+                    );
                     pin = Some(p);
                 }
             }
@@ -724,6 +758,23 @@ pub async fn run_purge(
             };
             if pin.is_none() {
                 if let Ok(p) = backend.acquire_pin().await {
+                    // §Fase 37.x.j (D4 + D6.c) — emit lazy acquire
+                    // event. `branch_index` is derived from the depth
+                    // of `ctx.branch_path` (non-empty ≡ inside a par-
+                    // block); the field is `None` for a linear parent
+                    // path's lazy acquire (rare — usually parent path
+                    // has eager pins from the dispatcher startup walk).
+                    crate::store::pin_observability::emit_pin_acquire(
+                        &node.store_name,
+                        &ctx.flow_name,
+                        "",
+                        "lazy",
+                        if ctx.branch_path.is_empty() {
+                            None
+                        } else {
+                            Some(ctx.branch_path.len())
+                        },
+                    );
                     pin = Some(p);
                 }
             }
