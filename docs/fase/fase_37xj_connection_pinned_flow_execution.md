@@ -1,6 +1,6 @@
 ---
 title: "Plan vivo: Fase 37.x.j — Connection-Pinned Flow Execution (closing the unnamed-prepared-statement race against transaction-mode poolers)"
-status: ✅ CLOSED 2026-05-21 — axon-lang v1.39.0 (initial) + v1.40.0 (38.x.f cycle) + **v1.40.1 (37.x.j.10 hotfix)** LIVE cross-stack. Cross-runtime PoolConnection hazard discovered + closed structurally via single-outer-`block_on_store` per flow execution. axon-enterprise v1.30.0 / v1.31.0 / v1.31.1 catch-ups LIVE in lockstep.
+status: ✅ CLOSED 2026-05-21 — axon-lang v1.39.0 (initial) + v1.40.0 (38.x.f cycle) + **v1.40.1 (37.x.j.10 hotfix)** LIVE cross-stack. axon-enterprise v1.30.0 / v1.31.0 / **v1.31.1** catch-ups LIVE in lockstep (PR #45 merged commit `bd61a59` + tag `v1.31.1` via refspec + ECR image 5m46s + Fase 29 + axon-csys-enterprise workflows green). Cross-runtime PoolConnection hazard discovered + closed structurally via single-outer-`block_on_store` per flow execution.
 owner: AXON Language + Runtime Team
 created: 2026-05-20
 target: |
