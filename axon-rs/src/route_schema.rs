@@ -81,7 +81,7 @@ pub struct FieldSchema {
 /// Structured body-validation error. The HTTP layer projects this into a
 /// 400 Bad Request with the field/expected/got triple so adopter clients
 /// can correct their request without server-side log diving.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct BodyValidationError {
     /// Top-level body type the validation was attempted against (e.g.
     /// `"LoanApplication"`).
@@ -99,6 +99,33 @@ pub struct BodyValidationError {
     /// Adopter-facing diagnostic — full sentence with a corrective hint.
     /// Stable across versions per D8 backwards-compat surface.
     pub hint: String,
+    /// §Fase 38.x.f (D2) — Declared cardinality kind of the expected
+    /// type: `"singular"` | `"plural"` | `"stream"` | `"unit"` |
+    /// `"unknown"`. Empty string for primitive-type validation errors
+    /// where the cardinality isn't load-bearing (the existing v1.39.0
+    /// surface). Serde `#[serde(default)]` keeps adopter consumers of
+    /// older versions byte-compatible.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub expected_cardinality: String,
+    /// §Fase 38.x.f (D2) — Observed cardinality kind of the response
+    /// body: same alphabet as `expected_cardinality`. Empty when not
+    /// applicable. The asymmetry expected/got is the diagnostic
+    /// payload adopters reach for first when D5 fires.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub got_cardinality: String,
+    /// §Fase 38.x.f (D2) — Length of the observed value when it is
+    /// `array` (plural). `None` for non-array gots. Helps adopters
+    /// confirm "the flow returned 1 row, but the contract said
+    /// singular — collapse with `result[0]` or change the endpoint
+    /// to `output: List<T>`".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub got_length: Option<u64>,
+    /// §Fase 38.x.f (D2) — Documentation URL adopters can follow for
+    /// the canonical remediation steps. Empty when the error is not
+    /// a cardinality mismatch (the existing v1.39.0 surface). The
+    /// URL is stable; the page may evolve.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub remediation_url: String,
 }
 
 impl std::fmt::Display for BodyValidationError {
@@ -264,6 +291,7 @@ fn validate_value(
              `type` in the deployed source. Add `type {type_name} {{ … }}` to \
              the source or correct the spelling."
         ),
+        ..Default::default()
     })
 }
 
@@ -298,6 +326,7 @@ fn validate_primitive(
             type_name = type_name,
             got = json_tag(v),
         ),
+        ..Default::default()
     })
 }
 
@@ -342,6 +371,7 @@ fn validate_ranged_number(
                     lo = fmt_f64(lo),
                     hi = fmt_f64(hi),
                 ),
+                ..Default::default()
             });
         }
     };
@@ -359,6 +389,7 @@ fn validate_ranged_number(
                  {hi_s}]` but received `{n_s}`.",
                 path = if field_path.is_empty() { "<body>" } else { field_path },
             ),
+            ..Default::default()
         });
     }
     Ok(())
@@ -385,6 +416,35 @@ fn validate_list(
                     path = if field_path.is_empty() { "<body>" } else { field_path },
                     got = json_tag(v),
                 ),
+                // §Fase 38.x.f (D2) — When this validation fires at
+                // the TOP-LEVEL body (empty field_path), the mismatch
+                // is between the declared `List<T>` (plural) and the
+                // observed JSON shape (not an array). Populate the
+                // cardinality diagnostic fields so adopters reaching
+                // for the audit_log entry see the cardinality story
+                // directly. For nested field violations the fields
+                // stay empty (the mismatch is at a sub-field, not
+                // load-bearing for the endpoint-level contract).
+                expected_cardinality: if field_path.is_empty() {
+                    "plural".to_string()
+                } else {
+                    String::new()
+                },
+                got_cardinality: if field_path.is_empty() {
+                    match v {
+                        Value::Object(_) => "singular".to_string(),
+                        Value::Null => "unit".to_string(),
+                        _ => "singular".to_string(),
+                    }
+                } else {
+                    String::new()
+                },
+                got_length: None,
+                remediation_url: if field_path.is_empty() {
+                    "https://axon-lang.io/docs/cardinality-mismatch".to_string()
+                } else {
+                    String::new()
+                },
             });
         }
     };
@@ -421,11 +481,53 @@ fn validate_struct(
                 got: json_tag(v).to_string(),
                 hint: format!(
                     "Body field `{path}` must be a `{type_name}` (JSON object) \
-                     but received a {got}.",
+                     but received a {got}. {cardinality_hint}",
                     path = if field_path.is_empty() { "<body>" } else { field_path },
                     type_name = schema.name,
                     got = json_tag(v),
+                    cardinality_hint = if field_path.is_empty() && v.is_array() {
+                        format!(
+                            "The flow returned a `List<{tn}>` (array of {n} \
+                             items) but the endpoint declared `output: {tn}` \
+                             (singular). Either change the endpoint to \
+                             `output: List<{tn}>` or collapse the flow's tail \
+                             to a single item (e.g. `return result[0]`). \
+                             (Fase 38.x.f D2)",
+                            tn = schema.name,
+                            n = v.as_array().map(|a| a.len()).unwrap_or(0),
+                        )
+                    } else {
+                        String::new()
+                    },
                 ),
+                // §Fase 38.x.f (D2) — when the top-level body got an
+                // array but expected an object, this is the canonical
+                // singular-vs-plural mismatch. Populate the structured
+                // cardinality diagnostic fields for the audit_log.
+                expected_cardinality: if field_path.is_empty() {
+                    "singular".to_string()
+                } else {
+                    String::new()
+                },
+                got_cardinality: if field_path.is_empty() {
+                    match v {
+                        Value::Array(_) => "plural".to_string(),
+                        Value::Null => "unit".to_string(),
+                        _ => "singular".to_string(),
+                    }
+                } else {
+                    String::new()
+                },
+                got_length: if field_path.is_empty() {
+                    v.as_array().map(|a| a.len() as u64)
+                } else {
+                    None
+                },
+                remediation_url: if field_path.is_empty() && v.is_array() {
+                    "https://axon-lang.io/docs/cardinality-mismatch".to_string()
+                } else {
+                    String::new()
+                },
             });
         }
     };
@@ -452,6 +554,7 @@ fn validate_struct(
                         type_name = field.type_name,
                         struct_name = schema.name,
                     ),
+                    ..Default::default()
                 });
             }
             Some(child) => {

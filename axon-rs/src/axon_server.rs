@@ -21472,6 +21472,15 @@ fn internal_validation_500(
             "expected": v.expected,
             "got": v.got,
             "hint": v.hint,
+            // §Fase 38.x.f (D2) — cardinality diagnostic fields.
+            // Empty strings serialize but adopters can grep
+            // `expected_cardinality` / `got_cardinality` / `got_length`
+            // / `remediation_url` to detect the cardinality-mismatch
+            // class specifically vs primitive-type violations.
+            "expected_cardinality": v.expected_cardinality,
+            "got_cardinality": v.got_cardinality,
+            "got_length": v.got_length,
+            "remediation_url": v.remediation_url,
             "trace_id": trace_id,
             "d_letter": "D5",
         }),
@@ -21510,12 +21519,53 @@ fn internal_validation_500(
         s.metrics.total_errors += 1;
     }
 
-    let client_body = serde_json::json!({
-        "error": "internal_validation_error",
-        "trace_id": trace_id,
-        "hint": "The flow produced a response that did not match the declared output schema. The adopter-facing diagnostic is in the audit trail (GET /v1/audit).",
-        "d_letter": "D5",
-    });
+    // §Fase 38.x.f (D4) — opt-in verbose hint surface for dev/staging.
+    // When `AXON_VERBOSE_D5_HINT=1` (truthy alphabet: 1, true, yes, on
+    // — case-insensitive) the full diagnostic payload from the audit
+    // entry is included in the client response body. Default OFF
+    // preserves OWASP-safe behavior (Fase 32.d D5) — production deploys
+    // never accidentally leak server-side type contracts through
+    // schema-validation errors.
+    let verbose = std::env::var("AXON_VERBOSE_D5_HINT")
+        .ok()
+        .map(|v| {
+            let normalized = v.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false);
+
+    let client_body = if verbose {
+        match &violation {
+            Some(v) => serde_json::json!({
+                "error": "internal_validation_error",
+                "trace_id": trace_id,
+                "hint": "The flow produced a response that did not match the declared output schema. AXON_VERBOSE_D5_HINT is ON — full diagnostic included below; do NOT enable in production (OWASP).",
+                "expected_type": v.expected_type,
+                "field_path": v.field_path,
+                "expected": v.expected,
+                "got": v.got,
+                "expected_cardinality": v.expected_cardinality,
+                "got_cardinality": v.got_cardinality,
+                "got_length": v.got_length,
+                "remediation_url": v.remediation_url,
+                "verbose_hint_detail": v.hint,
+                "d_letter": "D5",
+            }),
+            None => serde_json::json!({
+                "error": "internal_validation_error",
+                "trace_id": trace_id,
+                "hint": "The response body could not be parsed as JSON despite Content-Type. AXON_VERBOSE_D5_HINT is ON.",
+                "d_letter": "D5",
+            }),
+        }
+    } else {
+        serde_json::json!({
+            "error": "internal_validation_error",
+            "trace_id": trace_id,
+            "hint": "The flow produced a response that did not match the declared output schema. The adopter-facing diagnostic is in the audit trail (GET /v1/audit).",
+            "d_letter": "D5",
+        })
+    };
     (StatusCode::INTERNAL_SERVER_ERROR, Json(client_body)).into_response()
 }
 
