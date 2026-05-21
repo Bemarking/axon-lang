@@ -1,6 +1,6 @@
 ---
 title: "Plan vivo: Fase 38.x.f — Cardinality Coverage Complete (closing the v1.39.0 honest deferrals)"
-status: ✅ CLOSED 2026-05-21 — axon-lang v1.40.0 + axon-enterprise v1.31.0 LIVE cross-stack (full bilateral cardinality surface). ⚠️ **REOPENED 2026-05-21 for hotfix sub-fase 38.x.f.9** — runtime D5 body validator didn't honor `List<T>` / `Stream<T>` generics, making the T9XX compile-time hint (which suggests `output: List<T>`) a dead-end at deploy time. Fix ships as axon-lang v1.40.2 + enterprise v1.31.2 alongside Fase 37.x.j.11 (introspect error propagation).
+status: ✅ CLOSED 2026-05-21 — axon-lang v1.40.0 + v1.40.2 (38.x.f.9 Rust hotfix) + **v1.40.3 (38.x.f.10 Python parity)** LIVE cross-stack (full bilateral cardinality surface; Rust + Python parity locked). axon-enterprise v1.31.0 / v1.31.2 / **v1.31.3** catch-ups LIVE in lockstep. ⚠️ **REOPENED 2026-05-21 for hotfix sub-fase 38.x.f.10** — v1.40.2 closed the §0 generic-aware preamble on the Rust runtime only; the Python runtime (`axon/runtime/route_schema.py`) was missed, so adopters running `axon serve` (Python) still hit the dead-end. Founder principle: "axon es un lenguaje, no varios, sino uno solo" — cross-runtime parity is mandatory. Fix mirrors §0 in Python + adds 6 paritarios tests + cross-stack drift gate. Ships as axon-lang v1.40.3 + enterprise v1.31.3 alongside Fase 37.x.j.12 (`row_stream.rs` introspect propagation — 5th of 5 stores-crate sites).
 owner: AXON Language + Frontend + Runtime Team
 created: 2026-05-21
 target: |
@@ -431,3 +431,56 @@ Closed when:
   axon-lang release ships an axon-enterprise catch-up.
 - Standing rule (`feedback_subfase_shipped_marker`): every shipped
   sub-fase flips ⏳ → ✅ at landing.
+
+# ▶ 10. Sub-fase 38.x.f.10 — Python parity of §0 generic-aware preamble (v1.40.3 hotfix)
+
+**Diagnosed 2026-05-21** (same day as 38.x.f.9 ship, post-v1.40.2
+deploy). v1.40.2 closed the §0 generic-aware preamble on
+[axon-rs/src/route_schema.rs](../../axon-rs/src/route_schema.rs)
+(`validate_value`) and shipped 6 Rust unit tests anchoring the fix.
+**Missed**: the symmetric site in
+[axon/runtime/route_schema.py](../../axon/runtime/route_schema.py)
+(`_validate_value`) — same dead-end, same root cause, opposite stack.
+
+Adopters running `axon serve` (Python-based runtime, default for
+adopters not on the Rust binary) STILL hit the `unknown body type
+List<TenantRecord>` error after v1.40.2 — because the Python
+validator never strips `<T>` and falls through to §5 unknown_type
+exactly as the pre-v1.40.2 Rust did.
+
+**Founder principle violated**: *"axon es un lenguaje, no varios,
+sino uno solo"* (memoria `feedback_axon_for_axon`). A single `.axon`
+source MUST validate identically on both runtimes.
+
+**Fix — Python mirror of §0 preamble**: insert a `if not generic_param:`
+block at the top of `_validate_value` that strips `List<T>` /
+`Stream<T>` and recurses. Closed grammar today: `List<Inner>` +
+`Stream<Inner>`. Other future generics (`Map<K,V>`, `Optional<T>`)
+extend §0 additively without touching §1–§5.
+
+**Anchor — 12 new Python tests** in
+[tests/test_fase32_body_schema.py](../../tests/test_fase32_body_schema.py)
+across two test classes:
+
+1. `TestFase38xf10GenericAwarePreamble` — 6 tests byte-paritarios to
+   the Rust v1.40.2 suite at
+   [axon-rs/src/route_schema.rs::tests](../../axon-rs/src/route_schema.rs)
+   (`fase38xf9_validate_body_accepts_list_of_primitive`,
+   `_list_of_struct`, `_rejects_list_of_unknown_inner`,
+   `_rejects_list_against_non_array`,
+   `_accepts_nested_list_of_list`, `_stream_returns_ok_early`).
+
+2. `TestFase38xf10CrossStackDrift` — 6 cross-stack drift gate tests
+   that lock Python ↔ Rust agreement on the validation tuple for
+   the same `List<T>` / `Stream<T>` corpus. Any divergence — Python
+   accepting what Rust rejects, or the inverse — breaks BOTH this
+   gate AND its Rust twin, so drift fires on PRs to either stack.
+
+**Status**: ✅ SHIPPED 2026-05-21 — Python `_validate_value` now
+strips `List<T>` and recurses identically to Rust; `Stream<T>`
+returns `None` (Ok) early (SSE chunks validate at the wire layer
+downstream). 12/12 new Python tests green; 82/82 full
+`test_fase32_body_schema.py` green; 2114/2114 axon-lang Rust lib
+preserved. Ships as axon-lang **v1.40.3 PATCH** + axon-enterprise
+**v1.31.3** catch-up alongside Fase 37.x.j.12 (`row_stream.rs`
+introspect propagation).

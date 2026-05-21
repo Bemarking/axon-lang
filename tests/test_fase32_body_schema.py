@@ -599,3 +599,110 @@ class TestResponseSideValidation:
         assert req_side.field_path == resp_side.field_path
         assert req_side.expected == resp_side.expected
         assert req_side.got == resp_side.got
+
+
+# ── §Fase 38.x.f.10 — Generic-aware §0 preamble (Python mirror) ────
+
+
+class TestFase38xf10GenericAwarePreamble:
+    """§Fase 38.x.f.10 (POST-CLOSE HOTFIX 2026-05-21) — Python mirror
+    of the Rust §0 generic-aware preamble shipped in v1.40.2 as
+    Fase 38.x.f.9. v1.40.3 closes the Python path; founder principle:
+    'axon es un lenguaje, no varios, sino uno solo' — same .axon
+    source MUST validate identically on Python `axon serve` and
+    Rust `axon-rs` runtime.
+
+    These 6 tests are byte-paritarios to the Rust suite at
+    axon-rs/src/route_schema.rs::tests:
+      - fase38xf9_validate_body_accepts_list_of_primitive
+      - fase38xf9_validate_body_accepts_list_of_struct
+      - fase38xf9_validate_body_rejects_list_of_unknown_inner
+      - fase38xf9_validate_body_rejects_list_against_non_array
+      - fase38xf9_validate_body_accepts_nested_list_of_list
+      - fase38xf9_validate_body_stream_returns_ok_early"""
+
+    def test_fase38xf10_validate_body_accepts_list_of_primitive(self):
+        # Pre-hotfix: adopter declared `output: List<String>` but
+        # validate_body rejected it as unknown_type because the
+        # raw `"List<String>"` string fell through to §5.
+        assert validate_body(["alice", "bob", "carol"], "List<String>", {}) is None
+
+    def test_fase38xf10_validate_body_accepts_list_of_struct(self):
+        body = [
+            {"name": "alice", "age": 30},
+            {"name": "bob"},
+        ]
+        assert validate_body(body, "List<Person>", _person_table()) is None
+
+    def test_fase38xf10_validate_body_rejects_list_of_unknown_inner(self):
+        err = validate_body([{}, {}], "List<UnknownType>", {})
+        assert err is not None
+        assert err.expected_type == "List<UnknownType>"
+        assert err.expected == "UnknownType"
+        # Inner unknown propagates the path-element index.
+        assert err.field_path.startswith("[0")
+
+    def test_fase38xf10_validate_body_rejects_list_against_non_array(self):
+        err = validate_body("not an array", "List<String>", {})
+        assert err is not None
+        # `validate_list` renders the full `List<T>` shape in `expected`
+        # so adopters see the declared generic, not just `List`.
+        assert err.expected == "List<String>"
+        assert err.got == "string"
+
+    def test_fase38xf10_validate_body_accepts_nested_list_of_list(self):
+        # Recursive — §0 strips one layer, then recursion lands here
+        # again with type_name = "List<String>" and strips ANOTHER.
+        assert validate_body(
+            [["a", "b"], ["c"], []],
+            "List<List<String>>",
+            {},
+        ) is None
+
+    def test_fase38xf10_validate_body_stream_returns_ok_early(self):
+        # Stream<T> body validation is structurally unreachable from
+        # the SSE path (chunks validate at the wire layer). If we
+        # observe it at the body validator (defensive), we return
+        # None (Ok) early.
+        assert validate_body({"any": "shape"}, "Stream<Anything>", {}) is None
+        assert validate_body([1, 2, 3], "Stream<Integer>", {}) is None
+
+
+# ── §Fase 38.x.f.10 — Cross-stack drift gate against Rust §0 ──────
+
+
+class TestFase38xf10CrossStackDrift:
+    """Mirror of the 6 Rust §38.x.f.9 unit tests at
+    axon-rs/src/route_schema.rs::tests. Any divergence — Python
+    accepting what Rust rejects, or the inverse — breaks this gate
+    AND its Rust twin, so drift fires on PRs to either stack."""
+
+    def test_drift_list_primitive_both_stacks_accept(self):
+        # Rust assertion: validate_body(&body, "List<String>", &table).is_ok()
+        # where body = json!(["alice"]). Python mirror:
+        assert validate_body(["alice"], "List<String>", {}) is None
+
+    def test_drift_list_struct_both_stacks_accept(self):
+        body = [{"name": "alice", "age": 30}]
+        assert validate_body(body, "List<Person>", _person_table()) is None
+
+    def test_drift_list_unknown_inner_both_stacks_reject(self):
+        err = validate_body([{}], "List<NotDeclared>", {})
+        assert err is not None
+        # Rust: expected = "NotDeclared"; Python parity locked.
+        assert err.expected == "NotDeclared"
+
+    def test_drift_list_against_non_array_both_stacks_reject(self):
+        err = validate_body(42, "List<Integer>", {})
+        assert err is not None
+        # Rust: validate_list returns expected = "List<Integer>",
+        # got = "integer". Python parity locked.
+        assert err.expected == "List<Integer>"
+        assert err.got == "integer"
+
+    def test_drift_nested_list_of_list_both_stacks_accept(self):
+        assert validate_body([[1, 2]], "List<List<Integer>>", {}) is None
+
+    def test_drift_stream_returns_ok_both_stacks(self):
+        # Rust: validate_body(&json!("x"), "Stream<String>", &table).is_ok()
+        assert validate_body("x", "Stream<String>", {}) is None

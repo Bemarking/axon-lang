@@ -260,29 +260,41 @@ pub async fn stream_retrieve(
         .begin()
         .await
         .map_err(|e| StoreError::Connect { source: e.to_string() })?;
-    let resolved = introspect_conn(&mut tx, table).await;
-    let no_types = std::collections::HashMap::new();
-    // §37.x.h / D6 surfaces a resolution failure; here it degrades to
-    // an un-qualified bare table + empty type map.
-    // §Fase 38.x.a (D3) — see `postgres_backend::query()` for full rationale.
-    let (schema, column_types) = match &resolved {
-        Ok(r) => (Some(r.schema.as_str()), &r.column_types),
-        Err(e) => {
+    // §Fase 37.x.j.12 — ROLLBACK + propagate introspect error directly.
+    // Pre-v1.40.3 the fall-through path here re-used the same `tx` with
+    // a bare-table SELECT, so an introspect failure (privilege /
+    // search_path / SSL / pooler-mode) cascaded as `relation X does not
+    // exist` inside the stream-cursor path — exactly the masking class
+    // closed at the 4 CRUD sites of `postgres_backend.rs` in v1.40.2,
+    // but THIS site was missed. row_stream is the Pillar III lazy
+    // cursor path; `transport: sse` retrieves exercise it, so a
+    // streaming endpoint hit the same misleading cascade. Same fix
+    // shape: explicit ROLLBACK + return the primary `introspect_err`.
+    let resolved = match introspect_conn(&mut tx, table).await {
+        Ok(r) => r,
+        Err(introspect_err) => {
             tracing::warn!(
                 target: "axon::store",
                 table = %table,
                 op = "introspect_in_tx_stream",
-                error = %e,
-                d_letter = "D3+38.x.a",
+                error = %introspect_err,
+                d_letter = "37.x.j.12",
                 "store introspection failed inside the stream-cursor \
-                 transaction; falling back to bare-table cursor — the \
-                 drain will likely fail with the same root cause."
+                 transaction; rolling back and propagating the primary \
+                 error to the caller (no bare-table cascade)."
             );
-            (None, &no_types)
+            let _ = tx.rollback().await;
+            return Err(introspect_err);
         }
     };
     let (sql, params): (String, Vec<SqlValue>) =
-        build_select_sql(table, schema, where_expr, bindings, column_types)?;
+        build_select_sql(
+            table,
+            Some(resolved.schema.as_str()),
+            where_expr,
+            bindings,
+            &resolved.column_types,
+        )?;
     // §Fase 38.x.a (D1) — mandatory inside the `pool.begin()` tx.
     let mut query = sqlx::query(&sql).persistent(false);
     for value in &params {
@@ -300,9 +312,7 @@ pub async fn stream_retrieve(
     tx.commit()
         .await
         .map_err(|e| StoreError::Connect { source: e.to_string() })?;
-    if let Ok(r) = resolved {
-        backend.cache_schema(table, r);
-    }
+    backend.cache_schema(table, resolved);
     outcome
 }
 
