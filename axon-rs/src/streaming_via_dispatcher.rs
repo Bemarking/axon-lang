@@ -247,6 +247,99 @@ pub async fn run_streaming_via_dispatcher(
         }
     };
 
+    // §Fase 37.x.j (D2) — Eager acquire ONE PoolConnection per
+    // postgresql-backed axonstore the resolved flow body references.
+    // Held in an Arc<Mutex<HashMap>> shared with `DispatchCtx` so
+    // every wire-integration store handler routes its SQL through the
+    // pinned conn. Conns drop when this function returns + the
+    // streaming task ends → `after_release(DEALLOCATE ALL)` (Fase
+    // 38.x.a D2) wipes any prepared statements before the pool reuses
+    // them.
+    //
+    // The discovery walk is currently a permissive over-acquire: it
+    // scans every flow in the IR for postgresql-backed store ops and
+    // acquires one pin per unique store_name. This is a deliberate
+    // honest-deferral for sub-fase 37.x.j.5 — a precise walk that
+    // visits ONLY the resolved flow's body lands in sub-fase 37.x.j.6
+    // alongside the par-block isolation. Over-acquire is safe (pins
+    // are released on drop) but holds the pool slightly longer than
+    // strictly necessary; acceptable trade for shipping the adopter-
+    // blocking fix on the 37.x.j.5 timeline.
+    let pinned_conns: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                String,
+                sqlx::pool::PoolConnection<sqlx::Postgres>,
+            >,
+        >,
+    > = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::HashMap::new(),
+    ));
+    {
+        let mut needed: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for f in &ir.flows {
+            for node in &f.steps {
+                // §Fase 37.x.j.5 — match the four SQL store-op variants
+                // of `IRFlowNode`. Discovery is permissive: an in_memory
+                // store filters out below via `backend_kind`.
+                let store_ref: Option<&str> = match node {
+                    crate::ir_nodes::IRFlowNode::Persist(p) => Some(p.store_name.as_str()),
+                    crate::ir_nodes::IRFlowNode::Retrieve(r) => Some(r.store_name.as_str()),
+                    crate::ir_nodes::IRFlowNode::Mutate(m) => Some(m.store_name.as_str()),
+                    crate::ir_nodes::IRFlowNode::Purge(p) => Some(p.store_name.as_str()),
+                    _ => None,
+                };
+                if let Some(store_name) = store_ref {
+                    if store_registry.backend_kind(store_name)
+                        == Some(crate::store::registry::StoreBackendKind::Postgresql)
+                    {
+                        needed.insert(store_name.to_string());
+                    }
+                }
+            }
+        }
+        for store_name in &needed {
+            match store_registry.resolve(store_name) {
+                Ok(crate::store::registry::StoreHandle::Postgres(backend)) => {
+                    match backend.acquire_pin().await {
+                        Ok(conn) => {
+                            pinned_conns
+                                .lock()
+                                .unwrap()
+                                .insert(store_name.clone(), conn);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "axon::store::pin",
+                                store_name = %store_name,
+                                error = %e,
+                                d_letter = "37.x.j.D2",
+                                "streaming flow failed to acquire pin; \
+                                 falling back to per-step pool acquisition \
+                                 (legacy path). Adopter under transaction-\
+                                 mode pooler may observe the unnamed-\
+                                 prepared-statement race for this store."
+                            );
+                        }
+                    }
+                }
+                Ok(_) => {} // filtered above; defensive no-op
+                Err(e) => {
+                    tracing::warn!(
+                        target: "axon::store::pin",
+                        store_name = %store_name,
+                        error = %e,
+                        d_letter = "37.x.j.D2",
+                        "streaming flow failed to resolve axonstore for \
+                         pin acquisition; falling back to per-step pool \
+                         acquisition (legacy path)."
+                    );
+                }
+            }
+        }
+    }
+
     // §3 — Resolve the requested flow from the IR's flow list.
     // The frontend's IR generator preserves source declaration order
     // so a multi-flow program can dispatch any of them by name.
@@ -325,7 +418,14 @@ pub async fn run_streaming_via_dispatcher(
     .with_store_registry(store_registry)
     // §Fase 36.i (D4) — the tool registry, now LIVE on the production
     // SSE path. Activates the dispatcher's streaming-tool branch.
-    .with_tool_registry(tool_registry);
+    .with_tool_registry(tool_registry)
+    // §Fase 37.x.j (D2) — install the eager-acquired flow-scoped pin
+    // map. The wire-integration store handlers (`run_persist`,
+    // `run_retrieve`, `run_mutate`, `run_purge`) consult this map
+    // per op via take/dispatch/return discipline so every store op
+    // against the same axonstore for this flow lifetime routes
+    // through the SAME physical Postgres backend connection.
+    .with_pinned_conns(pinned_conns);
     // §Fase 35.j — thread the request's held capabilities into the
     // dispatcher so the store handlers can re-check gated stores.
     ctx.held_capabilities = held_capabilities;
