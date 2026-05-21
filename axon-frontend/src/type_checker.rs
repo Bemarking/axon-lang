@@ -157,6 +157,223 @@ pub struct TypeError {
     pub column: u32,
 }
 
+// ── §Fase 38.x.f — Cardinality inference primitive ──────────────────────────
+
+/// §Fase 38.x.f (D1) — A flow-tail / endpoint-output cardinality.
+///
+/// Distinguishes the four cardinality classes the type-checker reasons
+/// about at compile time, plus the disagreement + unknown fallback cases:
+///
+///  - [`Cardinality::Singular`] — one value of the named type.
+///    Examples: `step S { return T }`, `return result[0]`, a bound
+///    let-variable that resolved to singular.
+///  - [`Cardinality::Plural`] — a `List<T>` materialized at once.
+///    Examples: `retrieve … as x`, `for x in xs { … } yield T`,
+///    `return [a, b, c]`.
+///  - [`Cardinality::StreamCardinality`] — a `Stream<T>` whose chunks
+///    arrive over time (SSE wire format). Distinct from
+///    [`Cardinality::Plural`] because the runtime handles them
+///    differently — `List<T>` ships as a single JSON array; `Stream<T>`
+///    ships as a sequence of SSE events.
+///  - [`Cardinality::Unit`] — statement-only nodes (`persist`, `mutate`,
+///    `purge`) that yield no value. Endpoints declaring `output: Unit`
+///    accept this.
+///  - [`Cardinality::Disagreed`] — branches (`if`/`else`, `par`)
+///    disagree on tail cardinality. Triggers `axon-W003
+///    cardinality_disagreement_in_branches`. The special `output: Any`
+///    accepts this (degraded type safety).
+///  - [`Cardinality::Unknown`] — opaque flow tail (e.g. a `Par` block,
+///    a `LambdaDataApply` whose target resolves dynamically). The gate
+///    silently passes — the runtime D5 path stays as the final check.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Cardinality {
+    /// A singular value of the named type.
+    Singular(String),
+    /// A `List<T>` materialized at once.
+    Plural(String),
+    /// A `Stream<T>` (temporal plural — chunks arrive on SSE).
+    StreamCardinality(String),
+    /// Statement-only tail (no return value).
+    Unit,
+    /// Branches disagree on cardinality.
+    Disagreed,
+    /// Opaque — cannot be inferred at compile time.
+    Unknown,
+}
+
+/// §Fase 38.x.f (D1) — Compute the cardinality declared by an
+/// `axonendpoint`'s `output:` string. Pure + total:
+///
+///  - `""` → `Unknown` (endpoint didn't declare; gate skips).
+///  - `"Unit"` → `Unit`.
+///  - `"Any"` → `Disagreed` (degraded acceptance — any tail accepted).
+///  - `"List<T>"` → `Plural("T")`.
+///  - `"Stream<T>"` → `StreamCardinality("T")`.
+///  - everything else → `Singular(s)`.
+pub(crate) fn declared_cardinality(output_type: &str) -> Cardinality {
+    let t = output_type.trim();
+    if t.is_empty() {
+        return Cardinality::Unknown;
+    }
+    if t == "Unit" {
+        return Cardinality::Unit;
+    }
+    if t == "Any" {
+        return Cardinality::Disagreed;
+    }
+    if let Some(rest) = t.strip_prefix("List<") {
+        if let Some(inner) = rest.strip_suffix('>') {
+            return Cardinality::Plural(inner.trim().to_string());
+        }
+    }
+    if let Some(rest) = t.strip_prefix("Stream<") {
+        if let Some(inner) = rest.strip_suffix('>') {
+            return Cardinality::StreamCardinality(inner.trim().to_string());
+        }
+    }
+    Cardinality::Singular(t.to_string())
+}
+
+/// §Fase 38.x.f (D1) — Infer the cardinality of a flow's tail
+/// expression. Walks the body from tail backwards, returning the
+/// first FlowStep whose cardinality is determinable, joining branches
+/// on `if`/`else` (and detecting disagreement).
+///
+/// Pure + total: every flow body produces some [`Cardinality`] value;
+/// when no FlowStep's tail is determinable the function returns
+/// [`Cardinality::Unknown`] (the gate then silently passes — the
+/// runtime D5 path remains the final check).
+///
+/// The implementation handles the FlowStep variants common to adopter
+/// REST patterns:
+///
+///  - `Step` / `Probe` / `Reason` / `Validate` / `Refine` / `Weave` /
+///    `LambdaDataApply` / `ShieldApply` / `OtsApply` / `MandateApply`
+///    → declared `output_type` (mapped via [`declared_cardinality`]).
+///  - `Return` → infer from the `value_expr` string shape:
+///    `[a, b, …]` → Plural, `xs[N]` → Singular, bare identifier or
+///    expression → Unknown.
+///  - `Retrieve` → always `Plural("StoreRow")`.
+///  - `Persist` / `Mutate` / `Purge` → `Unit`.
+///  - `If` → join of `then_body` + `else_body` tail cardinalities.
+///  - `ForIn` → `Plural` of the body's per-iteration cardinality
+///    (a `for x in xs { … }` accumulates one value per iteration).
+///  - `Let` → skip (intermediate); recurse to the next-newer step.
+///  - `Break` / `Continue` → skip.
+///
+/// Every other FlowStep variant returns [`Cardinality::Unknown`]
+/// (Par, Stream, Hibernate, Deliberate, Consensus, Forge, Focus,
+/// Associate, Aggregate, ExploreStep, Ingest, Navigate, Drill, Trail,
+/// Corroborate, ComputeApply, UseTool, Remember, Recall, Listen,
+/// DaemonStep, Emit, Publish, Discover, Transact, GenericStep).
+pub(crate) fn infer_flow_tail_cardinality(flow: &FlowDefinition) -> Cardinality {
+    infer_body_tail_cardinality(&flow.body)
+}
+
+fn infer_body_tail_cardinality(body: &[FlowStep]) -> Cardinality {
+    if body.is_empty() {
+        return Cardinality::Unit;
+    }
+    // Walk from tail backwards; skip intermediate non-returning
+    // statements (Let, Break, Continue) until we find the first
+    // FlowStep whose tail cardinality is determinable.
+    for step in body.iter().rev() {
+        match step {
+            FlowStep::Step(s) => return declared_cardinality(&s.output_type),
+            FlowStep::LambdaDataApply(n) => return declared_cardinality(&n.output_type),
+            FlowStep::ShieldApply(n) => return declared_cardinality(&n.output_type),
+            FlowStep::OtsApply(n) => return declared_cardinality(&n.output_type),
+            FlowStep::MandateApply(n) => return declared_cardinality(&n.output_type),
+            FlowStep::If(cond) => {
+                let then_card = infer_body_tail_cardinality(&cond.then_body);
+                let else_card = infer_body_tail_cardinality(&cond.else_body);
+                return join_cardinalities(&then_card, &else_card);
+            }
+            FlowStep::ForIn(fi) => {
+                // The for-loop body's per-iteration cardinality becomes
+                // Plural at the loop's tail (N iterations × per-iter
+                // value = a list of N elements). When the body is empty
+                // or yields Unit, the for-loop yields Plural of Unknown.
+                let inner = infer_body_tail_cardinality(&fi.body);
+                return match inner {
+                    Cardinality::Singular(t) => Cardinality::Plural(t),
+                    Cardinality::Plural(t) => Cardinality::Plural(t),
+                    Cardinality::StreamCardinality(t) => {
+                        // A for-loop accumulating streams flattens to
+                        // a list of streams — treat as Plural of the
+                        // stream element type for the gate.
+                        Cardinality::Plural(t)
+                    }
+                    Cardinality::Unit => Cardinality::Unknown,
+                    other => other,
+                };
+            }
+            FlowStep::Return(r) => return infer_return_cardinality(&r.value_expr),
+            FlowStep::Retrieve(_) => {
+                return Cardinality::Plural("StoreRow".to_string());
+            }
+            FlowStep::Persist(_) | FlowStep::Mutate(_) | FlowStep::Purge(_) => {
+                return Cardinality::Unit;
+            }
+            FlowStep::Let(_) | FlowStep::Break(_) | FlowStep::Continue(_) => {
+                continue;
+            }
+            // All other variants opaque for v1.40.0 (honest scope).
+            _ => return Cardinality::Unknown,
+        }
+    }
+    Cardinality::Unit
+}
+
+fn infer_return_cardinality(expr: &str) -> Cardinality {
+    let t = expr.trim();
+    if t.is_empty() {
+        return Cardinality::Unit;
+    }
+    // `[a, b, c]` literal list → Plural with unknown element type.
+    if t.starts_with('[') && t.ends_with(']') && t.len() >= 2 {
+        return Cardinality::Plural(String::new());
+    }
+    // Indexed projection `name[N]` (e.g. `result[0]`) → Singular.
+    // Match: ends with `]`, contains `[`, NOT starting with `[`.
+    if t.ends_with(']') && t.contains('[') && !t.starts_with('[') {
+        return Cardinality::Singular(String::new());
+    }
+    // Bare identifier or unknown expression — opaque.
+    Cardinality::Unknown
+}
+
+fn join_cardinalities(a: &Cardinality, b: &Cardinality) -> Cardinality {
+    // Unknown joins as the OTHER cardinality (one branch determines).
+    if matches!(a, Cardinality::Unknown) {
+        return b.clone();
+    }
+    if matches!(b, Cardinality::Unknown) {
+        return a.clone();
+    }
+    // Both determined and equal → preserve.
+    if a == b {
+        return a.clone();
+    }
+    // Disagreed cases: cardinality kinds differ → Disagreed.
+    // (We do NOT compare element types here — Fase 37 D2 / T901 handle
+    // type mismatch; we only care about Singular vs Plural vs Stream
+    // vs Unit kind disagreement for D6 W003.)
+    let kind = |c: &Cardinality| match c {
+        Cardinality::Singular(_) => 0,
+        Cardinality::Plural(_) => 1,
+        Cardinality::StreamCardinality(_) => 2,
+        Cardinality::Unit => 3,
+        Cardinality::Disagreed => 4,
+        Cardinality::Unknown => 5,
+    };
+    if kind(a) == kind(b) {
+        // Same kind, different element type — preserve a's shape.
+        return a.clone();
+    }
+    Cardinality::Disagreed
+}
+
 // ── Symbol table ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -3352,6 +3569,24 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // §Fase 38.x.f (D1–D6) — Cardinality Coverage gate.
+        //
+        // Runs BEFORE the 37.c totality block because the latter does
+        // an early `return` when no binding sources are declared
+        // (endpoint with `output:` + `execute:` only, no `body:` /
+        // `path` / `query`). The cardinality gate is independent of
+        // binding-source declarations — it only needs the endpoint's
+        // `output:` + the flow's body tail — so it must run first or
+        // it never fires on the no-source case (e.g. the Stream
+        // mismatch §6 in the anchor test).
+        if !node.execute_flow.is_empty() && !node.output_type.is_empty() {
+            if let Some(flow) = self.find_flow(&node.execute_flow) {
+                let declared = declared_cardinality(&node.output_type);
+                let tail = infer_flow_tail_cardinality(flow);
+                self.emit_cardinality_gate(node, &declared, &tail);
+            }
+        }
+
         // §Fase 37.c (D2) — The Request Binding Contract totality check.
         //
         // When the endpoint declares `body: T`, the type-checker
@@ -3589,73 +3824,192 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // §Fase 38.x.e (D1, D3) — Retrieve Cardinality vs Output
-        // Singularity Gate.
-        //
-        // The cardinality of a flow's tail expression is known at
-        // compile time. A flow whose tail is `retrieve … as x` always
-        // produces `List<StoreRow>` (a plural value); a flow whose
-        // tail is `step S { ... }` returning T or `return result[0]`
-        // produces a singular T. The axonendpoint's `output:` type
-        // declares the contract with HTTP clients. When the flow's
-        // tail cardinality disagrees with the endpoint's declared
-        // output cardinality, the runtime D5 output-schema gate
-        // (Fase 32.d) rejects the response at REQUEST TIME with a
-        // generic `internal_validation_error`. v1.39.0 catches this
-        // class of bug at BUILD TIME via `axon-T9xx
-        // retrieve_cardinality_mismatch` with an actionable hint.
-        //
-        // v1.39.0 ships the D1 gate as a WARNING (axon-W003) unless
-        // `--strict-cardinality` is on; v1.40.0 flips to default-on
-        // (D5 migration window).
-        //
-        // Scope of v1.39.0 detection (honest, narrow): we detect ONLY
-        // the canonical kivi-shape — endpoint declares `output: T`
-        // (singular, no `List<...>` wrapper) AND the executed flow's
-        // tail FlowStep is `Retrieve` (always plural). Other
-        // cardinality patterns (singular-tail + List<T>-output, branch
-        // disagreement) are honest deferrals to Fase 38.x.f.
-        if !node.execute_flow.is_empty() && !node.output_type.is_empty() {
-            if let Some(flow) = self.find_flow(&node.execute_flow) {
-                let endpoint_output_is_singular =
-                    !node.output_type.starts_with("List<")
-                        && !node.output_type.starts_with("Stream<")
-                        && node.output_type != "Unit";
-                let tail_is_retrieve = matches!(
-                    flow.body.last(),
-                    Some(FlowStep::Retrieve(_))
+        // §Fase 38.x.f cardinality gate runs ABOVE this block (before
+        // the 37.c early-return on no-source endpoints). See the
+        // comment block at the top of check_axonendpoint for the
+        // load-bearing rationale.
+    }
+
+    /// §Fase 38.x.f (D1–D6) — Emit the cardinality-mismatch diagnostic
+    /// for the `(declared, tail)` disjoint pair. Pure: depends only on
+    /// the endpoint's `output:` declaration and the flow tail's
+    /// inferred cardinality.
+    fn emit_cardinality_gate(
+        &mut self,
+        node: &AxonEndpointDefinition,
+        declared: &Cardinality,
+        tail: &Cardinality,
+    ) {
+        match (declared, tail) {
+            // — Agreed shapes → silent pass.
+            (Cardinality::Unit, Cardinality::Unit) => {}
+            (Cardinality::Singular(d), Cardinality::Singular(_)) => {
+                // Type-level mismatch is the existing Fase 37 D2
+                // contract; cardinality agrees.
+                let _ = d;
+            }
+            (Cardinality::Plural(_), Cardinality::Plural(_)) => {}
+            (Cardinality::StreamCardinality(_), Cardinality::StreamCardinality(_)) => {}
+
+            // — Unknown / Disagreed-acceptance → silent pass.
+            (_, Cardinality::Unknown) => {}
+            (Cardinality::Disagreed, _) => {
+                // `output: Any` accepts every cardinality (degraded
+                // surface; documented adopter choice — Fase 38.x.f D6).
+            }
+            (Cardinality::Unknown, _) => {}
+
+            // — D3 bilateral: declared Plural vs tail Singular.
+            (Cardinality::Plural(decl_t), Cardinality::Singular(_)) => {
+                self.emit(
+                    format!(
+                        "axon-T9XX axonendpoint '{}' declares `output: {}` \
+                         (plural — `List<{}>`), but flow '{}' produces a \
+                         `{}` (singular) tail. The runtime would either \
+                         wrap the singular in an array implicitly OR fail \
+                         the D5 output-schema gate (Fase 32.d) depending \
+                         on path. To make the contract explicit: \
+                         (a) change the endpoint to `output: {}` if it \
+                             returns a single resource (REST \
+                             `GET /api/{{resource}}/{{id}}`-style); OR \
+                         (b) wrap the tail in a list — `return [result]` \
+                             or `for x in [result] {{ x }}` at the flow \
+                             tail. \
+                         (Fase 38.x.f D3 bilateral)",
+                        node.name,
+                        node.output_type,
+                        decl_t,
+                        node.execute_flow,
+                        decl_t,
+                        decl_t,
+                    ),
+                    &node.loc,
                 );
-                if endpoint_output_is_singular && tail_is_retrieve {
-                    self.emit(
-                        format!(
-                            "axon-T9XX axonendpoint '{}' declares `output: {}` \
-                             (singular), but flow '{}' produces a `List<{}>` \
-                             tail expression — the flow ends with a `retrieve` \
-                             step, which always returns a list of rows from \
-                             the store. The runtime D5 output-schema gate \
-                             (Fase 32.d) would reject the response as a \
-                             shape mismatch. \
-                             Either: \
-                             (a) change the endpoint to `output: List<{}>` if \
-                                 it is intentionally returning a collection \
-                                 (REST `GET /api/{{resource}}`-style); OR \
-                             (b) collapse the tail to a singular element — \
-                                 e.g. add `step Project {{ return result[0] }}` \
-                                 (or any step that emits the singular shape) \
-                                 BEFORE the implicit tail, OR add an explicit \
-                                 `return result[0]` at the end of the flow if \
-                                 the retrieve's `where:` filter is guaranteed \
-                                 to yield exactly one row. \
-                             (Fase 38.x.e D1)",
-                            node.name,
-                            node.output_type,
-                            node.execute_flow,
-                            node.output_type,
-                            node.output_type,
-                        ),
-                        &node.loc,
-                    );
-                }
+            }
+
+            // — D1 v1.39.0 retained: declared Singular vs tail Plural
+            //   (this is the canonical kivi-shape that 38.x.e shipped).
+            (Cardinality::Singular(decl_t), Cardinality::Plural(_)) => {
+                self.emit(
+                    format!(
+                        "axon-T9XX axonendpoint '{}' declares `output: {}` \
+                         (singular), but flow '{}' produces a `List<{}>` \
+                         tail expression — the flow ends with a step or \
+                         construct that produces a list (e.g. `retrieve` \
+                         step, `for x in xs {{ … }}` loop, or `return \
+                         [a, b, c]`). The runtime D5 output-schema gate \
+                         (Fase 32.d) would reject the response as a \
+                         shape mismatch. \
+                         Either: \
+                         (a) change the endpoint to `output: List<{}>` if \
+                             it is intentionally returning a collection \
+                             (REST `GET /api/{{resource}}`-style); OR \
+                         (b) collapse the tail to a singular element — \
+                             e.g. add `step Project {{ return result[0] }}` \
+                             (or any step that emits the singular shape) \
+                             BEFORE the implicit tail, OR add an explicit \
+                             `return result[0]` at the end of the flow if \
+                             the iteration is guaranteed to yield exactly \
+                             one element. \
+                         (Fase 38.x.f D1 — v1.39.0 narrow case preserved)",
+                        node.name,
+                        node.output_type,
+                        node.execute_flow,
+                        decl_t,
+                        decl_t,
+                    ),
+                    &node.loc,
+                );
+            }
+
+            // — D5 Stream mismatches (any direction crossing Stream
+            //   with non-Stream).
+            (Cardinality::StreamCardinality(decl_t), Cardinality::Singular(_))
+            | (Cardinality::StreamCardinality(decl_t), Cardinality::Plural(_)) => {
+                self.emit(
+                    format!(
+                        "axon-T9YY axonendpoint '{}' declares `output: \
+                         Stream<{}>` (temporal — chunks arrive over time \
+                         on SSE), but flow '{}' produces a non-stream \
+                         tail. These are distinct cardinality primitives: \
+                         (a) change the endpoint to `output: {}` (or \
+                             `List<{}>`) if you want JSON delivery at \
+                             once, OR \
+                         (b) change the flow tail to a step with \
+                             `output: Stream<{}>` (e.g. `step Generate \
+                             {{ ask: \"...\" output: Stream<{}> }}`) if \
+                             you want SSE chunked delivery. \
+                         (Fase 38.x.f D5 stream_cardinality_mismatch)",
+                        node.name,
+                        decl_t,
+                        node.execute_flow,
+                        decl_t,
+                        decl_t,
+                        decl_t,
+                        decl_t,
+                    ),
+                    &node.loc,
+                );
+            }
+            (Cardinality::Singular(_), Cardinality::StreamCardinality(strm_t))
+            | (Cardinality::Plural(_), Cardinality::StreamCardinality(strm_t)) => {
+                self.emit(
+                    format!(
+                        "axon-T9YY axonendpoint '{}' declares `output: {}` \
+                         (spatial — materialized at once), but flow '{}' \
+                         produces a `Stream<{}>` tail (temporal — chunks \
+                         arrive over time). These are distinct \
+                         cardinality primitives: \
+                         (a) change the endpoint to `output: Stream<{}>` \
+                             if you want SSE chunked delivery, OR \
+                         (b) change the flow tail to a non-streaming step \
+                             returning `{}` if you want JSON delivery. \
+                         (Fase 38.x.f D5 stream_cardinality_mismatch)",
+                        node.name,
+                        node.output_type,
+                        node.execute_flow,
+                        strm_t,
+                        strm_t,
+                        node.output_type,
+                    ),
+                    &node.loc,
+                );
+            }
+
+            // — D6 W003: tail-Disagreed against non-Any output.
+            (_, Cardinality::Disagreed) => {
+                self.emit(
+                    format!(
+                        "axon-W003 axonendpoint '{}' executes flow '{}' \
+                         whose tail is an `if`/`else` (or `par`) where \
+                         the branches disagree on cardinality — one \
+                         branch returns a singular value while another \
+                         returns a list (or stream). The endpoint's \
+                         `output: {}` cannot satisfy both shapes \
+                         simultaneously. Either: \
+                         (a) align the branches — return the same \
+                             cardinality from both; OR \
+                         (b) declare `output: Any` to accept either \
+                             shape (degraded type safety; the runtime \
+                             D5 gate will not protect this endpoint); \
+                             OR \
+                         (c) split into two endpoints, one per branch's \
+                             shape. \
+                         (Fase 38.x.f D6 cardinality_disagreement_in_branches)",
+                        node.name,
+                        node.execute_flow,
+                        node.output_type,
+                    ),
+                    &node.loc,
+                );
+            }
+
+            // — Type-mismatch only (cardinality agrees, types differ).
+            //   The existing Fase 37 D2 contract handles this.
+            (Cardinality::Unit, _) | (_, Cardinality::Unit) => {
+                // Unit + anything else is intentionally silent here —
+                // the runtime treats Unit-output as "no response body"
+                // and the existing output-schema gate doesn't apply.
             }
         }
     }

@@ -6154,7 +6154,26 @@ impl Parser {
                         self.consume(TokenType::RBrace)?;
                     },
                     "execute" => node.execute_flow = self.consume_any_ident_or_kw()?.value.clone(),
-                    "output" => node.output_type = self.consume_any_ident_or_kw()?.value.clone(),
+                    "output" => {
+                        // §Fase 38.x.f — promote axonendpoint `output:`
+                        // parsing from a single token to the full
+                        // generic-aware type expression (mirroring
+                        // `parse_step` for FlowStep::Step which already
+                        // uses `parse_output_type_string`).
+                        //
+                        // Pre-38.x.f: `output: List<Item>` captured only
+                        // `"List"`, dropping `<Item>` (next tokens were
+                        // either left unconsumed or absorbed by the
+                        // following field). v1.39.0's narrow cardinality
+                        // gate happened to fire correctly for `output: T`
+                        // + retrieve-tail because the singular-detection
+                        // path used `!starts_with("List<")` — but the
+                        // SYMMETRIC `output: List<T>` + singular-tail
+                        // case (38.x.f D3) needs the FULL `List<T>`
+                        // shape captured; without it the gate sees
+                        // `"List"` and misclassifies as Singular.
+                        node.output_type = self.parse_output_type_string()?;
+                    }
                     "shield" => node.shield_ref = self.consume_any_ident_or_kw()?.value.clone(),
                     "retries" => node.retries = self.parse_optional_int(),
                     "timeout" => {
