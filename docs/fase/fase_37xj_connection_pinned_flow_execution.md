@@ -1,6 +1,6 @@
 ---
 title: "Plan vivo: Fase 37.x.j — Connection-Pinned Flow Execution (closing the unnamed-prepared-statement race against transaction-mode poolers)"
-status: ⏳ OPEN 2026-05-20 — adopter regression; awaiting execution.
+status: ✅ CLOSED 2026-05-21 — axon-lang v1.39.0 + axon-enterprise v1.30.0 LIVE cross-stack.
 owner: AXON Language + Runtime Team
 created: 2026-05-20
 target: |

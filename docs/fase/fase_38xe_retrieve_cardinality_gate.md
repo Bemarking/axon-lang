@@ -1,6 +1,6 @@
 ---
 title: "Plan vivo: Fase 38.x.e — Retrieve Cardinality vs Output Singularity Gate (compile-time + runtime defense against List/singular shape mismatch)"
-status: ⏳ OPEN 2026-05-20 — adopter ergonomic gap; awaiting execution.
+status: ✅ CLOSED 2026-05-21 — axon-lang v1.39.0 + axon-enterprise v1.30.0 LIVE cross-stack (T9XX gate live).
 owner: AXON Language + Frontend Team
 created: 2026-05-20
 target: |
