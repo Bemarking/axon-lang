@@ -304,6 +304,14 @@ pub async fn run_streaming_via_dispatcher(
                 Ok(crate::store::registry::StoreHandle::Postgres(backend)) => {
                     match backend.acquire_pin().await {
                         Ok(conn) => {
+                            // §Fase 37.x.j (D4) — emit acquire event.
+                            crate::store::pin_observability::emit_pin_acquire(
+                                store_name,
+                                &flow_name,
+                                "", // streaming dispatcher's trace_id is reserved further down
+                                "eager",
+                                None,
+                            );
                             pinned_conns
                                 .lock()
                                 .unwrap()
