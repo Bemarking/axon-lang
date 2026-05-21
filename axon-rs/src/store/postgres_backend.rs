@@ -1426,39 +1426,46 @@ impl PostgresStoreBackend {
         let mut tx = conn.begin().await.map_err(|e| {
             StoreError::Connect { source: e.to_string() }
         })?;
-        let resolved = introspect_conn(&mut tx, table).await;
-        let no_types = std::collections::HashMap::new();
-        // §37.x.h / D6 surfaces a resolution failure; here it degrades
-        // to an un-qualified bare table + empty type map.
-        // §Fase 38.x.a (D3) — emit the PRIMARY introspection error as a
-        // structured `tracing::warn!` BEFORE the fall-through. Without
-        // this log, the adopter sees only the SECONDARY cascade error
-        // (typically `25P02 in_failed_sql_transaction` or `42703 column
-        // does not exist`) and has no way to diagnose what actually failed.
-        let (schema, column_types) = match &resolved {
-            Ok(r) => (Some(r.schema.as_str()), &r.column_types),
-            Err(e) => {
+        // §Fase 37.x.j.11 (POST-CLOSE HOTFIX 2026-05-21) — ROLLBACK +
+        // propagate the introspect error directly. Pre-hotfix the
+        // code fell through to bare-table SQL with `(None, &no_types)`
+        // inside the SAME (now poisoned) transaction. The cascade
+        // error (`25P02 in_failed_sql_transaction` / `42703 column
+        // does not exist`) was returned to the application layer,
+        // masking the actual root cause from any caller that didn't
+        // filter the `axon::store` tracing target.
+        //
+        // Honest scope cut: adopters whose introspect privileges
+        // differ from query privileges (rare in practice — same DB
+        // user) no longer get the fall-through. If real adopter
+        // demand surfaces, a future fase can add an opt-in
+        // `unsafe_skip_introspect` flag.
+        let resolved = match introspect_conn(&mut tx, table).await {
+            Ok(r) => r,
+            Err(introspect_err) => {
                 tracing::warn!(
                     target: "axon::store",
                     table = %table,
                     op = "introspect_in_tx",
-                    error = %e,
-                    d_letter = "D3+38.x.a",
-                    "store introspection failed inside the operation \
-                     transaction; falling back to bare-table SQL — the \
-                     operation will likely fail with the same root cause. \
-                     If the error mentions `prepared statement \"sqlx_s_N\" \
-                     already exists`, the deployment is behind a \
-                     transaction-mode pooler and this axon-lang version \
-                     should already mitigate via `.persistent(false)` (D1) \
-                     + `DEALLOCATE ALL` after release (D2); check the \
-                     pooler logs."
+                    error = %introspect_err,
+                    d_letter = "37.x.j.11",
+                    "store introspection failed; rolling back the \
+                     transaction and returning the primary error \
+                     directly. Pre-37.x.j.11 the runtime fell through \
+                     to bare-table SQL inside the poisoned tx → \
+                     cascade error masked the root cause."
                 );
-                (None, &no_types)
+                let _ = tx.rollback().await;
+                return Err(introspect_err);
             }
         };
-        let (sql, params) =
-            build_select_sql(table, schema, where_expr, bindings, column_types)?;
+        let (sql, params) = build_select_sql(
+            table,
+            Some(resolved.schema.as_str()),
+            where_expr,
+            bindings,
+            &resolved.column_types,
+        )?;
         // §Fase 38.x.a (D1) — `.persistent(false)` is mandatory inside the
         // `pool.begin()` transaction: the named PARSE protocol leaks across
         // logical sessions when the physical conn behind the pooler is
@@ -1474,9 +1481,7 @@ impl PostgresStoreBackend {
         tx.commit().await.map_err(|e| StoreError::Connect {
             source: e.to_string(),
         })?;
-        if let Ok(r) = resolved {
-            self.cache_schema(table, r);
-        }
+        self.cache_schema(table, resolved);
         rows.iter().map(map_pg_row).collect()
     }
 
@@ -1611,26 +1616,31 @@ impl PostgresStoreBackend {
         let mut tx = conn.begin().await.map_err(|e| {
             StoreError::Connect { source: e.to_string() }
         })?;
-        let resolved = introspect_conn(&mut tx, table).await;
-        let no_types = std::collections::HashMap::new();
-        // §Fase 38.x.a (D3) — see `query()` above for the full rationale.
-        let (schema, column_types) = match &resolved {
-            Ok(r) => (Some(r.schema.as_str()), &r.column_types),
-            Err(e) => {
+        // §Fase 37.x.j.11 — ROLLBACK + propagate introspect error
+        // directly. See `query()` above for the full rationale.
+        let resolved = match introspect_conn(&mut tx, table).await {
+            Ok(r) => r,
+            Err(introspect_err) => {
                 tracing::warn!(
                     target: "axon::store",
                     table = %table,
                     op = "introspect_in_tx_persist",
-                    error = %e,
-                    d_letter = "D3+38.x.a",
-                    "store introspection failed inside the persist \
-                     transaction; falling back to bare-table INSERT — \
-                     the persist will likely fail with the same root cause."
+                    error = %introspect_err,
+                    d_letter = "37.x.j.11",
+                    "persist introspection failed; rolling back the \
+                     transaction and returning the primary error \
+                     directly."
                 );
-                (None, &no_types)
+                let _ = tx.rollback().await;
+                return Err(introspect_err);
             }
         };
-        let (sql, params) = build_insert_sql(table, schema, data, column_types)?;
+        let (sql, params) = build_insert_sql(
+            table,
+            Some(resolved.schema.as_str()),
+            data,
+            &resolved.column_types,
+        )?;
         // §Fase 38.x.a (D1) — mandatory inside the `pool.begin()` tx.
         let mut q = sqlx::query(&sql).persistent(false);
         for value in &params {
@@ -1643,9 +1653,7 @@ impl PostgresStoreBackend {
         tx.commit().await.map_err(|e| StoreError::Connect {
             source: e.to_string(),
         })?;
-        if let Ok(r) = resolved {
-            self.cache_schema(table, r);
-        }
+        self.cache_schema(table, resolved);
         Ok(result.rows_affected())
     }
 
@@ -1700,27 +1708,32 @@ impl PostgresStoreBackend {
         let mut tx = conn.begin().await.map_err(|e| {
             StoreError::Connect { source: e.to_string() }
         })?;
-        let resolved = introspect_conn(&mut tx, table).await;
-        let no_types = std::collections::HashMap::new();
-        // §Fase 38.x.a (D3) — see `query()` above for the full rationale.
-        let (schema, column_types) = match &resolved {
-            Ok(r) => (Some(r.schema.as_str()), &r.column_types),
-            Err(e) => {
+        // §Fase 37.x.j.11 — ROLLBACK + propagate introspect error
+        // directly. See `query()` above for the full rationale.
+        let resolved = match introspect_conn(&mut tx, table).await {
+            Ok(r) => r,
+            Err(introspect_err) => {
                 tracing::warn!(
                     target: "axon::store",
                     table = %table,
                     op = "introspect_in_tx_mutate",
-                    error = %e,
-                    d_letter = "D3+38.x.a",
-                    "store introspection failed inside the mutate \
-                     transaction; falling back to bare-table UPDATE — \
-                     the mutate will likely fail with the same root cause."
+                    error = %introspect_err,
+                    d_letter = "37.x.j.11",
+                    "mutate introspection failed; rolling back the \
+                     transaction and returning the primary error \
+                     directly."
                 );
-                (None, &no_types)
+                let _ = tx.rollback().await;
+                return Err(introspect_err);
             }
         };
         let (sql, params) = build_update_sql(
-            table, schema, where_expr, data, bindings, column_types,
+            table,
+            Some(resolved.schema.as_str()),
+            where_expr,
+            data,
+            bindings,
+            &resolved.column_types,
         )?;
         // §Fase 38.x.a (D1) — mandatory inside the `pool.begin()` tx.
         let mut q = sqlx::query(&sql).persistent(false);
@@ -1734,9 +1747,7 @@ impl PostgresStoreBackend {
         tx.commit().await.map_err(|e| StoreError::Connect {
             source: e.to_string(),
         })?;
-        if let Ok(r) = resolved {
-            self.cache_schema(table, r);
-        }
+        self.cache_schema(table, resolved);
         Ok(result.rows_affected())
     }
 
@@ -1789,27 +1800,32 @@ impl PostgresStoreBackend {
         let mut tx = conn.begin().await.map_err(|e| {
             StoreError::Connect { source: e.to_string() }
         })?;
-        let resolved = introspect_conn(&mut tx, table).await;
-        let no_types = std::collections::HashMap::new();
-        // §Fase 38.x.a (D3) — see `query()` above for the full rationale.
-        let (schema, column_types) = match &resolved {
-            Ok(r) => (Some(r.schema.as_str()), &r.column_types),
-            Err(e) => {
+        // §Fase 37.x.j.11 — ROLLBACK + propagate introspect error
+        // directly. See `query()` above for the full rationale.
+        let resolved = match introspect_conn(&mut tx, table).await {
+            Ok(r) => r,
+            Err(introspect_err) => {
                 tracing::warn!(
                     target: "axon::store",
                     table = %table,
                     op = "introspect_in_tx_purge",
-                    error = %e,
-                    d_letter = "D3+38.x.a",
-                    "store introspection failed inside the purge \
-                     transaction; falling back to bare-table DELETE — \
-                     the purge will likely fail with the same root cause."
+                    error = %introspect_err,
+                    d_letter = "37.x.j.11",
+                    "purge introspection failed; rolling back the \
+                     transaction and returning the primary error \
+                     directly."
                 );
-                (None, &no_types)
+                let _ = tx.rollback().await;
+                return Err(introspect_err);
             }
         };
-        let (sql, params) =
-            build_delete_sql(table, schema, where_expr, bindings, column_types)?;
+        let (sql, params) = build_delete_sql(
+            table,
+            Some(resolved.schema.as_str()),
+            where_expr,
+            bindings,
+            &resolved.column_types,
+        )?;
         // §Fase 38.x.a (D1) — mandatory inside the `pool.begin()` tx.
         let mut q = sqlx::query(&sql).persistent(false);
         for value in &params {
@@ -1822,9 +1838,7 @@ impl PostgresStoreBackend {
         tx.commit().await.map_err(|e| StoreError::Connect {
             source: e.to_string(),
         })?;
-        if let Ok(r) = resolved {
-            self.cache_schema(table, r);
-        }
+        self.cache_schema(table, resolved);
         Ok(result.rows_affected())
     }
 

@@ -258,6 +258,52 @@ fn validate_value(
     table: &HashMap<String, TypeSchema>,
     body_type: &str,
 ) -> Result<(), BodyValidationError> {
+    // §0 — §Fase 38.x.f.9 (POST-CLOSE HOTFIX 2026-05-21) — generic-
+    // aware parsing. When the caller passes the raw type string with
+    // an embedded generic param (e.g. `"List<TenantRecord>"` from
+    // `validate_body` or from `validate_struct`'s field-type recursion)
+    // AND `generic_param` is empty, strip the `<Inner>` and recurse
+    // with the head + inner as separate args. This closes the
+    // T9XX-to-D5 dead-end the 38.x.f cardinality cycle left open: the
+    // compile-time gate suggests `output: List<T>` as remedy, the
+    // adopter applies it, and the runtime D5 then recognized `"List"`
+    // + generic param `"T"` properly (§3 below) — pre-hotfix the
+    // unsplit `"List<T>"` string fell through to §5 unknown_type.
+    //
+    // Recursive — handles nested `List<List<T>>` because the inner
+    // recursion lands here again with `type_name = "List<T>"` and
+    // strips ANOTHER layer.
+    //
+    // Closed grammar today: `List<Inner>` + `Stream<Inner>`. Other
+    // future generics (Map<K,V>, Optional<T>, etc.) extend this §0
+    // additively without touching §1–§5.
+    if generic_param.is_empty() {
+        if let Some(rest) = type_name.strip_prefix("List<") {
+            if let Some(inner) = rest.strip_suffix('>') {
+                return validate_value(
+                    v,
+                    "List",
+                    inner.trim(),
+                    field_path,
+                    table,
+                    body_type,
+                );
+            }
+        }
+        if let Some(rest) = type_name.strip_prefix("Stream<") {
+            if rest.ends_with('>') {
+                // §Fase 38.x.f.9 — `Stream<T>` body validation is
+                // structurally unreachable from the production path
+                // (SSE responses route through the streaming wire
+                // which validates chunks, not the full body). When
+                // we DO observe it at the body validator layer
+                // (defensive), return Ok early — the runtime SSE
+                // path is the canonical validation surface for
+                // temporal cardinality.
+                return Ok(());
+            }
+        }
+    }
     // §1 — primitives
     if BUILTIN_PRIMITIVES.contains(&type_name) {
         return validate_primitive(v, type_name, field_path, body_type);
@@ -768,5 +814,94 @@ mod tests {
     fn json_tag_distinguishes_integer_and_number() {
         assert_eq!(json_tag(&serde_json::json!(42)), "integer");
         assert_eq!(json_tag(&serde_json::json!(3.14)), "number");
+    }
+
+    // ── §Fase 38.x.f.9 — generic-aware §0 preamble tests ────────────
+
+    #[test]
+    fn fase38xf9_validate_body_accepts_list_of_primitive() {
+        // §Fase 38.x.f.9 — pre-hotfix the T9XX hint suggested
+        // `output: List<String>` but `validate_body` rejected it as
+        // unknown_type. Post-hotfix: §0 preamble strips the generic
+        // and dispatches to §3 (`validate_list`) properly.
+        let table: HashMap<String, TypeSchema> = HashMap::new();
+        let body = serde_json::json!(["alice", "bob"]);
+        let r = validate_body(&body, "List<String>", &table);
+        assert!(
+            r.is_ok(),
+            "List<String> over a String array must validate. Got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn fase38xf9_validate_body_accepts_list_of_struct() {
+        let mut table: HashMap<String, TypeSchema> = HashMap::new();
+        table.insert("Person".to_string(), person_schema());
+        let body = serde_json::json!([{"name": "alice", "age": 30}, {"name": "bob", "age": 25}]);
+        let r = validate_body(&body, "List<Person>", &table);
+        assert!(
+            r.is_ok(),
+            "List<Person> over a Person array must validate. Got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn fase38xf9_validate_body_rejects_list_of_unknown_inner() {
+        // Inner type unknown → unknown_type error from §5 with the
+        // inner type name, NOT a generic-string failure.
+        let table: HashMap<String, TypeSchema> = HashMap::new();
+        let body = serde_json::json!([{}]);
+        let r = validate_body(&body, "List<UnknownType>", &table);
+        assert!(r.is_err(), "List<UnknownType> must surface the inner-type miss.");
+        let err = r.unwrap_err();
+        assert!(
+            err.hint.contains("UnknownType"),
+            "diagnostic must name the inner type (`UnknownType`), not the outer `List<...>` shape. \
+             Got hint: {}",
+            err.hint
+        );
+    }
+
+    #[test]
+    fn fase38xf9_validate_body_rejects_list_against_non_array() {
+        // §3 (validate_list) handles the non-array case; we test the
+        // wiring catches it via the §0 preamble.
+        let table: HashMap<String, TypeSchema> = HashMap::new();
+        let body = serde_json::json!({"not": "an array"});
+        let r = validate_body(&body, "List<String>", &table);
+        assert!(r.is_err(), "object against List<String> must error.");
+        let err = r.unwrap_err();
+        assert_eq!(err.got, "object");
+        assert!(err.expected.contains("List"));
+    }
+
+    #[test]
+    fn fase38xf9_validate_body_accepts_nested_list_of_list() {
+        // Recursive — §0 strips outer, recurses with type_name="List",
+        // generic_param="List<String>". §3's validate_list iterates
+        // the outer array's elements; per-element validate_value lands
+        // back in §0 which strips the inner.
+        let table: HashMap<String, TypeSchema> = HashMap::new();
+        let body = serde_json::json!([["a", "b"], ["c"]]);
+        let r = validate_body(&body, "List<List<String>>", &table);
+        assert!(
+            r.is_ok(),
+            "Nested List<List<String>> over an array-of-arrays must validate. Got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn fase38xf9_validate_body_stream_returns_ok_early() {
+        // §Fase 38.x.f.9 — Stream<T> body validation is structurally
+        // unreachable (SSE chunks are validated at the wire layer, not
+        // the body layer). Defensive Ok early.
+        let table: HashMap<String, TypeSchema> = HashMap::new();
+        let body = serde_json::json!({"anything": "goes"});
+        let r = validate_body(&body, "Stream<Token>", &table);
+        assert!(
+            r.is_ok(),
+            "Stream<T> at the body validator layer must be a defensive Ok. \
+             Got: {r:?}"
+        );
     }
 }
