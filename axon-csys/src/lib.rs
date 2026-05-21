@@ -28,8 +28,15 @@ pub mod audio;
 pub mod buffer;
 pub mod crypto;
 pub mod effects;
+pub mod envelope;
 pub mod probe;
 pub mod tokens;
+
+// §Fase 39.c.x — re-export the epistemic envelope public surface.
+pub use envelope::{
+    clamp_ceiling, theorem_5_1_ceiling_from_c, validate_degradation,
+    EpistemicEnvelope, EpistemicEnvelopeCRepr, EpistemicKind, THEOREM_5_1_CEILING,
+};
 
 pub use audio::{
     mulaw_decode, mulaw_encode, resample_linear_pcm16, resample_linear_pcm16_output_len,

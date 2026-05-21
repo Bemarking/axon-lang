@@ -1987,29 +1987,48 @@ pub struct ExecuteRequest {
     /// Empty for callers without a query string.
     #[serde(default)]
     pub request_query: HashMap<String, String>,
+    /// §Fase 39.b — the declared output type from the originating
+    /// axonendpoint, propagated through `execute_handler` so the
+    /// FlowEnvelope's `ontological_type` slot reflects the endpoint
+    /// contract. Empty for legacy `/v1/execute` calls without a
+    /// declaring endpoint — the wrapper defaults to `"Any"`.
+    /// The dynamic-route dispatcher
+    /// [`dispatch_dynamic_endpoint`] sets this from
+    /// `route.output_type` so the wire-shape inner-T matches the
+    /// adopter declaration verbatim.
+    #[serde(default)]
+    pub declared_output_type: String,
 }
 
 fn default_execute_backend() -> String {
     "stub".to_string()
 }
 
-/// Server-side execution result (internal).
+/// Server-side execution result.
+///
+/// §Fase 39.b — promoted from `struct` to `pub struct` (and all fields
+/// to `pub`) so the new `crate::wire_envelope::FlowEnvelope` module
+/// can consume it as the converter input. Pre-39.b this type was
+/// internal to `axon_server`; v2.0.0 elevates it to a crate-public
+/// shape because it is the canonical input of the wire envelope
+/// builder. It is intentionally NOT part of the JSON wire (the
+/// FlowEnvelope is); it remains a runtime-internal aggregation step.
 #[derive(Debug, Clone, Serialize)]
-struct ServerExecutionResult {
-    success: bool,
-    flow_name: String,
-    source_file: String,
-    backend: String,
-    steps_executed: usize,
-    latency_ms: u64,
-    tokens_input: u64,
-    tokens_output: u64,
-    anchor_checks: usize,
-    anchor_breaches: usize,
-    errors: usize,
-    step_names: Vec<String>,
-    step_results: Vec<String>,
-    trace_id: u64,
+pub struct ServerExecutionResult {
+    pub success: bool,
+    pub flow_name: String,
+    pub source_file: String,
+    pub backend: String,
+    pub steps_executed: usize,
+    pub latency_ms: u64,
+    pub tokens_input: u64,
+    pub tokens_output: u64,
+    pub anchor_checks: usize,
+    pub anchor_breaches: usize,
+    pub errors: usize,
+    pub step_names: Vec<String>,
+    pub step_results: Vec<String>,
+    pub trace_id: u64,
     /// §Fase 33.e — Per-step stream-effect policies declared in the
     /// source. Each entry is `(step_name, policy_slug)` where slug is
     /// one of the closed catalog `{drop_oldest, degrade_quality,
@@ -2018,7 +2037,7 @@ struct ServerExecutionResult {
     /// `axon.complete` wire envelope so adopters can observe the
     /// policy is bound to runtime.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    effect_policies: Vec<(String, String)>,
+    pub effect_policies: Vec<(String, String)>,
 
     /// §Fase 33.x.d — Per-step `EnforcementSummary` from the
     /// `StreamPolicyEnforcer` runs. Empty in two cases:
@@ -2033,7 +2052,7 @@ struct ServerExecutionResult {
     /// production (a `drop_oldest` policy that never fires under
     /// sustained load is a configuration smell).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    enforcement_summaries: Vec<(String, EnforcementSummaryWire)>,
+    pub enforcement_summaries: Vec<(String, EnforcementSummaryWire)>,
 
     /// §Fase 33.x.g — Closed-catalog runtime warnings. Populated
     /// only when `server_execute_streaming` falls back to the
@@ -2043,7 +2062,23 @@ struct ServerExecutionResult {
     /// (async-streaming-active) path = D4 byte-compat preserved
     /// (wire field elided when empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    runtime_warnings: Vec<crate::runtime_warnings::RuntimeWarning>,
+    pub runtime_warnings: Vec<crate::runtime_warnings::RuntimeWarning>,
+
+    /// §Fase 39.c.y — semantic provenance events from the runtime
+    /// walk (`retrieve:<store>`, `shield:<name>`, `mutate:<store>`,
+    /// etc.). Merged into the `FlowEnvelope.provenance_chain` by
+    /// the converter. Empty for flows with no taxonomy-participating
+    /// steps.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provenance_events: Vec<String>,
+
+    /// §Fase 39.c.z — surfaced blame attribution when the flow
+    /// proceeded on degraded posture (anchor breach / shield
+    /// rejection / store breach / backend soft-fail / type mismatch).
+    /// `None` on clean happy path; the converter writes this slot
+    /// into the wire envelope's `blame_attribution` field verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blame_attribution: Option<crate::wire_envelope::BlameContext>,
 }
 
 /// §Fase 33.x.d — Wire-serializable mirror of
@@ -2168,6 +2203,9 @@ fn server_execute(
         effect_policies: Vec::new(), // populated by server_execute_streaming
         enforcement_summaries: Vec::new(), // populated by 33.x.d async path
         runtime_warnings: Vec::new(), // populated by 33.x.g when LEGACY path chosen
+        // §Fase 39.c.y + 39.c.z — propagate from runtime walk.
+        provenance_events: run_res.provenance_events,
+        blame_attribution: run_res.blame_attribution,
     })
 }
 
@@ -2317,7 +2355,31 @@ async fn execute_handler(
                 "server",
             );
 
-            Ok(Json(serde_json::to_value(&exec_result).unwrap_or_default()))
+            // §Fase 39.b — wrap the legacy ServerExecutionResult into
+            // the canonical FlowEnvelope wire shape (ψ-vector
+            // serialization). Per D2 the wire IS the FlowEnvelope;
+            // the .seal() invariant structurally enforces Theorem 5.1
+            // + audit_chain_hash before serialization.
+            //
+            // The ontological_type slot reflects the endpoint
+            // declaration when the call came through a dynamic-route
+            // dispatcher (which sets `payload.declared_output_type`);
+            // legacy `/v1/execute` calls without an originating
+            // endpoint default to `"Any"` (singular catch-all).
+            // `extract_inner_ontological_type` unwraps an outer
+            // `FlowEnvelope<T>` declaration so the wire's
+            // `ontological_type` is the inner T (the adopter's data
+            // type, not the envelope wrapper).
+            let ontological_type =
+                crate::wire_envelope::extract_inner_ontological_type(
+                    &payload.declared_output_type,
+                );
+            let envelope = crate::wire_envelope::FlowEnvelope::from_execution_result(
+                exec_result,
+                ontological_type,
+            )
+            .seal();
+            Ok(Json(serde_json::to_value(&envelope).unwrap_or_default()))
         }
         Err(e) => {
             // Record failed trace
@@ -21171,6 +21233,12 @@ async fn dynamic_endpoint_handler(
                 // §Fase 37.y (D3) — path + query travel alongside body.
                 request_path: path_captures.clone(),
                 request_query: request_query.clone(),
+                // §Fase 39.b — propagate the route's declared output
+                // type so the FlowEnvelope's `ontological_type` slot
+                // carries the endpoint contract verbatim. The handler
+                // unwraps an outer `FlowEnvelope<T>` declaration so
+                // the wire's slot is the inner T.
+                declared_output_type: route.output_type.clone(),
             };
             let mut resp = execute_handler(State(state.clone()), headers.clone(), Json(exec_req))
                 .await
@@ -21433,12 +21501,41 @@ async fn apply_output_validation_gate(
         let s = state.lock().unwrap();
         s.dynamic_types.clone()
     };
+    // §Fase 39.d — D5 runtime simplification. Pre-39.d the gate
+    // manually extracted the inner-T from `FlowEnvelope<T>` and
+    // pulled the `result` slot out of `parsed`. Post-39.d
+    // `validate_body` is the SINGLE canonical entry that knows
+    // about wire shapes: pass the raw declared type, and the
+    // validator handles FlowEnvelope unwrap + nested generic
+    // parsing + primitive/struct dispatch internally. The D5 gate
+    // shrinks to one call.
+    //
+    // Pre-39.e legacy bare declarations (where the adopter
+    // declared `output: T` without the `FlowEnvelope<>` wrapper)
+    // still need a transitional skip — the wire IS FlowEnvelope
+    // but the validator was asked to check against a bare-T which
+    // doesn't match the envelope's outer object shape. 39.e closes
+    // this path by making bare declarations compile errors.
+    let declares_envelope =
+        route.output_type.trim().starts_with("FlowEnvelope<");
+    if !declares_envelope {
+        return axum::response::Response::from_parts(
+            parts,
+            axum::body::Body::from(body_bytes),
+        );
+    }
     match crate::route_schema::validate_body(&parsed, &route.output_type, &type_table) {
-        Ok(()) => {
-            // Validation passed — rebuild the response with the original body.
-            axum::response::Response::from_parts(parts, axum::body::Body::from(body_bytes))
-        }
-        Err(verr) => internal_validation_500(&state, route, method_str, path_str, Some(verr)),
+        Ok(()) => axum::response::Response::from_parts(
+            parts,
+            axum::body::Body::from(body_bytes),
+        ),
+        Err(verr) => internal_validation_500(
+            &state,
+            route,
+            method_str,
+            path_str,
+            Some(verr),
+        ),
     }
 }
 

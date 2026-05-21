@@ -2516,7 +2516,21 @@ impl Parser {
 
         if self.check(TokenType::Lt) {
             self.advance();
-            generic_param = self.consume(TokenType::Identifier)?.value;
+            // §Fase 39.a — recursive: the generic param can itself be a
+            // nested type expression. `FlowEnvelope<List<TenantRecord>>`
+            // parses as outer=FlowEnvelope, inner=List<TenantRecord>.
+            // Pre-39.a the inner had to be a single Identifier; nested
+            // generics like the canonical FlowEnvelope<T> wrapper
+            // required this lift. Backwards-compat preserved for
+            // single-level generics like `Stream<Token>` and
+            // `List<T>` — the recursion lands once and returns the
+            // same flat string the v1.x parser produced.
+            let inner = self.parse_type_expr()?;
+            generic_param = if inner.generic_param.is_empty() {
+                inner.name
+            } else {
+                format!("{}<{}>", inner.name, inner.generic_param)
+            };
             self.consume(TokenType::Gt)?;
         }
         if self.check(TokenType::Question) {

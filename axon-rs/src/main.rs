@@ -284,6 +284,58 @@ enum Commands {
         #[command(subcommand)]
         action: StoreCommands,
     },
+    /// §Fase 39.f — Multi-file diagnostic aggregator (mirror of
+    /// `axon.cli.parse_cmd` from Fase 28.f). Walks patterns / dirs,
+    /// parses every `.axon` file with recovery, and aggregates
+    /// diagnostics across the whole corpus in one pass.
+    Parse {
+        /// File path, directory (walked recursively), or literal
+        /// pattern (multiple allowed).
+        #[arg(required = true)]
+        patterns: Vec<String>,
+        /// Cap the total errors reported across all files (D6,
+        /// default unlimited). The CLI prints a truncation footer
+        /// when the cap kicks in.
+        #[arg(long, value_name = "N")]
+        max_errors: Option<usize>,
+        /// Ignore pattern (substring match — may repeat). Future
+        /// fases extend this to fnmatch glob shapes.
+        #[arg(long = "ignore", value_name = "PATTERN")]
+        ignore: Vec<String>,
+        /// Worker thread count (accepted for Python-parity; current
+        /// Rust impl runs single-threaded — honest scope).
+        #[arg(long, value_name = "N")]
+        jobs: Option<usize>,
+        /// Emit machine-readable JSON diagnostics (D5).
+        #[arg(long)]
+        json: bool,
+        /// JSON framing when --json is set: `array` (default) or
+        /// `ndjson` (one diagnostic per line, streaming).
+        #[arg(long, default_value = "array")]
+        format: String,
+        /// Opt into legacy fail-on-first behavior (D8). Equivalent
+        /// to `AXON_PARSER_STRICT=1` env var (OR semantics).
+        #[arg(long)]
+        strict: bool,
+        #[arg(long)]
+        no_color: bool,
+    },
+    /// §Fase 39.f — Round-trip formatter (mirror of
+    /// `axon.cli.fmt_cmd` from Fase 14.d). Token-level formatter
+    /// preserving comments verbatim; cosmetic normalisation only
+    /// (trailing whitespace + final newline).
+    Fmt {
+        file: String,
+        /// Exit non-zero if the file is not already formatted (CI
+        /// gate). Does not modify the file.
+        #[arg(long)]
+        check: bool,
+        /// Write the formatted output back to the file in place.
+        #[arg(long)]
+        write: bool,
+        #[arg(long)]
+        no_color: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -466,9 +518,114 @@ fn main() {
             audit_cli::run_evidence_package(&file, output.as_deref(), &note)
         }
         Commands::Store { action } => run_store_command(action),
+        Commands::Parse {
+            patterns,
+            max_errors,
+            ignore,
+            jobs,
+            json,
+            format,
+            strict,
+            no_color,
+        } => run_parse_command(
+            patterns, max_errors, ignore, jobs, json, format, strict, no_color,
+        ),
+        Commands::Fmt { file, check, write, no_color } => {
+            run_fmt_command(&file, check, write, no_color)
+        }
     };
 
     process::exit(exit_code);
+}
+
+/// §Fase 39.f — `axon parse` subcommand dispatcher. Delegates the
+/// taxonomy + walk to `axon::cli_parse` and emits the report in the
+/// requested format (human / JSON array / NDJSON).
+fn run_parse_command(
+    patterns: Vec<String>,
+    max_errors: Option<usize>,
+    ignore: Vec<String>,
+    jobs: Option<usize>,
+    json: bool,
+    format: String,
+    strict: bool,
+    no_color: bool,
+) -> i32 {
+    let config = axon::cli_parse::ParseConfig {
+        patterns,
+        max_errors,
+        ignore_patterns: ignore,
+        jobs,
+        json,
+        format,
+        strict,
+        no_color,
+    };
+    let (diagnostics, io_errors, truncated) = axon::cli_parse::run_parse(&config);
+    if config.json {
+        print!("{}", axon::cli_parse::render_json(&diagnostics, &config.format));
+    } else {
+        print!(
+            "{}",
+            axon::cli_parse::render_human(
+                &diagnostics,
+                &io_errors,
+                truncated,
+                config.no_color,
+            )
+        );
+    }
+    axon::cli_parse::exit_code(&diagnostics, &io_errors)
+}
+
+/// §Fase 39.f — `axon fmt` subcommand dispatcher. Reads the file,
+/// runs the token-level round-trip formatter, dispatches to
+/// stdout / --check / --write mode per the Fase 14.d MVP contract.
+fn run_fmt_command(file: &str, check: bool, write: bool, no_color: bool) -> i32 {
+    use std::fs;
+    use std::path::Path;
+    let _ = no_color; // ANSI styling is honest scope deferred — the
+                     // dispatcher itself doesn't colour today.
+    let path = Path::new(file);
+    if !path.exists() {
+        eprintln!("✗ File not found: {}", file);
+        return 2;
+    }
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("✗ Could not read {}: {}", file, e);
+            return 2;
+        }
+    };
+    let formatted = match axon::cli_fmt::format_source(&source) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("✗ Lexer error: {}", e);
+            return 2;
+        }
+    };
+    if check {
+        // CI gate: exit 1 if the file would be reformatted.
+        if formatted != source {
+            eprintln!(
+                "✗ {}: file is not formatted (run `axon fmt --write` to fix)",
+                file
+            );
+            return 1;
+        }
+        return 0;
+    }
+    if write {
+        if let Err(e) = fs::write(path, &formatted) {
+            eprintln!("✗ Could not write {}: {}", file, e);
+            return 2;
+        }
+        return 0;
+    }
+    // Default mode: emit to stdout.
+    print!("{}", formatted);
+    0
 }
 
 /// §Fase 38.h (D10) — `axon store …` subcommand dispatcher. Spins a

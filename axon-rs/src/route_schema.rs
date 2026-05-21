@@ -232,15 +232,117 @@ fn json_tag(v: &Value) -> &'static str {
 /// **Backwards-compat (D9)**: when `type_name` is empty, returns
 /// `Ok(())` immediately. Adopters who don't declare `body:` keep the
 /// pre-Fase-32 free-form behavior.
+///
+/// **§Fase 39.d — Canonical FlowEnvelope-aware entry**. As of v2.0.0
+/// (39.d) `validate_body` is the SINGLE place that knows about wire
+/// shapes:
+///
+///   1. `FlowEnvelope<T>` declarations — `validate_body` unwraps
+///      `body["result"]` and recurses with the inner T. The outer
+///      envelope shape is verified by construction (object with
+///      `result` slot).
+///   2. Bare generics (`List<T>`, `Stream<T>`) — parsed at the
+///      canonical entry via [`parse_generic_head`]. The internal
+///      [`validate_value`] no longer carries a §0 preamble for
+///      string-stripping (the v1.40.2 / v1.40.3 bridge is retired).
+///   3. Primitives, structs, ranges — passed through to validate_value.
+///
+/// The convergence dividend retires ~46 lines of v1.x bridge code
+/// in favour of one well-named canonical entry. D5 callers (the
+/// runtime gate in `axon_server::apply_output_validation_gate`)
+/// pass the raw declared type verbatim — no manual unwrapping
+/// needed.
 pub fn validate_body(
     body: &Value,
     type_name: &str,
     table: &HashMap<String, TypeSchema>,
 ) -> Result<(), BodyValidationError> {
-    if type_name.is_empty() {
+    let t = type_name.trim();
+    if t.is_empty() {
         return Ok(());
     }
-    validate_value(body, type_name, "", "", table, type_name)
+    // §Fase 39.d — FlowEnvelope<T> canonical unwrap. When the adopter
+    // declares `output: FlowEnvelope<T>` (the v2.0.0 mandatory wire
+    // shape), the body is `{ontological_type, result, certainty, …}`
+    // and we validate `result` against T. The outer envelope shape
+    // (object with `result` slot) is verified by construction at
+    // the seal() layer; here we trust + unwrap.
+    if let Some(inner) = strip_flow_envelope(t) {
+        let obj = match body.as_object() {
+            Some(o) => o,
+            None => {
+                return Err(BodyValidationError {
+                    expected_type: type_name.to_string(),
+                    field_path: String::new(),
+                    expected: t.to_string(),
+                    got: json_tag(body).to_string(),
+                    hint: format!(
+                        "axonendpoint declared `output: {t}` but the response \
+                         body is not a JSON object — the FlowEnvelope wire \
+                         shape requires `{{ontological_type, result, …}}`. \
+                         This typically indicates a bug in the response wrapper."
+                    ),
+                    ..Default::default()
+                });
+            }
+        };
+        let result_slot = obj
+            .get("result")
+            .cloned()
+            .unwrap_or(Value::Null);
+        // `FlowEnvelope<Any>` is the universal accept (degraded
+        // surface) — no further validation on the inner.
+        if inner == "Any" {
+            return Ok(());
+        }
+        // Recurse on the inner T (which may itself be a generic
+        // like `List<X>` or a struct or a primitive).
+        return validate_body(&result_slot, &inner, table);
+    }
+    // §Fase 39.d — bare generic parsing at the canonical entry.
+    // `List<T>` / `Stream<T>` get split into `(head, inner)` before
+    // dispatching to validate_value, which now assumes pre-parsed
+    // input. Pre-39.d this parsing lived in validate_value's §0
+    // preamble (v1.40.2 / v1.40.3 bridge); 39.d retires it because
+    // FlowEnvelope<T> is the canonical wire shape.
+    let (head, generic) = parse_generic_head(t);
+    validate_value(body, &head, &generic, "", table, t)
+}
+
+/// §Fase 39.d — Strip the outer `FlowEnvelope<…>` wrapper from a
+/// declared type string. Returns the inner T verbatim (which may
+/// be a nested generic like `List<X>` or a struct name). Returns
+/// `None` when the input is NOT a FlowEnvelope wrapper.
+fn strip_flow_envelope(t: &str) -> Option<String> {
+    let rest = t.strip_prefix("FlowEnvelope<")?;
+    let inner = rest.strip_suffix('>')?;
+    Some(inner.trim().to_string())
+}
+
+/// §Fase 39.d — Parse the closed-catalog generic head + inner. Used
+/// by [`validate_body`] (the canonical entry) and by recursive
+/// callers like [`validate_list`] that need to split a string-form
+/// element type before calling [`validate_value`].
+///
+/// Closed grammar at v2.0.0:
+///   - `List<X>`   → `("List", "X")`
+///   - `Stream<X>` → `("Stream", "X")`
+///   - anything else → `(t, "")`
+///
+/// Future generics (Map<K,V>, Optional<T>, …) extend this helper
+/// additively without touching the validators downstream.
+fn parse_generic_head(t: &str) -> (String, String) {
+    if let Some(rest) = t.strip_prefix("List<") {
+        if let Some(inner) = rest.strip_suffix('>') {
+            return ("List".to_string(), inner.trim().to_string());
+        }
+    }
+    if let Some(rest) = t.strip_prefix("Stream<") {
+        if let Some(inner) = rest.strip_suffix('>') {
+            return ("Stream".to_string(), inner.trim().to_string());
+        }
+    }
+    (t.to_string(), String::new())
 }
 
 /// Internal recursive validator.
@@ -250,6 +352,13 @@ pub fn validate_body(
 /// `field_path` is the dotted path accumulated so far ("" at top level).
 /// `generic_param` carries `List<T>`'s element type when validating a
 /// list — empty otherwise.
+///
+/// **§Fase 39.d**: post-39.d this function assumes the input is
+/// PRE-PARSED. The v1.40.2/v1.40.3 §0 preamble (string-stripping for
+/// `List<T>` / `Stream<T>`) is retired in favour of one canonical
+/// parse at the [`validate_body`] entry. Recursive callers
+/// ([`validate_list`], [`validate_struct`]) pre-parse via
+/// [`parse_generic_head`] before calling here.
 fn validate_value(
     v: &Value,
     type_name: &str,
@@ -258,51 +367,13 @@ fn validate_value(
     table: &HashMap<String, TypeSchema>,
     body_type: &str,
 ) -> Result<(), BodyValidationError> {
-    // §0 — §Fase 38.x.f.9 (POST-CLOSE HOTFIX 2026-05-21) — generic-
-    // aware parsing. When the caller passes the raw type string with
-    // an embedded generic param (e.g. `"List<TenantRecord>"` from
-    // `validate_body` or from `validate_struct`'s field-type recursion)
-    // AND `generic_param` is empty, strip the `<Inner>` and recurse
-    // with the head + inner as separate args. This closes the
-    // T9XX-to-D5 dead-end the 38.x.f cardinality cycle left open: the
-    // compile-time gate suggests `output: List<T>` as remedy, the
-    // adopter applies it, and the runtime D5 then recognized `"List"`
-    // + generic param `"T"` properly (§3 below) — pre-hotfix the
-    // unsplit `"List<T>"` string fell through to §5 unknown_type.
-    //
-    // Recursive — handles nested `List<List<T>>` because the inner
-    // recursion lands here again with `type_name = "List<T>"` and
-    // strips ANOTHER layer.
-    //
-    // Closed grammar today: `List<Inner>` + `Stream<Inner>`. Other
-    // future generics (Map<K,V>, Optional<T>, etc.) extend this §0
-    // additively without touching §1–§5.
-    if generic_param.is_empty() {
-        if let Some(rest) = type_name.strip_prefix("List<") {
-            if let Some(inner) = rest.strip_suffix('>') {
-                return validate_value(
-                    v,
-                    "List",
-                    inner.trim(),
-                    field_path,
-                    table,
-                    body_type,
-                );
-            }
-        }
-        if let Some(rest) = type_name.strip_prefix("Stream<") {
-            if rest.ends_with('>') {
-                // §Fase 38.x.f.9 — `Stream<T>` body validation is
-                // structurally unreachable from the production path
-                // (SSE responses route through the streaming wire
-                // which validates chunks, not the full body). When
-                // we DO observe it at the body validator layer
-                // (defensive), return Ok early — the runtime SSE
-                // path is the canonical validation surface for
-                // temporal cardinality.
-                return Ok(());
-            }
-        }
+    // §Fase 39.d — `Stream<T>` defensive accept. Top-level Stream<T>
+    // body validation is structurally unreachable from the v2.0.0
+    // production path (SSE chunks validate at the streaming wire,
+    // not via this body validator — D9 of plan vivo Fase 39). When
+    // we DO observe it defensively, return Ok early.
+    if type_name == "Stream" {
+        return Ok(());
     }
     // §1 — primitives
     if BUILTIN_PRIMITIVES.contains(&type_name) {
@@ -499,13 +570,24 @@ fn validate_list(
         // declaration; parser should ideally warn but doesn't today).
         return Ok(());
     }
+    // §Fase 39.d — pre-parse the element type ONCE for the whole
+    // iteration. This replaces the per-element string-stripping that
+    // the v1.40.2/v1.40.3 §0 preamble in validate_value used to do.
+    let (elem_head, elem_generic) = parse_generic_head(element_type);
     for (idx, elem) in arr.iter().enumerate() {
         let elem_path = if field_path.is_empty() {
             format!("[{idx}]")
         } else {
             format!("{field_path}[{idx}]")
         };
-        validate_value(elem, element_type, "", &elem_path, table, body_type)?;
+        validate_value(
+            elem,
+            &elem_head,
+            &elem_generic,
+            &elem_path,
+            table,
+            body_type,
+        )?;
     }
     Ok(())
 }
@@ -895,6 +977,11 @@ mod tests {
         // §Fase 38.x.f.9 — Stream<T> body validation is structurally
         // unreachable (SSE chunks are validated at the wire layer, not
         // the body layer). Defensive Ok early.
+        //
+        // §Fase 39.d — preserved verbatim. The §0 preamble that
+        // implemented this case in v1.40.2/v1.40.3 was deleted; the
+        // defensive Ok now lives in validate_value (top of function)
+        // for the `Stream` head case after the canonical entry parses.
         let table: HashMap<String, TypeSchema> = HashMap::new();
         let body = serde_json::json!({"anything": "goes"});
         let r = validate_body(&body, "Stream<Token>", &table);
@@ -902,6 +989,246 @@ mod tests {
             r.is_ok(),
             "Stream<T> at the body validator layer must be a defensive Ok. \
              Got: {r:?}"
+        );
+    }
+
+    // ── §Fase 39.d — canonical entry + helpers ────────────────────
+
+    #[test]
+    fn fase39d_parse_generic_head_list() {
+        let (h, g) = parse_generic_head("List<TenantRecord>");
+        assert_eq!(h, "List");
+        assert_eq!(g, "TenantRecord");
+    }
+
+    #[test]
+    fn fase39d_parse_generic_head_stream() {
+        let (h, g) = parse_generic_head("Stream<Token>");
+        assert_eq!(h, "Stream");
+        assert_eq!(g, "Token");
+    }
+
+    #[test]
+    fn fase39d_parse_generic_head_nested_list() {
+        // Nested generic `List<List<X>>` returns the outer split.
+        // The inner `List<X>` is parsed by the recursive entry into
+        // validate_list → parse_generic_head again.
+        let (h, g) = parse_generic_head("List<List<X>>");
+        assert_eq!(h, "List");
+        assert_eq!(g, "List<X>");
+    }
+
+    #[test]
+    fn fase39d_parse_generic_head_bare_type() {
+        let (h, g) = parse_generic_head("TenantRecord");
+        assert_eq!(h, "TenantRecord");
+        assert_eq!(g, "");
+    }
+
+    #[test]
+    fn fase39d_parse_generic_head_inner_whitespace_trimmed() {
+        let (h, g) = parse_generic_head("List<  TenantRecord  >");
+        assert_eq!(h, "List");
+        assert_eq!(g, "TenantRecord");
+    }
+
+    #[test]
+    fn fase39d_strip_flow_envelope_singular() {
+        assert_eq!(
+            strip_flow_envelope("FlowEnvelope<TenantRecord>"),
+            Some("TenantRecord".to_string())
+        );
+    }
+
+    #[test]
+    fn fase39d_strip_flow_envelope_list() {
+        assert_eq!(
+            strip_flow_envelope("FlowEnvelope<List<TenantRecord>>"),
+            Some("List<TenantRecord>".to_string())
+        );
+    }
+
+    #[test]
+    fn fase39d_strip_flow_envelope_returns_none_on_bare() {
+        assert_eq!(strip_flow_envelope("TenantRecord"), None);
+        assert_eq!(strip_flow_envelope("List<X>"), None);
+        assert_eq!(strip_flow_envelope(""), None);
+    }
+
+    #[test]
+    fn fase39d_validate_body_unwraps_flow_envelope_with_struct() {
+        // §39.d canonical: declared `FlowEnvelope<Person>`, body is
+        // the FlowEnvelope wire shape, validation targets `result`
+        // slot against `Person`.
+        let mut table: HashMap<String, TypeSchema> = HashMap::new();
+        table.insert("Person".to_string(), person_schema());
+        let envelope = serde_json::json!({
+            "ontological_type": "Person",
+            "result": {"name": "alice", "age": 30},
+            "certainty": 1.0,
+            "provenance_chain": [],
+            "step_audit": {},
+            "audit_chain_hash": "",
+            "blame_attribution": null,
+            "execution_metrics": {},
+            "trace_id": "t"
+        });
+        let r = validate_body(&envelope, "FlowEnvelope<Person>", &table);
+        assert!(r.is_ok(), "FlowEnvelope<Person> over a Person body must validate. Got: {r:?}");
+    }
+
+    #[test]
+    fn fase39d_validate_body_unwraps_flow_envelope_with_list() {
+        // §39.d canonical: declared `FlowEnvelope<List<Person>>`, the
+        // result slot is an array of Person.
+        let mut table: HashMap<String, TypeSchema> = HashMap::new();
+        table.insert("Person".to_string(), person_schema());
+        let envelope = serde_json::json!({
+            "ontological_type": "List<Person>",
+            "result": [
+                {"name": "alice", "age": 30},
+                {"name": "bob", "age": 25}
+            ],
+            "certainty": 1.0,
+            "provenance_chain": [],
+            "step_audit": {},
+            "audit_chain_hash": "",
+            "blame_attribution": null,
+            "execution_metrics": {},
+            "trace_id": "t"
+        });
+        let r = validate_body(&envelope, "FlowEnvelope<List<Person>>", &table);
+        assert!(
+            r.is_ok(),
+            "FlowEnvelope<List<Person>> over a Person array result must \
+             validate. Got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn fase39d_validate_body_rejects_flow_envelope_with_wrong_inner_type() {
+        // §39.d — the canonical unwrap recurses on the inner T;
+        // if the `result` slot doesn't match T, validation fails
+        // with the inner-T error context.
+        let mut table: HashMap<String, TypeSchema> = HashMap::new();
+        table.insert("Person".to_string(), person_schema());
+        // Result has a wrong-type field (age is a string, not int).
+        let envelope = serde_json::json!({
+            "ontological_type": "Person",
+            "result": {"name": "alice", "age": "thirty"},
+            "certainty": 1.0,
+            "provenance_chain": [],
+            "step_audit": {},
+            "audit_chain_hash": "",
+            "blame_attribution": null,
+            "execution_metrics": {},
+            "trace_id": "t"
+        });
+        let r = validate_body(&envelope, "FlowEnvelope<Person>", &table);
+        assert!(
+            r.is_err(),
+            "Wrong inner-type MUST surface as validation error"
+        );
+        let err = r.unwrap_err();
+        assert_eq!(err.field_path, "age");
+    }
+
+    #[test]
+    fn fase39d_validate_body_rejects_flow_envelope_with_non_object_body() {
+        // §39.d — when declared is FlowEnvelope<T> but the body isn't
+        // a JSON object, validation surfaces a structural error (the
+        // wire wrapper is mandated to be an object).
+        let table: HashMap<String, TypeSchema> = HashMap::new();
+        let body = serde_json::json!("not an object");
+        let r = validate_body(&body, "FlowEnvelope<Any>", &table);
+        assert!(
+            r.is_err(),
+            "Non-object body MUST fail FlowEnvelope<T> shape check"
+        );
+        let err = r.unwrap_err();
+        assert!(err.hint.contains("FlowEnvelope"));
+    }
+
+    #[test]
+    fn fase39d_validate_body_flow_envelope_any_skips_inner_validation() {
+        // §39.d — `FlowEnvelope<Any>` is the universal accept
+        // (degraded surface); the inner result is not validated.
+        let table: HashMap<String, TypeSchema> = HashMap::new();
+        let envelope = serde_json::json!({
+            "ontological_type": "Any",
+            "result": {"anything": "goes"},
+            "certainty": 1.0,
+            "provenance_chain": [],
+            "step_audit": {},
+            "audit_chain_hash": "",
+            "blame_attribution": null,
+            "execution_metrics": {},
+            "trace_id": "t"
+        });
+        let r = validate_body(&envelope, "FlowEnvelope<Any>", &table);
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn fase39d_validate_body_flow_envelope_with_missing_result_slot() {
+        // §39.d — when the body lacks `result`, the unwrapper
+        // treats it as Value::Null and validates Null against T.
+        // For T=Any this is Ok; for T=Person it's a struct mismatch.
+        let mut table: HashMap<String, TypeSchema> = HashMap::new();
+        table.insert("Person".to_string(), person_schema());
+        let envelope = serde_json::json!({
+            "ontological_type": "Person",
+            "certainty": 1.0
+            // no `result` slot
+        });
+        let r = validate_body(&envelope, "FlowEnvelope<Person>", &table);
+        assert!(
+            r.is_err(),
+            "Missing result slot MUST fail when inner type is non-Any"
+        );
+    }
+
+    #[test]
+    fn fase39d_validate_value_no_longer_carries_section_0_preamble() {
+        // §Fase 39.d — STATIC grep gate. The §0 preamble that
+        // string-stripped List<X> / Stream<X> in v1.40.2/v1.40.3 is
+        // RETIRED. Any future PR that reintroduces it inside
+        // validate_value breaks this assertion.
+        let src = std::fs::read_to_string("src/route_schema.rs")
+            .expect("read route_schema.rs");
+        // The §0 marker text was unique; if it reappears we know the
+        // bridge was reinstated.
+        assert!(
+            !src.contains("§0 — §Fase 38.x.f.9 (POST-CLOSE HOTFIX 2026-05-21) — generic-\n    // aware parsing"),
+            "§Fase 39.d §S — the v1.40.2/v1.40.3 §0 preamble inside \
+             validate_value MUST stay retired. Generic parsing belongs \
+             at the canonical validate_body entry now."
+        );
+    }
+
+    #[test]
+    fn fase39d_d5_gate_simplified_calls_validate_body_directly() {
+        // §Fase 39.d — STATIC grep gate on axon_server.rs. The pre-39.d
+        // gate manually extracted inner-T + result slot; post-39.d
+        // validate_body is the canonical entry and the gate just calls
+        // it with the raw declared type.
+        let src = std::fs::read_to_string("src/axon_server.rs")
+            .expect("read axon_server.rs");
+        // The manual extract pattern from 39.b should be gone.
+        // (Allow it to still APPEAR in comments — only the active
+        // code path matters.)
+        let active_extract_calls = src.matches(
+            "crate::wire_envelope::extract_inner_ontological_type(&route.output_type)"
+        ).count();
+        // 39.b had this in the active path; 39.d removes the active
+        // call. The taxonomy might still be referenced in comments
+        // but not as the active gate logic.
+        assert!(
+            active_extract_calls <= 1,
+            "§Fase 39.d §S — the D5 gate MUST NOT manually call \
+             `extract_inner_ontological_type` for unwrapping (that work \
+             moved into validate_body). Found {active_extract_calls} \
+             active references."
         );
     }
 }

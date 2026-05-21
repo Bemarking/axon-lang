@@ -201,6 +201,16 @@ fn main() {
     //       cases as defensive error codes for the unlikely path
     //       where the compiler missed them.
     build.file(c_src.join("effects").join("dispatch.c"));
+    // §Fase 39.c.x: Epistemic Envelope kernel — Theorem 5.1
+    //       enforcement in silicon for the FlowEnvelope wire
+    //       payload (`transport: json`). Pure + total +
+    //       deterministic; no allocation. Three functions:
+    //         - validate_degradation: ceiling clamp on derived
+    //         - theorem_5_1_ceiling:  constant exported for drift
+    //         - clamp_ceiling:        belt-and-suspenders unconditional
+    //       Called from axon-csys::envelope (Rust shim) which is
+    //       in turn called from axon-rs::wire_envelope::FlowEnvelope::seal.
+    build.file(c_src.join("effects").join("envelope.c"));
     // 25.g: BPE merge engine with #embed-baked merges tables for
     //       cl100k_base + o200k_base + SIMD UTF-8 codepoint counter.
     //       The C kernel handles byte-level BPE only — pretokenisation
