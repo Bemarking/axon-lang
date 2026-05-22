@@ -70,9 +70,12 @@ use crate::ir_nodes::{
 // ────────────────────────────────────────────────────────────────────
 
 /// Apply a named shield to `target`. OSS default: identity
-/// passthrough. Enterprise overrides (axon_enterprise.shield) hook
-/// in via the future `DispatchCtx::shield_apply` field to route
-/// through a registered scanner pipeline (HIPAA / legal / fintech).
+/// passthrough. This helper is the **no-scanner fallback**: as of
+/// §Fase 40.b, [`run_shield_apply`] first consults
+/// [`crate::shield_registry`]; this function only runs when no scanner
+/// is registered for the shield name. Enterprise vertical crates
+/// register HIPAA / legal / fintech scanners via
+/// [`crate::shield_registry::register_shield_scanner`].
 ///
 /// # Streaming semantics
 ///
@@ -186,7 +189,29 @@ pub async fn run_shield_apply(
         .get(&node.target)
         .cloned()
         .unwrap_or_else(|| node.target.clone());
-    let shielded = apply_shield_to_target(&node.shield_name, &resolved_target, ctx);
+
+    // §Fase 40.b — consult the shield-scanner registry. A registered
+    // scanner (enterprise HIPAA/legal/AML, etc.) returns a verdict:
+    // `Pass` binds the (possibly redacted) content; `Reject` surfaces a
+    // structured `DispatchError::BackendError` so the SSE/HTTP layer can
+    // attribute blame. When NO scanner is registered for this name, the
+    // OSS identity passthrough applies (backwards-compatible — adopters
+    // with no enterprise layer see their data unmodified).
+    let shielded = match crate::shield_registry::lookup_shield_scanner(&node.shield_name) {
+        Some(scanner) => {
+            let scan_ctx = crate::shield_registry::ShieldScanContext::new(node.shield_name.clone());
+            match scanner.scan(&resolved_target, &scan_ctx) {
+                crate::shield_registry::ShieldVerdict::Pass(content) => content,
+                crate::shield_registry::ShieldVerdict::Reject { code, reason } => {
+                    return Err(DispatchError::BackendError {
+                        name: format!("shield:{}", node.shield_name),
+                        message: format!("[{code}] {reason}"),
+                    });
+                }
+            }
+        }
+        None => apply_shield_to_target(&node.shield_name, &resolved_target, ctx),
+    };
 
     let output_key = if !node.output_type.is_empty() {
         node.output_type.clone()
@@ -597,6 +622,107 @@ mod tests {
         };
         run_shield_apply(&node, &mut ctx).await.unwrap();
         assert_eq!(ctx.let_bindings.get("doc_shielded").unwrap(), "content");
+    }
+
+    // ── ShieldApply × §Fase 40.b registry hook ───────────────────────
+    // Unique shield names + cleanup so these don't collide with the
+    // "hipaa" identity tests above under parallel execution.
+
+    struct RedactScanner;
+    impl crate::shield_registry::ShieldScanner for RedactScanner {
+        fn scan(
+            &self,
+            _target: &str,
+            _ctx: &crate::shield_registry::ShieldScanContext,
+        ) -> crate::shield_registry::ShieldVerdict {
+            crate::shield_registry::ShieldVerdict::pass("[REDACTED]")
+        }
+    }
+
+    struct BlockScanner;
+    impl crate::shield_registry::ShieldScanner for BlockScanner {
+        fn scan(
+            &self,
+            _target: &str,
+            _ctx: &crate::shield_registry::ShieldScanContext,
+        ) -> crate::shield_registry::ShieldVerdict {
+            crate::shield_registry::ShieldVerdict::reject("phi.unredacted", "PHI present")
+        }
+    }
+
+    #[tokio::test]
+    async fn run_shield_apply_routes_through_registered_scanner() {
+        const NAME: &str = "t40b_redact";
+        crate::shield_registry::register_shield_scanner(NAME, std::sync::Arc::new(RedactScanner));
+
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert("note".into(), "SSN 123-45-6789".into());
+        let node = IRShieldApplyStep {
+            node_type: "shield_apply",
+            source_line: 0,
+            source_column: 0,
+            shield_name: NAME.into(),
+            target: "note".into(),
+            output_type: "scrubbed".into(),
+        };
+        let outcome = run_shield_apply(&node, &mut ctx).await.unwrap();
+        match outcome {
+            NodeOutcome::Completed { output, .. } => assert_eq!(output, "[REDACTED]"),
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        assert_eq!(ctx.let_bindings.get("scrubbed").unwrap(), "[REDACTED]");
+
+        crate::shield_registry::unregister_shield_scanner(NAME);
+    }
+
+    #[tokio::test]
+    async fn run_shield_apply_rejecting_scanner_surfaces_backend_error() {
+        const NAME: &str = "t40b_block";
+        crate::shield_registry::register_shield_scanner(NAME, std::sync::Arc::new(BlockScanner));
+
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert("note".into(), "raw phi".into());
+        let node = IRShieldApplyStep {
+            node_type: "shield_apply",
+            source_line: 0,
+            source_column: 0,
+            shield_name: NAME.into(),
+            target: "note".into(),
+            output_type: "scrubbed".into(),
+        };
+        let err = run_shield_apply(&node, &mut ctx).await.unwrap_err();
+        match err {
+            DispatchError::BackendError { name, message } => {
+                assert_eq!(name, format!("shield:{NAME}"));
+                assert!(message.contains("phi.unredacted"), "blame code in message");
+                assert!(message.contains("PHI present"), "reason in message");
+            }
+            other => panic!("expected BackendError, got {other:?}"),
+        }
+        // A rejected shield must NOT bind output.
+        assert!(ctx.let_bindings.get("scrubbed").is_none());
+
+        crate::shield_registry::unregister_shield_scanner(NAME);
+    }
+
+    #[tokio::test]
+    async fn run_shield_apply_unregistered_name_is_identity() {
+        // No scanner registered under this unique name → OSS identity.
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert("doc".into(), "untouched".into());
+        let node = IRShieldApplyStep {
+            node_type: "shield_apply",
+            source_line: 0,
+            source_column: 0,
+            shield_name: "t40b_never_registered".into(),
+            target: "doc".into(),
+            output_type: "out".into(),
+        };
+        let outcome = run_shield_apply(&node, &mut ctx).await.unwrap();
+        match outcome {
+            NodeOutcome::Completed { output, .. } => assert_eq!(output, "untouched"),
+            other => panic!("expected Completed, got {other:?}"),
+        }
     }
 
     // ── OtsApply ─────────────────────────────────────────────────────
