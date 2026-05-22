@@ -351,7 +351,8 @@ pub struct IREnsemble {
 
 // ── §λ-L-E Fase 4 — IRSession / IRTopology ──────────────────────────────────
 
-/// One operation in a compiled session protocol (send / receive / loop / end).
+/// One operation in a compiled session protocol
+/// (send / receive / loop / end / select / branch — §Fase 41.b adds the choices).
 #[derive(Debug, Clone, Serialize)]
 pub struct IRSessionStep {
     pub node_type: &'static str,
@@ -359,6 +360,17 @@ pub struct IRSessionStep {
     pub source_column: u32,
     pub op: String,
     pub message_type: String,
+    /// §Fase 41.b — labelled branches (only for `op == "select" | "branch"`).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub branches: Vec<IRSessionBranch>,
+}
+
+/// §Fase 41.b — one labelled arm of a compiled `select`/`branch` choice.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRSessionBranch {
+    pub node_type: &'static str,
+    pub label: String,
+    pub steps: Vec<IRSessionStep>,
 }
 
 /// A role's name and its ordered protocol steps.
