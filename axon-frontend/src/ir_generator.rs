@@ -191,6 +191,7 @@ impl IRGenerator {
             Declaration::Ensemble(n) => ir.ensembles.push(self.visit_ensemble(n)),
             Declaration::Session(n) => ir.sessions.push(self.visit_session(n)),
             Declaration::Topology(n) => ir.topologies.push(self.visit_topology(n)),
+            Declaration::Socket(n) => ir.sockets.push(self.visit_socket(n)),
             Declaration::Immune(n) => ir.immunes.push(self.visit_immune(n)),
             Declaration::Reflex(n) => ir.reflexes.push(self.visit_reflex(n)),
             Declaration::Heal(n) => ir.heals.push(self.visit_heal(n)),
@@ -1423,6 +1424,21 @@ impl IRGenerator {
             lifetime: n.lifetime.clone(),
             persistence: n.persistence.clone(),
             shield_ref: n.shield_ref.clone(),
+        }
+    }
+
+    /// §Fase 41.b — compile a `socket` to its IR (the typed-WS transport
+    /// binding; axon-rs realises the endpoint from this).
+    fn visit_socket(&self, n: &SocketDefinition) -> IRSocket {
+        IRSocket {
+            node_type: "socket",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            protocol: n.protocol.clone(),
+            backpressure_credit: n.backpressure_credit,
+            reconnect: n.reconnect,
+            legal_basis: n.legal_basis.clone(),
         }
     }
 }

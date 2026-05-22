@@ -210,6 +210,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Socket(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Generic(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -1643,6 +1647,12 @@ impl Parser {
         Ok(tok)
     }
 
+    /// §Fase 41.b — build a `ParseError` at the current token's location.
+    fn error(&self, message: &str) -> ParseError {
+        let tok = self.current();
+        ParseError { message: message.to_string(), line: tok.line, column: tok.column, ..Default::default() }
+    }
+
     /// Consume any identifier or keyword-used-as-value.
     fn consume_any_ident_or_kw(&mut self) -> Result<Token, ParseError> {
         let tok = self.current().clone();
@@ -1970,6 +1980,9 @@ impl Parser {
             // ── §λ-L-E Fase 4 — Topology + π-calculus sessions ─
             TokenType::Session => self.parse_session_definition().map(Declaration::Session),
             TokenType::Topology => self.parse_topology().map(Declaration::Topology),
+
+            // ── §Fase 41.b — typed WebSocket transport ─────────
+            TokenType::Socket => self.parse_socket().map(Declaration::Socket),
 
             // ── §λ-L-E Fase 5 — Cognitive immune system ─────────
             TokenType::Immune => self.parse_immune().map(Declaration::Immune),
@@ -5312,6 +5325,55 @@ impl Parser {
                     column: role_tok.column,
                 },
             });
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 41.b — Parse:
+    /// `socket Name { protocol: SessionRef, backpressure: credit(n),
+    ///               reconnect: cognitive_state, legal_basis: ... }`.
+    /// Fields are `key: value` pairs (order-free); only `protocol` is required.
+    fn parse_socket(&mut self) -> Result<SocketDefinition, ParseError> {
+        let tok = self.consume(TokenType::Socket)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = SocketDefinition {
+            name,
+            loc: Loc { line: tok.line, column: tok.column },
+            ..Default::default()
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match key.as_str() {
+                "protocol" => node.protocol = self.consume_any_ident_or_kw()?.value,
+                "backpressure" => {
+                    // `credit(n)` — the typed-resource window.
+                    let kind = self.consume_any_ident_or_kw()?.value;
+                    if kind != "credit" {
+                        return Err(self.error(&format!("expected `credit(n)` for backpressure, got `{kind}`")));
+                    }
+                    self.consume(TokenType::LParen)?;
+                    let n = self
+                        .consume(TokenType::Integer)?
+                        .value
+                        .parse::<i64>()
+                        .map_err(|_| self.error("backpressure credit must be an integer"))?;
+                    self.consume(TokenType::RParen)?;
+                    node.backpressure_credit = Some(n);
+                }
+                "reconnect" => {
+                    let mode = self.consume_any_ident_or_kw()?.value;
+                    node.reconnect = mode == "cognitive_state";
+                }
+                "legal_basis" => node.legal_basis = Some(self.consume_any_ident_or_kw()?.value),
+                other => return Err(self.error(&format!("unknown socket field `{other}`"))),
+            }
+            // Optional comma between fields.
+            if self.check(TokenType::Comma) {
+                self.consume(TokenType::Comma)?;
+            }
         }
         self.consume(TokenType::RBrace)?;
         Ok(node)

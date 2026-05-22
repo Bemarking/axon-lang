@@ -65,6 +65,10 @@ pub struct IRProgram {
     pub views: Vec<IRView>,
     /// §λ-L-E Fase 13 — Mobile typed channels (compiled).
     pub channels: Vec<IRChannel>,
+    /// §Fase 41.b — typed WebSocket transports (compiled). Each carries its
+    /// referenced `session` protocol + the credit-window backpressure so
+    /// axon-rs can realise the typed endpoint over a `tokio` WebSocket.
+    pub sockets: Vec<IRSocket>,
     /// §Fase 23 — algebraic effect declarations (compiled).
     /// Each declared effect persists into IR so axon-rs can build the
     /// per-effect operation table at startup. The CPS state graph for
@@ -127,6 +131,7 @@ impl IRProgram {
             components: Vec::new(),
             views: Vec::new(),
             channels: Vec::new(),
+            sockets: Vec::new(),
             effects: Vec::new(),
         }
     }
@@ -1410,6 +1415,22 @@ pub struct IRChannel {
     pub lifetime: String,
     pub persistence: String,
     pub shield_ref: String,
+}
+
+/// §Fase 41.b — compiled typed WebSocket transport. `protocol` names the
+/// `session` it carries; `backpressure_credit` is the typed-resource window
+/// (`null` if unspecified). axon-rs realises the endpoint over a `tokio` WS,
+/// crediting/decrementing the window per §4.2 of the paper.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRSocket {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub protocol: String,
+    pub backpressure_credit: Option<i64>,
+    pub reconnect: bool,
+    pub legal_basis: Option<String>,
 }
 
 /// Compiled emit step — `c⟨v⟩.P` (Chan-Output / Chan-Mobility).
