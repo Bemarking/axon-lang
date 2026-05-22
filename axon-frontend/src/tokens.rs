@@ -161,6 +161,9 @@ pub enum TokenType {
     View,
     // Mobile Typed Channels (§λ-L-E Fase 13 — π-calc mobility)
     Channel,
+    // WebSocket as a cognitive primitive (§Fase 41.b) — the typed-WS
+    // transport binding around a `session` protocol.
+    Socket,
     Emit,
     Publish,
     Discover,
@@ -457,6 +460,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "view" => TokenType::View,
         // Mobile Typed Channels (§λ-L-E Fase 13)
         "channel" => TokenType::Channel,
+        // WebSocket as a cognitive primitive (§Fase 41.b)
+        "socket" => TokenType::Socket,
         "emit" => TokenType::Emit,
         "publish" => TokenType::Publish,
         "discover" => TokenType::Discover,
@@ -534,6 +539,8 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             | TokenType::View
             // §λ-L-E Fase 13 — Mobile typed channels
             | TokenType::Channel
+            // §Fase 41.b — typed WebSocket transport
+            | TokenType::Socket
     )
 }
 
