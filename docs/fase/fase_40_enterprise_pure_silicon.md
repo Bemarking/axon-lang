@@ -128,7 +128,7 @@ one image. ENTRYPOINT flips to `axon-enterprise-server`.
 | **D10** | `axon-csys-enterprise` (existing Fase 27 crate) is **expanded**, not replaced — it is the workspace's C23 foundation. | propuesta |
 | **D13** | **Full parity before the purga.** Every domain's live sqlx store + REST handler is implemented + green in the real-Postgres CI lane BEFORE any Python is deleted (integration assembly 40.w.2–40.w.7). The purga (40.y) then runs against a proven-equivalent Rust path. | **ratified founder 2026-05-22** |
 | **D14** | **Standalone binary first.** `axon-enterprise-server` ships as its OWN binary (Docker `ENTRYPOINT` flips to it at 40.z); refines D4 — the one-binary router-merge ONTO the OSS axon-server's axum app is a **post-v2.0.0 follow-up** (would need an OSS router-extension hook, a 40.b-style axon-lang release). v2.0.0 does not block on it. | **ratified founder 2026-05-22** |
-| **D15** | **OIDC now, SAML later.** v2.0.0 ships functional OIDC SSO; the vetted `XmlDsigBackend` (anti-XXE/bomb, strict-binding) is delicate crypto deferred to a later patch. The §40.j type-state already makes unsafe SAML use unrepresentable, so deferral carries no security risk. | **ratified founder 2026-05-22** |
+| **D15** | **OIDC now, SAML later.** v2.0.0 ships functional OIDC SSO; the vetted `XmlDsigBackend` (anti-XXE/bomb, strict-binding) is delicate crypto deferred to a later patch — captured as a north-star language/security contribution in `docs/vision/multi_database_effects.md` §7 (full **native** Rust XML-DSig, not a vendored binding). The §40.j type-state already makes unsafe SAML use unrepresentable, so deferral carries no security risk. | **ratified founder 2026-05-22** |
 
 # ▶ 5. Sub-fases (construct-before-purge, topological)
 
