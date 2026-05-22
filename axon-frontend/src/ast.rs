@@ -292,11 +292,27 @@ pub struct EnsembleDefinition {
 
 // ── §λ-L-E Fase 4 — Topology + π-calculus binary sessions ──────────────────
 
-/// One step in a session protocol: `send T` | `receive T` | `loop` | `end`.
+/// One step in a session protocol.
+///
+/// §Fase 4: `send T` | `receive T` | `loop` | `end`. §Fase 41.b adds **choice**:
+/// `select { ℓ: [..], … }` (⊕ — this role chooses) and `branch { ℓ: [..], … }`
+/// (& — this role offers); for those `op`s the labelled continuations live in
+/// [`SessionStep::branches`] (a nested sub-protocol per label).
 #[derive(Debug, Clone, Default)]
 pub struct SessionStep {
-    pub op: String,           // send | receive | loop | end
+    pub op: String,           // send | receive | loop | end | select | branch
     pub message_type: String, // only meaningful for send / receive
+    /// §Fase 41.b — populated only for `op == "select" | "branch"`: the labelled
+    /// branches, each a nested step sequence (its own sub-protocol).
+    pub branches: Vec<SessionBranch>,
+    pub loc: Loc,
+}
+
+/// §Fase 41.b — one labelled arm of a `select`/`branch` choice: `ℓ: [steps]`.
+#[derive(Debug, Clone, Default)]
+pub struct SessionBranch {
+    pub label: String,
+    pub steps: Vec<SessionStep>,
     pub loc: Loc,
 }
 
