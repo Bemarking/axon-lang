@@ -909,6 +909,9 @@ impl<'a> TypeChecker<'a> {
                         n.loc.clone(),
                     ));
                 }
+                Declaration::Socket(n) => {
+                    registrations.push((n.name.clone(), "socket".into(), n.loc.line, n.loc.clone()));
+                }
                 Declaration::Generic(n) => {
                     if !n.name.is_empty() {
                         registrations.push((
@@ -979,6 +982,7 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Ensemble(n) => self.check_ensemble(n),
                 Declaration::Session(n) => self.check_session(n),
                 Declaration::Topology(n) => self.check_topology(n),
+                Declaration::Socket(n) => self.check_socket(n),
                 Declaration::Immune(n) => self.check_immune(n),
                 Declaration::Reflex(n) => self.check_reflex(n),
                 Declaration::Heal(n) => self.check_heal(n),
@@ -2801,6 +2805,41 @@ impl<'a> TypeChecker<'a> {
                 ),
                 &node.loc,
             );
+        }
+    }
+
+    /// §Fase 41.b — `socket` validation (the typed-WS transport binding).
+    /// Enforces: (a) `protocol` references a **declared `session`** (whose two
+    /// roles are duality-checked via the §41.a algebra, so the dialogue carried
+    /// over the connection is conformant by construction); (b) the backpressure
+    /// credit window, if given, is **positive** — a 0-credit window cannot type
+    /// a send (§4.2 of the paper: a send at `n=0` has no typing rule).
+    fn check_socket(&mut self, node: &SocketDefinition) {
+        if node.protocol.is_empty() {
+            self.emit(
+                format!("Socket '{}' has no `protocol:` — it must reference a declared session", node.name),
+                &node.loc,
+            );
+        } else if find_session_by_name(self.program, &node.protocol).is_none() {
+            self.emit(
+                format!(
+                    "Socket '{}' protocol '{}' is not a declared session (the protocol must be a `session`)",
+                    node.name, node.protocol
+                ),
+                &node.loc,
+            );
+        }
+        if let Some(n) = node.backpressure_credit {
+            if n <= 0 {
+                self.emit(
+                    format!(
+                        "Socket '{}' backpressure credit must be ≥ 1 (got {n}); a 0-credit window \
+                         cannot type a send (§Fase 41 §4.2)",
+                        node.name
+                    ),
+                    &node.loc,
+                );
+            }
         }
     }
 
@@ -7200,5 +7239,61 @@ mod fase41b_session_lowering_tests {
         // Dual direction but mismatched payload → not dual.
         let wrong = lower_session_role(&role("c", vec![step("receive", "WRONG"), step("end", "")]));
         assert!(!a.is_dual_to(&wrong));
+    }
+}
+
+#[cfg(test)]
+mod fase41b_socket_tests {
+    //! §Fase 41.b — the `socket` declaration: parse + check (protocol must
+    //! reference a declared `session`; backpressure credit must be positive).
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    // A well-formed (dual) binary session the socket can reference.
+    const SESSION: &str =
+        "session Chat { client: [send Msg, receive Token, end] server: [receive Msg, send Token, end] }";
+
+    fn parse_prog(src: &str) -> Program {
+        let toks = Lexer::new(src, "<t>").tokenize().expect("lex");
+        Parser::new(toks).parse().expect("parse")
+    }
+    fn errors(src: &str) -> Vec<TypeError> {
+        TypeChecker::new(&parse_prog(src)).check()
+    }
+
+    #[test]
+    fn socket_parses_into_ast_fields() {
+        let prog = parse_prog(&format!(
+            "{SESSION}\nsocket ChatWS {{ protocol: Chat, backpressure: credit(64), reconnect: cognitive_state, legal_basis: legitimate_interest }}"
+        ));
+        let sock = prog
+            .declarations
+            .iter()
+            .find_map(|d| if let Declaration::Socket(s) = d { Some(s) } else { None })
+            .expect("socket parsed");
+        assert_eq!(sock.name, "ChatWS");
+        assert_eq!(sock.protocol, "Chat");
+        assert_eq!(sock.backpressure_credit, Some(64));
+        assert!(sock.reconnect);
+        assert_eq!(sock.legal_basis.as_deref(), Some("legitimate_interest"));
+    }
+
+    #[test]
+    fn socket_referencing_a_declared_session_has_no_socket_error() {
+        let errs = errors(&format!("{SESSION}\nsocket ChatWS {{ protocol: Chat, backpressure: credit(64) }}"));
+        assert!(!errs.iter().any(|e| e.message.contains("Socket")), "unexpected socket error: {errs:?}");
+    }
+
+    #[test]
+    fn socket_with_undeclared_protocol_is_rejected() {
+        let errs = errors("socket ChatWS { protocol: DoesNotExist }");
+        assert!(errs.iter().any(|e| e.message.contains("not a declared session")), "{errs:?}");
+    }
+
+    #[test]
+    fn socket_with_zero_credit_window_is_rejected() {
+        let errs = errors(&format!("{SESSION}\nsocket ChatWS {{ protocol: Chat, backpressure: credit(0) }}"));
+        assert!(errs.iter().any(|e| e.message.contains("credit must be")), "{errs:?}");
     }
 }
