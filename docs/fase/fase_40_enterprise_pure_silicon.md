@@ -1,6 +1,6 @@
 ---
 title: "Plan vivo: Fase 40 — Enterprise Pure Silicon (the real v2.0.0 catch-up: axon-enterprise → 100% Rust/C)"
-status: 🚀 IN DESIGN — D1 ratified by founder 2026-05-21
+status: 🛠️ IN PROGRESS — 40.a SHIPPED 2026-05-21 (Rust workspace foundation; enterprise interprets its own language via versioned Cargo dependency). D1 ratified founder 2026-05-21.
 owner: AXON Compiler + Runtime + Enterprise Team
 created: 2026-05-21
 target: |
@@ -131,7 +131,7 @@ one image. ENTRYPOINT flips to `axon-enterprise-server`.
 
 | Sub-fase | Surface | Status |
 |----------|---------|--------|
-| **40.a** | Workspace foundation: promote `axon-csys-enterprise` into a workspace; add Cargo deps on axon-frontend 1.0.0 + axon-csys 0.2.0 + axon-lang 2.0.1; prove enterprise can lex/parse/type-check/run a vertical `.axon` program through the OSS language ("interprets its own language"). | ⏳ |
+| **40.a** ✅ SHIPPED 2026-05-21 | Workspace foundation: promote `axon-csys-enterprise` into a workspace; add Cargo deps on axon-frontend 1.0.0 + axon-csys 0.2.0 + axon-lang 2.0.1; prove enterprise can lex/parse/type-check/run a vertical `.axon` program through the OSS language ("interprets its own language"). | ✅ Branch `feature/fase-40-enterprise-pure-silicon` (commit `9c6debd`). Root virtual `Cargo.toml` with `[workspace.dependencies]` pinning `=1.0.0`/`=0.2.0`/`=2.0.1` as the single source of truth (D1 versioned dependency, not a fork). `axon-csys-enterprise` axon-csys pin advanced `=0.1.1`→`=0.2.0` via the workspace so the tree resolves ONE axon-csys (the one axon-lang 2.0.1 depends on) — byte-identity drift gates stay green. New `crates/enterprise-lang` façade re-exports the OSS pipeline (`checker`/`compiler`/`runner` + `frontend` + `csys`) through one boundary; `AXON_LANG_VERSION` resolved at compile time. **Proof**: vertical HIPAA `.axon` fixture type-checks AND compiles to IR through the dependency (IR `_meta.axon_version=="2.0.1"`, flow present); `AXON_LANG_VERSION=="2.0.1"`. Workspace builds clean (axon-lang 2.0.1 pulled from crates.io, 9m29s first build); 5 enterprise-lang tests + all axon-csys-enterprise drift gates (31+32+13+47+34+…) green. Type-check + compile are the deterministic offline proof; runtime *execution* of a flow (reaches a backend) lands with the vertical scanner in 40.c. | 
 | **40.b** | OSS shield extension-point in **axon-rs** (`pub` scanner-registration hook so the BSL vertical crate injects scanners into `apply_shield`). Ships as axon-lang v2.0.2/v2.1.0. *Axon-for-axon: a clean language extension point.* | ⏳ |
 | **40.c** | Vertical cognition → Rust (the R&D crown jewels): port HIPAA / legal / AML scanner families (~1.5K LOC) + dual-LLM + ensemble onto the 40.b hook + OSS shield framework. BSL, feature-gated. | ⏳ |
 | **40.d** | Supervisor enterprise layer → Rust: port hierarchy / factory (~1.9K LOC) onto axon-rs `DaemonSupervisor`. | ⏳ |
