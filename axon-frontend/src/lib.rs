@@ -63,3 +63,14 @@ pub mod ots_catalog;
 // hover, completion, go-to-definition and find-references. Zero
 // runtime deps — stays inside the Fase 12.c contract.
 pub mod channel_analysis;
+
+// §Fase 41.a — session types: the pure algebra of typed bidirectional
+// dialogue (WebSocket as a cognitive primitive). The session-type
+// grammar + the duality involution `(·)⊥` + regular-coinductive
+// equality for `μ`-types + the connection law (`peer ≡ self⊥`).
+// Grounded in Caires–Pfenning (session types = intuitionistic linear
+// propositions). Pure — no runtime deps; the `socket` surface (41.b),
+// credit-refined backpressure (41.c) and the typed-WS runtime (41.d,
+// in the `axon` crate) build on this. See
+// docs/paper_websocket_cognitive_primitive.md.
+pub mod session;
