@@ -48,6 +48,38 @@ pub fn current_tenant_id() -> String {
         .unwrap_or_else(|_| "default".to_string())
 }
 
+/// Run `fut` with the active-tenant task-local bound to `tenant_id`, so every
+/// downstream future — including storage methods that read [`current_tenant_id`]
+/// (and thus the RLS `SET LOCAL axon.current_tenant` in
+/// `storage_postgres`'s `begin_tenant_tx!`) — observes it automatically.
+///
+/// This is the **public tenant-scope primitive**. [`tenant_extractor_middleware`]
+/// is the batteries-included path (it resolves the tenant from an `X-Tenant-ID`
+/// header or a JWKS-verified bearer); `scope_tenant` is the *unbundled* path for
+/// callers that resolve the tenant THEMSELVES — e.g. an authentication layer
+/// that verifies its own tokens (a different signature algorithm, a local
+/// keyring, an mTLS identity) and just needs to bind the result. Scoping the
+/// tenant is thereby decoupled from how it was authenticated, so multi-tenant
+/// isolation needs **zero per-handler plumbing**: scope once at the request
+/// boundary and every downstream query is tenant-bound by construction.
+///
+/// ```no_run
+/// # async fn ex() {
+/// // An external auth layer resolved `tenant` from its own verified principal:
+/// let tenant = "acme".to_string();
+/// axon::tenant::scope_tenant(tenant, async {
+///     // every storage call here runs under SET LOCAL axon.current_tenant='acme'
+/// })
+/// .await;
+/// # }
+/// ```
+pub async fn scope_tenant<F>(tenant_id: String, fut: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    CURRENT_TENANT_ID.scope(tenant_id, fut).await
+}
+
 // ── TenantPlan ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -385,5 +417,25 @@ mod tests {
             .await;
         assert_eq!(outer.0, "tenant-a");
         assert_eq!(outer.1, "tenant-b");
+    }
+
+    #[tokio::test]
+    async fn test_scope_tenant_public_primitive_binds_and_nests() {
+        // The public primitive binds the same task-local current_tenant_id reads.
+        let got = scope_tenant("acme".to_string(), async { current_tenant_id() }).await;
+        assert_eq!(got, "acme");
+        // Returns its future's output (not just ()), so callers can scope a
+        // whole request pipeline and forward the response.
+        let doubled = scope_tenant("x".to_string(), async { 21 * 2 }).await;
+        assert_eq!(doubled, 42);
+        // Nesting restores the outer tenant after the inner scope ends.
+        let (inner, outer) = scope_tenant("outer".to_string(), async {
+            let inner = scope_tenant("inner".to_string(), async { current_tenant_id() }).await;
+            (inner, current_tenant_id())
+        })
+        .await;
+        assert_eq!((inner.as_str(), outer.as_str()), ("inner", "outer"));
+        // Outside any scope it's still the safe default.
+        assert_eq!(current_tenant_id(), "default");
     }
 }
