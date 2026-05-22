@@ -168,6 +168,10 @@ pub mod flow_execution_event;
 pub mod resilient_backend;
 pub mod retry_policy;
 pub mod runner;
+// §Fase 40.b — public shield-scanner registration hook. OSS ships no
+// scanners (identity); enterprise vertical crates register HIPAA/legal/AML
+// scanners here at boot. The `shield apply` handler consults it.
+pub mod shield_registry;
 pub mod server_config;
 pub mod server_metrics;
 pub mod session_scope;
