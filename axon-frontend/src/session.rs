@@ -11,12 +11,23 @@
 //! expects* — making a dialogue **deadlock-free and protocol-conformant by
 //! construction**, not by per-message runtime validation.
 //!
-//! This is the pure algebra only: no parser/AST (Fase 41.b), no credit-refined
-//! backpressure index (41.c), no runtime (41.d), no multiparty projection
-//! (41.h). The payload carried by `send`/`recv` is an opaque [`Payload`]
-//! (a canonical type name); 41.b binds it to the real AST value types — the
-//! duality + equality algebra here depends only on payload *equality*, never on
-//! payload structure, so it is decoupled by construction.
+//! This is the pure algebra only: no parser/AST (Fase 41.b), no runtime (41.d),
+//! no multiparty projection (41.h). The payload carried by `send`/`recv` is an
+//! opaque [`Payload`] (a canonical type name); 41.b binds it to the real AST
+//! value types — the duality + equality algebra here depends only on payload
+//! *equality*, never on payload structure, so it is decoupled by construction.
+//!
+//! §Fase 41.c — **credit-refined backpressure** (D2 of the plan vivo, §4.2 of
+//! the paper). `Send` / `Recv` now carry an optional credit index `n: u64`
+//! (`!ⁿA.S` / `?ⁿA.S`); `None` is the unbounded fragment (`!∞A.S`, the algebra
+//! before 41.c). The "send at n = 0 has no typing rule" axiom is implemented by
+//! [`SessionType::has_send_at_zero`] (an explicit `!⁰A.S` in the type is
+//! unprovable) and by the **Presburger-decidable** flow analysis
+//! [`SessionType::credit_analyse`], which — given a socket budget `k` — checks
+//! that every send fires at an available credit `> 0` (no rule at n=0) and that
+//! every recursive body is **sustainable** (per-iteration net send count
+//! `Δ = #send − #recv ≤ 0`, the loop-fixpoint inequality). All constraints are
+//! linear over the naturals → decidable in the theory of Presburger arithmetic.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -46,10 +57,22 @@ impl fmt::Display for Payload {
 pub enum SessionType {
     /// `end` — the dialogue is complete.
     End,
-    /// `!A.S` — send a value of type `A`, then behave as `S`.
-    Send(Payload, Box<SessionType>),
-    /// `?A.S` — receive a value of type `A`, then behave as `S`.
-    Recv(Payload, Box<SessionType>),
+    /// `!ⁿA.S` — send a value of type `A`, then behave as `S`. The optional
+    /// `credit` is the Fase 41.c index `n` (paper §4.2): `Some(n)` types a send
+    /// that *requires* `n > 0` available credit (the "no rule at n = 0" axiom
+    /// makes `Some(0)` unprovable); `None` is the unbounded fragment `!∞A.S`.
+    Send {
+        payload: Payload,
+        credit: Option<u64>,
+        cont: Box<SessionType>,
+    },
+    /// `?ⁿA.S` — receive a value of type `A`, then behave as `S`. Symmetric to
+    /// [`SessionType::Send`]: the index `n` bounds the receiver-side window.
+    Recv {
+        payload: Payload,
+        credit: Option<u64>,
+        cont: Box<SessionType>,
+    },
     /// `⊕{ℓᵢ:Sᵢ}` — internal choice: this endpoint *selects* a label.
     Select(BTreeMap<String, SessionType>),
     /// `&{ℓᵢ:Sᵢ}` — external choice: this endpoint *offers* the branches.
@@ -63,11 +86,39 @@ pub enum SessionType {
 impl SessionType {
     // ── Smart constructors (ergonomic + keep call sites readable) ──────────
 
+    /// `!A.S` — unbounded send (`credit = None`, the pre-41.c fragment).
     pub fn send(payload: impl Into<String>, then: SessionType) -> Self {
-        SessionType::Send(Payload::new(payload), Box::new(then))
+        SessionType::Send {
+            payload: Payload::new(payload),
+            credit: None,
+            cont: Box::new(then),
+        }
     }
+    /// `?A.S` — unbounded receive (`credit = None`).
     pub fn recv(payload: impl Into<String>, then: SessionType) -> Self {
-        SessionType::Recv(Payload::new(payload), Box::new(then))
+        SessionType::Recv {
+            payload: Payload::new(payload),
+            credit: None,
+            cont: Box::new(then),
+        }
+    }
+    /// `!ⁿA.S` — credit-refined send (Fase 41.c, paper §4.2). The continuation
+    /// `then` runs in the same window — the budget is global to the socket; the
+    /// `n` here is the *snapshot* of available credit demanded at this step.
+    pub fn send_credit(payload: impl Into<String>, n: u64, then: SessionType) -> Self {
+        SessionType::Send {
+            payload: Payload::new(payload),
+            credit: Some(n),
+            cont: Box::new(then),
+        }
+    }
+    /// `?ⁿA.S` — credit-refined receive (Fase 41.c).
+    pub fn recv_credit(payload: impl Into<String>, n: u64, then: SessionType) -> Self {
+        SessionType::Recv {
+            payload: Payload::new(payload),
+            credit: Some(n),
+            cont: Box::new(then),
+        }
     }
     pub fn select(branches: impl IntoIterator<Item = (String, SessionType)>) -> Self {
         SessionType::Select(branches.into_iter().collect())
@@ -86,12 +137,23 @@ impl SessionType {
 
     /// The dual `S⊥`: swaps `send`↔`recv` and `select`↔`branch`, recursing into
     /// continuations; `end`, `Rec` binders and `Var`s are preserved. Payloads
-    /// are **unchanged** (`(!A.S)⊥ = ?A.S⊥` — same `A`, opposite direction).
+    /// **and** the credit index `n` are unchanged — `(!ⁿA.S)⊥ = ?ⁿA.S⊥` (same
+    /// `A`, same `n`, opposite direction). Symmetric credit is the standard
+    /// credit-flow semantics (Rast lineage): the sender's window-of-n is
+    /// exactly what the receiver-side is sized to absorb.
     pub fn dual(&self) -> SessionType {
         match self {
             SessionType::End => SessionType::End,
-            SessionType::Send(a, k) => SessionType::Recv(a.clone(), Box::new(k.dual())),
-            SessionType::Recv(a, k) => SessionType::Send(a.clone(), Box::new(k.dual())),
+            SessionType::Send { payload, credit, cont } => SessionType::Recv {
+                payload: payload.clone(),
+                credit: *credit,
+                cont: Box::new(cont.dual()),
+            },
+            SessionType::Recv { payload, credit, cont } => SessionType::Send {
+                payload: payload.clone(),
+                credit: *credit,
+                cont: Box::new(cont.dual()),
+            },
             SessionType::Select(m) => SessionType::Branch(dual_map(m)),
             SessionType::Branch(m) => SessionType::Select(dual_map(m)),
             SessionType::Rec(x, b) => SessionType::Rec(x.clone(), Box::new(b.dual())),
@@ -106,8 +168,16 @@ impl SessionType {
     fn subst(&self, var: &str, repl: &SessionType) -> SessionType {
         match self {
             SessionType::End => SessionType::End,
-            SessionType::Send(a, k) => SessionType::Send(a.clone(), Box::new(k.subst(var, repl))),
-            SessionType::Recv(a, k) => SessionType::Recv(a.clone(), Box::new(k.subst(var, repl))),
+            SessionType::Send { payload, credit, cont } => SessionType::Send {
+                payload: payload.clone(),
+                credit: *credit,
+                cont: Box::new(cont.subst(var, repl)),
+            },
+            SessionType::Recv { payload, credit, cont } => SessionType::Recv {
+                payload: payload.clone(),
+                credit: *credit,
+                cont: Box::new(cont.subst(var, repl)),
+            },
             SessionType::Select(m) => SessionType::Select(subst_map(m, var, repl)),
             SessionType::Branch(m) => SessionType::Branch(subst_map(m, var, repl)),
             SessionType::Rec(x, b) => {
@@ -157,6 +227,234 @@ impl SessionType {
     pub fn is_dual_to(&self, peer: &SessionType) -> bool {
         peer.equiv(&self.dual())
     }
+
+    // ── Fase 41.c — credit-refined backpressure (D2, paper §4.2) ────────────
+
+    /// Stamp every (recursively-reachable) `Send` and `Recv` with the credit
+    /// index `n`. Idempotent on already-stamped types. Used by the type
+    /// checker to lift the socket's `backpressure: credit(k)` annotation onto
+    /// the bare session protocol so the algebra-level analysis can discharge
+    /// the constraint.
+    pub fn with_credit(&self, n: u64) -> SessionType {
+        match self {
+            SessionType::End => SessionType::End,
+            SessionType::Send { payload, cont, .. } => SessionType::Send {
+                payload: payload.clone(),
+                credit: Some(n),
+                cont: Box::new(cont.with_credit(n)),
+            },
+            SessionType::Recv { payload, cont, .. } => SessionType::Recv {
+                payload: payload.clone(),
+                credit: Some(n),
+                cont: Box::new(cont.with_credit(n)),
+            },
+            SessionType::Select(m) => SessionType::Select(
+                m.iter().map(|(l, s)| (l.clone(), s.with_credit(n))).collect(),
+            ),
+            SessionType::Branch(m) => SessionType::Branch(
+                m.iter().map(|(l, s)| (l.clone(), s.with_credit(n))).collect(),
+            ),
+            SessionType::Rec(x, b) => SessionType::Rec(x.clone(), Box::new(b.with_credit(n))),
+            SessionType::Var(x) => SessionType::Var(x.clone()),
+        }
+    }
+
+    /// The "no rule at n = 0" axiom (paper §4.2): an explicit `!⁰A.S` in the
+    /// type is **unprovable** — there is no typing rule for a send at zero
+    /// available credit. Returns the offending payload of the first such send
+    /// (in a deterministic left-to-right walk) if any.
+    ///
+    /// Decidable in linear time over the type structure.
+    pub fn has_send_at_zero(&self) -> Option<Payload> {
+        match self {
+            SessionType::End => None,
+            SessionType::Send { payload, credit: Some(0), .. } => Some(payload.clone()),
+            SessionType::Send { cont, .. } | SessionType::Recv { cont, .. } => cont.has_send_at_zero(),
+            SessionType::Select(m) | SessionType::Branch(m) => {
+                m.values().find_map(|s| s.has_send_at_zero())
+            }
+            SessionType::Rec(_, b) => b.has_send_at_zero(),
+            SessionType::Var(_) => None,
+        }
+    }
+
+    /// Decide the **credit conformance** of `self` against a budget `k`
+    /// (the socket's `backpressure: credit(k)` window). This is the
+    /// Presburger discharge — the constraints are linear arithmetic over the
+    /// naturals, so satisfiability is decidable; the algorithm here is the
+    /// direct fixpoint formulation specialised to closed, contractive session
+    /// types (Rast lineage, §4.2 of the paper).
+    ///
+    /// The check fires three kinds of error:
+    ///
+    /// 1. **Send at zero** — an explicit `!⁰A.S` in the type. Unprovable by
+    ///    construction (no typing rule applies).
+    /// 2. **Burst overflow** — a straight-line send burst exceeding the
+    ///    available window. With initial budget `k`, the abstract trace must
+    ///    never reach `available_credit < 0` at a send.
+    /// 3. **Loop unsustainability** — a recursive body whose per-iteration net
+    ///    send count `Δ = #send − #recv` is strictly positive: each iteration
+    ///    drains the window, so unbounded iteration is unsound under *any*
+    ///    finite budget. (`Δ ≤ 0` is the Presburger fixpoint inequality.)
+    ///
+    /// Returns `Ok(())` if the protocol is conformant, or [`CreditError`] with
+    /// the offending witness. Total over closed, contractive session types.
+    pub fn credit_analyse(&self, budget: u64) -> Result<(), CreditError> {
+        if let Some(p) = self.has_send_at_zero() {
+            return Err(CreditError::SendAtZero { payload: p });
+        }
+        // Initial window = full budget. The walker tracks the minimum
+        // available credit reachable along any execution path; if at any send
+        // it would fall below 0 → BurstOverflow. Recursive bodies are
+        // discharged by the Δ ≤ 0 fixpoint inequality.
+        let _final = credit_walk(self, budget as i64, budget as i64)?;
+        Ok(())
+    }
+
+    /// Enumerate the **recurring paths** of `self` w.r.t. recursion variable
+    /// `x` — every trace from the root that reaches `Var(x)`. Each path is
+    /// reported as `(#send, #recv)`; terminating paths (reaching `End` or a
+    /// different free variable) are dropped (they don't iterate, so they
+    /// don't constrain unbounded sustainability). Shadowing `Rec(x, …)` cuts
+    /// the descent — references inside refer to the inner binder.
+    ///
+    /// Total in time linear in the size of `self`; the path count is bounded
+    /// by the number of leaves of the choice tree.
+    pub fn recurring_paths(&self, x: &str) -> Vec<(u64, u64)> {
+        let mut out = Vec::new();
+        recurring_paths_into(self, x, 0, 0, &mut out);
+        out
+    }
+
+    /// Worst-case (maximum-Δ) recurring path of `self` w.r.t. `x`. Used by
+    /// the type checker to report the offending iteration count. Returns
+    /// `(0, 0)` if there are no recurring paths.
+    pub fn credit_delta(&self, x: &str) -> (u64, u64) {
+        self.recurring_paths(x)
+            .into_iter()
+            .max_by_key(|(s, r)| *s as i64 - *r as i64)
+            .unwrap_or((0, 0))
+    }
+}
+
+/// The Presburger discharge's negative verdict — the witness of an
+/// unconformant credit constraint. Surfaced verbatim by the type checker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreditError {
+    /// An explicit `!⁰A.S` — the "no rule at n=0" axiom rejects it.
+    SendAtZero { payload: Payload },
+    /// A straight-line send burst exceeds the budget `k`: at the offending
+    /// send the abstract credit window would fall below 0.
+    BurstOverflow { payload: Payload, budget: u64, burst: u64 },
+    /// A recursive body has Δ > 0 (per iteration drains the window): no finite
+    /// budget makes unbounded iteration sound.
+    LoopUnsustainable { sends_per_iter: u64, recvs_per_iter: u64 },
+}
+
+impl fmt::Display for CreditError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CreditError::SendAtZero { payload } => {
+                write!(f, "send `{payload}` at credit n=0 has no typing rule (D2, §4.2)")
+            }
+            CreditError::BurstOverflow { payload, budget, burst } => write!(
+                f,
+                "credit-window overflow at send `{payload}`: the protocol requires a \
+                 send-burst of {burst} but the socket's `credit({budget})` cannot absorb it"
+            ),
+            CreditError::LoopUnsustainable { sends_per_iter, recvs_per_iter } => write!(
+                f,
+                "recursive body is unsustainable: Δ = {sends_per_iter} - {recvs_per_iter} > 0 \
+                 (no finite credit window keeps unbounded iteration in flight)"
+            ),
+        }
+    }
+}
+
+/// Abstract-interpretation walker for the credit constraint. `available` is the
+/// current window snapshot; `budget` is the maximum (recv refills are capped at
+/// budget, the standard credit-flow semantics). Returns the available credit
+/// at the end of the executed branch (the *minimum* across choice arms so the
+/// caller sees the worst-case continuation).
+fn credit_walk(t: &SessionType, available: i64, budget: i64) -> Result<i64, CreditError> {
+    match t {
+        SessionType::End => Ok(available),
+        SessionType::Send { payload, cont, .. } => {
+            let next = available - 1;
+            if next < 0 {
+                return Err(CreditError::BurstOverflow {
+                    payload: payload.clone(),
+                    budget: budget as u64,
+                    burst: (budget - available + 1) as u64,
+                });
+            }
+            credit_walk(cont, next, budget)
+        }
+        SessionType::Recv { cont, .. } => {
+            // A recv refills one credit, capped at the budget (TCP-window
+            // semantics: the receiver never accumulates more than `k`).
+            let next = (available + 1).min(budget);
+            credit_walk(cont, next, budget)
+        }
+        SessionType::Select(m) | SessionType::Branch(m) => {
+            // Each arm must be conformant on its own; the conservative
+            // post-state is the minimum (worst case) across arms.
+            let mut worst = available;
+            for arm in m.values() {
+                let post = credit_walk(arm, available, budget)?;
+                if post < worst {
+                    worst = post;
+                }
+            }
+            Ok(worst)
+        }
+        SessionType::Rec(x, body) => {
+            // Loop sustainability (Presburger fixpoint): for every recurring
+            // path back to `Var(x)`, the per-iteration net send count must
+            // satisfy `Δ = #send − #recv ≤ 0`. A non-recurring arm (one that
+            // terminates in `end`) is exempt — it executes at most once.
+            // If *any* recurring path has Δ > 0, the window strictly drains
+            // on that iteration and no finite `k` is sufficient → reject.
+            for (s, r) in body.recurring_paths(x) {
+                if s > r {
+                    return Err(CreditError::LoopUnsustainable {
+                        sends_per_iter: s,
+                        recvs_per_iter: r,
+                    });
+                }
+            }
+            // Walk one iteration so a burst inside the body is surfaced even
+            // when the loop is sustainable on net (Δ ≤ 0 doesn't bound peak).
+            credit_walk(body, available, budget)
+        }
+        SessionType::Var(_) => {
+            // Recursion re-entry: nothing further to walk on this iteration;
+            // the fixpoint check above already vetted sustainability.
+            Ok(available)
+        }
+    }
+}
+
+/// Enumerate `(#send, #recv)` for every path from `t` that reaches `Var(x)`
+/// (the loop-recurring traces). Paths that hit `End` or a free `Var(y≠x)` are
+/// dropped — they exit the loop, not iterate. A shadowing `Rec(x, _)` cuts the
+/// descent (the inner binder re-captures the name). Total in linear time.
+fn recurring_paths_into(t: &SessionType, x: &str, s: u64, r: u64, out: &mut Vec<(u64, u64)>) {
+    match t {
+        SessionType::End => {} // terminates — not a recurring path
+        SessionType::Var(y) if y == x => out.push((s, r)),
+        SessionType::Var(_) => {} // a free var that isn't our loop's
+        SessionType::Send { cont, .. } => recurring_paths_into(cont, x, s + 1, r, out),
+        SessionType::Recv { cont, .. } => recurring_paths_into(cont, x, s, r + 1, out),
+        SessionType::Select(m) | SessionType::Branch(m) => {
+            // Each arm is its own trace — descend into all of them.
+            for arm in m.values() {
+                recurring_paths_into(arm, x, s, r, out);
+            }
+        }
+        SessionType::Rec(y, body) if y != x => recurring_paths_into(body, x, s, r, out),
+        SessionType::Rec(_, _) => {} // shadows x — its inner Var refers to itself
+    }
 }
 
 fn dual_map(m: &BTreeMap<String, SessionType>) -> BTreeMap<String, SessionType> {
@@ -176,8 +474,14 @@ fn equiv_inner(s: &SessionType, t: &SessionType, assumed: &mut Vec<(SessionType,
 
     match (s.unfold_head(), t.unfold_head()) {
         (SessionType::End, SessionType::End) => true,
-        (SessionType::Send(a, sk), SessionType::Send(b, tk)) => a == b && equiv_inner(&sk, &tk, assumed),
-        (SessionType::Recv(a, sk), SessionType::Recv(b, tk)) => a == b && equiv_inner(&sk, &tk, assumed),
+        (
+            SessionType::Send { payload: a, credit: ca, cont: sk },
+            SessionType::Send { payload: b, credit: cb, cont: tk },
+        ) => a == b && ca == cb && equiv_inner(&sk, &tk, assumed),
+        (
+            SessionType::Recv { payload: a, credit: ca, cont: sk },
+            SessionType::Recv { payload: b, credit: cb, cont: tk },
+        ) => a == b && ca == cb && equiv_inner(&sk, &tk, assumed),
         (SessionType::Select(m1), SessionType::Select(m2)) => equiv_maps(&m1, &m2, assumed),
         (SessionType::Branch(m1), SessionType::Branch(m2)) => equiv_maps(&m1, &m2, assumed),
         // A bare `Var` survives unfolding only if it is free (open type); compare
@@ -203,8 +507,14 @@ impl fmt::Display for SessionType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SessionType::End => f.write_str("end"),
-            SessionType::Send(a, k) => write!(f, "!{a}.{k}"),
-            SessionType::Recv(a, k) => write!(f, "?{a}.{k}"),
+            SessionType::Send { payload, credit, cont } => match credit {
+                Some(n) => write!(f, "!^{n}{payload}.{cont}"),
+                None => write!(f, "!{payload}.{cont}"),
+            },
+            SessionType::Recv { payload, credit, cont } => match credit {
+                Some(n) => write!(f, "?^{n}{payload}.{cont}"),
+                None => write!(f, "?{payload}.{cont}"),
+            },
             SessionType::Select(m) => write_choice(f, "+", m),
             SessionType::Branch(m) => write_choice(f, "&", m),
             SessionType::Rec(x, b) => write!(f, "rec {x}.{b}"),
@@ -349,5 +659,181 @@ mod tests {
         let s = SessionType::send("Int", SessionType::recv("Bool", SessionType::End));
         assert_eq!(s.to_string(), "!Int.?Bool.end");
         assert_eq!(SessionType::rec("X", SessionType::var("X")).to_string(), "rec X.X");
+    }
+
+    // ── Fase 41.c — credit-refined backpressure (D2) ─────────────────────────
+
+    #[test]
+    fn dual_preserves_credit_index() {
+        // (!ⁿA.S)⊥ = ?ⁿA.S⊥ — same credit, opposite direction.
+        let s = SessionType::send_credit("Msg", 7, SessionType::End);
+        assert_eq!(s.dual(), SessionType::recv_credit("Msg", 7, SessionType::End));
+        // Round-trip preserves the credit through both polarities.
+        assert!(s.dual().dual().equiv(&s));
+    }
+
+    #[test]
+    fn equality_distinguishes_credit_index() {
+        // Different numeric credit ⇒ structurally distinct types.
+        let a = SessionType::send_credit("T", 1, SessionType::End);
+        let b = SessionType::send_credit("T", 2, SessionType::End);
+        assert!(!a.equiv(&b));
+        // Unbounded (credit=None) is distinct from any stamped credit.
+        let unbounded = SessionType::send("T", SessionType::End);
+        assert!(!a.equiv(&unbounded));
+    }
+
+    #[test]
+    fn with_credit_stamps_every_send_and_recv() {
+        let bare = SessionType::send(
+            "A",
+            SessionType::recv("B", SessionType::send("C", SessionType::End)),
+        );
+        let stamped = bare.with_credit(4);
+        let expected = SessionType::send_credit(
+            "A",
+            4,
+            SessionType::recv_credit("B", 4, SessionType::send_credit("C", 4, SessionType::End)),
+        );
+        assert_eq!(stamped, expected);
+        // Idempotent on already-stamped.
+        assert_eq!(stamped.with_credit(4), stamped);
+    }
+
+    #[test]
+    fn has_send_at_zero_finds_the_unprovable_send() {
+        let bad = SessionType::recv(
+            "Q",
+            SessionType::send_credit("Boom", 0, SessionType::End),
+        );
+        assert_eq!(bad.has_send_at_zero(), Some(Payload::new("Boom")));
+        // A protocol with no `!⁰…` is clean.
+        let ok = SessionType::send_credit("A", 3, SessionType::End);
+        assert_eq!(ok.has_send_at_zero(), None);
+        // Sends inside choice arms are reached.
+        let choice = sel(&[("ask", SessionType::send_credit("X", 0, SessionType::End))]);
+        assert_eq!(choice.has_send_at_zero(), Some(Payload::new("X")));
+    }
+
+    // ── The Presburger discharge: credit_analyse(budget) ────────────────────
+
+    #[test]
+    fn credit_analyse_accepts_a_straight_line_protocol_within_budget() {
+        // Two consecutive sends; budget = 2 ⇒ enough window.
+        let s = SessionType::send("A", SessionType::send("B", SessionType::End));
+        assert!(s.credit_analyse(2).is_ok());
+    }
+
+    #[test]
+    fn credit_analyse_rejects_burst_overflow() {
+        // Three sends in a row; budget = 2 ⇒ the third send hits available = 0.
+        let s = SessionType::send(
+            "A",
+            SessionType::send("B", SessionType::send("C", SessionType::End)),
+        );
+        match s.credit_analyse(2) {
+            Err(CreditError::BurstOverflow { payload, budget: 2, .. }) => {
+                assert_eq!(payload, Payload::new("C"));
+            }
+            other => panic!("expected BurstOverflow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credit_analyse_rejects_explicit_send_at_zero() {
+        let s = SessionType::send_credit("X", 0, SessionType::End);
+        match s.credit_analyse(8) {
+            Err(CreditError::SendAtZero { payload }) => assert_eq!(payload, Payload::new("X")),
+            other => panic!("expected SendAtZero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credit_analyse_rejects_unsustainable_loop() {
+        // rec X. !A.!B.?Ack.X — Δ = 2 - 1 = 1 > 0; no finite budget keeps
+        // unbounded iteration in flight.
+        let s = SessionType::rec(
+            "X",
+            SessionType::send(
+                "A",
+                SessionType::send("B", SessionType::recv("Ack", SessionType::var("X"))),
+            ),
+        );
+        match s.credit_analyse(100) {
+            Err(CreditError::LoopUnsustainable { sends_per_iter: 2, recvs_per_iter: 1 }) => {}
+            other => panic!("expected LoopUnsustainable(2,1), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credit_analyse_accepts_a_balanced_loop() {
+        // rec X. !A.?Ack.X — Δ = 1 - 1 = 0; sustainable under budget ≥ 1.
+        let s = SessionType::rec(
+            "X",
+            SessionType::send("A", SessionType::recv("Ack", SessionType::var("X"))),
+        );
+        assert!(s.credit_analyse(1).is_ok());
+        assert!(s.credit_analyse(8).is_ok());
+    }
+
+    #[test]
+    fn credit_analyse_walks_choice_arms_worst_case() {
+        // +{ ask: !A.!B.end, quit: end } — the ask arm needs window 2.
+        let s = sel(&[
+            ("ask", SessionType::send("A", SessionType::send("B", SessionType::End))),
+            ("quit", SessionType::End),
+        ]);
+        assert!(s.credit_analyse(2).is_ok()); // both arms fit
+        assert!(matches!(
+            s.credit_analyse(1),
+            Err(CreditError::BurstOverflow { .. })
+        ));
+    }
+
+    #[test]
+    fn credit_delta_counts_per_iteration() {
+        // rec X. !A.!B.?Ack.X — the body's single recurring path has Δ = (2, 1).
+        let body = SessionType::send(
+            "A",
+            SessionType::send("B", SessionType::recv("Ack", SessionType::var("X"))),
+        );
+        assert_eq!(body.credit_delta("X"), (2, 1));
+        // Non-recurring tail (no Var(X)) yields no recurring paths → (0, 0).
+        let non_recurring = SessionType::send("A", SessionType::End);
+        assert_eq!(non_recurring.credit_delta("X"), (0, 0));
+        // Choice: only the recurring arm contributes; `cancel: end` is exempt.
+        let body_chat = sel(&[
+            (
+                "ask",
+                SessionType::send("U", SessionType::recv("Tok", SessionType::var("X"))),
+            ),
+            ("cancel", SessionType::End),
+        ]);
+        assert_eq!(body_chat.credit_delta("X"), (1, 1));
+    }
+
+    #[test]
+    fn credit_analyse_is_total_on_realistic_chat_dialogue() {
+        // The 41.a chat sample: rec X. +{ ask: !Utterance. &{ token: ?Token.X,
+        // done: end }, cancel: end }. Worst-case arm has Δ = 1 - 1 = 0.
+        let client = SessionType::rec(
+            "X",
+            sel(&[
+                (
+                    "ask",
+                    SessionType::send(
+                        "Utterance",
+                        brn(&[
+                            ("token", SessionType::recv("Token", SessionType::var("X"))),
+                            ("done", SessionType::End),
+                        ]),
+                    ),
+                ),
+                ("cancel", SessionType::End),
+            ]),
+        );
+        assert!(client.credit_analyse(4).is_ok());
+        // The dual receiver also conforms — symmetric credit.
+        assert!(client.dual().credit_analyse(4).is_ok());
     }
 }
