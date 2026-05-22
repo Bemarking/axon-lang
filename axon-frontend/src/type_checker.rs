@@ -2842,29 +2842,45 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// §Fase 41.b — `socket` validation (the typed-WS transport binding).
-    /// Enforces: (a) `protocol` references a **declared `session`** (whose two
-    /// roles are duality-checked via the §41.a algebra, so the dialogue carried
-    /// over the connection is conformant by construction); (b) the backpressure
-    /// credit window, if given, is **positive** — a 0-credit window cannot type
-    /// a send (§4.2 of the paper: a send at `n=0` has no typing rule).
+    /// §Fase 41.b/c — `socket` validation (the typed-WS transport binding).
+    /// Enforces, in order:
+    ///   (a) `protocol` references a **declared `session`** (whose two roles
+    ///       are duality-checked via the §41.a algebra, so the dialogue
+    ///       carried over the connection is conformant by construction);
+    ///   (b) the backpressure credit window, if given, is **positive** — a
+    ///       0-credit window cannot type a send (§4.2: no rule at n=0);
+    ///   (c) §Fase 41.c — the **Presburger discharge**: lower each role into
+    ///       the §41.a algebra, stamp with the socket's `credit(k)`, and run
+    ///       [`SessionType::credit_analyse`] — surfaces send-at-zero, burst
+    ///       overflow (the protocol demands a send-burst > k), and loop
+    ///       unsustainability (`Δ = #send − #recv > 0` per recurring path).
     fn check_socket(&mut self, node: &SocketDefinition) {
-        if node.protocol.is_empty() {
+        // (a) protocol shape.
+        let session = if node.protocol.is_empty() {
             self.emit(
                 format!("Socket '{}' has no `protocol:` — it must reference a declared session", node.name),
                 &node.loc,
             );
-        } else if find_session_by_name(self.program, &node.protocol).is_none() {
-            self.emit(
-                format!(
-                    "Socket '{}' protocol '{}' is not a declared session (the protocol must be a `session`)",
-                    node.name, node.protocol
-                ),
-                &node.loc,
-            );
-        }
-        if let Some(n) = node.backpressure_credit {
-            if n <= 0 {
+            None
+        } else {
+            match find_session_by_name(self.program, &node.protocol) {
+                Some(s) => Some(s),
+                None => {
+                    self.emit(
+                        format!(
+                            "Socket '{}' protocol '{}' is not a declared session (the protocol must be a `session`)",
+                            node.name, node.protocol
+                        ),
+                        &node.loc,
+                    );
+                    None
+                }
+            }
+        };
+        // (b) credit window must be positive — the static face of the n=0 axiom.
+        let budget: Option<u64> = match node.backpressure_credit {
+            Some(n) if n >= 1 => Some(n as u64),
+            Some(n) => {
                 self.emit(
                     format!(
                         "Socket '{}' backpressure credit must be ≥ 1 (got {n}); a 0-credit window \
@@ -2873,6 +2889,24 @@ impl<'a> TypeChecker<'a> {
                     ),
                     &node.loc,
                 );
+                None
+            }
+            None => None, // unbounded fragment — no credit constraints to discharge
+        };
+        // (c) Presburger discharge — only runs when (a) + (b) succeeded.
+        if let (Some(session), Some(budget)) = (session, budget) {
+            for role in &session.roles {
+                let lowered = lower_session_role(role).with_credit(budget);
+                if let Err(e) = lowered.credit_analyse(budget) {
+                    self.emit(
+                        format!(
+                            "Socket '{}' violates the credit-refined backpressure type of \
+                             session '{}' role '{}': {} (D2)",
+                            node.name, node.protocol, role.name, e
+                        ),
+                        &node.loc,
+                    );
+                }
             }
         }
     }
@@ -7450,5 +7484,121 @@ mod fase41b_choice_tests {
         }";
         let errs = TypeChecker::new(&parse_prog(src)).check();
         assert!(errs.iter().any(|e| e.message.contains("at least one") || e.message.contains("branch")), "{errs:?}");
+    }
+}
+
+#[cfg(test)]
+mod fase41c_credit_tests {
+    //! §Fase 41.c — the Presburger discharge wired into `check_socket`.
+    //! The bare session + dual is duality-checked (41.a/b); when a `socket`
+    //! binds `backpressure: credit(k)`, both roles are lowered, stamped with
+    //! `k`, and run through [`SessionType::credit_analyse`] — surfacing
+    //! send-at-zero, burst overflow and loop unsustainability as type errors.
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn parse_prog(src: &str) -> Program {
+        let toks = Lexer::new(src, "<t>").tokenize().expect("lex");
+        Parser::new(toks).parse().expect("parse")
+    }
+    fn errors(src: &str) -> Vec<TypeError> {
+        TypeChecker::new(&parse_prog(src)).check()
+    }
+    fn has(errs: &[TypeError], needle: &str) -> bool {
+        errs.iter().any(|e| e.message.contains(needle))
+    }
+
+    // A 2-send burst protocol — the client wants to put two messages on the
+    // wire back-to-back; under `credit(1)` the second send hits n=0.
+    const BURST_SESSION: &str =
+        "session Burst { client: [send A, send B, end] server: [receive A, receive B, end] }";
+
+    #[test]
+    fn credit_window_within_budget_is_accepted() {
+        let errs = errors(&format!(
+            "{BURST_SESSION}\nsocket S {{ protocol: Burst, backpressure: credit(2) }}"
+        ));
+        assert!(!has(&errs, "credit-refined"), "unexpected credit error: {errs:?}");
+        assert!(!has(&errs, "violates"), "{errs:?}");
+    }
+
+    #[test]
+    fn burst_overflow_is_rejected() {
+        let errs = errors(&format!(
+            "{BURST_SESSION}\nsocket S {{ protocol: Burst, backpressure: credit(1) }}"
+        ));
+        // The client role demands a 2-send burst; budget=1 cannot absorb it.
+        assert!(has(&errs, "credit-window overflow"), "expected burst overflow, got: {errs:?}");
+        assert!(has(&errs, "send-burst of 2"), "expected burst=2 detail, got: {errs:?}");
+        assert!(has(&errs, "credit(1)"), "expected budget=1 detail, got: {errs:?}");
+        // The dual `server` role is purely receives → no error attributed to it.
+        let server_errs: Vec<_> = errs
+            .iter()
+            .filter(|e| e.message.contains("role 'server'") && e.message.contains("credit-refined"))
+            .collect();
+        assert!(server_errs.is_empty(), "server role should be clean: {server_errs:?}");
+    }
+
+    #[test]
+    fn unsustainable_loop_is_rejected_at_any_budget() {
+        // rec X. !A.!B.?Ack.X — Δ = 2-1 = 1 > 0 per recurring iteration.
+        // No finite k is sufficient; even credit(100) is rejected statically.
+        let src = "session Drain {\n\
+            client: [send A, send B, receive Ack, loop]\n\
+            server: [receive A, receive B, send Ack, loop]\n\
+        }\nsocket S { protocol: Drain, backpressure: credit(100) }";
+        let errs = errors(src);
+        assert!(has(&errs, "unsustainable"), "expected loop unsustainability, got: {errs:?}");
+        assert!(has(&errs, "2 - 1 > 0"), "expected Δ detail, got: {errs:?}");
+    }
+
+    #[test]
+    fn balanced_loop_is_accepted_at_minimal_budget() {
+        // rec X. !A.?Ack.X — Δ = 1-1 = 0 ⇒ sustainable; budget=1 is enough.
+        let src = "session Pingpong {\n\
+            client: [send A, receive Ack, loop]\n\
+            server: [receive A, send Ack, loop]\n\
+        }\nsocket S { protocol: Pingpong, backpressure: credit(1) }";
+        let errs = errors(src);
+        assert!(!has(&errs, "credit-refined"), "{errs:?}");
+        assert!(!has(&errs, "unsustainable"), "{errs:?}");
+    }
+
+    #[test]
+    fn choice_arms_are_each_checked_under_budget() {
+        // The `ask` arm needs a 2-send burst; the `quit` arm terminates.
+        let src = "session Choice {\n\
+            client: [select { ask: [send Q, send R, end], quit: [end] }]\n\
+            server: [branch { ask: [receive Q, receive R, end], quit: [end] }]\n\
+        }\nsocket S { protocol: Choice, backpressure: credit(1) }";
+        let errs = errors(src);
+        assert!(has(&errs, "credit-window overflow"), "ask arm must overflow: {errs:?}");
+        // Same protocol under sufficient credit is clean.
+        let src_ok = src.replace("credit(1)", "credit(2)");
+        assert!(!has(&errors(&src_ok), "credit-refined"), "credit(2) should fit");
+    }
+
+    #[test]
+    fn no_backpressure_annotation_skips_credit_analysis() {
+        // Omitting `backpressure` leaves the protocol in the unbounded
+        // fragment (`!∞A.S`); the burst session typechecks clean.
+        let errs = errors(&format!(
+            "{BURST_SESSION}\nsocket S {{ protocol: Burst }}"
+        ));
+        assert!(!has(&errs, "credit-refined"), "{errs:?}");
+        assert!(!has(&errs, "violates"), "{errs:?}");
+    }
+
+    #[test]
+    fn zero_credit_still_caught_as_a_separate_diagnostic() {
+        // `credit(0)` was already rejected by 41.b's `≥ 1` check; 41.c does
+        // not silently swallow it — the earlier diagnostic still fires and
+        // the credit-analysis is skipped (no budget to discharge against).
+        let errs = errors(&format!(
+            "{BURST_SESSION}\nsocket S {{ protocol: Burst, backpressure: credit(0) }}"
+        ));
+        assert!(has(&errs, "credit must be"), "41.b ≥ 1 check still fires: {errs:?}");
+        assert!(!has(&errs, "credit-window overflow"), "no overflow-walking on bad budget: {errs:?}");
     }
 }
