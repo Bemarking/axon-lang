@@ -767,12 +767,17 @@ today.**
 
 # ▶ 13. The closing condition
 
-> **✅ FASE 39 CLOSED 2026-05-22.** All build/release/audit conditions met.
-> Two conditions were honestly **reclassified as Fase 40 handoffs** (see notes
-> below): the axon-enterprise catch-up and the adopter production migration.
-> The axon-lang language deliverable — Pure Silicon Cognition, zero language
-> Python, FlowEnvelope<T> canonical wire contract, the original adopter gap
-> structurally closed via axon-E039 — is **complete and live cross-stack**.
+> **✅ FASE 39 (LANGUAGE) CLOSED 2026-05-22 — but the v2.0.0 RELEASE CYCLE is
+> NOT yet complete.** The axon-lang language deliverable — Pure Silicon
+> Cognition, zero language Python, FlowEnvelope<T> canonical wire contract, the
+> original adopter gap structurally closed via axon-E039 — is **complete and
+> live cross-stack**. However, by the founder's catch-up-always directive, the
+> v2.0.0 change has NOT reached any Rust adopter until the enterprise Docker
+> image runs on v2.0.0. The pin-cap `axon-lang<2.0.0` (PR #48) is a tourniquet,
+> not a cure. **→ The v2.0.0 cycle completes in
+> [Fase 40](fase_40_enterprise_pure_silicon.md)** (axon-enterprise → 100%
+> Rust/C, consuming axon-lang 2.0.x via versioned Cargo dependency). Calling
+> this "two handoffs" earlier was a euphemism; Fase 40 is the real completion.
 
 Fase 39 closes when ALL of:
 
