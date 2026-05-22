@@ -25,7 +25,7 @@ from __future__ import annotations
 
 # Lives in lockstep with `axon-rs/Cargo.toml`, `pyproject.toml`, and
 # `axon/_bootstrap.py::_VERSION`. §Fase 39.i bumps to v2.0.0.
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 __all__ = ["__version__", "main"]
 
