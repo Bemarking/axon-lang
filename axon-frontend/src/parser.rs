@@ -5395,63 +5395,64 @@ impl Parser {
 
     fn parse_session_step(&mut self) -> Result<SessionStep, ParseError> {
         let tok = self.current().clone();
+        let loc = Loc { line: tok.line, column: tok.column };
         match tok.ttype {
             TokenType::Send => {
                 self.advance();
                 let msg = self.consume_any_ident_or_kw()?;
-                Ok(SessionStep {
-                    op: "send".to_string(),
-                    message_type: msg.value,
-                    loc: Loc {
-                        line: tok.line,
-                        column: tok.column,
-                    },
-                })
+                Ok(SessionStep { op: "send".into(), message_type: msg.value, loc, ..Default::default() })
             }
             TokenType::Receive => {
                 self.advance();
                 let msg = self.consume_any_ident_or_kw()?;
-                Ok(SessionStep {
-                    op: "receive".to_string(),
-                    message_type: msg.value,
-                    loc: Loc {
-                        line: tok.line,
-                        column: tok.column,
-                    },
-                })
+                Ok(SessionStep { op: "receive".into(), message_type: msg.value, loc, ..Default::default() })
             }
             TokenType::Loop => {
                 self.advance();
-                Ok(SessionStep {
-                    op: "loop".to_string(),
-                    message_type: String::new(),
-                    loc: Loc {
-                        line: tok.line,
-                        column: tok.column,
-                    },
-                })
+                Ok(SessionStep { op: "loop".into(), loc, ..Default::default() })
             }
             TokenType::End => {
                 self.advance();
-                Ok(SessionStep {
-                    op: "end".to_string(),
-                    message_type: String::new(),
-                    loc: Loc {
-                        line: tok.line,
-                        column: tok.column,
-                    },
-                })
+                Ok(SessionStep { op: "end".into(), loc, ..Default::default() })
+            }
+            // §Fase 41.b — choice: `select { ℓ: [..], … }` (⊕) | `branch { ℓ: [..], … }` (&).
+            // `select`/`branch` are not keywords — they arrive as identifiers.
+            TokenType::Identifier if tok.value == "select" || tok.value == "branch" => {
+                self.parse_session_choice(&tok.value, loc)
             }
             _ => Err(ParseError {
                 message: format!(
-                    "Invalid session step '{}' — expected send | receive | loop | end",
+                    "Invalid session step '{}' — expected send | receive | loop | end | select | branch",
                     tok.value
                 ),
                 line: tok.line,
                 column: tok.column,
-                            ..Default::default()
+                ..Default::default()
             }),
         }
+    }
+
+    /// §Fase 41.b — Parse a choice step: `select { ask: [..], cancel: [..] }`
+    /// (or `branch { … }`). Each `label: [steps]` arm is a nested sub-protocol.
+    fn parse_session_choice(&mut self, op: &str, loc: Loc) -> Result<SessionStep, ParseError> {
+        self.advance(); // consume `select` / `branch`
+        self.consume(TokenType::LBrace)?;
+        let mut branches = Vec::new();
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let label_tok = self.consume_any_ident_or_kw()?;
+            self.consume(TokenType::Colon)?;
+            let steps = self.parse_session_steps()?;
+            branches.push(SessionBranch {
+                label: label_tok.value,
+                steps,
+                loc: Loc { line: label_tok.line, column: label_tok.column },
+            });
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(SessionStep { op: op.to_string(), branches, loc, ..Default::default() })
     }
 
     /// Parse: `topology Name { nodes: [A, B, …]  edges: [A -> B : Session, …] }`.

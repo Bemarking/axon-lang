@@ -1303,13 +1303,7 @@ impl IRGenerator {
                 steps: r
                     .steps
                     .iter()
-                    .map(|s| IRSessionStep {
-                        node_type: "session_step",
-                        source_line: s.loc.line,
-                        source_column: s.loc.column,
-                        op: s.op.clone(),
-                        message_type: s.message_type.clone(),
-                    })
+                    .map(|s| self.lower_session_step_ir(s))
                     .collect(),
             })
             .collect();
@@ -1319,6 +1313,32 @@ impl IRGenerator {
             source_column: n.loc.column,
             name: n.name.clone(),
             roles,
+        }
+    }
+
+    /// §Fase 41.b — recursively lower a session step, including the nested
+    /// `select`/`branch` choice sub-protocols (each branch is its own ordered
+    /// step sequence). Mirrors the AST `SessionStep`/`SessionBranch` shape.
+    fn lower_session_step_ir(&self, s: &SessionStep) -> IRSessionStep {
+        IRSessionStep {
+            node_type: "session_step",
+            source_line: s.loc.line,
+            source_column: s.loc.column,
+            op: s.op.clone(),
+            message_type: s.message_type.clone(),
+            branches: s
+                .branches
+                .iter()
+                .map(|b| IRSessionBranch {
+                    node_type: "session_branch",
+                    label: b.label.clone(),
+                    steps: b
+                        .steps
+                        .iter()
+                        .map(|st| self.lower_session_step_ir(st))
+                        .collect(),
+                })
+                .collect(),
         }
     }
 

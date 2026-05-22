@@ -2757,26 +2757,60 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_session_role(&mut self, session_name: &str, role: &SessionRole) {
-        for (idx, step) in role.steps.iter().enumerate() {
-            if !matches!(step.op.as_str(), "send" | "receive" | "loop" | "end") {
-                self.emit(
-                    format!(
-                        "Session '{session_name}' role '{}' step #{idx} has invalid op '{}'",
-                        role.name, step.op
-                    ),
-                    &step.loc,
-                );
-                continue;
-            }
-            if matches!(step.op.as_str(), "send" | "receive") && step.message_type.is_empty() {
-                self.emit(
-                    format!(
-                        "Session '{session_name}' role '{}' step #{idx} '{}' \
-                         requires a message type",
-                        role.name, step.op
-                    ),
-                    &step.loc,
-                );
+        self.check_session_steps(session_name, &role.name, &role.steps);
+    }
+
+    /// §Fase 41.b — validate a step sequence, recursing into `select`/`branch`
+    /// arms: `send`/`receive` need a message type; a choice needs ≥ 1 branch
+    /// with unique labels; each branch's sub-protocol is validated recursively.
+    fn check_session_steps(&mut self, session_name: &str, role_name: &str, steps: &[SessionStep]) {
+        for (idx, step) in steps.iter().enumerate() {
+            match step.op.as_str() {
+                "send" | "receive" => {
+                    if step.message_type.is_empty() {
+                        self.emit(
+                            format!(
+                                "Session '{session_name}' role '{role_name}' step #{idx} '{}' \
+                                 requires a message type",
+                                step.op
+                            ),
+                            &step.loc,
+                        );
+                    }
+                }
+                "loop" | "end" => {}
+                "select" | "branch" => {
+                    if step.branches.is_empty() {
+                        self.emit(
+                            format!(
+                                "Session '{session_name}' role '{role_name}' step #{idx} '{}' must \
+                                 have at least one branch",
+                                step.op
+                            ),
+                            &step.loc,
+                        );
+                    }
+                    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                    for b in &step.branches {
+                        if !seen.insert(b.label.as_str()) {
+                            self.emit(
+                                format!(
+                                    "Session '{session_name}' role '{role_name}' choice has \
+                                     duplicate branch label '{}'",
+                                    b.label
+                                ),
+                                &b.loc,
+                            );
+                        }
+                        self.check_session_steps(session_name, role_name, &b.steps);
+                    }
+                }
+                other => {
+                    self.emit(
+                        format!("Session '{session_name}' role '{role_name}' step #{idx} has invalid op '{other}'"),
+                        &step.loc,
+                    );
+                }
             }
         }
     }
@@ -5062,26 +5096,48 @@ impl<'a> TypeChecker<'a> {
 /// (`[send T, loop]` ↦ `μX. !T.X`). Prefix `end`/`loop` (malformed; caught by
 /// `check_session_role`) are treated as the tail.
 fn lower_session_role(role: &SessionRole) -> SessionType {
-    let n = role.steps.len();
-    let terminal_loop = role.steps.last().is_some_and(|s| s.op == "loop");
-    // Fold the body (every step before a terminal end/loop) right-to-left over
-    // the tail: `X` if the role loops, else `end`.
-    let body_end = if n > 0 && matches!(role.steps[n - 1].op.as_str(), "end" | "loop") { n - 1 } else { n };
-    let mut acc = if terminal_loop { SessionType::var("X") } else { SessionType::End };
-    for step in role.steps[..body_end].iter().rev() {
-        acc = match step.op.as_str() {
-            "send" => SessionType::send(step.message_type.clone(), acc),
-            "receive" => SessionType::recv(step.message_type.clone(), acc),
-            // A mid-sequence end/loop is malformed; `check_session_role` already
-            // flags it. Lowering ignores it so duality diagnostics stay focused.
-            _ => acc,
-        };
-    }
-    if terminal_loop {
-        SessionType::rec("X", acc)
+    let body = lower_session_steps(&role.steps);
+    // A single role-level `μX` is the loop-back point: any `loop` (at the top
+    // level or inside a branch) recurses to the role's start.
+    if steps_contain_loop(&role.steps) {
+        SessionType::rec("X", body)
     } else {
-        acc
+        body
     }
+}
+
+/// Lower a step sequence into a [`SessionType`] (§Fase 41.b). `send`/`receive`
+/// prefix the continuation; `end`↦`end`, `loop`↦`X` (the role-level recursion
+/// var); `select`/`branch` are terminal choices whose labelled branches each
+/// lower recursively (their own sub-protocol).
+fn lower_session_steps(steps: &[SessionStep]) -> SessionType {
+    let Some((first, rest)) = steps.split_first() else {
+        return SessionType::End;
+    };
+    match first.op.as_str() {
+        "send" => SessionType::send(first.message_type.clone(), lower_session_steps(rest)),
+        "receive" => SessionType::recv(first.message_type.clone(), lower_session_steps(rest)),
+        "loop" => SessionType::var("X"),
+        "end" => SessionType::End,
+        "select" => SessionType::select(branch_types(&first.branches)),
+        "branch" => SessionType::branch(branch_types(&first.branches)),
+        // Malformed mid-sequence op; `check_session_role` flags it. Skip so
+        // duality diagnostics stay focused on the real shape.
+        _ => lower_session_steps(rest),
+    }
+}
+
+fn branch_types(branches: &[SessionBranch]) -> impl Iterator<Item = (String, SessionType)> + '_ {
+    branches.iter().map(|b| (b.label.clone(), lower_session_steps(&b.steps)))
+}
+
+/// True if any step (top-level or inside a `select`/`branch`) is a `loop` — the
+/// role then carries a single `μX` whose `X` every `loop` recurses to.
+fn steps_contain_loop(steps: &[SessionStep]) -> bool {
+    steps.iter().any(|s| {
+        s.op == "loop"
+            || (matches!(s.op.as_str(), "select" | "branch") && s.branches.iter().any(|b| steps_contain_loop(&b.steps)))
+    })
 }
 
 /// Directed-graph cycle detector (DFS with gray/black colouring). Returns
@@ -7295,5 +7351,104 @@ mod fase41b_socket_tests {
     fn socket_with_zero_credit_window_is_rejected() {
         let errs = errors(&format!("{SESSION}\nsocket ChatWS {{ protocol: Chat, backpressure: credit(0) }}"));
         assert!(errs.iter().any(|e| e.message.contains("credit must be")), "{errs:?}");
+    }
+}
+
+#[cfg(test)]
+mod fase41b_choice_tests {
+    //! §Fase 41.b — `select`/`branch` choice steps (⊕ / &): nested sub-protocols
+    //! that lower into `SessionType::Select`/`Branch`, with duality decided by
+    //! the connection law (`select` is dual to `branch` arm-for-arm).
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+    use std::collections::BTreeMap;
+
+    fn parse_prog(src: &str) -> Program {
+        let toks = Lexer::new(src, "<t>").tokenize().expect("lex");
+        Parser::new(toks).parse().expect("parse")
+    }
+    fn session<'a>(p: &'a Program, name: &str) -> &'a SessionDefinition {
+        p.declarations
+            .iter()
+            .find_map(|d| match d {
+                Declaration::Session(s) if s.name == name => Some(s),
+                _ => None,
+            })
+            .expect("session declared")
+    }
+    fn role_of<'a>(s: &'a SessionDefinition, name: &str) -> &'a SessionRole {
+        s.roles.iter().find(|r| r.name == name).expect("role")
+    }
+
+    // A session whose two roles disagree only by direction inside each arm:
+    // client offers a choice (⊕), server accepts it (&) — genuinely dual.
+    const CHOICE: &str = "session Negotiate {\n\
+        client: [select { ask: [send Query, receive Answer, end], quit: [end] }]\n\
+        server: [branch { ask: [receive Query, send Answer, end], quit: [end] }]\n\
+    }";
+
+    #[test]
+    fn select_branch_steps_parse_with_nested_arms() {
+        let p = parse_prog(CHOICE);
+        let s = session(&p, "Negotiate");
+        let client = role_of(s, "client");
+        assert_eq!(client.steps.len(), 1);
+        assert_eq!(client.steps[0].op, "select");
+        let labels: Vec<_> = client.steps[0].branches.iter().map(|b| b.label.as_str()).collect();
+        assert_eq!(labels, vec!["ask", "quit"]);
+        // The `ask` arm carries its own ordered sub-protocol.
+        let ask = &client.steps[0].branches[0];
+        assert_eq!(ask.steps.iter().map(|s| s.op.as_str()).collect::<Vec<_>>(), vec!["send", "receive", "end"]);
+    }
+
+    #[test]
+    fn select_lowers_to_session_type_select() {
+        let p = parse_prog(CHOICE);
+        let client = lower_session_role(role_of(session(&p, "Negotiate"), "client"));
+        let mut arms = BTreeMap::new();
+        arms.insert("ask".to_string(), SessionType::send("Query", SessionType::recv("Answer", SessionType::End)));
+        arms.insert("quit".to_string(), SessionType::End);
+        assert_eq!(client, SessionType::Select(arms));
+    }
+
+    #[test]
+    fn select_is_dual_to_matching_branch() {
+        // The connection law for choice: ⊕{ℓ:Sℓ} ⊥ &{ℓ:S̄ℓ} arm-for-arm.
+        let p = parse_prog(CHOICE);
+        let s = session(&p, "Negotiate");
+        let client = lower_session_role(role_of(s, "client"));
+        let server = lower_session_role(role_of(s, "server"));
+        assert!(client.is_dual_to(&server));
+        assert!(server.is_dual_to(&client));
+    }
+
+    #[test]
+    fn choice_session_typechecks_clean() {
+        let errs = TypeChecker::new(&parse_prog(CHOICE)).check();
+        assert!(
+            !errs.iter().any(|e| e.message.contains("not dual") || e.message.contains("Session")),
+            "unexpected session error: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn choice_with_duplicate_labels_is_rejected() {
+        let src = "session Bad {\n\
+            client: [select { ask: [end], ask: [end] }]\n\
+            server: [branch { ask: [end] }]\n\
+        }";
+        let errs = TypeChecker::new(&parse_prog(src)).check();
+        assert!(errs.iter().any(|e| e.message.contains("duplicate") || e.message.contains("label")), "{errs:?}");
+    }
+
+    #[test]
+    fn empty_choice_is_rejected() {
+        let src = "session Bad {\n\
+            client: [select {  }]\n\
+            server: [branch {  }]\n\
+        }";
+        let errs = TypeChecker::new(&parse_prog(src)).check();
+        assert!(errs.iter().any(|e| e.message.contains("at least one") || e.message.contains("branch")), "{errs:?}");
     }
 }
