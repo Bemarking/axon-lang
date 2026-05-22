@@ -116,6 +116,9 @@ pub enum Declaration {
     View(ViewDefinition),
     /// §λ-L-E Fase 13 — Mobile typed channels (paper_mobile_channels.md).
     Channel(ChannelDefinition),
+    /// §Fase 41.b — typed WebSocket transport binding a `session` protocol
+    /// (paper_websocket_cognitive_primitive.md).
+    Socket(SocketDefinition),
     /// Tier 3+ declarations parsed structurally (balanced braces, no detailed AST).
     Generic(GenericDeclaration),
 }
@@ -321,6 +324,35 @@ pub struct SessionDefinition {
     pub leading_trivia: Vec<crate::tokens::Trivia>,
     /// Fase 14.b — trailing comment trivia (same line as the
     /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// `socket Name { protocol: SessionRef, backpressure: credit(n), reconnect:
+/// cognitive_state, legal_basis: ... }`
+///
+/// §Fase 41.b — the typed WebSocket transport (paper_websocket_cognitive_primitive.md).
+/// `socket` is NOT the protocol — the protocol is a `session` it references by
+/// name (protocol and transport kept separate but composable). The type checker
+/// resolves `protocol` to a declared `session` (whose two roles are already
+/// duality-checked via the §41.a algebra), so the dialogue carried over the WS
+/// connection is conformant + deadlock-free by construction.
+#[derive(Debug, Default)]
+pub struct SocketDefinition {
+    pub name: String,
+    /// The referenced `session` declaration's name — the protocol.
+    pub protocol: String,
+    /// The credit window of the typed-resource backpressure (`credit(n)`);
+    /// `None` if unspecified. A `0` credit is rejected by the type checker.
+    pub backpressure_credit: Option<i64>,
+    /// `reconnect: cognitive_state` → `true` (resume mid-dialogue via a sealed
+    /// §40.t snapshot); absent or `reconnect: none` → `false`.
+    pub reconnect: bool,
+    /// Optional `legal_basis:` annotation (enterprise audit/shield gate).
+    pub legal_basis: Option<String>,
+    pub loc: Loc,
+    /// Fase 14.b — leading comment trivia.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia.
     pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
