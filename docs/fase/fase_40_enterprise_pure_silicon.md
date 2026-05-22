@@ -1,6 +1,6 @@
 ---
 title: "Plan vivo: Fase 40 — Enterprise Pure Silicon (the real v2.0.0 catch-up: axon-enterprise → 100% Rust/C)"
-status: 🛠️ IN PROGRESS — 40.a–40.k SHIPPED; 40.l CORE SHIPPED (login engine + repo traits + schema verified offline; axum/sqlx/KMS/samael assembly pending live-Postgres CI). 40.a (Rust workspace foundation). 40.b (OSS shield-scanner hook → axon-lang v2.1.0). 40.c (HIPAA/legal/AML vertical cognition — checksum-validated, leak-safe). 40.d (supervisor hardening — backoff/policies/budgets/health/Merkle-audit/hierarchy wrapping the OSS DaemonSupervisor). D1 ratified founder 2026-05-21.
+status: 🛠️ IN PROGRESS — 40.a–40.k + 40.m SHIPPED; 40.l CORE SHIPPED (login engine + axum router verified offline; sqlx/KMS/samael pending live-Postgres CI). ⚠️ §14 SCOPE RECKONING (2026-05-22): ~17K LOC across 12 SaaS domains (metering/audit/compliance/diagnostics/observability/cli/http/config/cognitive_states/replay/api_keys/invitations) have no sub-fase — founder triage needed before purga (40.o) + release (40.q). 40.a (Rust workspace foundation). 40.b (OSS shield-scanner hook → axon-lang v2.1.0). 40.c (HIPAA/legal/AML vertical cognition — checksum-validated, leak-safe). 40.d (supervisor hardening — backoff/policies/budgets/health/Merkle-audit/hierarchy wrapping the OSS DaemonSupervisor). D1 ratified founder 2026-05-21.
 owner: AXON Compiler + Runtime + Enterprise Team
 created: 2026-05-21
 target: |
@@ -143,7 +143,7 @@ one image. ENTRYPOINT flips to `axon-enterprise-server`.
 | **40.j** ✅ SHIPPED 2026-05-22 | SaaS — SSO → Rust (`openidconnect` for OIDC/PKCE/discovery/id-token; **SAML risk per D7**). | ✅ New BSL crate `crates/saas-sso` (`axon-enterprise-sso`). **pkce.rs**: RFC 7636 **S256 ONLY** (`plain` rejected — downgrade defence), verified against the RFC 7636 Appendix B vector. **state.rs**: CSRF state + replay nonce + PKCE pair generation; validation rejects replay (single-use) / expiry / mismatch. **id_token.rs**: OIDC ID-token claim validation (exact iss, aud-contains-client_id, exp, nonce) per OIDC Core §3.1.3.7. **discovery.rs**: discovery-doc parse. **mapper.rs**: OIDC/SAML claims → canonical identity + group→role resolution (no implicit creation, dedup preserving order). **saml.rs**: **type-state safety boundary** (founder D7 hardening, commit `c3c3cbb`) — `VerifiedSamlAssertion` has NO public constructor; the only path is `verify_assertion()`, which requires an `XmlDsigBackend`. Raw input is an opaque `UnverifiedSamlDocument` with no trusted accessors → the **compiler forbids acting on unverified SAML** (illegal states unrepresentable). **Strict binding (anti-XSW)**: backend returns ONLY the signature-verified subtree's fields (`VerifiedNodes`); raw XML never re-parsed for trusted data. **One-time-use replay cache** (TTL=NotOnOrAfter, Redis-backed at 40.l) + **clock-skew capped ≤5 min** (never widened) + **exact-binary audience** match vs SP EntityID (no trim). `XmlDsigBackend` contract documents the 40.l duties (no XXE: disable DTD/external entities; bound entity-expansion/size/time vs XML bombs; enveloped-signature over the whole element by ID; process timeout/memory cap + input sanitisation). Crypto signature verification stays delegated to the vetted backend at 40.l, but the type system now ENFORCES no assertion is trusted until that backend verified it. **18 tests (incl. RFC 7636 vector + mock-backend full path: replay/expired/audience/skew-cap); full workspace green.** Commits `9106c88` + `c3c3cbb`. **Honest scope**: HTTP fetches + ID-token SIGNATURE verification (IdP JWKS, RS256) + SAML XML-DSig compose at 40.l. | 
 | **40.k** ✅ SHIPPED 2026-05-22 | SaaS — Secrets + crypto envelope → Rust (RustCrypto + `aws-sdk-kms`; local + KMS envelope; policy). | ✅ New BSL crate `crates/saas-crypto` (`axon-enterprise-crypto`) — **beats the typical "AES-GCM with one fixed key" design**. **envelope.rs**: `EnvelopeEncryption` trait + canonical AAD serialization (sorted, separator-rejecting wire contract) + versioned format (0x01 local / 0x02 KMS). **local.rs**: `LocalEnvelope` — per encrypt fresh salt → HKDF-SHA256(master, salt, info=AAD) → per-record AES-256 subkey → AES-256-GCM(nonce, pt, aad=AAD). **AAD bound in BOTH the HKDF info AND the GCM tag** → a ciphertext cannot be replayed across users/purposes (AAD-swap defence test proves it). Master key + derived subkeys `Zeroizing` (wiped on drop). **value.rs**: `SecretValue` — opaque, self-redacting (Debug/Display never leak), **ZEROIZE-ON-DROP** plaintext (a guarantee the GC'd Python original could NOT make), constant-time eq, audit-safe SHA-256 fingerprint. **14 tests** (roundtrip/AAD-swap/tamper/cross-key isolation/zeroize/SHA-256 fingerprint vector) + full workspace green. This is where 40.g's TOTP secret is sealed at rest (AAD `{user_id, purpose}`). Commit `c18009e`. **Honest scope**: deterministic local backend + SecretValue ship; KMS backend (`aws-sdk-kms`, format 0x02) implements the trait + composes at 40.l. | 
 | **40.l** 🟡 CORE SHIPPED 2026-05-22 (infra assembly pending live-Postgres CI) | HTTP API convergence on **axum**: unify enterprise endpoints into the axon-rs axum app (tenant-context middleware, RBAC enforcement, audit, metering, OpenAPI, discovery). | 🟡 New BSL crate `crates/server` (`axon-enterprise-server`). 40.a–40.k shipped deterministic units; **the verified, offline-testable security CORE of the integration ships here**: **auth.rs** `evaluate_login` — the login state machine as a PURE function (lockout window → Argon2id verify → TOTP-at-rest decrypt+verify → transparent rehash) with anti-enumeration timing parity (unknown user / SSO-only account still spends a full Argon2 verify), composing 40.g identity + 40.k crypto; returns a `LoginDecision` the async wrapper persists. **8 tests incl. an end-to-end TOTP-at-rest flow** (enrol via envelope → require → wrong → correct) + rehash + lockout-crossing + every reject path. **store.rs** `UserStore`/`SessionStore` repo traits (DB boundary — keeps orchestration mockable). **schema.rs** core-table DDL from the 40.f RLS generators (fail-closed) + test. **errors.rs** `AuthError` (reveal_to_client discipline). 10 tests. Commit `e856b80`. **+ axum server assembly (commit `de790ef`)**: `http.rs` AppState (`Arc<dyn UserStore/SessionStore>` + `KeyRing` + envelope + hasher + configs) + `build_router` (`/healthz`, `/version`, `/.well-known/jwks.json`, `/token`) + the async `login` wrapper (find→evaluate→persist→mint §40.i JWT) + error→HTTP mapping (credential failures → generic 401). `store.rs` repo traits → `#[async_trait]` (dyn-compatible). `mock.rs` in-memory stores. **axum pinned to 0.8 to UNIFY with the OSS axon-server's axum** (single axum in the graph — prerequisite for one binary). **Tested offline via `tower::oneshot`**: `/token` mints a verifiable JWT with the right claims; **wrong-password ≡ unknown-user response proves anti-enumeration end-to-end**. **14 server tests + full workspace green.** **Honest status — NOT fully shipped like 40.a–k**: the HTTP surface + login flow are built+tested, but the remaining infra-bound completion (sqlx repos backing the traits, SSO `/sso/oidc|saml/*` callbacks + tenant/RBAC middleware, the KMS envelope backend, the vetted `XmlDsigBackend`, per-domain migrations, Docker cutover) needs live Postgres/AWS/HTTP and lands in the **real-Postgres CI lane**. Completes when that CI lane is green. | 
-| **40.m** | Studio / debugger + remaining modules → Rust or honest deferral with reason. | ⏳ |
+| **40.m** ✅ SHIPPED 2026-05-22 | Studio / debugger + remaining modules → Rust or honest deferral with reason. | ✅ New BSL crate `crates/studio` (`axon-enterprise-studio`), std-only. Ports the **complete deterministic part** of `studio/debugger.py`: breakpoint registry (set/remove/disable/list) + execution-snapshot store (capture/scoped-retrieval), in-memory + tested. The Python `step_into`/`step_over`/`continue_execution` were unimplemented stubs (`return None`) needing a **runtime debug hook in axon-rs** (pause-at-line + expose-locals + single-step) that does not exist — **honestly deferred** (`FlowDebugger::STEP_API_STATUS`) rather than ported as no-ops. 3 tests. Commit `853a148`. **⚠️ Surfaced a SCOPE RECKONING — see §14.** |
 | **40.n** | Test migration (mirror 39.g): enterprise Python tests → Rust integration / subprocess tests; honest quarantine of the rest with PR reason. | ⏳ |
 | **40.o** | Purga: remove ALL Python from axon-enterprise (mirror 39.h). `axon_enterprise/` + `pyproject.toml` + `alembic/` Python → gone; repo becomes a pure Rust/C workspace. | ⏳ |
 | **40.p** | Dockerfile cutover: single `axon-enterprise-server` binary compiled in; `ENTRYPOINT` flip; remove the `AXON_VERSION` download stage (axon-lang is a compiled-in Cargo dep now, not a downloaded binary); multi-arch amd64/arm64. | ⏳ |
@@ -214,6 +214,45 @@ Fase 40 closes — and the v2.0.0 cycle finally completes — when ALL of:
 - ❌ Enterprise reaches axon-lang via FFI/subprocess instead of a Cargo dependency.
 - ❌ A dual-runtime parity gate exists (the tax Fase 39 killed must stay dead).
 - ❌ The pin-cap was lifted before the Rust path was proven (D2 violated).
+
+# ▶ 14. Scope reckoning (surfaced at 40.m, 2026-05-22)
+
+40.m's "remaining modules" inventory revealed that the original sub-fase set
+(40.a–40.r) **under-scoped the SaaS breadth**. The plan enumerated db / identity
+/ rbac / jwt / sso / secrets-crypto + verticals / supervisor / catalogs / studio
+— but `axon_enterprise/` holds **~17K LOC across 12 more domains with no
+sub-fase**:
+
+| Domain | LOC | Nature |
+|--------|-----|--------|
+| `http` | 4,637 | HTTP API layer — largely composes at 40.l (axum) |
+| `compliance` | 2,984 | compliance engine (Fase 29 lineage) — substantial |
+| `diagnostics` | 1,935 | diagnostics (Fase 29 lineage) — substantial |
+| `metering` | 1,717 | usage metering + billing — substantial |
+| `cli` | 1,311 | enterprise CLI — converges with axon-server CLI |
+| `audit` | 1,065 | Merkle audit log (axon-csys-enterprise has the C23 mmap kernel; supervisor has a chain) |
+| `observability` | 926 | OTel / Prometheus exporters — infra integration |
+| `config` | 742 | settings (partly covered by per-crate configs) |
+| `cognitive_states` | 579 | cognitive-state persistence |
+| `replay` | 460 | replay tokens |
+| `api_keys` | 359 | tenant API keys |
+| `invitations` | 235 | user invitations |
+
+Plus the DB-backed `service.py` / `models.py` layers of the already-ported
+domains (those shipped their deterministic CORES only).
+
+**Implication:** the purga (40.o) CANNOT run until these are ported or
+explicitly dropped — deleting `axon_enterprise/` Python today loses audit /
+metering / compliance / diagnostics / etc. The release (40.q) + pin-cap lift
+require a functionally-complete Rust enterprise.
+
+**Decision needed (founder):** triage which domains are essential for the v2.0.0
+enterprise release vs deferrable, and re-plan the tail with explicit sub-fases
+for the essential ones. The auth/security spine (db/identity/rbac/jwt/sso/crypto/
+supervisor/vertical) + the login-flow integration are DONE; the business domains
+(metering/billing, audit, compliance, diagnostics) are the next substantial body
+of work. Much of `http`/`observability`/`cli`/`config` is integration/infra that
+composes rather than ports 1:1.
 
 ---
 
