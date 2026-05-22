@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 
 use crate::ast::*;
+use crate::session::SessionType;
 use crate::epistemic;
 
 // ── Valid value sets (mirrors Python frozensets) ─────────────────────────────
@@ -2776,39 +2777,30 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// §Fase 41.b — duality is now decided by the **session-type algebra**
+    /// (`crate::session`): each role is lowered to a [`SessionType`] (with
+    /// `loop` becoming an equirecursive `μ`), and the two are checked under the
+    /// **connection law** `T₂ ≡ T₁⊥` via regular-coinductive duality. This
+    /// supersedes the old positional, equal-length, step-by-step check — which
+    /// could not reason about `loop` as a recursion point — and grounds the
+    /// language's binary-session duality in linear logic (Caires–Pfenning).
     fn check_session_duality(&mut self, node: &SessionDefinition) {
-        let r1 = &node.roles[0];
-        let r2 = &node.roles[1];
-        if r1.steps.len() != r2.steps.len() {
+        let t1 = lower_session_role(&node.roles[0]);
+        let t2 = lower_session_role(&node.roles[1]);
+        if !t1.is_dual_to(&t2) {
             self.emit(
                 format!(
-                    "Session '{}' duality violation: roles '{}' ({} steps) and \
-                     '{}' ({} steps) have different lengths",
+                    "Session '{}' duality violation: role '{}' has the session type `{}`, \
+                     whose dual is `{}`, but role '{}' has `{}` (expected the dual)",
                     node.name,
-                    r1.name,
-                    r1.steps.len(),
-                    r2.name,
-                    r2.steps.len()
+                    node.roles[0].name,
+                    t1,
+                    t1.dual(),
+                    node.roles[1].name,
+                    t2,
                 ),
                 &node.loc,
             );
-            return;
-        }
-        for (i, (s1, s2)) in r1.steps.iter().zip(r2.steps.iter()).enumerate() {
-            if !steps_dual(s1, s2) {
-                self.emit(
-                    format!(
-                        "Session '{}' duality violation at step #{i}: '{}' has \
-                         '{}' but '{}' has '{}' (expected the dual)",
-                        node.name,
-                        r1.name,
-                        format_step(s1),
-                        r2.name,
-                        format_step(s2)
-                    ),
-                    &node.loc,
-                );
-            }
         }
     }
 
@@ -5024,19 +5016,32 @@ impl<'a> TypeChecker<'a> {
 
 /// Honda-Vasconcelos duality on a single step pair:
 /// `send T ↔ receive T`, `loop ↔ loop`, `end ↔ end`.
-fn steps_dual(s1: &SessionStep, s2: &SessionStep) -> bool {
-    match (s1.op.as_str(), s2.op.as_str()) {
-        ("send", "receive") | ("receive", "send") => s1.message_type == s2.message_type,
-        ("loop", "loop") | ("end", "end") => true,
-        _ => false,
+/// §Fase 41.b — lower a Fase 4 [`SessionRole`] (a flat `send`/`receive`/`loop`/
+/// `end` step list) into the [`SessionType`] algebra of `crate::session`:
+/// `send T` ↦ `!T.·`, `receive T` ↦ `?T.·`, a terminal `end` ↦ `end`, and a
+/// terminal `loop` ↦ a `μ`-recursion back to the role's start
+/// (`[send T, loop]` ↦ `μX. !T.X`). Prefix `end`/`loop` (malformed; caught by
+/// `check_session_role`) are treated as the tail.
+fn lower_session_role(role: &SessionRole) -> SessionType {
+    let n = role.steps.len();
+    let terminal_loop = role.steps.last().is_some_and(|s| s.op == "loop");
+    // Fold the body (every step before a terminal end/loop) right-to-left over
+    // the tail: `X` if the role loops, else `end`.
+    let body_end = if n > 0 && matches!(role.steps[n - 1].op.as_str(), "end" | "loop") { n - 1 } else { n };
+    let mut acc = if terminal_loop { SessionType::var("X") } else { SessionType::End };
+    for step in role.steps[..body_end].iter().rev() {
+        acc = match step.op.as_str() {
+            "send" => SessionType::send(step.message_type.clone(), acc),
+            "receive" => SessionType::recv(step.message_type.clone(), acc),
+            // A mid-sequence end/loop is malformed; `check_session_role` already
+            // flags it. Lowering ignores it so duality diagnostics stay focused.
+            _ => acc,
+        };
     }
-}
-
-fn format_step(s: &SessionStep) -> String {
-    if matches!(s.op.as_str(), "send" | "receive") {
-        format!("{} {}", s.op, s.message_type)
+    if terminal_loop {
+        SessionType::rec("X", acc)
     } else {
-        s.op.clone()
+        acc
     }
 }
 
@@ -7146,5 +7151,54 @@ mod fase39a_flow_envelope_tests {
              surface axon-T9XX through the unwrap (the wrap is \
              transparent to the cardinality contract). Errors: {errs:#?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod fase41b_session_lowering_tests {
+    //! §Fase 41.b — the Fase 4 `session` surface lowered into the §41.a
+    //! session-type algebra, with duality decided by the connection law
+    //! (regular-coinductive `is_dual_to`) rather than the old positional check.
+    use super::*;
+
+    fn step(op: &str, ty: &str) -> SessionStep {
+        SessionStep { op: op.into(), message_type: ty.into(), ..Default::default() }
+    }
+    fn role(name: &str, steps: Vec<SessionStep>) -> SessionRole {
+        SessionRole { name: name.into(), steps, ..Default::default() }
+    }
+
+    #[test]
+    fn lowers_send_receive_end_to_session_type() {
+        let r = role("client", vec![step("send", "T"), step("receive", "U"), step("end", "")]);
+        assert_eq!(lower_session_role(&r), SessionType::send("T", SessionType::recv("U", SessionType::End)));
+    }
+
+    #[test]
+    fn lowers_terminal_loop_to_mu_recursion() {
+        // `[send T, loop]` ↦ `μX. !T.X` — the loop is a recursion point, not a token.
+        let r = role("p", vec![step("send", "T"), step("loop", "")]);
+        assert_eq!(lower_session_role(&r), SessionType::rec("X", SessionType::send("T", SessionType::var("X"))));
+    }
+
+    #[test]
+    fn dual_recursive_roles_satisfy_the_connection_law() {
+        // The case the old positional check could not reason about as recursion:
+        // client loops sending T; server loops receiving T — genuinely dual.
+        let client = lower_session_role(&role("c", vec![step("send", "T"), step("loop", "")]));
+        let server = lower_session_role(&role("s", vec![step("receive", "T"), step("loop", "")]));
+        assert!(client.is_dual_to(&server));
+        assert!(server.is_dual_to(&client)); // symmetric up to involutivity
+    }
+
+    #[test]
+    fn non_dual_roles_are_rejected() {
+        let a = lower_session_role(&role("a", vec![step("send", "T"), step("end", "")]));
+        // Same direction → not dual.
+        let same = lower_session_role(&role("b", vec![step("send", "T"), step("end", "")]));
+        assert!(!a.is_dual_to(&same));
+        // Dual direction but mismatched payload → not dual.
+        let wrong = lower_session_role(&role("c", vec![step("receive", "WRONG"), step("end", "")]));
+        assert!(!a.is_dual_to(&wrong));
     }
 }
