@@ -38,7 +38,7 @@ from pathlib import Path
 
 # Bumped in lockstep with the release (Cargo.toml + pyproject.toml).
 # §Fase 39.i sets this to the v2.0.0 release version.
-_VERSION = "2.2.0"
+_VERSION = "2.3.0"
 
 _RELEASE_BASE = "https://github.com/Bemarking/axon-lang/releases/download"
 
