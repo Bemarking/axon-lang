@@ -166,8 +166,8 @@ env var → in-tree dev path (`<crate>/../knowledge`) → embedded corpus.
 |---|---|---|
 | **0** | Server spine (stdio JSON-RPC 2.0), knowledge loader, `axon.primitives` + `axon.primitive_doc`, `axon://primitives/{name}` resources, `socket` primitive documented end-to-end | ✅ |
 | **1** | `axon.check` (live validation) + `axon.parse` (IR introspection) + embedded corpus (`cargo install` ships self-contained) | ✅ |
-| **2** | The 6 **core cognitive primitives** — `persona`, `flow`, `step`, `anchor`, `tool`, `reason` — each backed by a canonical `.axon` example that round-trips through `axon-frontend` end-to-end (44 tests green). Remaining ~60 primitives staged in follow-up 2.x increments. | ◐ in progress |
-| **3** | Grammar resources (`axon://grammar/top_level`, `composition`, `ebnf`), flow logic resources, compliance resources | |
+| **2** | The 6 **core cognitive primitives** — `persona`, `flow`, `step`, `anchor`, `tool`, `reason` — each backed by a canonical `.axon` example that round-trips through `axon-frontend` end-to-end. Remaining ~60 primitives staged in follow-up 2.x increments. | ◐ in progress |
+| **3** | **Reference resources** — `axon://grammar/{top_level\|composition\|ebnf}`, `axon://logic/{flow_composition\|session_duality}`, `axon://compliance/{hipaa\|gdpr\|pci_dss\|sox\|soc2\|fedramp\|gxp\|fisma\|nist_800_53}`. The Catalog now loads `grammar/`, `logic/`, `compliance/` markdown alongside `primitives/`; the resource dispatcher serves all four URI families with structured errors. | ✅ |
 | **4** | `axon.compose(intent)` — natural language brief → typed scaffold with correct compliance shields | |
 | **5** | MCP prompts (`flow_design`, `shield_design`, `session_design`) | |
 
