@@ -10,8 +10,10 @@
 //!   sends `notifications/initialized`; ready.
 //! - Request/response: `id` echoes; `result` xor `error`.
 //! - Notifications: `id` absent → no reply.
-//! - Methods we serve (Phase 0): `initialize`, `tools/list`,
-//!   `tools/call`, `resources/list`, `resources/read`, `ping`.
+//! - Methods served: `initialize`, `ping`,
+//!   `tools/list`, `tools/call`,
+//!   `resources/list`, `resources/read`,
+//!   `prompts/list`, `prompts/get`.
 //!
 //! Anything beyond this subset returns `-32601 method not found`.
 //! Everything is dispatched off a single match in [`dispatch`].
@@ -23,7 +25,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::knowledge::Catalog;
-use crate::{resources, tools};
+use crate::{prompts, resources, tools};
 
 /// The MCP protocol version this server speaks. Bumped only when the
 /// server's externally-visible JSON-RPC shape changes incompatibly.
@@ -118,6 +120,10 @@ async fn dispatch(req: &Request, catalog: &Arc<Catalog>) -> Result<Value, JsonRp
         "resources/list" => Ok(json!({ "resources": resources::list(catalog) })),
         "resources/read" => resources::dispatch_read(req.params.clone(), catalog),
 
+        // ── Prompts (§Phase 5) ───────────────────────────────────────────
+        "prompts/list" => Ok(json!({ "prompts": prompts::list(catalog) })),
+        "prompts/get" => prompts::dispatch_get(req.params.clone(), catalog),
+
         // ── Anything else: per JSON-RPC §5.1, `-32601 method not found`.
         other => Err(JsonRpcError {
             code: -32601,
@@ -128,8 +134,9 @@ async fn dispatch(req: &Request, catalog: &Arc<Catalog>) -> Result<Value, JsonRp
 }
 
 /// The `initialize` response carries the server's protocol-version +
-/// capabilities. Our capabilities are minimal-but-honest: we serve tools
-/// and resources, not prompts (yet) or sampling.
+/// capabilities. We advertise tools, resources, AND prompts (§Phase 5)
+/// — the three host-facing MCP surfaces this server implements. None
+/// of them push change-notifications; `listChanged: false` everywhere.
 fn initialize_response() -> Value {
     json!({
         "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -138,9 +145,10 @@ fn initialize_response() -> Value {
             "version": env!("CARGO_PKG_VERSION"),
         },
         "capabilities": {
-            "tools": { "listChanged": false },
+            "tools":     { "listChanged": false },
             "resources": { "listChanged": false, "subscribe": false },
-            // Future phases will add: "prompts": { … }, "logging": { … }.
+            "prompts":   { "listChanged": false },
+            // Future phases may add: "logging": { … }, "sampling": { … }.
         },
         "instructions": include_str!("server_instructions.txt"),
     })
@@ -284,5 +292,83 @@ mod tests {
         let resp = handle_one(req, &cat()).await.expect("reply owed");
         let v: Value = serde_json::from_slice(&resp).unwrap();
         assert!(v["result"]["resources"].is_array());
+    }
+
+    // ── Phase 5: prompts/list + prompts/get ─────────────────────────────
+
+    /// Build a catalog backed by the embedded corpus — `prompts/get`
+    /// needs the real prompt bodies, not an empty stub.
+    fn cat_embedded() -> Arc<Catalog> {
+        Arc::new(Catalog::load_embedded().expect("embedded corpus must load"))
+    }
+
+    #[tokio::test]
+    async fn initialize_advertises_prompts_capability() {
+        let req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+        let resp = handle_one(req, &cat()).await.expect("reply owed");
+        let v: Value = serde_json::from_slice(&resp).unwrap();
+        // The prompts capability must be visible at handshake time —
+        // hosts gate the `prompts/*` UI on this declaration.
+        assert!(
+            v["result"]["capabilities"]["prompts"].is_object(),
+            "initialize must advertise the prompts capability"
+        );
+        assert_eq!(
+            v["result"]["capabilities"]["prompts"]["listChanged"], false,
+            "we do not push prompt-list-changed notifications"
+        );
+    }
+
+    #[tokio::test]
+    async fn prompts_list_returns_an_array_of_entries() {
+        let req = r#"{"jsonrpc":"2.0","id":4,"method":"prompts/list"}"#;
+        let resp = handle_one(req, &cat_embedded()).await.expect("reply owed");
+        let v: Value = serde_json::from_slice(&resp).unwrap();
+        let prompts = v["result"]["prompts"].as_array().expect("prompts array");
+        assert!(prompts.len() >= 3, "§Phase 5 ships ≥ 3 prompts");
+        // Every entry advertises {name, description, arguments}.
+        for p in prompts {
+            assert!(p["name"].is_string());
+            assert!(p["description"].is_string());
+            assert!(p["arguments"].is_array());
+        }
+    }
+
+    #[tokio::test]
+    async fn prompts_get_renders_known_prompt_with_arguments() {
+        let req = serde_json::to_string(&json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "prompts/get",
+            "params": {
+                "name": "flow_design",
+                "arguments": { "intent": "summarise a patient record" }
+            }
+        }))
+        .unwrap();
+        let resp = handle_one(&req, &cat_embedded()).await.expect("reply owed");
+        let v: Value = serde_json::from_slice(&resp).unwrap();
+        // Per MCP spec — reply carries `{ description, messages: [...] }`.
+        assert!(v["result"]["description"].is_string());
+        let msgs = v["result"]["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "user");
+        let text = msgs[0]["content"]["text"].as_str().unwrap();
+        assert!(text.contains("summarise a patient record"));
+    }
+
+    #[tokio::test]
+    async fn prompts_get_unknown_name_surfaces_structured_error() {
+        let req = serde_json::to_string(&json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "prompts/get",
+            "params": { "name": "does_not_exist", "arguments": {} }
+        }))
+        .unwrap();
+        let resp = handle_one(&req, &cat_embedded()).await.expect("reply owed");
+        let v: Value = serde_json::from_slice(&resp).unwrap();
+        assert_eq!(v["error"]["code"], -32602);
+        assert!(v["error"]["message"].as_str().unwrap().contains("unknown prompt"));
     }
 }
