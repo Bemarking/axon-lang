@@ -25,6 +25,13 @@ pub use axon_frontend::{
     lexer,
     parser,
     refinement,
+    // §Fase 41.a — the session-type algebra (duality, regular-coinductive
+    // equality, §41.c credit-refined backpressure, §41.e SSE-polarity
+    // predicate). Re-exported so downstream consumers (the enterprise
+    // server's §Fase 41.f WS surface in `axon-enterprise`) reach it via the
+    // single `axon = …` workspace dep without an extra `axon-frontend`
+    // dependency line.
+    session,
     store_introspect,
     store_schema,
     store_schema_manifest,
