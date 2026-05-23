@@ -75,3 +75,25 @@ fn template_retrieval_compiles() {
 fn template_multi_agent_compiles() {
     assert_template_compiles("multi_agent");
 }
+
+// §Fase 7.a — vertical extension templates.
+
+#[test]
+fn template_legaltech_compiles() {
+    assert_template_compiles("legaltech");
+}
+
+#[test]
+fn template_fintech_compiles() {
+    assert_template_compiles("fintech");
+}
+
+#[test]
+fn template_pharmatech_compiles() {
+    assert_template_compiles("pharmatech");
+}
+
+#[test]
+fn template_medic_research_compiles() {
+    assert_template_compiles("medic_research");
+}

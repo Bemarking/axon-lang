@@ -1021,8 +1021,11 @@ Body prose.
     fn embedded_corpus_contains_every_phase_4_template() {
         let cat = Catalog::load_embedded().expect("embedded corpus must load");
         let expected = [
+            // Fase 4 baseline (8):
             "generic", "healthcare", "banking", "government",
             "legal", "chat", "retrieval", "multi_agent",
+            // §Fase 7.a — vertical extensions (4):
+            "legaltech", "fintech", "pharmatech", "medic_research",
         ];
         for slug in expected {
             let t = cat

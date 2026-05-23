@@ -152,10 +152,13 @@ pub fn list() -> Vec<Value> {
                         "type": "string",
                         "enum": [
                             "generic", "healthcare", "banking", "government", "legal",
-                            "chat", "retrieval", "multi_agent"
+                            "chat", "retrieval", "multi_agent",
+                            "legaltech", "fintech", "pharmatech", "medic_research"
                         ],
                         "description": "Optional explicit domain override. Skips the \
-                            classifier — use when you already know which scaffold you want."
+                            classifier — use when you already know which scaffold you want. \
+                            §Fase 7.a added the vertical-extension domains (legaltech, \
+                            fintech, pharmatech, medic_research)."
                     }
                 },
                 "required": ["intent"],
@@ -370,7 +373,8 @@ fn compose_tool(args: Value, catalog: &Arc<Catalog>) -> Result<Value, JsonRpcErr
             None => {
                 return Err(JsonRpcError::invalid_params(format!(
                     "axon.compose: unknown domain `{s}` — valid: generic, healthcare, \
-                     banking, government, legal, chat, retrieval, multi_agent"
+                     banking, government, legal, chat, retrieval, multi_agent, \
+                     legaltech, fintech, pharmatech, medic_research"
                 )))
             }
         },
@@ -797,9 +801,12 @@ mod tests {
         let payload: Value =
             serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
         let alts = payload["alternatives"].as_array().unwrap();
-        // We always return the full scoreboard (8 domains) so the
-        // agent can quote it. The top entry's score must be > 0.
-        assert_eq!(alts.len(), 8);
+        // We always return the full scoreboard (one entry per domain
+        // in `Domain::all()`) so the agent can quote it. §Fase 7.a
+        // expanded the catalogue to 12 — the assertion tracks that.
+        // The top entry's score must be > 0 and the winning domain
+        // must be the one that matches the intent.
+        assert_eq!(alts.len(), 12);
         assert!(alts[0]["score"].as_u64().unwrap() >= 1);
         assert_eq!(alts[0]["domain"], "healthcare");
         // next_steps + primitives_used surface a curated checklist.
