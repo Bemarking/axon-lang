@@ -148,18 +148,48 @@ Opt-in only — no network egress without an explicit env var:
 | `AXON_EMCP_TELEMETRY_FILE` | Append JSONL events to this path (default: disabled) |
 | `AXON_EMCP_DEPLOYMENT_ID` | Correlation tag stamped on every event |
 | `AXON_EMCP_TELEMETRY_MAX_SAMPLES` | Latency histogram window per tool (default: 1000) |
+| `AXON_EMCP_OTLP_ENDPOINT` | OTLP/gRPC collector URL — empty = exporter disabled |
+| `AXON_EMCP_OTLP_HEADERS` | Comma-separated `key=value` auth/routing headers |
+| `AXON_EMCP_OTLP_INTERVAL_SECS` | Push interval (default: 60) |
+| `AXON_EMCP_OTLP_TIMEOUT_SECS` | Per-RPC timeout (default: 10) |
 
-Five privacy invariants are enforced by construction:
+Seven privacy invariants are enforced by construction:
 
 1. AXON source content is **never** recorded.
 2. `axon.compose` intent strings are **never** recorded.
 3. Tool error messages are **never** recorded.
 4. No remote egress without explicit opt-in.
 5. Deployment ID is operator-supplied (default: empty).
+6. OTLP exporter only spawns when `AXON_EMCP_OTLP_ENDPOINT` is set — no socket, no DNS, no task otherwise.
+7. The OTLP wire payload is a pure function of the in-process snapshot — every value crossing the wire came through one of the closed-catalog `record_*` recorders.
 
-The JSONL is OTLP-data-model compatible — downstream pipelines
-(Vector / Fluent Bit / otel-collector with the `filelog` receiver)
-ingest it and forward as OTLP wire.
+### OTLP/gRPC exporter
+
+Set `AXON_EMCP_OTLP_ENDPOINT` and the server pushes a metrics snapshot
+every 60s to your collector:
+
+```bash
+AXON_EMCP_OTLP_ENDPOINT=http://localhost:4317 axon-emcp
+# Or against Honeycomb / Grafana Cloud / Datadog / Lightstep:
+AXON_EMCP_OTLP_ENDPOINT=https://api.honeycomb.io:443 \
+AXON_EMCP_OTLP_HEADERS=x-honeycomb-team=YOUR_KEY,x-honeycomb-dataset=axon \
+  axon-emcp
+```
+
+The OTLP payload carries **18 metric families** keyed by `service.name=axon-emcp`,
+`service.version`, `deployment.environment` (from `AXON_EMCP_DEPLOYMENT_ID`):
+
+- `axon_emcp.tool.{calls,errors}` (Sum, `tool=` label)
+- `axon_emcp.tool.duration.{p50,p95,p99}_us` (Gauge, `tool=` label)
+- `axon_emcp.resource.reads` (Sum, `uri_family=` label)
+- `axon_emcp.prompt.{calls,missing_required_arg}` (Sum, `prompt=` label)
+- `axon_emcp.compose.{total,overrides,by_domain}` (Sum, `domain=` label)
+- `axon_emcp.check.{pass,fail}_by_stage` (Sum, `stage=` label)
+- `axon_emcp.examples.{total,by_name,empty_responses,by_topic,by_primitive}` (Sum, labelled)
+
+The JSONL sink + OTLP exporter compose freely — file-based pipelines
+(Vector / Fluent Bit / otel-collector `filelog` receiver) and the
+direct gRPC push both consume the same in-process snapshot.
 
 ## License
 

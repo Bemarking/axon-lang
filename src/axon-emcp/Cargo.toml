@@ -1,6 +1,6 @@
 [package]
 name = "axon-emcp"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
 edition = "2021"
 rust-version = "1.95"
@@ -28,8 +28,22 @@ serde_json = "1"
 
 # Async runtime — MCP servers are I/O-bound + benefit from async stdin/
 # stdout (the agent talks line-by-line); tokio is the de-facto Rust
-# choice + matches the rest of the workspace.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync"] }
+# choice + matches the rest of the workspace. The `time` feature
+# powers the §Fase 10 OTLP push loop (interval-driven background
+# task; see `otlp.rs`).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "time"] }
+
+# §Fase 10 — OTLP/gRPC exporter dependencies. We talk the OTLP wire
+# directly using `tonic` (gRPC) + `opentelemetry-proto` (proto types
+# + generated tonic client). No `opentelemetry-sdk` couplings — our
+# snapshot model stays the single source of truth and the exporter
+# is a pure translation: `Telemetry::snapshot()` → `ResourceMetrics`
+# → `MetricsServiceClient::export`. The `tls-native-roots` feature
+# lets the exporter talk to commercial OTLP endpoints (Honeycomb,
+# Datadog, Grafana Cloud, ...) without bundling a webpki roots blob.
+tonic = { version = "0.12", features = ["tls-native-roots"] }
+opentelemetry-proto = { version = "0.27", default-features = false, features = ["gen-tonic", "metrics"] }
+prost = "0.13"
 
 # Markdown frontmatter parsing — the knowledge base under `src/knowledge/`
 # uses YAML frontmatter to carry structured metadata (top-level status,

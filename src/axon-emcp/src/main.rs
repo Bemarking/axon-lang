@@ -39,7 +39,7 @@
 // All modules live in `src/lib.rs` so the binary and the integration
 // test suite (under `tests/`) compile against one copy of each. We
 // import only the surfaces the binary entrypoint actually needs.
-use axon_emcp::{knowledge, scaffold, server, telemetry};
+use axon_emcp::{knowledge, otlp, scaffold, server, telemetry};
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -118,9 +118,22 @@ async fn main() -> ExitCode {
         "telemetry installed"
     );
 
+    // §Fase 10 — OTLP/gRPC exporter follow-up. The pusher reads its
+    // config from `AXON_EMCP_OTLP_*` env vars; empty endpoint = no
+    // task spawned, no socket opened (privacy invariant #6). The
+    // background loop snapshots `tel` every `interval` and pushes
+    // a translated ResourceMetrics payload to the configured
+    // collector. We share `tel` via an `Arc` so the dispatcher and
+    // the pusher read the same in-process model.
+    let tel_arc = std::sync::Arc::new(tel);
+    let otlp_config = otlp::OtlpConfig::from_env();
+    otlp::spawn_pusher(otlp_config, tel_arc.clone());
+
     // Hand off to the stdio MCP loop. Returns when the agent disconnects
-    // (clean EOF on stdin) or on a fatal transport error.
-    match server::run_stdio(catalog, tel).await {
+    // (clean EOF on stdin) or on a fatal transport error. The OTLP
+    // pusher (if active) keeps running in the background and stops
+    // when the process exits.
+    match server::run_stdio(catalog, tel_arc).await {
         Ok(()) => {
             tracing::info!("axon-emcp shutting down cleanly");
             ExitCode::SUCCESS
@@ -237,6 +250,10 @@ fn run_help() -> ExitCode {
            AXON_EMCP_TELEMETRY_FILE      Append JSONL telemetry events to this path (default: disabled)\n  \
            AXON_EMCP_DEPLOYMENT_ID       Correlation tag stamped on every event (default: empty)\n  \
            AXON_EMCP_TELEMETRY_MAX_SAMPLES   Latency histogram window per tool (default: 1000)\n  \
+           AXON_EMCP_OTLP_ENDPOINT       OTLP/gRPC collector URL (e.g. http://localhost:4317). Empty = exporter disabled.\n  \
+           AXON_EMCP_OTLP_HEADERS        Comma-separated key=value headers stamped on every push (e.g. x-honeycomb-team=KEY)\n  \
+           AXON_EMCP_OTLP_INTERVAL_SECS  OTLP push interval in seconds (default: 60)\n  \
+           AXON_EMCP_OTLP_TIMEOUT_SECS   OTLP per-RPC timeout in seconds (default: 10)\n  \
            RUST_LOG                       Tracing filter (e.g. axon_emcp=debug)\n",
         name = env!("CARGO_PKG_NAME")
     );

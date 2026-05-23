@@ -43,9 +43,12 @@ pub const SERVER_NAME: &str = "axon-emcp";
 /// always-on (in-memory); the JSONL sink + deployment-ID propagation
 /// activate when the corresponding env vars are set (see
 /// [`crate::telemetry::TelemetryConfig::from_env`]).
-pub async fn run_stdio(catalog: Catalog, telemetry: Telemetry) -> std::io::Result<()> {
+pub async fn run_stdio(catalog: Catalog, telemetry: Arc<Telemetry>) -> std::io::Result<()> {
+    // §Fase 10 — caller hands us the shared `Arc<Telemetry>` already
+    // so the OTLP pusher (background task spawned in `main`) can
+    // hold its own clone and read the same in-process state every
+    // recorder writes to.
     let catalog = Arc::new(catalog);
-    let telemetry = Arc::new(telemetry);
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
     let mut line = String::new();
