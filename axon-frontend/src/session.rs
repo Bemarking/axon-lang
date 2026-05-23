@@ -340,6 +340,81 @@ impl SessionType {
             .max_by_key(|(s, r)| *s as i64 - *r as i64)
             .unwrap_or((0, 0))
     }
+
+    // ── Fase 41.e — SSE-as-fragment unification (D3, paper §4.4) ─────────
+
+    /// True iff `self` lies in the **SSE producer fragment**: the
+    /// connection only sends to its peer. Concretely the type contains
+    /// only `End`, `Send`, internal-`Select`, `Rec`, and `Var` — no
+    /// `Recv` (would mean the producer expects client input) and no
+    /// `Branch` (would mean the producer offers a choice the client
+    /// picks). For such a type the §4.4 identity `S_SSE = Π↓(S_WS)`
+    /// holds with `Π↓ = id`: the protocol *is already* the SSE fragment,
+    /// runnable over W3C SSE without WebSocket bidirectionality.
+    ///
+    /// Total over closed, contractive session types; linear in the size
+    /// of `self`.
+    pub fn projects_to_sse(&self) -> bool {
+        self.has_polarity(Polarity::Producer)
+    }
+
+    /// Dual of [`projects_to_sse`] — the **SSE consumer fragment**: the
+    /// connection only receives from its peer (`End`, `Recv`,
+    /// external-`Branch`, `Rec`, `Var`). The §4.4 theorem
+    /// `Π↓(S)⊥ = Π↑(S⊥)` ties this to `projects_to_sse` via duality:
+    /// `S.projects_to_sse() ⇔ S.dual().projects_to_sse_consumer()`.
+    pub fn projects_to_sse_consumer(&self) -> bool {
+        self.has_polarity(Polarity::Consumer)
+    }
+
+    /// Unified polarity test. The two SSE fragments are exactly the two
+    /// inhabitants of [`Polarity`]: `Producer = !/⊕/end/μ/var-only` and
+    /// `Consumer = ?/&/end/μ/var-only`.
+    pub fn has_polarity(&self, p: Polarity) -> bool {
+        match (self, p) {
+            (SessionType::End, _) => true,
+            (SessionType::Var(_), _) => true,
+            (SessionType::Send { cont, .. }, Polarity::Producer) => cont.has_polarity(p),
+            (SessionType::Recv { cont, .. }, Polarity::Consumer) => cont.has_polarity(p),
+            (SessionType::Select(arms), Polarity::Producer) => {
+                arms.values().all(|s| s.has_polarity(p))
+            }
+            (SessionType::Branch(arms), Polarity::Consumer) => {
+                arms.values().all(|s| s.has_polarity(p))
+            }
+            (SessionType::Rec(_, body), _) => body.has_polarity(p),
+            // Wrong-polarity head: `Send` in Consumer fragment, `Recv` in
+            // Producer fragment, `Branch` in Producer fragment, `Select`
+            // in Consumer fragment. Each one immediately disqualifies the
+            // type from the single-polarity SSE projection.
+            _ => false,
+        }
+    }
+}
+
+/// Which side of an SSE-projectable connection a session type describes
+/// — the **producer** (server-side, only sends/selects) or the
+/// **consumer** (client-side, only receives/branches). Used by
+/// [`SessionType::has_polarity`] to discharge the §4.4 SSE-fragment
+/// predicate `Π↓(S_WS) = S_SSE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Polarity {
+    /// Server-side: only outbound actions (`Send`, `Select`).
+    Producer,
+    /// Client-side: only inbound actions (`Recv`, `Branch`).
+    Consumer,
+}
+
+impl Polarity {
+    /// The dual of this polarity — used to express the connection-law
+    /// preservation: an SSE-projectable session has a Producer role and
+    /// a Consumer role, related by duality.
+    pub fn flip(self) -> Self {
+        match self {
+            Polarity::Producer => Polarity::Consumer,
+            Polarity::Consumer => Polarity::Producer,
+        }
+    }
 }
 
 /// The Presburger discharge's negative verdict — the witness of an
@@ -815,6 +890,100 @@ mod tests {
             ("cancel", SessionType::End),
         ]);
         assert_eq!(body_chat.credit_delta("X"), (1, 1));
+    }
+
+    // ── Fase 41.e — SSE-as-fragment unification (D3) ─────────────────────
+
+    #[test]
+    fn pure_send_chain_is_in_the_sse_producer_fragment() {
+        // !A.!B.end — the canonical SSE shape: a server emits a sequence
+        // of events, no client input.
+        let s = SessionType::send("A", SessionType::send("B", SessionType::End));
+        assert!(s.projects_to_sse());
+        // Its dual is the consumer-side, in the dual SSE fragment.
+        assert!(s.dual().projects_to_sse_consumer());
+    }
+
+    #[test]
+    fn any_recv_disqualifies_the_producer_fragment() {
+        // Even one `Recv` makes the type two-polarity.
+        let s = SessionType::send("Q", SessionType::recv("Ack", SessionType::End));
+        assert!(!s.projects_to_sse());
+        // …and the dual still has the offending direction, just flipped.
+        assert!(!s.dual().projects_to_sse_consumer());
+    }
+
+    #[test]
+    fn branch_disqualifies_the_producer_fragment() {
+        // Branch = client picks. The producer (server) cannot offer one.
+        let s = SessionType::branch([("ack".into(), SessionType::End)]);
+        assert!(!s.projects_to_sse());
+        // The dual is a Select, which IS in the producer fragment.
+        assert!(s.dual().projects_to_sse());
+    }
+
+    #[test]
+    fn select_is_in_the_producer_fragment_iff_all_arms_are() {
+        // ⊕{a: !A.end, b: end} — pure server-side internal choice.
+        let ok = sel(&[
+            ("a", SessionType::send("A", SessionType::End)),
+            ("b", SessionType::End),
+        ]);
+        assert!(ok.projects_to_sse());
+        // ⊕{a: !A.end, b: ?Q.end} — one arm asks for client input,
+        // disqualifies the entire choice.
+        let bad = sel(&[
+            ("a", SessionType::send("A", SessionType::End)),
+            ("b", SessionType::recv("Q", SessionType::End)),
+        ]);
+        assert!(!bad.projects_to_sse());
+    }
+
+    #[test]
+    fn recursive_sse_token_stream_is_in_the_producer_fragment() {
+        // rec X. !Token.X — an unbounded SSE token stream. The canonical
+        // example: every Fase 33 server-token stream is exactly this
+        // type (modulo the closing `end` we typically wrap it in).
+        let s = SessionType::rec(
+            "X",
+            SessionType::send("Token", SessionType::var("X")),
+        );
+        assert!(s.projects_to_sse());
+        // …and the dual SSE-consumer view is `rec X. ?Token.X`.
+        assert!(s.dual().projects_to_sse_consumer());
+    }
+
+    #[test]
+    fn the_two_polarities_partition_the_sse_projectable_space() {
+        // For every S, S.projects_to_sse() ⇔ S.dual().projects_to_sse_consumer().
+        // We sample a handful of producer-side shapes + the negative cases.
+        let samples_producer: Vec<SessionType> = vec![
+            SessionType::End,
+            SessionType::send("A", SessionType::End),
+            sel(&[("x", SessionType::End), ("y", SessionType::send("T", SessionType::End))]),
+            SessionType::rec("X", SessionType::send("T", SessionType::var("X"))),
+        ];
+        for s in samples_producer {
+            assert!(s.projects_to_sse(), "{s} should project to SSE producer");
+            assert!(s.dual().projects_to_sse_consumer(), "{s}⊥ should project to SSE consumer");
+        }
+        let samples_non_sse: Vec<SessionType> = vec![
+            SessionType::recv("A", SessionType::send("B", SessionType::End)),
+            SessionType::send("A", SessionType::recv("B", SessionType::End)),
+            brn(&[("x", SessionType::End)]),
+        ];
+        for s in samples_non_sse {
+            assert!(!s.projects_to_sse(), "{s} should NOT project to SSE producer");
+        }
+    }
+
+    #[test]
+    fn polarity_flip_is_an_involution() {
+        assert_eq!(Polarity::Producer.flip(), Polarity::Consumer);
+        assert_eq!(Polarity::Consumer.flip(), Polarity::Producer);
+        for p in [Polarity::Producer, Polarity::Consumer] {
+            assert_eq!(p.flip().flip(), p);
+        }
     }
 
     #[test]

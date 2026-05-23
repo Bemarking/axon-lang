@@ -32,11 +32,13 @@
 //!   role `G⌐r`, each running its own `SessionRuntime`).
 
 pub mod error;
+pub mod sse;
 pub mod state;
 pub mod wire;
 pub mod ws;
 
 pub use error::ProtocolError;
+pub use sse::drive_sse_producer;
 pub use state::{CreditWindow, SessionRuntime};
 pub use wire::{Frame, AXON_WIRE_VERSION};
 pub use ws::{drive, PeerRole};
