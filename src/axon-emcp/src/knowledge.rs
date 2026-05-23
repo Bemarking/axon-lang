@@ -194,6 +194,23 @@ struct ReferenceFrontmatter {
     title: String,
 }
 
+/// One domain scaffold template — the raw `.axon` source the
+/// `axon.compose` tool returns to an agent that asked for a typed
+/// starter program. Each template is hand-authored and proven to
+/// compile end-to-end through the same `axon-frontend` pipeline
+/// `axon.check` uses (see `tests/phase4_templates_compile.rs`).
+///
+/// Phase 4 ships 8 templates: `generic`, `healthcare`, `banking`,
+/// `government`, `legal`, `chat`, `retrieval`, `multi_agent`.
+#[derive(Debug, Clone)]
+pub struct Template {
+    /// File stem — `generic`, `healthcare`, …. Doubles as the URI
+    /// slug and the `axon.compose` lookup key.
+    pub slug: String,
+    /// The raw `.axon` source returned to the caller verbatim.
+    pub source: String,
+}
+
 /// The in-process knowledge catalogue. Built once at startup and held
 /// behind an `Arc` for cheap clone across the async dispatcher.
 #[derive(Debug, Clone, Default)]
@@ -203,6 +220,12 @@ pub struct Catalog {
     /// deterministic iteration so `resources/list` ordering does not
     /// drift across runs.
     references: BTreeMap<(ReferenceKind, String), Reference>,
+    /// `axon.compose` scaffold templates keyed by slug. The body is
+    /// the raw `.axon` source — `axon.compose` returns it after
+    /// confirming it still parses through the live `axon-frontend`
+    /// pipeline (the verification round-trips through
+    /// `compiler_pipeline::run`).
+    templates: BTreeMap<String, Template>,
 }
 
 impl Catalog {
@@ -309,7 +332,36 @@ impl Catalog {
                 }
             }
         }
-        Ok(Catalog { primitives, references })
+        // §Phase 4 — load scaffold templates from `templates/*.axon`.
+        // Templates carry no frontmatter; the file stem IS the slug
+        // and the entire file is the AXON source. The directory is
+        // optional (catalogs without templates still load).
+        let mut templates = BTreeMap::new();
+        if let Some(dir) = EMBEDDED_KNOWLEDGE.get_dir("templates") {
+            for file in dir.files() {
+                if !is_axon(file.path()) {
+                    continue;
+                }
+                let slug = match file.path().file_stem().and_then(|s| s.to_str()) {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                };
+                let source = file.contents_utf8().ok_or_else(|| {
+                    LoadError::BadFrontmatter(
+                        PathBuf::from(file.path()),
+                        "embedded template is not valid UTF-8".into(),
+                    )
+                })?;
+                let tpl = Template { slug: slug.clone(), source: source.to_string() };
+                if templates.insert(slug.clone(), tpl).is_some() {
+                    return Err(LoadError::DuplicateName(
+                        slug,
+                        PathBuf::from(file.path()),
+                    ));
+                }
+            }
+        }
+        Ok(Catalog { primitives, references, templates })
     }
 
     /// Load from an explicit path. Public so tests + tools can drive
@@ -363,7 +415,29 @@ impl Catalog {
                 }
             }
         }
-        Ok(Catalog { primitives, references })
+        // §Phase 4 — templates directory (optional).
+        let mut templates = BTreeMap::new();
+        let tpl_dir = root.join("templates");
+        if tpl_dir.is_dir() {
+            for entry in std::fs::read_dir(&tpl_dir).map_err(|e| LoadError::Io(tpl_dir.clone(), e))? {
+                let entry = entry.map_err(|e| LoadError::Io(tpl_dir.clone(), e))?;
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("axon") {
+                    continue;
+                }
+                let slug = match path.file_stem().and_then(|s| s.to_str()) {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                };
+                let source = std::fs::read_to_string(&path)
+                    .map_err(|e| LoadError::Io(path.clone(), e))?;
+                let tpl = Template { slug: slug.clone(), source };
+                if templates.insert(slug.clone(), tpl).is_some() {
+                    return Err(LoadError::DuplicateName(slug, path));
+                }
+            }
+        }
+        Ok(Catalog { primitives, references, templates })
     }
 
     /// Empty catalog — used only by unit tests that exercise the
@@ -415,6 +489,21 @@ impl Catalog {
             .filter(move |((k, _), _)| *k == kind)
             .map(|(_, v)| v)
     }
+
+    /// Total template count across every domain slug.
+    pub fn template_count(&self) -> usize {
+        self.templates.len()
+    }
+
+    /// Lookup one template by slug. `None` if absent.
+    pub fn template(&self, slug: &str) -> Option<&Template> {
+        self.templates.get(slug)
+    }
+
+    /// Iterate every template (in BTreeMap order — alphabetical, stable).
+    pub fn templates(&self) -> impl Iterator<Item = &Template> {
+        self.templates.values()
+    }
 }
 
 /// Match the FS loader's filter — only `.md` files count. Pulled out
@@ -423,6 +512,15 @@ fn is_markdown(p: &Path) -> bool {
     p.extension()
         .and_then(|s| s.to_str())
         .map(|s| s.eq_ignore_ascii_case("md"))
+        .unwrap_or(false)
+}
+
+/// Same shape for `.axon` files — used by the template loader so the
+/// embedded path and the FS path treat extensions identically.
+fn is_axon(p: &Path) -> bool {
+    p.extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.eq_ignore_ascii_case("axon"))
         .unwrap_or(false)
 }
 
@@ -621,6 +719,40 @@ Body prose.
         // primitive's introductory paragraph.
         assert!(socket.body.contains("socket"));
         assert!(socket.body.contains("WebSocket"));
+    }
+
+    /// §Phase 4 — every scaffold template shipped under
+    /// `src/knowledge/templates/` must be embedded into the binary
+    /// (so `cargo install --path src/axon-emcp` keeps `axon.compose`
+    /// fully self-contained), with the file stem as the slug.
+    #[test]
+    fn embedded_corpus_contains_every_phase_4_template() {
+        let cat = Catalog::load_embedded().expect("embedded corpus must load");
+        let expected = [
+            "generic", "healthcare", "banking", "government",
+            "legal", "chat", "retrieval", "multi_agent",
+        ];
+        for slug in expected {
+            let t = cat
+                .template(slug)
+                .unwrap_or_else(|| panic!("template `{slug}` must be embedded"));
+            assert_eq!(t.slug, slug);
+            assert!(
+                !t.source.is_empty(),
+                "template `{slug}`: empty source — compose would return nothing"
+            );
+            // Every template carries at least one `flow` declaration —
+            // the canonical agent-facing surface.
+            assert!(
+                t.source.contains("flow "),
+                "template `{slug}`: missing `flow` declaration"
+            );
+        }
+        assert_eq!(
+            cat.template_count(),
+            expected.len(),
+            "template count drift — add the new template to the expected list"
+        );
     }
 
     /// §Phase 3 — every reference doc shipped under
