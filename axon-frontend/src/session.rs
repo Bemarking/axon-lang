@@ -200,7 +200,12 @@ impl SessionType {
     /// Unfold every *leading* `Rec` so the head constructor is exposed:
     /// `μX.S ↦ S[μX.S/X]`, repeated. Terminates for **contractive** types
     /// (a guard appears under each `Rec` before the variable recurs).
-    fn unfold_head(&self) -> SessionType {
+    ///
+    /// Public so the 41.d runtime can drive the session-type cursor over a
+    /// live connection: after every operational step the continuation is
+    /// re-unfolded so the cursor never carries a leading `Rec` for the
+    /// state machine to interpret.
+    pub fn unfold_head(&self) -> SessionType {
         let mut t = self.clone();
         while let SessionType::Rec(x, b) = t {
             let whole = SessionType::Rec(x.clone(), b.clone());
