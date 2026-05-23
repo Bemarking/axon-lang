@@ -55,3 +55,11 @@ temp_*.txt
 
 # SDK (not part of this repo)
 sdk/
+
+# Private internal know-how (plan vivos, design notes, vision docs).
+# These describe HOW we construct axon cycle-by-cycle — not part of the
+# public surface adopters depend on. Public guides for adopters live at
+# docs/ root (see ADOPTER_*.md / MIGRATION_*.md) and in docs/papers/.
+# Files stay on disk locally; gitignore just prevents accidental re-tracking.
+docs/fase/
+docs/vision/
