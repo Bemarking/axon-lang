@@ -874,6 +874,110 @@ Body prose.
         assert!(socket.body.contains("WebSocket"));
     }
 
+    /// §Fase 6.a — **the coverage gate**.
+    ///
+    /// The closed contract between `axon-frontend::PRIMITIVE_REGISTRY`
+    /// and `src/knowledge/primitives/*.md`:
+    ///
+    /// - Every registry entry with `doc_status: Documented` MUST have
+    ///   a corresponding `.md` in the embedded corpus.
+    /// - Every `.md` in the embedded corpus MUST have a registry
+    ///   entry with `doc_status: Documented`.
+    ///
+    /// `Pending` entries are visible in the registry (the catalogue
+    /// is honestly complete) but the gate does NOT require their
+    /// docs — that is the §Fase 6.b–d roadmap. When a primitive's
+    /// `.md` lands, its registry entry flips Pending → Documented;
+    /// the gate then enforces the new pairing.
+    ///
+    /// A failure here is structured: it names every missing doc + every
+    /// orphan doc, so the contributor knows exactly which side of the
+    /// pair to fix. This is the "formula" §Fase 6.a promised — the
+    /// corpus cannot drift from the language by omission or by
+    /// accidental orphan.
+    #[test]
+    fn registry_and_corpus_coverage_is_closed_on_documented_entries() {
+        use axon_frontend::{DocStatus, PRIMITIVE_REGISTRY};
+        use std::collections::HashSet;
+
+        let cat = Catalog::load_embedded().expect("embedded corpus must load");
+
+        // Forward direction: every Documented entry has a .md.
+        let documented: Vec<&'static str> = PRIMITIVE_REGISTRY
+            .iter()
+            .filter(|i| i.doc_status == DocStatus::Documented)
+            .map(|i| i.name)
+            .collect();
+        let missing_docs: Vec<&'static str> = documented
+            .iter()
+            .copied()
+            .filter(|name| cat.primitive(name).is_none())
+            .collect();
+
+        // Reverse direction: every .md has a Documented registry entry.
+        let documented_set: HashSet<&'static str> = documented.iter().copied().collect();
+        let orphan_docs: Vec<String> = cat
+            .primitives()
+            .filter(|p| !documented_set.contains(p.name.as_str()))
+            .map(|p| p.name.clone())
+            .collect();
+
+        // The closed set must be balanced on both sides.
+        if !missing_docs.is_empty() || !orphan_docs.is_empty() {
+            let summary = axon_frontend::coverage_summary();
+            panic!(
+                "§Fase 6.a coverage gate failed:\n\
+                 \n\
+                 missing docs (in registry as Documented, no .md):\n  \
+                   {missing_docs:?}\n\
+                 orphan docs (.md but not in registry as Documented):\n  \
+                   {orphan_docs:?}\n\
+                 \n\
+                 catalog summary: {} total, {} documented, {} pending.\n\
+                 \n\
+                 Fix:\n  \
+                   - For each missing doc, run: \
+                     `axon-emcp scaffold-primitive <name>` + fill in the body.\n  \
+                   - For each orphan doc, either add the entry to \
+                     axon_frontend::PRIMITIVE_REGISTRY as DocStatus::Documented, \
+                     or delete the .md if the primitive was removed.",
+                summary.total, summary.documented, summary.pending,
+            );
+        }
+
+        // Cross-validate the closed Category catalogue too — every
+        // registry entry's category string must deserialise into the
+        // local `Category` enum, otherwise the loader would silently
+        // skip it. This catches drift between axon-frontend (which
+        // uses strings) and axon-emcp (which uses the typed enum).
+        for info in PRIMITIVE_REGISTRY {
+            let parsed: Result<Category, _> = serde_json::from_value(
+                serde_json::Value::String(info.category.to_string()),
+            );
+            assert!(
+                parsed.is_ok(),
+                "primitive `{}` registry category `{}` does not deserialise \
+                 into axon-emcp's Category enum — closed-catalog drift",
+                info.name, info.category
+            );
+        }
+    }
+
+    /// §Fase 6.a — informational coverage statistics. Logged as a
+    /// stable observation so future telemetry (§Fase 8) can pin the
+    /// regression surface here. Not strict: only asserts the counts
+    /// agree internally.
+    #[test]
+    fn registry_coverage_summary_is_internally_consistent() {
+        let s = axon_frontend::coverage_summary();
+        assert_eq!(s.total, s.documented + s.pending);
+        // Pin the Fase 5 baseline: 47 primitives, 7 documented, 40
+        // pending. As §Fase 6.b/c/d lands, the (documented, pending)
+        // split shifts toward (47, 0). Updating this assertion is
+        // part of each Fase 6 sub-phase's landing PR.
+        assert_eq!(s.total, 47);
+    }
+
     /// §Phase 5 — every MCP prompt shipped under
     /// `src/knowledge/prompts/` must be embedded with a non-empty
     /// title, summary, body, and at least one declared argument.

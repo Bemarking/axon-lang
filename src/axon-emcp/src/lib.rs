@@ -16,5 +16,6 @@ pub mod compose;
 pub mod knowledge;
 pub mod prompts;
 pub mod resources;
+pub mod scaffold;
 pub mod server;
 pub mod tools;
