@@ -14,10 +14,12 @@
 Any MCP-compatible coding agent that launches `axon-emcp` as a
 subprocess gets:
 
-- **5 tools** — `axon.primitives`, `axon.primitive_doc`, `axon.check`,
-  `axon.parse`, `axon.compose`. Live language reference + structured
-  validation through the same `axon-frontend` lexer/parser/type-checker
-  the `axon` CLI uses (byte-identical diagnostics).
+- **6 tools** — `axon.primitives`, `axon.primitive_doc`, `axon.check`,
+  `axon.parse`, `axon.compose`, `axon.examples`. Live language
+  reference + structured validation through the same `axon-frontend`
+  lexer/parser/type-checker the `axon` CLI uses (byte-identical
+  diagnostics), plus a curated drift-gated example corpus organised
+  by language idea.
 - **14+ resources** under `axon://` — full primitive references
   (`primitives/{name}`), grammar maps (`grammar/{top_level|composition|ebnf}`),
   composition logic (`logic/{flow_composition|session_duality}`), and
@@ -37,9 +39,10 @@ cargo install axon-emcp
 ```
 
 The installed binary is **fully self-contained** — the knowledge
-corpus (45 primitive docs + 33 templates + grammar/logic/compliance
-references) is baked into the executable via `include_dir!` at compile
-time. No `share/` directory, no env vars, no post-install steps.
+corpus (45 primitive docs + 33 templates + 17 idiomatic examples +
+grammar/logic/compliance references) is baked into the executable
+via `include_dir!` at compile time. No `share/` directory, no env
+vars, no post-install steps.
 
 ```bash
 axon-emcp --help
@@ -63,7 +66,7 @@ Point the agent's MCP config at the installed binary:
 }
 ```
 
-Restart the agent. The 5 tools, 14+ resources, and 3 prompts now
+Restart the agent. The 6 tools, 14+ resources, and 3 prompts now
 appear in the agent's surface — the agent will quote them when you
 ask it to write AXON.
 
@@ -90,6 +93,37 @@ corporate_integration, self_learning, document_analysis, ticket_triage,
 content_moderation, knowledge_extraction, compliance_monitoring,
 recruitment, education, financial_advisor, data_pipeline). Every
 template proven to compile through the live `axon-frontend` pipeline.
+
+## Focused examples library
+
+Where `axon.compose` gives you a full-app scaffold by *domain*,
+`axon.examples` returns minimal complete programs (~20–60 LOC)
+organised by *idea*:
+
+```
+You: show me how to use weave correctly.
+
+Agent: [calls axon.examples(primitive: "weave")]
+       ✓ Match: weave_braid — Weave braid — composing multiple sub-derivations
+       ✓ Topic: composition
+       ✓ Primitives: persona, flow, step, weave
+       ✓ Source: (verified to compile through axon-frontend)
+
+       Here is the canonical pattern: …
+```
+
+Filter on three independent axes (combine freely):
+
+- `name:` — single-example resolution by slug, returns full `.axon`
+  source the agent can paste / `axon.check` directly.
+- `topic:` — closed 10-entry taxonomy (`composition`, `session_types`,
+  `shields`, `effects`, `streaming`, `data`, `agents`, `endpoints`,
+  `memory`, `validation`).
+- `primitive:` — every example that exercises a given primitive name.
+
+Every example is drift-gated through the same `axon-frontend`
+pipeline `axon.check` uses, so what the agent receives is **guaranteed
+to compile**.
 
 ## Contributor surface
 

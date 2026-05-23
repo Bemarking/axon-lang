@@ -1,0 +1,37 @@
+---
+name: session_chat_duality
+title: Session-typed chat with dual client/server roles
+summary: Declares a `session` whose two roles are algebraic duals (§41 connection law) — `select`/`branch` mirror, `send`/`receive` mirror, both terminate in `end`.
+topic: session_types
+primitives:
+  - session
+---
+
+// A session declares the typed dialogue protocol. The compiler
+// verifies the two roles are algebraic duals (§41 connection law:
+// peer ≡ self⊥). select↔branch are mirrored; send↔receive are
+// mirrored; both roles end the same way.
+
+type Utterance { text: String }
+type Token     { piece: String }
+
+session ChatProtocol {
+    client: [
+        select {
+            ask:    [send Utterance, branch {
+                        token: [receive Token, end],
+                        done:  [end]
+                    }],
+            cancel: [end]
+        }
+    ]
+    server: [
+        branch {
+            ask:    [receive Utterance, select {
+                        token: [send Token, end],
+                        done:  [end]
+                    }],
+            cancel: [end]
+        }
+    ]
+}

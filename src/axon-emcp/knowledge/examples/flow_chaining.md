@@ -1,0 +1,38 @@
+---
+name: flow_chaining
+title: Multi-step flow with data flowing between steps
+summary: Chains two reasoning steps so the second consumes the first's output — the canonical "decompose then refine" pattern.
+topic: composition
+primitives:
+  - persona
+  - flow
+  - step
+---
+
+// Chained reasoning: step 2 consumes step 1's output.
+// The compiler verifies the output types align across the chain.
+
+persona Analyst {
+    domain: ["analysis", "synthesis"]
+    tone: analytical
+    confidence_threshold: 0.8
+    cite_sources: true
+}
+
+type Document { content: String }
+type Outline  { sections: String }
+type Summary  { text: String }
+
+flow Summarise(doc: Document) -> Summary {
+    step Decompose {
+        given: doc
+        ask: "Break the document into a sectioned outline."
+        output: Outline
+    }
+    step Refine {
+        given: Decompose.output
+        ask: "Compose a tight summary from the outline."
+        output: Summary
+    }
+    return Refine.output
+}

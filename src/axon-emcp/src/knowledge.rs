@@ -212,6 +212,140 @@ pub struct Template {
     pub source: String,
 }
 
+/// One focused, idiomatic example program — the corpus surface
+/// `axon.examples` returns. Where [`Template`] answers *"give me a
+/// starting point for a healthcare service"*, an [`Example`] answers
+/// *"show me how to use `weave` correctly"* or *"what does an
+/// idempotent endpoint look like"*. Each example is a minimal complete
+/// program (~20–60 LOC) demonstrating **one** idea, and every example
+/// is drift-gated through `axon-frontend` (see
+/// `tests/phase9_examples_compile.rs`).
+///
+/// On disk: `src/axon-emcp/knowledge/examples/<slug>.md` — YAML
+/// frontmatter (metadata) followed by pure AXON source (the body).
+/// We use `.md` (not `.axon`) so the frontmatter doesn't have to be
+/// embedded in comments; the loader splits the two cleanly.
+#[derive(Debug, Clone)]
+pub struct Example {
+    /// Slug — matches the file stem AND the frontmatter `name:`.
+    /// Doubles as the `axon.examples` lookup key.
+    pub name: String,
+    /// Human-readable title (one phrase, no trailing period).
+    pub title: String,
+    /// One-line summary — what idea this example demonstrates.
+    pub summary: String,
+    /// Closed topic taxonomy — `axon.examples(topic: ...)` filters by
+    /// this field. The closed catalog lives in [`ExampleTopic`].
+    pub topic: ExampleTopic,
+    /// The primitive names this example exercises idiomatically. Used
+    /// by `axon.examples(primitive: "weave")` to find every example
+    /// that demonstrates a given primitive. Strings (not the typed
+    /// [`Primitive`] reference) so the field is independent of corpus
+    /// load ordering — the runtime resolves the link if needed.
+    pub primitives: Vec<String>,
+    /// The raw `.axon` source — the body after the frontmatter,
+    /// returned verbatim to the caller. Drift-gated through
+    /// `axon-frontend` so the agent never receives a broken example.
+    pub source: String,
+}
+
+/// The closed taxonomy `axon.examples(topic: ...)` exposes. The 10
+/// entries cover the conceptual axes an agent reasons along when
+/// asking *"show me how to do X"*. New topics MUST land here + in
+/// [`ExampleTopic::all`] + in the `axon.examples` tool input-schema
+/// enum — the three sides of the drift gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum ExampleTopic {
+    /// Composition idioms — how primitives plug into one another
+    /// (`flow` + `step` + `tool`, `weave`, multi-step chaining).
+    Composition,
+    /// Session-types showcase — `session` duality, `socket` binding,
+    /// `select`/`branch`/`loop`/`end` algebra.
+    SessionTypes,
+    /// Defensive composition — `shield`, `mandate`, breach
+    /// policies, sanitisation patterns.
+    Shields,
+    /// Algebraic effects — `lambda`, `apply`, `effects: <...>`
+    /// declarations, higher-order flow composition.
+    Effects,
+    /// `Stream<T>` end-to-end — flows that emit streams, SSE
+    /// transport, per-step backpressure policies.
+    Streaming,
+    /// Persistence — `axonstore`, `dataspace`, `pix`, `corpus`,
+    /// `transact` writes, four-pillar data plane.
+    Data,
+    /// Multi-agent + lifecycle — `ensemble`, `forge`, `reflex`,
+    /// `heal`, `agent` cooperation patterns.
+    Agents,
+    /// HTTP REST + actor wire — `axonendpoint`, `mcp`, `listen`,
+    /// `daemon`, `axpoint`.
+    Endpoints,
+    /// Memory primitives — scope catalog (`ephemeral`, `session`,
+    /// `persistent`, `none`), lifecycle constraints.
+    Memory,
+    /// Type-driven safety — `anchor` invariants, `psyche` constraints,
+    /// `validate` predicates, refinement types in practice.
+    Validation,
+}
+
+impl ExampleTopic {
+    /// The URI / JSON-Schema slug — matches the `serde` rename.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExampleTopic::Composition => "composition",
+            ExampleTopic::SessionTypes => "session_types",
+            ExampleTopic::Shields => "shields",
+            ExampleTopic::Effects => "effects",
+            ExampleTopic::Streaming => "streaming",
+            ExampleTopic::Data => "data",
+            ExampleTopic::Agents => "agents",
+            ExampleTopic::Endpoints => "endpoints",
+            ExampleTopic::Memory => "memory",
+            ExampleTopic::Validation => "validation",
+        }
+    }
+    /// Every topic in stable order — used by `axon.examples` to
+    /// iterate deterministically and by the input-schema enum to
+    /// stay in sync with the closed catalog.
+    pub const fn all() -> &'static [ExampleTopic] {
+        &[
+            ExampleTopic::Composition,
+            ExampleTopic::SessionTypes,
+            ExampleTopic::Shields,
+            ExampleTopic::Effects,
+            ExampleTopic::Streaming,
+            ExampleTopic::Data,
+            ExampleTopic::Agents,
+            ExampleTopic::Endpoints,
+            ExampleTopic::Memory,
+            ExampleTopic::Validation,
+        ]
+    }
+    /// Parse a topic slug — case-insensitive, hyphen/underscore
+    /// tolerant. `None` if no match.
+    pub fn parse(s: &str) -> Option<Self> {
+        let norm = s.trim().to_ascii_lowercase().replace('-', "_");
+        ExampleTopic::all()
+            .iter()
+            .copied()
+            .find(|t| t.as_str() == norm)
+    }
+}
+
+/// Frontmatter shape for an [`Example`]. The body following the
+/// frontmatter block is the raw AXON source (no further parsing — the
+/// drift gate compiles it through `axon-frontend`).
+#[derive(Debug, Deserialize)]
+struct ExampleFrontmatter {
+    name: String,
+    title: String,
+    summary: String,
+    topic: ExampleTopic,
+    #[serde(default)]
+    primitives: Vec<String>,
+}
+
 /// One MCP **prompt** — a parameterized prompt template the host
 /// (Claude Code / Cursor / Continue / …) surfaces to the human user
 /// as a named recipe. When the user picks it, the host calls
@@ -286,6 +420,11 @@ pub struct Catalog {
     /// `prompts/list` + `prompts/get` so the host can offer them
     /// as slash-commands or chat-menu entries.
     prompts: BTreeMap<String, Prompt>,
+    /// §Phase 9 — `axon.examples` corpus keyed by slug. The body of
+    /// every entry is pure AXON source that compiles end-to-end
+    /// through `axon-frontend` (see `tests/phase9_examples_compile.rs`
+    /// — the drift gate that runs on every `cargo test`).
+    examples: BTreeMap<String, Example>,
 }
 
 impl Catalog {
@@ -441,7 +580,32 @@ impl Catalog {
                 }
             }
         }
-        Ok(Catalog { primitives, references, templates, prompts })
+        // §Phase 9 — load examples from `examples/*.md`. Each file
+        // carries YAML frontmatter (metadata) followed by raw AXON
+        // source (the body). The directory is optional — catalogs
+        // without examples still load.
+        let mut examples = BTreeMap::new();
+        if let Some(dir) = EMBEDDED_KNOWLEDGE.get_dir("examples") {
+            for file in dir.files() {
+                if !is_markdown(file.path()) {
+                    continue;
+                }
+                let raw = file.contents_utf8().ok_or_else(|| {
+                    LoadError::BadFrontmatter(
+                        PathBuf::from(file.path()),
+                        "embedded example is not valid UTF-8".into(),
+                    )
+                })?;
+                let ex = parse_example(raw, file.path())?;
+                if examples.insert(ex.name.clone(), ex.clone()).is_some() {
+                    return Err(LoadError::DuplicateName(
+                        ex.name,
+                        PathBuf::from(file.path()),
+                    ));
+                }
+            }
+        }
+        Ok(Catalog { primitives, references, templates, prompts, examples })
     }
 
     /// Load from an explicit path. Public so tests + tools can drive
@@ -535,7 +699,26 @@ impl Catalog {
                 }
             }
         }
-        Ok(Catalog { primitives, references, templates, prompts })
+        // §Phase 9 — examples directory (optional). Same shape as
+        // the embedded-path loader above: frontmatter + raw AXON body.
+        let mut examples = BTreeMap::new();
+        let ex_dir = root.join("examples");
+        if ex_dir.is_dir() {
+            for entry in std::fs::read_dir(&ex_dir).map_err(|e| LoadError::Io(ex_dir.clone(), e))? {
+                let entry = entry.map_err(|e| LoadError::Io(ex_dir.clone(), e))?;
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                    continue;
+                }
+                let raw = std::fs::read_to_string(&path)
+                    .map_err(|e| LoadError::Io(path.clone(), e))?;
+                let ex = parse_example(&raw, &path)?;
+                if examples.insert(ex.name.clone(), ex.clone()).is_some() {
+                    return Err(LoadError::DuplicateName(ex.name, path));
+                }
+            }
+        }
+        Ok(Catalog { primitives, references, templates, prompts, examples })
     }
 
     /// Empty catalog — used only by unit tests that exercise the
@@ -618,6 +801,37 @@ impl Catalog {
     /// available recipes does not jitter across runs.
     pub fn prompts(&self) -> impl Iterator<Item = &Prompt> {
         self.prompts.values()
+    }
+
+    /// §Phase 9 — total example count across every topic.
+    pub fn example_count(&self) -> usize {
+        self.examples.len()
+    }
+
+    /// §Phase 9 — lookup one example by slug. `None` if absent.
+    pub fn example(&self, name: &str) -> Option<&Example> {
+        self.examples.get(name)
+    }
+
+    /// §Phase 9 — iterate every example (in BTreeMap order — alphabetical,
+    /// stable). `axon.examples` walks this for the unfiltered listing.
+    pub fn examples(&self) -> impl Iterator<Item = &Example> {
+        self.examples.values()
+    }
+
+    /// §Phase 9 — iterate every example of one topic (in slug order).
+    /// Used by `axon.examples(topic: ...)` filtering.
+    pub fn examples_of(&self, topic: ExampleTopic) -> impl Iterator<Item = &Example> {
+        self.examples.values().filter(move |e| e.topic == topic)
+    }
+
+    /// §Phase 9 — iterate every example that exercises a given
+    /// primitive. Case-sensitive (primitive names are canonical
+    /// lowercase). Used by `axon.examples(primitive: "weave")`.
+    pub fn examples_using<'a>(&'a self, primitive: &'a str) -> impl Iterator<Item = &'a Example> + 'a {
+        self.examples
+            .values()
+            .filter(move |e| e.primitives.iter().any(|p| p == primitive))
     }
 }
 
@@ -730,6 +944,51 @@ fn parse_prompt(raw: &str, path: &Path) -> Result<Prompt, LoadError> {
         summary: fm.summary,
         arguments: fm.arguments,
         body: parsed.content,
+    })
+}
+
+/// §Phase 9 — parse one example document. Frontmatter shape: `name`,
+/// `title`, `summary`, `topic` (closed enum), optional `primitives`
+/// (list of primitive name strings). The body after the frontmatter
+/// is the raw AXON source returned verbatim — the drift gate
+/// `tests/phase9_examples_compile.rs` runs it through `axon-frontend`
+/// so a corpus regression is impossible to land.
+///
+/// The frontmatter `name:` MUST match the file stem so the URL slug
+/// (the `axon.examples` lookup key) cannot drift from the on-disk
+/// layout — same invariant as the reference + prompt loaders.
+fn parse_example(raw: &str, path: &Path) -> Result<Example, LoadError> {
+    let matter = Matter::<YAML>::new();
+    let parsed = matter.parse(raw);
+    let fm: ExampleFrontmatter = parsed
+        .data
+        .ok_or_else(|| LoadError::NoFrontmatter(path.to_path_buf()))?
+        .deserialize()
+        .map_err(|e| LoadError::BadFrontmatter(path.to_path_buf(), e.to_string()))?;
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    if !stem.is_empty() && fm.name != stem {
+        return Err(LoadError::BadFrontmatter(
+            path.to_path_buf(),
+            format!(
+                "frontmatter name `{}` does not match file stem `{}` \
+                 — the example slug must equal the filename",
+                fm.name, stem
+            ),
+        ));
+    }
+    // Trim leading whitespace + a possible single blank line between
+    // the frontmatter boundary and the first AXON declaration. We do
+    // not trim the trailing whitespace — preserving a final newline
+    // keeps `axon check` diagnostics line-accurate when the agent
+    // pastes the source into a follow-up `axon.check` call.
+    let source = parsed.content.trim_start().to_string();
+    Ok(Example {
+        name: fm.name,
+        title: fm.title,
+        summary: fm.summary,
+        topic: fm.topic,
+        primitives: fm.primitives,
+        source,
     })
 }
 

@@ -1,0 +1,56 @@
+---
+name: streaming_chat
+title: Token-by-token streaming flow with backpressure policy
+summary: Demonstrates `Stream<T>` — the flow's output is a stream; the tool declares a `stream:<policy>` effect from the closed catalog (`drop_oldest`, `degrade_quality`, `pause_upstream`, `fail`).
+topic: streaming
+primitives:
+  - persona
+  - flow
+  - step
+  - tool
+  - axonendpoint
+---
+
+// `Stream<T>` makes a flow emit tokens incrementally. Any flow whose
+// signature carries `Stream<T>` MUST be reachable from a tool that
+// declares a `stream:<policy>` effect — the language refuses to ship
+// a stream without explicit backpressure.
+
+persona ChatHost {
+    domain: ["chat"]
+    tone: friendly
+    confidence_threshold: 0.6
+    cite_sources: false
+}
+
+tool ChatBackend {
+    provider: openai
+    effects:  <network, stream:drop_oldest>
+    timeout:  60s
+}
+
+type Utterance   { text: String }
+type Token       { piece: String }
+type ChatRequest { req: Utterance }
+
+flow Chat(req: Utterance) -> Stream<Token> {
+    step Generate {
+        given: req
+        apply: ChatBackend
+        ask: "Reply to the user, one token at a time."
+        output: Stream<Token>
+    }
+    return Generate.output
+}
+
+axonendpoint ChatAPI {
+    method:    post
+    path:      "/v1/chat"
+    body:      ChatRequest
+    execute:   Chat
+    output:    Stream<Token>
+    backend:   auto
+    transport: sse(axon)
+    retries:   0
+    timeout:   60s
+}
