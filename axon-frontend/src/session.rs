@@ -32,10 +32,17 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// The value type carried by a `send`/`recv`. Opaque at this layer (a canonical
 /// type name); Fase 41.b replaces it with the real AST value type. Duality and
 /// equality treat it nominally — only `Payload == Payload` matters.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// `#[serde(transparent)]` — the JSON encoding is the bare type-name string
+/// (the wire shape the §Fase 41.g sealed-snapshot serialiser depends on);
+/// `Payload("Msg")` ↔ `"Msg"` on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Payload(pub String);
 
 impl Payload {
@@ -53,7 +60,13 @@ impl fmt::Display for Payload {
 /// A session type — the protocol of one endpoint of a connection (§3.1 of the
 /// paper). `Select`/`Branch` carry their labelled continuations in a `BTreeMap`
 /// so the label set is canonically ordered (deterministic duality + equality).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// `Serialize` + `Deserialize` — §Fase 41.g sealed-snapshot resume needs the
+/// residual cursor + the protocol schema serialisable. The encoding is
+/// stable across the algebra layer + the enterprise persistence layer: the
+/// same JSON shape goes into the AAD-bound `cognitive_states` ciphertext
+/// and comes back out via [`SessionRuntime::resume`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SessionType {
     /// `end` — the dialogue is complete.
     End,
