@@ -13,9 +13,9 @@ use axon_emcp::compiler_pipeline::{run, Outcome};
 /// drift gate we read files directly so the test is independent of
 /// catalogue plumbing.
 fn templates_dir() -> std::path::PathBuf {
+    // §Release 0.2.0 — the corpus lives INSIDE the crate
+    // (`src/axon-emcp/knowledge/`) so `cargo publish` ships it.
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
         .join("knowledge")
         .join("templates")
 }

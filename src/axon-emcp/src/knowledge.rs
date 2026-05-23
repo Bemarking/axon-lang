@@ -1,7 +1,8 @@
 //! The knowledge base catalogue.
 //!
 //! All documentation lives as markdown with YAML frontmatter under
-//! `src/knowledge/` at the repo root. This module:
+//! `src/axon-emcp/knowledge/` (inside the crate so `cargo publish`
+//! ships the corpus as part of the binary tarball). This module:
 //!
 //! 1. Discovers the corpus root (dev mode, installed binary, or
 //!    `AXON_EMCP_KNOWLEDGE_DIR` override — in this order).
@@ -31,7 +32,7 @@ use serde::Deserialize;
 /// (both let operators hot-edit `.md` files without rebuilding); the
 /// embedded copy is the (c) fallback that always works.
 static EMBEDDED_KNOWLEDGE: Dir<'_> =
-    include_dir!("$CARGO_MANIFEST_DIR/../knowledge");
+    include_dir!("$CARGO_MANIFEST_DIR/knowledge");
 
 /// One primitive's full documentation, parsed from its markdown source.
 ///
@@ -317,17 +318,15 @@ impl Catalog {
             }
             return Self::load_from(&path);
         }
-        // (2) in-tree dev path — only when we're sitting inside the
-        // source repo (CARGO_MANIFEST_DIR resolves the crate's source
-        // root; the sibling `knowledge` only exists when the binary
-        // is being run from that tree, not after `cargo install`).
-        let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .map(|p| p.join("knowledge"));
-        if let Some(p) = dev_path {
-            if p.is_dir() {
-                return Self::load_from(&p);
-            }
+        // (2) in-tree dev path — `<crate>/knowledge`. Present when
+        // the binary runs from the source tree (corpus lives inside
+        // the crate so it ships with `cargo publish`). After
+        // `cargo install` the embedded copy below is the canonical
+        // source; the in-tree path lets contributors hot-edit `.md`
+        // files without rebuilding.
+        let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("knowledge");
+        if dev_path.is_dir() {
+            return Self::load_from(&dev_path);
         }
         // (3) embedded fallback — the corpus baked into the binary by
         // `include_dir!` at compile time. This is what users of a

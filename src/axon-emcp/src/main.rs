@@ -197,14 +197,21 @@ fn resolve_knowledge_dir() -> Result<PathBuf, String> {
     }
     let cwd = std::env::current_dir()
         .map_err(|e| format!("could not read cwd: {e}"))?;
-    for candidate in [cwd.join("src").join("knowledge"), cwd.join("..").join("knowledge")] {
+    // §Release 0.2.0 — corpus moved INSIDE the crate
+    // (`src/axon-emcp/knowledge/`) so `cargo publish` ships it. Dev
+    // paths we try (in order): `<cwd>/src/axon-emcp/knowledge` (from
+    // repo root), `<cwd>/knowledge` (from inside the crate dir).
+    for candidate in [
+        cwd.join("src").join("axon-emcp").join("knowledge"),
+        cwd.join("knowledge"),
+    ] {
         if candidate.is_dir() {
             return Ok(candidate);
         }
     }
     Err(format!(
         "could not find knowledge directory — run from the repo root, \
-         or set AXON_EMCP_KNOWLEDGE_DIR to point to src/knowledge/. \
+         or set AXON_EMCP_KNOWLEDGE_DIR to point to src/axon-emcp/knowledge/. \
          cwd = {}",
         cwd.display()
     ))
