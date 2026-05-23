@@ -120,11 +120,89 @@ struct Frontmatter {
     since: String,
 }
 
+/// One reference document — the citation-ready prose the agent reads
+/// when it wants to quote a fact from the AXON manual. `kind` controls
+/// where the document lives on disk and which axon:// URI exposes it
+/// (see [`ReferenceKind`]).
+///
+/// Phase 3 ships three kinds: **grammar** (top-level vs. nested
+/// polarity, composition rules, EBNF), **logic** (when-to-use-what
+/// reasoning), and **compliance** (per-framework annotation maps).
+#[derive(Debug, Clone)]
+pub struct Reference {
+    /// Which family this document belongs to. Drives both the
+    /// on-disk directory and the served `axon://<kind>/<slug>` URI.
+    pub kind: ReferenceKind,
+    /// The URL slug — the file's base name without `.md`. Matches the
+    /// frontmatter `name:` field; the loader rejects mismatches.
+    pub slug: String,
+    /// One-line summary. Surfaces in the `resources/list` MCP payload
+    /// so the agent can pick which document to read without fetching
+    /// the body first.
+    pub summary: String,
+    /// Human-readable title rendered above the markdown body when the
+    /// agent reads the resource. Free-form (no enum constraint).
+    pub title: String,
+    /// The prose body — the markdown that follows the frontmatter,
+    /// returned verbatim by `resources/read`.
+    pub body: String,
+}
+
+/// The reference-document family. Each kind maps to a directory under
+/// `src/knowledge/` and to an `axon://<kind>/<slug>` URI namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceKind {
+    /// `axon://grammar/<slug>` — language-level rules: top-level vs.
+    /// nested polarity, composition + nesting rules, EBNF.
+    Grammar,
+    /// `axon://logic/<slug>` — when-to-use-what reasoning, idioms,
+    /// session-duality algebra, composition heuristics.
+    Logic,
+    /// `axon://compliance/<framework>` — per-framework annotation
+    /// maps (HIPAA, GDPR, PCI_DSS, SOC2, SOX, GxP, FISMA, NIST_800_53).
+    Compliance,
+}
+
+impl ReferenceKind {
+    /// The URI segment + directory name (matches the `serde` rename).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReferenceKind::Grammar => "grammar",
+            ReferenceKind::Logic => "logic",
+            ReferenceKind::Compliance => "compliance",
+        }
+    }
+    /// Every kind in stable order — used by `resources/list` to walk
+    /// the catalog deterministically.
+    pub const fn all() -> &'static [ReferenceKind] {
+        &[
+            ReferenceKind::Grammar,
+            ReferenceKind::Logic,
+            ReferenceKind::Compliance,
+        ]
+    }
+}
+
+/// Frontmatter shape for reference documents. Smaller than the
+/// primitive frontmatter: no category, no top-level polarity, no
+/// grammar fragment — those concepts only apply to primitives.
+#[derive(Debug, Deserialize)]
+struct ReferenceFrontmatter {
+    name: String,
+    summary: String,
+    title: String,
+}
+
 /// The in-process knowledge catalogue. Built once at startup and held
 /// behind an `Arc` for cheap clone across the async dispatcher.
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
     primitives: BTreeMap<String, Primitive>,
+    /// Reference docs keyed by `(kind, slug)`. The `BTreeMap` gives us
+    /// deterministic iteration so `resources/list` ordering does not
+    /// drift across runs.
+    references: BTreeMap<(ReferenceKind, String), Reference>,
 }
 
 impl Catalog {
@@ -184,14 +262,7 @@ impl Catalog {
         })?;
         let mut primitives = BTreeMap::new();
         for file in prims_dir.files() {
-            // Match the FS loader's filter — only `.md` files count.
-            let is_md = file
-                .path()
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(|s| s.eq_ignore_ascii_case("md"))
-                .unwrap_or(false);
-            if !is_md {
+            if !is_markdown(file.path()) {
                 continue;
             }
             let raw = file.contents_utf8().ok_or_else(|| {
@@ -208,7 +279,37 @@ impl Catalog {
                 ));
             }
         }
-        Ok(Catalog { primitives })
+        // §Phase 3 — load reference docs (grammar/, logic/, compliance/).
+        // Each kind is OPTIONAL at the corpus root: a stripped-down
+        // distribution that ships only `primitives/` still loads. The
+        // server logs a debug-level note when a kind is absent so
+        // operators can tell the loader did not silently swallow files.
+        let mut references = BTreeMap::new();
+        for kind in ReferenceKind::all() {
+            let Some(dir) = EMBEDDED_KNOWLEDGE.get_dir(kind.as_str()) else {
+                continue;
+            };
+            for file in dir.files() {
+                if !is_markdown(file.path()) {
+                    continue;
+                }
+                let raw = file.contents_utf8().ok_or_else(|| {
+                    LoadError::BadFrontmatter(
+                        PathBuf::from(file.path()),
+                        "embedded file is not valid UTF-8".into(),
+                    )
+                })?;
+                let refr = parse_reference(raw, file.path(), *kind)?;
+                let key = (refr.kind, refr.slug.clone());
+                if references.insert(key, refr.clone()).is_some() {
+                    return Err(LoadError::DuplicateName(
+                        format!("{}/{}", refr.kind.as_str(), refr.slug),
+                        PathBuf::from(file.path()),
+                    ));
+                }
+            }
+        }
+        Ok(Catalog { primitives, references })
     }
 
     /// Load from an explicit path. Public so tests + tools can drive
@@ -234,7 +335,35 @@ impl Catalog {
                 return Err(LoadError::DuplicateName(prim.name, path));
             }
         }
-        Ok(Catalog { primitives })
+        // §Phase 3 — reference docs live in sibling directories.
+        // Each is optional; if `grammar/` does not exist the catalog
+        // simply has no grammar references (a minimal corpus with
+        // only `primitives/` still loads).
+        let mut references = BTreeMap::new();
+        for kind in ReferenceKind::all() {
+            let dir = root.join(kind.as_str());
+            if !dir.is_dir() {
+                continue;
+            }
+            for entry in std::fs::read_dir(&dir).map_err(|e| LoadError::Io(dir.clone(), e))? {
+                let entry = entry.map_err(|e| LoadError::Io(dir.clone(), e))?;
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                    continue;
+                }
+                let raw = std::fs::read_to_string(&path)
+                    .map_err(|e| LoadError::Io(path.clone(), e))?;
+                let refr = parse_reference(&raw, &path, *kind)?;
+                let key = (refr.kind, refr.slug.clone());
+                if references.insert(key, refr.clone()).is_some() {
+                    return Err(LoadError::DuplicateName(
+                        format!("{}/{}", refr.kind.as_str(), refr.slug),
+                        path,
+                    ));
+                }
+            }
+        }
+        Ok(Catalog { primitives, references })
     }
 
     /// Empty catalog — used only by unit tests that exercise the
@@ -256,6 +385,45 @@ impl Catalog {
     pub fn primitives(&self) -> impl Iterator<Item = &Primitive> {
         self.primitives.values()
     }
+
+    /// Total reference-doc count across every [`ReferenceKind`].
+    pub fn reference_count(&self) -> usize {
+        self.references.len()
+    }
+
+    /// Reference-doc count for one specific kind. O(n) over the
+    /// references map, but n is small (tens, not thousands).
+    pub fn reference_count_of(&self, kind: ReferenceKind) -> usize {
+        self.references.keys().filter(|(k, _)| *k == kind).count()
+    }
+
+    /// Lookup one reference doc by `(kind, slug)`. `None` if absent.
+    pub fn reference(&self, kind: ReferenceKind, slug: &str) -> Option<&Reference> {
+        self.references.get(&(kind, slug.to_string()))
+    }
+
+    /// Iterate every reference doc (in BTreeMap order — `(kind, slug)`
+    /// ascending). Stable across runs so `resources/list` is too.
+    pub fn references(&self) -> impl Iterator<Item = &Reference> {
+        self.references.values()
+    }
+
+    /// Iterate every reference doc of one kind (in slug order).
+    pub fn references_of(&self, kind: ReferenceKind) -> impl Iterator<Item = &Reference> {
+        self.references
+            .iter()
+            .filter(move |((k, _), _)| *k == kind)
+            .map(|(_, v)| v)
+    }
+}
+
+/// Match the FS loader's filter — only `.md` files count. Pulled out
+/// so the embedded path and the FS path stay in lockstep.
+fn is_markdown(p: &Path) -> bool {
+    p.extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.eq_ignore_ascii_case("md"))
+        .unwrap_or(false)
 }
 
 /// What can go wrong loading the corpus. Surfaced as a fatal startup
@@ -311,6 +479,51 @@ fn parse_primitive(raw: &str, path: &Path) -> Result<Primitive, LoadError> {
         top_level: fm.top_level,
         grammar: fm.grammar,
         since: fm.since,
+        body: parsed.content,
+    })
+}
+
+/// Parse one reference document. The `expected_kind` is the directory
+/// the file was found in (`grammar/`, `logic/`, `compliance/`); the
+/// loader uses it as the document's `kind` so a misplaced file is
+/// impossible — the on-disk layout drives the URI namespace.
+fn parse_reference(
+    raw: &str,
+    path: &Path,
+    expected_kind: ReferenceKind,
+) -> Result<Reference, LoadError> {
+    let matter = Matter::<YAML>::new();
+    let parsed = matter.parse(raw);
+    let fm: ReferenceFrontmatter = parsed
+        .data
+        .ok_or_else(|| LoadError::NoFrontmatter(path.to_path_buf()))?
+        .deserialize()
+        .map_err(|e| LoadError::BadFrontmatter(path.to_path_buf(), e.to_string()))?;
+    // §Phase 3 invariant — the frontmatter `name:` MUST match the
+    // file's base name (stem). Without this guard, a document
+    // declaring `name: hipaa` but stored as `pci_dss.md` would shadow
+    // the *real* pci_dss entry on next load. We catch this early so
+    // the agent never resolves an `axon://compliance/pci_dss` to
+    // a HIPAA body.
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if !stem.is_empty() && fm.name != stem {
+        return Err(LoadError::BadFrontmatter(
+            path.to_path_buf(),
+            format!(
+                "frontmatter name `{}` does not match file stem `{}` \
+                 — the URL slug must equal the filename",
+                fm.name, stem
+            ),
+        ));
+    }
+    Ok(Reference {
+        kind: expected_kind,
+        slug: fm.name,
+        summary: fm.summary,
+        title: fm.title,
         body: parsed.content,
     })
 }
@@ -408,6 +621,75 @@ Body prose.
         // primitive's introductory paragraph.
         assert!(socket.body.contains("socket"));
         assert!(socket.body.contains("WebSocket"));
+    }
+
+    /// §Phase 3 — every reference doc shipped under
+    /// `src/knowledge/{grammar,logic,compliance}/` must be embedded
+    /// and round-trip through the same frontmatter parser the FS
+    /// loader uses. The `(kind, slug)` table is the canonical list
+    /// of what `resources/list` surfaces from the embedded corpus.
+    #[test]
+    fn embedded_corpus_contains_every_phase_3_reference_doc() {
+        let cat = Catalog::load_embedded().expect("embedded corpus must load");
+
+        // (kind, slug) tuples for every Phase 3 doc we ship.
+        let expected: &[(ReferenceKind, &str)] = &[
+            (ReferenceKind::Grammar, "top_level"),
+            (ReferenceKind::Grammar, "composition"),
+            (ReferenceKind::Grammar, "ebnf"),
+            (ReferenceKind::Logic, "flow_composition"),
+            (ReferenceKind::Logic, "session_duality"),
+            (ReferenceKind::Compliance, "hipaa"),
+            (ReferenceKind::Compliance, "gdpr"),
+            (ReferenceKind::Compliance, "pci_dss"),
+            (ReferenceKind::Compliance, "sox"),
+            (ReferenceKind::Compliance, "soc2"),
+            (ReferenceKind::Compliance, "fedramp"),
+            (ReferenceKind::Compliance, "gxp"),
+            (ReferenceKind::Compliance, "fisma"),
+            (ReferenceKind::Compliance, "nist_800_53"),
+        ];
+
+        for (kind, slug) in expected {
+            let r = cat
+                .reference(*kind, slug)
+                .unwrap_or_else(|| panic!("{}/{slug} must be embedded", kind.as_str()));
+            assert_eq!(r.kind, *kind, "{}/{slug}: kind drift", kind.as_str());
+            assert_eq!(&r.slug, slug, "{}/{slug}: slug drift", kind.as_str());
+            assert!(
+                !r.title.is_empty(),
+                "{}/{slug}: title empty — resources/list label would be unhelpful",
+                kind.as_str()
+            );
+            assert!(
+                !r.summary.is_empty(),
+                "{}/{slug}: summary empty — discovery would have no description",
+                kind.as_str()
+            );
+            assert!(
+                !r.body.is_empty(),
+                "{}/{slug}: body empty — resources/read would return nothing",
+                kind.as_str()
+            );
+        }
+
+        // Cross-check the family counts so we notice if a new doc
+        // lands without being added to the expected list above.
+        assert_eq!(
+            cat.reference_count_of(ReferenceKind::Grammar),
+            3,
+            "grammar family count drift"
+        );
+        assert_eq!(
+            cat.reference_count_of(ReferenceKind::Logic),
+            2,
+            "logic family count drift"
+        );
+        assert_eq!(
+            cat.reference_count_of(ReferenceKind::Compliance),
+            9,
+            "compliance family count drift"
+        );
     }
 
     /// §Phase 2 — the 6 core cognitive primitives an agent touches

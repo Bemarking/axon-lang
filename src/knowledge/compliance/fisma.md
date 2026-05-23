@@ -1,0 +1,159 @@
+---
+name: fisma
+title: FISMA — Federal Information Security Modernization Act (2014)
+summary: AXON annotations covering FISMA's statutory requirement for federal information systems — what flows through NIST 800-53 (the implementing catalogue) vs. what FISMA itself requires.
+---
+
+# FISMA — Federal Information Security Modernization Act (2014)
+
+**Scope:** US federal information and information systems.
+Statute (44 U.S.C. §§3551–3558) that requires every federal
+agency to implement an information-security program.
+
+FISMA itself does not enumerate controls — it delegates to
+**NIST SP 800-53** (and the FIPS publications). The annotation
+`compliance: [FISMA]` therefore travels with `[NIST_800_53]` and
+(for the assessment program) `[FedRAMP_<baseline>]`:
+
+```axon
+compliance: [FISMA, NIST_800_53, FedRAMP_Moderate]
+```
+
+This page covers the **statutory + categorisation** layer; the
+control-by-control mapping lives in
+`axon://compliance/nist_800_53` and `axon://compliance/fedramp`.
+
+## Declaring FISMA
+
+```axon
+type AgencyRecord compliance [FISMA, NIST_800_53] {
+    record_id: String,
+    agency_code: AgencyCode,
+    category: FipsCategory
+}
+
+axonstore AgencyRecords
+    compliance: [FISMA, NIST_800_53, FedRAMP_Moderate]
+    backend: postgresql
+    isolation: serializable
+    encryption: at_rest
+    retention: 7y
+
+axonendpoint AgencyRecordsAPI {
+    flow: AgencyRecordsFlow
+    method: POST
+    route: "/v1/agency/records"
+    compliance: [FISMA, NIST_800_53, FedRAMP_Moderate]
+    requires: [agency.write]
+}
+```
+
+## What the compiler enforces statically
+
+| FISMA element | AXON enforcement |
+|---|---|
+| §3551(a) — purpose statement | Out of scope. |
+| §3553(a) — categorisation per FIPS 199 | A FISMA-tagged `type`'s field `category: FipsCategory` is enforced as one of `{low, moderate, high}` (closed catalogue); the type checker rejects unknown values. |
+| §3554(b)(1) — security risk-based program | The static check requires a paired `[NIST_800_53]` tag — the AXON catalogue assumes 800-53 as the implementing control catalogue. |
+| §3554(b)(2) — policies & procedures | Out of scope. |
+| §3554(b)(3) — protective controls | Delegated to NIST 800-53 — see the FedRAMP / NIST_800_53 resources. |
+| §3554(b)(7) — periodic testing | Out of scope. |
+| §3556 — Federal Information Security Incident Center | A FISMA-tagged deployment routes incident records to a §40 incident channel that is consumable by US-CERT-equivalent tooling. |
+
+## What the runtime enforces
+
+Every runtime check is **inherited** from the paired catalogues
+(NIST 800-53 + FedRAMP baseline). FISMA itself imposes no
+distinct runtime check.
+
+| FISMA element | Source of runtime enforcement |
+|---|---|
+| Audit trail | NIST 800-53 AU family — see `axon://compliance/nist_800_53` |
+| Access control | NIST 800-53 AC family — see `axon://compliance/nist_800_53` |
+| Cryptography | NIST FIPS 140-3 — selected at runtime, validated configuration |
+| Incident response | NIST 800-53 IR family |
+
+## What you still attest manually
+
+- **System inventory** under §3554(c) — annual.
+- **Independent assessment** (§3555) — annually, by the IG or
+  an independent external auditor.
+- **Annual report to OMB** + Congress per §3555.
+- **Categorisation determination** per FIPS 199 — operator's
+  decision, documented in the SSP.
+- **Authorization to Operate (ATO)** — the agency's AO signs,
+  not AXON.
+
+## FIPS 199 categorisation primer
+
+FISMA hangs everything off the FIPS 199 categorisation: each
+information type is rated `{low, moderate, high}` on each of
+`{confidentiality, integrity, availability}`. The system's overall
+rating is the **high-water mark**.
+
+| Rating | Worst-case impact | Indicative baseline |
+|---|---|---|
+| **Low** | Limited adverse effect | FedRAMP Low |
+| **Moderate** | Serious adverse effect | FedRAMP Moderate (most agencies) |
+| **High** | Severe / catastrophic | FedRAMP High (life-safety, intel) |
+
+The compiler does **not** make the categorisation determination
+— it accepts whatever the operator declares. The static check
+verifies the type's declared category is in the closed enum.
+
+## Common patterns
+
+### Pattern 1 — Moderate-impact agency endpoint
+
+```axon
+type CaseFile compliance [FISMA, NIST_800_53] {
+    case_id: String,
+    classification: ClassificationLevel,
+    category: moderate     # FIPS 199 categorisation
+}
+
+axonendpoint CaseFileAPI {
+    flow: CaseFileFlow
+    method: POST
+    route: "/v1/cases"
+    compliance: [FISMA, NIST_800_53, FedRAMP_Moderate, SOC2]
+    requires: [cases.write]
+}
+```
+
+### Pattern 2 — Annual independent assessment evidence pack
+
+```axon
+flow GenerateFISMAAnnualEvidence(year: Int) -> EvidencePackage {
+    step CollectAuditRows {
+        given: { year, tag: "FISMA" }
+        retrieve: AuditLog
+        output: List<AuditRow>
+    }
+    step CollectConfigChanges {
+        given: { year, tag: "FISMA" }
+        retrieve: ConfigChanges
+        output: List<ConfigChange>
+    }
+    step PackageEvidence {
+        given: { audit: CollectAuditRows.output, configs: CollectConfigChanges.output }
+        ask: "Bundle into a tamper-evident PDF + JSON archive"
+        output: EvidencePackage
+    }
+    return PackageEvidence.output
+}
+```
+
+## When NOT to use FISMA
+
+- **Non-federal customers.** Even an agency vendor that does not
+  store federal data may not be FISMA-scoped — check with the AO.
+- **Federal contractor systems** that don't process federal
+  information directly. The §52.204-21 NIST 800-171 floor applies
+  instead — see `axon://compliance/nist_800_171` (not yet
+  shipped).
+
+FISMA travels with NIST 800-53 + a FedRAMP baseline. Declaring
+`compliance: [FISMA]` alone is structurally allowed but
+operationally incomplete; the static checker emits an
+`axon-W104` warning recommending the paired tags.
