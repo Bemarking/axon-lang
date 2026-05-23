@@ -74,3 +74,9 @@ pub mod channel_analysis;
 // in the `axon` crate) build on this. See
 // docs/paper_websocket_cognitive_primitive.md.
 pub mod session;
+// §Fase 41.h — multiparty session types (Honda–Yoshida–Carbone). A
+// `GlobalType` declares an n-party protocol; projection `G⌐r` extracts
+// each role's binary `SessionType` (the §41.a algebra). The safe-
+// realizability gate is `project_all`: a `Result::Ok` is the structural
+// certificate that independent per-role runtimes faithfully realise `G`.
+pub mod multiparty;
