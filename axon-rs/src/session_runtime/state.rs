@@ -22,6 +22,7 @@
 use std::collections::BTreeMap;
 
 use axon_frontend::session::{Payload, SessionType};
+use serde::{Deserialize, Serialize};
 
 use super::error::ProtocolError;
 
@@ -32,7 +33,11 @@ use super::error::ProtocolError;
 /// (`SessionType::credit_analyse`) has already verified the protocol is
 /// conformant under this budget — this is the runtime safety net for an
 /// off-spec peer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Serialize` + `Deserialize` — §Fase 41.g sealed-snapshot resume carries
+/// the *live* window (available count, not just the budget) so a resumed
+/// connection picks up exactly where the disconnected one left off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreditWindow {
     /// Maximum credit the producer may hold at any one time (`k` in the
     /// `socket { backpressure: credit(k) }` annotation).
@@ -71,12 +76,21 @@ impl CreditWindow {
 /// transition is local: there is no cross-process synchronisation here;
 /// the carrier delivers frames in order and the two cursors stay in lock
 /// step because they were initialised from a duality-checked pair.
-#[derive(Debug, Clone)]
+///
+/// `Serialize` + `Deserialize` — §Fase 41.g sealed-snapshot resume. The
+/// serialised form is a stable JSON object containing the schema (so
+/// resume can verify the protocol hasn't been swapped), the residual
+/// cursor, and the live credit window. Encoded once via [`Self::seal`]
+/// into the AAD-bound `cognitive_states` ciphertext; decoded by
+/// [`Self::resume`] after the §40.k `EnvelopeEncryption::decrypt` verifies
+/// the (tenant, session, flow) binding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRuntime {
     /// The original session type (the protocol "schema"). Kept so the
     /// runtime can re-report it on errors and so the cursor's invariants
     /// are documented at the type level (the cursor is always reachable
-    /// from `schema` along the trace so far).
+    /// from `schema` along the trace so far). Resume validates a sealed
+    /// snapshot's `schema` matches the live socket's declared protocol.
     schema: SessionType,
     /// The residual type — the unfinished part of the protocol. Always
     /// head-unfolded (never a leading `Rec` or `Var`).
@@ -120,6 +134,63 @@ impl SessionRuntime {
     /// this point with [`ProtocolError::AlreadyComplete`].
     pub fn is_complete(&self) -> bool {
         matches!(self.cursor, SessionType::End)
+    }
+
+    // ── §Fase 41.g — typed reconnection via sealed snapshots ───────────
+
+    /// Serialise the live runtime state into a stable JSON envelope —
+    /// the plaintext the §40.t `cognitive_states` AAD-bound ciphertext
+    /// wraps. Carries the schema (so resume can verify the protocol
+    /// hasn't been swapped under the connection), the residual cursor,
+    /// and the live credit window snapshot.
+    ///
+    /// Symmetric with [`Self::resume`]: `runtime.seal()` then
+    /// `SessionRuntime::resume(sealed, declared_schema)` round-trips when
+    /// the declared schema matches.
+    ///
+    /// Returns `None` if and only if the cursor is already at `End` — a
+    /// completed dialogue has no residual to seal, so no snapshot is
+    /// issued (the caller should `evict()` the prior snapshot instead).
+    pub fn seal(&self) -> Option<SealedRuntime> {
+        if self.is_complete() {
+            return None;
+        }
+        Some(SealedRuntime {
+            version: SEALED_RUNTIME_VERSION,
+            schema: self.schema.clone(),
+            cursor: self.cursor.clone(),
+            credit: self.credit,
+        })
+    }
+
+    /// Reconstruct a [`SessionRuntime`] from a sealed snapshot, validating
+    /// the schema matches what the route declares now (defence against
+    /// protocol-swap attacks where an attacker reuses a sealed snapshot
+    /// against a different socket whose declaration drifted).
+    ///
+    /// On success the returned runtime resumes from the exact cursor +
+    /// credit window the disconnected one left behind. The carrier driver
+    /// then runs the producer/consumer loop as usual.
+    pub fn resume(
+        sealed: SealedRuntime,
+        declared_schema: &SessionType,
+    ) -> Result<Self, ResumeError> {
+        if sealed.version != SEALED_RUNTIME_VERSION {
+            return Err(ResumeError::UnsupportedVersion(sealed.version));
+        }
+        if !sealed.schema.equiv(declared_schema) {
+            return Err(ResumeError::SchemaMismatch);
+        }
+        // The cursor must be reachable from the schema (we cannot prove
+        // this in general — the algebra would need a labelled trace — but
+        // we DO require the cursor to be head-unfolded, which the wire
+        // form preserves because `seal()` only stores cursors set via
+        // `advance()`).
+        Ok(SessionRuntime {
+            schema: sealed.schema,
+            cursor: sealed.cursor,
+            credit: sealed.credit,
+        })
     }
 
     // ── Operational rules ──────────────────────────────────────────────
@@ -276,6 +347,79 @@ fn kind_of(t: &SessionType) -> &'static str {
 fn keys_of(m: &BTreeMap<String, SessionType>) -> Vec<String> {
     m.keys().cloned().collect()
 }
+
+// ── §Fase 41.g — sealed-snapshot envelope ────────────────────────────────
+
+/// On-wire version tag for the sealed-runtime JSON. Bumped only on a
+/// breaking schema change to the envelope shape.
+pub const SEALED_RUNTIME_VERSION: u8 = 1;
+
+/// The plaintext the §40.t `cognitive_states` AAD-bound ciphertext wraps —
+/// a stable JSON envelope containing the session-type schema, the residual
+/// cursor, and the live credit window. Issued by
+/// [`SessionRuntime::seal`]; opened by [`SessionRuntime::resume`] after the
+/// §40.k envelope decryption verifies the (tenant, session, flow) binding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SealedRuntime {
+    /// Envelope version — gates schema evolution.
+    pub version: u8,
+    /// The declared session-type schema. Resume validates this equals
+    /// the live socket's declaration (defence against protocol-swap).
+    pub schema: SessionType,
+    /// The residual session type (the cursor at seal time). Always
+    /// head-unfolded because `SessionRuntime::advance` enforces it.
+    pub cursor: SessionType,
+    /// The live credit window snapshot — `None` if the bound socket is
+    /// in the unbounded fragment (no `backpressure` annotation).
+    pub credit: Option<CreditWindow>,
+}
+
+impl SealedRuntime {
+    /// Serialise to bytes — the format the §Fase 40.t envelope encrypts.
+    /// Deterministic JSON via `serde_json::to_vec`.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("SealedRuntime ⇒ JSON is total")
+    }
+    /// Parse bytes (after envelope decryption) back into a `SealedRuntime`.
+    pub fn from_bytes(b: &[u8]) -> Result<Self, ResumeError> {
+        serde_json::from_slice(b).map_err(|e| ResumeError::Malformed(e.to_string()))
+    }
+}
+
+/// Errors raised by [`SessionRuntime::resume`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeError {
+    /// The sealed envelope's version is newer than this runtime supports.
+    UnsupportedVersion(u8),
+    /// The sealed schema does not match the live socket's declared
+    /// protocol. The §40.t envelope's AAD binds tenant+session+flow, so
+    /// the *transport* can't be confused; this check catches the case
+    /// where the socket's declared session-type itself drifted between
+    /// seal + resume (e.g. a deploy bumped the protocol).
+    SchemaMismatch,
+    /// The plaintext bytes didn't deserialise into a `SealedRuntime`
+    /// envelope. Carries the parser's complaint for diagnostics.
+    Malformed(String),
+}
+
+impl std::fmt::Display for ResumeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResumeError::UnsupportedVersion(v) => write!(
+                f,
+                "sealed runtime envelope version {v} is newer than this runtime supports \
+                 (current = {SEALED_RUNTIME_VERSION})"
+            ),
+            ResumeError::SchemaMismatch => f.write_str(
+                "sealed runtime's declared protocol does not match the live socket's session type \
+                 — the protocol drifted between seal and resume",
+            ),
+            ResumeError::Malformed(detail) => write!(f, "sealed runtime envelope is malformed: {detail}"),
+        }
+    }
+}
+
+impl std::error::Error for ResumeError {}
 
 #[cfg(test)]
 mod tests {
@@ -445,6 +589,136 @@ mod tests {
     }
 
     // ── A realistic chat dialogue runs to completion ────────────────────
+
+    // ── §Fase 41.g — sealed snapshot round-trip + resume validation ────
+
+    #[test]
+    fn seal_returns_none_at_end_and_some_otherwise() {
+        // !A.end → before sending, seal yields a snapshot.
+        let schema = SessionType::send("A", SessionType::End);
+        let r = SessionRuntime::new(schema.clone(), None);
+        let sealed = r.seal().expect("snapshot at non-End cursor");
+        assert_eq!(sealed.version, SEALED_RUNTIME_VERSION);
+        // The schema is preserved verbatim (resume needs the original).
+        assert_eq!(sealed.schema, schema);
+        // The cursor is the head-unfolded form of `Send`.
+        assert!(matches!(sealed.cursor, SessionType::Send { .. }));
+        // After advancing to End, seal returns None.
+        let mut r = SessionRuntime::new(schema, None);
+        r.try_send("A").unwrap();
+        assert!(r.is_complete());
+        assert!(r.seal().is_none(), "no snapshot once cursor is at End");
+    }
+
+    #[test]
+    fn seal_carries_live_credit_window_not_just_budget() {
+        // !A.!B.end with budget=2 — after one send the window has 1 left.
+        let schema = SessionType::send("A", SessionType::send("B", SessionType::End));
+        let mut r = SessionRuntime::new(schema, Some(2));
+        r.try_send("A").unwrap();
+        let sealed = r.seal().expect("snapshot mid-protocol");
+        assert_eq!(sealed.credit, Some(CreditWindow { budget: 2, available: 1 }));
+    }
+
+    #[test]
+    fn resume_round_trips_through_seal_then_unbinds_to_the_same_cursor() {
+        let schema = SessionType::recv(
+            "Msg",
+            SessionType::send("Ack", SessionType::End),
+        );
+        let r0 = SessionRuntime::new(schema.clone(), None);
+        let sealed = r0.seal().expect("snapshot before recv");
+        let bytes = sealed.to_bytes();
+        // Round-trip via JSON bytes (the §40.t envelope plaintext).
+        let recovered = SealedRuntime::from_bytes(&bytes).expect("parse");
+        assert_eq!(recovered, sealed);
+        // And resume → live runtime that picks up where we left off.
+        let r1 = SessionRuntime::resume(recovered, &schema).expect("resume");
+        assert_eq!(r1.cursor(), r0.cursor());
+        assert_eq!(r1.credit(), r0.credit());
+    }
+
+    #[test]
+    fn resume_after_partial_progress_continues_from_the_residual() {
+        // !A.!B.end — send A, seal, resume, send B, end.
+        let schema = SessionType::send("A", SessionType::send("B", SessionType::End));
+        let mut r0 = SessionRuntime::new(schema.clone(), Some(2));
+        r0.try_send("A").unwrap();
+        let bytes = r0.seal().unwrap().to_bytes();
+        // Wire bytes round-trip — this is what the AAD-bound ciphertext carries.
+        let recovered = SealedRuntime::from_bytes(&bytes).unwrap();
+        let mut r1 = SessionRuntime::resume(recovered, &schema).unwrap();
+        // Credit window survived the seal (1 used, 1 available).
+        assert_eq!(r1.credit().unwrap().available, 1);
+        // The cursor is exactly `!B.end` — sending B completes the dialogue.
+        r1.try_send("B").expect("send B from resumed cursor");
+        assert!(r1.is_complete());
+    }
+
+    #[test]
+    fn resume_rejects_a_schema_mismatch() {
+        // Seal a snapshot for `!A.end`, then try to resume against `!B.end`.
+        let schema_a = SessionType::send("A", SessionType::End);
+        let schema_b = SessionType::send("B", SessionType::End);
+        let r0 = SessionRuntime::new(schema_a.clone(), None);
+        let sealed = r0.seal().unwrap();
+        assert_eq!(
+            SessionRuntime::resume(sealed.clone(), &schema_b).err(),
+            Some(ResumeError::SchemaMismatch)
+        );
+        // Same-schema resume works.
+        assert!(SessionRuntime::resume(sealed, &schema_a).is_ok());
+    }
+
+    #[test]
+    fn resume_rejects_a_future_envelope_version() {
+        let schema = SessionType::send("A", SessionType::End);
+        let r = SessionRuntime::new(schema.clone(), None);
+        let mut sealed = r.seal().unwrap();
+        sealed.version = SEALED_RUNTIME_VERSION + 7;
+        assert_eq!(
+            SessionRuntime::resume(sealed, &schema).err(),
+            Some(ResumeError::UnsupportedVersion(SEALED_RUNTIME_VERSION + 7))
+        );
+    }
+
+    #[test]
+    fn resume_rejects_malformed_envelope_bytes() {
+        let garbage = b"{not valid JSON";
+        assert!(matches!(
+            SealedRuntime::from_bytes(garbage),
+            Err(ResumeError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn resume_accepts_alpha_equivalent_schemas() {
+        // The schema match uses the §41.a regular-coinductive equality, so
+        // α-renamed recursion variables are accepted as equivalent.
+        let schema_x = SessionType::rec("X", SessionType::send("T", SessionType::var("X")));
+        let schema_y = SessionType::rec("Y", SessionType::send("T", SessionType::var("Y")));
+        let r = SessionRuntime::new(schema_x.clone(), None);
+        let sealed = r.seal().unwrap();
+        // Sealing produced a schema with binder `X`; resume against `Y` succeeds.
+        assert!(SessionRuntime::resume(sealed, &schema_y).is_ok());
+    }
+
+    #[test]
+    fn sealed_runtime_is_json_compatible_with_serde_roundtrip() {
+        // The wire shape must be JSON-deserialisable by any downstream
+        // tool (e.g. an offline forensic inspector). We check the bytes
+        // parse via the standard `serde_json::from_slice`.
+        let schema = SessionType::send("X", SessionType::End);
+        let r = SessionRuntime::new(schema, None);
+        let bytes = r.seal().unwrap().to_bytes();
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("envelope is well-formed JSON");
+        // The envelope carries the four known keys.
+        assert!(value.get("version").is_some());
+        assert!(value.get("schema").is_some());
+        assert!(value.get("cursor").is_some());
+        assert!(value.get("credit").is_some());
+    }
 
     #[test]
     fn realistic_chat_dialogue_runs_to_completion() {
