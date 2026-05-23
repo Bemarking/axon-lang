@@ -109,6 +109,47 @@ pub enum Domain {
     /// §Fase 7.b — Embedded sales widget — streaming SSE chat +
     /// JSON lead-capture endpoint, product-corpus grounded.
     SalesWidget,
+    // ── §Fase 7.c — Application patterns ─────────────────────────
+    /// §Fase 7.c — RPA-style multi-step workflow with mandate-gated
+    /// approvals + typed audit receipt.
+    WorkflowAutomation,
+    /// §Fase 7.c — BI / analytics pipeline against a typed metrics
+    /// warehouse with data-freshness anchor.
+    BusinessIntelligence,
+    /// §Fase 7.c — ERP / CRM / HR sync hub — typed normalisation,
+    /// lineage preservation, reconciliation.
+    CorporateIntegration,
+    /// §Fase 7.c — Continual-learning loop — feedback → eval →
+    /// mandate-gated production promotion.
+    SelfLearning,
+    /// §Fase 7.c — Bulk document classification + extraction (general
+    /// document Q&A / invoice / resume processing).
+    DocumentAnalysis,
+    /// §Fase 7.c — Async support-ticket classification + priority +
+    /// SLA-aware routing.
+    TicketTriage,
+    /// §Fase 7.c — UGC moderation chain (immune + reflex + heal)
+    /// with policy-citation anchor.
+    ContentModeration,
+    /// §Fase 7.c — Knowledge-graph entity + relation extraction with
+    /// typed triple store + evidence-span anchor.
+    KnowledgeExtraction,
+    /// §Fase 7.c — Multi-framework compliance monitoring (HIPAA /
+    /// GDPR / PCI / SOX / SOC2) with PIX-chained audit + auditor
+    /// review mandate.
+    ComplianceMonitoring,
+    /// §Fase 7.c — Resume screening + candidate ranking with
+    /// mandatory bias-detection shield + NoBiasInRanking anchor.
+    Recruitment,
+    /// §Fase 7.c — Curriculum-driven tutoring persona with student-
+    /// progress memory + Socratic anchor + streaming reply.
+    Education,
+    /// §Fase 7.c — Personal-finance educator with mandatory
+    /// NoInvestmentAdvice anchor (NOT a registered advisor).
+    FinancialAdvisor,
+    /// §Fase 7.c — ETL pipeline with cognitive enrichment + transact
+    /// over the load step + quality-floor anchor.
+    DataPipeline,
 }
 
 impl Domain {
@@ -136,6 +177,19 @@ impl Domain {
             Domain::Dev => "dev",
             Domain::SalesConsultive => "sales_consultive",
             Domain::SalesWidget => "sales_widget",
+            Domain::WorkflowAutomation => "workflow_automation",
+            Domain::BusinessIntelligence => "business_intelligence",
+            Domain::CorporateIntegration => "corporate_integration",
+            Domain::SelfLearning => "self_learning",
+            Domain::DocumentAnalysis => "document_analysis",
+            Domain::TicketTriage => "ticket_triage",
+            Domain::ContentModeration => "content_moderation",
+            Domain::KnowledgeExtraction => "knowledge_extraction",
+            Domain::ComplianceMonitoring => "compliance_monitoring",
+            Domain::Recruitment => "recruitment",
+            Domain::Education => "education",
+            Domain::FinancialAdvisor => "financial_advisor",
+            Domain::DataPipeline => "data_pipeline",
         }
     }
     /// Every domain in stable order — used for classifier iteration
@@ -162,6 +216,20 @@ impl Domain {
             Domain::Dev,
             Domain::SalesConsultive,
             Domain::SalesWidget,
+            // Application patterns (use-case shape) — §Fase 7.c
+            Domain::WorkflowAutomation,
+            Domain::BusinessIntelligence,
+            Domain::CorporateIntegration,
+            Domain::SelfLearning,
+            Domain::DocumentAnalysis,
+            Domain::TicketTriage,
+            Domain::ContentModeration,
+            Domain::KnowledgeExtraction,
+            Domain::ComplianceMonitoring,
+            Domain::Recruitment,
+            Domain::Education,
+            Domain::FinancialAdvisor,
+            Domain::DataPipeline,
             // Meta-patterns
             Domain::Chat,
             Domain::Retrieval,
@@ -595,6 +663,282 @@ fn domain_metadata(d: Domain) -> &'static DomainMetadata {
                 "Add SOC2-Privacy if you're EU-facing; layer GDPR on the lead-capture surface.",
             ],
         },
+        Domain::WorkflowAutomation => &DomainMetadata {
+            label: "Workflow automation (mandate-gated approvals)",
+            summary: "RPA-style multi-step workflow with explicit mandate gating on the approve step + audit receipts on every execution. Back-office work: expense approvals, document routing, claim processing.",
+            keywords: &[
+                "workflow", "automation", "rpa", "approval_workflow",
+                "back_office", "expense_approval", "document_routing",
+                "claim_processing", "process_automation",
+            ],
+            primitives_used: &[
+                "type", "persona", "context", "anchor", "shield", "mandate",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Bind the mandate to your real escalation queue.",
+                "Add per-step branching via `if` for the approve/reject/escalate paths.",
+                "Wire a daemon for the async escalation channel.",
+                "Layer SOX if the workflow touches financial transactions.",
+                "Add an audit-export endpoint for compliance review.",
+            ],
+        },
+        Domain::BusinessIntelligence => &DomainMetadata {
+            label: "Business Intelligence (data-freshness anchored)",
+            summary: "Analytical Q&A pipeline against a typed metrics warehouse with freshness + accuracy anchors. Dashboards + ad-hoc queries return AnalyticsResult envelopes.",
+            keywords: &[
+                "bi", "business_intelligence", "analytics", "dashboard",
+                "metrics", "kpi", "data_storytelling", "warehouse",
+                "ad_hoc_analysis",
+            ],
+            primitives_used: &[
+                "type", "axonstore", "persona", "context", "anchor", "shield",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Pin the warehouse to your real DB + adjust the schema.",
+                "Tighten DataFreshnessGate.confidence_floor: per SLA.",
+                "Add chart_spec emission via a downstream renderer tool.",
+                "Add GDPR if the dashboards touch EU customer data.",
+                "Wire row-level security via dataspace tenant isolation.",
+            ],
+        },
+        Domain::CorporateIntegration => &DomainMetadata {
+            label: "Corporate Integration (ERP / CRM / HR sync hub)",
+            summary: "Multi-source sync hub with typed normalisation + lineage preservation + reconciliation. SAP / Workday / Salesforce / NetSuite integration shape.",
+            keywords: &[
+                "integration", "corporate_integration", "erp", "crm", "hr",
+                "sap", "workday", "salesforce", "netsuite", "mdm",
+                "master_data", "ipaas",
+            ],
+            primitives_used: &[
+                "type", "resource", "persona", "context", "anchor", "shield",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Wire your real connector providers (sap-sdk / salesforce-sdk).",
+                "Adopt a canonical entity ontology (Schema.org or in-house).",
+                "Add idempotency keys on the IngestRequest for replay safety.",
+                "Layer GDPR if EU employee/customer data is in scope.",
+                "Configure DLQ for unprocessable records (DataPipeline pattern).",
+            ],
+        },
+        Domain::SelfLearning => &DomainMetadata {
+            label: "Continual learning (mandate-gated promotion)",
+            summary: "Feedback-driven model improvement loop — collect signals, score, eval, promote (under mandate). Anti-poisoning shield + EvidenceBackedPromotion anchor.",
+            keywords: &[
+                "continual_learning", "self_learning", "feedback_loop",
+                "mlops", "ml_ops", "model_improvement", "active_learning",
+                "online_learning", "drift_detection",
+            ],
+            primitives_used: &[
+                "type", "memory", "persona", "context", "anchor", "shield",
+                "mandate", "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Wire your eval-set + lift-calculation backend.",
+                "Tune PromotionApproval.constraint to your real promotion criteria.",
+                "Add training-poisoning detection signals into the shield's scan list.",
+                "Layer a `pix` (provenance) over the FeedbackStore for tamper-evidence.",
+                "Add a `heal` routine for borderline-promotion human review.",
+            ],
+        },
+        Domain::DocumentAnalysis => &DomainMetadata {
+            label: "Document analysis (bulk extraction)",
+            summary: "General bulk-document processing — classify, extract, emit typed structured data with confidence per field. Invoices, resumes, reports, technical docs.",
+            keywords: &[
+                "document_analysis", "document_processing", "ocr",
+                "invoice_processing", "resume_parsing", "report_extraction",
+                "form_processing", "intelligent_document_processing", "idp",
+            ],
+            primitives_used: &[
+                "type", "persona", "context", "anchor", "shield",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Wire an OCR tool if the documents arrive as images / PDFs.",
+                "Add per-document-class extraction sub-flows (apply: pattern).",
+                "Tighten anchor's confidence_floor for regulated extractions.",
+                "Layer HIPAA / GDPR if the documents contain PHI / PII.",
+                "Add a quarantine sink for low-confidence extractions.",
+            ],
+        },
+        Domain::TicketTriage => &DomainMetadata {
+            label: "Ticket triage (SLA-aware routing)",
+            summary: "Async support-ticket classification + priority + routing to the right queue. SLA-aware; customer-tier-respecting. PII-redacting shield (ticket bodies often contain PII).",
+            keywords: &[
+                "ticket_triage", "ticket_routing", "support_routing",
+                "zendesk", "intercom", "freshdesk", "helpdesk",
+                "sla_routing", "customer_support",
+            ],
+            primitives_used: &[
+                "type", "persona", "context", "anchor", "shield",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Wire the routing queues to your real helpdesk.",
+                "Tune classification thresholds per customer-tier policy.",
+                "Add an auto-answer step for tickets that match canned-response patterns.",
+                "Add a daemon for the bulk-import lane (legacy ticket migration).",
+                "Layer GDPR if the helpdesk serves EU customers.",
+            ],
+        },
+        Domain::ContentModeration => &DomainMetadata {
+            label: "Content moderation (immune + reflex + heal)",
+            summary: "UGC moderation pipeline with continuous-monitoring immune system, immediate-action reflex (quarantine), and human-in-loop heal for borderline cases.",
+            keywords: &[
+                "content_moderation", "moderation", "trust_and_safety",
+                "ugc_moderation", "toxicity_detection", "ugc",
+                "policy_violation", "auto_moderation",
+            ],
+            primitives_used: &[
+                "type", "resource", "fabric", "manifest", "observe",
+                "immune", "reflex", "heal",
+                "persona", "context", "anchor", "shield",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Tune ContentVigil.sensitivity per the platform's tolerance.",
+                "Add per-region moderation policy variants (EU vs US thresholds).",
+                "Wire heal review queue to your real moderation-operations team.",
+                "Add an appeal flow for restored content (legal-discovery friendly).",
+                "Layer GDPR if EU users post UGC.",
+            ],
+        },
+        Domain::KnowledgeExtraction => &DomainMetadata {
+            label: "Knowledge extraction (entity + relation graphs)",
+            summary: "Entity + relation triple extraction for knowledge graphs. Typed candidates, confidence per triple, evidence-span anchored. Backs RAG with structured retrieval.",
+            keywords: &[
+                "knowledge_extraction", "knowledge_graph", "kg", "ner",
+                "named_entity_recognition", "relation_extraction", "ontology",
+                "entity_linking", "wikidata", "graph_construction",
+            ],
+            primitives_used: &[
+                "type", "axonstore", "persona", "context", "anchor", "shield",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Pin the entity-URI naming convention (Wikidata / in-house ontology).",
+                "Add an alignment step to merge new triples with existing graph state.",
+                "Tighten EvidenceSpanRequired.confidence_floor for high-stakes KGs.",
+                "Add SPARQL / Cypher endpoints downstream of the triple store.",
+                "Layer compliance per the source data's classification.",
+            ],
+        },
+        Domain::ComplianceMonitoring => &DomainMetadata {
+            label: "Compliance monitoring (multi-framework posture)",
+            summary: "Continuous multi-framework compliance audit (HIPAA / GDPR / PCI / SOX / SOC2) with PIX-chained tamper-evident audit + auditor-review mandate on posture transitions.",
+            keywords: &[
+                "compliance_monitoring", "audit", "internal_audit",
+                "regulatory_compliance", "posture_management",
+                "continuous_compliance", "grc", "hipaa_monitoring",
+                "sox_monitoring",
+            ],
+            primitives_used: &[
+                "type", "pix", "persona", "context", "anchor", "shield", "mandate",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Wire the control catalogue per framework (NIST 800-53 SP / SOX 404 / HIPAA §164).",
+                "Add per-control evidence pointers (links to PIX / log / artefact).",
+                "Tighten AuditorReview.constraint to your real review SLA.",
+                "Add a posture-export endpoint for the auditor-portal.",
+                "Layer dedicated retention per framework (SOX 7y, HIPAA 6y, …).",
+            ],
+        },
+        Domain::Recruitment => &DomainMetadata {
+            label: "Recruitment (resume screening + bias detection)",
+            summary: "Candidate screening + ranking with MANDATORY bias-detection shield + NoBiasInRanking anchor. EEOC-aligned. Production deployments add a heal routine for borderline rankings.",
+            keywords: &[
+                "recruitment", "hr", "hiring", "talent_acquisition",
+                "ats", "applicant_tracking", "resume_screening",
+                "candidate_ranking", "fair_hiring",
+            ],
+            primitives_used: &[
+                "type", "persona", "context", "anchor", "shield",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "ADD a `heal` routine for human review of borderline rankings — required for EEOC defensibility.",
+                "Wire to your ATS provider (Greenhouse / Lever / Workday).",
+                "Add per-role competency rubric corpus.",
+                "Layer GDPR + state-specific HR laws (NYC AI bias law, EU AI Act).",
+                "Add an appeal flow for rejected candidates (regulatory friendly).",
+            ],
+        },
+        Domain::Education => &DomainMetadata {
+            label: "Education / tutoring (Socratic streaming)",
+            summary: "Curriculum-driven tutoring persona with persistent student-progress memory + Socratic anchor (no direct answers when guided discovery teaches more). Streaming SSE reply.",
+            keywords: &[
+                "education", "tutoring", "edtech", "personalized_learning",
+                "pedagogy", "socratic", "lms", "learning_management",
+                "intelligent_tutoring",
+            ],
+            primitives_used: &[
+                "type", "memory", "persona", "context", "anchor", "tool",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &[],
+            next_steps: &[
+                "Wire your curriculum corpus (organised by course + topic).",
+                "Add per-skill-level prompt variants in the persona.",
+                "Layer FERPA if serving US K-12 / higher-ed.",
+                "Add a `heal` routine for at-risk-student escalation.",
+                "Configure language: per market for localised tutoring.",
+            ],
+        },
+        Domain::FinancialAdvisor => &DomainMetadata {
+            label: "Personal finance educator (NoInvestmentAdvice)",
+            summary: "PFM-style assistant with MANDATORY NoInvestmentAdvice anchor (NOT a registered investment advisor). Educational + budgeting + debt-management focused.",
+            keywords: &[
+                "financial_advisor", "pfm", "personal_finance",
+                "budgeting", "debt_management", "financial_literacy",
+                "robo_advisor", "fiduciary",
+            ],
+            primitives_used: &[
+                "type", "persona", "context", "anchor", "shield",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Add a registered-investment-advisor (RIA) review layer for advice-tier features.",
+                "Wire authoritative-source corpus (CFPB / NerdWallet / textbook references).",
+                "Layer GLBA + state-specific consumer-finance laws as applicable.",
+                "Add jurisdiction-aware disclaimer rendering.",
+                "Configure persona's language: per market.",
+            ],
+        },
+        Domain::DataPipeline => &DomainMetadata {
+            label: "Data pipeline (ETL with cognitive enrichment)",
+            summary: "Single-pass ETL pipeline: ingest → validate → enrich (cognitive) → load. Transact block over the load step + quality-floor anchor.",
+            keywords: &[
+                "data_pipeline", "etl", "elt", "data_ingestion",
+                "data_enrichment", "data_quality", "data_loading",
+                "warehouse_loading", "stream_processing",
+            ],
+            primitives_used: &[
+                "type", "axonstore", "transact", "persona", "context", "anchor", "shield",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Pin the destination warehouse + adjust the schema.",
+                "Add per-source validators as separate sub-flows.",
+                "Wire a DLQ for quarantined records.",
+                "Layer compliance per the data classification (HIPAA / PCI / GDPR).",
+                "Add observability for batch-level latency + throughput.",
+            ],
+        },
         Domain::MultiAgent => &DomainMetadata {
             label: "Multi-agent coordination",
             summary: "Planner + worker pattern — two personas, two flows, two HTTP boundaries.",
@@ -811,6 +1155,42 @@ pub fn parse_domain_hint(s: &str) -> Option<Domain> {
         | "lead_qualification" => Some(Domain::SalesConsultive),
         "sales_widget" | "widget" | "website_chat" | "embedded_chat" | "lead_capture" => {
             Some(Domain::SalesWidget)
+        }
+        // §Fase 7.c — application-pattern aliases.
+        "workflow_automation" | "workflow" | "rpa" | "approval_workflow" | "back_office" => {
+            Some(Domain::WorkflowAutomation)
+        }
+        "business_intelligence" | "bi" | "analytics" | "dashboard" | "kpi" => {
+            Some(Domain::BusinessIntelligence)
+        }
+        "corporate_integration" | "ipaas" | "erp_integration" | "mdm" | "master_data" => {
+            Some(Domain::CorporateIntegration)
+        }
+        "self_learning" | "continual_learning" | "feedback_loop" | "mlops" | "active_learning" => {
+            Some(Domain::SelfLearning)
+        }
+        "document_analysis" | "document_processing" | "idp" | "invoice_processing"
+        | "resume_parsing" => Some(Domain::DocumentAnalysis),
+        "ticket_triage" | "ticket_routing" | "support_routing" | "helpdesk" => {
+            Some(Domain::TicketTriage)
+        }
+        "content_moderation" | "moderation" | "trust_and_safety" | "ugc_moderation" => {
+            Some(Domain::ContentModeration)
+        }
+        "knowledge_extraction" | "kg" | "knowledge_graph" | "ner"
+        | "named_entity_recognition" => Some(Domain::KnowledgeExtraction),
+        "compliance_monitoring" | "grc" | "audit_monitoring" | "continuous_compliance" => {
+            Some(Domain::ComplianceMonitoring)
+        }
+        "recruitment" | "hr" | "hiring" | "ats" | "talent_acquisition" => Some(Domain::Recruitment),
+        "education" | "tutoring" | "edtech" | "lms" | "intelligent_tutoring" => {
+            Some(Domain::Education)
+        }
+        "financial_advisor" | "pfm" | "personal_finance" | "robo_advisor" => {
+            Some(Domain::FinancialAdvisor)
+        }
+        "data_pipeline" | "etl" | "elt" | "data_ingestion" | "warehouse_loading" => {
+            Some(Domain::DataPipeline)
         }
         // Meta-patterns
         "chat" | "streaming" | "dialogue" => Some(Domain::Chat),

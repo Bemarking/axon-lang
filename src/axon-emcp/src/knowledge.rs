@@ -1029,6 +1029,13 @@ Body prose.
             // §Fase 7.b — agent patterns (8):
             "chat_research", "chat_tools", "chat_skills", "whatsapp",
             "voice", "dev", "sales_consultive", "sales_widget",
+            // §Fase 7.c — application patterns (13):
+            "workflow_automation", "business_intelligence",
+            "corporate_integration", "self_learning",
+            "document_analysis", "ticket_triage",
+            "content_moderation", "knowledge_extraction",
+            "compliance_monitoring", "recruitment",
+            "education", "financial_advisor", "data_pipeline",
         ];
         for slug in expected {
             let t = cat

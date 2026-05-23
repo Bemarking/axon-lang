@@ -139,3 +139,70 @@ fn template_sales_consultive_compiles() {
 fn template_sales_widget_compiles() {
     assert_template_compiles("sales_widget");
 }
+
+// §Fase 7.c — application-pattern templates (closes the cycle at 33/33).
+
+#[test]
+fn template_workflow_automation_compiles() {
+    assert_template_compiles("workflow_automation");
+}
+
+#[test]
+fn template_business_intelligence_compiles() {
+    assert_template_compiles("business_intelligence");
+}
+
+#[test]
+fn template_corporate_integration_compiles() {
+    assert_template_compiles("corporate_integration");
+}
+
+#[test]
+fn template_self_learning_compiles() {
+    assert_template_compiles("self_learning");
+}
+
+#[test]
+fn template_document_analysis_compiles() {
+    assert_template_compiles("document_analysis");
+}
+
+#[test]
+fn template_ticket_triage_compiles() {
+    assert_template_compiles("ticket_triage");
+}
+
+#[test]
+fn template_content_moderation_compiles() {
+    assert_template_compiles("content_moderation");
+}
+
+#[test]
+fn template_knowledge_extraction_compiles() {
+    assert_template_compiles("knowledge_extraction");
+}
+
+#[test]
+fn template_compliance_monitoring_compiles() {
+    assert_template_compiles("compliance_monitoring");
+}
+
+#[test]
+fn template_recruitment_compiles() {
+    assert_template_compiles("recruitment");
+}
+
+#[test]
+fn template_education_compiles() {
+    assert_template_compiles("education");
+}
+
+#[test]
+fn template_financial_advisor_compiles() {
+    assert_template_compiles("financial_advisor");
+}
+
+#[test]
+fn template_data_pipeline_compiles() {
+    assert_template_compiles("data_pipeline");
+}
