@@ -1,0 +1,49 @@
+[package]
+name = "axon-emcp"
+version = "0.1.0"
+authors = ["AXON Project", "Bemarking AI S.A.S."]
+edition = "2021"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/Bemarking/axon-lang"
+description = "axon-emcp — the official ℰMCP (Epistemic Model Context Protocol) server for AXON. A stdio JSON-RPC 2.0 MCP server that exposes the AXON language to AI coding agents (Claude Code, Codex, Cursor, …): every primitive's grammar + semantic constraints + idiomatic examples, plus live validation via the same `axon-frontend` lexer/parser/type-checker the `axon` CLI uses. Hydrated from a diff-reviewable markdown knowledge base under `src/knowledge/`."
+keywords = ["axon", "mcp", "ai", "agent", "coding"]
+categories = ["development-tools", "command-line-utilities"]
+readme = "README.md"
+
+[[bin]]
+name = "axon-emcp"
+path = "src/main.rs"
+
+[dependencies]
+# §ℰMCP — the compiler frontend gives us live validation: `axon.check`
+# returns the same diagnostics `axon check` would print. We consume by
+# path (in-tree development) + a version constraint (so cargo-publish
+# resolves a registry version too, matching the §Fase 40 D1 discipline).
+axon-frontend = { path = "../../axon-frontend", version = "=1.1.0" }
+
+# Serde JSON for the MCP wire protocol (JSON-RPC 2.0 over stdio).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async runtime — MCP servers are I/O-bound + benefit from async stdin/
+# stdout (the agent talks line-by-line); tokio is the de-facto Rust
+# choice + matches the rest of the workspace.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync"] }
+
+# Markdown frontmatter parsing — the knowledge base under `src/knowledge/`
+# uses YAML frontmatter to carry structured metadata (top-level status,
+# category, grammar EBNF fragment, etc.). `gray_matter` is the canonical
+# Rust crate for this pattern (used by ssg's like zola, mdbook plugins).
+gray_matter = { version = "0.2", default-features = false, features = ["yaml"] }
+
+# Tracing — same observability stack as the rest of axon. We log to
+# stderr only (stdout is reserved for the MCP wire protocol; corrupting
+# it would break the agent's parser).
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[dev-dependencies]
+# Smoke tests drive the server via a deterministic line-by-line JSON-RPC
+# exchange; no external mock needed.
+serde_json = "1"
