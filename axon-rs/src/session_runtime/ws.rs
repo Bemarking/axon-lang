@@ -187,7 +187,11 @@ pub async fn drive(
 /// - `Select`⇒ this fase the runtime cannot auto-pick an arm; the
 ///             [`drive`] loop's echo mode emits the first label in
 ///             canonical (BTreeMap) order so the test surface is total.
-fn next_outgoing_frame(runtime: &SessionRuntime) -> Option<Frame> {
+///
+/// Visible to siblings (`session_runtime::sse`) so the SSE-fragment
+/// driver shares the same dispatch — both carriers run the same algebra,
+/// only the framing differs. §Fase 41.e.
+pub(super) fn next_outgoing_frame(runtime: &SessionRuntime) -> Option<Frame> {
     use axon_frontend::session::SessionType;
     match runtime.cursor() {
         SessionType::Send { payload, .. } => Some(Frame::Send {
@@ -211,7 +215,12 @@ fn next_outgoing_frame(runtime: &SessionRuntime) -> Option<Frame> {
 /// for symmetry — both roles step the cursor identically on local
 /// actions; the algebra carries no direction beyond duality, which is
 /// already baked into the role's `SessionType` at construction.
-async fn apply_outgoing(
+///
+/// Visible to siblings (`session_runtime::sse`) — the SSE-fragment
+/// driver advances its runtime via the same primitive so a Send / End
+/// transition is identical at the operational layer regardless of the
+/// carrier (WS frame vs SSE event). §Fase 41.e.
+pub(super) async fn apply_outgoing(
     runtime: &mut SessionRuntime,
     frame: &Frame,
     _role: PeerRole,
