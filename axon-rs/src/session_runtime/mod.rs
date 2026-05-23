@@ -39,6 +39,6 @@ pub mod ws;
 
 pub use error::ProtocolError;
 pub use sse::drive_sse_producer;
-pub use state::{CreditWindow, SessionRuntime};
+pub use state::{CreditWindow, ResumeError, SealedRuntime, SessionRuntime, SEALED_RUNTIME_VERSION};
 pub use wire::{Frame, AXON_WIRE_VERSION};
 pub use ws::{drive, PeerRole};
