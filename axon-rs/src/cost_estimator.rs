@@ -532,6 +532,7 @@ mod tests {
             components: vec![],
             views: vec![],
             channels: vec![],
+            sockets: vec![],
             effects: vec![],
         };
 
@@ -598,6 +599,7 @@ mod tests {
             components: vec![],
             views: vec![],
             channels: vec![],
+            sockets: vec![],
             effects: vec![],
         };
 
@@ -666,6 +668,7 @@ mod tests {
             components: vec![],
             views: vec![],
             channels: vec![],
+            sockets: vec![],
             effects: vec![],
         };
 

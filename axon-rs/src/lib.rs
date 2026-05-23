@@ -60,6 +60,14 @@ pub mod handlers;
 /// §λ-L-E Fase 3 + 5 runtime primitives. Port of `axon/runtime/` (lease kernel,
 /// reconcile loop, ensemble aggregator, immune kernels).
 pub mod runtime;
+/// §Fase 41.d — the **runtime** of a session-typed dialogue. The static
+/// algebra (`axon_frontend::session`: duality, regular-coinductive
+/// equality, credit-refined backpressure index `!ⁿA.S`) gets a dynamic
+/// counterpart here: an operational state machine (`SessionRuntime`)
+/// with one method per algebra rule, a wire envelope (`Frame`), and an
+/// RFC 6455 WebSocket carrier (`ws::drive`) that runs a session type
+/// against a peer. Carrier-agnostic core; the WS layer is one binding.
+pub mod session_runtime;
 /// §Fase 23.f — Algebraic effects runtime. FSM dispatch loop +
 /// handler stack + Free-Monad interpretation of CPS-lowered IR
 /// (consumes the JSON IR emitted by the Python frontend in 23.b/c/d).

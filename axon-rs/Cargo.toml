@@ -32,7 +32,12 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "blo
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-axum = "0.8"
+# §Fase 41.d — the `ws` feature exposes `axum::extract::ws::{WebSocketUpgrade,
+# WebSocket, Message}`, the server-side half of RFC 6455 (handshake + frame
+# loop) over `tokio-tungstenite`. This is the carrier for the session-typed
+# dialogue runtime — its operational rules (send/recv/select/branch/credit)
+# live in `src/session_runtime/` over the typed channel, transport-agnostic.
+axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
 http-body-util = "0.1"
@@ -85,3 +90,12 @@ futures = "0.3"
 # stable across reqwest minor bumps.
 bytes = "1"
 axon-csys = { path = "../axon-csys", version = "=0.2.0" }
+
+[dev-dependencies]
+# §Fase 41.d — client-side WebSocket for the session-typed runtime's E2E
+# tests. `tokio-tungstenite` is the same library axum's `ws` feature pulls in
+# server-side, so both peers share the RFC 6455 implementation exactly. Pinned
+# to the version axum 0.8 carries transitively to keep one common WS dep.
+# `rustls-tls-webpki-roots` would unlock `wss://`; the in-process tests use
+# plain TCP so the default features are sufficient.
+tokio-tungstenite = "0.24"
