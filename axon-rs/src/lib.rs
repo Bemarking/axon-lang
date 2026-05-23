@@ -32,6 +32,12 @@ pub use axon_frontend::{
     // single `axon = …` workspace dep without an extra `axon-frontend`
     // dependency line.
     session,
+    // §Fase 41.h — multiparty session types (global types + projection).
+    // The orchestration story for n-agent skill/tool topologies: declare
+    // a `GlobalType`, project per role, drive each role's binary
+    // `SessionType` over the §41.d/41.f runtime — composition stays in
+    // lock-step by construction.
+    multiparty,
     store_introspect,
     store_schema,
     store_schema_manifest,
