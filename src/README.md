@@ -190,8 +190,8 @@ env var → in-tree dev path (`<crate>/../knowledge`) → embedded corpus.
 | **6.e** | Release tag + cross-stack publish (batched with §Fase 7 / 8) | |
 | **7.a** | **Verticals — 4 new templates** (`legaltech`, `fintech`, `pharmatech`, `medic_research`) + Domain enum 8→12. Drift gate caught the `severity` reserved-keyword collision. Coverage: 12/33. | ✅ |
 | **7.b** | **Agent patterns — 8 new templates** (`chat_research`, `chat_tools`, `chat_skills`, `whatsapp`, `voice`, `dev`, `sales_consultive`, `sales_widget`) + Domain enum 12→20 + classifier curation. Drift gate caught the `on_breach: redact` bug — `redact` is the `redact:` field's name, NOT a value in the closed `on_breach` catalog `{deflect, escalate, halt, quarantine, sanitize_and_retry}`. Coverage: 20/33 (61%). | ✅ |
-| **7.c** | Application patterns — 13 new (workflow, BI, corporate, self_learning, document, ticket, content_mod, knowledge, compliance, recruitment, education, financial_advisor, data_pipeline) | next |
-| **8** | Telemetría OTLP-grade + privacy-first | |
+| **7.c** | **Application patterns — 13 new templates** (`workflow_automation`, `business_intelligence`, `corporate_integration`, `self_learning`, `document_analysis`, `ticket_triage`, `content_moderation`, `knowledge_extraction`, `compliance_monitoring`, `recruitment`, `education`, `financial_advisor`, `data_pipeline`) + Domain enum 20→33. Drift gate caught 3 bugs (`retrieve:` is a flow-step SIBLING not a step body field; `mandate.on_violation` closed catalog is `{coerce, halt, retry}`). **🎉 Coverage 33/33 — Fase 7 CLOSED.** | ✅ |
+| **8** | Telemetría OTLP-grade + privacy-first | next |
 
 The discipline: every primitive added to `src/knowledge/primitives/` is
 backed by a passing `cargo test` that exercises a real `.axon` example
