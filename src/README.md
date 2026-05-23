@@ -183,6 +183,13 @@ env var → in-tree dev path (`<crate>/../knowledge`) → embedded corpus.
 | **3** | **Reference resources** — `axon://grammar/{top_level\|composition\|ebnf}`, `axon://logic/{flow_composition\|session_duality}`, `axon://compliance/{hipaa\|gdpr\|pci_dss\|sox\|soc2\|fedramp\|gxp\|fisma\|nist_800_53}`. The Catalog now loads `grammar/`, `logic/`, `compliance/` markdown alongside `primitives/`; the resource dispatcher serves all four URI families with structured errors. | ✅ |
 | **4** | **`axon.compose(intent)`** — natural-language brief → typed scaffold. Closed-domain classifier (keyword scoring + explainable scoreboard) over 8 domains (`generic`, `healthcare`, `banking`, `government`, `legal`, `chat`, `retrieval`, `multi_agent`); each scaffold is a hand-authored `.axon` template proven to compile end-to-end through the live `axon-frontend` pipeline. Returns `{scaffold, domain, alternatives, primitives_used, compliance_applied, next_steps, axon_check_verdict}`. | ✅ |
 | **5** | **MCP prompts** — `flow_design`, `shield_design`, `session_design` exposed via `prompts/list` + `prompts/get`. Each prompt is a hand-authored markdown body with declared `arguments:` schema; `{{arg}}` placeholders render at `get` time from user-supplied values. The `initialize` handshake now advertises the `prompts` capability so hosts surface the recipes as slash-commands. | ✅ |
+| **6.a** | **The fórmula** — `axon_frontend::PRIMITIVE_REGISTRY` is the closed catalogue of every named language construct (47 entries: 7 Documented + 40 Pending). A coverage gate test enforces the closed pair: every `Documented` registry entry has a `.md`, every `.md` has a `Documented` registry entry. The `axon-emcp scaffold-primitive <name>` subcommand stamps frontmatter-correct skeletons from the registry — drift impossible by construction. | ✅ |
+| **6.b** | Tier 1 — 10 primitives (`context`, `intent`, `memory`, `agent`, `probe`, `validate`, `refine`, `weave`, `type`, `run`) + canonical `.axon` examples | next |
+| **6.c** | Tier 2 — 13 primitives (`resource`, `fabric`, `manifest`, `observe`, `reconcile`, `lease`, `ensemble`, `session`, `axonstore`, `dataspace`, `corpus`, `pix`, `taint`) | |
+| **6.d** | Tier 3 — 17 primitives (`axonendpoint`, `axpoint`, `daemon`, `mcp`, `listen`, `shield`, `mandate`, `compute`, `lambda`, `forge`, `ots`, `psyche`, `logic`, `immune`, `reflex`, `heal`, `transact`) | |
+| **6.e** | Coverage 100% verde + release tag | |
+| **7** | 33 templates + classifier extendido + Domain enum expandido | |
+| **8** | Telemetría OTLP-grade + privacy-first | |
 
 The discipline: every primitive added to `src/knowledge/primitives/` is
 backed by a passing `cargo test` that exercises a real `.axon` example

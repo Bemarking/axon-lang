@@ -80,3 +80,14 @@ pub mod session;
 // realizability gate is `project_all`: a `Result::Ok` is the structural
 // certificate that independent per-role runtimes faithfully realise `G`.
 pub mod multiparty;
+
+// §Fase 6.a — the closed registry of every primitive AXON exposes as
+// a named language construct. Single source of truth for the ℰMCP
+// coverage gate + scaffold CLI + future LSP completions / docs-site
+// generators. Pure const data, no runtime deps. See the module-level
+// docs for the discipline (registry + corpus = atomic addition).
+pub mod primitive_registry;
+pub use primitive_registry::{
+    by_category, coverage_summary, find as find_primitive, with_status, CoverageSummary,
+    DocStatus, PrimitiveInfo, PRIMITIVE_REGISTRY,
+};
