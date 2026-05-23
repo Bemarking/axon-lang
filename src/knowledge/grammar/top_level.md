@@ -80,8 +80,13 @@ follows from one row.
 | `axpoint`        | ✓ | — | Fase 32 |
 | `daemon`         | ✓ | — | Fase 16 |
 | `mcp`            | ✓ | — | Fase 33+ |
-| `taint`          | ✓ | — | Fase 26 |
 | `listen`         | ✗ | `flow`, `daemon` body | Fase 16 |
+
+> The `taint` keyword is a reserved word in the lexer but has no
+> parser production today (it appears in the epistemic-uncertainty
+> lattice in `axon-frontend::epistemic`, not as a top-level
+> declaration). If a future Fase introduces a `taint <Name> { … }`
+> declaration the registry + this table grow together.
 
 ## Operators
 

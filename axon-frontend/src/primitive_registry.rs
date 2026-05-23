@@ -254,7 +254,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 6",
         summary: "Declares an external compute/storage resource (database, S3, ML endpoint) consumable by a flow.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "fabric",
@@ -262,7 +262,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 6",
         summary: "The cloud-substrate declaration — provider, region, zones, ephemerality, bound shield.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "manifest",
@@ -270,7 +270,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 6",
         summary: "Bundles resources + fabric + compliance tags into a deployable, audit-tracked unit.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "observe",
@@ -278,7 +278,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 6",
         summary: "Declares an observability surface — sources, quorum, timeout, certainty floor, partition policy.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "reconcile",
@@ -286,7 +286,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 6",
         summary: "A typed reconciliation loop — observes drift against a manifest and applies bounded corrections.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "lease",
@@ -294,7 +294,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 6",
         summary: "Time-bounded resource acquisition with typed expiry, renewal, and revocation semantics.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "ensemble",
@@ -302,7 +302,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 6",
         summary: "Coordinates multiple cognitive entities under a consensus or quorum protocol with structured tie-breaking.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "immune",
@@ -343,7 +343,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 36",
         summary: "A typed, audit-chained data store — relational backend, isolation level, encryption, retention, on-breach policy.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "dataspace",
@@ -351,7 +351,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 36",
         summary: "A named, isolated data namespace — multi-tenant by construction, with cross-tenant proof obligations.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "corpus",
@@ -359,7 +359,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 36",
         summary: "A retrieval-ready collection of documents — backs RAG and grounded retrieval with citation provenance.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "pix",
@@ -367,7 +367,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 19",
         summary: "Provenance Index — an append-only, hash-linked chain of every state transition with tamper-evident verification.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "transact",
@@ -384,7 +384,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 41.a (v2.3.0)",
         summary: "Declares the typed bidirectional dialogue protocol a socket carries — §41 algebra (send/receive/select/branch/loop/end).",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "socket",
@@ -427,14 +427,15 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         summary: "Declares an outbound MCP server binding — turns axon into an MCP client of another server.",
         doc_status: DocStatus::Pending,
     },
-    PrimitiveInfo {
-        name: "taint",
-        category: "wire",
-        top_level: true,
-        since: "Fase 26",
-        summary: "A typed tag carrying provenance + integrity status across the boundary of trust.",
-        doc_status: DocStatus::Pending,
-    },
+    // §Fase 6.c — `taint` was registered in 6.a as a wire primitive
+    // but has no parser production (the lexer recognises the
+    // keyword token; no `parse_taint` exists; the language treats
+    // `taint` only as part of the epistemic-uncertainty lattice
+    // wording in `epistemic.rs`). Registry is the source of truth
+    // for what the parser actually accepts as a top-level
+    // declaration; an entry without a parser production lies. We
+    // remove it here. If a future Fase introduces `taint <Name> {
+    // ... }`, re-add an entry with that Fase's `since:` tag.
     PrimitiveInfo {
         name: "listen",
         category: "wire",
@@ -583,14 +584,15 @@ mod tests {
 
     #[test]
     fn registry_contains_the_expected_count() {
-        // The total count is meaningful — a regression that drops a
-        // primitive would manifest as a smaller catalogue. We pin
-        // the count so the regression surface is the test, not
-        // post-hoc debugging.
+        // Total count is pinned — a regression that drops a primitive
+        // surfaces as a smaller catalogue. §Fase 6.c removed `taint`
+        // (lex-recognised, no parser production), dropping the total
+        // from 47 to 46. Future Fases that add or remove primitives
+        // update this assertion in the same PR.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            47,
-            "PRIMITIVE_REGISTRY count drift — add the new primitive intentionally + update this assertion"
+            46,
+            "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
 
@@ -635,16 +637,21 @@ mod tests {
     }
 
     #[test]
-    fn documented_tier_matches_phase_6b_baseline() {
-        // §Fase 6.b baseline (post-Tier-1): 17 primitives documented.
+    fn documented_tier_matches_phase_6c_baseline() {
+        // §Fase 6.c baseline (post-Tier-2): 29 primitives documented.
         //
-        //   Tier 0 (Fase 5, 7):   persona, flow, step, anchor, tool, reason, socket
+        //   Tier 0 (Fase 5,    7): persona, flow, step, anchor, tool, reason, socket
         //   Tier 1 (Fase 6.b, 10): context, intent, memory, agent, probe,
         //                          validate, refine, weave, type, run
+        //   Tier 2 (Fase 6.c, 12): resource, fabric, manifest, observe,
+        //                          reconcile, lease, ensemble, session,
+        //                          axonstore, dataspace, corpus, pix
         //
-        // A regression that accidentally flipped a Documented entry to
-        // Pending — or vice versa — surfaces here. As §Fase 6.c lands
-        // (13 more), this set widens; update the assertion in lockstep.
+        // Tier 2 ships 12 (not 13) — `taint` was removed from the
+        // registry in 6.c because it has no parser production. The
+        // discipline holds: registry entries match parser productions
+        // one-to-one. A regression that flipped a Documented entry
+        // back to Pending surfaces here.
         let documented: HashSet<&str> = with_status(DocStatus::Documented)
             .map(|i| i.name)
             .collect();
@@ -654,23 +661,28 @@ mod tests {
             // Tier 1
             "context", "intent", "memory", "agent", "probe", "validate",
             "refine", "weave", "type", "run",
+            // Tier 2
+            "resource", "fabric", "manifest", "observe", "reconcile",
+            "lease", "ensemble", "session", "axonstore", "dataspace",
+            "corpus", "pix",
         ]
         .into_iter()
         .collect();
         assert_eq!(
             documented, expected,
-            "Documented set drift — Fase 6.b baseline is 17 specific primitives"
+            "Documented set drift — Fase 6.c baseline is 29 specific primitives"
         );
     }
 
     #[test]
     fn coverage_summary_is_arithmetic() {
         let s = coverage_summary();
-        assert_eq!(s.total, 47);
+        assert_eq!(s.total, 46);
         assert_eq!(s.documented + s.pending, s.total);
-        // §Fase 6.b ships Tier 1 — 17 Documented (7 + 10), 30 Pending.
-        assert_eq!(s.documented, 17);
-        assert_eq!(s.pending, 30);
+        // §Fase 6.c ships Tier 2 (12 docs) — 29 Documented (7+10+12),
+        // 17 Pending (Tier 3 — closes in 6.d).
+        assert_eq!(s.documented, 29);
+        assert_eq!(s.pending, 17);
     }
 
     #[test]
