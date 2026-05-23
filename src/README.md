@@ -92,7 +92,7 @@ agent), the agent has access to:
 | `axon.check(source)` | **1 ✅** | Validate `.axon` source through the same lex → parse → type-check pipeline `axon check` uses. Returns `{ ok, stage, errors[], warnings[], summary }`. `isError: true` flips on a blocking failure so the agent's "go fix it" reflex fires |
 | `axon.parse(source)` | **1 ✅** | Parse to IR (JSON). On success returns `{ ok: true, ir: { node_type: "program", personas, flows, … }, … }`; on failure returns the same diagnostic shape as `axon.check` (uniform parser surface for the agent) |
 | `axon.examples(topic)` | 2 | Canonical `.axon` programs by topic (healthcare, banking, chat, multi-agent…) |
-| `axon.compose(intent)` | 4 | Given a natural-language brief, return a typed scaffold with the right primitives + compliance shields wired |
+| `axon.compose(intent)` | **4 ✅** | Natural-language brief → typed `.axon` scaffold. Closed-domain classifier (generic/healthcare/banking/government/legal/chat/retrieval/multi_agent) drives template selection; every scaffold round-trips through the live `axon-frontend` pipeline before return |
 | `axon.validate_pattern(source, pattern)` | 4 | Check whether a source fragment matches an idiomatic pattern (e.g. "is this a well-formed dual session?") |
 
 ### Resources (it can read these)
@@ -168,7 +168,7 @@ env var → in-tree dev path (`<crate>/../knowledge`) → embedded corpus.
 | **1** | `axon.check` (live validation) + `axon.parse` (IR introspection) + embedded corpus (`cargo install` ships self-contained) | ✅ |
 | **2** | The 6 **core cognitive primitives** — `persona`, `flow`, `step`, `anchor`, `tool`, `reason` — each backed by a canonical `.axon` example that round-trips through `axon-frontend` end-to-end. Remaining ~60 primitives staged in follow-up 2.x increments. | ◐ in progress |
 | **3** | **Reference resources** — `axon://grammar/{top_level\|composition\|ebnf}`, `axon://logic/{flow_composition\|session_duality}`, `axon://compliance/{hipaa\|gdpr\|pci_dss\|sox\|soc2\|fedramp\|gxp\|fisma\|nist_800_53}`. The Catalog now loads `grammar/`, `logic/`, `compliance/` markdown alongside `primitives/`; the resource dispatcher serves all four URI families with structured errors. | ✅ |
-| **4** | `axon.compose(intent)` — natural language brief → typed scaffold with correct compliance shields | |
+| **4** | **`axon.compose(intent)`** — natural-language brief → typed scaffold. Closed-domain classifier (keyword scoring + explainable scoreboard) over 8 domains (`generic`, `healthcare`, `banking`, `government`, `legal`, `chat`, `retrieval`, `multi_agent`); each scaffold is a hand-authored `.axon` template proven to compile end-to-end through the live `axon-frontend` pipeline. Returns `{scaffold, domain, alternatives, primitives_used, compliance_applied, next_steps, axon_check_verdict}`. | ✅ |
 | **5** | MCP prompts (`flow_design`, `shield_design`, `session_design`) | |
 
 The discipline: every primitive added to `src/knowledge/primitives/` is

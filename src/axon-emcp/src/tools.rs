@@ -22,6 +22,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::compiler_pipeline;
+use crate::compose;
 use crate::knowledge::{Catalog, Category};
 use crate::server::JsonRpcError;
 
@@ -125,6 +126,42 @@ pub fn list() -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
+        json!({
+            "name": "axon.compose",
+            "description": "Generate a typed AXON scaffold from a natural-language intent. \
+                Classifies the intent into one of 8 closed domains (generic, healthcare, \
+                banking, government, legal, chat, retrieval, multi_agent), fetches the \
+                hand-authored template for that domain, re-validates it through the same \
+                `axon-frontend` pipeline `axon.check` uses, and returns: \
+                `{scaffold, domain, alternatives, primitives_used, compliance_applied, \
+                next_steps, axon_check_verdict}`. \
+                USE THIS when a user describes WHAT they want in plain language; the result \
+                is a guaranteed-compile starting point you can iterate on. The classifier \
+                is keyword-based and explainable — `alternatives` carries the scoreboard. \
+                Override the classifier with `domain:` when you already know the domain.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "intent": {
+                        "type": "string",
+                        "description": "Natural-language description of what the user wants \
+                            to build (\"a healthcare flow that handles PHI\", \"a streaming \
+                            chat assistant\", \"a banking endpoint for loan decisions\")."
+                    },
+                    "domain": {
+                        "type": "string",
+                        "enum": [
+                            "generic", "healthcare", "banking", "government", "legal",
+                            "chat", "retrieval", "multi_agent"
+                        ],
+                        "description": "Optional explicit domain override. Skips the \
+                            classifier — use when you already know which scaffold you want."
+                    }
+                },
+                "required": ["intent"],
+                "additionalProperties": false
+            }
+        }),
     ]
 }
 
@@ -138,6 +175,7 @@ pub async fn dispatch_call(params: Value, catalog: &Arc<Catalog>) -> Result<Valu
         "axon.primitive_doc" => primitive_doc(call.arguments, catalog),
         "axon.check" => check(call.arguments),
         "axon.parse" => parse(call.arguments),
+        "axon.compose" => compose_tool(call.arguments, catalog),
         other => Err(JsonRpcError {
             code: -32601,
             message: format!("unknown tool: `{other}`"),
@@ -296,6 +334,64 @@ fn parse(args: Value) -> Result<Value, JsonRpcError> {
     let outcome = compiler_pipeline::run(&args.source, filename);
     let payload = compiler_pipeline::outcome_to_parse_payload(outcome);
     let is_error = !payload["ok"].as_bool().unwrap_or(true);
+    Ok(json!({
+        "content": [
+            { "type": "text", "text": serde_json::to_string_pretty(&payload).unwrap() }
+        ],
+        "isError": is_error,
+    }))
+}
+
+// ─── axon.compose ────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct ComposeArgs {
+    intent: String,
+    /// Optional explicit domain override. When present it short-
+    /// circuits the classifier; when absent the keyword scoreboard
+    /// picks. Strings are normalised through
+    /// [`compose::parse_domain_hint`] which accepts canonical names
+    /// AND common aliases (`hc`, `fintech`, `rag`, …).
+    #[serde(default)]
+    domain: Option<String>,
+}
+
+fn compose_tool(args: Value, catalog: &Arc<Catalog>) -> Result<Value, JsonRpcError> {
+    let args: ComposeArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("axon.compose: {e}")))?;
+
+    // Resolve the optional domain hint into the closed enum. An
+    // unknown string is a structured invalid_params — the
+    // tools/list inputSchema already enumerated the closed catalog,
+    // so the only way to land here is the agent invented a value.
+    let domain_override = match args.domain.as_deref() {
+        Some(s) => match compose::parse_domain_hint(s) {
+            Some(d) => Some(d),
+            None => {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "axon.compose: unknown domain `{s}` — valid: generic, healthcare, \
+                     banking, government, legal, chat, retrieval, multi_agent"
+                )))
+            }
+        },
+        None => None,
+    };
+
+    let r = compose::compose(&args.intent, domain_override, catalog).map_err(|e| {
+        // Reaching this branch means the catalog is missing a template
+        // for the closed enum — an integration-test regression.
+        JsonRpcError {
+            code: -32603,
+            message: format!("axon.compose internal error: {e}"),
+            data: None,
+        }
+    })?;
+
+    // `axon_check_verdict != "well-formed"` would indicate the
+    // template drifted from the parser without the integration test
+    // catching it. Flip `isError` so the agent's reflex fires.
+    let is_error = r.axon_check_verdict != "well-formed";
+    let payload = compose::response_to_json(&r);
     Ok(json!({
         "content": [
             { "type": "text", "text": serde_json::to_string_pretty(&payload).unwrap() }
@@ -569,5 +665,157 @@ mod tests {
         assert_eq!(payload["ok"], false);
         assert!(payload["errors"].as_array().unwrap().len() >= 1);
         assert!(payload["ir"].is_null());
+    }
+
+    // ── Phase 4: axon.compose ───────────────────────────────────────────
+
+    /// Build a catalog with the embedded corpus — needed for compose
+    /// since it depends on the real `templates/` shipped under
+    /// `src/knowledge/templates/`. The other tools' tests use a
+    /// stub corpus, but compose's substantive behaviour is the
+    /// classifier + template emission, both of which require the
+    /// real corpus.
+    fn embedded_catalog() -> Arc<Catalog> {
+        Arc::new(Catalog::load_embedded().expect("embedded corpus must load"))
+    }
+
+    #[tokio::test]
+    async fn compose_returns_well_formed_scaffold_for_healthcare_intent() {
+        let cat = embedded_catalog();
+        let v = dispatch_call(
+            json!({
+                "name": "axon.compose",
+                "arguments": { "intent": "a patient summarisation service with PHI" }
+            }),
+            &cat,
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["isError"], false);
+        let payload: Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["domain"], "healthcare");
+        assert_eq!(payload["axon_check_verdict"], "well-formed");
+        // The scaffold must mention HIPAA — that's the wire signal
+        // a downstream agent uses to know the compliance is real.
+        assert!(payload["scaffold"].as_str().unwrap().contains("HIPAA"));
+        // Compliance applied is structured + agent-machine-readable.
+        let compl: Vec<&str> = payload["compliance_applied"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(compl.contains(&"HIPAA"));
+    }
+
+    #[tokio::test]
+    async fn compose_honors_explicit_domain_argument() {
+        let cat = embedded_catalog();
+        // Intent matches banking; force the chat template instead.
+        let v = dispatch_call(
+            json!({
+                "name": "axon.compose",
+                "arguments": {
+                    "intent": "process credit card payments and loan applications",
+                    "domain": "chat"
+                }
+            }),
+            &cat,
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["isError"], false);
+        let payload: Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["domain"], "chat");
+        assert_eq!(payload["axon_check_verdict"], "well-formed");
+    }
+
+    #[tokio::test]
+    async fn compose_falls_back_to_generic_for_unrelated_intent() {
+        let cat = embedded_catalog();
+        let v = dispatch_call(
+            json!({
+                "name": "axon.compose",
+                "arguments": { "intent": "say hello" }
+            }),
+            &cat,
+        )
+        .await
+        .unwrap();
+        let payload: Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["domain"], "generic");
+        assert_eq!(payload["axon_check_verdict"], "well-formed");
+    }
+
+    #[tokio::test]
+    async fn compose_rejects_unknown_domain_hint() {
+        let cat = embedded_catalog();
+        let err = dispatch_call(
+            json!({
+                "name": "axon.compose",
+                "arguments": {
+                    "intent": "anything",
+                    "domain": "bogus-domain"
+                }
+            }),
+            &cat,
+        )
+        .await
+        .expect_err("unknown domain must be a structured invalid_params");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("unknown domain"));
+    }
+
+    #[tokio::test]
+    async fn compose_rejects_missing_intent_argument() {
+        let cat = embedded_catalog();
+        let err = dispatch_call(
+            json!({ "name": "axon.compose", "arguments": {} }),
+            &cat,
+        )
+        .await
+        .expect_err("missing required `intent` must reject");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("axon.compose"));
+    }
+
+    #[tokio::test]
+    async fn compose_response_carries_explainability_scoreboard() {
+        let cat = embedded_catalog();
+        let v = dispatch_call(
+            json!({
+                "name": "axon.compose",
+                "arguments": { "intent": "patient PHI clinical trial under HIPAA" }
+            }),
+            &cat,
+        )
+        .await
+        .unwrap();
+        let payload: Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        let alts = payload["alternatives"].as_array().unwrap();
+        // We always return the full scoreboard (8 domains) so the
+        // agent can quote it. The top entry's score must be > 0.
+        assert_eq!(alts.len(), 8);
+        assert!(alts[0]["score"].as_u64().unwrap() >= 1);
+        assert_eq!(alts[0]["domain"], "healthcare");
+        // next_steps + primitives_used surface a curated checklist.
+        assert!(!payload["next_steps"].as_array().unwrap().is_empty());
+        assert!(!payload["primitives_used"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn compose_advertised_in_tools_list() {
+        let names: Vec<String> = list()
+            .iter()
+            .map(|v| v["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            names.contains(&"axon.compose".to_string()),
+            "axon.compose must be advertised in tools/list; saw {names:?}"
+        );
     }
 }

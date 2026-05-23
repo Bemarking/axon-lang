@@ -1,0 +1,77 @@
+//! §Phase 4 — every template shipped under `src/knowledge/templates/`
+//! must compile end-to-end through the same `axon-frontend` pipeline
+//! the `axon` CLI uses.
+//!
+//! This is the drift gate for `axon.compose`: the moment a template
+//! stops parsing the test fails, so the agent never receives a
+//! malformed scaffold even mid-refactor.
+
+use axon_emcp::compiler_pipeline::{run, Outcome};
+
+/// Locate the workspace's templates directory relative to this test
+/// crate. The compose tool itself uses the catalogue, but for the
+/// drift gate we read files directly so the test is independent of
+/// catalogue plumbing.
+fn templates_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("knowledge")
+        .join("templates")
+}
+
+fn assert_template_compiles(slug: &str) {
+    let path = templates_dir().join(format!("{slug}.axon"));
+    let src = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("template {slug} missing at {}: {e}", path.display()));
+    match run(&src, &format!("{slug}.axon")) {
+        Outcome::Ok { .. } => { /* compiles clean — the whole assertion */ }
+        Outcome::Err { stage, errors, warnings } => panic!(
+            "template `{slug}` failed at {stage:?}:\n\
+             errors   = {errors:#?}\n\
+             warnings = {warnings:#?}\n\
+             path     = {}",
+            path.display()
+        ),
+    }
+}
+
+#[test]
+fn template_generic_compiles() {
+    assert_template_compiles("generic");
+}
+
+#[test]
+fn template_healthcare_compiles() {
+    assert_template_compiles("healthcare");
+}
+
+#[test]
+fn template_banking_compiles() {
+    assert_template_compiles("banking");
+}
+
+#[test]
+fn template_government_compiles() {
+    assert_template_compiles("government");
+}
+
+#[test]
+fn template_legal_compiles() {
+    assert_template_compiles("legal");
+}
+
+#[test]
+fn template_chat_compiles() {
+    assert_template_compiles("chat");
+}
+
+#[test]
+fn template_retrieval_compiles() {
+    assert_template_compiles("retrieval");
+}
+
+#[test]
+fn template_multi_agent_compiles() {
+    assert_template_compiles("multi_agent");
+}
