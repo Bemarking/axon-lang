@@ -25,6 +25,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::knowledge::Catalog;
+use crate::telemetry::Telemetry;
 use crate::{prompts, resources, tools};
 
 /// The MCP protocol version this server speaks. Bumped only when the
@@ -36,11 +37,15 @@ pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 pub const SERVER_NAME: &str = "axon-emcp";
 
 /// Run the stdio MCP loop. Returns `Ok(())` on clean EOF (the agent
-/// closed the pipe); `Err` on a fatal transport failure (the agent
-/// produced bytes that don't parse as line-delimited JSON, or we lost
-/// the ability to write stdout).
-pub async fn run_stdio(catalog: Catalog) -> std::io::Result<()> {
+/// closed the pipe); `Err` on a fatal transport failure.
+///
+/// `telemetry` is the per-instance §Fase 8 registry. Recording is
+/// always-on (in-memory); the JSONL sink + deployment-ID propagation
+/// activate when the corresponding env vars are set (see
+/// [`crate::telemetry::TelemetryConfig::from_env`]).
+pub async fn run_stdio(catalog: Catalog, telemetry: Telemetry) -> std::io::Result<()> {
     let catalog = Arc::new(catalog);
+    let telemetry = Arc::new(telemetry);
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
     let mut line = String::new();
@@ -56,7 +61,7 @@ pub async fn run_stdio(catalog: Catalog) -> std::io::Result<()> {
             continue;
         }
         tracing::debug!(bytes = trimmed.len(), "← request");
-        let response = handle_one(trimmed, &catalog).await;
+        let response = handle_one(trimmed, &catalog, &telemetry).await;
         if let Some(resp_bytes) = response {
             stdout.write_all(&resp_bytes).await?;
             stdout.write_all(b"\n").await?;
@@ -72,7 +77,11 @@ pub async fn run_stdio(catalog: Catalog) -> std::io::Result<()> {
 ///
 /// Returns `Some(bytes)` for a request (a reply is owed) and `None` for
 /// a notification (no reply by JSON-RPC spec).
-async fn handle_one(line: &str, catalog: &Arc<Catalog>) -> Option<Vec<u8>> {
+async fn handle_one(
+    line: &str,
+    catalog: &Arc<Catalog>,
+    telemetry: &Arc<Telemetry>,
+) -> Option<Vec<u8>> {
     // First, try to parse as a generic `Request` so we can recover the
     // `id` for error responses even when the method/params are malformed.
     let parsed: Result<Request, serde_json::Error> = serde_json::from_str(line);
@@ -91,7 +100,7 @@ async fn handle_one(line: &str, catalog: &Arc<Catalog>) -> Option<Vec<u8>> {
     let is_notification = req.id.is_none();
     let id = req.id.clone().unwrap_or(Value::Null);
 
-    let outcome = dispatch(&req, catalog).await;
+    let outcome = dispatch(&req, catalog, telemetry).await;
 
     if is_notification {
         // No reply per JSON-RPC §4.1.
@@ -105,7 +114,11 @@ async fn handle_one(line: &str, catalog: &Arc<Catalog>) -> Option<Vec<u8>> {
 
 /// Method router. Every supported MCP method dispatches here; unknown
 /// methods produce `-32601 method not found`.
-async fn dispatch(req: &Request, catalog: &Arc<Catalog>) -> Result<Value, JsonRpcError> {
+async fn dispatch(
+    req: &Request,
+    catalog: &Arc<Catalog>,
+    telemetry: &Arc<Telemetry>,
+) -> Result<Value, JsonRpcError> {
     match req.method.as_str() {
         // ── Lifecycle ────────────────────────────────────────────────────
         "initialize" => Ok(initialize_response()),
@@ -114,15 +127,15 @@ async fn dispatch(req: &Request, catalog: &Arc<Catalog>) -> Result<Value, JsonRp
 
         // ── Tools ────────────────────────────────────────────────────────
         "tools/list" => Ok(json!({ "tools": tools::list() })),
-        "tools/call" => tools::dispatch_call(req.params.clone(), catalog).await,
+        "tools/call" => tools::dispatch_call(req.params.clone(), catalog, telemetry).await,
 
         // ── Resources ────────────────────────────────────────────────────
         "resources/list" => Ok(json!({ "resources": resources::list(catalog) })),
-        "resources/read" => resources::dispatch_read(req.params.clone(), catalog),
+        "resources/read" => resources::dispatch_read(req.params.clone(), catalog, telemetry),
 
         // ── Prompts (§Phase 5) ───────────────────────────────────────────
         "prompts/list" => Ok(json!({ "prompts": prompts::list(catalog) })),
-        "prompts/get" => prompts::dispatch_get(req.params.clone(), catalog),
+        "prompts/get" => prompts::dispatch_get(req.params.clone(), catalog, telemetry),
 
         // ── Anything else: per JSON-RPC §5.1, `-32601 method not found`.
         other => Err(JsonRpcError {
@@ -233,10 +246,21 @@ mod tests {
         Arc::new(Catalog::empty_for_tests())
     }
 
+    /// Throwaway telemetry registry for server-side wire tests —
+    /// JSONL sink disabled, deployment ID empty, default 1k sample
+    /// window. Cheap to construct per test.
+    fn tel() -> Arc<Telemetry> {
+        Arc::new(Telemetry::new(crate::telemetry::TelemetryConfig {
+            jsonl_sink: None,
+            deployment_id: "".into(),
+            max_samples: 1000,
+        }))
+    }
+
     #[tokio::test]
     async fn initialize_carries_version_capabilities_and_instructions() {
         let req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
-        let resp = handle_one(req, &cat()).await.expect("reply owed");
+        let resp = handle_one(req, &cat(), &tel()).await.expect("reply owed");
         let v: Value = serde_json::from_slice(&resp).unwrap();
         assert_eq!(v["jsonrpc"], "2.0");
         assert_eq!(v["id"], 1);
@@ -250,14 +274,14 @@ mod tests {
     #[tokio::test]
     async fn notification_produces_no_reply() {
         let req = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
-        let resp = handle_one(req, &cat()).await;
+        let resp = handle_one(req, &cat(), &tel()).await;
         assert!(resp.is_none(), "notifications must not yield a reply");
     }
 
     #[tokio::test]
     async fn unknown_method_returns_method_not_found() {
         let req = r#"{"jsonrpc":"2.0","id":7,"method":"axon.does_not_exist"}"#;
-        let resp = handle_one(req, &cat()).await.expect("reply owed");
+        let resp = handle_one(req, &cat(), &tel()).await.expect("reply owed");
         let v: Value = serde_json::from_slice(&resp).unwrap();
         assert_eq!(v["error"]["code"], -32601);
         assert!(v["error"]["message"].as_str().unwrap().contains("not found"));
@@ -265,7 +289,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_json_returns_parse_error_with_null_id() {
-        let resp = handle_one("{ not valid json", &cat()).await.expect("reply owed");
+        let resp = handle_one("{ not valid json", &cat(), &tel()).await.expect("reply owed");
         let v: Value = serde_json::from_slice(&resp).unwrap();
         assert_eq!(v["error"]["code"], -32700);
         assert_eq!(v["id"], Value::Null);
@@ -274,7 +298,7 @@ mod tests {
     #[tokio::test]
     async fn tools_list_returns_an_array() {
         let req = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
-        let resp = handle_one(req, &cat()).await.expect("reply owed");
+        let resp = handle_one(req, &cat(), &tel()).await.expect("reply owed");
         let v: Value = serde_json::from_slice(&resp).unwrap();
         let tools = v["result"]["tools"].as_array().expect("tools array");
         assert!(!tools.is_empty(), "we ship at least one tool on day 0");
@@ -289,7 +313,7 @@ mod tests {
     #[tokio::test]
     async fn resources_list_returns_an_array() {
         let req = r#"{"jsonrpc":"2.0","id":3,"method":"resources/list"}"#;
-        let resp = handle_one(req, &cat()).await.expect("reply owed");
+        let resp = handle_one(req, &cat(), &tel()).await.expect("reply owed");
         let v: Value = serde_json::from_slice(&resp).unwrap();
         assert!(v["result"]["resources"].is_array());
     }
@@ -305,7 +329,7 @@ mod tests {
     #[tokio::test]
     async fn initialize_advertises_prompts_capability() {
         let req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
-        let resp = handle_one(req, &cat()).await.expect("reply owed");
+        let resp = handle_one(req, &cat(), &tel()).await.expect("reply owed");
         let v: Value = serde_json::from_slice(&resp).unwrap();
         // The prompts capability must be visible at handshake time —
         // hosts gate the `prompts/*` UI on this declaration.
@@ -322,7 +346,7 @@ mod tests {
     #[tokio::test]
     async fn prompts_list_returns_an_array_of_entries() {
         let req = r#"{"jsonrpc":"2.0","id":4,"method":"prompts/list"}"#;
-        let resp = handle_one(req, &cat_embedded()).await.expect("reply owed");
+        let resp = handle_one(req, &cat_embedded(), &tel()).await.expect("reply owed");
         let v: Value = serde_json::from_slice(&resp).unwrap();
         let prompts = v["result"]["prompts"].as_array().expect("prompts array");
         assert!(prompts.len() >= 3, "§Phase 5 ships ≥ 3 prompts");
@@ -346,7 +370,7 @@ mod tests {
             }
         }))
         .unwrap();
-        let resp = handle_one(&req, &cat_embedded()).await.expect("reply owed");
+        let resp = handle_one(&req, &cat_embedded(), &tel()).await.expect("reply owed");
         let v: Value = serde_json::from_slice(&resp).unwrap();
         // Per MCP spec — reply carries `{ description, messages: [...] }`.
         assert!(v["result"]["description"].is_string());
@@ -366,7 +390,7 @@ mod tests {
             "params": { "name": "does_not_exist", "arguments": {} }
         }))
         .unwrap();
-        let resp = handle_one(&req, &cat_embedded()).await.expect("reply owed");
+        let resp = handle_one(&req, &cat_embedded(), &tel()).await.expect("reply owed");
         let v: Value = serde_json::from_slice(&resp).unwrap();
         assert_eq!(v["error"]["code"], -32602);
         assert!(v["error"]["message"].as_str().unwrap().contains("unknown prompt"));

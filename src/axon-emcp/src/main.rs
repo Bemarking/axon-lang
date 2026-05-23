@@ -39,7 +39,7 @@
 // All modules live in `src/lib.rs` so the binary and the integration
 // test suite (under `tests/`) compile against one copy of each. We
 // import only the surfaces the binary entrypoint actually needs.
-use axon_emcp::{knowledge, scaffold, server};
+use axon_emcp::{knowledge, scaffold, server, telemetry};
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -57,6 +57,7 @@ async fn main() -> ExitCode {
     if let Some(sub) = args.get(1) {
         match sub.as_str() {
             "scaffold-primitive" => return run_scaffold_primitive(&args[2..]),
+            "telemetry" => return run_telemetry(&args[2..]),
             "--help" | "-h" => return run_help(),
             "--version" | "-V" => return run_version(),
             // Any other first-arg token falls through to MCP server
@@ -101,9 +102,25 @@ async fn main() -> ExitCode {
         "knowledge base loaded"
     );
 
+    // §Fase 8 — install the per-instance telemetry registry. Reads
+    // env vars (`AXON_EMCP_TELEMETRY_FILE`, `AXON_EMCP_DEPLOYMENT_ID`,
+    // `AXON_EMCP_TELEMETRY_MAX_SAMPLES`) at startup; missing vars
+    // yield defaults (no file sink, no deployment ID, 1k samples).
+    let tel_config = telemetry::TelemetryConfig::from_env();
+    let jsonl_sink = tel_config.jsonl_sink.clone();
+    let deployment_id = tel_config.deployment_id.clone();
+    let max_samples = tel_config.max_samples;
+    let tel = telemetry::Telemetry::new(tel_config);
+    tracing::info!(
+        deployment_id = %deployment_id,
+        jsonl_sink = ?jsonl_sink,
+        max_samples,
+        "telemetry installed"
+    );
+
     // Hand off to the stdio MCP loop. Returns when the agent disconnects
     // (clean EOF on stdin) or on a fatal transport error.
-    match server::run_stdio(catalog).await {
+    match server::run_stdio(catalog, tel).await {
         Ok(()) => {
             tracing::info!("axon-emcp shutting down cleanly");
             ExitCode::SUCCESS
@@ -204,12 +221,16 @@ fn run_help() -> ExitCode {
          SUBCOMMANDS:\n  \
            (none)                 Start the MCP server (default — speaks JSON-RPC 2.0 on stdio)\n  \
            scaffold-primitive <name>\n                                Stamp a markdown doc skeleton for one primitive\n  \
+           telemetry summarize <file>\n                                Aggregate a JSONL telemetry log into the snapshot shape\n  \
            --help, -h             Print this help\n  \
            --version, -V          Print the crate version\n\
          \n\
          ENV:\n  \
-           AXON_EMCP_KNOWLEDGE_DIR  Override the corpus root (default: in-tree dev path, then embedded)\n  \
-           RUST_LOG                 Tracing filter (e.g. axon_emcp=debug)\n",
+           AXON_EMCP_KNOWLEDGE_DIR        Override the corpus root (default: in-tree, then embedded)\n  \
+           AXON_EMCP_TELEMETRY_FILE      Append JSONL telemetry events to this path (default: disabled)\n  \
+           AXON_EMCP_DEPLOYMENT_ID       Correlation tag stamped on every event (default: empty)\n  \
+           AXON_EMCP_TELEMETRY_MAX_SAMPLES   Latency histogram window per tool (default: 1000)\n  \
+           RUST_LOG                       Tracing filter (e.g. axon_emcp=debug)\n",
         name = env!("CARGO_PKG_NAME")
     );
     ExitCode::SUCCESS
@@ -219,4 +240,46 @@ fn run_help() -> ExitCode {
 fn run_version() -> ExitCode {
     eprintln!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     ExitCode::SUCCESS
+}
+
+/// `telemetry <subcmd>` — §Fase 8 contributor surface for the
+/// telemetry layer. Subcommands:
+///
+/// - `summarize <file>` — aggregate a JSONL telemetry log into the
+///   same snapshot shape `axon-emcp` emits in-process. Prints the
+///   summary as pretty-JSON to STDOUT (subcommand output) so the
+///   contributor can pipe `jq` / save to a file.
+fn run_telemetry(args: &[String]) -> ExitCode {
+    let Some(sub) = args.first() else {
+        eprintln!("usage: axon-emcp telemetry <summarize> <file>");
+        return ExitCode::from(2);
+    };
+    match sub.as_str() {
+        "summarize" => {
+            let Some(path) = args.get(1) else {
+                eprintln!("usage: axon-emcp telemetry summarize <file>");
+                return ExitCode::from(2);
+            };
+            let path = PathBuf::from(path);
+            match telemetry::summarize_jsonl(&path) {
+                Ok(v) => {
+                    // The summary is the subcommand's PRIMARY output;
+                    // route to STDOUT so adopters can pipe it to `jq`
+                    // / save to file / forward to OTLP collector.
+                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: failed to summarize `{}`: {e}", path.display());
+                    ExitCode::from(1)
+                }
+            }
+        }
+        other => {
+            eprintln!(
+                "unknown telemetry subcommand `{other}` — valid: summarize"
+            );
+            ExitCode::from(2)
+        }
+    }
 }

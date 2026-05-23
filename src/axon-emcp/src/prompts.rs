@@ -27,6 +27,7 @@ use serde_json::{json, Value};
 
 use crate::knowledge::Catalog;
 use crate::server::JsonRpcError;
+use crate::telemetry::Telemetry;
 
 /// Build the `prompts/list` payload. Each entry advertises the
 /// prompt's name, summary, and arguments schema so the host can
@@ -50,7 +51,16 @@ pub fn list(catalog: &Arc<Catalog>) -> Vec<Value> {
 
 /// Dispatch a `prompts/get` request. Params shape (per MCP spec):
 /// `{ "name": "...", "arguments": { "<arg>": "<value>", ... } }`.
-pub fn dispatch_get(params: Value, catalog: &Arc<Catalog>) -> Result<Value, JsonRpcError> {
+///
+/// §Fase 8 — every dispatch records a `prompt_get` event with the
+/// prompt name + a `missing_required` boolean (no argument values are
+/// recorded — they're caller-supplied free-form text that may carry
+/// PII).
+pub fn dispatch_get(
+    params: Value,
+    catalog: &Arc<Catalog>,
+    telemetry: &Arc<Telemetry>,
+) -> Result<Value, JsonRpcError> {
     let req: GetParams = serde_json::from_value(params)
         .map_err(|e| JsonRpcError::invalid_params(format!("prompts/get params: {e}")))?;
 
@@ -73,6 +83,7 @@ pub fn dispatch_get(params: Value, catalog: &Arc<Catalog>) -> Result<Value, Json
             let v = args.get(&declared.name);
             let is_empty = v.map(|s| s.trim().is_empty()).unwrap_or(true);
             if is_empty {
+                telemetry.record_prompt_get(&req.name, /* missing_required */ true);
                 return Err(JsonRpcError::invalid_params(format!(
                     "prompts/get `{}`: required argument `{}` is missing or empty",
                     req.name, declared.name
@@ -81,6 +92,7 @@ pub fn dispatch_get(params: Value, catalog: &Arc<Catalog>) -> Result<Value, Json
         }
     }
 
+    telemetry.record_prompt_get(&req.name, /* missing_required */ false);
     let rendered = render(&prompt.body, &args);
 
     // Per MCP spec, a `prompts/get` reply carries an optional
@@ -149,6 +161,16 @@ mod tests {
 
     fn embedded() -> Arc<Catalog> {
         Arc::new(Catalog::load_embedded().expect("embedded corpus must load"))
+    }
+
+    /// Throwaway telemetry registry — JSONL sink disabled, deployment
+    /// ID empty. Cheap per test.
+    fn tel() -> Arc<Telemetry> {
+        Arc::new(Telemetry::new(crate::telemetry::TelemetryConfig {
+            jsonl_sink: None,
+            deployment_id: "".into(),
+            max_samples: 1000,
+        }))
     }
 
     // ── render() ─────────────────────────────────────────────────────
@@ -243,7 +265,7 @@ mod tests {
                     "compliance": "HIPAA, GDPR"
                 }
             }),
-            &cat,
+            &cat, &tel(),
         )
         .unwrap();
         // Description is the prompt's title.
@@ -270,7 +292,7 @@ mod tests {
                 "name": "flow_design",
                 "arguments": { "intent": "ship a thing" }
             }),
-            &cat,
+            &cat, &tel(),
         )
         .unwrap();
         let text = v["messages"][0]["content"]["text"].as_str().unwrap();
@@ -285,7 +307,7 @@ mod tests {
         let cat = embedded();
         let err = dispatch_get(
             json!({ "name": "flow_design", "arguments": {} }),
-            &cat,
+            &cat, &tel(),
         )
         .expect_err("missing required `intent` must reject");
         assert_eq!(err.code, -32602);
@@ -297,7 +319,7 @@ mod tests {
         let cat = embedded();
         let err = dispatch_get(
             json!({ "name": "shield_design", "arguments": { "purpose": "   " } }),
-            &cat,
+            &cat, &tel(),
         )
         .expect_err("whitespace-only required argument must be treated as missing");
         assert_eq!(err.code, -32602);
@@ -309,7 +331,7 @@ mod tests {
         let cat = embedded();
         let err = dispatch_get(
             json!({ "name": "does_not_exist", "arguments": {} }),
-            &cat,
+            &cat, &tel(),
         )
         .expect_err("unknown prompt must surface a structured error");
         assert_eq!(err.code, -32602);
@@ -330,7 +352,7 @@ mod tests {
                     "reconnect": "yes"
                 }
             }),
-            &cat,
+            &cat, &tel(),
         )
         .unwrap();
         let text = v["messages"][0]["content"]["text"].as_str().unwrap();

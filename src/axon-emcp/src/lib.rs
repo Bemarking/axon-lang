@@ -18,4 +18,5 @@ pub mod prompts;
 pub mod resources;
 pub mod scaffold;
 pub mod server;
+pub mod telemetry;
 pub mod tools;

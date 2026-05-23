@@ -26,6 +26,7 @@ use serde_json::{json, Value};
 
 use crate::knowledge::{Catalog, ReferenceKind};
 use crate::server::JsonRpcError;
+use crate::telemetry::Telemetry;
 
 /// Build the `resources/list` payload. Walks every catalogue entry —
 /// primitives + reference docs — so the agent can discover the full
@@ -61,10 +62,28 @@ pub fn list(catalog: &Arc<Catalog>) -> Vec<Value> {
 
 /// Dispatch a `resources/read` request. Params shape (per MCP spec):
 /// `{ "uri": "..." }`.
-pub fn dispatch_read(params: Value, catalog: &Arc<Catalog>) -> Result<Value, JsonRpcError> {
+///
+/// §Fase 8 — every read is recorded as a `resource_read` event keyed
+/// by URI family (`axon://primitives/`, `axon://grammar/`, …) NOT the
+/// full slug. The bounded cardinality is intentional: we count
+/// usage shape, not which-document-was-read.
+pub fn dispatch_read(
+    params: Value,
+    catalog: &Arc<Catalog>,
+    telemetry: &Arc<Telemetry>,
+) -> Result<Value, JsonRpcError> {
     let req: ReadParams = serde_json::from_value(params)
         .map_err(|e| JsonRpcError::invalid_params(format!("resources/read params: {e}")))?;
     let parsed = parse_axon_uri(&req.uri)?;
+    let family = match &parsed {
+        AxonUri::Primitive(_) => "axon://primitives/",
+        AxonUri::Reference(kind, _) => match kind {
+            ReferenceKind::Grammar => "axon://grammar/",
+            ReferenceKind::Logic => "axon://logic/",
+            ReferenceKind::Compliance => "axon://compliance/",
+        },
+    };
+    telemetry.record_resource_read(family);
     match parsed {
         AxonUri::Primitive(name) => read_primitive(name, &req.uri, catalog),
         AxonUri::Reference(kind, slug) => read_reference(kind, slug, &req.uri, catalog),
@@ -193,6 +212,16 @@ mod tests {
     use std::io::Write;
     use std::sync::Arc;
 
+    /// Throwaway telemetry registry for resources tests — JSONL sink
+    /// disabled, deployment ID empty. Cheap per test.
+    fn tel() -> Arc<Telemetry> {
+        Arc::new(Telemetry::new(crate::telemetry::TelemetryConfig {
+            jsonl_sink: None,
+            deployment_id: "".into(),
+            max_samples: 1000,
+        }))
+    }
+
     fn catalog_with(name: &str) -> Arc<Catalog> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
@@ -226,7 +255,7 @@ mod tests {
     #[test]
     fn dispatch_read_returns_markdown_with_metadata_header() {
         let cat = catalog_with("socket");
-        let v = dispatch_read(json!({ "uri": "axon://primitives/socket" }), &cat).unwrap();
+        let v = dispatch_read(json!({ "uri": "axon://primitives/socket" }), &cat, &tel()).unwrap();
         let text = v["contents"][0]["text"].as_str().unwrap();
         assert!(text.contains("axon-emcp metadata"));
         assert!(text.contains("**name**: `socket`"));
@@ -237,7 +266,7 @@ mod tests {
     #[test]
     fn dispatch_read_rejects_unsupported_scheme() {
         let cat = catalog_with("socket");
-        let err = dispatch_read(json!({ "uri": "https://example.com/x" }), &cat)
+        let err = dispatch_read(json!({ "uri": "https://example.com/x" }), &cat, &tel())
             .expect_err("must reject");
         assert!(err.message.contains("unsupported scheme"));
     }
@@ -245,7 +274,7 @@ mod tests {
     #[test]
     fn dispatch_read_rejects_unknown_resource_kind() {
         let cat = catalog_with("socket");
-        let err = dispatch_read(json!({ "uri": "axon://does_not_exist/x" }), &cat)
+        let err = dispatch_read(json!({ "uri": "axon://does_not_exist/x" }), &cat, &tel())
             .expect_err("must reject");
         assert!(err.message.contains("unknown axon:// resource kind"));
     }
@@ -253,7 +282,7 @@ mod tests {
     #[test]
     fn dispatch_read_rejects_unknown_primitive() {
         let cat = catalog_with("socket");
-        let err = dispatch_read(json!({ "uri": "axon://primitives/nope" }), &cat)
+        let err = dispatch_read(json!({ "uri": "axon://primitives/nope" }), &cat, &tel())
             .expect_err("must reject");
         assert!(err.message.contains("unknown primitive"));
     }
@@ -369,7 +398,7 @@ mod tests {
         let cat = catalog_with_references();
         let v = dispatch_read(
             json!({ "uri": "axon://grammar/top_level" }),
-            &cat,
+            &cat, &tel(),
         )
         .unwrap();
         let text = v["contents"][0]["text"].as_str().unwrap();
@@ -385,7 +414,7 @@ mod tests {
         let cat = catalog_with_references();
         let v = dispatch_read(
             json!({ "uri": "axon://logic/flow_composition" }),
-            &cat,
+            &cat, &tel(),
         )
         .unwrap();
         let text = v["contents"][0]["text"].as_str().unwrap();
@@ -398,7 +427,7 @@ mod tests {
         let cat = catalog_with_references();
         let v = dispatch_read(
             json!({ "uri": "axon://compliance/hipaa" }),
-            &cat,
+            &cat, &tel(),
         )
         .unwrap();
         let text = v["contents"][0]["text"].as_str().unwrap();
@@ -412,7 +441,7 @@ mod tests {
         let cat = catalog_with_references();
         let err = dispatch_read(
             json!({ "uri": "axon://grammar/does_not_exist" }),
-            &cat,
+            &cat, &tel(),
         )
         .expect_err("unknown slugs must surface a structured error");
         assert!(err.message.contains("unknown grammar reference"));
@@ -423,7 +452,7 @@ mod tests {
         let cat = catalog_with_references();
         let err = dispatch_read(
             json!({ "uri": "axon://compliance/does_not_exist" }),
-            &cat,
+            &cat, &tel(),
         )
         .expect_err("unknown slugs must surface a structured error");
         assert!(err.message.contains("unknown compliance reference"));
