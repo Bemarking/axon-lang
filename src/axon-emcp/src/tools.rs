@@ -21,10 +21,13 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use std::time::Instant;
+
 use crate::compiler_pipeline;
 use crate::compose;
 use crate::knowledge::{Catalog, Category};
 use crate::server::JsonRpcError;
+use crate::telemetry::Telemetry;
 
 /// Build the `tools/list` payload. Sorted by name for a deterministic
 /// wire — the agent should not see the order shift across runs.
@@ -179,21 +182,47 @@ pub fn list() -> Vec<Value> {
 
 /// Dispatch a `tools/call` request. `params` is the raw `params` field
 /// of the JSON-RPC envelope: `{ "name": "...", "arguments": { ... } }`.
-pub async fn dispatch_call(params: Value, catalog: &Arc<Catalog>) -> Result<Value, JsonRpcError> {
+///
+/// §Fase 8 — every dispatched call is wall-clock-timed and recorded
+/// through `telemetry`. The recorded fields are privacy-clean: tool
+/// name + duration + `is_error` boolean. Arguments + error messages
+/// are NEVER passed to the recorder (see `telemetry.rs` §Privacy).
+pub async fn dispatch_call(
+    params: Value,
+    catalog: &Arc<Catalog>,
+    telemetry: &Arc<Telemetry>,
+) -> Result<Value, JsonRpcError> {
     let call: ToolCall = serde_json::from_value(params)
         .map_err(|e| JsonRpcError::invalid_params(format!("tools/call params: {e}")))?;
-    match call.name.as_str() {
+    let started = Instant::now();
+    // §Fase 8 — for `axon.compose` + `axon.check` + `axon.parse` we
+    // ALSO record the structured outcome below (per-domain, per-stage)
+    // through the dedicated `record_compose` / `record_check`
+    // entrypoints. The top-level `record_tool_call` runs in EVERY
+    // branch so the wire-level aggregates stay complete.
+    let result = match call.name.as_str() {
         "axon.primitives" => primitives(call.arguments, catalog),
         "axon.primitive_doc" => primitive_doc(call.arguments, catalog),
-        "axon.check" => check(call.arguments),
-        "axon.parse" => parse(call.arguments),
-        "axon.compose" => compose_tool(call.arguments, catalog),
+        "axon.check" => check(call.arguments, telemetry),
+        "axon.parse" => parse(call.arguments, telemetry),
+        "axon.compose" => compose_tool(call.arguments, catalog, telemetry),
         other => Err(JsonRpcError {
             code: -32601,
             message: format!("unknown tool: `{other}`"),
             data: None,
         }),
-    }
+    };
+    let duration = started.elapsed();
+    // `is_error` reflects the *envelope* outcome: a JSON-RPC error
+    // (the Err arm) OR an `isError: true` flip inside a successful
+    // envelope (the agent's reflex hook). Both are operationally
+    // failed calls; we count them as such.
+    let is_error = match &result {
+        Err(_) => true,
+        Ok(v) => v["isError"].as_bool().unwrap_or(false),
+    };
+    telemetry.record_tool_call(&call.name, duration, is_error);
+    result
 }
 
 #[derive(Debug, Deserialize)]
@@ -311,17 +340,18 @@ struct CheckArgs {
     filename: Option<String>,
 }
 
-fn check(args: Value) -> Result<Value, JsonRpcError> {
+fn check(args: Value, telemetry: &Arc<Telemetry>) -> Result<Value, JsonRpcError> {
     let args: CheckArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("axon.check: {e}")))?;
     let filename = args.filename.as_deref().unwrap_or("<axon.check input>");
     let outcome = compiler_pipeline::run(&args.source, filename);
     let payload = compiler_pipeline::outcome_to_check_payload(&outcome);
-    // The MCP `tools/call` contract: wrap the payload in `content` so
-    // the agent's parser sees a uniform `{content, isError}` envelope.
-    // `isError` flips on a *blocking* check failure (so the agent's
-    // reflex is "look at the errors", not "the tool itself broke").
     let is_error = !payload["ok"].as_bool().unwrap_or(true);
+    // §Fase 8 — record the per-stage outcome. The `stage` value is
+    // the closed `Stage::as_str()` slug; the source itself is NEVER
+    // forwarded to the recorder (privacy invariant #1).
+    let stage_slug = payload["stage"].as_str().unwrap_or("type_check");
+    telemetry.record_check(stage_slug, is_error);
     Ok(json!({
         "content": [
             { "type": "text", "text": serde_json::to_string_pretty(&payload).unwrap() }
@@ -339,13 +369,18 @@ struct ParseArgs {
     filename: Option<String>,
 }
 
-fn parse(args: Value) -> Result<Value, JsonRpcError> {
+fn parse(args: Value, telemetry: &Arc<Telemetry>) -> Result<Value, JsonRpcError> {
     let args: ParseArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("axon.parse: {e}")))?;
     let filename = args.filename.as_deref().unwrap_or("<axon.parse input>");
     let outcome = compiler_pipeline::run(&args.source, filename);
     let payload = compiler_pipeline::outcome_to_parse_payload(outcome);
     let is_error = !payload["ok"].as_bool().unwrap_or(true);
+    // §Fase 8 — same per-stage recording surface as `axon.check`. The
+    // pipeline shape is shared (it's the same `compiler_pipeline::run`)
+    // so the `stage` slug is interchangeable between check/parse.
+    let stage_slug = payload["stage"].as_str().unwrap_or("ir_generate");
+    telemetry.record_check(stage_slug, is_error);
     Ok(json!({
         "content": [
             { "type": "text", "text": serde_json::to_string_pretty(&payload).unwrap() }
@@ -368,7 +403,11 @@ struct ComposeArgs {
     domain: Option<String>,
 }
 
-fn compose_tool(args: Value, catalog: &Arc<Catalog>) -> Result<Value, JsonRpcError> {
+fn compose_tool(
+    args: Value,
+    catalog: &Arc<Catalog>,
+    telemetry: &Arc<Telemetry>,
+) -> Result<Value, JsonRpcError> {
     let args: ComposeArgs = serde_json::from_value(args)
         .map_err(|e| JsonRpcError::invalid_params(format!("axon.compose: {e}")))?;
 
@@ -404,6 +443,16 @@ fn compose_tool(args: Value, catalog: &Arc<Catalog>) -> Result<Value, JsonRpcErr
     // template drifted from the parser without the integration test
     // catching it. Flip `isError` so the agent's reflex fires.
     let is_error = r.axon_check_verdict != "well-formed";
+    // §Fase 8 — record the per-domain compose outcome. `intent` is
+    // NEVER forwarded (privacy invariant #2); only the closed-catalog
+    // `domain` slug, the top classifier score, and whether the call
+    // carried an explicit `domain:` override.
+    let top_score = r
+        .alternatives
+        .first()
+        .map(|a| a.score)
+        .unwrap_or(0);
+    telemetry.record_compose(r.domain.slug(), top_score, domain_override.is_some());
     let payload = compose::response_to_json(&r);
     Ok(json!({
         "content": [
@@ -446,13 +495,22 @@ mod tests {
         Arc::new(Catalog::load_from(&dir).unwrap())
     }
 
+    /// Throwaway telemetry registry for dispatcher tests — JSONL sink
+    /// disabled, deployment ID empty. Cheap to construct per test.
+    fn tel() -> Arc<Telemetry> {
+        Arc::new(Telemetry::new(crate::telemetry::TelemetryConfig {
+            jsonl_sink: None,
+            deployment_id: "".into(),
+            max_samples: 1000,
+        }))
+    }
+
     #[tokio::test]
     async fn primitives_returns_every_entry_when_unfiltered() {
         let cat = catalog_with("socket", true, Category::SessionTypes);
         let v = dispatch_call(
             json!({ "name": "axon.primitives", "arguments": {} }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .unwrap();
         let text = v["content"][0]["text"].as_str().unwrap();
@@ -468,8 +526,7 @@ mod tests {
         let v = dispatch_call(
             json!({ "name": "axon.primitives",
                     "arguments": { "category": "session_types" } }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .unwrap();
         let parsed: Value =
@@ -479,8 +536,7 @@ mod tests {
         let v2 = dispatch_call(
             json!({ "name": "axon.primitives",
                     "arguments": { "category": "cognition" } }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .unwrap();
         let parsed2: Value =
@@ -494,8 +550,7 @@ mod tests {
         let err = dispatch_call(
             json!({ "name": "axon.primitives",
                     "arguments": { "category": "bogus" } }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .expect_err("must reject");
         assert_eq!(err.code, -32602);
@@ -508,8 +563,7 @@ mod tests {
         let v = dispatch_call(
             json!({ "name": "axon.primitive_doc",
                     "arguments": { "name": "socket" } }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .unwrap();
         let text = v["content"][0]["text"].as_str().unwrap();
@@ -526,8 +580,7 @@ mod tests {
         let err = dispatch_call(
             json!({ "name": "axon.primitive_doc",
                     "arguments": { "name": "does_not_exist" } }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .expect_err("must reject");
         assert!(err.message.contains("unknown primitive"));
@@ -539,8 +592,7 @@ mod tests {
         let cat = catalog_with("socket", true, Category::SessionTypes);
         let err = dispatch_call(
             json!({ "name": "axon.does_not_exist", "arguments": {} }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .expect_err("must reject");
         assert_eq!(err.code, -32601);
@@ -556,8 +608,7 @@ mod tests {
                 "name": "axon.check",
                 "arguments": { "source": "persona X { tone: precise }" }
             }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .unwrap();
         assert_eq!(v["isError"], false);
@@ -575,8 +626,7 @@ mod tests {
                 "name": "axon.check",
                 "arguments": { "source": "@@@" }
             }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .unwrap();
         // `isError` MUST flip — agents key off this for the "go fix it"
@@ -601,8 +651,7 @@ mod tests {
         let cat = catalog_with("socket", true, Category::SessionTypes);
         let err = dispatch_call(
             json!({ "name": "axon.check", "arguments": {} }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .expect_err("missing required `source` must reject");
         assert_eq!(err.code, -32602);
@@ -623,8 +672,7 @@ mod tests {
                     "filename": "my_draft.axon"
                 }
             }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .unwrap();
         assert_eq!(v["isError"], false);
@@ -640,8 +688,7 @@ mod tests {
                 "name": "axon.parse",
                 "arguments": { "source": "persona X { tone: precise }" }
             }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .unwrap();
         assert_eq!(v["isError"], false);
@@ -666,8 +713,7 @@ mod tests {
                 "name": "axon.parse",
                 "arguments": { "source": "@@@" }
             }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .unwrap();
         assert_eq!(v["isError"], true);
@@ -700,8 +746,7 @@ mod tests {
                 "name": "axon.compose",
                 "arguments": { "intent": "a patient summarisation service with PHI" }
             }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .unwrap();
         assert_eq!(v["isError"], false);
@@ -734,8 +779,7 @@ mod tests {
                     "domain": "chat"
                 }
             }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .unwrap();
         assert_eq!(v["isError"], false);
@@ -753,8 +797,7 @@ mod tests {
                 "name": "axon.compose",
                 "arguments": { "intent": "say hello" }
             }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .unwrap();
         let payload: Value =
@@ -774,8 +817,7 @@ mod tests {
                     "domain": "bogus-domain"
                 }
             }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .expect_err("unknown domain must be a structured invalid_params");
         assert_eq!(err.code, -32602);
@@ -787,8 +829,7 @@ mod tests {
         let cat = embedded_catalog();
         let err = dispatch_call(
             json!({ "name": "axon.compose", "arguments": {} }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .expect_err("missing required `intent` must reject");
         assert_eq!(err.code, -32602);
@@ -803,8 +844,7 @@ mod tests {
                 "name": "axon.compose",
                 "arguments": { "intent": "patient PHI clinical trial under HIPAA" }
             }),
-            &cat,
-        )
+            &cat, &tel())
         .await
         .unwrap();
         let payload: Value =
