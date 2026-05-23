@@ -42,26 +42,28 @@ to guess what's top-level vs. what nests inside a `flow`.
 src/
 ├── README.md           ← this file
 ├── knowledge/          ← the canonical source of truth — diff-reviewed
-│   ├── primitives/         one markdown file per primitive (65+)
-│   │   ├── persona.md
-│   │   ├── flow.md
-│   │   ├── socket.md       (§Fase 41 — the newest primitive)
+│   ├── primitives/         one markdown file per primitive (Phase 2 ships 7)
+│   │   ├── persona.md     anchor.md   flow.md     reason.md
+│   │   ├── step.md        tool.md     socket.md   (Fase 41 newest)
 │   │   └── …
-│   ├── grammar/
-│   │   ├── top_level.md    which primitives are top-level vs. nested
-│   │   ├── composition.md  the nesting rules
-│   │   └── ebnf.md         the official EBNF
-│   ├── flow_logic.md       when to use what
-│   ├── idioms.md           idiomatic patterns
-│   └── examples/           canonical .axon programs
+│   ├── grammar/            Phase 3 — top_level + composition + ebnf
+│   ├── logic/              Phase 3 — flow_composition + session_duality
+│   ├── compliance/         Phase 3 — hipaa/gdpr/pci_dss/sox/soc2/fedramp/gxp/fisma/nist_800_53
+│   ├── templates/          Phase 4 — 8 axon-check-clean scaffolds (generic, healthcare, …)
+│   └── prompts/            Phase 5 — flow_design + shield_design + session_design
 └── axon-emcp/          ← the Rust MCP server (stdio JSON-RPC 2.0)
     ├── Cargo.toml
+    ├── tests/              integration tests — phase2 canonical + phase4 template drift
     └── src/
-        ├── main.rs         stdio transport + server loop
-        ├── server.rs       MCP protocol handshake + dispatch
-        ├── knowledge.rs    loads + indexes src/knowledge/ at startup
-        ├── tools/          MCP tools agents can call
-        └── resources/      MCP resources agents can read
+        ├── main.rs              stdio transport + server loop
+        ├── lib.rs               re-exports for tests + embedders
+        ├── server.rs            MCP protocol handshake + dispatch
+        ├── knowledge.rs         loads + indexes src/knowledge/ at startup
+        ├── compiler_pipeline.rs lex → parse → type-check via axon-frontend
+        ├── tools.rs             axon.primitives / primitive_doc / check / parse / compose
+        ├── compose.rs           Phase 4 — domain classifier + template emission
+        ├── resources.rs         axon://primitives/* + grammar/* + logic/* + compliance/*
+        └── prompts.rs           Phase 5 — prompts/list + prompts/get + {{arg}} renderer
 ```
 
 **Two layers**, deliberately:
@@ -106,6 +108,14 @@ agent), the agent has access to:
 | `axon://logic/session_duality` | The §Fase 41 algebra rules for dual sessions |
 | `axon://compliance/{framework}` | What `compliance: [...]` annotations cover which framework |
 
+### Prompts (the host surfaces these as slash-commands / chat-menu entries)
+
+| Name | Phase | What it does |
+|---|---|---|
+| `flow_design` | **5 ✅** | Turn a natural-language flow intent into a typed, anchored, optionally-streaming AXON program. Drives the agent through `axon.compose` → `axon.primitive_doc` → `axon.check`. Arguments: `intent` (required), `domain`, `streaming`, `compliance`. |
+| `shield_design` | **5 ✅** | Turn a shield purpose (PHI redaction, jailbreak defence, financial scrubbing) into a typed `shield` declaration with the right scan list, on_breach policy, and compliance tags. Arguments: `purpose` (required), `severity`, `compliance`. |
+| `session_design` | **5 ✅** | Turn a dialogue intent (chat, RPC, multiparty) into a §41 duality-correct `session` + `socket` pair honouring linearity + credit-refined backpressure + multiparty projection. Arguments: `intent` (required), `parties`, `backpressure`, `reconnect`. |
+
 ## Install
 
 ```bash
@@ -138,9 +148,12 @@ Then point your agent's MCP config at it:
 }
 ```
 
-That's it — restart the agent and it will see `axon.primitives`,
-`axon.primitive_doc`, `axon.check`, `axon.parse` as callable tools, plus
-the `axon://primitives/{name}` resources, plus the onboarding
+That's it — restart the agent and it will see **5 tools** (`axon.primitives`,
+`axon.primitive_doc`, `axon.check`, `axon.parse`, `axon.compose`),
+**14 resources** (`axon://primitives/{name}` + `axon://grammar/*` +
+`axon://logic/*` + `axon://compliance/*`), and **3 prompts**
+(`flow_design`, `shield_design`, `session_design`) — surfaced by the
+host as slash-commands or chat-menu entries — plus the onboarding
 instructions on connect.
 
 ### Hot-editing the corpus (contributors)
@@ -169,7 +182,7 @@ env var → in-tree dev path (`<crate>/../knowledge`) → embedded corpus.
 | **2** | The 6 **core cognitive primitives** — `persona`, `flow`, `step`, `anchor`, `tool`, `reason` — each backed by a canonical `.axon` example that round-trips through `axon-frontend` end-to-end. Remaining ~60 primitives staged in follow-up 2.x increments. | ◐ in progress |
 | **3** | **Reference resources** — `axon://grammar/{top_level\|composition\|ebnf}`, `axon://logic/{flow_composition\|session_duality}`, `axon://compliance/{hipaa\|gdpr\|pci_dss\|sox\|soc2\|fedramp\|gxp\|fisma\|nist_800_53}`. The Catalog now loads `grammar/`, `logic/`, `compliance/` markdown alongside `primitives/`; the resource dispatcher serves all four URI families with structured errors. | ✅ |
 | **4** | **`axon.compose(intent)`** — natural-language brief → typed scaffold. Closed-domain classifier (keyword scoring + explainable scoreboard) over 8 domains (`generic`, `healthcare`, `banking`, `government`, `legal`, `chat`, `retrieval`, `multi_agent`); each scaffold is a hand-authored `.axon` template proven to compile end-to-end through the live `axon-frontend` pipeline. Returns `{scaffold, domain, alternatives, primitives_used, compliance_applied, next_steps, axon_check_verdict}`. | ✅ |
-| **5** | MCP prompts (`flow_design`, `shield_design`, `session_design`) | |
+| **5** | **MCP prompts** — `flow_design`, `shield_design`, `session_design` exposed via `prompts/list` + `prompts/get`. Each prompt is a hand-authored markdown body with declared `arguments:` schema; `{{arg}}` placeholders render at `get` time from user-supplied values. The `initialize` handshake now advertises the `prompts` capability so hosts surface the recipes as slash-commands. | ✅ |
 
 The discipline: every primitive added to `src/knowledge/primitives/` is
 backed by a passing `cargo test` that exercises a real `.axon` example

@@ -211,6 +211,61 @@ pub struct Template {
     pub source: String,
 }
 
+/// One MCP **prompt** — a parameterized prompt template the host
+/// (Claude Code / Cursor / Continue / …) surfaces to the human user
+/// as a named recipe. When the user picks it, the host calls
+/// `prompts/get` with the user's argument values; we render the body
+/// with `{{arg}}` substitution and return the resulting message.
+///
+/// Phase 5 ships three: `flow_design`, `shield_design`,
+/// `session_design`.
+#[derive(Debug, Clone)]
+pub struct Prompt {
+    /// Slug — matches the file stem AND the frontmatter `name:`.
+    /// Doubles as the `prompts/get` lookup key.
+    pub name: String,
+    /// Human-readable title surfaced in `prompts/list`.
+    pub title: String,
+    /// One-line summary for `prompts/list` discovery.
+    pub summary: String,
+    /// Declared arguments in declaration order. Each `{{name}}` in
+    /// the body is substituted from this list at render time.
+    pub arguments: Vec<PromptArgument>,
+    /// Markdown body with `{{name}}` placeholders. Returned to the
+    /// host (typically rendered into a single user-role message).
+    pub body: String,
+}
+
+/// One declared argument of a [`Prompt`]. The MCP spec requires every
+/// prompt advertise its argument schema so the host can surface a
+/// form-style picker; this struct mirrors that schema (the
+/// `Serialize` impl emits exactly the wire shape `prompts/list`
+/// expects).
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct PromptArgument {
+    /// Argument identifier — also the placeholder name in the body.
+    pub name: String,
+    /// Human-readable description shown to the user when the host
+    /// renders the picker.
+    pub description: String,
+    /// `true` ⇒ the host must collect a value before calling
+    /// `prompts/get`. `false` ⇒ optional; the renderer substitutes
+    /// the literal "(unspecified)" when omitted.
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// Frontmatter shape on `prompts/*.md`. The body markdown follows
+/// (verbatim, with `{{arg}}` placeholders to render later).
+#[derive(Debug, Deserialize)]
+struct PromptFrontmatter {
+    name: String,
+    title: String,
+    summary: String,
+    #[serde(default)]
+    arguments: Vec<PromptArgument>,
+}
+
 /// The in-process knowledge catalogue. Built once at startup and held
 /// behind an `Arc` for cheap clone across the async dispatcher.
 #[derive(Debug, Clone, Default)]
@@ -226,6 +281,10 @@ pub struct Catalog {
     /// pipeline (the verification round-trips through
     /// `compiler_pipeline::run`).
     templates: BTreeMap<String, Template>,
+    /// §Phase 5 — MCP prompts keyed by `name`. Surfaced via
+    /// `prompts/list` + `prompts/get` so the host can offer them
+    /// as slash-commands or chat-menu entries.
+    prompts: BTreeMap<String, Prompt>,
 }
 
 impl Catalog {
@@ -361,7 +420,29 @@ impl Catalog {
                 }
             }
         }
-        Ok(Catalog { primitives, references, templates })
+        // §Phase 5 — load MCP prompts from `prompts/*.md`.
+        let mut prompts = BTreeMap::new();
+        if let Some(dir) = EMBEDDED_KNOWLEDGE.get_dir("prompts") {
+            for file in dir.files() {
+                if !is_markdown(file.path()) {
+                    continue;
+                }
+                let raw = file.contents_utf8().ok_or_else(|| {
+                    LoadError::BadFrontmatter(
+                        PathBuf::from(file.path()),
+                        "embedded prompt is not valid UTF-8".into(),
+                    )
+                })?;
+                let p = parse_prompt(raw, file.path())?;
+                if prompts.insert(p.name.clone(), p.clone()).is_some() {
+                    return Err(LoadError::DuplicateName(
+                        p.name,
+                        PathBuf::from(file.path()),
+                    ));
+                }
+            }
+        }
+        Ok(Catalog { primitives, references, templates, prompts })
     }
 
     /// Load from an explicit path. Public so tests + tools can drive
@@ -437,7 +518,25 @@ impl Catalog {
                 }
             }
         }
-        Ok(Catalog { primitives, references, templates })
+        // §Phase 5 — prompts directory (optional).
+        let mut prompts = BTreeMap::new();
+        let pr_dir = root.join("prompts");
+        if pr_dir.is_dir() {
+            for entry in std::fs::read_dir(&pr_dir).map_err(|e| LoadError::Io(pr_dir.clone(), e))? {
+                let entry = entry.map_err(|e| LoadError::Io(pr_dir.clone(), e))?;
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                    continue;
+                }
+                let raw = std::fs::read_to_string(&path)
+                    .map_err(|e| LoadError::Io(path.clone(), e))?;
+                let p = parse_prompt(&raw, &path)?;
+                if prompts.insert(p.name.clone(), p.clone()).is_some() {
+                    return Err(LoadError::DuplicateName(p.name, path));
+                }
+            }
+        }
+        Ok(Catalog { primitives, references, templates, prompts })
     }
 
     /// Empty catalog — used only by unit tests that exercise the
@@ -503,6 +602,23 @@ impl Catalog {
     /// Iterate every template (in BTreeMap order — alphabetical, stable).
     pub fn templates(&self) -> impl Iterator<Item = &Template> {
         self.templates.values()
+    }
+
+    /// §Phase 5 — total prompt count.
+    pub fn prompt_count(&self) -> usize {
+        self.prompts.len()
+    }
+
+    /// §Phase 5 — lookup one prompt by name. `None` if absent.
+    pub fn prompt(&self, name: &str) -> Option<&Prompt> {
+        self.prompts.get(name)
+    }
+
+    /// §Phase 5 — iterate every prompt (in BTreeMap order — alphabetical,
+    /// stable). Used by `prompts/list` so the host's render of the
+    /// available recipes does not jitter across runs.
+    pub fn prompts(&self) -> impl Iterator<Item = &Prompt> {
+        self.prompts.values()
     }
 }
 
@@ -577,6 +693,43 @@ fn parse_primitive(raw: &str, path: &Path) -> Result<Primitive, LoadError> {
         top_level: fm.top_level,
         grammar: fm.grammar,
         since: fm.since,
+        body: parsed.content,
+    })
+}
+
+/// §Phase 5 — parse one MCP prompt document. Frontmatter shape:
+/// `name`, `title`, `summary`, optional `arguments: [{ name,
+/// description, required }, ...]`. The body is the rendered prompt
+/// template with `{{name}}` placeholders (substitution happens at
+/// `prompts/get` time, not at load time).
+///
+/// The frontmatter `name:` MUST match the file stem so the URL slug
+/// (the `prompts/get` lookup key) cannot drift from the on-disk
+/// layout — same invariant as the reference loader.
+fn parse_prompt(raw: &str, path: &Path) -> Result<Prompt, LoadError> {
+    let matter = Matter::<YAML>::new();
+    let parsed = matter.parse(raw);
+    let fm: PromptFrontmatter = parsed
+        .data
+        .ok_or_else(|| LoadError::NoFrontmatter(path.to_path_buf()))?
+        .deserialize()
+        .map_err(|e| LoadError::BadFrontmatter(path.to_path_buf(), e.to_string()))?;
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    if !stem.is_empty() && fm.name != stem {
+        return Err(LoadError::BadFrontmatter(
+            path.to_path_buf(),
+            format!(
+                "frontmatter name `{}` does not match file stem `{}` \
+                 — the prompt slug must equal the filename",
+                fm.name, stem
+            ),
+        ));
+    }
+    Ok(Prompt {
+        name: fm.name,
+        title: fm.title,
+        summary: fm.summary,
+        arguments: fm.arguments,
         body: parsed.content,
     })
 }
@@ -719,6 +872,41 @@ Body prose.
         // primitive's introductory paragraph.
         assert!(socket.body.contains("socket"));
         assert!(socket.body.contains("WebSocket"));
+    }
+
+    /// §Phase 5 — every MCP prompt shipped under
+    /// `src/knowledge/prompts/` must be embedded with a non-empty
+    /// title, summary, body, and at least one declared argument.
+    /// Hosts (Claude Code, Cursor, Continue) gate their slash-command
+    /// surface on this catalogue; a missing or malformed entry would
+    /// vanish from the menu silently.
+    #[test]
+    fn embedded_corpus_contains_every_phase_5_prompt() {
+        let cat = Catalog::load_embedded().expect("embedded corpus must load");
+        let expected = ["flow_design", "shield_design", "session_design"];
+        for name in expected {
+            let p = cat
+                .prompt(name)
+                .unwrap_or_else(|| panic!("prompt `{name}` must be embedded"));
+            assert_eq!(p.name, name, "{name}: slug drift");
+            assert!(!p.title.is_empty(), "{name}: title empty");
+            assert!(!p.summary.is_empty(), "{name}: summary empty");
+            assert!(!p.body.is_empty(), "{name}: body empty");
+            assert!(
+                !p.arguments.is_empty(),
+                "{name}: at least one argument must be declared so the host can render a picker"
+            );
+            // Every declared argument carries a name + description.
+            for arg in &p.arguments {
+                assert!(!arg.name.is_empty(), "{name}: empty argument name");
+                assert!(!arg.description.is_empty(), "{name}: empty argument description for `{}`", arg.name);
+            }
+        }
+        assert_eq!(
+            cat.prompt_count(),
+            expected.len(),
+            "prompt count drift — add the new prompt to the expected list"
+        );
     }
 
     /// §Phase 4 — every scaffold template shipped under
