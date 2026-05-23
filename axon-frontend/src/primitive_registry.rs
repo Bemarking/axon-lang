@@ -310,7 +310,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 19",
         summary: "Continuous-monitoring agent that learns a baseline + emits epistemic-level signals on anomalies.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "reflex",
@@ -318,7 +318,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 19",
         summary: "An automatic-response trigger bound to an immune system's level — fires structured actions on threshold breach.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "heal",
@@ -326,7 +326,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 19",
         summary: "A recovery routine bound to an immune system's level — runs scoped repairs, often human-in-the-loop.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     // ── Data plane ────────────────────────────────────────────────────
     PrimitiveInfo {
@@ -375,7 +375,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "Fase 36",
         summary: "A flow-body block that wraps multiple data-plane mutations in a single transactional unit with rollback semantics.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     // ── Session types (§Fase 41) ──────────────────────────────────────
     PrimitiveInfo {
@@ -401,7 +401,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 32",
         summary: "HTTP REST primitive — exposes a flow on a typed route with body/output schemas, transport classification, and compliance.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "axpoint",
@@ -409,7 +409,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 32",
         summary: "Lightweight axonendpoint — for simple request/response flows without the full request-binding schema scaffolding.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "daemon",
@@ -417,7 +417,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 16",
         summary: "A long-lived, supervised cognitive process — reacts to events on declared listeners with structured restart semantics.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "mcp",
@@ -425,7 +425,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 33+",
         summary: "Declares an outbound MCP server binding — turns axon into an MCP client of another server.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     // §Fase 6.c — `taint` was registered in 6.a as a wire primitive
     // but has no parser production (the lexer recognises the
@@ -442,7 +442,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "Fase 16",
         summary: "A flow/daemon-body listener — binds to an event source and dispatches typed messages downstream.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     // ── Operators ─────────────────────────────────────────────────────
     PrimitiveInfo {
@@ -451,7 +451,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 20",
         summary: "A composable defence layer — scans inputs/outputs for declared threats with a structured on-breach policy.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "mandate",
@@ -459,7 +459,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 21",
         summary: "A typed approval requirement — gates a flow's execution on a capability check + optional segregation of duties.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "compute",
@@ -467,7 +467,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 17",
         summary: "Binds a flow to a specific compute backend — model selection, effort hint, parallelism, deterministic seed.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "lambda",
@@ -475,7 +475,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 15",
         summary: "An anonymous, typed function bound to a flow's data plane — supports lambda apply semantics for inline composition.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "forge",
@@ -483,7 +483,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "Fase 18",
         summary: "A flow-body block that constructs typed values from sub-step outputs under explicit construction discipline.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "ots",
@@ -491,7 +491,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 11",
         summary: "One-shot transform — a closed-catalogue media transformation (audio, image, format) with native/ffmpeg backend dispatch.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "psyche",
@@ -499,16 +499,17 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 14",
         summary: "Declares the psychological model a persona enacts — beliefs, desires, traits, behavioural disposition.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
-    PrimitiveInfo {
-        name: "logic",
-        category: "operators",
-        top_level: true,
-        since: "Fase 23",
-        summary: "Declares a logic surface — propositional rules, predicate constraints, algebraic-effect handlers.",
-        doc_status: DocStatus::Pending,
-    },
+    // §Fase 6.d — `logic` was registered in 6.a as an operators
+    // primitive but has NO parser production (the lexer recognises
+    // the `logic` keyword token; no `parse_logic` exists; the
+    // top-level dispatch in `parse_declaration` has no `Logic`
+    // arm). Same situation `taint` was in at 6.c. Discipline
+    // applies: registry entries match parser productions
+    // one-to-one. We remove `logic` here; if a future Fase
+    // introduces `logic <Name> { … }`, re-add the entry with
+    // that Fase's `since:` tag.
 ];
 
 /// Lookup one primitive by canonical name. O(n) over the 47-entry
@@ -586,12 +587,14 @@ mod tests {
     fn registry_contains_the_expected_count() {
         // Total count is pinned — a regression that drops a primitive
         // surfaces as a smaller catalogue. §Fase 6.c removed `taint`
-        // (lex-recognised, no parser production), dropping the total
-        // from 47 to 46. Future Fases that add or remove primitives
-        // update this assertion in the same PR.
+        // (47→46); §Fase 6.d removed `logic` (46→45). Both were lex-
+        // recognised keywords with NO parser production, and the
+        // "registry entries = parser productions" discipline meant
+        // they could not stay. Future Fases that add or remove
+        // primitives update this assertion in the same PR.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            46,
+            45,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -637,8 +640,9 @@ mod tests {
     }
 
     #[test]
-    fn documented_tier_matches_phase_6c_baseline() {
-        // §Fase 6.c baseline (post-Tier-2): 29 primitives documented.
+    fn documented_tier_matches_phase_6d_baseline_full_coverage() {
+        // §Fase 6.d baseline (post-Tier-3): **45 primitives — every
+        // entry in the registry is Documented (100% coverage)**.
         //
         //   Tier 0 (Fase 5,    7): persona, flow, step, anchor, tool, reason, socket
         //   Tier 1 (Fase 6.b, 10): context, intent, memory, agent, probe,
@@ -646,12 +650,17 @@ mod tests {
         //   Tier 2 (Fase 6.c, 12): resource, fabric, manifest, observe,
         //                          reconcile, lease, ensemble, session,
         //                          axonstore, dataspace, corpus, pix
+        //   Tier 3 (Fase 6.d, 16): axonendpoint, axpoint, daemon, mcp,
+        //                          listen, shield, mandate, compute,
+        //                          lambda, forge, ots, psyche, immune,
+        //                          reflex, heal, transact
         //
-        // Tier 2 ships 12 (not 13) — `taint` was removed from the
-        // registry in 6.c because it has no parser production. The
-        // discipline holds: registry entries match parser productions
-        // one-to-one. A regression that flipped a Documented entry
-        // back to Pending surfaces here.
+        // Tier 2 ships 12 (not 13) — `taint` removed in 6.c (no
+        // parser production). Tier 3 ships 16 (not 17) — `logic`
+        // removed in 6.d (same reason). The discipline holds: every
+        // entry in the registry has a `.md` AND a parser production.
+        // A regression that flips a Documented entry back to Pending
+        // surfaces here.
         let documented: HashSet<&str> = with_status(DocStatus::Documented)
             .map(|i| i.name)
             .collect();
@@ -665,24 +674,30 @@ mod tests {
             "resource", "fabric", "manifest", "observe", "reconcile",
             "lease", "ensemble", "session", "axonstore", "dataspace",
             "corpus", "pix",
+            // Tier 3
+            "axonendpoint", "axpoint", "daemon", "mcp", "listen",
+            "shield", "mandate", "compute", "lambda", "forge", "ots",
+            "psyche", "immune", "reflex", "heal", "transact",
         ]
         .into_iter()
         .collect();
         assert_eq!(
             documented, expected,
-            "Documented set drift — Fase 6.c baseline is 29 specific primitives"
+            "Documented set drift — Fase 6.d baseline is 45 specific primitives (full coverage)"
         );
     }
 
     #[test]
     fn coverage_summary_is_arithmetic() {
         let s = coverage_summary();
-        assert_eq!(s.total, 46);
+        assert_eq!(s.total, 45);
         assert_eq!(s.documented + s.pending, s.total);
-        // §Fase 6.c ships Tier 2 (12 docs) — 29 Documented (7+10+12),
-        // 17 Pending (Tier 3 — closes in 6.d).
-        assert_eq!(s.documented, 29);
-        assert_eq!(s.pending, 17);
+        // §Fase 6.d achieves **100% coverage** — every entry in the
+        // registry has a `.md` and a passing drift-gated canonical
+        // program. Pending count is 0; any future drop is a
+        // regression the gate catches.
+        assert_eq!(s.documented, 45);
+        assert_eq!(s.pending, 0);
     }
 
     #[test]
