@@ -1,0 +1,196 @@
+---
+name: axonstore
+summary: A typed, audit-chained data store — relational backend, isolation level, encryption, retention, on-breach policy.
+category: data_plane
+top_level: true
+since: Fase 36
+grammar: |
+  axonstore <Name> {
+      backend: <ident>                        # required — postgres | mysql | sqlite | in_memory
+      connection: "<conn-str>"                 # optional — backend connection string
+      isolation: <read_committed|repeatable_read|serializable>   # optional
+      on_breach: <log|raise|rollback>          # optional — policy on type-check breach
+      capability: "<slug.dotted>"              # optional — required cap to access
+      confidence_floor: <0.0..1.0>             # optional — minimum certainty
+      schema { <col>: <Type> [<constraint>...], ... }   # optional — Fase 38.b inline schema
+      schema: "<manifest.ref>"                 # optional — manifest-bound schema
+      schema: env:VAR                          # optional — per-tenant schema env-var
+  }
+---
+
+# `axonstore`
+
+`axonstore` declares **a typed, audit-chained data store** — the
+data-plane primitive that backs every Fase 36+ persistence
+surface. It binds a name, a backend, an isolation level, an
+on-breach policy, and (optionally) a column schema, retention
+policy, encryption setting, and capability slug.
+
+This is **the structural commitment of the data plane**:
+everything declared here is auditable, isolated by tenancy by
+construction, and gated by typed capability checks. The §40
+column-proof rule cross-validates that compliance-tagged stores
+(`compliance: [HIPAA]`) carry the right tenant_id column;
+runtime mutations land in the §19 PIX provenance chain.
+
+## Surface
+
+`axonstore` is a **top-level declaration**. It is *not* nested
+inside a dataspace, manifest, or flow.
+
+```axon
+axonstore PaymentVault {
+    backend:     postgresql
+    connection:  "postgres://payments.internal/vault"
+    isolation:   serializable
+    on_breach:   raise
+    capability:  "payment.write"
+    schema {
+        txn_id:     Text primary_key
+        amount:     Numeric not_null
+        card_token: Text not_null
+        cardholder: Text
+        posted_at:  Timestamp not_null
+    }
+}
+```
+
+**Column types are a closed v1.38.0 catalogue**:
+`Uuid | Text | Int | BigInt | Float | Double | Bool | Timestamp |
+Timestamptz | Date | Time | Json | Jsonb | Bytea | Numeric`. The
+type names from the general `type` system (`String`, `Number`,
+`Bool`) do **not** appear here — `axonstore` column types map to
+SQL backend types directly.
+
+## Fields
+
+### `backend:` (required)
+
+A **single identifier** naming the backend kind. Closed
+catalogue (`axon-frontend::type_checker::VALID_STORE_BACKENDS`):
+
+| Value | Status |
+|---|---|
+| `postgresql` | Production-ready. The standard. |
+| `mysql` | Type-check-valid; runtime-absent (future). |
+| `sqlite` | Type-check-valid; runtime-absent (future). |
+| `in_memory` | Production-ready for tests + zero-infra demos. |
+
+### `connection:` (optional)
+
+A **string literal** containing the backend connection string.
+Format is backend-specific (Postgres URL, in-memory `:memory:`).
+Optional — for `in_memory` backends and for manifests that
+inject connection strings via env.
+
+### `isolation:` (optional)
+
+A **single identifier** from the closed isolation catalogue
+(`axon-frontend::type_checker::VALID_STORE_ISOLATION`):
+
+| Value | Semantic |
+|---|---|
+| `read_committed` | Lowest — phantom reads allowed. |
+| `repeatable_read` | Middle — snapshot per transaction. |
+| `serializable` | Strictest — serialisable. The production default for regulated stores. |
+
+### `on_breach:` (optional)
+
+A **single identifier** from the closed breach catalogue
+(`axon-frontend::type_checker::VALID_STORE_ON_BREACH`):
+
+| Value | Behaviour on a type-check breach (column-type mismatch, capability deny, etc.) |
+|---|---|
+| `log` | Emit audit row + accept the mutation (development only). |
+| `raise` | Halt with a typed error. **Production default for compliance-tagged stores.** |
+| `rollback` | Roll back the current transaction; emit audit row. |
+
+### `capability:` (optional, Fase 35.j D11)
+
+A **string literal** containing a **dotted-slug capability**
+(`"admin"`, `"tenant.read"`, `"hipaa.phi.read"`). Mutations
+that don't carry this capability are rejected. Validated at
+parse time against the closed grammar
+`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`.
+
+### `confidence_floor:` (optional)
+
+A **numeric literal in `[0.0, 1.0]`**. Minimum certainty
+required to commit a write. Below the floor, mutations land in
+a quarantine table for review.
+
+### `schema { ... }` / `schema: "<ref>"` / `schema: env:VAR` (Fase 38.b D1)
+
+Three closed forms for declaring the store's typed column
+schema:
+
+**(a) Inline** — the most common:
+
+```axon
+schema {
+    id:           BigInt primary_key identity
+    tenant_id:    String not_null
+    amount:       Number not_null
+    posted_at:    Timestamp not_null default now()
+}
+```
+
+Column constraints (position-independent): `primary_key`,
+`auto_increment`, `identity` (Fase 38.x.d), `not_null`,
+`unique`, `default <value>`.
+
+**(b) Manifest reference** — `schema: "public.tenants"`. The
+schema is declared in a separate manifest file (typed +
+diff-reviewable).
+
+**(c) Env-var schema** — `schema: env:TENANT_SCHEMA` or
+`schema: "env:TENANT_SCHEMA"`. The schema namespace is read
+from an environment variable at runtime (per-tenant schemas
+on the same backend).
+
+The runtime cross-validates the declared schema against the
+actual DDL at deploy time; mismatches surface as
+`axon-E044 schema drift detected`.
+
+## Runtime behaviour
+
+`axonstore` lowers to an `AxonStoreDefinition` IR node. At
+deploy time, the runtime connects to the named backend, asserts
+isolation level, validates the schema (if declared), and arms
+the on-breach policy.
+
+Every mutation flows through:
+1. **Capability check** — `capability:` slug must be in the
+   actor's capability set.
+2. **Column proof** — the §40 column proof verifies the
+   mutation respects compliance tags (e.g. HIPAA-tagged store
+   requires `tenant_id` in the WHERE clause).
+3. **Type check** — column types are enforced.
+4. **PIX provenance row** — every mutation lands in the
+   declared `pix` chain (if one is bound).
+5. **Audit row** — `axonstore:<name>:<op>` with full context.
+
+## What this primitive is NOT
+
+- **Not a generic ORM.** AXON does not generate models from
+  the schema — it validates the schema against the runtime DDL.
+  ORM/migration tooling is upstream.
+- **Not a `memory`.** `memory` is cognitive working state
+  (often vector + retrieval); `axonstore` is structured,
+  audit-chained persistence.
+- **Not a `dataspace`.** A dataspace is a *namespace* for
+  axonstores (multi-tenant isolation); the store is one
+  named entry within a dataspace.
+- **Not silent on compliance.** A `compliance: [HIPAA]`
+  axonstore without `tenant_id` in the schema is rejected by
+  the §40 column proof at parse time.
+
+## See also
+
+- `axon://primitives/dataspace` — multi-tenant namespace.
+- `axon://primitives/pix` — provenance chain.
+- `axon://primitives/corpus` — RAG-oriented document store.
+- `axon://primitives/resource` — lower-level external-resource
+  handle.
+- `axon://compliance/hipaa` — example of column-proof
+  enforcement on a HIPAA-tagged axonstore.

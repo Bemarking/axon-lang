@@ -971,11 +971,10 @@ Body prose.
     fn registry_coverage_summary_is_internally_consistent() {
         let s = axon_frontend::coverage_summary();
         assert_eq!(s.total, s.documented + s.pending);
-        // Pin the Fase 5 baseline: 47 primitives, 7 documented, 40
-        // pending. As §Fase 6.b/c/d lands, the (documented, pending)
-        // split shifts toward (47, 0). Updating this assertion is
-        // part of each Fase 6 sub-phase's landing PR.
-        assert_eq!(s.total, 47);
+        // §Fase 6.c rebaseline: 46 primitives total (was 47 in 6.a;
+        // `taint` removed because it has no parser production). As
+        // §Fase 6.d lands Tier 3, `pending` shrinks toward 0.
+        assert_eq!(s.total, 46);
     }
 
     /// §Phase 5 — every MCP prompt shipped under
