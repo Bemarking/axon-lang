@@ -410,6 +410,60 @@ Body prose.
         assert!(socket.body.contains("WebSocket"));
     }
 
+    /// §Phase 2 — the 6 core cognitive primitives an agent touches
+    /// before anything else (`persona`, `flow`, `step`, `anchor`,
+    /// `tool`, `reason`). Verifies each one is embedded, well-typed
+    /// against the `Category` discriminator, and carries the
+    /// `top_level` polarity we promise in the catalogue. A regression
+    /// here is a regression in the agent's onboarding surface — the
+    /// first primitive lookups would 404.
+    #[test]
+    fn embedded_corpus_contains_the_six_core_cognitive_primitives() {
+        let cat = Catalog::load_embedded().expect("embedded corpus must load");
+
+        // (name, expected category, expected top-level polarity)
+        let expected: &[(&str, Category, bool)] = &[
+            ("persona", Category::Cognition, true),
+            ("flow", Category::Cognition, true),
+            ("step", Category::Cognition, false),
+            ("anchor", Category::Cognition, true),
+            ("tool", Category::Cognition, true),
+            ("reason", Category::Cognition, false),
+        ];
+
+        for (name, category, top_level) in expected {
+            let p = cat
+                .primitive(name)
+                .unwrap_or_else(|| panic!("`{name}` must be embedded after Phase 2"));
+            assert_eq!(
+                p.category, *category,
+                "{name}: category drift (catalogue says {:?}, expected {category:?})",
+                p.category
+            );
+            assert_eq!(
+                p.top_level, *top_level,
+                "{name}: top_level drift (catalogue says {}, expected {top_level})",
+                p.top_level
+            );
+            assert!(
+                !p.summary.is_empty(),
+                "{name}: summary is empty — agent listings would be unhelpful"
+            );
+            assert!(
+                !p.body.is_empty(),
+                "{name}: body is empty — `axon.primitive_doc({name})` would return nothing"
+            );
+            // Every Phase 2 doc opens with a backtick-wrapped name header
+            // (`# \`persona\``, `# \`flow\``, …) — anchors the "what is
+            // this?" answer at the top of the agent's prose response.
+            let opener = format!("# `{name}`");
+            assert!(
+                p.body.contains(&opener),
+                "{name}: body must open with `{opener}` — missing canonical header"
+            );
+        }
+    }
+
     /// A throwaway temp dir, no `tempfile` dep — keeps the dependency
     /// surface minimal. We use process-id + a monotonic counter so
     /// concurrent test runs don't collide.

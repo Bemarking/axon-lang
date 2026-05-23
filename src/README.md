@@ -166,7 +166,7 @@ env var → in-tree dev path (`<crate>/../knowledge`) → embedded corpus.
 |---|---|---|
 | **0** | Server spine (stdio JSON-RPC 2.0), knowledge loader, `axon.primitives` + `axon.primitive_doc`, `axon://primitives/{name}` resources, `socket` primitive documented end-to-end | ✅ |
 | **1** | `axon.check` (live validation) + `axon.parse` (IR introspection) + embedded corpus (`cargo install` ships self-contained) | ✅ |
-| **2** | Remaining 64+ primitives in `src/knowledge/primitives/` | next |
+| **2** | The 6 **core cognitive primitives** — `persona`, `flow`, `step`, `anchor`, `tool`, `reason` — each backed by a canonical `.axon` example that round-trips through `axon-frontend` end-to-end (44 tests green). Remaining ~60 primitives staged in follow-up 2.x increments. | ◐ in progress |
 | **3** | Grammar resources (`axon://grammar/top_level`, `composition`, `ebnf`), flow logic resources, compliance resources | |
 | **4** | `axon.compose(intent)` — natural language brief → typed scaffold with correct compliance shields | |
 | **5** | MCP prompts (`flow_design`, `shield_design`, `session_design`) | |
@@ -178,3 +178,11 @@ base does not drift from the language — it is checked against the
 implementation on every commit. Phase 1 closed the loop: the agent can
 now VALIDATE the code it produces, against the same compiler the `axon`
 CLI ships.
+
+Phase 2 proved that discipline in practice: the first draft of three
+primitive docs contained inaccuracies (`empathic` → `empathetic`, a
+non-existent `<Target>` argument on `reason`, an `effects:` row that
+did not match the closed catalog). The integration suite under
+`src/axon-emcp/tests/phase2_canonical_programs.rs` rejected all three
+on first run, exactly as it will reject any future doc that drifts
+from the parser.

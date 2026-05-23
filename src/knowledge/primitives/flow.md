@@ -1,0 +1,172 @@
+---
+name: flow
+summary: The orchestration primitive — a typed, ordered composition of cognitive steps with parameters and a return type.
+category: cognition
+top_level: true
+since: v0.1.0 (initial language)
+grammar: |
+  flow <Name>(<param>: <Type>, <param>: <Type>, ...) -> <ReturnType> {
+      <FlowStep>
+      <FlowStep>
+      ...
+  }
+
+  # FlowStep ::= step | if | for | let | return | weave | use | remember
+  #            | recall | hibernate | associate | aggregate | explore
+  #            | ingest | navigate | drill | corroborate | listen
+  #            | retrieve | persist | mutate | run | reason | ...
+---
+
+# `flow`
+
+A `flow` is the **unit of orchestration** in AXON. It declares a
+typed function whose body is an ordered sequence of cognitive
+operations — `step`s, control flow (`if`, `for`), bindings (`let`),
+memory operations (`remember`, `recall`), graph operations
+(`navigate`, `drill`), data-plane operations (`retrieve`,
+`persist`, `mutate`), and others.
+
+A flow is **what you `run`**. The `run` statement binds a flow to a
+persona, a context, and any anchors that must hold across its
+execution.
+
+## Surface
+
+`flow` is a **top-level declaration**. It is *not* nested inside
+another flow, a daemon, or any other primitive. (Flows compose by
+*calling* one another via `apply` from within a `step`, not by
+nesting.)
+
+```axon
+flow AnalyzeContract(doc: Document) -> ContractAnalysis {
+    step Extract {
+        given: doc
+        ask: "Extract parties, obligations, dates, penalties"
+        output: EntityMap
+    }
+    step Assess {
+        given: Extract.output
+        ask: "Identify ambiguous or risky clauses"
+        output: RiskAnalysis
+    }
+    return Assess.output
+}
+```
+
+## Header
+
+### `flow <Name>(<params>) -> <ReturnType>`
+
+- **`<Name>`** — a `PascalCase` identifier, unique among flows
+  within the same module. The compiler builds a per-module flow
+  symbol table at parse time; duplicates are rejected.
+- **`(<params>)`** — zero or more comma-separated `name: Type`
+  parameters. Types must resolve to a declared `type`, a built-in
+  (`String`, `Number`, `Bool`), a generic application
+  (`List<T>`, `Stream<T>`, `Optional<T>`?), or a recursive
+  generic (`FlowEnvelope<List<TenantRecord>>`, since Fase 39.a).
+- **`-> <ReturnType>`** — optional. When present, the flow's last
+  evaluated step (or explicit `return`) must produce a value
+  assignable to `<ReturnType>`. When omitted, the flow is treated
+  as effect-only (no return value).
+
+```axon
+flow GreetUser(name: String, locale: String) -> Greeting { … }
+flow EmitMetrics()                                       { … }   # no return
+flow Chat(prompt: String) -> Stream<Token>               { … }   # streaming return
+```
+
+## Body
+
+The body is a `{ }`-braced **ordered sequence** of *flow steps*.
+Each step is one of (see `axon://primitives/<step-kind>` for the
+detail of each):
+
+| Kind | Purpose |
+|---|---|
+| `step` | A cognitive operation (the most common) |
+| `if`, `for`, `let`, `return`, `break`, `continue` | Control + binding |
+| `reason`, `probe`, `weave`, `stream` | Reasoning sub-constructs |
+| `remember`, `recall`, `hibernate`, `associate`, `aggregate` | Memory ops |
+| `explore`, `ingest`, `navigate`, `drill`, `corroborate` | Graph + retrieval |
+| `listen`, `retrieve`, `persist`, `mutate` | Data plane |
+| `apply` | Invoke another flow (composition) |
+
+The compiler enforces three structural rules across the body:
+
+1. **Definite assignment** — each step that references
+   `<OtherStep>.output` must lexically follow that step.
+2. **Flow-locality** — references are resolved against the
+   enclosing flow's lexical scope; `apply`-invoked sub-flows do
+   *not* see the caller's step outputs.
+3. **Return-type compatibility** — when `-> <T>` is declared, every
+   `return` statement (or the last expression-step) must produce
+   a `<T>`.
+
+## Streaming returns (Fase 33)
+
+A flow whose return type is `Stream<T>` participates in the
+**algebraic stream effect runtime** (§Fase 33). Each step that
+emits chunks does so via the `<stream: ...>` effect row; the
+runtime materialises the emissions as Server-Sent Events on the
+declared transport (`axonendpoint` route, `socket`, etc.).
+
+```axon
+flow Chat(prompt: String) -> Stream<Token> {
+    step Generate {
+        given: prompt
+        ask: "Reply, one token at a time"
+        output: Stream<Token>
+    }
+}
+```
+
+The compile-time gate (`flow_has_stream_output`) checks that the
+final step's output type begins with `Stream<` and ends with `>`;
+adopters who only need batch returns can ignore the entire
+stream-effect surface.
+
+## Running a flow
+
+A declared flow does nothing until a `run` statement binds it:
+
+```axon
+run AnalyzeContract(myContract)
+    as LegalExpert              # persona binding (required)
+    within LegalReview          # context binding (optional)
+    constrained_by [NoHallucination, NoPHI]   # anchor list (optional)
+    on_failure: retry(backoff: exponential)   # failure policy (optional)
+    output_to: "report.json"    # destination (optional)
+    effort: high                # compute hint (optional)
+```
+
+See `axon://primitives/run` for the full surface.
+
+## What this primitive is NOT
+
+- **Not a function in the imperative sense.** A flow is a
+  *typed orchestration of cognitive operations*. The runtime is
+  free to reorder data-independent steps and to fuse step bodies
+  for backend efficiency, as long as observed effects respect the
+  declared ordering and the IR audit trail.
+- **Not nested inside another flow.** Composition is via `apply`
+  (which calls another declared flow) — there is no anonymous or
+  inline flow grammar.
+- **Not a daemon.** A flow runs once per `run`; a `daemon` runs
+  continuously and reacts to events. A daemon's bodies are
+  *expressed* as flow-step bodies, but the lifecycle is different.
+- **Not an `axonendpoint`.** An `axonendpoint` exposes a flow over
+  HTTP; the flow is the cognition, the endpoint is the wire.
+
+## See also
+
+- `axon://primitives/step` — the most common flow-step kind.
+- `axon://primitives/run` — the binding statement that executes a
+  flow with a persona + context + anchors.
+- `axon://primitives/axonendpoint` — exposes a flow as an HTTP
+  route.
+- `axon://primitives/socket` — exposes a flow as a session-typed
+  WebSocket.
+- `axon://logic/flow_composition` — when to nest sub-flows via
+  `apply` vs. inline `step`s.
+- `axon://grammar/top_level` — full top-level vs. nested table.
