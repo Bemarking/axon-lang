@@ -971,10 +971,11 @@ Body prose.
     fn registry_coverage_summary_is_internally_consistent() {
         let s = axon_frontend::coverage_summary();
         assert_eq!(s.total, s.documented + s.pending);
-        // §Fase 6.c rebaseline: 46 primitives total (was 47 in 6.a;
-        // `taint` removed because it has no parser production). As
-        // §Fase 6.d lands Tier 3, `pending` shrinks toward 0.
-        assert_eq!(s.total, 46);
+        // §Fase 6.d closes the coverage cycle: 45 total (47 - taint -
+        // logic, both lex-only with no parser production), 45
+        // Documented, 0 Pending. **100% coverage achieved**. Any
+        // future drop is a regression the gate catches.
+        assert_eq!(s.total, 45);
     }
 
     /// §Phase 5 — every MCP prompt shipped under

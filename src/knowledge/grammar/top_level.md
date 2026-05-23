@@ -100,7 +100,11 @@ follows from one row.
 | `ots`      | ✓ | — | Fase 11 |
 | `psyche`   | ✓ | — | Fase 14 |
 | `agent`    | ✓ | — | Fase 18 |
-| `logic`    | ✓ | — | Fase 23 |
+
+> The `logic` keyword is a reserved word in the lexer but — like
+> `taint` (Fase 6.c) — has no parser production today. If a future
+> Fase introduces a `logic <Name> { … }` declaration the registry +
+> this table grow together.
 
 ## Statements (not primitives, but parsed at flow body)
 
