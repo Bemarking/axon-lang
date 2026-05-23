@@ -20,11 +20,10 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-mod compiler_pipeline;
-mod knowledge;
-mod resources;
-mod server;
-mod tools;
+// All modules live in `src/lib.rs` so the binary and the integration
+// test suite (under `tests/`) compile against one copy of each. We
+// import only the surfaces the binary entrypoint actually needs.
+use axon_emcp::{knowledge, server};
 
 use std::process::ExitCode;
 
