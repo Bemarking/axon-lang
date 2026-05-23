@@ -30,11 +30,16 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// One of 8 closed domains the compose tool can ground an intent in.
+/// Closed-catalogue domains the compose tool can ground an intent in.
 /// The set is intentionally small — every domain ships an
 /// `.axon`-check-clean template, so adding a domain is a structured
 /// PR (template + entry in this enum + entry in
 /// [`domain_metadata`]), not a runtime config.
+///
+/// §Fase 7.a expanded the vertical surface with `legaltech`,
+/// `fintech`, `pharmatech`, `medic_research` — each a distinct
+/// SaaS / product / research vertical with its own compliance
+/// posture (different from `legal`, `banking`, `healthcare`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Domain {
@@ -43,11 +48,11 @@ pub enum Domain {
     Generic,
     /// HIPAA + GDPR + GxP — PHI, clinical trials, telemedicine.
     Healthcare,
-    /// PCI_DSS + SOX + SOC2 — payments, loans, ledger.
+    /// PCI_DSS + SOX + SOC2 — enterprise-bank payments, loans, ledger.
     Banking,
     /// FISMA + NIST_800_53 + FedRAMP — agency, citizen, federal.
     Government,
-    /// SOC2 + privilege discipline — contract, case, e-discovery.
+    /// SOC2 + privilege discipline — in-house contract / case / e-discovery.
     Legal,
     /// Streaming dialogue — chat, conversation, real-time reply.
     Chat,
@@ -56,6 +61,26 @@ pub enum Domain {
     /// Multi-agent task delegation — planner + worker, ensemble,
     /// coordination across personas.
     MultiAgent,
+    /// §Fase 7.a — SOC2 + multi-tenant SaaS for legal-technology
+    /// products (contract automation, e-discovery, IP portfolio
+    /// management). Differs from `Legal`: PRODUCT pattern with
+    /// `requires:` capability gates, replay-token writes, per-tenant
+    /// path scoping.
+    LegalTech,
+    /// §Fase 7.a — PCI_DSS + SOC2 with AML/KYC + fraud-detection
+    /// emphasis. Consumer fintech / neobank / embedded finance.
+    /// Differs from `Banking`: AML/CFT + state money-transmitter +
+    /// consumer-protection posture, not enterprise-ledger.
+    FinTech,
+    /// §Fase 7.a — GxP + HIPAA + SOC2 for pharmaceutical R&D, drug
+    /// discovery, compound screening. FDA 21 CFR Part 11 audit
+    /// trails. Differs from `Healthcare` (patient care).
+    PharmaTech,
+    /// §Fase 7.a — HIPAA + GxP + SOC2 for clinical research +
+    /// trial-management workflows. IRB-supervised, adverse-event
+    /// recording, protocol-deviation tracking. Differs from both
+    /// `Healthcare` (patient care) and `PharmaTech` (drug discovery).
+    MedicResearch,
 }
 
 impl Domain {
@@ -71,16 +96,28 @@ impl Domain {
             Domain::Chat => "chat",
             Domain::Retrieval => "retrieval",
             Domain::MultiAgent => "multi_agent",
+            Domain::LegalTech => "legaltech",
+            Domain::FinTech => "fintech",
+            Domain::PharmaTech => "pharmatech",
+            Domain::MedicResearch => "medic_research",
         }
     }
     /// Every domain in stable order — used for classifier iteration
-    /// and for the `alternatives` field in the response.
+    /// and for the `alternatives` field in the response. Verticals
+    /// appear FIRST (most-specific wins ties); meta-patterns
+    /// (`Chat`, `Retrieval`, `MultiAgent`) and `Generic` last.
     pub const fn all() -> &'static [Domain] {
         &[
+            // Verticals — most specific
             Domain::Healthcare,
             Domain::Banking,
             Domain::Government,
             Domain::Legal,
+            Domain::LegalTech,
+            Domain::FinTech,
+            Domain::PharmaTech,
+            Domain::MedicResearch,
+            // Meta-patterns
             Domain::Chat,
             Domain::Retrieval,
             Domain::MultiAgent,
@@ -259,6 +296,91 @@ fn domain_metadata(d: Domain) -> &'static DomainMetadata {
                 "Add a `retrieve` step that pulls from the corpus before the `Compose` step.",
                 "Confirm the citation format matches your downstream rendering.",
                 "Tune `confidence_floor:` to suppress ungrounded outputs.",
+            ],
+        },
+        Domain::LegalTech => &DomainMetadata {
+            label: "LegalTech SaaS (SOC 2)",
+            summary: "Multi-tenant SaaS for legal-technology products — contract automation, e-discovery, IP portfolio management, matter management. PrivilegeShield + per-tenant `requires:` capability gates + replay-token writes.",
+            keywords: &[
+                "legaltech", "legal-tech", "legal_tech", "contract_automation",
+                "ediscovery", "e-discovery", "matter", "ip-portfolio",
+                "ip_portfolio", "case_management", "tenant",
+            ],
+            primitives_used: &[
+                "type", "persona", "context", "anchor", "shield",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Define your tenant-id propagation policy across endpoints.",
+                "Adjust `requires:` capability slugs to your RBAC catalogue.",
+                "Add `replay: true` if writes must be idempotent.",
+                "Layer SOX or HIPAA on top if the platform touches financial or PHI matters.",
+                "Configure retention per jurisdiction (state-bar requirements vary).",
+            ],
+        },
+        Domain::FinTech => &DomainMetadata {
+            label: "Consumer FinTech (PCI DSS + KYC/AML)",
+            summary: "Mobile-first consumer-fintech / neobank / embedded-finance scaffold with KYC + AML + PCI DSS focus. Differs from `Banking` (enterprise-ledger pattern): this targets consumer accounts, real-time risk scoring, dispute handling.",
+            keywords: &[
+                "fintech", "neobank", "embedded_finance", "consumer_finance",
+                "wallet", "kyc", "aml", "money_transmitter", "fraud_detection",
+                "remittance", "p2p_payment", "buy_now_pay_later", "bnpl",
+            ],
+            primitives_used: &[
+                "type", "persona", "context", "anchor", "shield",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["PCI_DSS", "SOC2"],
+            next_steps: &[
+                "Wire your KYC provider (Plaid / Persona / Trulioo) as a declared `tool`.",
+                "Adopt state-money-transmitter retention policies per jurisdiction.",
+                "Hook the AML/sanctions screen into the FintechShield's scan list.",
+                "Tune `confidence_floor:` per the risk-tier policy.",
+                "Add SOC2-Privacy if you serve regulated personal data.",
+            ],
+        },
+        Domain::PharmaTech => &DomainMetadata {
+            label: "PharmaTech R&D (GxP + HIPAA + 21 CFR Part 11)",
+            summary: "Pharmaceutical R&D + drug-discovery + compound-screening scaffold. FDA 21 CFR Part 11 audit trails, GxP discipline, IRB-supervised workflows. Persona is scientific-researcher (not clinician); compliance is R&D-forward.",
+            keywords: &[
+                "pharma", "pharmatech", "pharma-tech", "drug_discovery",
+                "medicinal_chemistry", "compound_screening", "assay",
+                "fda", "21_cfr_part_11", "gxp", "preclinical", "toxicology",
+            ],
+            primitives_used: &[
+                "type", "persona", "context", "anchor", "shield",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["GxP", "HIPAA", "SOC2"],
+            next_steps: &[
+                "File your validation plan (IQ / OQ / PQ) per GAMP 5 category.",
+                "Wire the audit chain to a tamper-evident archive (PIX-backed).",
+                "Tune `confidence_floor:` upward — pharma decisions are high-stakes.",
+                "Pin a deterministic backend for reproducible compound predictions.",
+                "Add a `compute` declaration with explicit seed for replay.",
+            ],
+        },
+        Domain::MedicResearch => &DomainMetadata {
+            label: "Medical Research / I+D (HIPAA + GxP + IRB)",
+            summary: "Clinical research + trial-management scaffold — participant enrolment, adverse-event recording, protocol-deviation tracking. IRB-supervised, ICH-GCP-aligned. Differs from `Healthcare` (patient care) and `PharmaTech` (drug discovery).",
+            keywords: &[
+                "clinical_trial", "clinical_research", "trial_management",
+                "medic_research", "medical_research", "i_plus_d", "i+d",
+                "irb", "informed_consent", "adverse_event", "protocol_deviation",
+                "participant", "good_clinical_practice", "ich_gcp",
+            ],
+            primitives_used: &[
+                "type", "persona", "context", "anchor", "shield",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["HIPAA", "GxP", "SOC2"],
+            next_steps: &[
+                "Sign a BAA with every downstream LLM provider; the participant_id is PHI.",
+                "Wire IRB approval status into the InformedConsentVerified anchor's evidence chain.",
+                "Configure retention per ICH-E6 (R3) — 25y for investigator records.",
+                "Add a `pix` (Provenance Index) over the trial database for tamper-evident audit.",
+                "Layer a `heal` routine for adverse-event escalation with human-in-loop review.",
             ],
         },
         Domain::MultiAgent => &DomainMetadata {
@@ -448,10 +570,21 @@ pub fn response_to_json(r: &ComposeResponse) -> Value {
 pub fn parse_domain_hint(s: &str) -> Option<Domain> {
     match s.trim().to_lowercase().as_str() {
         "generic" | "default" | "minimal" => Some(Domain::Generic),
+        // Verticals — order matters: more-specific aliases before
+        // less-specific ones so the resolver lands on the right
+        // domain (e.g. `legaltech` must NOT fall into `Legal`).
         "healthcare" | "health" | "medical" | "clinical" | "hc" => Some(Domain::Healthcare),
-        "banking" | "bank" | "finance" | "fintech" => Some(Domain::Banking),
+        "banking" | "bank" => Some(Domain::Banking),
         "government" | "gov" | "federal" | "agency" => Some(Domain::Government),
         "legal" | "law" | "contract" => Some(Domain::Legal),
+        // §Fase 7.a — vertical extension aliases.
+        "legaltech" | "legal-tech" | "legal_tech" => Some(Domain::LegalTech),
+        "fintech" | "neobank" | "embedded_finance" | "embedded-finance" => Some(Domain::FinTech),
+        "pharma" | "pharmatech" | "pharma-tech" | "drug_discovery" | "drug-discovery"
+        | "preclinical" => Some(Domain::PharmaTech),
+        "medic_research" | "medical_research" | "clinical_research" | "clinical-research"
+        | "trial_management" | "i+d" | "ipi" | "irb" => Some(Domain::MedicResearch),
+        // Meta-patterns
         "chat" | "streaming" | "dialogue" => Some(Domain::Chat),
         "retrieval" | "rag" | "qa" | "search" => Some(Domain::Retrieval),
         "multi_agent" | "multi-agent" | "multiagent" | "ensemble" | "orchestration" => {
@@ -602,10 +735,18 @@ mod tests {
         assert_eq!(parse_domain_hint("medical"), Some(Domain::Healthcare));
         assert_eq!(parse_domain_hint("HC"), Some(Domain::Healthcare));
         assert_eq!(parse_domain_hint("banking"), Some(Domain::Banking));
-        assert_eq!(parse_domain_hint("fintech"), Some(Domain::Banking));
+        // §Fase 7.a — `fintech` now maps to the dedicated FinTech
+        // domain (consumer fintech / neobank / embedded finance),
+        // NOT Banking (enterprise-bank pattern).
+        assert_eq!(parse_domain_hint("fintech"), Some(Domain::FinTech));
+        assert_eq!(parse_domain_hint("neobank"), Some(Domain::FinTech));
         assert_eq!(parse_domain_hint("gov"), Some(Domain::Government));
         assert_eq!(parse_domain_hint("multi-agent"), Some(Domain::MultiAgent));
         assert_eq!(parse_domain_hint("rag"), Some(Domain::Retrieval));
+        // §Fase 7.a — vertical extensions.
+        assert_eq!(parse_domain_hint("legaltech"), Some(Domain::LegalTech));
+        assert_eq!(parse_domain_hint("pharma"), Some(Domain::PharmaTech));
+        assert_eq!(parse_domain_hint("clinical_research"), Some(Domain::MedicResearch));
     }
 
     #[test]
