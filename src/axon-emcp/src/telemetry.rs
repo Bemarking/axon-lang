@@ -120,6 +120,10 @@ struct TelemetryState {
     compose: ComposeStats,
     /// `axon.check` / `axon.parse` outcomes — pass/fail per stage.
     check: CheckStats,
+    /// §Phase 9 — `axon.examples` outcomes (listing / by-name /
+    /// by-topic / by-primitive). Privacy-clean: only closed-catalog
+    /// slugs flow here.
+    examples: ExamplesStats,
 }
 
 #[derive(Default)]
@@ -149,6 +153,32 @@ struct ComposeStats {
     /// Distribution of the top score in the classifier's scoreboard.
     /// Bucket per score value (0..N, capped at 16).
     top_score_buckets: BTreeMap<u32, u64>,
+}
+
+/// §Phase 9 — `axon.examples` aggregate counters. Tracks how
+/// adopters discover the corpus: how often a listing returned vs
+/// a specific-slug fetch vs a topic / primitive filter. Both filter
+/// fields are closed-catalog slugs (topic from [`ExampleTopic`],
+/// primitive from [`PRIMITIVE_REGISTRY`]) so the cardinality is
+/// bounded.
+#[derive(Default)]
+struct ExamplesStats {
+    /// Total `axon.examples` calls.
+    total: u64,
+    /// Calls that asked for a SPECIFIC example by `name:`. These are
+    /// the highest-value lookups (the agent already knows the slug).
+    by_name: u64,
+    /// Calls that filtered by `topic:`. Per-topic counts keyed by the
+    /// closed [`ExampleTopic::as_str`] slug.
+    by_topic: BTreeMap<String, u64>,
+    /// Calls that filtered by `primitive:`. Per-primitive counts
+    /// keyed by the canonical primitive name.
+    by_primitive: BTreeMap<String, u64>,
+    /// Calls that returned zero results (filter matched nothing).
+    /// Useful for spotting gaps in the corpus — a topic / primitive
+    /// queried repeatedly but never satisfied signals a missing
+    /// example.
+    empty_responses: u64,
 }
 
 #[derive(Default)]
@@ -269,6 +299,52 @@ impl Telemetry {
         }));
     }
 
+    /// §Phase 9 — record an `axon.examples` lookup outcome.
+    ///
+    /// # Privacy
+    /// - `by_name` (`Some(slug)`) — the exact example slug requested.
+    ///   Closed-catalog (one of the embedded corpus slugs), so no
+    ///   adopter input flows here. `None` ⇒ the call was a listing
+    ///   (topic / primitive filter or unfiltered).
+    /// - `topic_filter` / `primitive_filter` — closed-catalog slugs
+    ///   from [`ExampleTopic`] / [`PRIMITIVE_REGISTRY`] respectively.
+    /// - `result_count` — how many examples the call returned. Used
+    ///   to detect zero-result queries that signal corpus gaps.
+    ///
+    /// Caller-supplied strings (filter keywords, search terms) are
+    /// NEVER passed here — privacy invariant #5.
+    pub fn record_examples(
+        &self,
+        by_name: Option<&str>,
+        topic_filter: Option<&str>,
+        primitive_filter: Option<&str>,
+        result_count: usize,
+    ) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.examples.total += 1;
+            if by_name.is_some() {
+                state.examples.by_name += 1;
+            }
+            if let Some(t) = topic_filter {
+                *state.examples.by_topic.entry(t.to_string()).or_insert(0) += 1;
+            }
+            if let Some(p) = primitive_filter {
+                *state.examples.by_primitive.entry(p.to_string()).or_insert(0) += 1;
+            }
+            if result_count == 0 {
+                state.examples.empty_responses += 1;
+            }
+        }
+        self.append_event(json!({
+            "kind": "examples",
+            "by_name": by_name,
+            "topic_filter": topic_filter,
+            "primitive_filter": primitive_filter,
+            "result_count": result_count,
+        }));
+    }
+
     /// Record an `axon.check` / `axon.parse` pipeline outcome.
     ///
     /// # Privacy
@@ -373,6 +449,13 @@ impl Telemetry {
                 "pass_by_stage": state.check.pass_by_stage,
                 "fail_by_stage": state.check.fail_by_stage,
             },
+            "examples": {
+                "total": state.examples.total,
+                "by_name": state.examples.by_name,
+                "by_topic": state.examples.by_topic,
+                "by_primitive": state.examples.by_primitive,
+                "empty_responses": state.examples.empty_responses,
+            },
         })
     }
 
@@ -463,6 +546,7 @@ pub fn summarize_jsonl(path: &std::path::Path) -> std::io::Result<Value> {
     let mut prompts: BTreeMap<String, PromptStats> = BTreeMap::new();
     let mut compose = ComposeStats::default();
     let mut check = CheckStats::default();
+    let mut examples = ExamplesStats::default();
     let mut total_lines: u64 = 0;
     let mut skipped_lines: u64 = 0;
     for line in reader.lines() {
@@ -519,6 +603,21 @@ pub fn summarize_jsonl(path: &std::path::Path) -> std::io::Result<Value> {
                     *check.fail_by_stage.entry(stage.to_string()).or_insert(0) += 1;
                 } else {
                     *check.pass_by_stage.entry(stage.to_string()).or_insert(0) += 1;
+                }
+            }
+            Some("examples") => {
+                examples.total += 1;
+                if v["by_name"].is_string() {
+                    examples.by_name += 1;
+                }
+                if let Some(t) = v["topic_filter"].as_str() {
+                    *examples.by_topic.entry(t.to_string()).or_insert(0) += 1;
+                }
+                if let Some(p) = v["primitive_filter"].as_str() {
+                    *examples.by_primitive.entry(p.to_string()).or_insert(0) += 1;
+                }
+                if v["result_count"].as_u64().unwrap_or(0) == 0 {
+                    examples.empty_responses += 1;
                 }
             }
             _ => skipped_lines += 1,
@@ -586,6 +685,13 @@ pub fn summarize_jsonl(path: &std::path::Path) -> std::io::Result<Value> {
             "pass_by_stage": check.pass_by_stage,
             "fail_by_stage": check.fail_by_stage,
         },
+        "examples": {
+            "total": examples.total,
+            "by_name": examples.by_name,
+            "by_topic": examples.by_topic,
+            "by_primitive": examples.by_primitive,
+            "empty_responses": examples.empty_responses,
+        },
     }))
 }
 
@@ -600,6 +706,7 @@ impl EventKind {
     pub const PROMPT_GET: EventKind = EventKind("prompt_get");
     pub const COMPOSE: EventKind = EventKind("compose");
     pub const CHECK: EventKind = EventKind("check");
+    pub const EXAMPLES: EventKind = EventKind("examples");
 }
 
 #[cfg(test)]

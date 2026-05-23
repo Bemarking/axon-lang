@@ -1,0 +1,50 @@
+---
+name: axonendpoint_rest
+title: REST endpoint exposing a flow over HTTP
+summary: "`axonendpoint` is the HTTP boundary primitive — `method:` from the closed catalog (get|post|put|delete), `body:` is a type, `execute:` references a flow, and the response shape mirrors the flow's `-> Output`."
+topic: endpoints
+primitives:
+  - persona
+  - flow
+  - axonendpoint
+---
+
+// `axonendpoint` exposes a flow as a typed HTTP REST resource.
+// `body:` field names match the flow's parameter names (Fase 37 + 37.y
+// D3 — Request Binding Contract).
+
+persona Reviewer {
+    domain: ["review"]
+    tone: precise
+    confidence_threshold: 0.85
+    cite_sources: true
+}
+
+type ReviewInput   { q: String }
+type ReviewOutput  { reply: String }
+type ReviewRequest { req: ReviewInput }
+
+// v2.0.0 wire contract (Fase 39 D2 + D12): JSON-transport responses
+// MUST wrap the payload in `FlowEnvelope<T>` so the ψ-vector slot
+// `result` carries the structured value alongside `certainty`,
+// `provenance_chain`, and the rest of the envelope. Bare types are
+// rejected at type-check.
+flow Review(req: ReviewInput) -> FlowEnvelope<ReviewOutput> {
+    step Reply {
+        given: req
+        ask: "Review the input and produce a typed reply."
+        output: FlowEnvelope<ReviewOutput>
+    }
+    return Reply.output
+}
+
+axonendpoint ReviewAPI {
+    method:  post
+    path:    "/v1/review"
+    body:    ReviewRequest
+    execute: Review
+    output:  FlowEnvelope<ReviewOutput>
+    backend: auto
+    retries: 1
+    timeout: 10s
+}

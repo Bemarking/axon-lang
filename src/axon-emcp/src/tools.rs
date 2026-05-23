@@ -25,7 +25,7 @@ use std::time::Instant;
 
 use crate::compiler_pipeline;
 use crate::compose;
-use crate::knowledge::{Catalog, Category};
+use crate::knowledge::{Catalog, Category, ExampleTopic};
 use crate::server::JsonRpcError;
 use crate::telemetry::Telemetry;
 
@@ -130,6 +130,52 @@ pub fn list() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "axon.examples",
+            "description": "Return focused, idiomatic AXON example programs from the curated corpus. \
+                Where `axon.compose` returns a full-app scaffold organised by DOMAIN \
+                (healthcare, banking, …), `axon.examples` returns minimal complete programs \
+                (~20–60 LOC) organised by IDEA — `weave` braiding, session-type duality, \
+                stream-with-backpressure, idempotent endpoints, etc. EVERY example is drift-\
+                gated through `axon-frontend` so what you receive is guaranteed to compile. \
+                USE THIS when you need to see how to use ONE primitive correctly before \
+                composing a larger program — `axon.examples(primitive: \"weave\")` returns \
+                every example that exercises `weave`. \
+                Three filter modes (combine freely): \
+                `name:` pins one specific example by slug; `topic:` filters by the closed \
+                10-entry topic catalog; `primitive:` filters by primitive name. Omit all \
+                three to get a listing of every example. \
+                Returns `{count, examples: [{name, title, summary, topic, primitives, \
+                source?}]}` — `source` is only included on single-example resolution.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Exact example slug (e.g. \"weave_braid\", \
+                            \"session_chat_duality\"). When set, the response contains \
+                            ONLY that one example, with its full `.axon` source."
+                    },
+                    "topic": {
+                        "type": "string",
+                        "enum": [
+                            "composition", "session_types", "shields", "effects",
+                            "streaming", "data", "agents", "endpoints", "memory",
+                            "validation"
+                        ],
+                        "description": "Filter by the closed topic catalog (10 entries). \
+                            Returns every example carrying this topic."
+                    },
+                    "primitive": {
+                        "type": "string",
+                        "description": "Filter by primitive name — returns every example \
+                            that exercises this primitive idiomatically (free-form so the \
+                            agent can ask about any of the 45 primitives in the registry)."
+                    }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
             "name": "axon.compose",
             "description": "Generate a typed AXON scaffold from a natural-language intent. \
                 Classifies the intent into one of 8 closed domains (generic, healthcare, \
@@ -206,6 +252,7 @@ pub async fn dispatch_call(
         "axon.check" => check(call.arguments, telemetry),
         "axon.parse" => parse(call.arguments, telemetry),
         "axon.compose" => compose_tool(call.arguments, catalog, telemetry),
+        "axon.examples" => examples(call.arguments, catalog, telemetry),
         other => Err(JsonRpcError {
             code: -32601,
             message: format!("unknown tool: `{other}`"),
@@ -460,6 +507,149 @@ fn compose_tool(
         ],
         "isError": is_error,
     }))
+}
+
+// ─── axon.examples ───────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, Default)]
+struct ExamplesArgs {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    topic: Option<String>,
+    #[serde(default)]
+    primitive: Option<String>,
+}
+
+/// §Phase 9 — `axon.examples` handler. Resolves three independent
+/// filter modes:
+///
+/// - `name:` — single-example lookup; returns the full `.axon`
+///   `source` so the agent can paste / `axon.check` directly. An
+///   unknown name is a structured `-32602` invalid_params (the
+///   inputSchema does not enumerate slugs, so a typo is the only
+///   way to land here).
+/// - `topic:` — listing filtered by the closed `ExampleTopic` enum.
+///   An unknown slug is `-32602` (the inputSchema's enum already
+///   listed the 10 valid values).
+/// - `primitive:` — listing filtered by primitive name. Free-form
+///   (the inputSchema does not enumerate the 45 primitives by name);
+///   an unknown primitive yields a zero-result response — NOT an
+///   error — so the agent can iterate.
+///
+/// Filters compose with AND semantics: `topic: composition + primitive:
+/// weave` returns examples that are BOTH on the composition topic AND
+/// exercise `weave`. Omitting every filter returns the full corpus
+/// listing without `source` bodies (the listing surface).
+fn examples(
+    args: Value,
+    catalog: &Arc<Catalog>,
+    telemetry: &Arc<Telemetry>,
+) -> Result<Value, JsonRpcError> {
+    let args: ExamplesArgs = if args.is_null() {
+        ExamplesArgs::default()
+    } else {
+        serde_json::from_value(args)
+            .map_err(|e| JsonRpcError::invalid_params(format!("axon.examples: {e}")))?
+    };
+
+    // Validate the topic (if any) against the closed enum BEFORE any
+    // catalog lookup. An invented slug is a typed invalid_params, not
+    // a silent zero-result response.
+    let topic_filter: Option<ExampleTopic> = match args.topic.as_deref() {
+        Some(s) => match ExampleTopic::parse(s) {
+            Some(t) => Some(t),
+            None => {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "axon.examples: unknown topic `{s}` — see tool inputSchema for the \
+                     closed 10-entry catalog (composition, session_types, shields, effects, \
+                     streaming, data, agents, endpoints, memory, validation)."
+                )))
+            }
+        },
+        None => None,
+    };
+
+    // Single-example lookup wins over any filter — the agent already
+    // knows the exact slug, so we return it verbatim with full source.
+    if let Some(name) = args.name.as_deref() {
+        let e = catalog.example(name).ok_or_else(|| JsonRpcError {
+            code: -32602,
+            message: format!(
+                "axon.examples: unknown example `{name}` — call axon.examples without \
+                 arguments to see the full catalog"
+            ),
+            data: None,
+        })?;
+        telemetry.record_examples(
+            Some(name),
+            topic_filter.map(|t| t.as_str()),
+            args.primitive.as_deref(),
+            1,
+        );
+        let payload = json!({
+            "count": 1,
+            "examples": [example_to_json(e, /*include_source=*/ true)],
+        });
+        return Ok(mcp_text_result(&serde_json::to_string_pretty(&payload).unwrap()));
+    }
+
+    // Listing path — apply both filters (AND semantics) over the full
+    // corpus and return entries without `source` to keep the payload
+    // bounded. The agent can drill down via `name:` on any hit.
+    let primitive_filter = args.primitive.as_deref();
+    let entries: Vec<&_> = catalog
+        .examples()
+        .filter(|e| match topic_filter {
+            Some(t) => e.topic == t,
+            None => true,
+        })
+        .filter(|e| match primitive_filter {
+            Some(p) => e.primitives.iter().any(|x| x == p),
+            None => true,
+        })
+        .collect();
+
+    telemetry.record_examples(
+        None,
+        topic_filter.map(|t| t.as_str()),
+        primitive_filter,
+        entries.len(),
+    );
+
+    let examples_json: Vec<Value> = entries
+        .iter()
+        .map(|e| example_to_json(e, /*include_source=*/ false))
+        .collect();
+    Ok(mcp_text_result(&serde_json::to_string_pretty(&json!({
+        "count": examples_json.len(),
+        "examples": examples_json,
+    })).unwrap()))
+}
+
+/// Project an [`Example`] into the wire shape. `include_source: true`
+/// emits the raw `.axon` body (single-example resolution); `false`
+/// omits it (listing — keeps the payload bounded so an agent can
+/// scan the full catalog before drilling down).
+fn example_to_json(e: &crate::knowledge::Example, include_source: bool) -> Value {
+    if include_source {
+        json!({
+            "name": e.name,
+            "title": e.title,
+            "summary": e.summary,
+            "topic": e.topic.as_str(),
+            "primitives": e.primitives,
+            "source": e.source,
+        })
+    } else {
+        json!({
+            "name": e.name,
+            "title": e.title,
+            "summary": e.summary,
+            "topic": e.topic.as_str(),
+            "primitives": e.primitives,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -861,6 +1051,183 @@ mod tests {
         // next_steps + primitives_used surface a curated checklist.
         assert!(!payload["next_steps"].as_array().unwrap().is_empty());
         assert!(!payload["primitives_used"].as_array().unwrap().is_empty());
+    }
+
+    // ── Phase 9: axon.examples ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn examples_unfiltered_returns_full_corpus() {
+        let cat = embedded_catalog();
+        let v = dispatch_call(
+            json!({ "name": "axon.examples", "arguments": {} }),
+            &cat, &tel())
+        .await
+        .unwrap();
+        assert_eq!(v["isError"], false);
+        let payload: Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        // Phase 9 ships 17 curated examples (4 composition + 2 session_types
+        // + 1 shields + 1 effects + 1 streaming + 2 data + 2 agents + 1
+        // endpoints + 1 memory + 2 validation).
+        assert_eq!(payload["count"], 17);
+        assert_eq!(payload["examples"].as_array().unwrap().len(), 17);
+        // Listing path omits `source` — keeps the payload bounded.
+        let first = &payload["examples"][0];
+        assert!(first["name"].is_string());
+        assert!(first["title"].is_string());
+        assert!(first["summary"].is_string());
+        assert!(first["topic"].is_string());
+        assert!(first["primitives"].is_array());
+        assert!(
+            first["source"].is_null(),
+            "listing must omit `source` to keep the payload bounded"
+        );
+    }
+
+    #[tokio::test]
+    async fn examples_by_name_returns_full_source() {
+        let cat = embedded_catalog();
+        let v = dispatch_call(
+            json!({
+                "name": "axon.examples",
+                "arguments": { "name": "weave_braid" }
+            }),
+            &cat, &tel())
+        .await
+        .unwrap();
+        assert_eq!(v["isError"], false);
+        let payload: Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["count"], 1);
+        let entry = &payload["examples"][0];
+        assert_eq!(entry["name"], "weave_braid");
+        assert_eq!(entry["topic"], "composition");
+        // Single-example resolution INCLUDES the source — that is the
+        // agent's primary use case (paste / `axon.check`).
+        let source = entry["source"].as_str().expect("source must be present");
+        assert!(source.contains("weave {"));
+    }
+
+    #[tokio::test]
+    async fn examples_filters_by_topic() {
+        let cat = embedded_catalog();
+        let v = dispatch_call(
+            json!({
+                "name": "axon.examples",
+                "arguments": { "topic": "session_types" }
+            }),
+            &cat, &tel())
+        .await
+        .unwrap();
+        let payload: Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        // Phase 9 ships 2 session-types examples (session duality + socket
+        // websocket binding). Every returned entry must carry the topic.
+        assert_eq!(payload["count"], 2);
+        for e in payload["examples"].as_array().unwrap() {
+            assert_eq!(e["topic"], "session_types");
+        }
+    }
+
+    #[tokio::test]
+    async fn examples_filters_by_primitive() {
+        let cat = embedded_catalog();
+        let v = dispatch_call(
+            json!({
+                "name": "axon.examples",
+                "arguments": { "primitive": "weave" }
+            }),
+            &cat, &tel())
+        .await
+        .unwrap();
+        let payload: Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        // `weave_braid` is the only example that lists `weave`.
+        assert_eq!(payload["count"], 1);
+        assert_eq!(payload["examples"][0]["name"], "weave_braid");
+    }
+
+    #[tokio::test]
+    async fn examples_topic_and_primitive_filters_compose_with_and_semantics() {
+        let cat = embedded_catalog();
+        let v = dispatch_call(
+            json!({
+                "name": "axon.examples",
+                "arguments": {
+                    "topic":     "composition",
+                    "primitive": "weave"
+                }
+            }),
+            &cat, &tel())
+        .await
+        .unwrap();
+        let payload: Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        // Both filters hit weave_braid (composition + uses weave).
+        assert_eq!(payload["count"], 1);
+        assert_eq!(payload["examples"][0]["name"], "weave_braid");
+    }
+
+    #[tokio::test]
+    async fn examples_rejects_unknown_topic_with_structured_error() {
+        let cat = embedded_catalog();
+        let err = dispatch_call(
+            json!({
+                "name": "axon.examples",
+                "arguments": { "topic": "not-a-topic" }
+            }),
+            &cat, &tel())
+        .await
+        .expect_err("unknown topic must reject");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("unknown topic"));
+    }
+
+    #[tokio::test]
+    async fn examples_rejects_unknown_name_with_structured_error() {
+        let cat = embedded_catalog();
+        let err = dispatch_call(
+            json!({
+                "name": "axon.examples",
+                "arguments": { "name": "does_not_exist" }
+            }),
+            &cat, &tel())
+        .await
+        .expect_err("unknown example name must reject");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("unknown example"));
+    }
+
+    #[tokio::test]
+    async fn examples_unknown_primitive_returns_empty_listing_not_error() {
+        let cat = embedded_catalog();
+        // Primitive filter is free-form (the inputSchema does not enumerate
+        // every primitive name) — an unknown primitive must yield zero
+        // results, NOT a structured error. The agent can iterate.
+        let v = dispatch_call(
+            json!({
+                "name": "axon.examples",
+                "arguments": { "primitive": "no_such_primitive" }
+            }),
+            &cat, &tel())
+        .await
+        .unwrap();
+        let payload: Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["count"], 0);
+        assert!(payload["examples"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn examples_advertised_in_tools_list() {
+        let names: Vec<String> = list()
+            .iter()
+            .map(|v| v["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            names.contains(&"axon.examples".to_string()),
+            "axon.examples must be advertised in tools/list; saw {names:?}"
+        );
     }
 
     #[tokio::test]

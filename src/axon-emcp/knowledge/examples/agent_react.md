@@ -1,0 +1,61 @@
+---
+name: agent_react
+title: "`agent` with ReAct strategy, tool catalogue, and budgets"
+summary: "Declares an `agent` — orchestrated cognitive entity binding tools + memory + shield under an explicit coordination strategy with iteration/token/time/cost budgets."
+topic: agents
+primitives:
+  - persona
+  - tool
+  - memory
+  - shield
+  - agent
+---
+
+// `agent` is the Fase 18+ orchestrated cognitive entity. Where
+// `persona` declares identity and `flow` declares a typed sequence,
+// `agent` binds tools + memory + shield under a coordination
+// strategy (react | plan_and_execute | reflexion | custom) with
+// explicit budgets.
+
+persona Researcher {
+    domain: ["research"]
+    tone: analytical
+    confidence_threshold: 0.85
+    cite_sources: true
+}
+
+tool WebSearch {
+    provider: openai
+    effects:  <network>
+    timeout:  30s
+}
+
+tool Calculator {
+    provider: openai
+    effects:  <pure>
+    timeout:  5s
+}
+
+memory SessionScratch {
+    store:     session
+    retrieval: semantic
+}
+
+shield SafeAgent {
+    scan:       [prompt_injection, data_exfil]
+    on_breach:  halt
+    severity:   high
+    compliance: [SOC2]
+}
+
+agent ResearchAssistant {
+    goal:           "Answer user questions by combining web search with arithmetic."
+    tools:          [WebSearch, Calculator]
+    memory:         SessionScratch
+    strategy:       react
+    on_stuck:       escalate
+    shield:         SafeAgent
+    max_iterations: 12
+    max_tokens:     16384
+    max_time:       2m
+}
