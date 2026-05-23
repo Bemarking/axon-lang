@@ -14,6 +14,7 @@
 pub mod compiler_pipeline;
 pub mod compose;
 pub mod knowledge;
+pub mod otlp;
 pub mod prompts;
 pub mod resources;
 pub mod scaffold;
