@@ -1,8 +1,10 @@
 <p align="center">
-  <strong>AXON</strong> <em>v1.30.0</em><br>
-  The first formal cognitive language for AI — a native Rust runtime with
-  <strong>Cognitive I/O</strong>, real-time streaming, first-class HTTP
-  endpoints, and a four-pillar cognitive data plane.
+  <strong>AXON</strong> <em>v2.3.0</em><br>
+  The first formal cognitive language for AI — a 100% Rust + C23 native
+  runtime with <strong>Cognitive I/O</strong>, real-time streaming,
+  first-class HTTP endpoints, a four-pillar cognitive data plane, and
+  <strong>session-typed WebSocket dialogue</strong> as a cognitive primitive
+  (Caires–Pfenning linear-logic Curry–Howard).
 </p>
 
 <p align="center">
@@ -18,22 +20,26 @@
   <code>compute</code> · <code>logic</code><br>
   <code>daemon</code> · <code>listen</code><br>
   <code>axonendpoint</code> · <code>axpoint</code> · <code>axonstore</code> · <code>apx</code><br>
-  <!-- NEW — Cognitive I/O & compliance (λ-L-E calculus, Phases 1–9) -->
+  <!-- Cognitive I/O & compliance (λ-L-E calculus, Phases 1–9) -->
   <strong>Cognitive I/O:</strong>
   <code>resource</code> · <code>fabric</code> · <code>manifest</code> · <code>observe</code> ·
   <code>reconcile</code> · <code>lease</code> · <code>ensemble</code><br>
-  <code>topology</code> · <code>session</code> · <code>send</code> · <code>receive</code> ·
+  <code>topology</code> · <code>session</code> · <code>send</code> · <code>receive</code> · <code>select</code> · <code>branch</code> ·
   <code>immune</code> · <code>reflex</code> · <code>heal</code> ·
   <code>compliance</code><br>
-  <code>component</code> · <code>view</code>
+  <code>component</code> · <code>view</code><br>
+  <!-- NEW — Session-typed WebSocket dialogue (Fase 41, v2.3.0) -->
+  <strong>Session types (v2.3.0):</strong>
+  <code>socket</code> · <code>send T</code> · <code>receive T</code> · <code>select {ℓᵢ:…}</code> · <code>branch {ℓᵢ:…}</code> · <code>backpressure: credit(k)</code> · <code>reconnect: cognitive_state</code>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.30.0-informational" alt="Version">
+  <img src="https://img.shields.io/badge/version-v2.3.0-informational" alt="Version">
   <img src="https://img.shields.io/badge/status-production-brightgreen" alt="Status: Production">
-  <img src="https://img.shields.io/badge/runtime-rust%20native-orange" alt="Rust Native">
-  <img src="https://img.shields.io/badge/streaming-SSE%20%7C%20NDJSON-brightgreen" alt="Streaming">
-  <img src="https://img.shields.io/badge/tests-4513%20rs%20%2B%205156%20py-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/runtime-100%25%20Rust%20%2B%20C23-orange" alt="100% Rust + C23">
+  <img src="https://img.shields.io/badge/streaming-SSE%20%7C%20NDJSON%20%7C%20WebSocket-brightgreen" alt="Streaming">
+  <img src="https://img.shields.io/badge/realtime-session--typed-purple" alt="Session types">
+  <img src="https://img.shields.io/badge/tests-2245%20axon--lang%20%2B%20535%20frontend%20%2B%2013%20csys-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/compliance-HIPAA%20%7C%20PCI__DSS%20%7C%20GDPR%20%7C%20SOX%20%7C%20SOC2%20%7C%20ISO27001%20%7C%20FIPS%20%7C%20CC%20EAL4%2B-blueviolet" alt="Compliance">
   <img src="https://img.shields.io/badge/persistence-postgresql-blue" alt="PostgreSQL">
   <img src="https://img.shields.io/badge/observability-tracing-green" alt="Tracing">
@@ -47,9 +53,13 @@
 AXON is a **compiled language** that targets LLMs instead of CPUs. It has a
 formal EBNF grammar, a lexer, parser, AST, intermediate representation, **seven
 native Rust LLM backends** (Anthropic, OpenAI, Gemini, Kimi, GLM, Ollama,
-OpenRouter), and a native Rust runtime with semantic type checking, an
-algebraic-effects execution engine, real-time SSE/NDJSON streaming, retry +
-circuit-breaker resilience, and execution tracing.
+OpenRouter), and a 100% Rust + C23 native runtime with semantic type checking, an
+algebraic-effects execution engine, real-time SSE / NDJSON / WebSocket
+session-typed streaming, retry + circuit-breaker resilience, and execution
+tracing. The FIPS-routable cryptographic + tokenisation kernels live in
+[`axon-csys`](axon-csys/) as standalone C23 (no opaque C bindings — every
+kernel is a `_Generic`-dispatched, `[[nodiscard]]`-annotated, sanitizer-clean
+C23 source file with a Rust wrapper).
 
 Beyond cognition, AXON ships **Cognitive I/O** — a λ-calculus-based
 infrastructure layer where resources, control loops, observability, security
@@ -57,6 +67,15 @@ kernels, and UI components carry their regulatory class (HIPAA / PCI_DSS /
 GDPR / SOX / SOC 2 / ISO 27001 / FIPS / CC EAL 4+) as a **compile-time type**.
 Programs that fail coverage are rejected *before* they run. No other
 programming language does this.
+
+**v2.3.0 (Fase 41) adds the first session-typed real-time dialogue primitive in
+any production language**: declare a `session` (the bidirectional protocol),
+bind it to a `socket` (the WebSocket transport with credit-refined
+backpressure), and the compiler proves the two endpoints are duals
+(Caires–Pfenning linear-logic Curry–Howard); the runtime enforces every step,
+seals the residual cursor on disconnect for typed reconnection, and projects
+to W3C Server-Sent Events when the protocol is single-polarity. See
+[`docs/paper_websocket_cognitive_primitive.md`](docs/paper_websocket_cognitive_primitive.md).
 
 It is **not** a Python library, a LangChain wrapper, a YAML DSL, or a Terraform
 replacement. It is a *new kind of calculus* — see
@@ -81,6 +100,7 @@ error**, not a post-mortem finding.
 | `lease`     | τ-decaying affine capability; post-expiry use is a CT-2 *Anchor Breach* | Hybrid affine + revocation (D2) |
 | `ensemble`  | Byzantine quorum aggregator over N observations with common-knowledge fusion | Fagin–Halpern `Cφ` |
 | `topology` + `session` | Typed directed graph over declared entities with Honda–Vasconcelos duality + deadlock detection | π-calculus binary sessions |
+| `socket` (v2.3.0) | Session-typed WebSocket transport with credit-refined backpressure, typed reconnection via `cognitive_states`, SSE-as-fragment projection | Caires–Pfenning Curry–Howard + Rast credit-refined types ([paper_websocket_cognitive_primitive.md](docs/paper_websocket_cognitive_primitive.md)) |
 | `immune` + `reflex` + `heal` | KL-divergence anomaly sensor + O(1) signed-trace motor response + Linear-Logic one-shot patch FSM | Cognitive Immune System ([paper_immune_v2.md](docs/paper_immune_v2.md)) |
 | `component` + `view` | Declarative UI with the **same** compile-time κ coverage rule — regulated types need a covering shield or the compiler rejects | Regulatory Type Theory (Fase 9) |
 
@@ -89,10 +109,11 @@ error**, not a post-mortem finding.
 1. **Compile-time compliance.** `shield<HIPAA>` / `type PatientRecord compliance [HIPAA, GDPR]` are *types*. A `.axon` program that sends PHI to an unshielded endpoint fails `axon check` — same exit code as a syntax error.
 2. **Blame Calculus (Findler–Felleisen).** Every error is classified as **CT-1** (axon/runtime bug), **CT-2** (program author: anchor breach, expired lease), or **CT-3** (infrastructure: partition, missing credential, provider quota). No silent downgrades.
 3. **Audit-ready artefacts.** `axon dossier` + `axon sbom` + `axon audit --framework {soc2,iso27001,fips,cc,all}` + `axon evidence-package` produce byte-identical, deterministic JSON/ZIP — the SHA-256 of every output is a *contract* against your release.
-4. **Native Rust runtime, no interpreter.** The whole stack — lexer, parser, type-checker, IR, the algebraic-effects execution engine, the HTTP server, the seven LLM backends, and the streaming wire — is a single native Rust binary. Download a prebuilt or `cargo build --release`. No GC, no interpreter, no runtime dependency.
+4. **100% Rust + C23 runtime, no interpreter.** The whole stack — lexer, parser, type-checker, IR, the algebraic-effects execution engine, the HTTP server, the seven LLM backends, the streaming wire, the session-typed WebSocket driver — is a single native Rust binary; the FIPS-routable cryptographic + tokeniser kernels live in [`axon-csys`](axon-csys/) as standalone C23 (no `unsafe` glue: `_Generic`-dispatched headers, `[[nodiscard]]` everywhere, sanitizer-clean, valgrind-clean). Download a prebuilt or `cargo build --release`. No GC, no interpreter, no runtime dependency.
 5. **Cognitive immune system.** `immune + reflex + heal` is a first-class language primitive, not a plug-in. Signed HMAC traces per firing, three compliance modes (`audit_only` / `human_in_loop` / `adversarial`), Linear-Logic patch FSM preventing double-application.
 6. **Post-Quantum-ready ESK.** HMAC-SHA256 baseline + Ed25519 + ML-DSA-65 (NIST FIPS 204 Dilithium) + Hybrid signer (NIST SP 800-208 transition posture). Feature-gated; no silent classical fallbacks.
 7. **Persistence is a typed cognitive primitive.** A database in AXON is an `axonstore`, not an ORM bolt-on: retrieved rows are born epistemically `Untrusted` and a `confidence_floor` is enforced at read and write; every mutation appends to an HMAC-Merkle audit chain; `retrieve` is a bounded, back-pressured `Stream<Row>`; and store access is capability-typed and checked at *compile time*. No other language treats stored data this way.
+8. **Real-time dialogue is a typed cognitive primitive (v2.3.0).** A WebSocket in AXON is a `socket` over a declared `session`, not a JSON envelope over bytes: the compiler proves the two endpoints are duals (Caires–Pfenning intuitionistic linear logic, `S̄ ≡ S⊥`), so the connection is **deadlock-free and protocol-conformant by construction**; credit-refined backpressure (`backpressure: credit(k)`) is decidable in Presburger arithmetic at compile time; a mid-protocol disconnect seals the residual session-type cursor + credit window into an AAD-bound `cognitive_states` snapshot, and the typed `?resume=` resume restores it under tenant + flow_id binding; a single-polarity protocol's `socket` ALSO speaks W3C Server-Sent Events byte-compat with Fase 33's existing SSE pipeline (`S_SSE = Π_↓(S_WS)`).
 
 ### External audit readiness
 
@@ -141,21 +162,24 @@ Remove the `shield` line and `axon check` fails with *"endpoint 'Api' sends regu
 
 ## Production Status
 
-AXON v1.30.0 is **production-ready**. The full stack is cross-validated:
+AXON v2.3.0 is **production-ready**. The full stack is cross-validated, 100% Rust + C23:
 
-- ✅ 65+ cognitive + Cognitive-I/O primitives wired to the native Rust runtime
+- ✅ 65+ cognitive + Cognitive-I/O primitives wired to the native runtime
 - ✅ 285 HTTP routes tested end-to-end
 - ✅ Seven native Rust LLM backends (Anthropic, OpenAI, Gemini, Kimi, GLM, Ollama, OpenRouter) with full async streaming
 - ✅ Real-time streaming wire — SSE + NDJSON, type-driven transport inference, per-chunk algebraic-effect dispatch
+- ✅ **Session-typed WebSocket dialogue (v2.3.0)** — declared `session` + `socket`, statically-checked duality (Caires–Pfenning), credit-refined backpressure (Presburger discharge), typed reconnection via AAD-bound `cognitive_states` snapshots, SSE-as-fragment unification
+- ✅ **Multiparty projection (v2.3.0)** — `GlobalType` + `project_all` (Honda–Yoshida–Carbone safe-realizability gate) for n-agent skill/tool topologies
 - ✅ `axonendpoint` as a first-class HTTP REST primitive — typed routes, body + output schema validation, `Idempotency-Key`, auth scopes
 - ✅ `axonstore` cognitive data plane — epistemically typed rows, HMAC-Merkle audit chains, `Stream<Row>`, capability-typed access
 - ✅ Compile-time regulatory compliance for HIPAA / PCI_DSS / GDPR / SOX / SOC 2 / ISO 27001 / FIPS / CC EAL 4+
 - ✅ Cognitive immune system (anomaly detection + reflex + heal) paper-faithful
 - ✅ Post-Quantum signatures: HMAC-SHA256 baseline + Ed25519 + ML-DSA-65 + Hybrid (NIST SP 800-208)
+- ✅ **`axon-csys` C23 kernels** — FIPS-routable SHA-256 / HMAC-SHA256 / SIMD G.711 / BPE tokeniser / FSM dispatch (computed gotos) / buffer pool (207× faster than Vec<u8>) — standalone C23 with sanitizer-clean + valgrind-clean CI lanes
 - ✅ PostgreSQL persistence with migrations and health checks
 - ✅ Structured observability (JSON logging + request tracing)
 - ✅ LLM call resilience (retry + circuit breaker + fallback)
-- ✅ **4,513 Rust + 5,156 Python = 9,669 tests, zero regressions**
+- ✅ **2,245 axon-lang + 535 axon-frontend + 13 axon-csys = 2,793 Rust tests**; cross-stack zero-regression discipline. Python side is now a thin PyPI wrapper that downloads + invokes the native Rust binary (the language interpreter is 100% Rust/C23 — the Python suite was retired in Fase 40's *Pure Silicon* pivot).
 - ✅ Zero "por ahora", zero "lo mínimo" — production-complete
 
 Designed for cognitive AI applications that require formal semantics, reliability, epistemic rigor, and *provable* regulatory coverage.
@@ -210,11 +234,11 @@ flow AnalyzeContract(doc: Document) -> StructuredReport {
 
 ---
 
-## Native Rust Runtime
+## Native Rust + C23 Runtime
 
-AXON v1.30.0 ships a **production-hardened** native Rust runtime server with **285 HTTP routes**, **65+ primitives** wired to runtime, an **algebraic-effects execution engine**, a **real-time SSE/NDJSON streaming wire**, a full **ℰMCP** (Epistemic Model Context Protocol) implementation, **PostgreSQL persistence**, **structured observability via tracing**, **LLM call resilience** (retry + circuit breaker + fallback chains across seven native backends), and a complete native CLI (`check`, `compile`, `run`, `serve`, `parse`, `dossier`, `sbom`, `audit`, `evidence-package`, and more).
+AXON v2.3.0 ships a **production-hardened** 100% Rust + C23 native runtime server with **285+ HTTP routes**, **65+ primitives** wired to runtime, an **algebraic-effects execution engine**, a **real-time SSE / NDJSON / session-typed WebSocket streaming wire**, a full **ℰMCP** (Epistemic Model Context Protocol) implementation, **PostgreSQL persistence**, **structured observability via tracing**, **LLM call resilience** (retry + circuit breaker + fallback chains across seven native backends), and a complete native CLI (`check`, `compile`, `run`, `serve`, `parse`, `dossier`, `sbom`, `audit`, `evidence-package`, and more).
 
-The **Rust + C stack is the canonical implementation** of the language. The original Python package (`pip install axon-lang`) remains published as the historical reference implementation; new runtime surfaces (streaming, the cognitive data plane, the HTTP REST layer) are Rust-canonical.
+The **Rust + C23 stack is the canonical implementation** of the language. Fase 40 (*Pure Silicon*, v2.0.0) retired the Python interpreter — the original `pip install axon-lang` package is now a thin wrapper that downloads + invokes the native Rust binary. The FIPS-routable cryptographic + tokeniser kernels live in [`axon-csys`](axon-csys/) as standalone C23 (no `unsafe` glue: `_Generic`-dispatched headers, `[[nodiscard]]` everywhere, sanitizer-clean + valgrind-clean CI lanes).
 
 **Production Foundation (Phase K):**
 - **Observability**: JSON structured logging with request tracing, daily log rotation, configurable levels
@@ -313,10 +337,11 @@ AXON v1.0.0 launched with three production-critical systems that remain the foun
 | MCP tool types | 8 (flow, dataspace, axonstore, shield, corpus, compute, mandate, forge) |
 | MCP resource types | 10 (traces, metrics, backends, flows, dataspaces, axonstores, shields, corpora, mandates, forges) |
 | MCP workflow prompts | 5 (research, decide, secure_transfer, reflect, analyze_image) |
-| `axon-rs` library tests | 2,012 |
-| `axon-rs` integration tests | 1,959 |
-| Rust workspace tests | 4,513 (`axon-rs` + `axon-frontend` + `axon-csys`) |
-| Python reference-suite tests | 5,156 |
+| `axon-lang` (axon-rs) lib tests | 2,245 |
+| `axon-frontend` lib tests | 535 (incl. §41.a-c algebra + §41.h multiparty) |
+| `axon-csys` lib tests | 13 (Rust wrapper; C23 kernels exercised by `cargo test` + sanitizers/valgrind in CI) |
+| Rust workspace total | 2,793 — zero regressions |
+| Python wrapper tests | 16 (the thin PyPI wrapper that downloads + invokes the native binary; the interpreter was retired in Fase 40) |
 | SQL tables | 12 (traces, sessions, daemons, audit_log, axon_stores, dataspaces, hibernations, event_history, execution_cache, cost_tracking, schedules, backend_registry) |
 | Performance indexes | 15 |
 
@@ -4062,8 +4087,11 @@ daemon ComplianceReporter(event: RiskAssessment) -> SARReport {
 > a persistent relation enriched in four orthogonal dimensions no relational
 > model ever carried: an **epistemic** grading, an **audit-chained** mutation
 > history, an **algebraic-effect** (streaming) selection, and a **capability**
-> type. v1.30.0 (Fase 35) ships these four pillars on a native Rust + `sqlx`
-> PostgreSQL substrate.
+> type. Shipped in v1.30.0 (Fase 35) on a native Rust + `sqlx` PostgreSQL
+> substrate; v1.31.0 (Fase 38) added the *Declared & Compile-Time-Typed Store
+> Schema* (the `schema { … }` block + the `CREATE TABLE` synthesis); v2.0.0
+> (Fase 39) added the **`FlowEnvelope⟨T⟩` wire contract** (Theorem 5.1, the
+> §40 enterprise binding).
 
 Every existing LLM framework bolts a database on as an afterthought: wrap a
 SQLAlchemy session in a class, call it "memory", and hope the agent doesn't
@@ -4073,12 +4101,12 @@ cognitive primitive** — its `where` filters compile to parameterized SQL
 mutation is audit-chained, and store access is checked against a capability
 type at compile time.
 
-> **What v1.30.0 ships (Fase 35).** The four pillars below are live and proven
-> end-to-end against a real `postgres:16` in CI. The `schema { … }` and
-> `transact { … }` syntax shown later in this section *parses* today, but full
-> DDL schema synthesis (`CREATE TABLE` / `migrate()`) and multi-statement
-> transactions are the Fase 35.x roadmap — v1.30.0 runs single-statement
-> autocommit and maps the store name to an existing SQL table.
+> **What v2.3.0 ships.** The four pillars below are live and proven end-to-end
+> against a real `postgres:16` in CI. The Fase 38 *typed schema synthesis*
+> (Fase 38.a-i, v1.31.0+) generates `CREATE TABLE` from the `schema { … }`
+> block at compile time, with declared cardinality propagation (Fase 38.x.f).
+> Multi-statement transactions land in 38.x. The Fase 39 *FlowEnvelope* (v2.0.0)
+> formalises the cross-stack T1 wire contract for the §40 enterprise binding.
 
 #### The four pillars
 
@@ -4237,9 +4265,11 @@ Rust's ownership model.
 
 > *Scope note — the `schema { … }`, `transact { … }` and `migrate()` constructs
 > in the examples below parse today and illustrate the design model. v1.30.0
-> enforces the four pillars (epistemic floor, audit chain, `Stream<Row>`,
-> capability typing); DDL schema synthesis and multi-statement transactions are
-> the Fase 35.x roadmap.*
+> shipped the four pillars (epistemic floor, audit chain, `Stream<Row>`,
+> capability typing); v1.31.0 (Fase 38) added the *Declared & Compile-Time-
+> Typed Store Schema* (DDL synthesis from `schema { … }`); v2.0.0 (Fase 39)
+> added the `FlowEnvelope⟨T⟩` wire contract. Multi-statement transactions
+> remain on the 38.x roadmap.*
 
 **Use Case 1 — Financial Ledger with Atomic Double-Entry Bookkeeping**
 
@@ -4437,9 +4467,9 @@ know {
                               Typed Output (validated, traced, epistemic)
 ```
 
-**v1.30.0 metrics: ~161K Rust + ~92K Python source lines · 285 routes · 65+ primitives · 4,513 Rust + 5,156 Python = 9,669 tests · 108 mapped external-audit controls across 4 frameworks**
+**v2.3.0 metrics: 100% Rust + C23 native runtime · 285+ routes · 65+ primitives · 2,245 axon-lang + 535 axon-frontend + 13 axon-csys = 2,793 Rust tests · 108 mapped external-audit controls across 4 frameworks**
 
-> **Versioning trail (semver MINOR bumps, all backward-compatible):**
+> **Versioning trail (semver bumps; v2.x.y additions are backward-compatible at the language surface):**
 > - **v1.0.0** — Initial Phase K production release (47 cognitive primitives, 738 tests)
 > - **v1.1.0** — Fases 1–5 Cognitive I/O: `resource` / `fabric` / `manifest` / `observe` / `reconcile` / `lease` / `ensemble` / `topology` / `session` / `immune` / `reflex` / `heal`
 > - **v1.2.0** — Fases 6–7.x ESK: `compliance` annotations + Regulatory Type Theory + audit engine (108 controls across SOC 2 / ISO 27001 / FIPS 140-3 / CC EAL 4+)
@@ -4448,12 +4478,18 @@ know {
 > - **v1.4.x–v1.9.x** — Fases 11–14: neuro-symbolic micro-OS, π-calculus mobile typed channels, lossless lexing
 > - **v1.10.0–v1.15.0** — Fases 15–20: runtime wiring (lambda-apply, `let`, IR meta-audit), production hardening, daemon supervisor, the production Shield runtime
 > - **v1.16.0–v1.18.0** — Fases 22–24: seven native Rust LLM backends + the algebraic-effects execution runtime
-> - **v1.19.x–v1.20.0** — Fases 25 + 28: C23 metal-bound kernels (`axon-csys`) + adopter diagnostic robustness (multi-file `axon parse`, rustc-style diagnostics)
+> - **v1.19.x–v1.20.0** — Fases 25 + 28: **C23 metal-bound kernels** (`axon-csys`) + adopter diagnostic robustness (multi-file `axon parse`, rustc-style diagnostics)
 > - **v1.21.0–v1.22.0** — Fases 30–31: HTTP transport for algebraic stream effects (SSE / NDJSON) + type-driven wire inference
 > - **v1.23.0–v1.23.1** — Fase 32: `axonendpoint` as a first-class HTTP REST primitive — typed routes, body + output schema validation, `Idempotency-Key`, auth scopes
 > - **v1.24.0–v1.28.0** — Fase 33: SSE as a cognitive primitive — per-`IRFlowNode` async dispatcher, production streaming wiring, wire-format adapters
 > - **v1.29.0** — Fase 34: tools as stream-producers
 > - **v1.30.0** — Fase 35: `axonstore` as a cognitive data plane (four pillars — epistemic / audit-chained / `Stream<Row>` / capability-typed)
+> - **v1.31.0** — Fase 36: Backend Resolution Contract (D1 deterministic precedence ladder) + Fase 36.x mixed-flow streaming
+> - **v1.32.0–v1.40.x** — Fase 37: Request Binding Contract (totality across the runner) + Fase 37.y pooler-coherent store + Fase 38 *Declared & Compile-Time-Typed Store Schema* (CREATE TABLE synthesis from `schema { … }`) + Fase 38.x cardinality propagation + Fase 38.x.f narrow cardinality gate
+> - **v2.0.0** — **Fase 39 (Pure Silicon)**: cross-stack `FlowEnvelope⟨T⟩` wire contract (Theorem 5.1) + **Fase 40 *Enterprise Pure Silicon*** — axon-enterprise rewritten to 100% Rust + C23, consuming axon-lang via a versioned Cargo dependency (no Python interpreter); 23-crate workspace with §40.f RLS policy generators + §40.g Argon2id identity + §40.h closed RBAC catalog + §40.i Ed25519/JWKS + §40.j OIDC/SAML + §40.k AES-256-GCM envelope + §40.l axum integration + §40.o tamper-evident audit hash-chain + §40.t AAD-bound `cognitive_states` snapshots
+> - **v2.1.0** — Fase 40 follow-ups: native-runner multi-arch Docker image (amd64 + arm64; no QEMU)
+> - **v2.2.0** — Fase 40.w.3.1 (D16): public `axon::tenant::scope_tenant` primitive — the auth middleware scopes the tenant task-local so RLS binds automatically (no per-handler `SET LOCAL` contract)
+> - **v2.3.0** — **Fase 41 (WebSocket as a Cognitive Primitive)**: the §41.a binary session-type algebra (duality + regular-coinductive μ-equality, Caires–Pfenning) + §41.b `session` + `socket` declarations (with `select`/`branch` choice grammar) + §41.c **credit-refined backpressure** (Presburger discharge, `backpressure: credit(k)`) + §41.d `tokio` + RFC 6455 WebSocket runtime + §41.e **SSE-as-fragment unification** (`S_SSE = Π_↓(S_WS)`, byte-compat with Fase 33) + §41.f enterprise WS surface (the Kivi single-image unblock) + §41.g typed reconnection via AAD-bound `cognitive_states` snapshots + §41.h **multiparty projection** (Honda–Yoshida–Carbone `GlobalType` + `project_all` safe-realizability gate) + §41.i dedicated CI fuzz lane (6 + 2 surfaces × 50-seed LCG corpus)
 
 ### 65+ Language Primitives — Cognitive + Cognitive I/O (100% wired to runtime)
 
@@ -4606,31 +4642,52 @@ axon-constructor/
 │       │   ├── audit_chain.rs       # Pillar II — HMAC-Merkle mutation chain
 │       │   ├── row_stream.rs        # Pillar III — retrieve as Stream<Row>
 │       │   └── capability.rs        # Pillar IV — capability-typed access
+│       ├── session_runtime/     # §Fase 41 — typed WS dialogue runtime
+│       │   ├── state.rs             # SessionRuntime cursor + CreditWindow + seal/resume
+│       │   ├── wire.rs              # Frame { Send, Select, End, Error } JSON envelope
+│       │   ├── ws.rs                # axum WebSocket carrier driver (RFC 6455)
+│       │   ├── sse.rs               # SSE-as-fragment driver (S_SSE = Π_↓(S_WS))
+│       │   └── error.rs             # ProtocolError closed catalog
 │       ├── axon_server.rs       # axum HTTP / JSON-RPC server (285 routes)
 │       ├── emcp.rs              # Epistemic Model Context Protocol
 │       ├── esk/                 # Epistemic Substrate Kernel (trust lattice)
 │       ├── wire_format/         # SSE / NDJSON wire-format adapters
 │       ├── storage_postgres.rs  # PostgreSQL persistence + migrations
 │       └── resilient_backend.rs # Retry + circuit breaker + fallback chains
-├── axon-csys/                   # C23 metal-bound kernels (BPE, crypto, SIMD)
-├── axon/                        # Python — historical reference implementation
-├── examples/                    # Reference .axon programs (healthcare, banking…)
-├── docs/                        # Language spec, papers, adopter guides, plans
+├── axon-csys/                   # **C23 metal-bound kernels** (FIPS-routable):
+│   ├── src/                         #   - SHA-256 + HMAC-SHA256 (used by audit chain + JWT)
+│   │                                #   - SIMD G.711 audio codecs
+│   │                                #   - BPE tokeniser (1.26-1.43× faster than tiktoken-rs;
+│   │                                #     #embed-baked merges tables for OpenAI/Kimi/GLM)
+│   │                                #   - Buffer pool (207× faster than Vec<u8> for hot paths)
+│   │                                #   - FSM dispatch via computed gotos
+│   └── tests/                       # sanitizer-clean + valgrind-clean CI lanes
+├── axon/                        # Python — thin PyPI wrapper (downloads + invokes the Rust binary)
+├── examples/                    # Reference .axon programs (healthcare, banking, government…)
+├── docs/                        # Language spec, papers, adopter guides, plans vivos
+│   ├── ADOPTER_SESSION_TYPES.md     # §Fase 41 adopter guide
+│   ├── MIGRATION_v2.3.md            # v2.2.x → v2.3.0 migration recipes
+│   └── paper_websocket_cognitive_primitive.md  # The four-pillar Fase 41 paper
 ├── sdk/                         # TypeScript MCP client SDK
-├── tests/                       # Python reference test suite (5,156 tests)
+├── tests/                       # Wrapper contract tests + CLI smoke tests
 └── .github/workflows/           # CI — per-fase test workflows + release pipelines
+    ├── fase_41_session_types.yml    # 7-lane WS / SSE / fuzz / D8 backwards-compat
+    ├── fase_33_sse_cognitive_primitive.yml
+    └── …                            # one workflow per cycle for clear failure attribution
 ```
 
 ---
 
 ## Installation
 
-> **The Rust binary is the canonical channel.** The whole stack — compiler,
-> runtime, HTTP server, seven LLM backends, and the streaming wire — ships as a
-> single native binary, no interpreter required. Download a prebuilt (Option 1)
-> or `cargo build` from source (Option 2). The original Python package
-> (`pip install axon-lang`) is still published as the historical reference
-> implementation.
+> **The Rust + C23 binary is the canonical channel.** The whole stack — compiler,
+> runtime, HTTP server, seven LLM backends, the SSE / NDJSON / WebSocket
+> streaming wire, the session-typed dialogue driver — ships as a single native
+> binary, no interpreter required. Download a prebuilt (Option 1) or
+> `cargo build` from source (Option 2). The original Python package
+> (`pip install axon-lang`) is now a thin wrapper that downloads + invokes the
+> native binary — the Python interpreter was retired in Fase 40 (*Pure Silicon*,
+> v2.0.0).
 
 ### Option 1 — Download the binary (recommended)
 
@@ -4805,13 +4862,25 @@ cargo test --test integration              # axon-rs integration tests
 cd ../axon-frontend && cargo test          # compiler frontend tests
 ```
 
-### Current Status
+### Current Status (v2.3.0)
 
 ```
-Rust workspace:  4,513 tests  (axon-rs 3,971 · axon-frontend 321 · axon-csys 221)
-Python suite:    5,156 tests  (historical reference implementation)
-Total:           9,669 tests — zero regressions
+axon-lang lib       :  2,245 tests  (the runtime — sessions, backends, runtime, streaming, axonstore)
+axon-frontend lib   :    535 tests  (lexer / parser / type checker / IR / session-type algebra / multiparty)
+axon-csys lib       :     13 tests  (the C23 kernels' Rust wrapper)
+─────────────────────────────────────
+Rust workspace      :  2,793 tests — zero regressions
 ```
+
+Plus dedicated integration lanes per cycle:
+- §Fase 41 WS / SSE / fuzz E2E lanes (the new `fase_41_session_types.yml` workflow)
+- §Fase 33 SSE family (still green — D8 backwards-compat)
+- §Fase 30/31/32 streaming + REST families
+- §Fase 38 typed schema CREATE TABLE + cardinality propagation
+- §Fase 39 FlowEnvelope wire contract drift gate
+- Real-`postgres:16` integration lane for the `axonstore` data plane
+
+> **Python wrapper note.** Since Fase 40 (*Pure Silicon*, v2.0.0) the `pip install axon-lang` package is a thin wrapper that downloads + invokes the native Rust binary; the historical Python interpreter has been retired. The `tests/` directory ships only the wrapper contract tests + the CLI smoke test (the runtime is exercised by the Rust suite above).
 
 Every development cycle (Fase) lands behind a dedicated CI workflow under
 [`.github/workflows/`](.github/workflows/) — per-fase test lanes, cross-stack
@@ -4974,6 +5043,12 @@ honesty:
 | v1.24–v1.28 | SSE as a cognitive primitive — per-`IRFlowNode` async dispatcher + production streaming wiring | ✅ Done |
 | v1.29     | Tools as stream-producers                         | ✅ Done |
 | v1.30     | `axonstore` cognitive data plane — four pillars (epistemic / audit-chained / `Stream<Row>` / capability-typed) | ✅ Done |
+| v1.31     | Fase 36: Backend Resolution Contract (D1 deterministic precedence ladder) + Fase 36.x mixed-flow streaming | ✅ Done |
+| v1.32–v1.40 | Fase 37 Request Binding Contract + Fase 38 *Declared & Compile-Time-Typed Store Schema* (DDL synthesis + cardinality propagation) | ✅ Done |
+| **v2.0**  | **Fase 39 + 40 — Pure Silicon**: `FlowEnvelope⟨T⟩` cross-stack wire contract (Theorem 5.1) + axon-enterprise rewritten 100% Rust + C23 (23-crate workspace, no Python interpreter) | ✅ Done |
+| v2.1      | Fase 40 follow-ups: native-runner multi-arch Docker image (amd64 + arm64) | ✅ Done |
+| v2.2      | Fase 40.w.3.1 (D16) `axon::tenant::scope_tenant` primitive — auth middleware scopes RLS task-local automatically | ✅ Done |
+| **v2.3**  | **Fase 41 — WebSocket as a Cognitive Primitive**: session-type algebra (Caires–Pfenning) + `session` + `socket` + credit-refined backpressure (Presburger) + SSE-as-fragment unification + typed reconnection (AAD-bound `cognitive_states`) + multiparty projection (Honda–Yoshida–Carbone) + enterprise WS surface (Kivi single-image unblock) | ✅ Done |
 
 ---
 
@@ -5044,6 +5119,12 @@ honesty:
 | Epistemically-typed persistent storage | ❌ | ❌    | ❌       | ✅       |
 | Audit-chained database mutations | ❌      | ❌      | ❌       | ✅       |
 | Capability-typed data access  | ❌        | ❌      | ❌       | ✅       |
+| **Session-typed bidirectional dialogue (v2.3.0)** | ❌ | ❌ | ❌    | ✅       |
+| **Statically-checked WebSocket protocol duality** | ❌ | ❌ | ❌  | ✅       |
+| **Credit-refined backpressure (Presburger-decidable)** | ❌ | ❌ | ❌ | ✅    |
+| **Typed reconnection via AAD-bound snapshots** | ❌ | ❌ | ❌    | ✅       |
+| **Multiparty projection (Honda–Yoshida–Carbone)** | ❌ | ❌ | ❌   | ✅       |
+| **100% Rust + C23 runtime (no GC, no interpreter)** | ❌ | ❌ | ❌ | ✅       |
 
 ---
 
