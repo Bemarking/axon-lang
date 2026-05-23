@@ -141,7 +141,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "v0.1.0",
         summary: "Declares the conversational frame — memory scope, depth, max tokens, temperature — a flow operates within.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "flow",
@@ -173,7 +173,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "v0.1.0",
         summary: "A declarative target outcome — what the flow is trying to achieve, separately from how it gets there.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "memory",
@@ -181,7 +181,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "v0.1.0",
         summary: "Declares a typed memory store — session, persistent, vector — for cross-step state with retrieval + decay semantics.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "agent",
@@ -189,7 +189,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "Fase 18",
         summary: "An orchestrated cognitive entity — composes personas, tools, contexts under a coordination strategy.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "run",
@@ -197,7 +197,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "v0.1.0",
         summary: "Binds a flow to a persona, context, and anchors — the statement that EXECUTES a declared flow.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "step",
@@ -221,7 +221,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "v0.1.0",
         summary: "A diagnostic / probing operation inside a step — emits observations without changing the trajectory.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "validate",
@@ -229,7 +229,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "v0.1.0",
         summary: "Enforces a typed invariant on a step's output before subsequent steps consume it.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "refine",
@@ -237,7 +237,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "v0.1.0",
         summary: "Iteratively improves a candidate output via a declared refinement strategy.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "weave",
@@ -245,7 +245,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: false,
         since: "v0.1.0",
         summary: "Multi-thread reasoning braid — composes multiple sub-derivations into a unified conclusion.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     // ── Cognitive I/O ─────────────────────────────────────────────────
     PrimitiveInfo {
@@ -335,7 +335,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         top_level: true,
         since: "v0.1.0",
         summary: "Declares a structured data type with optional refinements, ranges, where clauses, and compliance tags.",
-        doc_status: DocStatus::Pending,
+        doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
         name: "axonstore",
@@ -635,20 +635,31 @@ mod tests {
     }
 
     #[test]
-    fn documented_tier_matches_phase_5_baseline() {
-        // §Fase 5 baseline: 7 primitives documented (persona, flow,
-        // step, anchor, tool, reason, socket). A regression that
-        // accidentally flipped a Documented entry to Pending — or
-        // vice versa — would show up here.
+    fn documented_tier_matches_phase_6b_baseline() {
+        // §Fase 6.b baseline (post-Tier-1): 17 primitives documented.
+        //
+        //   Tier 0 (Fase 5, 7):   persona, flow, step, anchor, tool, reason, socket
+        //   Tier 1 (Fase 6.b, 10): context, intent, memory, agent, probe,
+        //                          validate, refine, weave, type, run
+        //
+        // A regression that accidentally flipped a Documented entry to
+        // Pending — or vice versa — surfaces here. As §Fase 6.c lands
+        // (13 more), this set widens; update the assertion in lockstep.
         let documented: HashSet<&str> = with_status(DocStatus::Documented)
             .map(|i| i.name)
             .collect();
-        let expected: HashSet<&str> = ["persona", "flow", "step", "anchor", "tool", "reason", "socket"]
-            .into_iter()
-            .collect();
+        let expected: HashSet<&str> = [
+            // Tier 0
+            "persona", "flow", "step", "anchor", "tool", "reason", "socket",
+            // Tier 1
+            "context", "intent", "memory", "agent", "probe", "validate",
+            "refine", "weave", "type", "run",
+        ]
+        .into_iter()
+        .collect();
         assert_eq!(
             documented, expected,
-            "Documented set drift — Fase 5 baseline is 7 specific primitives"
+            "Documented set drift — Fase 6.b baseline is 17 specific primitives"
         );
     }
 
@@ -657,8 +668,9 @@ mod tests {
         let s = coverage_summary();
         assert_eq!(s.total, 47);
         assert_eq!(s.documented + s.pending, s.total);
-        assert_eq!(s.documented, 7);
-        assert_eq!(s.pending, 40);
+        // §Fase 6.b ships Tier 1 — 17 Documented (7 + 10), 30 Pending.
+        assert_eq!(s.documented, 17);
+        assert_eq!(s.pending, 30);
     }
 
     #[test]

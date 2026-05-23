@@ -1,0 +1,146 @@
+---
+name: context
+summary: Declares the conversational frame — memory scope, depth, max tokens, temperature — a flow operates within.
+category: cognition
+top_level: true
+since: v0.1.0
+grammar: |
+  context <Name> {
+      memory: <ephemeral|none|persistent|session>   # optional — conversational memory scope
+      language: "<bcp47>"                           # optional — preferred output language tag
+      depth: <shallow|standard|deep|exhaustive>     # optional — reasoning thoroughness
+      max_tokens: <integer>                         # optional — output budget
+      temperature: <0.0..2.0>                       # optional — sampling temperature
+      cite_sources: <true|false>                    # optional — force citations on every claim
+  }
+---
+
+# `context`
+
+`context` declares **the conversational frame** a flow operates
+within: how much memory it retains across turns, how deep it
+reasons, how many tokens it can emit, what temperature governs
+sampling, and whether citations are mandatory. A flow that runs
+without an explicit context inherits the runtime's defaults; a
+flow that runs *within* a declared context binds those defaults
+explicitly + auditable.
+
+This is the **second primitive an agent touches** — after
+`persona` (who the agent is), `context` says *how* the agent
+deploys that identity in a given conversation.
+
+## Surface
+
+`context` is a **top-level declaration**. It is *not* nested
+inside a flow, a persona, or a daemon. A `run` statement binds
+it via `within <Context>`.
+
+```axon
+context LegalReview {
+    memory: session
+    language: "en"
+    depth: exhaustive
+    max_tokens: 4096
+    temperature: 0.3
+    cite_sources: true
+}
+```
+
+## Fields
+
+### `memory:` (optional)
+
+A **single identifier** from the closed memory-scope catalogue:
+
+| Value | Meaning |
+|---|---|
+| `ephemeral` | No retention. Each turn starts fresh. |
+| `none` | Alias for `ephemeral`. Explicit "intentionally amnesiac". |
+| `session` | Retains across the conversation; cleared on disconnect. |
+| `persistent` | Retains across reconnects, scoped by tenant + user. |
+
+The type checker rejects unknown values
+(`axon-frontend::type_checker::VALID_MEMORY_SCOPES`).
+
+### `language:` (optional)
+
+A **string literal** containing a BCP-47 tag (`"en"`, `"es-CO"`,
+`"pt-BR"`, …). Sets the preferred output language for the flow.
+Overrides the request locale + the persona's `language:` field.
+
+### `depth:` (optional)
+
+A **single identifier** from the closed depth catalogue:
+`shallow | standard | deep | exhaustive`. The runtime maps this
+to backend-specific reasoning effort (max-thought tokens,
+chain-of-thought budget, retrieval breadth).
+
+### `max_tokens:` (optional)
+
+A **non-negative integer literal**. Hard cap on the flow's
+output length. Independent of the persona's
+`confidence_threshold:` — `max_tokens` bounds *length*,
+`confidence_threshold` bounds *uncertainty*.
+
+### `temperature:` (optional)
+
+A **numeric literal in `[0.0, 2.0]`**. Sampling temperature
+forwarded to the backend. `0.0` requests greedy decoding;
+typical values are `0.0`–`0.4` for analytical work, `0.7`–`1.0`
+for creative work. Above `1.0` the runtime emits an
+`axon-W007` warning (sampling becomes near-uniform).
+
+### `cite_sources:` (optional)
+
+A **boolean**. When `true`, every factual claim emitted while the
+context is active MUST carry an `[evidence: ...]` citation —
+identical semantics to the persona-level field of the same name.
+The two compose: if either the persona OR the active context
+demands citations, citations are required.
+
+## Runtime behaviour
+
+At deploy time, every `context` declaration lowers to a
+`ContextDefinition` IR node. At `run`-time the binding happens
+once:
+
+```axon
+run AnalyzeContract(doc)
+    as LegalExpert            # persona — who
+    within LegalReview        # context — how (this declaration)
+    constrained_by [NoHallucination]
+```
+
+The context's fields are injected into:
+
+- The system prompt's frame section (`depth`, `language`).
+- The backend's sampling parameters (`temperature`, `max_tokens`).
+- The shield + anchor layer (`cite_sources`).
+- The session-management layer (`memory:`).
+
+Unlike `persona`, a context can be swapped per-`run` without
+re-declaring the persona — useful when the same expert needs to
+operate in different conversational frames (one-shot Q&A vs.
+multi-turn dialogue).
+
+## What this primitive is NOT
+
+- **Not a system prompt.** A context is structured metadata.
+  The system prompt is one of its lowerings, not its definition.
+- **Not nested inside a `flow`.** A flow *references* a context
+  by name on the `run` statement; it does not declare one inline.
+- **Not a persona.** Persona = identity (who); context = frame
+  (how). The two compose; they are not interchangeable.
+- **Not a session.** `memory: session` IS the conversational
+  memory scope; `session` (the primitive) is a §41
+  duality-typed dialogue protocol — different concept.
+
+## See also
+
+- `axon://primitives/persona` — the *who* that pairs with this
+  *how*.
+- `axon://primitives/run` — the binding site (`within <Context>`).
+- `axon://primitives/memory` — durable, addressable memory
+  stores; complements the conversational `memory:` scope here.
+- `axon://primitives/flow` — the orchestration that consumes the
+  context.
