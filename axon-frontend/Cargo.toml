@@ -1,10 +1,10 @@
 [package]
 name = "axon-frontend"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 rust-version = "1.95"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
-description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator. Zero runtime dependencies. v0.21.0 promotes the v0.20.0 narrow cardinality gate to a FULL Cardinality propagation pass (Fase 38.x.f): new `pub(crate)` Cardinality enum + `infer_flow_tail_cardinality` walks every FlowStep variant, joins if/else branches, and detects disagreement. New error codes T9XX bilateral (D3 plural-output + singular-tail), T9YY stream_cardinality_mismatch (D5 spatial vs temporal), W003 cardinality_disagreement_in_branches (D6). v0.20.0 the narrow Retrieve Cardinality Gate (Fase 38.x.e). v0.19.3 Request Binding Contract source set (Fase 37.y). v0.19.0 Declared & Compile-Time-Typed Store Schema (Fase 38). v0.18.0 Request Binding Contract totality (Fase 37). v0.17.0 `in_memory` axonstore (Fase 36.x). v0.12.0 wire-format adapter. v0.11.0 Fase 32 REST. v0.10.0 type-driven wire. v0.9.0 HTTP. v0.2.0–v0.8.0 earlier cycles."
+description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator. Zero runtime dependencies. v1.2.0 adds PRIMITIVE_REGISTRY — closed catalogue of every named language construct (45 entries) with PrimitiveInfo / DocStatus / CoverageSummary types + find / by_category / with_status / coverage_summary helpers. Single source of truth for downstream tooling (axon-emcp coverage gate, future LSP completions, docs-site generators). v1.1.0 introduced session-types + multiparty projection. v1.0.x earlier cycles — see https://github.com/Bemarking/axon-lang."
 license = "MIT"
 repository = "https://github.com/Bemarking/axon-lang"
 readme = "README.md"
