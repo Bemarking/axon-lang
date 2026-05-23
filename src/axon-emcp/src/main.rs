@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod compiler_pipeline;
 mod knowledge;
 mod resources;
 mod server;

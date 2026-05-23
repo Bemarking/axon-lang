@@ -21,6 +21,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::compiler_pipeline;
 use crate::knowledge::{Catalog, Category};
 use crate::server::JsonRpcError;
 
@@ -70,6 +71,60 @@ pub fn list() -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
+        json!({
+            "name": "axon.check",
+            "description": "Validate AXON source code. Runs the same lex → parse → \
+                type-check pipeline the `axon check` CLI uses, and returns structured \
+                diagnostics (severity + stage + message + line/column). Use this AFTER \
+                generating a program, BEFORE presenting it to the user as working. \
+                Never claim a program is correct until axon.check returns ok=true. The \
+                pipeline stops at the first failing stage: a lex error means parse + \
+                type-check did not run.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "The complete AXON source text to validate. Pass \
+                            the whole program (top-level declarations only — fragments \
+                            are usually rejected)."
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Optional virtual filename for the diagnostics. \
+                            Defaults to \"<axon.check input>\"."
+                    }
+                },
+                "required": ["source"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "axon.parse",
+            "description": "Parse AXON source to its Intermediate Representation (IR). \
+                Returns the same JSON shape `axon parse` would print: a `Program` node \
+                whose children are every declared primitive (`flows`, `personas`, \
+                `axonendpoints`, `axonstores`, `sockets`, `sessions`, …). Use this when \
+                you need to REASON ABOUT what you just wrote — e.g. to confirm the \
+                program has the right shape before refining it. On failure returns the \
+                same diagnostic shape as axon.check.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "The complete AXON source text to parse."
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Optional virtual filename. Defaults to \
+                            \"<axon.parse input>\"."
+                    }
+                },
+                "required": ["source"],
+                "additionalProperties": false
+            }
+        }),
     ]
 }
 
@@ -81,6 +136,8 @@ pub async fn dispatch_call(params: Value, catalog: &Arc<Catalog>) -> Result<Valu
     match call.name.as_str() {
         "axon.primitives" => primitives(call.arguments, catalog),
         "axon.primitive_doc" => primitive_doc(call.arguments, catalog),
+        "axon.check" => check(call.arguments),
+        "axon.parse" => parse(call.arguments),
         other => Err(JsonRpcError {
             code: -32601,
             message: format!("unknown tool: `{other}`"),
@@ -193,6 +250,58 @@ fn mcp_text_result(text: &str) -> Value {
         ],
         "isError": false,
     })
+}
+
+// ─── axon.check ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct CheckArgs {
+    source: String,
+    #[serde(default)]
+    filename: Option<String>,
+}
+
+fn check(args: Value) -> Result<Value, JsonRpcError> {
+    let args: CheckArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("axon.check: {e}")))?;
+    let filename = args.filename.as_deref().unwrap_or("<axon.check input>");
+    let outcome = compiler_pipeline::run(&args.source, filename);
+    let payload = compiler_pipeline::outcome_to_check_payload(&outcome);
+    // The MCP `tools/call` contract: wrap the payload in `content` so
+    // the agent's parser sees a uniform `{content, isError}` envelope.
+    // `isError` flips on a *blocking* check failure (so the agent's
+    // reflex is "look at the errors", not "the tool itself broke").
+    let is_error = !payload["ok"].as_bool().unwrap_or(true);
+    Ok(json!({
+        "content": [
+            { "type": "text", "text": serde_json::to_string_pretty(&payload).unwrap() }
+        ],
+        "isError": is_error,
+    }))
+}
+
+// ─── axon.parse ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct ParseArgs {
+    source: String,
+    #[serde(default)]
+    filename: Option<String>,
+}
+
+fn parse(args: Value) -> Result<Value, JsonRpcError> {
+    let args: ParseArgs = serde_json::from_value(args)
+        .map_err(|e| JsonRpcError::invalid_params(format!("axon.parse: {e}")))?;
+    let filename = args.filename.as_deref().unwrap_or("<axon.parse input>");
+    let outcome = compiler_pipeline::run(&args.source, filename);
+    let payload = compiler_pipeline::outcome_to_parse_payload(outcome);
+    let is_error = !payload["ok"].as_bool().unwrap_or(true);
+    Ok(json!({
+        "content": [
+            { "type": "text", "text": serde_json::to_string_pretty(&payload).unwrap() }
+        ],
+        "isError": is_error,
+    }))
 }
 
 #[cfg(test)]
@@ -326,5 +435,139 @@ mod tests {
         .await
         .expect_err("must reject");
         assert_eq!(err.code, -32601);
+    }
+
+    // ── Phase 1: axon.check ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn check_returns_ok_for_a_well_formed_program() {
+        let cat = catalog_with("socket", true, Category::SessionTypes);
+        let v = dispatch_call(
+            json!({
+                "name": "axon.check",
+                "arguments": { "source": "persona X { tone: precise }" }
+            }),
+            &cat,
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["isError"], false);
+        let payload: Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["errors"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn check_returns_diagnostic_with_isError_on_syntax_garbage() {
+        let cat = catalog_with("socket", true, Category::SessionTypes);
+        let v = dispatch_call(
+            json!({
+                "name": "axon.check",
+                "arguments": { "source": "@@@" }
+            }),
+            &cat,
+        )
+        .await
+        .unwrap();
+        // `isError` MUST flip — agents key off this for the "go fix it"
+        // reflex; a malformed program is a typed failure, not a tool fault.
+        assert_eq!(v["isError"], true);
+        let payload: Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["ok"], false);
+        let errors = payload["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0]["severity"], "error");
+        // The stage is whichever the pipeline failed at (lex or parse —
+        // depends on how `@@@` is classified). Either is acceptable, but
+        // it must be one of the closed catalog values.
+        let stage = errors[0]["stage"].as_str().unwrap();
+        assert!(matches!(stage, "lex" | "parse"));
+        assert!(errors[0]["line"].as_u64().unwrap() >= 1);
+    }
+
+    #[tokio::test]
+    async fn check_rejects_missing_source_argument() {
+        let cat = catalog_with("socket", true, Category::SessionTypes);
+        let err = dispatch_call(
+            json!({ "name": "axon.check", "arguments": {} }),
+            &cat,
+        )
+        .await
+        .expect_err("missing required `source` must reject");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("axon.check"));
+    }
+
+    #[tokio::test]
+    async fn check_accepts_optional_filename_for_diagnostics() {
+        let cat = catalog_with("socket", true, Category::SessionTypes);
+        // The filename does not affect the diagnostic shape we surface
+        // (we don't pipe source_snippet through to the agent yet) but
+        // it must be accepted as an optional argument.
+        let v = dispatch_call(
+            json!({
+                "name": "axon.check",
+                "arguments": {
+                    "source": "persona X { tone: precise }",
+                    "filename": "my_draft.axon"
+                }
+            }),
+            &cat,
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["isError"], false);
+    }
+
+    // ── Phase 1: axon.parse ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn parse_returns_ir_for_a_well_formed_program() {
+        let cat = catalog_with("socket", true, Category::SessionTypes);
+        let v = dispatch_call(
+            json!({
+                "name": "axon.parse",
+                "arguments": { "source": "persona X { tone: precise }" }
+            }),
+            &cat,
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["isError"], false);
+        let payload: Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["stage"], "ir_generate");
+        // The IR's root is a `Program` node. The agent uses this to
+        // confirm the file's top-level shape before composing more.
+        assert_eq!(payload["ir"]["node_type"], "program");
+        // Personas declared at top-level land in the `personas` array.
+        let personas = payload["ir"]["personas"].as_array().unwrap();
+        assert_eq!(personas.len(), 1);
+        assert_eq!(personas[0]["name"], "X");
+    }
+
+    #[tokio::test]
+    async fn parse_returns_same_diagnostic_shape_as_check_on_failure() {
+        let cat = catalog_with("socket", true, Category::SessionTypes);
+        let v = dispatch_call(
+            json!({
+                "name": "axon.parse",
+                "arguments": { "source": "@@@" }
+            }),
+            &cat,
+        )
+        .await
+        .unwrap();
+        assert_eq!(v["isError"], true);
+        let payload: Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        // The failure shape is uniform with axon.check — same keys,
+        // same severity vocabulary. (parse just adds `ir` on success.)
+        assert_eq!(payload["ok"], false);
+        assert!(payload["errors"].as_array().unwrap().len() >= 1);
+        assert!(payload["ir"].is_null());
     }
 }
