@@ -1,0 +1,180 @@
+---
+name: socket
+summary: Session-typed WebSocket transport with credit-refined backpressure, typed reconnection, and SSE-as-fragment projection.
+category: session_types
+top_level: true
+since: Fase 41.b (v2.3.0)
+grammar: |
+  socket <Name> {
+      protocol: <SessionRef>            # required — must reference a declared `session`
+      backpressure: credit(<n>)          # optional — Presburger-decidable index, n ≥ 1
+      reconnect: cognitive_state         # optional — enables AAD-bound resume
+      legal_basis: <basis>               # optional — §40 legal-basis tag
+  }
+---
+
+# `socket`
+
+The `socket` primitive binds a **declared session** (the bidirectional
+dialogue protocol) to a **WebSocket transport** (RFC 6455). Shipped in
+v2.3.0 (Fase 41.b); the §41.a–c algebra proves the two endpoints are
+duals at compile time and discharges the credit-refined backpressure
+constraint in Presburger arithmetic.
+
+## Surface
+
+`socket` is a **top-level declaration**. It is *not* nested inside a
+`flow`, a `daemon`, or a `session`. It references a `session` by name.
+
+```axon
+session Chat {
+    client: [
+        loop,
+        select { ask: [send Utterance, branch { token: [receive Token, loop],
+                                                done:  [end] }],
+                 cancel: [end] }
+    ]
+    server: [
+        loop,
+        branch { ask: [receive Utterance, select { token: [send Token, loop],
+                                                   done:  [end] }],
+                 cancel: [end] }
+    ]
+}
+
+socket ChatWS {
+    protocol: Chat
+    backpressure: credit(8)
+    reconnect: cognitive_state
+    legal_basis: legitimate_interest
+}
+```
+
+## Fields
+
+### `protocol:` (required)
+
+Must reference a declared `session`. The compiler:
+
+1. Resolves the name in the symbol table.
+2. Lowers both roles into the §41.a `SessionType` algebra (with `loop`
+   becoming `μX.…`).
+3. Verifies the **connection law** `peer ≡ self⊥` via regular-coinductive
+   equality (α-equivalent recursion variables are accepted).
+
+A socket that names an undeclared session, or a session whose two roles
+fail duality, is rejected at `axon check` time.
+
+### `backpressure: credit(<n>)` (optional)
+
+Declares the **credit-refined index** of §41.c (paper §4.2): the
+producer holds a sliding window of `n` in-flight sends; each `send`
+consumes one credit, each `receive` refills one (capped at `n`,
+standard TCP-window semantics).
+
+`n` **must be ≥ 1**. A 0-credit window has no typing rule for a send
+(`!⁰A.S` is unprovable by the §4.2 axiom); the compiler rejects
+`credit(0)`.
+
+The type checker discharges three Presburger constraints at compile
+time:
+
+| Verdict | When | Diagnostic |
+|---|---|---|
+| `SendAtZero` | Type contains an explicit `!⁰A.S` | "send `A` at credit n=0 has no typing rule" |
+| `BurstOverflow` | Straight-line send-burst > `n` | "the protocol requires a send-burst of N but `credit(n)` cannot absorb it" |
+| `LoopUnsustainable` | A recursive body has Δ = `#send − #recv > 0` | "recursive body is unsustainable: Δ = … > 0" |
+
+Omit `backpressure:` to run in the unbounded fragment (the §41.c
+constraints are vacuously satisfied; the runtime never gates on credit).
+
+### `reconnect: cognitive_state` (optional)
+
+Enables **typed reconnection** (§41.g). On a mid-protocol disconnect,
+the server seals the residual session-type cursor + live credit window
+into an AAD-bound `cognitive_states` snapshot keyed by `(tenant_id,
+session_id, socket_name, subject_user_id)`. A reconnecting client
+presents the session_id via `?resume=<session_id>` and the runtime
+restores from the exact residual.
+
+Snapshot TTL defaults to 5 minutes; configurable at deploy time per the
+enterprise control plane.
+
+Omitting `reconnect:` makes the socket **one-shot**: a mid-protocol
+drop is terminal; the client must start a fresh dialogue.
+
+### `legal_basis: <basis>` (optional)
+
+Propagates the §40 legal-basis annotation into the audit hash-chain.
+Every utterance through this socket carries the basis in the
+`session:ws_*` audit rows, so an investigator can trace which legal
+basis covered each frame.
+
+## Runtime behaviour
+
+The enterprise server (`axon-enterprise-server` v2.1.0+) mounts a
+declared socket at `GET /api/v1/socket/<lowercase-name>` automatically
+at boot. The route is protected by the §40.w auth layer and the
+`socket:connect` RBAC capability (granted to owner/admin/developer by
+default; viewer excluded).
+
+Carrier closure codes:
+
+| Code | Reason | Meaning |
+|---|---|---|
+| `1000` | `session_end` | Both peers reached `end`. |
+| `1002` | `payload_mismatch` | Wrong payload type for the cursor. |
+| `1002` | `unexpected_frame` | Wrong frame kind for the cursor. |
+| `1002` | `unknown_label` | `select`/`branch` label not in the type. |
+| `1002` | `credit_exhausted` | `send` attempted at credit n=0. |
+| `1002` | `already_complete` | Peer sent more after `end`. |
+| `1002` | `malformed_frame` | Envelope failed JSON / version parsing. |
+
+Resume rejection codes (HTTP 410 Gone): `resume_not_found`,
+`resume_expired`, `resume_aad_mismatch`, `resume_malformed`,
+`resume_schema_drift`.
+
+## SSE-as-fragment unification (§41.e)
+
+If the bound session's server role is **single-polarity** (only `send`,
+`select`, `end`, `loop` — no `receive`, no `branch`), the same socket
+declaration ALSO speaks W3C Server-Sent Events on the same path with
+`Accept: text/event-stream`. The wire bytes are byte-compatible with
+Fase 33's SSE machinery:
+
+```
+event: axon.send
+data: {"payload_type":"Token","data":…}
+
+event: axon.end
+data: {}
+```
+
+This is the formal identity `S_SSE = Π_↓(S_WS)` shipped in code. For
+two-polarity protocols, SSE requests return one `axon.error{
+code:"non-sse-polarity-schema" }` event and close; the full dialogue
+remains available over WebSocket.
+
+## What this primitive is NOT
+
+- **Not a generic WebSocket library.** A socket without a `protocol:`
+  field is rejected. The session type is the type of the connection.
+- **Not nested inside a `flow`.** A `flow` consumes typed channels +
+  utterances, but the carrier binding (the socket) is a top-level
+  declaration like `axonendpoint`.
+- **Not auto-recovered without `reconnect: cognitive_state`.** Omitting
+  the annotation makes the socket one-shot by design — useful for
+  request-style dialogues where replay would be a security issue.
+
+## See also
+
+- `axon://primitives/session` — declares the bidirectional protocol
+  the socket binds.
+- `axon://logic/session_duality` — the §41.a connection law rules
+  (regular-coinductive equality, α-equivalent recursion variables).
+- `axon://primitives/cognitive_state` — the AAD-bound snapshot store
+  the `reconnect:` field hooks into.
+- `axon://compliance/legal_basis_catalog` — the closed catalog the
+  `legal_basis:` field draws from.
+- [`docs/papers/paper_websocket_cognitive_primitive.md`](https://github.com/Bemarking/axon-lang/blob/master/docs/papers/paper_websocket_cognitive_primitive.md)
+  — the four-pillar paper underpinning Fase 41.
