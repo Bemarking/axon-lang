@@ -17,9 +17,21 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use gray_matter::Matter;
 use gray_matter::engine::YAML;
+use gray_matter::Matter;
+use include_dir::{include_dir, Dir};
 use serde::Deserialize;
+
+/// The knowledge corpus compiled into the binary at build time.
+///
+/// `cargo install --path src/axon-emcp` ships this baked-in copy so
+/// the installed server runs without any filesystem dependency. At
+/// runtime [`Catalog::load_default`] still prefers (a) the
+/// `AXON_EMCP_KNOWLEDGE_DIR` env override or (b) the in-tree dev path
+/// (both let operators hot-edit `.md` files without rebuilding); the
+/// embedded copy is the (c) fallback that always works.
+static EMBEDDED_KNOWLEDGE: Dir<'_> =
+    include_dir!("$CARGO_MANIFEST_DIR/../knowledge");
 
 /// One primitive's full documentation, parsed from its markdown source.
 ///
@@ -116,15 +128,87 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// Discover + load the corpus from one of three locations, in
-    /// order: (a) the `AXON_EMCP_KNOWLEDGE_DIR` env var (operator
-    /// override), (b) the in-tree dev path
-    /// `<crate>/../knowledge` (when running `cargo run`), (c) the
-    /// installed path `<exe-dir>/../share/axon-emcp/knowledge` (when
-    /// running a `cargo install`-ed binary).
+    /// Discover + load the corpus. Resolution order (first hit wins):
+    ///
+    /// 1. **`AXON_EMCP_KNOWLEDGE_DIR`** env var — operator override
+    ///    (lets ops pin the corpus to an explicit path, e.g. for a
+    ///    custom on-prem distribution).
+    /// 2. **In-tree dev path** (`<crate>/../knowledge`) — present when
+    ///    running `cargo run` from inside the repo; lets contributors
+    ///    hot-edit `.md` files without rebuilding the binary.
+    /// 3. **Embedded corpus** ([`EMBEDDED_KNOWLEDGE`]) — baked into the
+    ///    binary at compile time by `include_dir!`. Always present.
+    ///    This is what a `cargo install`-ed user gets.
+    ///
+    /// The function only fails if a higher-priority location was
+    /// requested explicitly (via the env var) and turned out to be
+    /// invalid — in that case we surface the problem rather than
+    /// silently falling through to the embedded copy. An unset env
+    /// var + missing dev path just transparently uses the embedded
+    /// copy.
     pub fn load_default() -> Result<Self, LoadError> {
-        let root = discover_corpus_root()?;
-        Self::load_from(&root)
+        // (1) explicit env override — always wins, and if it points
+        // somewhere that does not parse, that's a hard error: the
+        // operator asked us to use that corpus.
+        if let Ok(env) = std::env::var("AXON_EMCP_KNOWLEDGE_DIR") {
+            let path = PathBuf::from(env);
+            if !path.is_dir() {
+                return Err(LoadError::MissingDir(path));
+            }
+            return Self::load_from(&path);
+        }
+        // (2) in-tree dev path — only when we're sitting inside the
+        // source repo (CARGO_MANIFEST_DIR resolves the crate's source
+        // root; the sibling `knowledge` only exists when the binary
+        // is being run from that tree, not after `cargo install`).
+        let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join("knowledge"));
+        if let Some(p) = dev_path {
+            if p.is_dir() {
+                return Self::load_from(&p);
+            }
+        }
+        // (3) embedded fallback — the corpus baked into the binary by
+        // `include_dir!` at compile time. This is what users of a
+        // `cargo install`-ed binary will hit by default.
+        Self::load_embedded()
+    }
+
+    /// Load the catalog from the compile-time-embedded corpus. Used by
+    /// `load_default` as the final fallback; also exposed directly so
+    /// tests can exercise the embedded path without the env-var dance.
+    pub fn load_embedded() -> Result<Self, LoadError> {
+        let prims_dir = EMBEDDED_KNOWLEDGE.get_dir("primitives").ok_or_else(|| {
+            LoadError::MissingDir(PathBuf::from("(embedded)/primitives"))
+        })?;
+        let mut primitives = BTreeMap::new();
+        for file in prims_dir.files() {
+            // Match the FS loader's filter — only `.md` files count.
+            let is_md = file
+                .path()
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.eq_ignore_ascii_case("md"))
+                .unwrap_or(false);
+            if !is_md {
+                continue;
+            }
+            let raw = file.contents_utf8().ok_or_else(|| {
+                LoadError::BadFrontmatter(
+                    PathBuf::from(file.path()),
+                    "embedded file is not valid UTF-8".into(),
+                )
+            })?;
+            let prim = parse_primitive(raw, file.path())?;
+            if primitives.insert(prim.name.clone(), prim.clone()).is_some() {
+                return Err(LoadError::DuplicateName(
+                    prim.name,
+                    PathBuf::from(file.path()),
+                ));
+            }
+        }
+        Ok(Catalog { primitives })
     }
 
     /// Load from an explicit path. Public so tests + tools can drive
@@ -178,10 +262,9 @@ impl Catalog {
 /// error — the server refuses to run on a malformed knowledge base.
 #[derive(Debug)]
 pub enum LoadError {
-    /// We could not find any candidate corpus root (env var unset,
-    /// dev path absent, install path absent).
-    NoCorpusRoot,
-    /// The corpus root exists but is missing the expected subdir.
+    /// The corpus root exists but is missing the expected subdir
+    /// (`primitives/`), or the operator-supplied
+    /// `AXON_EMCP_KNOWLEDGE_DIR` does not name an existing directory.
     MissingDir(PathBuf),
     /// A filesystem error happened while reading a path.
     Io(PathBuf, std::io::Error),
@@ -196,10 +279,6 @@ pub enum LoadError {
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LoadError::NoCorpusRoot => f.write_str(
-                "could not locate the knowledge corpus root (set AXON_EMCP_KNOWLEDGE_DIR \
-                 to the absolute path of `src/knowledge/`)",
-            ),
             LoadError::MissingDir(p) => write!(f, "expected directory not found: {}", p.display()),
             LoadError::Io(p, e) => write!(f, "I/O error reading {}: {}", p.display(), e),
             LoadError::BadFrontmatter(p, msg) => {
@@ -216,38 +295,6 @@ impl std::fmt::Display for LoadError {
 }
 
 impl std::error::Error for LoadError {}
-
-fn discover_corpus_root() -> Result<PathBuf, LoadError> {
-    // (a) explicit env override — always wins.
-    if let Ok(env) = std::env::var("AXON_EMCP_KNOWLEDGE_DIR") {
-        let p = PathBuf::from(env);
-        if p.is_dir() {
-            return Ok(p);
-        }
-    }
-    // (b) in-tree dev: <crate>/.. is `src/`, knowledge is its sibling.
-    // CARGO_MANIFEST_DIR is set during compilation; available at
-    // runtime when launched via `cargo run`. For `cargo install`-ed
-    // binaries this falls through to (c).
-    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(|p| p.join("knowledge"));
-    if let Some(p) = dev_path {
-        if p.is_dir() {
-            return Ok(p);
-        }
-    }
-    // (c) installed binary: <exe-dir>/../share/axon-emcp/knowledge
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join("..").join("share").join("axon-emcp").join("knowledge");
-            if candidate.is_dir() {
-                return Ok(candidate);
-            }
-        }
-    }
-    Err(LoadError::NoCorpusRoot)
-}
 
 fn parse_primitive(raw: &str, path: &Path) -> Result<Primitive, LoadError> {
     let matter = Matter::<YAML>::new();
@@ -336,6 +383,31 @@ Body prose.
         write_primitive(&prim_dir, "b", &body("dup"));
         let err = Catalog::load_from(&tmp).expect_err("dup name must fail");
         assert!(matches!(err, LoadError::DuplicateName(name, _) if name == "dup"));
+    }
+
+    #[test]
+    fn embedded_corpus_loads_and_contains_at_least_the_socket_primitive() {
+        // §Phase 1 — the `include_dir!` macro bakes `src/knowledge/`
+        // into the binary at compile time. `load_embedded` must
+        // round-trip every entry through the same frontmatter parser
+        // the FS loader uses, so the wire shape an MCP client sees
+        // does not depend on whether the corpus was disk-served or
+        // baked-in.
+        let cat = Catalog::load_embedded().expect("embedded corpus must load");
+        assert!(
+            cat.primitive_count() >= 1,
+            "embedded corpus is empty — include_dir! resolved no files"
+        );
+        let socket = cat
+            .primitive("socket")
+            .expect("Phase 0 ships the socket primitive — must be embedded");
+        assert!(socket.top_level);
+        assert_eq!(socket.category, Category::SessionTypes);
+        // The embedded body must include the canonical opening — the
+        // markdown was authored as `# \`socket\`` followed by the
+        // primitive's introductory paragraph.
+        assert!(socket.body.contains("socket"));
+        assert!(socket.body.contains("WebSocket"));
     }
 
     /// A throwaway temp dir, no `tempfile` dep — keeps the dependency

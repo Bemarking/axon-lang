@@ -85,15 +85,15 @@ agent), the agent has access to:
 
 ### Tools (it can call these)
 
-| Tool | What it does |
-|---|---|
-| `axon.check(source)` | Validate a string of `.axon` source; returns structured diagnostics (rustc-style spans, error codes, suggestions) |
-| `axon.parse(source)` | Parse to AST + IR (JSON); useful for the agent to *reason about* what it just wrote |
-| `axon.primitives(filter?)` | List every primitive, optionally filtered by category (cognition / cognitive-io / session-types / data-plane) |
-| `axon.primitive_doc(name)` | Full reference for one primitive: grammar, top-level status, semantic constraints, idiomatic examples |
-| `axon.examples(topic)` | Canonical `.axon` programs by topic (healthcare, banking, chat, multi-agent…) |
-| `axon.compose(intent)` | Given a natural-language brief, return a typed scaffold with the right primitives + compliance shields wired |
-| `axon.validate_pattern(source, pattern)` | Check whether a source fragment matches an idiomatic pattern (e.g. "is this a well-formed dual session?") |
+| Tool | Phase | What it does |
+|---|---|---|
+| `axon.primitives(filter?)` | **0 ✅** | List every primitive, optionally filtered by category (`cognition` / `cognitive_io` / `data_plane` / `session_types` / `wire` / `operators`) |
+| `axon.primitive_doc(name)` | **0 ✅** | Full reference for one primitive: grammar, top-level status, since-version, complete markdown body (semantic constraints + examples + what-it-is-not + see-also) |
+| `axon.check(source)` | **1 ✅** | Validate `.axon` source through the same lex → parse → type-check pipeline `axon check` uses. Returns `{ ok, stage, errors[], warnings[], summary }`. `isError: true` flips on a blocking failure so the agent's "go fix it" reflex fires |
+| `axon.parse(source)` | **1 ✅** | Parse to IR (JSON). On success returns `{ ok: true, ir: { node_type: "program", personas, flows, … }, … }`; on failure returns the same diagnostic shape as `axon.check` (uniform parser surface for the agent) |
+| `axon.examples(topic)` | 2 | Canonical `.axon` programs by topic (healthcare, banking, chat, multi-agent…) |
+| `axon.compose(intent)` | 4 | Given a natural-language brief, return a typed scaffold with the right primitives + compliance shields wired |
+| `axon.validate_pattern(source, pattern)` | 4 | Check whether a source fragment matches an idiomatic pattern (e.g. "is this a well-formed dual session?") |
 
 ### Resources (it can read these)
 
@@ -106,34 +106,75 @@ agent), the agent has access to:
 | `axon://logic/session_duality` | The §Fase 41 algebra rules for dual sessions |
 | `axon://compliance/{framework}` | What `compliance: [...]` annotations cover which framework |
 
-## Install (preview)
+## Install
+
+```bash
+# From inside a clone of the axon-lang repo:
+cargo install --path src/axon-emcp
+# → `axon-emcp` is installed to ~/.cargo/bin (or %USERPROFILE%\.cargo\bin)
+```
+
+The installed binary is **fully self-contained** — Phase 1 vendored the
+knowledge corpus into the executable via `include_dir!` at compile time.
+No `share/`, no env var, no post-install steps. Verify:
+
+```bash
+axon-emcp --help  # (or run it under your agent — it speaks MCP on stdio)
+```
+
+Then point your agent's MCP config at it:
 
 ```jsonc
-// In your agent's mcp.json (Claude Code, Codex, Cursor, …)
+// Claude Code: ~/.config/claude-code/mcp.json (or platform equivalent)
+// Cursor:      ~/.cursor/mcp.json
+// Codex:       ~/.codex/mcp.json
+// Continue:    ~/.continue/config.json (under "mcp.servers")
 {
   "mcpServers": {
     "axon": {
-      "command": "axon-emcp",
-      "args": []
+      "command": "axon-emcp"
     }
   }
 }
 ```
 
+That's it — restart the agent and it will see `axon.primitives`,
+`axon.primitive_doc`, `axon.check`, `axon.parse` as callable tools, plus
+the `axon://primitives/{name}` resources, plus the onboarding
+instructions on connect.
+
+### Hot-editing the corpus (contributors)
+
+If you're contributing to the corpus (`src/knowledge/primitives/*.md`)
+and want edits to take effect WITHOUT recompiling:
+
 ```bash
-cargo install --path src/axon-emcp
-# or: download the binary from a future GitHub release
+# Option A: run from the repo tree — the binary prefers the in-tree
+# dev path over the embedded copy automatically.
+cargo run --manifest-path src/axon-emcp/Cargo.toml --release
+
+# Option B: point an installed binary at a checkout via env var.
+AXON_EMCP_KNOWLEDGE_DIR=/path/to/axon-lang/src/knowledge axon-emcp
 ```
+
+The corpus-resolution order (first hit wins): `AXON_EMCP_KNOWLEDGE_DIR`
+env var → in-tree dev path (`<crate>/../knowledge`) → embedded corpus.
 
 ## Status
 
-This is **Phase 0 of the ℰMCP OFICIAL** — the spine is up (server
-skeleton, knowledge-base structure, one primitive documented
-end-to-end). The full primitive catalog (65+ files) lands in subsequent
-phases. See `src/axon-emcp/README.md` for development status.
+| Phase | Surface | Status |
+|---|---|---|
+| **0** | Server spine (stdio JSON-RPC 2.0), knowledge loader, `axon.primitives` + `axon.primitive_doc`, `axon://primitives/{name}` resources, `socket` primitive documented end-to-end | ✅ |
+| **1** | `axon.check` (live validation) + `axon.parse` (IR introspection) + embedded corpus (`cargo install` ships self-contained) | ✅ |
+| **2** | Remaining 64+ primitives in `src/knowledge/primitives/` | next |
+| **3** | Grammar resources (`axon://grammar/top_level`, `composition`, `ebnf`), flow logic resources, compliance resources | |
+| **4** | `axon.compose(intent)` — natural language brief → typed scaffold with correct compliance shields | |
+| **5** | MCP prompts (`flow_design`, `shield_design`, `session_design`) | |
 
 The discipline: every primitive added to `src/knowledge/primitives/` is
 backed by a passing `cargo test` that exercises a real `.axon` example
 through the live `axon-frontend` parser + type-checker. The knowledge
 base does not drift from the language — it is checked against the
-implementation on every commit.
+implementation on every commit. Phase 1 closed the loop: the agent can
+now VALIDATE the code it produces, against the same compiler the `axon`
+CLI ships.

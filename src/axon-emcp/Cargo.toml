@@ -37,6 +37,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-
 # Rust crate for this pattern (used by ssg's like zola, mdbook plugins).
 gray_matter = { version = "0.2", default-features = false, features = ["yaml"] }
 
+# §Phase 1 — embed the knowledge corpus into the binary at compile time
+# so `cargo install --path src/axon-emcp` ships a fully self-contained
+# server (no need for adopters to set AXON_EMCP_KNOWLEDGE_DIR or copy
+# a `share/` directory). At runtime we still prefer (a) the env-var
+# override + (b) the in-tree dev path when they exist — both let
+# operators hot-edit the corpus without rebuilding — and fall back to
+# (c) this embedded copy in the installed-binary scenario.
+include_dir = "0.7"
+
 # Tracing — same observability stack as the rest of axon. We log to
 # stderr only (stdout is reserved for the MCP wire protocol; corrupting
 # it would break the agent's parser).
