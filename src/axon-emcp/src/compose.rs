@@ -81,6 +81,34 @@ pub enum Domain {
     /// recording, protocol-deviation tracking. Differs from both
     /// `Healthcare` (patient care) and `PharmaTech` (drug discovery).
     MedicResearch,
+    // ── §Fase 7.b — Agent patterns (interaction modality) ────────
+    /// §Fase 7.b — Streaming research-assistant chat grounded in a
+    /// declared corpus with hard-fail source-citation anchor.
+    ChatResearch,
+    /// §Fase 7.b — Streaming chat with function-calling tools
+    /// (web search, calculator, time API). Tool-use surface.
+    ChatTools,
+    /// §Fase 7.b — Chat that classifies-then-dispatches to typed
+    /// skill sub-flows (Support / Sales / Billing per the
+    /// canonical template).
+    ChatSkills,
+    /// §Fase 7.b — WhatsApp Business webhook agent — typed
+    /// inbound/outbound payloads, per-phone-number persistent
+    /// memory, PII-redaction shield.
+    Whatsapp,
+    /// §Fase 7.b — Voice agent — μ-law ↔ PCM16 OTS codec
+    /// transformations, streaming Stream<Token> reply.
+    Voice,
+    /// §Fase 7.b — Coding-assistant agent — sandboxed code
+    /// interpreter + git tools + streaming reply, anchored
+    /// against hallucinated APIs.
+    Dev,
+    /// §Fase 7.b — Consultative sales agent — lead qualification
+    /// with NoMisrepresentation anchor + CRM tool bindings.
+    SalesConsultive,
+    /// §Fase 7.b — Embedded sales widget — streaming SSE chat +
+    /// JSON lead-capture endpoint, product-corpus grounded.
+    SalesWidget,
 }
 
 impl Domain {
@@ -100,6 +128,14 @@ impl Domain {
             Domain::FinTech => "fintech",
             Domain::PharmaTech => "pharmatech",
             Domain::MedicResearch => "medic_research",
+            Domain::ChatResearch => "chat_research",
+            Domain::ChatTools => "chat_tools",
+            Domain::ChatSkills => "chat_skills",
+            Domain::Whatsapp => "whatsapp",
+            Domain::Voice => "voice",
+            Domain::Dev => "dev",
+            Domain::SalesConsultive => "sales_consultive",
+            Domain::SalesWidget => "sales_widget",
         }
     }
     /// Every domain in stable order — used for classifier iteration
@@ -117,6 +153,15 @@ impl Domain {
             Domain::FinTech,
             Domain::PharmaTech,
             Domain::MedicResearch,
+            // Agent patterns (interaction modality) — §Fase 7.b
+            Domain::ChatResearch,
+            Domain::ChatTools,
+            Domain::ChatSkills,
+            Domain::Whatsapp,
+            Domain::Voice,
+            Domain::Dev,
+            Domain::SalesConsultive,
+            Domain::SalesWidget,
             // Meta-patterns
             Domain::Chat,
             Domain::Retrieval,
@@ -383,6 +428,173 @@ fn domain_metadata(d: Domain) -> &'static DomainMetadata {
                 "Layer a `heal` routine for adverse-event escalation with human-in-loop review.",
             ],
         },
+        Domain::ChatResearch => &DomainMetadata {
+            label: "Research-assistant chat (corpus-grounded SSE)",
+            summary: "Streaming chat anchored on a declared corpus — every reply cites the corpus passages it draws from. Persona is analytical, evidence-led, low-temperature.",
+            keywords: &[
+                "research", "literature_review", "academic", "scholar",
+                "study", "evidence_based", "grounded_chat", "rag_chat",
+                "citation", "scientific",
+            ],
+            primitives_used: &[
+                "type", "corpus", "persona", "context", "anchor", "tool",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &[],
+            next_steps: &[
+                "Populate the corpus with real document references (replace the PaperA/PaperB/PaperC placeholders).",
+                "Pin a deterministic backend for reproducible literature reviews.",
+                "Tune `MustCiteCorpus.confidence_floor:` upward if the domain is high-stakes.",
+                "Layer SOC2 compliance if customer-attributed research is in scope.",
+                "Add a `retrieve` flow-step before `Reply` to materialise corpus chunks explicitly.",
+            ],
+        },
+        Domain::ChatTools => &DomainMetadata {
+            label: "Streaming chat with function-calling tools",
+            summary: "Streaming chat that invokes a declared catalogue of tools (web search, calculator, time API) mid-conversation. Closed tool surface — strict-tool-mode optional.",
+            keywords: &[
+                "tool_use", "function_calling", "tools_chat",
+                "agent_tools", "web_search_chat", "calculator_chat",
+                "openai_tools", "anthropic_tools",
+            ],
+            primitives_used: &[
+                "type", "persona", "context", "anchor", "tool",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &[],
+            next_steps: &[
+                "Pick the real tool providers (brave / tavily / serper / native_calculator / …).",
+                "Pin a streaming backend (`provider: openai`/`anthropic`).",
+                "Add a `shield` if the chat touches PII or regulated data.",
+                "Run `effort: strict` on the bound `run` to lock the tool surface in production.",
+                "Wire structured telemetry on tool-invocation outcomes (§Fase 8 preview).",
+            ],
+        },
+        Domain::ChatSkills => &DomainMetadata {
+            label: "Skill-routing chat (multi-flow dispatch)",
+            summary: "A router persona that classifies the user's message and dispatches to typed skill sub-flows (Support / Sales / Billing). Each skill is a first-class flow with its own typed I/O — audit-traceable per dispatch.",
+            keywords: &[
+                "skill", "skills", "skill_routing", "router_chat",
+                "dispatch_chat", "multi_skill", "intent_classifier",
+                "customer_support", "support_router",
+            ],
+            primitives_used: &[
+                "type", "persona", "context",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &[],
+            next_steps: &[
+                "Add real skill flows for your domain (Returns / OnboardingHelp / etc.).",
+                "Tune the router's `Classify` step's prompt with adopter-specific examples.",
+                "Bind a `shield` per skill — billing tends to need stricter PII gating than support.",
+                "Add a `confidence_floor:` on the router so ambiguous messages escalate to human review.",
+                "Wire telemetry per skill on dispatch + outcome (lead-in to §Fase 8).",
+            ],
+        },
+        Domain::Whatsapp => &DomainMetadata {
+            label: "WhatsApp Business webhook agent",
+            summary: "Conversational agent driven by the WA Business API. Typed inbound/outbound payloads, per-phone-number persistent memory, PII-redaction shield (phone numbers are PII). Stays inside the WA session window by construction.",
+            keywords: &[
+                "whatsapp", "wa_business", "wa_webhook", "wati", "twilio_wa",
+                "messaging", "conversational_commerce", "chat_widget_mobile",
+            ],
+            primitives_used: &[
+                "type", "persona", "context", "anchor", "shield", "memory",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Wire your WA Business provider (Meta direct / Twilio / Vonage / WATI).",
+                "Adopt the WA template-message policy — outbound outside the 24h window requires pre-approved templates.",
+                "Localise the persona's `language:` per market.",
+                "Tighten `confidence_threshold:` upward for regulated industries.",
+                "Persist conversation history under the per-phone-number memory key.",
+            ],
+        },
+        Domain::Voice => &DomainMetadata {
+            label: "Voice agent (PSTN / Twilio / Vonage)",
+            summary: "Audio-in / audio-out conversational agent with declared `ots:` codec transformations (μ-law 8kHz ↔ PCM16). Streaming Stream<Token> reply via SSE; bridges the carrier-codec to the LLM-streaming pipeline.",
+            keywords: &[
+                "voice", "voice_agent", "ivr", "phone_agent", "pstn",
+                "audio_agent", "twilio_voice", "vonage_voice", "stt_tts",
+                "speech_to_text", "text_to_speech",
+            ],
+            primitives_used: &[
+                "type", "ots", "persona", "context", "anchor", "tool",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &[],
+            next_steps: &[
+                "Wire your STT/TTS provider (Deepgram / ElevenLabs / Azure / native runtime).",
+                "Confirm the carrier's actual codec (μ-law 8kHz is Twilio's default; G.711 alaw for European carriers).",
+                "Add an `axonstore` if call-transcription persistence is required (HIPAA / SOC2 implications).",
+                "Tune SSE keepalive for the call's wall-clock budget.",
+                "Layer a shield if the call touches PHI or financial data.",
+            ],
+        },
+        Domain::Dev => &DomainMetadata {
+            label: "Dev assistant (sandboxed code + git tools)",
+            summary: "Coding agent with sandboxed code-interpreter + git tools + DocsLookup + streaming reply. Anchored against hallucinated APIs — every API claim must cite the language stdlib or a retrieved reference.",
+            keywords: &[
+                "dev", "developer", "coding_assistant", "code_agent",
+                "copilot", "code_review", "pair_programmer",
+                "code_interpreter", "git_agent",
+            ],
+            primitives_used: &[
+                "type", "persona", "context", "anchor", "tool",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &[],
+            next_steps: &[
+                "Pin the sandbox container image with your language toolchains pre-installed.",
+                "Configure the `GitTool` provider for your VCS (github / gitlab / bitbucket).",
+                "Tighten the persona's `domain:` list to the languages you actually support.",
+                "Add an internal docs corpus if you have a private API surface.",
+                "Cap `max_tokens:` per the model's effective context window for long-running tasks.",
+            ],
+        },
+        Domain::SalesConsultive => &DomainMetadata {
+            label: "Consultative sales agent",
+            summary: "Lead-qualification agent anchored to NoMisrepresentation — every product claim must ground on the catalogue corpus. CRM tool bindings log every qualified lead.",
+            keywords: &[
+                "sales", "consultative_sales", "lead_qualification",
+                "sdr", "bdr", "discovery_call", "outbound_sales",
+                "inbound_sales", "crm",
+            ],
+            primitives_used: &[
+                "type", "persona", "context", "anchor", "shield", "tool",
+                "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Wire the CRMLogger to your CRM (Salesforce / HubSpot / Pipedrive).",
+                "Populate the ProductCatalogueLookup's vector store with your real product docs.",
+                "Tune `confidence_floor:` upward for regulated industries (finance, health).",
+                "Add `requires:` capability gates per sales-org role (SDR / AE / Mgr).",
+                "Layer a `pix` (provenance index) over the qualified-leads stream for audit.",
+            ],
+        },
+        Domain::SalesWidget => &DomainMetadata {
+            label: "Embedded sales widget (SSE + lead capture)",
+            summary: "Two endpoints in one declaration: SSE streaming chat for the live conversation + JSON lead-capture endpoint for the commit. Anchored on a product-knowledge corpus.",
+            keywords: &[
+                "widget", "sales_widget", "website_chat", "embedded_chat",
+                "conversion_chat", "lead_capture", "site_widget",
+                "demo_request", "marketing_chat",
+            ],
+            primitives_used: &[
+                "type", "corpus", "persona", "context", "anchor",
+                "shield", "tool", "flow", "step", "axonendpoint",
+            ],
+            compliance_applied: &["SOC2"],
+            next_steps: &[
+                "Populate the ProductCorpus with real product sheets + FAQ entries.",
+                "Tune the widget's `tone:` per your brand voice.",
+                "Add Cookie / consent gating before persisting the captured lead (GDPR layer).",
+                "Wire the lead-capture endpoint to your CRM via a downstream tool.",
+                "Add SOC2-Privacy if you're EU-facing; layer GDPR on the lead-capture surface.",
+            ],
+        },
         Domain::MultiAgent => &DomainMetadata {
             label: "Multi-agent coordination",
             summary: "Planner + worker pattern — two personas, two flows, two HTTP boundaries.",
@@ -584,6 +796,22 @@ pub fn parse_domain_hint(s: &str) -> Option<Domain> {
         | "preclinical" => Some(Domain::PharmaTech),
         "medic_research" | "medical_research" | "clinical_research" | "clinical-research"
         | "trial_management" | "i+d" | "ipi" | "irb" => Some(Domain::MedicResearch),
+        // §Fase 7.b — agent-pattern aliases.
+        "chat_research" | "research_chat" | "rag_chat" | "grounded_chat" => {
+            Some(Domain::ChatResearch)
+        }
+        "chat_tools" | "tools_chat" | "function_calling" | "tool_use" => Some(Domain::ChatTools),
+        "chat_skills" | "skills_chat" | "skill_router" | "intent_router" => {
+            Some(Domain::ChatSkills)
+        }
+        "whatsapp" | "wa" | "wa_business" | "wati" => Some(Domain::Whatsapp),
+        "voice" | "voice_agent" | "phone_agent" | "ivr" | "pstn" => Some(Domain::Voice),
+        "dev" | "developer" | "code_agent" | "coding_assistant" | "copilot" => Some(Domain::Dev),
+        "sales_consultive" | "sales_consultative" | "consultative_sales" | "sdr" | "bdr"
+        | "lead_qualification" => Some(Domain::SalesConsultive),
+        "sales_widget" | "widget" | "website_chat" | "embedded_chat" | "lead_capture" => {
+            Some(Domain::SalesWidget)
+        }
         // Meta-patterns
         "chat" | "streaming" | "dialogue" => Some(Domain::Chat),
         "retrieval" | "rag" | "qa" | "search" => Some(Domain::Retrieval),

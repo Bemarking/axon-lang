@@ -97,3 +97,45 @@ fn template_pharmatech_compiles() {
 fn template_medic_research_compiles() {
     assert_template_compiles("medic_research");
 }
+
+// §Fase 7.b — agent-pattern templates.
+
+#[test]
+fn template_chat_research_compiles() {
+    assert_template_compiles("chat_research");
+}
+
+#[test]
+fn template_chat_tools_compiles() {
+    assert_template_compiles("chat_tools");
+}
+
+#[test]
+fn template_chat_skills_compiles() {
+    assert_template_compiles("chat_skills");
+}
+
+#[test]
+fn template_whatsapp_compiles() {
+    assert_template_compiles("whatsapp");
+}
+
+#[test]
+fn template_voice_compiles() {
+    assert_template_compiles("voice");
+}
+
+#[test]
+fn template_dev_compiles() {
+    assert_template_compiles("dev");
+}
+
+#[test]
+fn template_sales_consultive_compiles() {
+    assert_template_compiles("sales_consultive");
+}
+
+#[test]
+fn template_sales_widget_compiles() {
+    assert_template_compiles("sales_widget");
+}

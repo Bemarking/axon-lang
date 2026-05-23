@@ -153,12 +153,16 @@ pub fn list() -> Vec<Value> {
                         "enum": [
                             "generic", "healthcare", "banking", "government", "legal",
                             "chat", "retrieval", "multi_agent",
-                            "legaltech", "fintech", "pharmatech", "medic_research"
+                            "legaltech", "fintech", "pharmatech", "medic_research",
+                            "chat_research", "chat_tools", "chat_skills", "whatsapp",
+                            "voice", "dev", "sales_consultive", "sales_widget"
                         ],
                         "description": "Optional explicit domain override. Skips the \
                             classifier — use when you already know which scaffold you want. \
-                            §Fase 7.a added the vertical-extension domains (legaltech, \
-                            fintech, pharmatech, medic_research)."
+                            §Fase 7.a added vertical-extension domains (legaltech, fintech, \
+                            pharmatech, medic_research); §Fase 7.b added agent-pattern \
+                            domains (chat_research, chat_tools, chat_skills, whatsapp, \
+                            voice, dev, sales_consultive, sales_widget)."
                     }
                 },
                 "required": ["intent"],
@@ -374,7 +378,9 @@ fn compose_tool(args: Value, catalog: &Arc<Catalog>) -> Result<Value, JsonRpcErr
                 return Err(JsonRpcError::invalid_params(format!(
                     "axon.compose: unknown domain `{s}` — valid: generic, healthcare, \
                      banking, government, legal, chat, retrieval, multi_agent, \
-                     legaltech, fintech, pharmatech, medic_research"
+                     legaltech, fintech, pharmatech, medic_research, \
+                     chat_research, chat_tools, chat_skills, whatsapp, voice, dev, \
+                     sales_consultive, sales_widget"
                 )))
             }
         },
@@ -803,10 +809,10 @@ mod tests {
         let alts = payload["alternatives"].as_array().unwrap();
         // We always return the full scoreboard (one entry per domain
         // in `Domain::all()`) so the agent can quote it. §Fase 7.a
-        // expanded the catalogue to 12 — the assertion tracks that.
-        // The top entry's score must be > 0 and the winning domain
-        // must be the one that matches the intent.
-        assert_eq!(alts.len(), 12);
+        // grew the catalogue to 12; §Fase 7.b to 20. The assertion
+        // tracks the count exactly so any future drop / addition
+        // surfaces here.
+        assert_eq!(alts.len(), 20);
         assert!(alts[0]["score"].as_u64().unwrap() >= 1);
         assert_eq!(alts[0]["domain"], "healthcare");
         // next_steps + primitives_used surface a curated checklist.

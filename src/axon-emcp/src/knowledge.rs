@@ -1026,6 +1026,9 @@ Body prose.
             "legal", "chat", "retrieval", "multi_agent",
             // §Fase 7.a — vertical extensions (4):
             "legaltech", "fintech", "pharmatech", "medic_research",
+            // §Fase 7.b — agent patterns (8):
+            "chat_research", "chat_tools", "chat_skills", "whatsapp",
+            "voice", "dev", "sales_consultive", "sales_widget",
         ];
         for slug in expected {
             let t = cat
