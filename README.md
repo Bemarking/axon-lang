@@ -43,7 +43,7 @@
   <img src="https://img.shields.io/badge/compliance-HIPAA%20%7C%20PCI__DSS%20%7C%20GDPR%20%7C%20SOX%20%7C%20SOC2%20%7C%20ISO27001%20%7C%20FIPS%20%7C%20CC%20EAL4%2B-blueviolet" alt="Compliance">
   <img src="https://img.shields.io/badge/persistence-postgresql-blue" alt="PostgreSQL">
   <img src="https://img.shields.io/badge/observability-tracing-green" alt="Tracing">
-  <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
+  <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-lightgrey" alt="License">
 </p>
 
 ---
@@ -5130,7 +5130,33 @@ honesty:
 
 ## License
 
-MIT
+**GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)** —
+see [`LICENSE`](./LICENSE) for the canonical text.
+
+Effective 2026-05-25, axon-lang transitioned from MIT to AGPL-3.0
+to close the SaaS loophole: forks deployed as network services must
+release their modifications under AGPL too. Existing MIT-licensed
+releases on crates.io / PyPI (≤ axon-lang 2.3.0) retain MIT terms;
+new releases from v3.0.0 onward ship under AGPL.
+
+### Contributing
+
+Every contributor must sign the [Contributor License Agreement
+(CLA)](./CLA.md) before their pull request can be merged. The CLA is
+collected automatically by the
+[cla-assistant.io](https://cla-assistant.io/) bot on first PR. See
+[`CONTRIBUTING.md`](./CONTRIBUTING.md) for the full flow.
+
+### Commercial license
+
+If AGPL-3.0 doesn't fit your use case (e.g. you want to embed
+axon-lang in a closed-source product without open-sourcing your
+product), a commercial license is available from Bemarking AI S.A.S.
+— write to
+[licensing@bemarking.com.co](mailto:licensing@bemarking.com.co) for
+terms. The dual-license architecture (AGPL public + commercial
+relicensing) is documented in
+[the axon-enterprise `LICENSING.md`](https://github.com/Bemarking/axon-enterprise/blob/master/LICENSING.md).
 
 ## Authors
 

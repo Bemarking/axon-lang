@@ -1,0 +1,103 @@
+# CLA-assistant workflow for axon-lang.
+#
+# Triggers the cla-assistant.io GitHub App to verify every PR
+# contributor has signed the Contributor License Agreement at
+# [`CLA.md`](../../CLA.md). On first contribution the bot posts a
+# comment with a signing link; subsequent PRs from the same account
+# carry the signature forward.
+#
+# Setup (one-time, by Bemarking maintainers):
+#   1. Install the cla-assistant.io GitHub App on Bemarking/axon-lang.
+#   2. Create an empty repo `Bemarking/cla-signatures` (private) for
+#      the bot to commit signature records into.
+#   3. Add a repo-level secret `PERSONAL_ACCESS_TOKEN` with `repo`
+#      scope so the bot can write to the signatures repo.
+#
+# The workflow runs on:
+#   - PR open / synchronize / reopen — checks every commit author.
+#   - Comment on PR — re-runs the check when a contributor signs.
+
+name: CLA Assistant
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+# Avoid concurrent runs on the same PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    # Only run on PR events + on issue comments that look like a CLA
+    # signing phrase (the bot's default trigger phrase is
+    # "I have read the CLA Document and I hereby sign the CLA").
+    if: |
+      (github.event.action == 'created' &&
+       contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA')) ||
+      (github.event_name == 'pull_request_target' &&
+       (github.event.action == 'opened' ||
+        github.event.action == 'synchronize' ||
+        github.event.action == 'closed'))
+    steps:
+      - name: CLA Assistant
+        # Pinned to a specific SHA for supply-chain safety; review on
+        # upgrade. Latest stable as of 2026-05-25.
+        uses: contributor-assistant/github-action@v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PERSONAL_ACCESS_TOKEN must be set as a repo secret with
+          # `repo` scope so the action can push signatures to the
+          # `Bemarking/cla-signatures` repo.
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        with:
+          path-to-signatures: 'signatures/v1/cla.json'
+          path-to-document: 'https://github.com/Bemarking/axon-lang/blob/master/CLA.md'
+          branch: 'main'
+          # The remote repo storing signatures. Must be created out-
+          # of-band by maintainers + the PERSONAL_ACCESS_TOKEN must
+          # have write access.
+          remote-organization-name: 'Bemarking'
+          remote-repository-name: 'cla-signatures'
+          # Exempt the maintainer team's bots + Bemarking employees
+          # (who have signed the Corporate CLA separately).
+          allowlist: 'dependabot[bot],renovate[bot],github-actions[bot]'
+          # Custom messages — pin them so the contributor experience
+          # is consistent + on-brand.
+          custom-notsigned-prcomment: |
+            👋 Thanks for your contribution to **axon-lang**!
+
+            Before we can merge this PR, you (and every commit
+            author in the PR) must sign the [Contributor License
+            Agreement](https://github.com/Bemarking/axon-lang/blob/master/CLA.md).
+
+            This is a one-time signature that covers all your
+            future contributions. The CLA grants Bemarking AI S.A.S.
+            the right to dual-license axon-lang (AGPL-3.0 for the
+            public + commercial license for the axon-enterprise
+            product). The full reasoning is in
+            [`CLA.md`](https://github.com/Bemarking/axon-lang/blob/master/CLA.md)
+            and the dual-license architecture is documented in
+            [`LICENSING.md`](https://github.com/Bemarking/axon-enterprise/blob/master/LICENSING.md).
+
+            **To sign**, comment on this PR with the exact phrase:
+
+            > I have read the CLA Document and I hereby sign the CLA
+
+            Or sign offline by emailing
+            [legal@bemarking.com.co](mailto:legal@bemarking.com.co)
+            per the instructions in `CLA.md` § C.
+
+            The bot will re-check this PR once you comment.
+          custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
+          custom-allsigned-prcomment: |
+            ✅ All contributors on this PR have signed the CLA. Thank you!
