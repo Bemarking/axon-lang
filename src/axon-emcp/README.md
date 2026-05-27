@@ -7,6 +7,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/axon-emcp.svg)](https://crates.io/crates/axon-emcp)
 [![docs.rs](https://docs.rs/axon-emcp/badge.svg)](https://docs.rs/axon-emcp)
+[![MCP Registry](https://img.shields.io/badge/MCP%20Registry-io.github.Bemarking%2Faxon--emcp-blue)](https://registry.modelcontextprotocol.io/v0/servers?search=axon-emcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 ## What it does
@@ -43,6 +44,30 @@ corpus (45 primitive docs + 33 templates + 17 idiomatic examples +
 grammar/logic/compliance references) is baked into the executable
 via `include_dir!` at compile time. No `share/` directory, no env
 vars, no post-install steps.
+
+### Listed on the official MCP Server Registry
+
+The server is registered at
+[`registry.modelcontextprotocol.io`](https://registry.modelcontextprotocol.io/v0/servers?search=axon-emcp)
+under the canonical namespace `io.github.Bemarking/axon-emcp`. Tools
+that consume the registry (Claude Desktop's connector picker, Cursor's
+MCP browser, the `mcp-publisher` CLI's discovery surface, future
+clients that index `registry.modelcontextprotocol.io/v0/servers`)
+list the server automatically. Adopters that prefer the registry-
+driven install flow can run:
+
+```bash
+# Inspect the canonical metadata:
+curl -s 'https://registry.modelcontextprotocol.io/v0/servers?search=axon-emcp' | jq .
+
+# Or use the publisher CLI for inspection:
+mcp-publisher status io.github.Bemarking/axon-emcp
+```
+
+The crate itself stays on `crates.io` (the registry currently lists
+`npm | pypi | oci | nuget | mcpb` as package-source types; `crates.io`
+is registry-tracked via the `websiteUrl` field until it lands in the
+package-type enum).
 
 ```bash
 axon-emcp --help
