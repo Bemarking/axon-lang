@@ -21,6 +21,16 @@
 > [`UPGRADE_v2.x_TO_v3.0.0.md`](./UPGRADE_v2.x_TO_v3.0.0.md) — v2.x →
 > v3.x is purely additive (§Fase 49) and does not hit this cliff.
 >
+> **Public mirror for adopters without access to this private repo:**
+> this file (canonical, §Fase 49.n drift-gated against the Rust
+> migration source) is also published byte-identically in the public
+> OSS `axon-lang` repository at
+> [`github.com/Bemarking/axon-lang/tree/master/docs/adopter-upgrades/v1_oss_axon_rs/`](https://github.com/Bemarking/axon-lang/tree/master/docs/adopter-upgrades/v1_oss_axon_rs).
+> The `axon-enterprise` repo this file lives in is EULA-licensed +
+> private; if you cannot reach the in-repo links below, fetch from
+> the mirror — both copies SHA-256 to the identical bytes (verify
+> via the `sha256sum` command in the public mirror's `README.md`).
+>
 > **Total apply time:** ~10-30 minutes including verification. The
 > actual DDL runs in under a minute; the diagnostic pre-flight + the
 > post-flight `bootstrap` is what takes the rest.
