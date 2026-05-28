@@ -47,6 +47,8 @@ infrastructure/terraform/*.tfstate.backup
 temp_*.py
 temp_*.json
 temp_*.txt
+/diff_*.txt
+/diff_*.json
 
 # Local test-run scratch output — never commit (root-level dumps)
 /test_*.txt

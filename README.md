@@ -48,6 +48,19 @@
 
 ---
 
+> **Two repositories, two version lines.** This repo (`axon-lang`,
+> AGPL-3.0-or-later, public) ships the **language + runtime + compiler + 7 LLM
+> backends + Cognitive I/O + WebSocket session types** — currently **v2.3.0**.
+> The commercial control plane (`axon-enterprise`, EULA, private) layers
+> multi-tenant identity / RBAC / SSO / metering / audit / vertical compliance
+> **on top of** this language via a pinned Cargo dependency — currently
+> **v3.0.7**. The version numbers diverge by design (enterprise iterates on
+> the SaaS surface independently of the language). If you don't run a
+> commercial Axon deployment, this repo is all you need; the badge above is
+> the only version that matters for you.
+
+---
+
 ## What is AXON?
 
 AXON is a **compiled language** that targets LLMs instead of CPUs. It has a
