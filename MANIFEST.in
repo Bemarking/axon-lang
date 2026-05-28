@@ -7,8 +7,7 @@ include .env.example
 recursive-include examples *.axon
 
 # Exclude dev-only files
-exclude big-picture.md
-exclude north-star.md
 prune .axon-dev
+prune docs
 prune tests
 prune .venv

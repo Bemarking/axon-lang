@@ -86,10 +86,10 @@ git push origin master enterprise master
 ### Option 2: Use the Helper Script
 ```bash
 # Simple push to both
-./push-both.sh
+./scripts/push-both.sh
 
 # Smart push (detects enterprise features)
-./push-smart.sh
+./scripts/push-smart.sh
 ```
 
 ## Synchronization Strategy
