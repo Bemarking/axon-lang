@@ -48,7 +48,7 @@ sha256sum docs/adopter-upgrades/v1_oss_axon_rs/upgrade_v1_oss_axon_rs.sql
 # expected: 98d67c8980d56d5a2234cfc0fdd56e076a2522555e316d29f1324b37daf4551c
 
 sha256sum docs/adopter-upgrades/v1_oss_axon_rs/UPGRADE_v1.x_OSS_AXON_RS_TO_v3.x.md
-# expected: 520c927a79ec95fa9d80fb985dd502b7d947242fcc9e14535c106fd213314330
+# expected: 533b2cd7dd44fa63021d7fd992c4893506f0c36277d3034e0e8b4422c9bde9cc
 ```
 
 If you find a divergence between the mirror and any canonical version
