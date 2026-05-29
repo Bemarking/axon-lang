@@ -293,6 +293,35 @@ impl ServerConfig {
     }
 }
 
+/// §Fase 50.d/2 (v2.4.0) — minimal `ServerConfig` for embedded
+/// callers (notably `axon-enterprise`'s runtime executor that
+/// constructs `ServerState` to drive `server_execute_streaming`).
+///
+/// Defaults: in-memory channel (no DB), no auth token, INFO logs to
+/// stdout, no persisted state path. Adopters that need persistence
+/// or auth construct `ServerConfig` explicitly. This default is
+/// total + side-effect-free: `ServerState::new(ServerConfig::default())`
+/// produces a fresh in-memory state with no on-disk recovery
+/// attempted (when `config_path` is `None`).
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            channel: "memory".to_string(),
+            auth_token: String::new(),
+            log_level: "INFO".to_string(),
+            log_format: "json".to_string(),
+            log_file: None,
+            database_url: None,
+            config_path: None,
+            strict_type_driven_transport: false,
+            default_backend: None,
+            schemas_dir: None,
+        }
+    }
+}
+
 /// §Fase 31.f (D7) — Parse a truthy env var per the cross-stack
 /// contract. Truthy values (case-insensitive): "1", "true", "yes",
 /// "on". Empty / unset / any other value → false.
@@ -846,7 +875,14 @@ impl ServerMetrics {
 }
 
 impl ServerState {
-    fn new(config: ServerConfig) -> Self {
+    // §Fase 50.d/2 (v2.4.0) — publicized so external crates (notably
+    // `axon-enterprise`'s runtime executor) can construct a
+    // `ServerState` without reimplementing the persistence-recovery
+    // dance. The constructor is total + safe for callers without
+    // on-disk persistence (the recovery branches no-op when
+    // `config.config_path` is unset + no STATE_PERSIST_PATH file
+    // exists).
+    pub fn new(config: ServerConfig) -> Self {
         let event_bus = EventBus::new();
         let supervisor = DaemonSupervisor::new(event_bus.clone());
         let master_token = if config.auth_token.is_empty() { None } else { Some(config.auth_token.clone()) };
@@ -1002,7 +1038,12 @@ impl ServerState {
     }
 }
 
-type SharedState = Arc<Mutex<ServerState>>;
+// §Fase 50.d/2 (v2.4.0) — publicized alongside `server_execute_streaming`
+// so external crates can construct + thread the shared server state
+// into the streaming entry point. The wrapper type stays a `type`
+// alias so adopters that prefer the explicit `Arc<Mutex<ServerState>>`
+// shape don't pay an indirection cost.
+pub type SharedState = Arc<Mutex<ServerState>>;
 
 // ── Auth middleware ────────────────────────────────────────────────────────
 
@@ -18623,7 +18664,13 @@ fn resolve_stream_policies_for_flow(
 /// Bundles the [`FlowExecutionEvent`] receiver with an "exited"
 /// signal the consumer can await to confirm the producer task has
 /// terminated (e.g. for cancel-safety budgets in tests / metrics).
-pub(crate) struct StreamingExecution {
+// §Fase 33.f / §Fase 50.d/2 (v2.4.0) — publicized so `axon-enterprise`'s
+// runtime executor can drive real per-token SSE streaming via the
+// public `server_execute_streaming` entry point. The fields are read by
+// the SSE consumer (events receiver + per-step side-channels); making
+// the struct `pub` exposes those readings to enterprise consumers
+// without forcing them through the OSS axum handler.
+pub struct StreamingExecution {
     pub events: tokio::sync::mpsc::UnboundedReceiver<
         crate::flow_execution_event::FlowExecutionEvent,
     >,
@@ -18723,7 +18770,14 @@ pub(crate) struct StreamingExecution {
 /// Adopters on v1.26.0 who set `set_streaming_via_dispatcher(false)`
 /// hit a compile error on the missing symbol — explicit failure
 /// shape per the 33.y.l → 33.z.e deprecation cycle.
-fn server_execute_streaming(
+// §Fase 33.e/§Fase 50.d/2 (v2.4.0) — publicized so `axon-enterprise`'s
+// runtime executor can drive real per-token SSE streaming without
+// reimplementing the per-IRFlowNode dispatcher on its side. The
+// function builds the StreamingExecution handle (events channel + per-
+// step side-channels) the SSE consumer drives; enterprise consumers
+// pass a freshly-constructed `SharedState` (see `ServerState::new`,
+// also publicized in v2.4.0).
+pub fn server_execute_streaming(
     state: SharedState,
     source: String,
     source_file: String,
