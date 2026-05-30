@@ -99,6 +99,13 @@ pub mod backends;
 pub mod backend_resolution;
 /// §ESK Fase 6 — Epistemic Security Kernel. Port of `axon/runtime/esk/`.
 pub mod esk;
+/// §Fase 51 — Proof-Carrying Code. apx/axonendpoint carry a portable,
+/// machine-checkable proof object an INDEPENDENT verifier checks
+/// against the artifact WITHOUT trusting the compiler that produced it
+/// (the move from `esk`'s builder-signed attestation to a consumer-
+/// verifiable proof). §51.a ships the kernel + the ComplianceCoverage
+/// property class.
+pub mod pcc;
 /// CLI handlers for the ESK audit commands (dossier, sbom, audit, evidence-package).
 pub mod audit_cli;
 pub mod flow_inspect;
