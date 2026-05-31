@@ -14,9 +14,10 @@ use crate::ir_nodes::IRProgram;
 
 use super::effects;
 use super::proof_term::{
-    CapabilityIsolationWitness, ComplianceCoverageWitness,
-    EffectRowSoundnessWitness, ProofTerm, PropertyClass, ResourceBoundsWitness,
-    ShieldHaltGuaranteeWitness, Witness, MAX_RETRIES, VALID_BREACH_POLICIES,
+    CapabilityContainmentWitness, CapabilityIsolationWitness,
+    ComplianceCoverageWitness, EffectRowSoundnessWitness, ProofTerm,
+    PropertyClass, ResourceBoundsWitness, ShieldHaltGuaranteeWitness, Witness,
+    MAX_RETRIES, VALID_BREACH_POLICIES,
 };
 
 /// Canonical SHA-256 hex digest of the IR artifact. Reuses the
@@ -354,11 +355,132 @@ pub fn generate_shield_halt_guarantee_proofs(
     proofs
 }
 
+/// §51.x — recursively collect every store name a flow's steps reach
+/// (Retrieve / Persist / Mutate / Purge), descending into BOTH
+/// conditional branches + the for-in loop body. A SOUND
+/// over-approximation: every statically-reachable store op is counted
+/// (we do not know which branch fires at runtime, so both count), so a
+/// containment proof never misses a reachable gate. Total + bounded
+/// (the only nesting node kinds are `Conditional` + `ForIn`; the
+/// Par/Deliberate/Consensus/Forge blocks carry no nested steps in the
+/// IR).
+fn collect_store_accesses(
+    steps: &[crate::ir_nodes::IRFlowNode],
+    out: &mut Vec<String>,
+) {
+    use crate::ir_nodes::IRFlowNode as N;
+    for step in steps {
+        match step {
+            N::Retrieve(s) => out.push(s.store_name.clone()),
+            N::Persist(s) => out.push(s.store_name.clone()),
+            N::Mutate(s) => out.push(s.store_name.clone()),
+            N::Purge(s) => out.push(s.store_name.clone()),
+            N::Conditional(c) => {
+                collect_store_accesses(&c.then_body, out);
+                collect_store_accesses(&c.else_body, out);
+            }
+            N::ForIn(f) => collect_store_accesses(&f.body, out),
+            _ => {}
+        }
+    }
+}
+
+/// §51.x — derive a [`CapabilityContainmentWitness`] for one endpoint
+/// against the program IR. Pure + total. Shared with the checker
+/// (D51.2). Resolves `execute_flow` in `ir.flows`, walks its reachable
+/// store ops, resolves each store's capability gate, and computes the
+/// uncovered set (`reached_gates \ declared_requires`).
+pub fn derive_capability_containment_witness(
+    endpoint_name: &str,
+    execute_flow: &str,
+    declared_requires_raw: &[String],
+    ir: &IRProgram,
+) -> CapabilityContainmentWitness {
+    let declared_requires = canonical_classes(declared_requires_raw);
+
+    let flow = ir.flows.iter().find(|f| f.name == execute_flow);
+    let flow_resolved = flow.is_some();
+
+    // Reachable store names (sound over-approximation).
+    let mut reached_stores: Vec<String> = Vec::new();
+    if let Some(f) = flow {
+        collect_store_accesses(&f.steps, &mut reached_stores);
+    }
+
+    // Resolve each reached store to its capability gate (non-empty only).
+    let mut reached_gates: Vec<String> = reached_stores
+        .iter()
+        .filter_map(|name| {
+            ir.axonstore_specs
+                .iter()
+                .find(|s| &s.name == name)
+                .map(|s| s.capability.clone())
+        })
+        .filter(|cap| !cap.is_empty())
+        .collect();
+    reached_gates.sort();
+    reached_gates.dedup();
+
+    // uncovered = reached_gates \ declared_requires (the gates the flow
+    // reaches that the endpoint does not declare). Reuses the canonical
+    // `covers` predicate (required \ provided).
+    let mut uncovered_gates: Vec<String> = crate::esk::compliance::covers(
+        declared_requires.iter(),
+        reached_gates.iter(),
+    )
+    .into_iter()
+    .collect();
+    uncovered_gates.sort();
+
+    CapabilityContainmentWitness {
+        endpoint_name: endpoint_name.to_string(),
+        execute_flow: execute_flow.to_string(),
+        flow_resolved,
+        declared_requires,
+        reached_gates,
+        uncovered_gates,
+    }
+}
+
+/// §51.x — generate capability-containment proofs. One proof per
+/// apx/axonendpoint where the property is non-trivial: the endpoint
+/// declares `requires:` OR its flow reaches at least one gated store.
+/// (An endpoint with no requires that reaches no gated store has
+/// nothing to certify.) The "reaches a gated store with no requires"
+/// case IS generated — that is the capability-leak finding.
+pub fn generate_capability_containment_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for ep in &ir.endpoints {
+        let witness = derive_capability_containment_witness(
+            &ep.name,
+            &ep.execute_flow,
+            &ep.requires_capabilities,
+            ir,
+        );
+        // Skip trivial subjects: no declared requires AND no reached
+        // gates (nothing to certify).
+        if witness.declared_requires.is_empty() && witness.reached_gates.is_empty() {
+            continue;
+        }
+        proofs.push(ProofTerm {
+            property: PropertyClass::CapabilityContainment,
+            artifact_digest: digest.clone(),
+            witness: Witness::CapabilityContainment(witness),
+            axon_version: axon_version.to_string(),
+        });
+    }
+    proofs
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
-/// generator (compliance / effects / capability / resources / shields)
-/// — one bundle covering every certifiable property an apx program
-/// declares.
+/// generator (compliance / effects / capability-gate / resources /
+/// shields / capability-containment) — one bundle covering every
+/// certifiable property an apx program declares.
 pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
     let mut proofs = Vec::new();
     proofs.extend(generate_compliance_coverage_proofs(ir, axon_version));
@@ -366,5 +488,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_capability_isolation_proofs(ir, axon_version));
     proofs.extend(generate_resource_bounds_proofs(ir, axon_version));
     proofs.extend(generate_shield_halt_guarantee_proofs(ir, axon_version));
+    proofs.extend(generate_capability_containment_proofs(ir, axon_version));
     proofs
 }

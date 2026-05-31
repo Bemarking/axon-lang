@@ -38,19 +38,20 @@ pub mod proof_term;
 
 pub use checker::{check_proof, CheckOutcome};
 pub use generate::{
-    artifact_digest, derive_capability_isolation_witness,
-    derive_compliance_coverage_witness, derive_effect_row_soundness_witness,
-    derive_endpoint_retry_witness, derive_shield_halt_witness,
-    derive_socket_credit_witness, generate_all_proofs,
+    artifact_digest, derive_capability_containment_witness,
+    derive_capability_isolation_witness, derive_compliance_coverage_witness,
+    derive_effect_row_soundness_witness, derive_endpoint_retry_witness,
+    derive_shield_halt_witness, derive_socket_credit_witness,
+    generate_all_proofs, generate_capability_containment_proofs,
     generate_capability_isolation_proofs, generate_compliance_coverage_proofs,
     generate_effect_row_soundness_proofs, generate_resource_bounds_proofs,
     generate_shield_halt_guarantee_proofs,
 };
 pub use proof_term::{
-    CapabilityIsolationWitness, ComplianceCoverageWitness,
-    EffectRowSoundnessWitness, ProofBundle, ProofTerm, PropertyClass,
-    ResourceBoundsWitness, ShieldHaltGuaranteeWitness, Witness, MAX_RETRIES,
-    VALID_BREACH_POLICIES,
+    CapabilityContainmentWitness, CapabilityIsolationWitness,
+    ComplianceCoverageWitness, EffectRowSoundnessWitness, ProofBundle,
+    ProofTerm, PropertyClass, ResourceBoundsWitness, ShieldHaltGuaranteeWitness,
+    Witness, MAX_RETRIES, VALID_BREACH_POLICIES,
 };
 
 #[cfg(test)]
@@ -81,6 +82,7 @@ mod tests {
             compliance: compliance.iter().map(|s| s.to_string()).collect(),
             path_params: Vec::new(),
             query_params: Vec::new(),
+            requires_capabilities: Vec::new(),
         }
     }
 
@@ -342,6 +344,7 @@ mod tests {
         assert_eq!(PropertyClass::CapabilityIsolation.slug(), "capability_isolation");
         assert_eq!(PropertyClass::ResourceBounds.slug(), "resource_bounds");
         assert_eq!(PropertyClass::ShieldHaltGuarantee.slug(), "shield_halt_guarantee");
+        assert_eq!(PropertyClass::CapabilityContainment.slug(), "capability_containment");
     }
 
     // ── §Fase 51.b — EffectRowSoundness ──────────────────────────────
@@ -914,6 +917,224 @@ mod tests {
         let mut ir = empty_ir();
         ir.shields.push(shield_breach("Guard", "halt", &["pii_leak", "jailbreak"]));
         let proofs = generate_shield_halt_guarantee_proofs(&ir, VERSION);
+        let json = serde_json::to_string(&proofs[0]).expect("serialize");
+        let restored: ProofTerm = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored, proofs[0]);
+        assert_eq!(check_proof(&restored, &ir), CheckOutcome::Verified);
+    }
+
+    // ── §Fase 51.x — CapabilityContainment ───────────────────────────
+
+    /// An endpoint with the given execute_flow + declared requires.
+    fn endpoint_requires(
+        name: &str,
+        execute_flow: &str,
+        requires: &[&str],
+    ) -> IRAxonEndpoint {
+        let mut e = endpoint(name, &[], "");
+        e.execute_flow = execute_flow.to_string();
+        e.requires_capabilities = requires.iter().map(|s| s.to_string()).collect();
+        e
+    }
+
+    fn retrieve_step(store_name: &str) -> crate::ir_nodes::IRFlowNode {
+        crate::ir_nodes::IRFlowNode::Retrieve(crate::ir_nodes::IRRetrieveStep {
+            node_type: "retrieve",
+            source_line: 1,
+            source_column: 1,
+            store_name: store_name.to_string(),
+            where_expr: String::new(),
+            alias: String::new(),
+        })
+    }
+
+    /// A flow whose top-level steps each retrieve from the given stores.
+    fn flow_reaching(name: &str, store_names: &[&str]) -> crate::ir_nodes::IRFlow {
+        crate::ir_nodes::IRFlow {
+            node_type: "flow",
+            source_line: 1,
+            source_column: 1,
+            name: name.to_string(),
+            parameters: Vec::new(),
+            return_type_name: String::new(),
+            return_type_generic: String::new(),
+            return_type_optional: false,
+            steps: store_names.iter().map(|s| retrieve_step(s)).collect(),
+            edges: Vec::new(),
+            execution_levels: Vec::new(),
+        }
+    }
+
+    /// A flow that reaches `store_name` ONLY inside a conditional
+    /// then-branch (exercises the recursive store walk).
+    fn flow_reaching_in_conditional(
+        name: &str,
+        store_name: &str,
+    ) -> crate::ir_nodes::IRFlow {
+        let cond = crate::ir_nodes::IRFlowNode::Conditional(crate::ir_nodes::IRConditional {
+            node_type: "conditional",
+            source_line: 1,
+            source_column: 1,
+            condition: "x".to_string(),
+            comparison_op: "==".to_string(),
+            comparison_value: "1".to_string(),
+            then_body: vec![retrieve_step(store_name)],
+            else_body: Vec::new(),
+            conditions: Vec::new(),
+            conjunctor: String::new(),
+        });
+        let mut f = flow_reaching(name, &[]);
+        f.steps = vec![cond];
+        f
+    }
+
+    /// Happy path: the flow reaches a gated store, and the endpoint
+    /// declares requiring that exact gate → contained → Verified.
+    #[test]
+    fn covered_containment_verifies() {
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Ledger", "data.read"));
+        ir.flows.push(flow_reaching("Chat", &["Ledger"]));
+        ir.endpoints
+            .push(endpoint_requires("ChatEndpoint", "Chat", &["data.read"]));
+        let proofs = generate_capability_containment_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// CAPABILITY LEAK: the flow reaches a gated store but the endpoint
+    /// declares no covering requires → uncovered gate → Refuted.
+    #[test]
+    fn uncovered_gate_refuted() {
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Ledger", "data.read"));
+        ir.flows.push(flow_reaching("Chat", &["Ledger"]));
+        ir.endpoints
+            .push(endpoint_requires("Leaky", "Chat", &[])); // declares nothing
+        let proofs = generate_capability_containment_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 1, "reached-gate-with-no-requires must produce a proof");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("capability leak"), "got: {reason}");
+                assert!(reason.contains("data.read"), "got: {reason}");
+            }
+            other => panic!("expected leak Refuted, got {other:?}"),
+        }
+    }
+
+    /// The recursive walk catches a store reached only inside a
+    /// conditional branch → still a leak when uncovered.
+    #[test]
+    fn nested_conditional_reach_is_caught() {
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Secret", "admin.read"));
+        ir.flows
+            .push(flow_reaching_in_conditional("Branchy", "Secret"));
+        ir.endpoints
+            .push(endpoint_requires("NestedLeak", "Branchy", &[]));
+        let proofs = generate_capability_containment_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("admin.read"), "got: {reason}");
+            }
+            other => panic!("expected nested-reach Refuted, got {other:?}"),
+        }
+    }
+
+    /// An unresolvable execute_flow → Refuted (cannot certify
+    /// containment for a flow not in the artifact).
+    #[test]
+    fn unresolved_flow_refuted() {
+        let mut ir = empty_ir();
+        ir.endpoints
+            .push(endpoint_requires("Ghost", "NoSuchFlow", &["x.read"]));
+        let proofs = generate_capability_containment_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("not present in the artifact"), "got: {reason}");
+            }
+            other => panic!("expected unresolved-flow Refuted, got {other:?}"),
+        }
+    }
+
+    /// Declaring MORE requires than reached gates is fine (verified) —
+    /// containment is `reached ⊆ declared`, not equality.
+    #[test]
+    fn over_declared_requires_verifies() {
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Ledger", "data.read"));
+        ir.flows.push(flow_reaching("Chat", &["Ledger"]));
+        ir.endpoints.push(endpoint_requires(
+            "Strict",
+            "Chat",
+            &["data.read", "extra.write"], // extra is harmless
+        ));
+        let proofs = generate_capability_containment_proofs(&ir, VERSION);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// An endpoint with no requires reaching only UNGATED stores has
+    /// nothing to certify → no proof.
+    #[test]
+    fn trivial_no_requires_no_gates_no_proof() {
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Open", "")); // ungated
+        ir.flows.push(flow_reaching("Chat", &["Open"]));
+        ir.endpoints.push(endpoint_requires("Plain", "Chat", &[]));
+        assert!(generate_capability_containment_proofs(&ir, VERSION).is_empty());
+    }
+
+    /// ADVERSARIAL (D51.2): a forged witness hiding an uncovered gate
+    /// (clearing `uncovered_gates`) is rejected — the checker
+    /// recomputes from the artifact.
+    #[test]
+    fn forged_hidden_uncovered_rejected() {
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Ledger", "data.read"));
+        ir.flows.push(flow_reaching("Chat", &["Ledger"]));
+        ir.endpoints.push(endpoint_requires("Sneaky", "Chat", &[]));
+        let mut proofs = generate_capability_containment_proofs(&ir, VERSION);
+        if let Witness::CapabilityContainment(ref mut w) = proofs[0].witness {
+            w.uncovered_gates.clear(); // the lie
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("disagrees with artifact"), "got: {reason}");
+            }
+            other => panic!("expected forged Refuted, got {other:?}"),
+        }
+    }
+
+    /// Digest binding holds for containment proofs.
+    #[test]
+    fn containment_digest_mismatch_rejected() {
+        let mut ir_a = empty_ir();
+        ir_a.axonstore_specs.push(store("Ledger", "data.read"));
+        ir_a.flows.push(flow_reaching("Chat", &["Ledger"]));
+        ir_a.endpoints
+            .push(endpoint_requires("E", "Chat", &["data.read"]));
+        let proofs = generate_capability_containment_proofs(&ir_a, VERSION);
+
+        let mut ir_b = empty_ir();
+        ir_b.axonstore_specs.push(store("Ledger", "data.read"));
+        ir_b.flows.push(flow_reaching("Chat", &["Ledger"]));
+        ir_b.endpoints
+            .push(endpoint_requires("E", "Chat", &["data.read"]));
+        ir_b.endpoints
+            .push(endpoint_requires("Extra", "Chat", &["data.read"])); // changes digest
+
+        assert_eq!(check_proof(&proofs[0], &ir_b), CheckOutcome::DigestMismatch);
+    }
+
+    /// Containment proof round-trips through JSON and still verifies.
+    #[test]
+    fn containment_json_round_trips_and_verifies() {
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Ledger", "data.read"));
+        ir.flows.push(flow_reaching("Chat", &["Ledger"]));
+        ir.endpoints
+            .push(endpoint_requires("E", "Chat", &["data.read"]));
+        let proofs = generate_capability_containment_proofs(&ir, VERSION);
         let json = serde_json::to_string(&proofs[0]).expect("serialize");
         let restored: ProofTerm = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored, proofs[0]);
