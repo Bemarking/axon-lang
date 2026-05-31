@@ -1078,6 +1078,11 @@ impl IRGenerator {
                     optional: f.type_expr.optional,
                 })
                 .collect(),
+            // §Fase 51.x — lower the `requires:` capability scopes into
+            // the IR so the PCC CapabilityContainment property can read
+            // them. Direct clone; IR JSON omits the field when empty
+            // (D5 backwards-compat).
+            requires_capabilities: n.requires_capabilities.clone(),
         }
     }
 

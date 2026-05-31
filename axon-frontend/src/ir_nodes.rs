@@ -1406,6 +1406,16 @@ pub struct IRAxonEndpoint {
     /// — same D5 IR-JSON byte-identity guarantee as `path_params`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub query_params: Vec<IRTypeField>,
+    /// §Fase 51.x — capability scopes the request bearer must hold
+    /// (the `requires: [scope.dotted]` declaration, §Fase 32.g). Mirror
+    /// of `AxonEndpointDefinition.requires_capabilities`, lowered into
+    /// the IR so the PCC CapabilityContainment property can prove that
+    /// the stores this endpoint's flow reaches are all covered by the
+    /// declared requires. **`skip_serializing_if = Vec::is_empty`** so a
+    /// pre-§51.x IR-JSON snapshot (no `requires:`) stays byte-identical
+    /// (D5 backwards-compat — empty key parses back to empty Vec).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires_capabilities: Vec<String>,
 }
 
 // ── §λ-L-E Fase 13 — Mobile Typed Channels IR ───────────────────────────────

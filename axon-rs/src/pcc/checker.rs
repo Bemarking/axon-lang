@@ -25,10 +25,10 @@
 use crate::ir_nodes::IRProgram;
 
 use super::generate::{
-    artifact_digest, derive_capability_isolation_witness,
-    derive_compliance_coverage_witness, derive_effect_row_soundness_witness,
-    derive_endpoint_retry_witness, derive_shield_halt_witness,
-    derive_socket_credit_witness,
+    artifact_digest, derive_capability_containment_witness,
+    derive_capability_isolation_witness, derive_compliance_coverage_witness,
+    derive_effect_row_soundness_witness, derive_endpoint_retry_witness,
+    derive_shield_halt_witness, derive_socket_credit_witness,
 };
 use super::proof_term::{ProofTerm, PropertyClass, ResourceBoundsWitness, Witness};
 
@@ -80,6 +80,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         }
         (PropertyClass::ShieldHaltGuarantee, Witness::ShieldHaltGuarantee(w)) => {
             check_shield_halt_guarantee(w, ir)
+        }
+        (PropertyClass::CapabilityContainment, Witness::CapabilityContainment(w)) => {
+            check_capability_containment(w, ir)
         }
         _ => CheckOutcome::UnknownProperty,
     }
@@ -411,6 +414,66 @@ fn check_shield_halt_guarantee(
             reason: format!(
                 "shield '{}' declares `on_breach: halt` but an empty `scan: []` — the halt can never fire (no scan ⟹ no breach ⟹ no halt): a vacuous guarantee",
                 actual.shield_name
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §51.x — re-derive the capability-containment witness from the named
+/// endpoint and verify it against the proof, then render the verdict.
+/// Independent of the producer (D51.2): the checker re-resolves the
+/// `execute_flow`, re-walks its reachable store ops, re-resolves each
+/// gate, and recomputes the uncovered set; a forged witness (e.g.
+/// hiding an uncovered gate) is rejected because the recomputation
+/// disagrees.
+fn check_capability_containment(
+    claimed: &super::proof_term::CapabilityContainmentWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let ep = match ir.endpoints.iter().find(|e| e.name == claimed.endpoint_name) {
+        Some(e) => e,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "endpoint '{}' not present in artifact",
+                    claimed.endpoint_name
+                ),
+            }
+        }
+    };
+
+    // Re-derive independently — do NOT trust the witness.
+    let actual = derive_capability_containment_witness(
+        &ep.name,
+        &ep.execute_flow,
+        &ep.requires_capabilities,
+        ir,
+    );
+
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+
+    // Verdict. An unresolvable execute_flow cannot be analyzed for
+    // store reachability — refuse to certify containment (sound: a
+    // missing flow could reach gated stores we cannot see).
+    if !actual.flow_resolved {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "endpoint '{}' executes flow '{}' which is not present in the artifact — cannot certify capability containment",
+                actual.endpoint_name, actual.execute_flow
+            ),
+        };
+    }
+    if !actual.uncovered_gates.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "endpoint '{}' reaches store(s) gated by capabilit(ies) {:?} that its declared `requires:` {:?} does not cover — a capability leak (a request satisfying the declared requires could reach a store it is not authorized for)",
+                actual.endpoint_name, actual.uncovered_gates, actual.declared_requires
             ),
         };
     }

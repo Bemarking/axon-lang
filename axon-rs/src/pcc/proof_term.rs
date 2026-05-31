@@ -86,6 +86,19 @@ pub enum PropertyClass {
     /// an empty `scan: []` can never detect a breach, so the halt never
     /// fires — a vacuous guarantee / security theater).
     ShieldHaltGuarantee,
+    /// §51.x — the CONTAINMENT half of capability isolation (the
+    /// deferral §51.c flagged): every capability gate on a store the
+    /// apx's `execute_flow` REACHES is covered by the endpoint's
+    /// declared `requires:` scopes. Otherwise the flow touches a store
+    /// gated by capability `G` the endpoint does not declare requiring
+    /// — a request satisfying the endpoint's declared requires could
+    /// still reach a store it is not authorized for (capability leak /
+    /// privilege escalation). Reachability is a SOUND
+    /// over-approximation: every statically-reachable store op (both
+    /// conditional branches + the loop body) is counted. An
+    /// unresolvable `execute_flow` is REFUTED (cannot certify
+    /// containment for a flow the artifact does not contain).
+    CapabilityContainment,
 }
 
 /// §51.e — the closed breach-policy catalog. Mirror of
@@ -111,6 +124,7 @@ impl PropertyClass {
             PropertyClass::CapabilityIsolation => "capability_isolation",
             PropertyClass::ResourceBounds => "resource_bounds",
             PropertyClass::ShieldHaltGuarantee => "shield_halt_guarantee",
+            PropertyClass::CapabilityContainment => "capability_containment",
         }
     }
 }
@@ -244,6 +258,33 @@ pub struct ShieldHaltGuaranteeWitness {
     pub vacuous_halt: bool,
 }
 
+/// §51.x — witness for [`PropertyClass::CapabilityContainment`].
+///
+/// The derivation for one endpoint's reachable-store-gate containment.
+/// The checker re-resolves the `execute_flow`, re-walks its reachable
+/// store ops, re-resolves each store's capability gate, and recomputes
+/// the uncovered set; a forged witness is rejected because the
+/// recomputation disagrees (D51.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityContainmentWitness {
+    /// The apx / axonendpoint this proof is about.
+    pub endpoint_name: String,
+    /// The flow the endpoint executes.
+    pub execute_flow: String,
+    /// Whether `execute_flow` resolves to a flow present in the IR.
+    pub flow_resolved: bool,
+    /// The capability scopes the endpoint declares (`requires:`),
+    /// sorted + deduped.
+    pub declared_requires: Vec<String>,
+    /// The capability gates of the stores the flow REACHES (each
+    /// reached store's non-empty `capability`), sorted + deduped.
+    pub reached_gates: Vec<String>,
+    /// `reached_gates \ declared_requires` — gates the flow reaches but
+    /// the endpoint does not declare requiring. Empty for a verifying
+    /// proof.
+    pub uncovered_gates: Vec<String>,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,6 +295,7 @@ pub enum Witness {
     CapabilityIsolation(CapabilityIsolationWitness),
     ResourceBounds(ResourceBoundsWitness),
     ShieldHaltGuarantee(ShieldHaltGuaranteeWitness),
+    CapabilityContainment(CapabilityContainmentWitness),
 }
 
 impl Witness {
@@ -273,6 +315,7 @@ impl Witness {
                 ..
             }) => socket_name,
             Witness::ShieldHaltGuarantee(w) => &w.shield_name,
+            Witness::CapabilityContainment(w) => &w.endpoint_name,
         }
     }
 }
