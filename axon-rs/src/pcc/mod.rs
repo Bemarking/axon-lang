@@ -40,14 +40,15 @@ pub use checker::{check_proof, CheckOutcome};
 pub use generate::{
     artifact_digest, derive_capability_isolation_witness,
     derive_compliance_coverage_witness, derive_effect_row_soundness_witness,
-    derive_endpoint_retry_witness, derive_socket_credit_witness,
-    generate_capability_isolation_proofs, generate_compliance_coverage_proofs,
-    generate_effect_row_soundness_proofs, generate_resource_bounds_proofs,
+    derive_endpoint_retry_witness, derive_shield_halt_witness,
+    derive_socket_credit_witness, generate_capability_isolation_proofs,
+    generate_compliance_coverage_proofs, generate_effect_row_soundness_proofs,
+    generate_resource_bounds_proofs, generate_shield_halt_guarantee_proofs,
 };
 pub use proof_term::{
     CapabilityIsolationWitness, ComplianceCoverageWitness,
     EffectRowSoundnessWitness, ProofTerm, PropertyClass, ResourceBoundsWitness,
-    Witness, MAX_RETRIES,
+    ShieldHaltGuaranteeWitness, Witness, MAX_RETRIES, VALID_BREACH_POLICIES,
 };
 
 #[cfg(test)]
@@ -338,6 +339,7 @@ mod tests {
         assert_eq!(PropertyClass::EffectRowSoundness.slug(), "effect_row_soundness");
         assert_eq!(PropertyClass::CapabilityIsolation.slug(), "capability_isolation");
         assert_eq!(PropertyClass::ResourceBounds.slug(), "resource_bounds");
+        assert_eq!(PropertyClass::ShieldHaltGuarantee.slug(), "shield_halt_guarantee");
     }
 
     // ── §Fase 51.b — EffectRowSoundness ──────────────────────────────
@@ -794,6 +796,122 @@ mod tests {
         let mut ir = empty_ir();
         ir.sockets.push(socket("Chat", Some(16)));
         let proofs = generate_resource_bounds_proofs(&ir, VERSION);
+        let json = serde_json::to_string(&proofs[0]).expect("serialize");
+        let restored: ProofTerm = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored, proofs[0]);
+        assert_eq!(check_proof(&restored, &ir), CheckOutcome::Verified);
+    }
+
+    // ── §Fase 51.e — ShieldHaltGuarantee ─────────────────────────────
+
+    /// Shield with the given `on_breach` policy + `scan` categories.
+    fn shield_breach(name: &str, on_breach: &str, scan: &[&str]) -> IRShield {
+        let mut s = shield(name, &[]); // reuse base builder (compliance empty)
+        s.on_breach = on_breach.to_string();
+        s.scan = scan.iter().map(|c| c.to_string()).collect();
+        s
+    }
+
+    /// Happy path: a halt shield that actually scans verifies.
+    #[test]
+    fn valid_halt_with_scan_verifies() {
+        let mut ir = empty_ir();
+        ir.shields.push(shield_breach("Guard", "halt", &["pii_leak"]));
+        let proofs = generate_shield_halt_guarantee_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// A non-halt policy (deflect) with an empty scan verifies — the
+    /// vacuous check is halt-specific; deflect makes no halt guarantee.
+    #[test]
+    fn non_halt_policy_with_empty_scan_verifies() {
+        let mut ir = empty_ir();
+        ir.shields.push(shield_breach("Soft", "deflect", &[]));
+        let proofs = generate_shield_halt_guarantee_proofs(&ir, VERSION);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// A shield with no declared `on_breach` produces no proof.
+    #[test]
+    fn no_breach_policy_no_proof() {
+        let mut ir = empty_ir();
+        ir.shields.push(shield_breach("None", "", &["pii_leak"]));
+        assert!(generate_shield_halt_guarantee_proofs(&ir, VERSION).is_empty());
+    }
+
+    /// Unknown breach policy (typo'd `hault`, which the PARSER does NOT
+    /// reject — it reads `on_breach` as a bare identifier) → Refuted.
+    #[test]
+    fn unknown_breach_policy_refuted() {
+        let mut ir = empty_ir();
+        ir.shields.push(shield_breach("Typo", "hault", &["pii_leak"]));
+        let proofs = generate_shield_halt_guarantee_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("unknown on_breach policy"), "got: {reason}");
+                assert!(reason.contains("hault"), "got: {reason}");
+            }
+            other => panic!("expected unknown-policy Refuted, got {other:?}"),
+        }
+    }
+
+    /// VACUOUS HALT: a shield declaring `on_breach: halt` with an empty
+    /// `scan: []` → Refuted (the halt can never fire — security
+    /// theater). This defect is NOT enforced upstream.
+    #[test]
+    fn vacuous_halt_refuted() {
+        let mut ir = empty_ir();
+        ir.shields.push(shield_breach("Theater", "halt", &[]));
+        let proofs = generate_shield_halt_guarantee_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("vacuous"), "got: {reason}");
+                assert!(reason.contains("never fire"), "got: {reason}");
+            }
+            other => panic!("expected vacuous-halt Refuted, got {other:?}"),
+        }
+    }
+
+    /// ADVERSARIAL (D51.2): a forged witness claiming `vacuous_halt:
+    /// false` for a halt shield that scans nothing is rejected — the
+    /// checker recomputes from the artifact.
+    #[test]
+    fn forged_vacuous_halt_rejected() {
+        let mut ir = empty_ir();
+        ir.shields.push(shield_breach("Sneaky", "halt", &[]));
+        let mut proofs = generate_shield_halt_guarantee_proofs(&ir, VERSION);
+        if let Witness::ShieldHaltGuarantee(ref mut w) = proofs[0].witness {
+            w.vacuous_halt = false; // the lie
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("disagrees with artifact"), "got: {reason}");
+            }
+            other => panic!("expected forged Refuted, got {other:?}"),
+        }
+    }
+
+    /// Digest binding holds for shield-halt proofs.
+    #[test]
+    fn shield_halt_digest_mismatch_rejected() {
+        let mut ir_a = empty_ir();
+        ir_a.shields.push(shield_breach("Guard", "halt", &["pii_leak"]));
+        let proofs = generate_shield_halt_guarantee_proofs(&ir_a, VERSION);
+
+        let mut ir_b = empty_ir();
+        ir_b.shields.push(shield_breach("Guard", "halt", &["pii_leak"]));
+        ir_b.shields.push(shield_breach("Other", "deflect", &["toxicity"])); // changes digest
+
+        assert_eq!(check_proof(&proofs[0], &ir_b), CheckOutcome::DigestMismatch);
+    }
+
+    /// Shield-halt proof round-trips through JSON and still verifies.
+    #[test]
+    fn shield_halt_json_round_trips_and_verifies() {
+        let mut ir = empty_ir();
+        ir.shields.push(shield_breach("Guard", "halt", &["pii_leak", "jailbreak"]));
+        let proofs = generate_shield_halt_guarantee_proofs(&ir, VERSION);
         let json = serde_json::to_string(&proofs[0]).expect("serialize");
         let restored: ProofTerm = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored, proofs[0]);
