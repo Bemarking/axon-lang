@@ -90,12 +90,11 @@ while let Some(event) = rx.recv().await {
 
 ### Workspace consistency: axon-frontend pin sync
 
-The `axon-rs/Cargo.toml` dependency pin on `axon-frontend` was
-stale at `=1.1.0` while `axon-frontend/Cargo.toml` had been bumped
-to `1.2.0` in-tree. v2.4.0 updates the pin to `=1.2.0` so the
-workspace builds cleanly without lockfile coercion. (The `1.2.0`
-bump also lowers `requires_capabilities` into `IRAxonEndpoint` for
-the PCC capability-containment property below.)
+v2.4.0 pins `axon-frontend = "=1.3.0"`. **axon-frontend 1.3.0** is a
+companion release: 1.2.0 was already published to crates.io WITHOUT the
+`requires_capabilities` field, so the PCC capability-containment lowering
+(`requires_capabilities` on `IRAxonEndpoint`, §51.x.1) ships as the additive
+1.3.0 bump. Publish order: axon-frontend 1.3.0 → axon-lang 2.4.0.
 
 ---
 
