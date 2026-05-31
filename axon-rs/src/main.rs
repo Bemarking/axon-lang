@@ -284,6 +284,13 @@ enum Commands {
         #[command(subcommand)]
         action: StoreCommands,
     },
+    /// §Fase 51 — Proof-Carrying Code: generate + independently verify
+    /// machine-checkable proofs of an apx program's declared contract
+    /// (compliance / effects / capability / resources / shields).
+    Pcc {
+        #[command(subcommand)]
+        action: PccCommands,
+    },
     /// §Fase 39.f — Multi-file diagnostic aggregator (mirror of
     /// `axon.cli.parse_cmd` from Fase 28.f). Walks patterns / dirs,
     /// parses every `.axon` file with recovery, and aggregates
@@ -373,6 +380,34 @@ enum StoreCommands {
         /// support lands.
         #[arg(long, default_value = "json")]
         format: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PccCommands {
+    /// Compile a `.axon` file and emit a Proof-Carrying Code bundle
+    /// (JSON) certifying its declared contract across all five property
+    /// classes (compliance / effects / capability / resources /
+    /// shields). The bundle travels alongside the artifact; a consumer
+    /// runs `axon pcc verify` to check it WITHOUT trusting this
+    /// compiler.
+    Prove {
+        /// The `.axon` source file to prove.
+        file: String,
+        /// Optional path to write the bundle. Stdout when omitted.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Independently verify a proof bundle against a `.axon` source.
+    /// Recompiles the source (an independent re-derivation of the
+    /// artifact) and re-checks every proof; the per-proof `artifact_digest`
+    /// binding catches a bundle minted for different source. Exit 0 iff
+    /// every proof verifies; exit 1 if any is refuted / mismatched.
+    Verify {
+        /// The `.axon` source file the bundle claims to be about.
+        file: String,
+        /// The proof bundle JSON (as emitted by `axon pcc prove`).
+        bundle: String,
     },
 }
 
@@ -518,6 +553,14 @@ fn main() {
             audit_cli::run_evidence_package(&file, output.as_deref(), &note)
         }
         Commands::Store { action } => run_store_command(action),
+        Commands::Pcc { action } => match action {
+            PccCommands::Prove { file, output } => {
+                axon::pcc_cli::run_pcc_prove(&file, output.as_deref())
+            }
+            PccCommands::Verify { file, bundle } => {
+                axon::pcc_cli::run_pcc_verify(&file, &bundle)
+            }
+        },
         Commands::Parse {
             patterns,
             max_errors,
