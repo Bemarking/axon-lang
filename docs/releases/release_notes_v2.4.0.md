@@ -1,15 +1,17 @@
-# AXON v2.4.0 — Public streaming surface for downstream embedders
+# AXON v2.4.0 — Public streaming surface + Proof-Carrying Code
 
-> **Released:** 2026-05-28
+> **Released:** 2026-05-28 (streaming) · 2026-05-30 (PCC additions)
 > **Type:** minor bump · additive API surface · zero breaking change
-> **Theme:** §Fase 50.d/2 cross-stack catch-up — publicize the streaming
-> entry point + state constructor so `axon-enterprise` (and any other
-> downstream embedder) can drive real per-token SSE streaming without
-> reimplementing the per-IRFlowNode dispatcher.
+> **Theme:** two additive headline surfaces — (1) §Fase 50.d/2 cross-stack
+> catch-up publicizing the streaming entry point so embedders can drive real
+> per-token SSE, and (2) §Fase 51/52 **Proof-Carrying Code**: a new
+> `axon::pcc` module + `axon pcc prove`/`verify` CLI that emit a portable,
+> machine-checkable proof object an INDEPENDENT verifier re-checks against the
+> artifact — without trusting the compiler that produced it (Necula 1997).
 
 ---
 
-## What's new
+## What's new — Part 1: streaming surface
 
 ### Public streaming API for embedders (§Fase 50.d/2)
 
@@ -91,7 +93,69 @@ while let Some(event) = rx.recv().await {
 The `axon-rs/Cargo.toml` dependency pin on `axon-frontend` was
 stale at `=1.1.0` while `axon-frontend/Cargo.toml` had been bumped
 to `1.2.0` in-tree. v2.4.0 updates the pin to `=1.2.0` so the
-workspace builds cleanly without lockfile coercion.
+workspace builds cleanly without lockfile coercion. (The `1.2.0`
+bump also lowers `requires_capabilities` into `IRAxonEndpoint` for
+the PCC capability-containment property below.)
+
+---
+
+## What's new — Part 2: Proof-Carrying Code (§Fase 51 / 52)
+
+A new `pub mod pcc` turns "trust the axon compiler" into "verify the proof."
+Every `apx` / `axonendpoint` can carry a portable, serializable **proof
+object** (`ProofTerm` / `ProofBundle`) certifying a declared contract; a
+minimal **independent checker** re-derives the property from the artifact and
+verifies the witness — it never trusts the witness, and binds each proof to a
+specific artifact via a SHA-256 IR digest (a proof for program A cannot be
+replayed against program B).
+
+This is **Proof-Carrying Code** (Necula 1997): the producer ships code + a
+proof; the consumer runs a small trusted checker, cheaper than generation and
+independent of trust in the producer. It is categorically stronger than the
+existing attestation surfaces (SBOM / in-toto / SLSA / ComplianceDossier),
+which are builder-signed claims you trust the signer for.
+
+### Six property classes
+
+- **ComplianceCoverage** — an endpoint's declared `compliance: [...]` is fully
+  provided by its resolved shield (`covers(provided, required) == ∅`).
+- **EffectRowSoundness** — a tool's declared effect row is well-formed over
+  the known effect-base catalog (+ stream-qualifier validity).
+- **CapabilityIsolation** — each axonstore capability gate is grammatical.
+- **ResourceBounds** — endpoint retry counts + socket backpressure credits are
+  finite and in-bounds.
+- **ShieldHaltGuarantee** — a `on_breach: halt` shield is non-vacuous (a
+  non-empty `scan:` so the halt can actually fire).
+- **CapabilityContainment** (§51.x.1) — the capabilities reachable through an
+  endpoint's executed flow are a subset of what the endpoint declares in
+  `requires:`. The negation is a **capability leak**: an under-declared
+  endpoint that could reach a more-privileged store. The reachability walk is
+  an exhaustive, no-wildcard match over every `IRFlowNode` variant (§51.x.3 —
+  the compiler enforces it can never silently miss a future node).
+
+### `check_bundle` deployability aggregate (§52.a)
+
+`axon::pcc::check_bundle(&ProofBundle, &IRProgram) -> BundleReport` is the one
+trusted predicate for "is this bundle deployable" (`all_verified()` +
+`refutations()`). The policy lives in the checker, not in consumer glue — so
+the `axon pcc verify` CLI and any downstream deploy gate render identical
+verdicts. (`axon-enterprise` v3.1.0 consumes exactly this for a fail-closed
+proof-at-deploy gate.)
+
+### `axon pcc` CLI (§51.f)
+
+- **`axon pcc prove <source.axon> [-o bundle.json]`** — compile, generate the
+  full `ProofBundle` across all property classes, emit JSON.
+- **`axon pcc verify <source.axon> <bundle.json>`** — recompile the source (an
+  INDEPENDENT re-derivation), check every proof against it, exit 0 iff all
+  verified.
+
+### Surface (all additive)
+
+`pub mod pcc` re-exports `ProofTerm`, `ProofBundle`, `PropertyClass` (6
+variants), the witness structs, `check_proof`, `check_bundle`, `BundleReport`,
+`generate_all_proofs`, `artifact_digest`, and the per-class generators. Plus
+`pub mod pcc_cli` for the CLI entry points. No existing surface changed.
 
 ---
 
@@ -157,9 +221,13 @@ cargo install axon-lang --version 2.4.0
 
 ## Tests
 
-- `axon-lang` lib: **2245 / 2245 green** (no test changes; the
-  publicity bump compiles into the same test surface).
-- `axon-frontend` lib: 535 / 535 green.
+- `axon-lang` lib: **2316 / 2316 green** (streaming publicity is shape-only;
+  +71 of those are the new `pcc` suite — 13 ComplianceCoverage + 12
+  EffectRowSoundness + 7 CapabilityIsolation + 10 ResourceBounds + 8
+  ShieldHaltGuarantee + 9 CapabilityContainment + 5 check_bundle + 4 CLI +
+  3 §51.x.3 invariant gates, incl. adversarial forged-witness + digest-mismatch
+  cases per class).
+- `axon-frontend` lib: 535+ green (incl. the `requires_capabilities` lowering).
 - `axon-csys` lib: 13 / 13 green.
 - Workspace build clean post-bump.
 
