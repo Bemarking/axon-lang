@@ -360,10 +360,39 @@ pub fn generate_shield_halt_guarantee_proofs(
 /// conditional branches + the for-in loop body. A SOUND
 /// over-approximation: every statically-reachable store op is counted
 /// (we do not know which branch fires at runtime, so both count), so a
-/// containment proof never misses a reachable gate. Total + bounded
-/// (the only nesting node kinds are `Conditional` + `ForIn`; the
-/// Par/Deliberate/Consensus/Forge blocks carry no nested steps in the
-/// IR).
+/// containment proof never misses a reachable gate. Total + bounded.
+///
+/// ## §51.x.3 — no-silent-gap invariant (compiler-enforced)
+///
+/// The match below is **exhaustive — there is NO `_` wildcard arm**.
+/// Every [`IRFlowNode`](crate::ir_nodes::IRFlowNode) variant is
+/// classified deliberately into exactly one of three buckets:
+///
+/// - **store op** — names a capability-gated `axonstore_specs` entry
+///   (the four CRUD verbs Retrieve/Persist/Mutate/Purge are, by
+///   construction, the ONLY axonstore-touching nodes);
+/// - **nesting** — carries a nested `Vec<IRFlowNode>` body to recurse
+///   into (ONLY `Conditional` then/else + `ForIn` body);
+/// - **leaf** — carries neither an axonstore reference nor a nested
+///   body, so it contributes nothing to the reachable-gate set.
+///
+/// Because there is no wildcard, **adding a new `IRFlowNode` variant
+/// breaks compilation here** until a maintainer classifies it — the
+/// reachability walk can never silently miss a future node that adds a
+/// store reference or a nested body. (A `cargo test` source gate also
+/// pins the absence of a wildcard so a refactor cannot reintroduce one.)
+///
+/// Notes on the leaf classification:
+/// - `Remember` / `Recall` reference the cognitive **memory** subsystem
+///   (`memory_target` / `memory_source`), a DIFFERENT subsystem from the
+///   capability-gated axonstore; if memory ever becomes capability-gated
+///   that is a NEW property class, not this walk.
+/// - `Par` / `Deliberate` / `Consensus` / `Forge` / `Stream` / `Transact`
+///   are payload-free in the IR (no nested `IRFlowNode` body).
+/// - If a flow-invocation node (cf. the top-level [`IRRun`](crate::ir_nodes::IRRun),
+///   which today lives ONLY at program level and is unreachable from a
+///   flow body) ever enters `IRFlowNode`, this is where transitive
+///   cross-flow reachability must be REOPENED (§51.x.3).
 fn collect_store_accesses(
     steps: &[crate::ir_nodes::IRFlowNode],
     out: &mut Vec<String>,
@@ -371,16 +400,59 @@ fn collect_store_accesses(
     use crate::ir_nodes::IRFlowNode as N;
     for step in steps {
         match step {
+            // ── store ops — the only axonstore-touching nodes ──
             N::Retrieve(s) => out.push(s.store_name.clone()),
             N::Persist(s) => out.push(s.store_name.clone()),
             N::Mutate(s) => out.push(s.store_name.clone()),
             N::Purge(s) => out.push(s.store_name.clone()),
+            // ── nesting — the only nodes with a nested body ──
             N::Conditional(c) => {
                 collect_store_accesses(&c.then_body, out);
                 collect_store_accesses(&c.else_body, out);
             }
             N::ForIn(f) => collect_store_accesses(&f.body, out),
-            _ => {}
+            // ── leaves — no axonstore ref, no nested body. Listed
+            // EXPLICITLY (no `_` wildcard) so a future variant forces a
+            // deliberate classification at compile time (§51.x.3). ──
+            N::Step(_)
+            | N::Probe(_)
+            | N::Reason(_)
+            | N::Validate(_)
+            | N::Refine(_)
+            | N::Weave(_)
+            | N::UseTool(_)
+            | N::Remember(_)
+            | N::Recall(_)
+            | N::Let(_)
+            | N::Return(_)
+            | N::Break(_)
+            | N::Continue(_)
+            | N::LambdaDataApply(_)
+            | N::Par(_)
+            | N::Hibernate(_)
+            | N::Deliberate(_)
+            | N::Consensus(_)
+            | N::Forge(_)
+            | N::Focus(_)
+            | N::Associate(_)
+            | N::Aggregate(_)
+            | N::Explore(_)
+            | N::Ingest(_)
+            | N::ShieldApply(_)
+            | N::Stream(_)
+            | N::Navigate(_)
+            | N::Drill(_)
+            | N::Trail(_)
+            | N::Corroborate(_)
+            | N::OtsApply(_)
+            | N::MandateApply(_)
+            | N::ComputeApply(_)
+            | N::Listen(_)
+            | N::DaemonStep(_)
+            | N::Emit(_)
+            | N::Publish(_)
+            | N::Discover(_)
+            | N::Transact(_) => {}
         }
     }
 }
