@@ -38,13 +38,14 @@ pub mod proof_term;
 
 pub use checker::{check_proof, CheckOutcome};
 pub use generate::{
-    artifact_digest, derive_compliance_coverage_witness,
-    derive_effect_row_soundness_witness, generate_compliance_coverage_proofs,
+    artifact_digest, derive_capability_isolation_witness,
+    derive_compliance_coverage_witness, derive_effect_row_soundness_witness,
+    generate_capability_isolation_proofs, generate_compliance_coverage_proofs,
     generate_effect_row_soundness_proofs,
 };
 pub use proof_term::{
-    ComplianceCoverageWitness, EffectRowSoundnessWitness, ProofTerm,
-    PropertyClass, Witness,
+    CapabilityIsolationWitness, ComplianceCoverageWitness,
+    EffectRowSoundnessWitness, ProofTerm, PropertyClass, Witness,
 };
 
 #[cfg(test)]
@@ -333,6 +334,7 @@ mod tests {
     fn property_class_slug_stable() {
         assert_eq!(PropertyClass::ComplianceCoverage.slug(), "compliance_coverage");
         assert_eq!(PropertyClass::EffectRowSoundness.slug(), "effect_row_soundness");
+        assert_eq!(PropertyClass::CapabilityIsolation.slug(), "capability_isolation");
     }
 
     // ── §Fase 51.b — EffectRowSoundness ──────────────────────────────
@@ -515,5 +517,112 @@ mod tests {
         ir_b.tools.push(tool("Other", &["storage"])); // changes digest
 
         assert_eq!(check_proof(&proofs[0], &ir_b), CheckOutcome::DigestMismatch);
+    }
+
+    // ── §Fase 51.c — CapabilityIsolation ─────────────────────────────
+
+    /// `axonstore` with the given Pillar IV capability gate slug.
+    fn store(name: &str, capability: &str) -> crate::ir_nodes::IRAxonStore {
+        crate::ir_nodes::IRAxonStore {
+            node_type: "axonstore",
+            source_line: 1,
+            source_column: 1,
+            name: name.to_string(),
+            backend: "postgresql".to_string(),
+            connection: String::new(),
+            confidence_floor: None,
+            isolation: String::new(),
+            on_breach: String::new(),
+            capability: capability.to_string(),
+            column_schema: None,
+        }
+    }
+
+    /// Happy path: a well-formed §32.g gate slug verifies.
+    #[test]
+    fn well_formed_gate_verifies() {
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Ledger", "legal.read"));
+        let proofs = generate_capability_isolation_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// A store with no capability gate produces no proof.
+    #[test]
+    fn no_gate_no_proof() {
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Open", ""));
+        assert!(generate_capability_isolation_proofs(&ir, VERSION).is_empty());
+    }
+
+    /// A malformed gate slug (uppercase violates the §32.g grammar) →
+    /// Refuted.
+    #[test]
+    fn malformed_gate_refuted() {
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Broken", "Legal.Read")); // uppercase
+        let proofs = generate_capability_isolation_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("malformed capability gate"), "got: {reason}");
+                assert!(reason.contains("Legal.Read"), "got: {reason}");
+            }
+            other => panic!("expected malformed-gate Refuted, got {other:?}"),
+        }
+    }
+
+    /// Dotted multi-segment scope (`hipaa.phi.read`) is well-formed.
+    #[test]
+    fn deep_dotted_gate_verifies() {
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Phi", "hipaa.phi.read"));
+        let proofs = generate_capability_isolation_proofs(&ir, VERSION);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// ADVERSARIAL (D51.2): a forged witness claiming `malformed:
+    /// false` for a broken gate is rejected — the checker re-runs the
+    /// grammar validator and finds the witness lies.
+    #[test]
+    fn forged_malformed_flag_rejected() {
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Sneaky", "Bad..Slug"));
+        let mut proofs = generate_capability_isolation_proofs(&ir, VERSION);
+        if let Witness::CapabilityIsolation(ref mut w) = proofs[0].witness {
+            w.malformed = false; // the lie
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("disagrees with artifact"), "got: {reason}");
+            }
+            other => panic!("expected forged Refuted, got {other:?}"),
+        }
+    }
+
+    /// Digest binding holds for capability proofs.
+    #[test]
+    fn capability_proof_digest_mismatch_rejected() {
+        let mut ir_a = empty_ir();
+        ir_a.axonstore_specs.push(store("Ledger", "legal.read"));
+        let proofs = generate_capability_isolation_proofs(&ir_a, VERSION);
+
+        let mut ir_b = empty_ir();
+        ir_b.axonstore_specs.push(store("Ledger", "legal.read"));
+        ir_b.axonstore_specs.push(store("Extra", "fin.read")); // changes digest
+
+        assert_eq!(check_proof(&proofs[0], &ir_b), CheckOutcome::DigestMismatch);
+    }
+
+    /// Capability proof round-trips through JSON and still verifies.
+    #[test]
+    fn capability_proof_json_round_trips_and_verifies() {
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Ledger", "legal.read"));
+        let proofs = generate_capability_isolation_proofs(&ir, VERSION);
+        let json = serde_json::to_string(&proofs[0]).expect("serialize");
+        let restored: ProofTerm = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored, proofs[0]);
+        assert_eq!(check_proof(&restored, &ir), CheckOutcome::Verified);
     }
 }

@@ -51,6 +51,23 @@ pub enum PropertyClass {
     /// `stream` without a backpressure policy, and pure/impure
     /// contradictions.
     EffectRowSoundness,
+    /// §51.c — every capability gate an `axonstore` declares (its
+    /// Pillar IV `capability` slug, §Fase 35.j) is a well-formed §32.g
+    /// capability scope (matches the closed grammar
+    /// `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`, via the OSS
+    /// `axon_frontend::parser::is_valid_capability_slug`). A malformed
+    /// gate is a Pillar IV defect: it can never match a properly-formed
+    /// bearer capability, so the store is either locked out or — worse,
+    /// if a consumer treats "unparseable gate" as "no gate" — silently
+    /// bypassed.
+    ///
+    /// **Scope (honest):** this is the gate-integrity half. The
+    /// containment half — an apx's reachable store gates ⊆ its declared
+    /// `requires:` set — needs the endpoint `requires_capabilities`
+    /// (AST / enterprise deploy metadata, NOT lowered to the frontend
+    /// IR) + flow→store reachability, and is deferred to §51.x
+    /// (enterprise PCC consumption, where `requires` lives).
+    CapabilityIsolation,
 }
 
 impl PropertyClass {
@@ -59,6 +76,7 @@ impl PropertyClass {
         match self {
             PropertyClass::ComplianceCoverage => "compliance_coverage",
             PropertyClass::EffectRowSoundness => "effect_row_soundness",
+            PropertyClass::CapabilityIsolation => "capability_isolation",
         }
     }
 }
@@ -128,6 +146,23 @@ pub struct EffectRowSoundnessWitness {
     pub purity_violation: bool,
 }
 
+/// §51.c — witness for [`PropertyClass::CapabilityIsolation`].
+///
+/// The derivation for one `axonstore`'s capability gate. The checker
+/// re-reads the store's `capability` from the IR and re-runs the §32.g
+/// grammar validator; a forged witness is rejected because the
+/// recomputation disagrees (D51.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityIsolationWitness {
+    /// The `axonstore` this proof is about.
+    pub store_name: String,
+    /// The store's declared Pillar IV capability gate slug.
+    pub capability: String,
+    /// True when `capability` is non-empty AND does NOT match the
+    /// §32.g capability-scope grammar. False for a verifying proof.
+    pub malformed: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +170,7 @@ pub struct EffectRowSoundnessWitness {
 pub enum Witness {
     ComplianceCoverage(ComplianceCoverageWitness),
     EffectRowSoundness(EffectRowSoundnessWitness),
+    CapabilityIsolation(CapabilityIsolationWitness),
 }
 
 /// The portable proof object (D51.1). Serializes to JSON; travels with

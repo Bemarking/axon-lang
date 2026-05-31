@@ -14,8 +14,8 @@ use crate::ir_nodes::IRProgram;
 
 use super::effects;
 use super::proof_term::{
-    ComplianceCoverageWitness, EffectRowSoundnessWitness, ProofTerm,
-    PropertyClass, Witness,
+    CapabilityIsolationWitness, ComplianceCoverageWitness,
+    EffectRowSoundnessWitness, ProofTerm, PropertyClass, Witness,
 };
 
 /// Canonical SHA-256 hex digest of the IR artifact. Reuses the
@@ -196,6 +196,52 @@ pub fn generate_effect_row_soundness_proofs(
             property: PropertyClass::EffectRowSoundness,
             artifact_digest: digest.clone(),
             witness: Witness::EffectRowSoundness(witness),
+            axon_version: axon_version.to_string(),
+        });
+    }
+    proofs
+}
+
+/// §51.c — derive a [`CapabilityIsolationWitness`] for one store's
+/// capability gate. Pure + total. Shared with the checker's
+/// re-derivation path (D51.2). Grammar validity delegates to the OSS
+/// single-source-of-truth `axon_frontend::parser::is_valid_capability_slug`
+/// (re-exported as `crate::parser`) — the checker re-derives the FACT
+/// (this store's gate slug) and re-runs the canonical validator; it
+/// does not trust the witness.
+pub fn derive_capability_isolation_witness(
+    store_name: &str,
+    capability: &str,
+) -> CapabilityIsolationWitness {
+    let malformed =
+        !capability.is_empty() && !crate::parser::is_valid_capability_slug(capability);
+    CapabilityIsolationWitness {
+        store_name: store_name.to_string(),
+        capability: capability.to_string(),
+        malformed,
+    }
+}
+
+/// §51.c — generate capability-isolation proofs for every `axonstore`
+/// in `ir` that declares a non-empty `capability` gate. Stores with no
+/// gate produce no proof (nothing to certify — an ungated store is out
+/// of scope for the gate-integrity property).
+pub fn generate_capability_isolation_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for store in &ir.axonstore_specs {
+        if store.capability.is_empty() {
+            continue;
+        }
+        let witness =
+            derive_capability_isolation_witness(&store.name, &store.capability);
+        proofs.push(ProofTerm {
+            property: PropertyClass::CapabilityIsolation,
+            artifact_digest: digest.clone(),
+            witness: Witness::CapabilityIsolation(witness),
             axon_version: axon_version.to_string(),
         });
     }
