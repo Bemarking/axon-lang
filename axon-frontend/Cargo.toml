@@ -1,10 +1,10 @@
 [package]
 name = "axon-frontend"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2021"
 rust-version = "1.95"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
-description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator. Zero runtime dependencies. v1.2.0 adds PRIMITIVE_REGISTRY — closed catalogue of every named language construct (45 entries) with PrimitiveInfo / DocStatus / CoverageSummary types + find / by_category / with_status / coverage_summary helpers. Single source of truth for downstream tooling (axon-emcp coverage gate, future LSP completions, docs-site generators). v1.1.0 introduced session-types + multiparty projection. v1.0.x earlier cycles — see https://github.com/Bemarking/axon-lang."
+description = "AXON compiler frontend — lexer, parser, AST, epistemic type system, type checker, IR generator. Zero runtime dependencies. v1.3.0 lowers requires_capabilities into IRAxonEndpoint (the PCC capability-containment property, §Fase 51.x.1). v1.2.0 added PRIMITIVE_REGISTRY — closed catalogue of every named language construct (45 entries) with PrimitiveInfo / DocStatus / CoverageSummary types + helpers. v1.1.0 introduced session-types + multiparty projection. See https://github.com/Bemarking/axon-lang."
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/Bemarking/axon-lang"
 readme = "README.md"
