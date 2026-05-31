@@ -15,7 +15,8 @@ use crate::ir_nodes::IRProgram;
 use super::effects;
 use super::proof_term::{
     CapabilityIsolationWitness, ComplianceCoverageWitness,
-    EffectRowSoundnessWitness, ProofTerm, PropertyClass, Witness,
+    EffectRowSoundnessWitness, ProofTerm, PropertyClass, ResourceBoundsWitness,
+    Witness, MAX_RETRIES,
 };
 
 /// Canonical SHA-256 hex digest of the IR artifact. Reuses the
@@ -244,6 +245,67 @@ pub fn generate_capability_isolation_proofs(
             witness: Witness::CapabilityIsolation(witness),
             axon_version: axon_version.to_string(),
         });
+    }
+    proofs
+}
+
+/// §51.d — derive the retry-bound witness for one endpoint. Pure +
+/// total. Shared with the checker (D51.2).
+pub fn derive_endpoint_retry_witness(
+    endpoint_name: &str,
+    retries: i64,
+) -> ResourceBoundsWitness {
+    ResourceBoundsWitness::EndpointRetry {
+        endpoint_name: endpoint_name.to_string(),
+        retries,
+        in_bounds: (0..=MAX_RETRIES).contains(&retries),
+    }
+}
+
+/// §51.d — derive the credit-positivity witness for one socket's
+/// DECLARED credit window. Pure + total. Shared with the checker.
+pub fn derive_socket_credit_witness(
+    socket_name: &str,
+    credit: i64,
+) -> ResourceBoundsWitness {
+    ResourceBoundsWitness::SocketCredit {
+        socket_name: socket_name.to_string(),
+        credit,
+        positive: credit >= 1,
+    }
+}
+
+/// §51.d — generate resource-bound proofs: one retry-bound proof per
+/// apx/axonendpoint, plus one credit-positivity proof per socket that
+/// DECLARES a `backpressure: credit(k)` window. Sockets with an
+/// unspecified credit produce no proof (unspecified is a legitimate
+/// type state, not a bound to certify). `timeout` is out of scope by
+/// design (closed duration enum, bounded at parse).
+pub fn generate_resource_bounds_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for ep in &ir.endpoints {
+        let witness = derive_endpoint_retry_witness(&ep.name, ep.retries);
+        proofs.push(ProofTerm {
+            property: PropertyClass::ResourceBounds,
+            artifact_digest: digest.clone(),
+            witness: Witness::ResourceBounds(witness),
+            axon_version: axon_version.to_string(),
+        });
+    }
+    for socket in &ir.sockets {
+        if let Some(credit) = socket.backpressure_credit {
+            let witness = derive_socket_credit_witness(&socket.name, credit);
+            proofs.push(ProofTerm {
+                property: PropertyClass::ResourceBounds,
+                artifact_digest: digest.clone(),
+                witness: Witness::ResourceBounds(witness),
+                axon_version: axon_version.to_string(),
+            });
+        }
     }
     proofs
 }

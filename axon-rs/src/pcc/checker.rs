@@ -27,8 +27,9 @@ use crate::ir_nodes::IRProgram;
 use super::generate::{
     artifact_digest, derive_capability_isolation_witness,
     derive_compliance_coverage_witness, derive_effect_row_soundness_witness,
+    derive_endpoint_retry_witness, derive_socket_credit_witness,
 };
-use super::proof_term::{ProofTerm, PropertyClass, Witness};
+use super::proof_term::{ProofTerm, PropertyClass, ResourceBoundsWitness, Witness};
 
 /// The closed verdict catalog. Total over every proof shape — no
 /// default / panic path.
@@ -72,6 +73,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         }
         (PropertyClass::CapabilityIsolation, Witness::CapabilityIsolation(w)) => {
             check_capability_isolation(w, ir)
+        }
+        (PropertyClass::ResourceBounds, Witness::ResourceBounds(w)) => {
+            check_resource_bounds(w, ir)
         }
         _ => CheckOutcome::UnknownProperty,
     }
@@ -263,4 +267,96 @@ fn check_capability_isolation(
         };
     }
     CheckOutcome::Verified
+}
+
+/// §51.d — re-derive the resource-bound witness from the named subject
+/// (endpoint or socket) and verify it against the proof, then render
+/// the verdict. Independent of the producer (D51.2): the checker
+/// re-reads `retries` / `backpressure_credit` from the artifact and
+/// recomputes the bound; a forged witness is rejected because the
+/// recomputation disagrees.
+fn check_resource_bounds(
+    claimed: &ResourceBoundsWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    match claimed {
+        ResourceBoundsWitness::EndpointRetry { endpoint_name, .. } => {
+            let ep = match ir.endpoints.iter().find(|e| e.name == *endpoint_name) {
+                Some(e) => e,
+                None => {
+                    return CheckOutcome::Refuted {
+                        reason: format!(
+                            "endpoint '{}' not present in artifact",
+                            endpoint_name
+                        ),
+                    }
+                }
+            };
+            let actual = derive_endpoint_retry_witness(&ep.name, ep.retries);
+            if actual != *claimed {
+                return CheckOutcome::Refuted {
+                    reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                        .to_string(),
+                };
+            }
+            if let ResourceBoundsWitness::EndpointRetry { retries, in_bounds, .. } = &actual {
+                if !in_bounds {
+                    return CheckOutcome::Refuted {
+                        reason: format!(
+                            "endpoint '{}' declares retries={} outside the bound [0, {}] (negative is nonsensical; above the ceiling is a retry storm)",
+                            ep.name,
+                            retries,
+                            super::proof_term::MAX_RETRIES
+                        ),
+                    };
+                }
+            }
+            CheckOutcome::Verified
+        }
+        ResourceBoundsWitness::SocketCredit { socket_name, .. } => {
+            let socket = match ir.sockets.iter().find(|s| s.name == *socket_name) {
+                Some(s) => s,
+                None => {
+                    return CheckOutcome::Refuted {
+                        reason: format!(
+                            "socket '{}' not present in artifact",
+                            socket_name
+                        ),
+                    }
+                }
+            };
+            // The witness claims a DECLARED credit. If the artifact's
+            // socket has no declared credit, the witness disagrees
+            // (forged / stale).
+            let credit = match socket.backpressure_credit {
+                Some(k) => k,
+                None => {
+                    return CheckOutcome::Refuted {
+                        reason: format!(
+                            "socket '{}' has no declared backpressure credit in the artifact, but the witness claims one (forged or stale proof)",
+                            socket_name
+                        ),
+                    }
+                }
+            };
+            let actual = derive_socket_credit_witness(&socket.name, credit);
+            if actual != *claimed {
+                return CheckOutcome::Refuted {
+                    reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                        .to_string(),
+                };
+            }
+            if let ResourceBoundsWitness::SocketCredit { credit, positive, .. } = &actual {
+                if !positive {
+                    return CheckOutcome::Refuted {
+                        reason: format!(
+                            "socket '{}' declares backpressure credit({}) — a window < 1 deadlocks the §Fase 41.b typed-resource gate",
+                            socket.name, credit
+                        ),
+                    };
+                }
+            }
+            CheckOutcome::Verified
+        }
+    }
 }
