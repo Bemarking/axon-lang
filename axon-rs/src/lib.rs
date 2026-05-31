@@ -108,6 +108,11 @@ pub mod esk;
 pub mod pcc;
 /// CLI handlers for the ESK audit commands (dossier, sbom, audit, evidence-package).
 pub mod audit_cli;
+/// §Fase 51.f — CLI handlers for the PCC commands (`axon pcc prove` /
+/// `axon pcc verify`). Closes the Proof-Carrying Code loop at the
+/// command line: generate a proof bundle from source, then
+/// independently verify it against a recompile of that source.
+pub mod pcc_cli;
 pub mod flow_inspect;
 /// §Fase 33.x.g — Closed-catalog runtime warnings for the SSE
 /// production path. Surfaces `axon-W002 streaming-not-supported`

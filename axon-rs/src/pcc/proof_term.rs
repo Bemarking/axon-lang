@@ -256,6 +256,27 @@ pub enum Witness {
     ShieldHaltGuarantee(ShieldHaltGuaranteeWitness),
 }
 
+impl Witness {
+    /// §51.f — the subject (endpoint / tool / store / socket / shield)
+    /// the witness is about, for human-readable CLI output. Total.
+    pub fn subject_name(&self) -> &str {
+        match self {
+            Witness::ComplianceCoverage(w) => &w.endpoint_name,
+            Witness::EffectRowSoundness(w) => &w.tool_name,
+            Witness::CapabilityIsolation(w) => &w.store_name,
+            Witness::ResourceBounds(ResourceBoundsWitness::EndpointRetry {
+                endpoint_name,
+                ..
+            }) => endpoint_name,
+            Witness::ResourceBounds(ResourceBoundsWitness::SocketCredit {
+                socket_name,
+                ..
+            }) => socket_name,
+            Witness::ShieldHaltGuarantee(w) => &w.shield_name,
+        }
+    }
+}
+
 /// The portable proof object (D51.1). Serializes to JSON; travels with
 /// the artifact; the independent checker verifies it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,4 +290,19 @@ pub struct ProofTerm {
     pub witness: Witness,
     /// Producer version (diagnostic; NOT trusted by the checker).
     pub axon_version: String,
+}
+
+/// §51.f — the portable proof bundle the `axon pcc prove` CLI emits +
+/// `axon pcc verify` consumes. Carries every proof generated for an
+/// artifact plus the artifact digest they all bind to (a quick
+/// sanity field — the per-proof `artifact_digest` is the authoritative
+/// binding the checker re-verifies).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofBundle {
+    /// Producer version that generated the bundle.
+    pub axon_version: String,
+    /// SHA-256 hex digest of the artifact all proofs bind to.
+    pub artifact_digest: String,
+    /// Every generated proof (across all property classes).
+    pub proofs: Vec<ProofTerm>,
 }

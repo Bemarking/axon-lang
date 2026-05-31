@@ -41,14 +41,16 @@ pub use generate::{
     artifact_digest, derive_capability_isolation_witness,
     derive_compliance_coverage_witness, derive_effect_row_soundness_witness,
     derive_endpoint_retry_witness, derive_shield_halt_witness,
-    derive_socket_credit_witness, generate_capability_isolation_proofs,
-    generate_compliance_coverage_proofs, generate_effect_row_soundness_proofs,
-    generate_resource_bounds_proofs, generate_shield_halt_guarantee_proofs,
+    derive_socket_credit_witness, generate_all_proofs,
+    generate_capability_isolation_proofs, generate_compliance_coverage_proofs,
+    generate_effect_row_soundness_proofs, generate_resource_bounds_proofs,
+    generate_shield_halt_guarantee_proofs,
 };
 pub use proof_term::{
     CapabilityIsolationWitness, ComplianceCoverageWitness,
-    EffectRowSoundnessWitness, ProofTerm, PropertyClass, ResourceBoundsWitness,
-    ShieldHaltGuaranteeWitness, Witness, MAX_RETRIES, VALID_BREACH_POLICIES,
+    EffectRowSoundnessWitness, ProofBundle, ProofTerm, PropertyClass,
+    ResourceBoundsWitness, ShieldHaltGuaranteeWitness, Witness, MAX_RETRIES,
+    VALID_BREACH_POLICIES,
 };
 
 #[cfg(test)]

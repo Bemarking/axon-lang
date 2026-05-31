@@ -353,3 +353,18 @@ pub fn generate_shield_halt_guarantee_proofs(
     }
     proofs
 }
+
+/// §51.f — generate proofs across ALL property classes for `ir`. The
+/// `axon pcc prove` entry point. Concatenates every per-class
+/// generator (compliance / effects / capability / resources / shields)
+/// — one bundle covering every certifiable property an apx program
+/// declares.
+pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
+    let mut proofs = Vec::new();
+    proofs.extend(generate_compliance_coverage_proofs(ir, axon_version));
+    proofs.extend(generate_effect_row_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_capability_isolation_proofs(ir, axon_version));
+    proofs.extend(generate_resource_bounds_proofs(ir, axon_version));
+    proofs.extend(generate_shield_halt_guarantee_proofs(ir, axon_version));
+    proofs
+}

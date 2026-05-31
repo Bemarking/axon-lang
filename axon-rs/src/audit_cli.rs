@@ -123,7 +123,7 @@ fn compile_file(file: &str) -> Result<IRProgram, i32> {
     Ok(IRGenerator::new().generate(&program))
 }
 
-fn write_or_print(text: &str, output: Option<&str>, success_msg: &str) -> i32 {
+pub fn write_or_print(text: &str, output: Option<&str>, success_msg: &str) -> i32 {
     match output {
         Some(path) => match fs::write(path, text) {
             Ok(()) => {
