@@ -32,22 +32,25 @@
 //! checker, not the (large, complex) compiler.
 
 pub mod checker;
+pub mod effects;
 pub mod generate;
 pub mod proof_term;
 
 pub use checker::{check_proof, CheckOutcome};
 pub use generate::{
     artifact_digest, derive_compliance_coverage_witness,
-    generate_compliance_coverage_proofs,
+    derive_effect_row_soundness_witness, generate_compliance_coverage_proofs,
+    generate_effect_row_soundness_proofs,
 };
 pub use proof_term::{
-    ComplianceCoverageWitness, ProofTerm, PropertyClass, Witness,
+    ComplianceCoverageWitness, EffectRowSoundnessWitness, ProofTerm,
+    PropertyClass, Witness,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir_nodes::{IRAxonEndpoint, IRProgram, IRShield};
+    use crate::ir_nodes::{IRAxonEndpoint, IRProgram, IRShield, IRToolSpec};
 
     const VERSION: &str = "2.4.0-test";
 
@@ -329,5 +332,188 @@ mod tests {
     #[test]
     fn property_class_slug_stable() {
         assert_eq!(PropertyClass::ComplianceCoverage.slug(), "compliance_coverage");
+        assert_eq!(PropertyClass::EffectRowSoundness.slug(), "effect_row_soundness");
+    }
+
+    // ── §Fase 51.b — EffectRowSoundness ──────────────────────────────
+
+    /// Tool declaring the given effect-row entries.
+    fn tool(name: &str, effects: &[&str]) -> IRToolSpec {
+        IRToolSpec {
+            node_type: "tool",
+            source_line: 1,
+            source_column: 1,
+            name: name.to_string(),
+            provider: "native".to_string(),
+            max_results: None,
+            filter_expr: String::new(),
+            timeout: String::new(),
+            runtime: String::new(),
+            sandbox: None,
+            input_schema: Vec::new(),
+            output_schema: String::new(),
+            effect_row: effects.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// Happy path: a tool with well-formed effects verifies.
+    #[test]
+    fn well_formed_effect_row_verifies() {
+        let mut ir = empty_ir();
+        ir.tools.push(tool("Fetch", &["network", "storage"]));
+        let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// A tool with no declared effects produces no proof.
+    #[test]
+    fn no_effects_no_proof() {
+        let mut ir = empty_ir();
+        ir.tools.push(tool("Plain", &[]));
+        assert!(generate_effect_row_soundness_proofs(&ir, VERSION).is_empty());
+    }
+
+    /// Phantom base effect (typo'd `netwrok`) → Refuted.
+    #[test]
+    fn phantom_effect_base_refuted() {
+        let mut ir = empty_ir();
+        ir.tools.push(tool("Typo", &["netwrok"]));
+        let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("unknown base"), "got: {reason}");
+                assert!(reason.contains("netwrok"), "got: {reason}");
+            }
+            other => panic!("expected phantom-effect Refuted, got {other:?}"),
+        }
+    }
+
+    /// Bare `stream` without a backpressure qualifier → Refuted
+    /// (unenforceable).
+    #[test]
+    fn bare_stream_missing_qualifier_refuted() {
+        let mut ir = empty_ir();
+        ir.tools.push(tool("Streamer", &["stream"]));
+        let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("without a qualifier"), "got: {reason}");
+            }
+            other => panic!("expected missing-qualifier Refuted, got {other:?}"),
+        }
+    }
+
+    /// `stream:<valid policy>` verifies (qualifier from the backpressure
+    /// catalog).
+    #[test]
+    fn valid_stream_qualifier_verifies() {
+        let mut ir = empty_ir();
+        ir.tools.push(tool("Streamer", &["stream:drop_oldest"]));
+        let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// `stream:<bogus>` (qualifier not in the backpressure catalog) →
+    /// Refuted.
+    #[test]
+    fn invalid_stream_qualifier_refuted() {
+        let mut ir = empty_ir();
+        ir.tools.push(tool("Streamer", &["stream:explode"]));
+        let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("invalid backpressure policy"), "got: {reason}");
+            }
+            other => panic!("expected invalid-qualifier Refuted, got {other:?}"),
+        }
+    }
+
+    /// `pure` alongside another effect → purity contradiction → Refuted.
+    #[test]
+    fn purity_violation_refuted() {
+        let mut ir = empty_ir();
+        ir.tools.push(tool("FakePure", &["pure", "network"]));
+        let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("pure"), "got: {reason}");
+                assert!(reason.contains("cannot be effectful"), "got: {reason}");
+            }
+            other => panic!("expected purity Refuted, got {other:?}"),
+        }
+    }
+
+    /// `pure` alone verifies.
+    #[test]
+    fn pure_alone_verifies() {
+        let mut ir = empty_ir();
+        ir.tools.push(tool("TrulyPure", &["pure"]));
+        let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// ADVERSARIAL (D51.2): a forged witness hiding a phantom base
+    /// (clearing `unknown_bases`) is rejected — the checker recomputes.
+    #[test]
+    fn forged_hidden_unknown_base_rejected() {
+        let mut ir = empty_ir();
+        ir.tools.push(tool("Sneaky", &["netwrok"]));
+        let mut proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
+        if let Witness::EffectRowSoundness(ref mut w) = proofs[0].witness {
+            w.unknown_bases.clear(); // the lie
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("disagrees with artifact"), "got: {reason}");
+            }
+            other => panic!("expected forged Refuted, got {other:?}"),
+        }
+    }
+
+    /// ADVERSARIAL: a proof whose `property` and `witness` variants
+    /// disagree (ComplianceCoverage property carrying an
+    /// EffectRowSoundness witness) is UnknownProperty — neither
+    /// property is actually witnessed, so no silent accept.
+    #[test]
+    fn mismatched_property_witness_is_unknown_property() {
+        let mut ir = empty_ir();
+        ir.tools.push(tool("Fetch", &["network"]));
+        let digest = artifact_digest(&ir);
+        let bogus = ProofTerm {
+            property: PropertyClass::ComplianceCoverage, // mismatch
+            artifact_digest: digest,
+            witness: Witness::EffectRowSoundness(
+                derive_effect_row_soundness_witness("Fetch", &["network".to_string()]),
+            ),
+            axon_version: VERSION.to_string(),
+        };
+        assert_eq!(check_proof(&bogus, &ir), CheckOutcome::UnknownProperty);
+    }
+
+    /// Effect-row proof round-trips through JSON and still verifies.
+    #[test]
+    fn effect_proof_json_round_trips_and_verifies() {
+        let mut ir = empty_ir();
+        ir.tools.push(tool("Fetch", &["network", "storage"]));
+        let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
+        let json = serde_json::to_string(&proofs[0]).expect("serialize");
+        let restored: ProofTerm = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored, proofs[0]);
+        assert_eq!(check_proof(&restored, &ir), CheckOutcome::Verified);
+    }
+
+    /// Digest binding holds for effect-row proofs too.
+    #[test]
+    fn effect_proof_digest_mismatch_rejected() {
+        let mut ir_a = empty_ir();
+        ir_a.tools.push(tool("Fetch", &["network"]));
+        let proofs = generate_effect_row_soundness_proofs(&ir_a, VERSION);
+
+        let mut ir_b = empty_ir();
+        ir_b.tools.push(tool("Fetch", &["network"]));
+        ir_b.tools.push(tool("Other", &["storage"])); // changes digest
+
+        assert_eq!(check_proof(&proofs[0], &ir_b), CheckOutcome::DigestMismatch);
     }
 }

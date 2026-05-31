@@ -24,7 +24,10 @@
 
 use crate::ir_nodes::IRProgram;
 
-use super::generate::{artifact_digest, derive_compliance_coverage_witness};
+use super::generate::{
+    artifact_digest, derive_compliance_coverage_witness,
+    derive_effect_row_soundness_witness,
+};
 use super::proof_term::{ProofTerm, PropertyClass, Witness};
 
 /// The closed verdict catalog. Total over every proof shape — no
@@ -55,11 +58,19 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
     if proof.artifact_digest != artifact_digest(ir) {
         return CheckOutcome::DigestMismatch;
     }
-    // (2) dispatch on the (property, witness) pairing.
+    // (2) dispatch on the (property, witness) pairing. A mismatched
+    // pairing (e.g. property says ComplianceCoverage but the witness is
+    // an EffectRowSoundness witness) is a malformed proof — neither
+    // property is actually witnessed — so it is UnknownProperty, not a
+    // silent accept.
     match (&proof.property, &proof.witness) {
         (PropertyClass::ComplianceCoverage, Witness::ComplianceCoverage(w)) => {
             check_compliance_coverage(w, ir)
         }
+        (PropertyClass::EffectRowSoundness, Witness::EffectRowSoundness(w)) => {
+            check_effect_row_soundness(w, ir)
+        }
+        _ => CheckOutcome::UnknownProperty,
     }
 }
 
@@ -131,6 +142,73 @@ fn check_compliance_coverage(
                 actual.uncovered_classes,
                 actual.shield_ref,
                 actual.provided_classes
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §51.b — re-derive the effect-row witness from the named tool and
+/// verify it against the proof, then render the verdict. Independent
+/// of the producer (D51.2): the checker re-reads `tool.effect_row` from
+/// the artifact and recomputes every fact; a forged witness is rejected
+/// because the recomputation disagrees.
+fn check_effect_row_soundness(
+    claimed: &super::proof_term::EffectRowSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let tool = match ir.tools.iter().find(|t| t.name == claimed.tool_name) {
+        Some(t) => t,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "tool '{}' not present in artifact",
+                    claimed.tool_name
+                ),
+            }
+        }
+    };
+
+    // Re-derive independently — do NOT trust the witness.
+    let actual = derive_effect_row_soundness_witness(&tool.name, &tool.effect_row);
+
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+
+    // Verdict on the re-derived facts.
+    if !actual.unknown_bases.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "tool '{}' declares effect entr(ies) with unknown base(s) {:?} (not in the closed effect catalog)",
+                actual.tool_name, actual.unknown_bases
+            ),
+        };
+    }
+    if !actual.missing_qualifier.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "tool '{}' declares qualifier-requiring effect(s) {:?} without a qualifier (bare stream/trust is unenforceable)",
+                actual.tool_name, actual.missing_qualifier
+            ),
+        };
+    }
+    if !actual.invalid_stream_qualifier.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "tool '{}' declares stream effect(s) {:?} with an invalid backpressure policy qualifier",
+                actual.tool_name, actual.invalid_stream_qualifier
+            ),
+        };
+    }
+    if actual.purity_violation {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "tool '{}' declares `pure` alongside other effects {:?} — a pure tool cannot be effectful",
+                actual.tool_name, actual.declared_effects
             ),
         };
     }
