@@ -27,7 +27,8 @@ use crate::ir_nodes::IRProgram;
 use super::generate::{
     artifact_digest, derive_capability_isolation_witness,
     derive_compliance_coverage_witness, derive_effect_row_soundness_witness,
-    derive_endpoint_retry_witness, derive_socket_credit_witness,
+    derive_endpoint_retry_witness, derive_shield_halt_witness,
+    derive_socket_credit_witness,
 };
 use super::proof_term::{ProofTerm, PropertyClass, ResourceBoundsWitness, Witness};
 
@@ -76,6 +77,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         }
         (PropertyClass::ResourceBounds, Witness::ResourceBounds(w)) => {
             check_resource_bounds(w, ir)
+        }
+        (PropertyClass::ShieldHaltGuarantee, Witness::ShieldHaltGuarantee(w)) => {
+            check_shield_halt_guarantee(w, ir)
         }
         _ => CheckOutcome::UnknownProperty,
     }
@@ -359,4 +363,56 @@ fn check_resource_bounds(
             CheckOutcome::Verified
         }
     }
+}
+
+/// §51.e — re-derive the shield breach-policy witness from the named
+/// shield and verify it against the proof, then render the verdict.
+/// Independent of the producer (D51.2): the checker re-reads
+/// `on_breach` + `scan` from the artifact and recomputes both facts; a
+/// forged witness (claiming `vacuous_halt: false` for a halt shield
+/// that scans nothing) is rejected because the recomputation disagrees.
+fn check_shield_halt_guarantee(
+    claimed: &super::proof_term::ShieldHaltGuaranteeWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let shield = match ir.shields.iter().find(|s| s.name == claimed.shield_name) {
+        Some(s) => s,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "shield '{}' not present in artifact",
+                    claimed.shield_name
+                ),
+            }
+        }
+    };
+
+    // Re-derive independently — do NOT trust the witness.
+    let actual =
+        derive_shield_halt_witness(&shield.name, &shield.on_breach, &shield.scan);
+
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+
+    if !actual.known_policy {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "shield '{}' declares an unknown on_breach policy {:?} (not in the closed breach-policy catalog)",
+                actual.shield_name, actual.on_breach
+            ),
+        };
+    }
+    if actual.vacuous_halt {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "shield '{}' declares `on_breach: halt` but an empty `scan: []` — the halt can never fire (no scan ⟹ no breach ⟹ no halt): a vacuous guarantee",
+                actual.shield_name
+            ),
+        };
+    }
+    CheckOutcome::Verified
 }

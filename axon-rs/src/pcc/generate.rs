@@ -16,7 +16,7 @@ use super::effects;
 use super::proof_term::{
     CapabilityIsolationWitness, ComplianceCoverageWitness,
     EffectRowSoundnessWitness, ProofTerm, PropertyClass, ResourceBoundsWitness,
-    Witness, MAX_RETRIES,
+    ShieldHaltGuaranteeWitness, Witness, MAX_RETRIES, VALID_BREACH_POLICIES,
 };
 
 /// Canonical SHA-256 hex digest of the IR artifact. Reuses the
@@ -306,6 +306,50 @@ pub fn generate_resource_bounds_proofs(
                 axon_version: axon_version.to_string(),
             });
         }
+    }
+    proofs
+}
+
+/// §51.e — derive a [`ShieldHaltGuaranteeWitness`] for one shield's
+/// breach policy. Pure + total. Shared with the checker (D51.2).
+pub fn derive_shield_halt_witness(
+    shield_name: &str,
+    on_breach: &str,
+    scan: &[String],
+) -> ShieldHaltGuaranteeWitness {
+    let known_policy = VALID_BREACH_POLICIES.contains(&on_breach);
+    let scan_count = scan.len();
+    let vacuous_halt = on_breach == "halt" && scan.is_empty();
+    ShieldHaltGuaranteeWitness {
+        shield_name: shield_name.to_string(),
+        on_breach: on_breach.to_string(),
+        known_policy,
+        scan_count,
+        vacuous_halt,
+    }
+}
+
+/// §51.e — generate shield-halt-guarantee proofs for every shield in
+/// `ir` that declares a non-empty `on_breach` policy. Shields with no
+/// breach policy declared produce no proof (no guarantee to certify).
+pub fn generate_shield_halt_guarantee_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for shield in &ir.shields {
+        if shield.on_breach.is_empty() {
+            continue;
+        }
+        let witness =
+            derive_shield_halt_witness(&shield.name, &shield.on_breach, &shield.scan);
+        proofs.push(ProofTerm {
+            property: PropertyClass::ShieldHaltGuarantee,
+            artifact_digest: digest.clone(),
+            witness: Witness::ShieldHaltGuarantee(witness),
+            axon_version: axon_version.to_string(),
+        });
     }
     proofs
 }

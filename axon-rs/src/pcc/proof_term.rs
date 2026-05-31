@@ -78,7 +78,22 @@ pub enum PropertyClass {
     /// design — it is a closed duration enum (`{5s,15s,30s,60s}`)
     /// already bounded at parse time, not an unbounded-resource risk.
     ResourceBounds,
+    /// §51.e — a shield's breach policy provides a real guarantee:
+    /// `on_breach` is a recognized policy (closed catalog — catches a
+    /// typo'd `hault`, which the parser does NOT reject since it reads
+    /// `on_breach` as a bare identifier), and a shield declaring
+    /// `on_breach: halt` actually scans something (a halt shield with
+    /// an empty `scan: []` can never detect a breach, so the halt never
+    /// fires — a vacuous guarantee / security theater).
+    ShieldHaltGuarantee,
 }
+
+/// §51.e — the closed breach-policy catalog. Mirror of
+/// `axon_frontend::type_checker::VALID_ON_BREACH_POLICIES` (private
+/// const). The checker's own statement of the spec (D51.2). Cross-crate
+/// drift gate deferred to §51.f alongside the effect catalog.
+pub const VALID_BREACH_POLICIES: &[&str] =
+    &["deflect", "escalate", "halt", "quarantine", "sanitize_and_retry"];
 
 /// §51.d — the retry-storm ceiling. A declared `retries` above this is
 /// almost certainly a defect (an unbounded-ish retry storm), not a
@@ -95,6 +110,7 @@ impl PropertyClass {
             PropertyClass::EffectRowSoundness => "effect_row_soundness",
             PropertyClass::CapabilityIsolation => "capability_isolation",
             PropertyClass::ResourceBounds => "resource_bounds",
+            PropertyClass::ShieldHaltGuarantee => "shield_halt_guarantee",
         }
     }
 }
@@ -206,6 +222,28 @@ pub enum ResourceBoundsWitness {
     },
 }
 
+/// §51.e — witness for [`PropertyClass::ShieldHaltGuarantee`].
+///
+/// The derivation for one shield's breach policy. The checker re-reads
+/// the shield's `on_breach` + `scan` from the IR and recomputes both
+/// facts; a forged witness is rejected because the recomputation
+/// disagrees (D51.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldHaltGuaranteeWitness {
+    /// The shield this proof is about.
+    pub shield_name: String,
+    /// The shield's declared `on_breach` policy.
+    pub on_breach: String,
+    /// True when `on_breach` is in the closed breach-policy catalog.
+    pub known_policy: bool,
+    /// Count of declared `scan` categories (for the vacuous-halt check).
+    pub scan_count: usize,
+    /// True when `on_breach == "halt"` AND `scan` is empty — the halt
+    /// can never fire (no scan ⟹ no breach ⟹ no halt). False for a
+    /// verifying proof.
+    pub vacuous_halt: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,6 +253,7 @@ pub enum Witness {
     EffectRowSoundness(EffectRowSoundnessWitness),
     CapabilityIsolation(CapabilityIsolationWitness),
     ResourceBounds(ResourceBoundsWitness),
+    ShieldHaltGuarantee(ShieldHaltGuaranteeWitness),
 }
 
 /// The portable proof object (D51.1). Serializes to JSON; travels with
