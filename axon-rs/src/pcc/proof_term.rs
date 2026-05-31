@@ -68,7 +68,24 @@ pub enum PropertyClass {
     /// IR) + flow→store reachability, and is deferred to §51.x
     /// (enterprise PCC consumption, where `requires` lives).
     CapabilityIsolation,
+    /// §51.d — declared resource bounds are within sane limits:
+    /// an apx/axonendpoint's `retries` is in `[0, MAX_RETRIES]`
+    /// (negative is nonsensical; above the ceiling is a retry storm),
+    /// and a `socket` carrying a DECLARED `backpressure: credit(k)`
+    /// has `k >= 1` (a credit window of 0 deadlocks the §Fase 41.b
+    /// typed-resource gate). Unspecified socket credit is a legitimate
+    /// type state and is NOT refuted. `timeout` is out of scope by
+    /// design — it is a closed duration enum (`{5s,15s,30s,60s}`)
+    /// already bounded at parse time, not an unbounded-resource risk.
+    ResourceBounds,
 }
+
+/// §51.d — the retry-storm ceiling. A declared `retries` above this is
+/// almost certainly a defect (an unbounded-ish retry storm), not a
+/// legitimate config. Generous on purpose so legitimate high-retry
+/// configs are not false-positived; the negative-retries case is the
+/// unambiguous defect this bound primarily guards.
+pub const MAX_RETRIES: i64 = 100;
 
 impl PropertyClass {
     /// Stable wire slug for the property class.
@@ -77,6 +94,7 @@ impl PropertyClass {
             PropertyClass::ComplianceCoverage => "compliance_coverage",
             PropertyClass::EffectRowSoundness => "effect_row_soundness",
             PropertyClass::CapabilityIsolation => "capability_isolation",
+            PropertyClass::ResourceBounds => "resource_bounds",
         }
     }
 }
@@ -163,6 +181,31 @@ pub struct CapabilityIsolationWitness {
     pub malformed: bool,
 }
 
+/// §51.d — witness for [`PropertyClass::ResourceBounds`]. One subject
+/// per proof: an endpoint's retry bound OR a socket's credit window.
+/// Tagged by `subject` so the JSON is self-describing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "subject")]
+pub enum ResourceBoundsWitness {
+    /// An apx/axonendpoint's declared `retries`.
+    EndpointRetry {
+        endpoint_name: String,
+        retries: i64,
+        /// True when `retries` is in `[0, MAX_RETRIES]`.
+        in_bounds: bool,
+    },
+    /// A socket's DECLARED `backpressure: credit(k)` window. Generated
+    /// only when the socket declares a credit (unspecified is not
+    /// witnessed — it is a legitimate type state, not a bound to
+    /// certify).
+    SocketCredit {
+        socket_name: String,
+        credit: i64,
+        /// True when `credit >= 1` (a 0 window deadlocks per §41.b).
+        positive: bool,
+    },
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +214,7 @@ pub enum Witness {
     ComplianceCoverage(ComplianceCoverageWitness),
     EffectRowSoundness(EffectRowSoundnessWitness),
     CapabilityIsolation(CapabilityIsolationWitness),
+    ResourceBounds(ResourceBoundsWitness),
 }
 
 /// The portable proof object (D51.1). Serializes to JSON; travels with

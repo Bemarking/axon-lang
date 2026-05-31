@@ -40,12 +40,14 @@ pub use checker::{check_proof, CheckOutcome};
 pub use generate::{
     artifact_digest, derive_capability_isolation_witness,
     derive_compliance_coverage_witness, derive_effect_row_soundness_witness,
+    derive_endpoint_retry_witness, derive_socket_credit_witness,
     generate_capability_isolation_proofs, generate_compliance_coverage_proofs,
-    generate_effect_row_soundness_proofs,
+    generate_effect_row_soundness_proofs, generate_resource_bounds_proofs,
 };
 pub use proof_term::{
     CapabilityIsolationWitness, ComplianceCoverageWitness,
-    EffectRowSoundnessWitness, ProofTerm, PropertyClass, Witness,
+    EffectRowSoundnessWitness, ProofTerm, PropertyClass, ResourceBoundsWitness,
+    Witness, MAX_RETRIES,
 };
 
 #[cfg(test)]
@@ -335,6 +337,7 @@ mod tests {
         assert_eq!(PropertyClass::ComplianceCoverage.slug(), "compliance_coverage");
         assert_eq!(PropertyClass::EffectRowSoundness.slug(), "effect_row_soundness");
         assert_eq!(PropertyClass::CapabilityIsolation.slug(), "capability_isolation");
+        assert_eq!(PropertyClass::ResourceBounds.slug(), "resource_bounds");
     }
 
     // ── §Fase 51.b — EffectRowSoundness ──────────────────────────────
@@ -620,6 +623,177 @@ mod tests {
         let mut ir = empty_ir();
         ir.axonstore_specs.push(store("Ledger", "legal.read"));
         let proofs = generate_capability_isolation_proofs(&ir, VERSION);
+        let json = serde_json::to_string(&proofs[0]).expect("serialize");
+        let restored: ProofTerm = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored, proofs[0]);
+        assert_eq!(check_proof(&restored, &ir), CheckOutcome::Verified);
+    }
+
+    // ── §Fase 51.d — ResourceBounds ──────────────────────────────────
+
+    /// An endpoint with the given `retries` (reuses the base builder).
+    fn endpoint_retries(name: &str, retries: i64) -> IRAxonEndpoint {
+        let mut e = endpoint(name, &[], "");
+        e.retries = retries;
+        e
+    }
+
+    /// A socket with the given (optional) backpressure credit window.
+    fn socket(name: &str, credit: Option<i64>) -> crate::ir_nodes::IRSocket {
+        crate::ir_nodes::IRSocket {
+            node_type: "socket",
+            source_line: 1,
+            source_column: 1,
+            name: name.to_string(),
+            protocol: "ChatProtocol".to_string(),
+            backpressure_credit: credit,
+            reconnect: false,
+            legal_basis: None,
+        }
+    }
+
+    /// Retry counts within `[0, MAX_RETRIES]` verify — including both
+    /// boundaries (0 and the ceiling).
+    #[test]
+    fn retry_in_bounds_verifies() {
+        let mut ir = empty_ir();
+        ir.endpoints.push(endpoint_retries("Mid", 3));
+        ir.endpoints.push(endpoint_retries("Zero", 0));
+        ir.endpoints.push(endpoint_retries("Ceiling", MAX_RETRIES));
+        let proofs = generate_resource_bounds_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 3);
+        for p in &proofs {
+            assert_eq!(check_proof(p, &ir), CheckOutcome::Verified);
+        }
+    }
+
+    /// Negative retries → Refuted (nonsensical).
+    #[test]
+    fn retry_negative_refuted() {
+        let mut ir = empty_ir();
+        ir.endpoints.push(endpoint_retries("Neg", -1));
+        let proofs = generate_resource_bounds_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("retries=-1"), "got: {reason}");
+                assert!(reason.contains("outside the bound"), "got: {reason}");
+            }
+            other => panic!("expected negative-retry Refuted, got {other:?}"),
+        }
+    }
+
+    /// Retry count above the ceiling → Refuted (retry storm).
+    #[test]
+    fn retry_storm_refuted() {
+        let mut ir = empty_ir();
+        ir.endpoints.push(endpoint_retries("Storm", MAX_RETRIES + 1));
+        let proofs = generate_resource_bounds_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("retry storm"), "got: {reason}");
+            }
+            other => panic!("expected retry-storm Refuted, got {other:?}"),
+        }
+    }
+
+    /// A socket with a positive declared credit verifies.
+    #[test]
+    fn socket_positive_credit_verifies() {
+        let mut ir = empty_ir();
+        ir.sockets.push(socket("Chat", Some(8)));
+        let proofs = generate_resource_bounds_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// A socket declaring credit(0) → Refuted (deadlock per §41.b).
+    #[test]
+    fn socket_zero_credit_refuted() {
+        let mut ir = empty_ir();
+        ir.sockets.push(socket("Dead", Some(0)));
+        let proofs = generate_resource_bounds_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("deadlock"), "got: {reason}");
+            }
+            other => panic!("expected zero-credit Refuted, got {other:?}"),
+        }
+    }
+
+    /// A socket with UNSPECIFIED credit produces no proof (legitimate
+    /// type state, not a bound to certify).
+    #[test]
+    fn socket_unspecified_credit_no_proof() {
+        let mut ir = empty_ir();
+        ir.sockets.push(socket("Unspecified", None));
+        // No endpoints either, so the whole proof set is empty.
+        assert!(generate_resource_bounds_proofs(&ir, VERSION).is_empty());
+    }
+
+    /// ADVERSARIAL (D51.2): a forged retry witness claiming
+    /// `in_bounds: true` for a negative retry count is rejected — the
+    /// checker recomputes the bound.
+    #[test]
+    fn forged_retry_in_bounds_rejected() {
+        let mut ir = empty_ir();
+        ir.endpoints.push(endpoint_retries("Liar", -5));
+        let mut proofs = generate_resource_bounds_proofs(&ir, VERSION);
+        if let Witness::ResourceBounds(ResourceBoundsWitness::EndpointRetry {
+            ref mut in_bounds,
+            ..
+        }) = proofs[0].witness
+        {
+            *in_bounds = true; // the lie
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("disagrees with artifact"), "got: {reason}");
+            }
+            other => panic!("expected forged Refuted, got {other:?}"),
+        }
+    }
+
+    /// ADVERSARIAL: a SocketCredit witness for a socket that has NO
+    /// declared credit in the artifact is rejected (forged / stale).
+    #[test]
+    fn forged_socket_credit_for_unspecified_rejected() {
+        let mut ir = empty_ir();
+        ir.sockets.push(socket("Ghost", None)); // unspecified in artifact
+        let digest = artifact_digest(&ir);
+        let bogus = ProofTerm {
+            property: PropertyClass::ResourceBounds,
+            artifact_digest: digest,
+            witness: Witness::ResourceBounds(derive_socket_credit_witness("Ghost", 8)),
+            axon_version: VERSION.to_string(),
+        };
+        match check_proof(&bogus, &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("no declared backpressure credit"), "got: {reason}");
+            }
+            other => panic!("expected forged-socket Refuted, got {other:?}"),
+        }
+    }
+
+    /// Digest binding holds for resource-bound proofs.
+    #[test]
+    fn resource_proof_digest_mismatch_rejected() {
+        let mut ir_a = empty_ir();
+        ir_a.endpoints.push(endpoint_retries("E", 2));
+        let proofs = generate_resource_bounds_proofs(&ir_a, VERSION);
+
+        let mut ir_b = empty_ir();
+        ir_b.endpoints.push(endpoint_retries("E", 2));
+        ir_b.endpoints.push(endpoint_retries("Extra", 1)); // changes digest
+
+        assert_eq!(check_proof(&proofs[0], &ir_b), CheckOutcome::DigestMismatch);
+    }
+
+    /// Resource-bound proof round-trips through JSON and still verifies.
+    #[test]
+    fn resource_proof_json_round_trips_and_verifies() {
+        let mut ir = empty_ir();
+        ir.sockets.push(socket("Chat", Some(16)));
+        let proofs = generate_resource_bounds_proofs(&ir, VERSION);
         let json = serde_json::to_string(&proofs[0]).expect("serialize");
         let restored: ProofTerm = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored, proofs[0]);
