@@ -42,6 +42,15 @@ pub enum PropertyClass {
     /// typo'd `HIPPA`) and compliance-claimed-without-enforcement
     /// (declaring GDPR with no attached shield).
     ComplianceCoverage,
+    /// §51.b — every entry in a tool's `effects: <...>` row is
+    /// well-formed: its base is in the closed effect catalog
+    /// ([`crate::pcc::effects::EFFECT_BASES`]); `stream` / `trust`
+    /// carry a qualifier (`stream`'s in the backpressure catalog); and
+    /// `pure` is exclusive (a tool cannot be both `pure` and
+    /// effectful). Catches phantom effects (typo'd `network`), bare
+    /// `stream` without a backpressure policy, and pure/impure
+    /// contradictions.
+    EffectRowSoundness,
 }
 
 impl PropertyClass {
@@ -49,6 +58,7 @@ impl PropertyClass {
     pub fn slug(&self) -> &'static str {
         match self {
             PropertyClass::ComplianceCoverage => "compliance_coverage",
+            PropertyClass::EffectRowSoundness => "effect_row_soundness",
         }
     }
 }
@@ -91,12 +101,40 @@ pub struct ComplianceCoverageWitness {
     pub uncovered_classes: Vec<String>,
 }
 
+/// §51.b — witness for [`PropertyClass::EffectRowSoundness`].
+///
+/// The derivation for one tool's declared effect row. The checker
+/// re-derives every field from the tool's IR and rejects a disagreement
+/// as forgery (D51.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectRowSoundnessWitness {
+    /// The tool this proof is about.
+    pub tool_name: String,
+    /// The tool's declared effect-row entries, sorted + deduped
+    /// (canonical so the checker's re-derivation compares equal). Each
+    /// entry is `base` or `base:qualifier`.
+    pub declared_effects: Vec<String>,
+    /// Entries whose base effect is NOT in the closed catalog (phantom
+    /// effects). Empty for a verifying proof.
+    pub unknown_bases: Vec<String>,
+    /// Qualifier-required bases (`stream` / `trust`) declared WITHOUT a
+    /// qualifier (bare `stream` / `trust`). Empty for a verifying proof.
+    pub missing_qualifier: Vec<String>,
+    /// `stream:<q>` entries whose qualifier is not a valid backpressure
+    /// policy. Empty for a verifying proof.
+    pub invalid_stream_qualifier: Vec<String>,
+    /// True when `pure` appears alongside any other effect (a tool
+    /// cannot be both pure and effectful). False for a verifying proof.
+    pub purity_violation: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Witness {
     ComplianceCoverage(ComplianceCoverageWitness),
+    EffectRowSoundness(EffectRowSoundnessWitness),
 }
 
 /// The portable proof object (D51.1). Serializes to JSON; travels with

@@ -12,8 +12,10 @@
 
 use crate::ir_nodes::IRProgram;
 
+use super::effects;
 use super::proof_term::{
-    ComplianceCoverageWitness, ProofTerm, PropertyClass, Witness,
+    ComplianceCoverageWitness, EffectRowSoundnessWitness, ProofTerm,
+    PropertyClass, Witness,
 };
 
 /// Canonical SHA-256 hex digest of the IR artifact. Reuses the
@@ -115,6 +117,85 @@ pub fn generate_compliance_coverage_proofs(
             property: PropertyClass::ComplianceCoverage,
             artifact_digest: digest.clone(),
             witness: Witness::ComplianceCoverage(witness),
+            axon_version: axon_version.to_string(),
+        });
+    }
+    proofs
+}
+
+/// §51.b — derive an [`EffectRowSoundnessWitness`] for one tool's
+/// declared effect row. Pure + total. Shared with the checker's
+/// re-derivation path (D51.2).
+pub fn derive_effect_row_soundness_witness(
+    tool_name: &str,
+    effect_row: &[String],
+) -> EffectRowSoundnessWitness {
+    let declared_effects = canonical_classes(effect_row);
+
+    let mut unknown_bases = Vec::new();
+    let mut missing_qualifier = Vec::new();
+    let mut invalid_stream_qualifier = Vec::new();
+    let mut has_pure = false;
+    let mut has_other = false;
+
+    for entry in &declared_effects {
+        let (base, qualifier) = effects::split_effect(entry);
+        if !effects::is_known_base(base) {
+            unknown_bases.push(entry.clone());
+            // An unknown base is also "other" for purity purposes —
+            // a tool with `pure` + a phantom effect is still a
+            // contradiction. (has_other set below covers it.)
+            has_other = true;
+            continue;
+        }
+        if base == "pure" {
+            has_pure = true;
+        } else {
+            has_other = true;
+        }
+        if effects::requires_qualifier(base) && qualifier.is_none() {
+            missing_qualifier.push(entry.clone());
+        }
+        if base == "stream" {
+            if let Some(q) = qualifier {
+                if !effects::is_valid_stream_qualifier(q) {
+                    invalid_stream_qualifier.push(entry.clone());
+                }
+            }
+        }
+    }
+
+    let purity_violation = has_pure && has_other;
+
+    EffectRowSoundnessWitness {
+        tool_name: tool_name.to_string(),
+        declared_effects,
+        unknown_bases,
+        missing_qualifier,
+        invalid_stream_qualifier,
+        purity_violation,
+    }
+}
+
+/// §51.b — generate effect-row-soundness proofs for every tool in `ir`
+/// that declares a non-empty `effects: <...>` row. Tools with no
+/// declared effects produce no proof (nothing to certify).
+pub fn generate_effect_row_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for tool in &ir.tools {
+        if tool.effect_row.is_empty() {
+            continue;
+        }
+        let witness =
+            derive_effect_row_soundness_witness(&tool.name, &tool.effect_row);
+        proofs.push(ProofTerm {
+            property: PropertyClass::EffectRowSoundness,
+            artifact_digest: digest.clone(),
+            witness: Witness::EffectRowSoundness(witness),
             axon_version: axon_version.to_string(),
         });
     }
