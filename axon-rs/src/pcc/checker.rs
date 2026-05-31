@@ -25,8 +25,8 @@
 use crate::ir_nodes::IRProgram;
 
 use super::generate::{
-    artifact_digest, derive_compliance_coverage_witness,
-    derive_effect_row_soundness_witness,
+    artifact_digest, derive_capability_isolation_witness,
+    derive_compliance_coverage_witness, derive_effect_row_soundness_witness,
 };
 use super::proof_term::{ProofTerm, PropertyClass, Witness};
 
@@ -69,6 +69,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         }
         (PropertyClass::EffectRowSoundness, Witness::EffectRowSoundness(w)) => {
             check_effect_row_soundness(w, ir)
+        }
+        (PropertyClass::CapabilityIsolation, Witness::CapabilityIsolation(w)) => {
+            check_capability_isolation(w, ir)
         }
         _ => CheckOutcome::UnknownProperty,
     }
@@ -209,6 +212,53 @@ fn check_effect_row_soundness(
             reason: format!(
                 "tool '{}' declares `pure` alongside other effects {:?} — a pure tool cannot be effectful",
                 actual.tool_name, actual.declared_effects
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §51.c — re-derive the capability-gate witness from the named store
+/// and verify it against the proof, then render the verdict.
+/// Independent of the producer (D51.2): the checker re-reads
+/// `store.capability` from the artifact and re-runs the §32.g grammar
+/// validator; a forged witness (claiming `malformed: false` for a
+/// broken gate) is rejected because the recomputation disagrees.
+fn check_capability_isolation(
+    claimed: &super::proof_term::CapabilityIsolationWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let store = match ir
+        .axonstore_specs
+        .iter()
+        .find(|s| s.name == claimed.store_name)
+    {
+        Some(s) => s,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "axonstore '{}' not present in artifact",
+                    claimed.store_name
+                ),
+            }
+        }
+    };
+
+    // Re-derive independently — do NOT trust the witness.
+    let actual = derive_capability_isolation_witness(&store.name, &store.capability);
+
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+
+    if actual.malformed {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axonstore '{}' declares a malformed capability gate {:?} (not a valid §32.g scope: ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$)",
+                actual.store_name, actual.capability
             ),
         };
     }
