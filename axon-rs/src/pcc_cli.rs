@@ -27,7 +27,7 @@ use crate::ir_generator::IRGenerator;
 use crate::ir_nodes::IRProgram;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
-use crate::pcc::{check_proof, generate_all_proofs, CheckOutcome, ProofBundle};
+use crate::pcc::{check_bundle, generate_all_proofs, CheckOutcome, ProofBundle};
 use crate::runner::AXON_VERSION;
 
 /// Compile a `.axon` file to its IR, or return a process exit code on
@@ -124,28 +124,29 @@ pub fn run_pcc_verify(file: &str, bundle_path: &str) -> i32 {
         return 0;
     }
 
+    // §52.a — dogfood the trusted aggregate: the "deployable?" predicate
+    // (all_verified) lives in the checker, not here (D52.1). This CLI and
+    // the enterprise deploy gate render the SAME `BundleReport`.
+    let report = check_bundle(&bundle, &ir);
+    let total = report.results.len();
     let mut verified = 0usize;
-    let mut failed = 0usize;
-    for proof in &bundle.proofs {
-        let slug = proof.property.slug();
-        let subject = proof.witness.subject_name();
-        match check_proof(proof, &ir) {
+    for r in &report.results {
+        let slug = r.property.slug();
+        let subject = &r.subject;
+        match &r.outcome {
             CheckOutcome::Verified => {
                 verified += 1;
                 println!("  OK   [{slug}] {subject} — verified");
             }
             CheckOutcome::Refuted { reason } => {
-                failed += 1;
                 println!("  FAIL [{slug}] {subject} — refuted: {reason}");
             }
             CheckOutcome::DigestMismatch => {
-                failed += 1;
                 println!(
                     "  FAIL [{slug}] {subject} — digest mismatch: this proof is not for {file}"
                 );
             }
             CheckOutcome::UnknownProperty => {
-                failed += 1;
                 println!(
                     "  FAIL [{slug}] {subject} — unknown property (checker does not understand this proof shape)"
                 );
@@ -153,11 +154,11 @@ pub fn run_pcc_verify(file: &str, bundle_path: &str) -> i32 {
         }
     }
 
-    let total = verified + failed;
-    if failed == 0 {
+    if report.all_verified() {
         println!("PCC verify: {verified}/{total} proofs VERIFIED against {file}.");
         0
     } else {
+        let failed = total - verified;
         println!("PCC verify: {failed}/{total} proofs FAILED against {file} ({verified} verified).");
         1
     }

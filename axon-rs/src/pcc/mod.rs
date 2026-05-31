@@ -36,7 +36,7 @@ pub mod effects;
 pub mod generate;
 pub mod proof_term;
 
-pub use checker::{check_proof, CheckOutcome};
+pub use checker::{check_bundle, check_proof, BundleReport, CheckOutcome, ProofCheck};
 pub use generate::{
     artifact_digest, derive_capability_containment_witness,
     derive_capability_isolation_witness, derive_compliance_coverage_witness,
@@ -1139,5 +1139,111 @@ mod tests {
         let restored: ProofTerm = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored, proofs[0]);
         assert_eq!(check_proof(&restored, &ir), CheckOutcome::Verified);
+    }
+
+    // ── §Fase 52.a — check_bundle deployability aggregate ────────────
+
+    /// Build the full proof bundle for an IR (mirrors the CLI/handler
+    /// `generate_all_proofs` → `ProofBundle` path).
+    fn bundle_for(ir: &crate::ir_nodes::IRProgram) -> ProofBundle {
+        ProofBundle {
+            axon_version: VERSION.to_string(),
+            artifact_digest: artifact_digest(ir),
+            proofs: generate_all_proofs(ir, VERSION),
+        }
+    }
+
+    /// A clean program (covered compliance + halting shield) → every
+    /// proof verifies → `all_verified()` true, no refutations.
+    #[test]
+    fn bundle_report_all_verified_for_clean_program() {
+        let mut ir = empty_ir();
+        ir.shields.push(shield_breach("Guard", "halt", &["pii_leak"]));
+        ir.axonstore_specs.push(store("Ledger", "data.read"));
+        ir.flows.push(flow_reaching("Chat", &["Ledger"]));
+        ir.endpoints
+            .push(endpoint_requires("ChatEndpoint", "Chat", &["data.read"]));
+
+        let report = check_bundle(&bundle_for(&ir), &ir);
+        assert!(!report.results.is_empty(), "clean program still yields proofs");
+        assert!(report.all_verified(), "every proof must verify: {:?}", report.refutations());
+        assert!(report.refutations().is_empty());
+    }
+
+    /// A leaky program (a flow reaches a gated store the endpoint does
+    /// NOT declare) → the containment proof refutes → `all_verified()`
+    /// false, and the refutation names the leaked capability. This is
+    /// the deploy-gate signal §52.c rejects on.
+    #[test]
+    fn bundle_report_flags_capability_leak() {
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Ledger", "data.read"));
+        ir.flows.push(flow_reaching("Chat", &["Ledger"]));
+        ir.endpoints
+            .push(endpoint_requires("Leaky", "Chat", &[])); // declares nothing
+
+        let report = check_bundle(&bundle_for(&ir), &ir);
+        assert!(!report.all_verified(), "a capability leak must be non-deployable");
+        let refs = report.refutations();
+        assert!(!refs.is_empty());
+        assert!(
+            refs.iter().any(|r| r.property == PropertyClass::CapabilityContainment),
+            "the leak must surface as a CapabilityContainment refutation"
+        );
+        assert!(
+            refs.iter().any(|r| matches!(&r.outcome, CheckOutcome::Refuted { reason } if reason.contains("data.read"))),
+            "the refutation must name the leaked capability"
+        );
+    }
+
+    /// The aggregate agrees with per-proof `check_proof`, in order — the
+    /// report is just a faithful fold, no hidden policy.
+    #[test]
+    fn bundle_report_matches_per_proof_check() {
+        let mut ir = empty_ir();
+        ir.shields.push(shield_breach("Guard", "halt", &["pii_leak"]));
+        ir.endpoints.push(endpoint("E", &["HIPAA"], "Guard"));
+        let bundle = bundle_for(&ir);
+        let report = check_bundle(&bundle, &ir);
+        assert_eq!(report.results.len(), bundle.proofs.len());
+        for (r, proof) in report.results.iter().zip(&bundle.proofs) {
+            assert_eq!(r.outcome, check_proof(proof, &ir));
+            assert_eq!(r.property, proof.property);
+            assert_eq!(r.subject, proof.witness.subject_name());
+        }
+    }
+
+    /// A bundle whose proofs are about a DIFFERENT artifact → every
+    /// check is `DigestMismatch` → non-deployable (fail-closed).
+    #[test]
+    fn bundle_report_rejects_foreign_bundle() {
+        let mut ir_a = empty_ir();
+        ir_a.endpoints.push(endpoint("E", &["HIPAA"], ""));
+        let bundle = bundle_for(&ir_a);
+
+        let mut ir_b = empty_ir();
+        ir_b.endpoints.push(endpoint("E", &["HIPAA"], ""));
+        ir_b.endpoints.push(endpoint("Other", &["PCI_DSS"], "")); // different digest
+
+        let report = check_bundle(&bundle, &ir_b);
+        assert!(!report.all_verified());
+        assert!(report
+            .results
+            .iter()
+            .all(|r| r.outcome == CheckOutcome::DigestMismatch));
+    }
+
+    /// An empty bundle is vacuously deployable (nothing to refute).
+    #[test]
+    fn empty_bundle_is_vacuously_verified() {
+        let ir = empty_ir();
+        let bundle = ProofBundle {
+            axon_version: VERSION.to_string(),
+            artifact_digest: artifact_digest(&ir),
+            proofs: Vec::new(),
+        };
+        let report = check_bundle(&bundle, &ir);
+        assert!(report.all_verified());
+        assert!(report.refutations().is_empty());
     }
 }

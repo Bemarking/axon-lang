@@ -88,6 +88,74 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
     }
 }
 
+/// §52.a — the result of checking one proof inside a bundle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProofCheck {
+    /// Position of the proof in `ProofBundle::proofs`.
+    pub index: usize,
+    /// The property class the proof claims.
+    pub property: PropertyClass,
+    /// The witness subject (endpoint / tool / store / shield name).
+    pub subject: String,
+    /// The independent checker's verdict.
+    pub outcome: CheckOutcome,
+}
+
+/// §52.a — the deployability report for a whole [`ProofBundle`].
+///
+/// Aggregates the per-proof [`check_proof`] outcomes so a consumer (the
+/// enterprise deploy gate, the `axon pcc verify` CLI) has ONE trusted
+/// predicate for "is this bundle deployable." The policy — what counts
+/// as deployable — lives HERE, on the checker side, never in consumer
+/// glue (D52.1): a bundle is deployable iff every proof `Verified`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleReport {
+    /// One entry per proof, in bundle order.
+    pub results: Vec<ProofCheck>,
+}
+
+impl BundleReport {
+    /// True iff EVERY proof verified. Fail-closed: an empty bundle is
+    /// vacuously verified (nothing to refute), and any non-`Verified`
+    /// outcome (`Refuted` / `DigestMismatch` / `UnknownProperty`) makes
+    /// the whole bundle non-deployable (D52.2).
+    pub fn all_verified(&self) -> bool {
+        self.results
+            .iter()
+            .all(|r| r.outcome == CheckOutcome::Verified)
+    }
+
+    /// Every check that did NOT verify — the reasons a deploy gate
+    /// surfaces when it rejects.
+    pub fn refutations(&self) -> Vec<&ProofCheck> {
+        self.results
+            .iter()
+            .filter(|r| r.outcome != CheckOutcome::Verified)
+            .collect()
+    }
+}
+
+/// §52.a — check every proof in a bundle against the artifact,
+/// independently (each proof re-derived via [`check_proof`]). The
+/// bundle's own `artifact_digest` is advisory only — the authoritative
+/// binding is the per-proof digest [`check_proof`] re-verifies, so a
+/// bundle whose proofs are about a different artifact reports
+/// `DigestMismatch` per proof (not a silent pass).
+pub fn check_bundle(bundle: &super::proof_term::ProofBundle, ir: &IRProgram) -> BundleReport {
+    let results = bundle
+        .proofs
+        .iter()
+        .enumerate()
+        .map(|(index, proof)| ProofCheck {
+            index,
+            property: proof.property.clone(),
+            subject: proof.witness.subject_name().to_string(),
+            outcome: check_proof(proof, ir),
+        })
+        .collect();
+    BundleReport { results }
+}
+
 /// §51.a — re-derive the compliance-coverage witness from the artifact
 /// and verify it against the proof's witness, then render the verdict.
 ///
