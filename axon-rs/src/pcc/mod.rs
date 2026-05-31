@@ -1233,6 +1233,80 @@ mod tests {
             .all(|r| r.outcome == CheckOutcome::DigestMismatch));
     }
 
+    // ── §Fase 51.x.3 — no-silent-gap reachability invariant ─────────
+
+    /// The reachability walk's match is exhaustive: it must NOT contain
+    /// a `_` wildcard arm. This is the maintainable proxy for the
+    /// compiler-enforced invariant (a wildcard would let a future
+    /// `IRFlowNode` variant carrying a store ref / nested body be
+    /// silently missed). A refactor that reintroduces a wildcard fails
+    /// HERE — the §51.x.3 no-silent-gap gate.
+    #[test]
+    fn reachability_walk_has_no_wildcard_arm() {
+        const GEN_SRC: &str = include_str!("generate.rs");
+        let start = GEN_SRC
+            .find("fn collect_store_accesses(")
+            .expect("collect_store_accesses present");
+        // Bound the slice to the function body (up to the next top-level
+        // `pub fn`, which is derive_capability_containment_witness).
+        let rest = &GEN_SRC[start..];
+        let end = rest
+            .find("\npub fn derive_capability_containment_witness")
+            .expect("derive_capability_containment_witness follows");
+        let body = &rest[..end];
+        assert!(
+            !body.contains("_ => {}") && !body.contains("_ =>"),
+            "collect_store_accesses must stay an EXHAUSTIVE match with no \
+             `_` wildcard — a wildcard re-opens the §51.x.3 silent-gap risk \
+             (a future IRFlowNode variant could carry a store ref / nested \
+             body and be missed)"
+        );
+    }
+
+    /// The walk documents where transitive cross-flow reachability must
+    /// be reopened if a flow-invocation node ever enters `IRFlowNode`
+    /// (today `IRRun` is top-level only, so the case is vacuous — see
+    /// §51.x.3 recon). Pin the sentinel so the note can't be silently
+    /// dropped.
+    #[test]
+    fn reachability_walk_documents_transitive_reopen() {
+        const GEN_SRC: &str = include_str!("generate.rs");
+        assert!(
+            GEN_SRC.contains("REOPENED (§51.x.3)")
+                || GEN_SRC.contains("REOPEN"),
+            "the walk must keep the note on where to reopen transitive \
+             cross-flow reachability if a flow-invocation node ever joins \
+             IRFlowNode"
+        );
+    }
+
+    /// Leaf nodes (here: a payload-free `Break`) contribute NOTHING to
+    /// the reachable-gate set — only the store op is counted. Confirms
+    /// the leaf classification is inert.
+    #[test]
+    fn leaf_nodes_contribute_no_gates() {
+        use crate::ir_nodes::{IRBreakStep, IRFlowNode};
+        let mut ir = empty_ir();
+        ir.axonstore_specs.push(store("Ledger", "data.read"));
+        // A flow whose body interleaves a leaf node with the one store op.
+        let mut flow = flow_reaching("Chat", &["Ledger"]);
+        flow.steps.push(IRFlowNode::Break(IRBreakStep {
+            node_type: "break",
+            source_line: 1,
+            source_column: 1,
+        }));
+        ir.flows.push(flow);
+        let w = derive_capability_containment_witness(
+            "E",
+            "Chat",
+            &["data.read".to_string()],
+            &ir,
+        );
+        // Only the gated store contributes; the leaf adds nothing.
+        assert_eq!(w.reached_gates, vec!["data.read".to_string()]);
+        assert!(w.uncovered_gates.is_empty());
+    }
+
     /// An empty bundle is vacuously deployable (nothing to refute).
     #[test]
     fn empty_bundle_is_vacuously_verified() {
