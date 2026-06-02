@@ -95,6 +95,13 @@ pub enum Declaration {
     Daemon(DaemonDefinition),
     AxonStore(AxonStoreDefinition),
     AxonEndpoint(AxonEndpointDefinition),
+    /// §Fase 53 — Closed-catalog extension mechanism. Declares
+    /// adopter-specific PROVENANCE members for a closed catalog
+    /// (`effects` bases or shield `scan` categories) so the
+    /// type-checker + PCC treat them as first-class. Auditable +
+    /// gateable; never extends the enforceable effect set (invariant
+    /// #2 — provenance-class only).
+    Extension(ExtensionDefinition),
     /// §λ-L-E Fase 1 — I/O cognitivo primitives.
     Resource(ResourceDefinition),
     Fabric(FabricDefinition),
@@ -569,6 +576,43 @@ pub struct AgentDefinition {
     pub leading_trivia: Vec<crate::tokens::Trivia>,
     /// Fase 14.b — trailing comment trivia (same line as the
     /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+// ── §Fase 53 — Closed-catalog extension mechanism ────────────────────────────
+
+/// One member of an `extension` declaration. For `category: effects`
+/// the `name` is a provenance base (e.g. `"epistemic:believe"`) with
+/// optional `semantics` + `default_confidence` (a CEILING, never a
+/// floor — §53.d tainted-overriding). For `category: scan` the `name`
+/// is a scan-category identifier and the metadata is typically absent.
+#[derive(Debug, Clone)]
+pub struct ExtensionMember {
+    pub name: String,
+    pub semantics: Option<String>,
+    pub default_confidence: Option<f64>,
+    pub loc: Loc,
+}
+
+/// `extension Name { category: effects|scan, members: [ "x" : { … }, … ] }`
+///
+/// §Fase 53. A first-class, auditable + gateable declaration that
+/// expands a closed catalog with adopter-specific PROVENANCE members.
+/// Soundness invariants (validated in §53.c/§53.d): members are
+/// provenance-class only (never the enforceable effect set), must not
+/// shadow a canonical base/category, and ride in the IR + proof bundle
+/// so an independent PCC verifier re-derives against the same artifact.
+#[derive(Debug)]
+pub struct ExtensionDefinition {
+    pub name: String,
+    /// `effects` | `scan` — validated against the closed category set
+    /// in §53.c (the type-checker), not the parser.
+    pub category: String,
+    pub members: Vec<ExtensionMember>,
+    pub loc: Loc,
+    /// Fase 14.b — leading comment trivia. Empty by default.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia. Empty by default.
     pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 

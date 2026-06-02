@@ -142,6 +142,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Extension(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::AxonStore(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -1963,6 +1967,7 @@ impl Parser {
             TokenType::Mandate => self.parse_mandate().map(Declaration::Mandate),
             TokenType::Compute => self.parse_compute().map(Declaration::Compute),
             TokenType::Daemon => self.parse_daemon().map(Declaration::Daemon),
+            TokenType::Extension => self.parse_extension().map(Declaration::Extension),
             TokenType::AxonStore => self.parse_axonstore().map(Declaration::AxonStore),
             TokenType::AxonEndpoint => self.parse_axonendpoint().map(Declaration::AxonEndpoint),
 
@@ -4074,6 +4079,97 @@ impl Parser {
         }
         self.consume(TokenType::RBrace)?;
         Ok(node)
+    }
+
+    /// §Fase 53 — `extension Name { category: effects|scan, members: [ … ] }`.
+    /// The parser is permissive on field/category VALUES (validated in
+    /// §53.c by the type-checker — no-shadowing, category-membership);
+    /// it only enforces the structural grammar here.
+    fn parse_extension(&mut self) -> Result<ExtensionDefinition, ParseError> {
+        let tok = self.consume(TokenType::Extension)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = ExtensionDefinition {
+            name,
+            category: String::new(),
+            members: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.current().value.clone();
+            self.advance();
+            if self.check(TokenType::Colon) {
+                self.advance();
+                match field_name.as_str() {
+                    "category" => {
+                        node.category = self.consume_any_ident_or_kw()?.value.clone()
+                    }
+                    "members" => node.members = self.parse_extension_members()?,
+                    _ => self.skip_value(),
+                }
+            } else if self.check(TokenType::LBrace) {
+                self.skip_braced_block()?;
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 53 — parse `[ "name" [ : { semantics: "…", default_confidence: 0.8 } ], … ]`.
+    /// Each member is a string literal optionally followed by a metadata
+    /// block. Trailing/interleaved commas are tolerated.
+    fn parse_extension_members(&mut self) -> Result<Vec<ExtensionMember>, ParseError> {
+        let mut members = Vec::new();
+        self.consume(TokenType::LBracket)?;
+        while !self.check(TokenType::RBracket) && !self.check(TokenType::Eof) {
+            let name_tok = self.consume(TokenType::StringLit)?;
+            let mut member = ExtensionMember {
+                name: name_tok.value.clone(),
+                semantics: None,
+                default_confidence: None,
+                loc: Loc {
+                    line: name_tok.line,
+                    column: name_tok.column,
+                },
+            };
+            // Optional `: { semantics: "…", default_confidence: 0.8 }`.
+            if self.check(TokenType::Colon) {
+                self.advance();
+                self.consume(TokenType::LBrace)?;
+                while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                    let mkey = self.current().value.clone();
+                    self.advance();
+                    if self.check(TokenType::Colon) {
+                        self.advance();
+                        match mkey.as_str() {
+                            "semantics" => {
+                                member.semantics =
+                                    Some(self.consume(TokenType::StringLit)?.value.clone())
+                            }
+                            "default_confidence" => {
+                                member.default_confidence = self.parse_optional_float()
+                            }
+                            _ => self.skip_value(),
+                        }
+                    }
+                    if self.check(TokenType::Comma) {
+                        self.advance();
+                    }
+                }
+                self.consume(TokenType::RBrace)?;
+            }
+            members.push(member);
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBracket)?;
+        Ok(members)
     }
 
     fn parse_shield(&mut self) -> Result<ShieldDefinition, ParseError> {

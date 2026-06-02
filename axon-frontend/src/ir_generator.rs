@@ -169,6 +169,9 @@ impl IRGenerator {
             Declaration::Daemon(n) => ir.daemons.push(self.visit_daemon(n)),
             Declaration::AxonStore(n) => ir.axonstore_specs.push(self.visit_axonstore(n)),
             Declaration::AxonEndpoint(n) => ir.endpoints.push(self.visit_axonendpoint(n)),
+            // §Fase 53.a — `extension` parsed; IR lowering (IRExtension +
+            // ir.extensions, deterministically sorted) lands in §53.b.
+            Declaration::Extension(_) => {}
             Declaration::Resource(n) => ir.resources.push(self.visit_resource(n)),
             Declaration::Fabric(n) => ir.fabrics.push(self.visit_fabric(n)),
             Declaration::Manifest(n) => {

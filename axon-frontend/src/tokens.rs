@@ -136,6 +136,8 @@ pub enum TokenType {
     Transact,
     // AxonEndpoint
     AxonEndpoint,
+    // §Fase 53 — Closed-catalog extension mechanism
+    Extension,
     // I/O Cognitivo (§λ-L-E Fase 1 — Resources)
     Resource,
     Fabric,
@@ -435,6 +437,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "purge" => TokenType::Purge,
         "transact" => TokenType::Transact,
         "axonendpoint" | "axpoint" => TokenType::AxonEndpoint,
+        // §Fase 53 — Closed-catalog extension mechanism
+        "extension" => TokenType::Extension,
         // I/O Cognitivo (§λ-L-E Fase 1 — Resources)
         "resource" => TokenType::Resource,
         "fabric" => TokenType::Fabric,
@@ -519,6 +523,7 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             | TokenType::Lambda
             | TokenType::AxonStore
             | TokenType::AxonEndpoint
+            | TokenType::Extension
             | TokenType::Import
             | TokenType::Run
             // §λ-L-E Fase 1–5 — I/O cognitivo, control, topology, immune
