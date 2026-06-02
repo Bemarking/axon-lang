@@ -922,6 +922,17 @@ impl<'a> TypeChecker<'a> {
                         ));
                     }
                 }
+                // §Fase 53.a — register the extension name as a symbol
+                // (free duplicate-name detection). Member-level + category
+                // + no-shadowing validation is §53.c.
+                Declaration::Extension(n) => {
+                    registrations.push((
+                        n.name.clone(),
+                        "extension".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
+                }
                 Declaration::Epistemic(_) => {
                     // Recursion handled below
                 }
@@ -989,6 +1000,10 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Component(n) => self.check_component(n),
                 Declaration::View(n) => self.check_view(n),
                 Declaration::Channel(n) => self.check_channel(n),
+                // §Fase 53.c will implement `check_extension` (category ∈
+                // {effects,scan}, no-shadowing of canonical bases/categories,
+                // provenance-class members, valid default_confidence range).
+                Declaration::Extension(_) => {}
                 Declaration::Import(_)
                 | Declaration::Type(_)
                 | Declaration::Let(_)
