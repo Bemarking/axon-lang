@@ -487,6 +487,16 @@ pub struct TypeChecker<'a> {
     /// `register_declarations` pass uses it to populate
     /// `store_inline_column_sets` for the non-inline forms.
     manifest: Option<&'a crate::store_schema_manifest::Manifest>,
+    /// §Fase 53.c — extension-declared PROVENANCE members, collected +
+    /// validated in a pre-pass (`collect_and_validate_extensions`)
+    /// before tool/shield validation. `ext_effect_members` holds full
+    /// effect-row entries (e.g. `"epistemic:believe"`) accepted verbatim
+    /// by `check_tool`; `ext_scan_categories` holds bare scan categories
+    /// accepted by `check_shield`. A member only lands here AFTER passing
+    /// the invariant checks (provenance-class #2, no-shadowing #3,
+    /// confidence range) — a rejected member is never silently honored.
+    ext_effect_members: std::collections::HashSet<String>,
+    ext_scan_categories: std::collections::HashSet<String>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -499,6 +509,8 @@ impl<'a> TypeChecker<'a> {
             store_inline_column_sets: std::collections::HashMap::new(),
             current_flow_params: crate::store_column_proof::FlowParamTypes::new(),
             manifest: None,
+            ext_effect_members: std::collections::HashSet::new(),
+            ext_scan_categories: std::collections::HashSet::new(),
         }
     }
 
@@ -526,11 +538,16 @@ impl<'a> TypeChecker<'a> {
             store_inline_column_sets: std::collections::HashMap::new(),
             current_flow_params: crate::store_column_proof::FlowParamTypes::new(),
             manifest: Some(manifest),
+            ext_effect_members: std::collections::HashSet::new(),
+            ext_scan_categories: std::collections::HashSet::new(),
         }
     }
 
     pub fn check(mut self) -> Vec<TypeError> {
         self.register_declarations(&self.program.declarations);
+        // §Fase 53.c — validate + collect extensions BEFORE tool/shield
+        // validation so the augmented provenance catalogs are populated.
+        self.collect_and_validate_extensions(&self.program.declarations);
         self.check_declarations(&self.program.declarations);
         self.errors
     }
@@ -541,6 +558,8 @@ impl<'a> TypeChecker<'a> {
     /// `(TypeChecker.check(), .warnings)` pair.
     pub fn check_with_warnings(mut self) -> (Vec<TypeError>, Vec<TypeError>) {
         self.register_declarations(&self.program.declarations);
+        // §Fase 53.c — see `check`.
+        self.collect_and_validate_extensions(&self.program.declarations);
         self.check_declarations(&self.program.declarations);
         (self.errors, self.warnings)
     }
@@ -956,6 +975,96 @@ impl<'a> TypeChecker<'a> {
 
     // ── Phase 2: validation ──────────────────────────────────────
 
+    /// §Fase 53.c — pre-pass: validate every `extension` declaration and
+    /// populate the augmented provenance catalogs the tool/shield checks
+    /// consult. Runs BEFORE `check_declarations`. Recurses into
+    /// `epistemic` blocks for parity with `register_declarations`.
+    fn collect_and_validate_extensions(&mut self, decls: &[Declaration]) {
+        for decl in decls {
+            match decl {
+                Declaration::Extension(ext) => self.check_extension(ext),
+                Declaration::Epistemic(eb) => {
+                    self.collect_and_validate_extensions(&eb.body)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// §Fase 53.c — validate one `extension` + register its surviving
+    /// members. Enforces:
+    ///  - category ∈ {`effects`, `scan`};
+    ///  - INVARIANT #2 (provenance-class): an `effects` member's base
+    ///    (segment before `:`) may NOT be a canonical ENFORCEABLE effect
+    ///    base — this blocks smuggling an unenforceable privileged effect
+    ///    under a custom name (`io:bypass_shield`, `network:…`, …);
+    ///  - INVARIANT #3 (no shadowing): a `scan` member may not shadow a
+    ///    canonical scan category;
+    ///  - `default_confidence` ∈ [0.0, 1.0] when present.
+    /// Only members surviving validation are added to the augmented
+    /// catalog — a rejected member is never silently honored.
+    fn check_extension(&mut self, ext: &ExtensionDefinition) {
+        match ext.category.as_str() {
+            "effects" => {
+                for m in &ext.members {
+                    let base = m.name.split(':').next().unwrap_or(m.name.as_str());
+                    if is_valid(base, VALID_EFFECTS) {
+                        self.emit(
+                            format!(
+                                "extension '{}' effect member '{}' shadows the canonical enforceable \
+                                 base '{}'. Extensions are PROVENANCE-class only (§Fase 53 invariant \
+                                 #2: E_C ∩ E_E = ∅) — they may not redefine or qualify an enforceable \
+                                 effect base.",
+                                ext.name, m.name, base
+                            ),
+                            &m.loc,
+                        );
+                        continue;
+                    }
+                    if let Some(c) = m.default_confidence {
+                        if !(0.0..=1.0).contains(&c) {
+                            self.emit(
+                                format!(
+                                    "extension '{}' member '{}' has default_confidence {} outside the \
+                                     valid range [0.0, 1.0]",
+                                    ext.name, m.name, c
+                                ),
+                                &m.loc,
+                            );
+                            continue;
+                        }
+                    }
+                    self.ext_effect_members.insert(m.name.clone());
+                }
+            }
+            "scan" => {
+                for m in &ext.members {
+                    if is_valid(&m.name, VALID_SCAN_CATEGORIES) {
+                        self.emit(
+                            format!(
+                                "extension '{}' scan member '{}' shadows a canonical scan category \
+                                 (§Fase 53 invariant #3 — no shadowing of the canonical catalog)",
+                                ext.name, m.name
+                            ),
+                            &m.loc,
+                        );
+                        continue;
+                    }
+                    self.ext_scan_categories.insert(m.name.clone());
+                }
+            }
+            other => {
+                self.emit(
+                    format!(
+                        "extension '{}' has unknown category '{}'. Valid categories: effects, scan",
+                        ext.name, other
+                    ),
+                    &ext.loc,
+                );
+            }
+        }
+    }
+
     fn check_declarations(&mut self, decls: &[Declaration]) {
         for decl in decls {
             match decl {
@@ -1135,6 +1244,14 @@ impl<'a> TypeChecker<'a> {
         }
         if let Some(ref eff) = node.effects {
             for e in &eff.effects {
+                // §Fase 53.c — an extension-declared provenance member is
+                // accepted VERBATIM (the full entry, e.g.
+                // "epistemic:believe"). Provenance-class: it carries no
+                // runtime capability (invariant #2), so the canonical
+                // base/qualifier enforcement below does not apply.
+                if self.ext_effect_members.contains(e) {
+                    continue;
+                }
                 // Handle composite effects like "name:qualifier"
                 let (base, qualifier) = match e.split_once(':') {
                     Some((b, q)) => (b, Some(q)),
@@ -1925,7 +2042,9 @@ impl<'a> TypeChecker<'a> {
     fn check_shield(&mut self, node: &ShieldDefinition) {
         // Scan categories
         for cat in &node.scan {
-            if !is_valid(cat, VALID_SCAN_CATEGORIES) {
+            // §Fase 53.c — accept an extension-declared scan category as
+            // first-class (alongside the canonical catalog).
+            if !is_valid(cat, VALID_SCAN_CATEGORIES) && !self.ext_scan_categories.contains(cat) {
                 self.emit(
                     format!(
                         "Unknown scan category '{}' in shield '{}'. Valid: {}",
