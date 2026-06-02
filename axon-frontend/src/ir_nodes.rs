@@ -34,6 +34,19 @@ pub struct IRProgram {
     pub compute_specs: Vec<IRCompute>,
     pub axonstore_specs: Vec<IRAxonStore>,
     pub endpoints: Vec<IRAxonEndpoint>,
+    /// §Fase 53 — closed-catalog extension declarations (compiled).
+    /// `#[serde(skip)]` TEMPORARILY: the Python reference `IRProgram`
+    /// does not yet carry this field, so skipping keeps the
+    /// byte-identical structural-parity gate green (same pattern as
+    /// `dataspace_specs`). The in-memory field feeds the §53.c
+    /// type-checker + §53.d PCC (both read `&IRProgram`); the skip is
+    /// removed when the Python IR mirror lands, at which point
+    /// extensions serialise INTO the artifact (soundness invariant #1).
+    /// Deterministically sorted by `name` at the end of IR generation
+    /// (§53.b founder refinement B) so multi-file declaration order can
+    /// never perturb the proof-bundle hash.
+    #[serde(skip)]
+    pub extensions: Vec<IRExtension>,
     /// Local-only: IRDataspace specs are computed during IR generation so
     /// the cost estimator and inspectors can reach them, but Python's
     /// reference IRProgram does not serialise this field. Hidden from JSON
@@ -114,6 +127,7 @@ impl IRProgram {
             compute_specs: Vec::new(),
             axonstore_specs: Vec::new(),
             endpoints: Vec::new(),
+            extensions: Vec::new(),
             dataspace_specs: Vec::new(),
             resources: Vec::new(),
             fabrics: Vec::new(),
@@ -1305,6 +1319,38 @@ pub struct IRDaemon {
     pub max_tokens: Option<i64>,
     pub max_time: String,
     pub max_cost: Option<f64>,
+}
+
+// ── §Fase 53 — Closed-catalog extension mechanism ────────────────────────────
+
+/// §Fase 53 — one compiled member of an `extension`. For `effects`
+/// the `name` is a provenance base; `default_confidence` is a CEILING
+/// (§53.d tainted-overriding). Metadata is elided from JSON when absent
+/// so the serialised shape stays minimal once the `extensions` field is
+/// un-skipped alongside the Python IR mirror.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRExtensionMember {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantics: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_confidence: Option<f64>,
+}
+
+/// §Fase 53 — a compiled `extension` declaration. Rides in the IR (and,
+/// once un-skipped, the proof bundle) so an independent PCC verifier
+/// re-derives `is_known_base` against the artifact's own extensions
+/// (soundness invariant #1). `category` ∈ {`effects`, `scan`} — the
+/// type-checker (§53.c) enforces the closed category + no-shadowing +
+/// provenance-class invariants before this IR is trusted.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRExtension {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub category: String,
+    pub members: Vec<IRExtensionMember>,
 }
 
 #[derive(Debug, Clone, Serialize)]

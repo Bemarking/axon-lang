@@ -120,6 +120,16 @@ impl IRGenerator {
             });
         }
 
+        // Phase 4 (§Fase 53.b, founder refinement B): deterministic
+        // extension order. Declarations across multiple `import`ed files
+        // arrive in file+source order; sorting by the extension
+        // identifier makes `ir.extensions` a pure function of the
+        // declared set, so the proof-bundle hash (§53.d) is stable
+        // regardless of declaration order. Stable sort preserves the
+        // (already-deterministic, single-file) member order within each
+        // extension.
+        ir.extensions.sort_by(|a, b| a.name.cmp(&b.name));
+
         ir
     }
 
@@ -169,9 +179,10 @@ impl IRGenerator {
             Declaration::Daemon(n) => ir.daemons.push(self.visit_daemon(n)),
             Declaration::AxonStore(n) => ir.axonstore_specs.push(self.visit_axonstore(n)),
             Declaration::AxonEndpoint(n) => ir.endpoints.push(self.visit_axonendpoint(n)),
-            // §Fase 53.a — `extension` parsed; IR lowering (IRExtension +
-            // ir.extensions, deterministically sorted) lands in §53.b.
-            Declaration::Extension(_) => {}
+            // §Fase 53.b — lower the `extension` declaration into the IR.
+            // Deterministic ordering is applied once, at the end of
+            // `generate` (Phase 4), not here.
+            Declaration::Extension(n) => ir.extensions.push(self.visit_extension(n)),
             Declaration::Resource(n) => ir.resources.push(self.visit_resource(n)),
             Declaration::Fabric(n) => ir.fabrics.push(self.visit_fabric(n)),
             Declaration::Manifest(n) => {
@@ -1042,6 +1053,29 @@ impl IRGenerator {
             // preserves the tagged-union shape (inline / manifest_ref /
             // env_var) and the canonical PascalCase column-type name.
             column_schema: n.column_schema.as_ref().map(lower_column_schema),
+        }
+    }
+
+    /// §Fase 53.b — lower an `extension` declaration to its IR mirror.
+    /// Pure structural lowering; the category/no-shadowing/provenance
+    /// invariants are enforced by the §53.c type-checker before this IR
+    /// is consumed by §53.d PCC.
+    fn visit_extension(&self, n: &crate::ast::ExtensionDefinition) -> crate::ir_nodes::IRExtension {
+        crate::ir_nodes::IRExtension {
+            node_type: "extension",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            category: n.category.clone(),
+            members: n
+                .members
+                .iter()
+                .map(|m| crate::ir_nodes::IRExtensionMember {
+                    name: m.name.clone(),
+                    semantics: m.semantics.clone(),
+                    default_confidence: m.default_confidence,
+                })
+                .collect(),
         }
     }
 
