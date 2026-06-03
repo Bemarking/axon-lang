@@ -327,6 +327,24 @@ impl Lexer {
             c if c.is_ascii_digit() => self.scan_number(line, col, c, false)?,
             c if c.is_alphabetic() || c == '_' => self.scan_identifier(line, col, c),
 
+            // §Fase 54.b — `$` is only meaningful as interpolation, and
+            // interpolation in Axon canonically lives INSIDE a string
+            // literal (`"${name}"` / `"$name"`) — the same form used for
+            // prompt text, `persist` field values, and the `use <Tool> on
+            // "${param}"` tool argument. A bare `$` outside quotes is never
+            // valid; guide the author to quote it rather than emitting the
+            // opaque "unexpected character" message.
+            '$' => {
+                return Err(LexerError {
+                    message: "Unexpected '$'. Interpolation `${name}` / `$name` is only \
+                              valid inside a string literal — wrap it in quotes, e.g. \
+                              `\"${name}\"`."
+                        .to_string(),
+                    line,
+                    column: col,
+                });
+            }
+
             c => {
                 return Err(LexerError {
                     message: format!("Unexpected character {:?}", c),
