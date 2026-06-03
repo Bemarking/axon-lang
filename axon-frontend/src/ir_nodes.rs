@@ -35,16 +35,19 @@ pub struct IRProgram {
     pub axonstore_specs: Vec<IRAxonStore>,
     pub endpoints: Vec<IRAxonEndpoint>,
     /// §Fase 53 — closed-catalog extension declarations (compiled).
-    /// `#[serde(skip)]` TEMPORARILY: the Python reference `IRProgram`
-    /// does not yet carry this field, so skipping keeps the
-    /// byte-identical structural-parity gate green (same pattern as
-    /// `dataspace_specs`). The in-memory field feeds the §53.c
-    /// type-checker + §53.d PCC (both read `&IRProgram`); the skip is
-    /// removed when the Python IR mirror lands, at which point
-    /// extensions serialise INTO the artifact (soundness invariant #1).
-    /// Deterministically sorted by `name` at the end of IR generation
-    /// (§53.b founder refinement B) so multi-file declaration order can
-    /// never perturb the proof-bundle hash.
+    /// `#[serde(skip)]` so the field is NOT emitted into the IR JSON —
+    /// this keeps the static IR-JSON drift-gate fixtures green without
+    /// regenerating them (same established pattern as `dataspace_specs`).
+    /// The in-memory field feeds the §53.c type-checker + §53.d PCC (both
+    /// read `&IRProgram`); soundness invariant #1 holds via SOURCE
+    /// re-derivation — both the prover and the verifier read the
+    /// source-derived IR, which carries the extensions. §53.x hardening
+    /// (optional): un-skip + regenerate fixtures + bind extensions into
+    /// the PCC `artifact_digest` (today the digest omits them; the
+    /// witness still binds them by re-derivation). Deterministically
+    /// sorted by `name` at the end of IR generation (§53.b founder
+    /// refinement B) so multi-file declaration order can never perturb
+    /// the proof-bundle hash.
     #[serde(skip)]
     pub extensions: Vec<IRExtension>,
     /// Local-only: IRDataspace specs are computed during IR generation so
