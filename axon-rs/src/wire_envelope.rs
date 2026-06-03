@@ -404,6 +404,25 @@ impl FlowEnvelope {
     ///    sub-fase that moves it to axon-csys::crypto for true
     ///    silicon-grounded tamper-evidence.)
     pub fn seal(mut self) -> Self {
+        // §Fase 55.e — epistemic ceiling propagates to the HEADLINE
+        // certainty: a flow can be no more certain than its least-certain
+        // epistemic tool. The λD lattice meet (⊓) of the per-tool ceilings
+        // is their minimum; each envelope's `confidence` IS that tool's
+        // applied ceiling (§55.a/b), so `min(confidences)` is the flow's
+        // epistemic upper bound. Applied BEFORE the C23 kernel so the kernel
+        // consolidates the full degradation (Theorem 5.1) at the single
+        // egress — no gateway can read a nominal `know` headline while an
+        // internal tool degraded the computation to `speculate`
+        // (Epistemic Transparency / taint propagation). No epistemic tool ⇒
+        // no change (D5 wire byte-compat for every pre-55 flow).
+        if let Some(min_ceiling) = self
+            .epistemic_envelopes
+            .iter()
+            .map(|e| e.confidence)
+            .reduce(f64::min)
+        {
+            self.certainty = self.certainty.min(min_ceiling);
+        }
         // Theorem 5.1 — DELEGATE to C23 kernel. The algebra for
         // `derived_status` matches the producer in
         // `from_execution_result` (anchor_breaches > 0 || errors > 0)
