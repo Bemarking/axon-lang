@@ -15,7 +15,9 @@
 //! Keeping capture pure and side-effect-free makes the lattice arithmetic
 //! exhaustively testable without the runner.
 
+use crate::ir_nodes::{IRFlow, IRFlowNode, IRToolSpec};
 use crate::lambda_data::apply_provenance_ceiling;
+use serde::{Deserialize, Serialize};
 
 /// The closed catalog of epistemic levels, ordered along the λD lattice
 /// `⊥ ⊑ doubt ⊑ speculate ⊑ believe ⊑ know ⊑ ⊤`. Mirrors the frontend
@@ -50,8 +52,10 @@ pub fn level_ceiling(level: &str) -> Option<f64> {
 }
 
 /// The captured epistemic envelope of one tool dispatch — the Theorem 5.1
-/// `(base, scope, confidence)` triple.
-#[derive(Debug, Clone, PartialEq)]
+/// `(base, scope, confidence)` triple. Serialized verbatim onto the wire
+/// (`FlowEnvelope.epistemic_envelopes` on the sync path; the `epistemic`
+/// array on the streaming `axon.complete`) — §Fase 55.b.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EpistemicEnvelope {
     /// The lattice position imposed by the tool's `epistemic:<level>`
     /// effect (`doubt` | `speculate` | `believe` | `know`).
@@ -101,6 +105,41 @@ pub fn capture(
         scope: scope.to_string(),
         confidence: apply_provenance_ceiling(input_confidence, ceiling),
     })
+}
+
+/// §Fase 55.b — derive the epistemic envelopes for one flow's tool
+/// dispatches, straight from the IR. For each flow-level `use <Tool>` step,
+/// look up the tool's declared effect row in `tools` and [`capture`] its
+/// epistemic envelope. Steps whose tool has no epistemic base (or whose
+/// tool is undeclared) contribute nothing.
+///
+/// `input_confidence` is the clean pre-dispatch ψ certainty — `1.0` for a
+/// top-level flow (a tool's own ceiling is what surfaces the degradation);
+/// a finer running ψ, when one exists, flows through `capture`'s `min`.
+///
+/// This is the SINGLE derivation both transports call (the sync runner with
+/// its in-hand `ir`, the streaming resolver after re-deriving the IR from
+/// source), so the wire carries byte-identical envelopes by construction —
+/// the §55.c parity invariant.
+pub fn collect_for_flow(
+    flow: &IRFlow,
+    tools: &[IRToolSpec],
+    input_confidence: f64,
+) -> Vec<EpistemicEnvelope> {
+    flow.steps
+        .iter()
+        .filter_map(|node| match node {
+            IRFlowNode::UseTool(u) => {
+                let tool = tools.iter().find(|t| t.name == u.tool_name)?;
+                capture(
+                    &tool.effect_row,
+                    &format!("tool:{}", u.tool_name),
+                    input_confidence,
+                )
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -173,5 +212,86 @@ mod tests {
         assert_eq!(capture(&row, "tool:T", 1.5).unwrap().confidence, 0.50);
         // -0.2 → clamp to 0.0 → still 0.0.
         assert_eq!(capture(&row, "tool:T", -0.2).unwrap().confidence, 0.0);
+    }
+
+    // ── §55.b — collect_for_flow (IR-driven derivation) ──────────────
+
+    fn tool(name: &str, effects: &[&str]) -> IRToolSpec {
+        IRToolSpec {
+            node_type: "tool",
+            source_line: 0,
+            source_column: 0,
+            name: name.into(),
+            provider: String::new(),
+            max_results: None,
+            filter_expr: String::new(),
+            timeout: String::new(),
+            runtime: String::new(),
+            sandbox: None,
+            input_schema: Vec::new(),
+            output_schema: String::new(),
+            effect_row: effects.iter().map(|e| e.to_string()).collect(),
+        }
+    }
+
+    fn use_tool(tool_name: &str) -> IRFlowNode {
+        IRFlowNode::UseTool(crate::ir_nodes::IRUseToolStep {
+            node_type: "use_tool",
+            source_line: 0,
+            source_column: 0,
+            tool_name: tool_name.into(),
+            argument: "${query}".into(),
+        })
+    }
+
+    fn flow_with_steps(steps: Vec<IRFlowNode>) -> IRFlow {
+        IRFlow {
+            node_type: "flow",
+            source_line: 0,
+            source_column: 0,
+            name: "F".into(),
+            parameters: Vec::new(),
+            return_type_name: "Unit".into(),
+            return_type_generic: String::new(),
+            return_type_optional: false,
+            steps,
+            edges: Vec::new(),
+            execution_levels: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn collects_one_envelope_per_epistemic_tool_dispatch() {
+        let tools = vec![
+            tool("WebSearch", &["network", "epistemic:speculate"]),
+            tool("ExactLookup", &["compute", "epistemic:know"]),
+        ];
+        let flow = flow_with_steps(vec![use_tool("WebSearch"), use_tool("ExactLookup")]);
+        let envs = collect_for_flow(&flow, &tools, 1.0);
+        assert_eq!(envs.len(), 2);
+        assert_eq!(envs[0], EpistemicEnvelope {
+            base: "speculate".into(),
+            scope: "tool:WebSearch".into(),
+            confidence: 0.80,
+        });
+        assert_eq!(envs[1], EpistemicEnvelope {
+            base: "know".into(),
+            scope: "tool:ExactLookup".into(),
+            confidence: 0.99,
+        });
+    }
+
+    #[test]
+    fn a_non_epistemic_tool_contributes_no_envelope() {
+        let tools = vec![tool("PlainHttp", &["network"])];
+        let flow = flow_with_steps(vec![use_tool("PlainHttp")]);
+        assert!(collect_for_flow(&flow, &tools, 1.0).is_empty());
+    }
+
+    #[test]
+    fn an_undeclared_tool_is_skipped_not_panicked() {
+        let tools: Vec<IRToolSpec> = Vec::new();
+        let flow = flow_with_steps(vec![use_tool("Ghost")]);
+        assert!(collect_for_flow(&flow, &tools, 1.0).is_empty());
     }
 }

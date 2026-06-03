@@ -165,6 +165,7 @@ fn fase39b_s5_sealed_envelope_carries_full_psi_vector() {
         step_audit: StepAuditTrail::default(),
         audit_chain_hash: String::new(),
         blame_attribution: None,
+        epistemic_envelopes: Vec::new(),
         execution_metrics: ExecutionMetrics::default(),
         trace_id: "test-trace".to_string(),
     }
@@ -210,6 +211,7 @@ fn fase39b_s5_theorem_5_1_bounds_derived_certainty() {
         },
         audit_chain_hash: String::new(),
         blame_attribution: None,
+        epistemic_envelopes: Vec::new(),
         execution_metrics: ExecutionMetrics::default(),
         trace_id: "x".to_string(),
     };
@@ -283,6 +285,7 @@ fn fase39b_s6_audit_chain_hash_deterministic_on_identical_input() {
         },
         audit_chain_hash: String::new(),
         blame_attribution: None,
+        epistemic_envelopes: Vec::new(),
         execution_metrics: ExecutionMetrics::default(),
         trace_id: "t".to_string(),
     }
@@ -305,6 +308,7 @@ fn fase39b_s6_audit_chain_hash_deterministic_on_identical_input() {
         },
         audit_chain_hash: String::new(),
         blame_attribution: None,
+        epistemic_envelopes: Vec::new(),
         execution_metrics: ExecutionMetrics::default(),
         trace_id: "t".to_string(),
     }
@@ -331,6 +335,7 @@ fn fase39b_s6_audit_chain_hash_changes_on_provenance_tamper() {
         step_audit: StepAuditTrail::default(),
         audit_chain_hash: String::new(),
         blame_attribution: None,
+        epistemic_envelopes: Vec::new(),
         execution_metrics: ExecutionMetrics::default(),
         trace_id: "t".to_string(),
     };
@@ -423,6 +428,7 @@ fn fase39b_s8_from_execution_result_e2e() {
         runtime_warnings: Vec::new(),
         provenance_events: Vec::new(),
         blame_attribution: None,
+        epistemic_envelopes: Vec::new(),
     };
     let env = FlowEnvelope::from_execution_result(
         exec,

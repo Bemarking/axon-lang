@@ -171,6 +171,7 @@ fn fase39c_s4_provenance_chain_canonical_ordering() {
             "shield:Hipaa".to_string(),
         ],
         blame_attribution: None,
+        epistemic_envelopes: Vec::new(),
     };
     let env = FlowEnvelope::from_execution_result(exec, "List<Any>".to_string());
     assert_eq!(
@@ -326,6 +327,7 @@ fn fase39c_s7_e2e_converter_with_anchor_breach() {
             "warn",
             0.42,
         )),
+        epistemic_envelopes: Vec::new(),
     };
     let env = FlowEnvelope::from_execution_result(
         exec,
@@ -388,6 +390,7 @@ fn fase39c_s7_e2e_clean_path_no_blame() {
         runtime_warnings: Vec::new(),
         provenance_events: Vec::new(),
         blame_attribution: None,
+        epistemic_envelopes: Vec::new(),
     };
     let env = FlowEnvelope::from_execution_result(exec, "Any".to_string()).seal();
     assert_eq!(env.certainty, 1.0, "§39.c §7 — clean path → 1.0");

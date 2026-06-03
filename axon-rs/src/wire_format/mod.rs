@@ -123,6 +123,13 @@ pub struct CompleteEnvelope {
     pub enforcement_summaries: Vec<(String, EnforcementSummaryWire)>,
     pub runtime_warnings: Vec<RuntimeWarning>,
     pub step_audit_records: Vec<StepAuditRecord>,
+    /// §Fase 55.b — the Theorem 5.1 `(base, scope, confidence)` triple of
+    /// every `use <Tool>` dispatch whose tool declares an
+    /// `epistemic:<level>` effect. Emitted as the `epistemic` array on the
+    /// streaming `axon.complete` envelope (elided when empty), byte-aligned
+    /// with the sync `FlowEnvelope.epistemic_envelopes` (both derived by
+    /// `epistemic_capture::collect_for_flow` — §55.c parity).
+    pub epistemic_envelopes: Vec<crate::epistemic_capture::EpistemicEnvelope>,
 }
 
 /// Wire-format adapter trait — translates internal flow-execution

@@ -2430,6 +2430,13 @@ pub struct ServerRunnerMetrics {
     /// wins (subsequent events are recorded in audit_log but do
     /// not overwrite the primary attribution).
     pub blame_attribution: Option<crate::wire_envelope::BlameContext>,
+    /// §Fase 55.b — the Theorem 5.1 `(base, scope, confidence)` triple of
+    /// every flow-level `use <Tool>` dispatch whose tool declares an
+    /// `epistemic:<level>` effect. Derived from the IR via
+    /// [`crate::epistemic_capture::collect_for_flow`] — the same function
+    /// the streaming path calls, so both transports surface byte-identical
+    /// envelopes (§55.c parity). Empty for flows with no epistemic tool.
+    pub epistemic_envelopes: Vec<crate::epistemic_capture::EpistemicEnvelope>,
 }
 
 pub fn execute_server_flow(
@@ -2815,6 +2822,18 @@ pub fn execute_server_flow(
     // breach > backend soft-fail > type mismatch. The first
     // surfaced wins per `merge_blame`'s stable tie-break.
 
+    // §Fase 55.b — capture the epistemic envelope of every tool dispatch
+    // in this flow from the IR (the SAME derivation the streaming path
+    // re-runs from source). `input_confidence = 1.0`: a top-level flow's
+    // ψ is clean before any tool degrades it, so each tool's own ceiling
+    // is what surfaces.
+    let epistemic_envelopes = ir
+        .flows
+        .iter()
+        .find(|f| f.name == flow_name)
+        .map(|f| crate::epistemic_capture::collect_for_flow(f, &ir.tools, 1.0))
+        .unwrap_or_default();
+
     Ok(ServerRunnerMetrics {
         success,
         steps_executed,
@@ -2826,6 +2845,7 @@ pub fn execute_server_flow(
         per_step_chunks,
         provenance_events,
         blame_attribution,
+        epistemic_envelopes,
     })
 }
 

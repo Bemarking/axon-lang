@@ -90,6 +90,17 @@ pub struct FlowEnvelope {
     /// making it structurally unbypassable.
     pub certainty: f64,
 
+    /// §Fase 55.b — the Theorem 5.1 `(base, scope, confidence)` triple of
+    /// every flow-level `use <Tool>` dispatch whose tool declares an
+    /// `epistemic:<level>` effect. Surfaces the epistemic degradation on
+    /// the wire — the §50.i.4 parity gate, promoted (the competitive
+    /// differential: an adopter sees a query routed through an
+    /// `epistemic:speculate` tool decay to `confidence ≤ 0.80`). Empty —
+    /// and elided from the JSON — for flows with no epistemic tool (D5
+    /// backward-compat: byte-identical wire for every pre-55.b flow).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub epistemic_envelopes: Vec<crate::epistemic_capture::EpistemicEnvelope>,
+
     // ── Pillar II (Audit-chained) — provenance + step trail ──────
     /// Ordered list of `kind:identifier` tuples capturing the
     /// lineage of `result`. Examples:
@@ -328,6 +339,8 @@ impl FlowEnvelope {
             ontological_type,
             result,
             certainty,
+            // §Fase 55.b — surface the IR-derived epistemic envelopes.
+            epistemic_envelopes: exec_result.epistemic_envelopes,
             provenance_chain,
             step_audit: StepAuditTrail {
                 step_names: exec_result.step_names.clone(),
@@ -489,6 +502,7 @@ mod tests {
             runtime_warnings: Vec::new(),
             provenance_events: Vec::new(),
             blame_attribution: None,
+            epistemic_envelopes: Vec::new(),
         }
     }
 
@@ -637,6 +651,7 @@ mod tests {
             ontological_type: "Any".to_string(),
             result: serde_json::Value::Null,
             certainty: 1.0, // misbehaving producer
+            epistemic_envelopes: Vec::new(),
             provenance_chain: vec!["flow:Derived".to_string()],
             step_audit: StepAuditTrail {
                 anchor_breaches: 1, // makes this derived per 39.b algebra
@@ -675,6 +690,7 @@ mod tests {
             ontological_type: "Any".to_string(),
             result: serde_json::Value::Null,
             certainty: 1.0,
+            epistemic_envelopes: Vec::new(),
             provenance_chain: vec!["flow:Empty".to_string()],
             step_audit: StepAuditTrail::default(),
             audit_chain_hash: String::new(),
