@@ -176,6 +176,75 @@ pub fn clear_shield_registry() {
         .clear();
 }
 
+// ────────────────────────────────────────────────────────────────────────
+//  §Fase 53.e — NO PHANTOM GUARDRAILS (founder refinement C)
+// ────────────────────────────────────────────────────────────────────────
+
+/// Every `(shield_name, category)` where a shield declares an
+/// EXTENSION-introduced scan category (one declared via an
+/// `extension { category: scan }` block) but has **no registered
+/// scanner** — i.e. a guardrail the operator believes is active that is
+/// actually a silent no-op.
+///
+/// Canonical scan categories are intentionally NOT gated: they carry a
+/// documented framework meaning, and the OSS identity passthrough (no
+/// scanner) is the backwards-compatible default. Only adopter-introduced
+/// extension categories — which have NO default semantics — require an
+/// explicit scanner; serving one unscanned is a false sense of security.
+pub fn unscanned_extension_scan_categories(
+    ir: &crate::ir_nodes::IRProgram,
+) -> Vec<(String, String)> {
+    let mut ext_cats: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for ext in &ir.extensions {
+        if ext.category == "scan" {
+            for m in &ext.members {
+                ext_cats.insert(m.name.as_str());
+            }
+        }
+    }
+    if ext_cats.is_empty() {
+        return Vec::new();
+    }
+    let mut violations = Vec::new();
+    for shield in &ir.shields {
+        // A registered scanner owns the shield: it is responsible for the
+        // declared categories. Only a shield with NO scanner can leave an
+        // extension category as a ghost guardrail.
+        if lookup_shield_scanner(&shield.name).is_some() {
+            continue;
+        }
+        for cat in &shield.scan {
+            if ext_cats.contains(cat.as_str()) {
+                violations.push((shield.name.clone(), cat.clone()));
+            }
+        }
+    }
+    violations
+}
+
+/// §Fase 53.e — the boot gate. `Ok(())` when every extension scan
+/// category used by a shield has a registered scanner; `Err(blame)` (a
+/// Server-Blame message) otherwise. The boot sequence MUST treat `Err`
+/// as FATAL — refuse to serve rather than present a ghost guardrail
+/// (founder refinement C: no silent no-op, fail loud).
+pub fn check_extension_scan_coverage(ir: &crate::ir_nodes::IRProgram) -> Result<(), String> {
+    let violations = unscanned_extension_scan_categories(ir);
+    if violations.is_empty() {
+        return Ok(());
+    }
+    let detail = violations
+        .iter()
+        .map(|(s, c)| format!("shield '{s}' → scan category '{c}'"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(format!(
+        "§Fase 53.e refusing to boot — extension scan categor(ies) declared but \
+         UNSCANNED (no scanner registered): {detail}. An `extension` scan category \
+         has no default meaning; serving it as a silent no-op would be a phantom \
+         guardrail. Register a scanner for the shield(s) or remove the category."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +272,68 @@ mod tests {
                 "policy rejection (test)",
             )
         }
+    }
+
+    // ── §Fase 53.e — phantom-guardrail boot gate ───────────────────
+
+    fn ir_from(src: &str) -> crate::ir_nodes::IRProgram {
+        let tokens = crate::lexer::Lexer::new(src, "<test>")
+            .tokenize()
+            .expect("lex");
+        let program = crate::parser::Parser::new(tokens).parse().expect("parse");
+        crate::ir_generator::IRGenerator::new().generate(&program)
+    }
+
+    struct PassScanner;
+    impl ShieldScanner for PassScanner {
+        fn scan(&self, target: &str, _ctx: &ShieldScanContext) -> ShieldVerdict {
+            ShieldVerdict::pass(target.to_string())
+        }
+    }
+
+    /// A shield using ONLY canonical scan categories (no scanner) is NOT
+    /// a violation — the canonical passthrough is the documented default.
+    #[test]
+    fn canonical_category_without_scanner_is_not_a_violation() {
+        let ir = ir_from(
+            "shield T53e_canon { scan: [code_injection] strategy: pattern on_breach: halt }",
+        );
+        assert!(unscanned_extension_scan_categories(&ir).is_empty());
+        assert!(check_extension_scan_coverage(&ir).is_ok());
+    }
+
+    /// A shield using an EXTENSION scan category with NO registered
+    /// scanner is a phantom guardrail → reported + boot refused.
+    #[test]
+    fn extension_category_without_scanner_is_a_violation() {
+        let ir = ir_from(
+            "extension t53e_x { category: scan members: [ \"dunning_pressure\" ] }\n\
+             shield T53e_ghost { scan: [dunning_pressure] strategy: pattern on_breach: halt }",
+        );
+        let v = unscanned_extension_scan_categories(&ir);
+        assert_eq!(
+            v,
+            vec![("T53e_ghost".to_string(), "dunning_pressure".to_string())]
+        );
+        let err = check_extension_scan_coverage(&ir).expect_err("must refuse boot");
+        assert!(err.contains("phantom guardrail"), "got: {err}");
+        assert!(err.contains("dunning_pressure"), "got: {err}");
+    }
+
+    /// Same source, but a scanner registered under the shield name → the
+    /// extension category is covered → no violation.
+    #[test]
+    fn extension_category_with_scanner_is_ok() {
+        const SHIELD: &str = "T53e_covered";
+        let _prev = register_shield_scanner(SHIELD, Arc::new(PassScanner));
+        let ir = ir_from(&format!(
+            "extension t53e_y {{ category: scan members: [ \"dunning_pressure\" ] }}\n\
+             shield {SHIELD} {{ scan: [dunning_pressure] strategy: pattern on_breach: halt }}"
+        ));
+        let ok = check_extension_scan_coverage(&ir);
+        // Clean up BEFORE asserting so a failure doesn't leak the scanner.
+        unregister_shield_scanner(SHIELD);
+        assert!(ok.is_ok(), "a registered scanner must cover the category: {ok:?}");
     }
 
     #[test]
