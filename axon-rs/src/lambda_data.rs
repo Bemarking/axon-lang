@@ -89,13 +89,13 @@ impl Derivation {
 #[derive(Debug, Clone)]
 pub struct LambdaData {
     pub name: String,
-    pub ontology: String,              // T
-    pub value: Vec<u8>,                // V (opaque payload)
-    pub certainty: f64,                // c ∈ [0,1]
-    pub temporal_frame_start: String,  // τ_start
-    pub temporal_frame_end: String,    // τ_end
-    pub provenance: String,            // ρ
-    pub derivation: Derivation,        // δ
+    pub ontology: String,             // T
+    pub value: Vec<u8>,               // V (opaque payload)
+    pub certainty: f64,               // c ∈ [0,1]
+    pub temporal_frame_start: String, // τ_start
+    pub temporal_frame_end: String,   // τ_end
+    pub provenance: String,           // ρ
+    pub derivation: Derivation,       // δ
 }
 
 // ── Codec errors ────────────────────────────────────────────────────────────
@@ -215,9 +215,9 @@ pub fn decode(data: &[u8]) -> Result<LambdaData, LdError> {
 
     // Magic
     let mut magic = [0u8; 3];
-    cursor.read_exact(&mut magic).map_err(|_| {
-        LdError::DecodeError("truncated: missing magic bytes".into())
-    })?;
+    cursor
+        .read_exact(&mut magic)
+        .map_err(|_| LdError::DecodeError("truncated: missing magic bytes".into()))?;
     if magic != MAGIC {
         return Err(LdError::DecodeError(format!(
             "invalid magic: expected [CE 9B 44], got [{:02X} {:02X} {:02X}]",
@@ -227,9 +227,9 @@ pub fn decode(data: &[u8]) -> Result<LambdaData, LdError> {
 
     // Version
     let mut ver = [0u8; 1];
-    cursor.read_exact(&mut ver).map_err(|_| {
-        LdError::DecodeError("truncated: missing version byte".into())
-    })?;
+    cursor
+        .read_exact(&mut ver)
+        .map_err(|_| LdError::DecodeError("truncated: missing version byte".into()))?;
     if ver[0] != FORMAT_VERSION {
         return Err(LdError::DecodeError(format!(
             "unsupported version: {} (expected {})",
@@ -242,9 +242,9 @@ pub fn decode(data: &[u8]) -> Result<LambdaData, LdError> {
     let ontology = read_str(&mut cursor)?;
 
     let mut c_bytes = [0u8; 8];
-    cursor.read_exact(&mut c_bytes).map_err(|_| {
-        LdError::DecodeError("truncated: missing certainty".into())
-    })?;
+    cursor
+        .read_exact(&mut c_bytes)
+        .map_err(|_| LdError::DecodeError("truncated: missing certainty".into()))?;
     let certainty = f64::from_le_bytes(c_bytes);
 
     let temporal_frame_start = read_str(&mut cursor)?;
@@ -252,22 +252,21 @@ pub fn decode(data: &[u8]) -> Result<LambdaData, LdError> {
     let provenance = read_str(&mut cursor)?;
 
     let mut d_byte = [0u8; 1];
-    cursor.read_exact(&mut d_byte).map_err(|_| {
-        LdError::DecodeError("truncated: missing derivation".into())
-    })?;
-    let derivation = Derivation::from_byte(d_byte[0]).ok_or_else(|| {
-        LdError::DecodeError(format!("invalid derivation tag: {}", d_byte[0]))
-    })?;
+    cursor
+        .read_exact(&mut d_byte)
+        .map_err(|_| LdError::DecodeError("truncated: missing derivation".into()))?;
+    let derivation = Derivation::from_byte(d_byte[0])
+        .ok_or_else(|| LdError::DecodeError(format!("invalid derivation tag: {}", d_byte[0])))?;
 
     let mut vlen_bytes = [0u8; 4];
-    cursor.read_exact(&mut vlen_bytes).map_err(|_| {
-        LdError::DecodeError("truncated: missing value length".into())
-    })?;
+    cursor
+        .read_exact(&mut vlen_bytes)
+        .map_err(|_| LdError::DecodeError("truncated: missing value length".into()))?;
     let vlen = u32::from_le_bytes(vlen_bytes) as usize;
     let mut value = vec![0u8; vlen];
-    cursor.read_exact(&mut value).map_err(|_| {
-        LdError::DecodeError("truncated: value payload incomplete".into())
-    })?;
+    cursor
+        .read_exact(&mut value)
+        .map_err(|_| LdError::DecodeError("truncated: value payload incomplete".into()))?;
 
     let ld = LambdaData {
         name,
@@ -295,7 +294,12 @@ pub fn decode(data: &[u8]) -> Result<LambdaData, LdError> {
 ///   δ_out = max(δ₁, δ₂)           — derivation can only increase (raw < derived < inferred < aggregated < transformed)
 ///   τ_out = intersection(τ₁, τ₂)  — temporal frame narrows
 ///   ρ_out = "ρ₁ ∘ ρ₂"             — provenance chain concatenation
-pub fn compose(a: &LambdaData, b: &LambdaData, result_name: &str, result_ontology: &str) -> Result<LambdaData, LdError> {
+pub fn compose(
+    a: &LambdaData,
+    b: &LambdaData,
+    result_name: &str,
+    result_ontology: &str,
+) -> Result<LambdaData, LdError> {
     // Theorem 5.1: c_out ≤ min(c_in₁, c_in₂)
     let c_out = a.certainty.min(b.certainty);
 
@@ -346,6 +350,31 @@ pub fn compose(a: &LambdaData, b: &LambdaData, result_name: &str, result_ontolog
     Ok(composed)
 }
 
+/// §Fase 53.d.2 — tainted-overriding (founder refinement A). A
+/// PROVENANCE member's declared `default_confidence` — an `extension`
+/// member's ceiling (§53), or the built-in `epistemic:<level>` axis — is
+/// a CEILING on the announced certainty, never a floor. When a value
+/// with certainty `input_c` is annotated with such a member, the
+/// announced certainty degrades to `min(ceiling, input_c)`.
+///
+/// This is the SAME Theorem 5.1 (Epistemic Degradation) rule [`compose`]
+/// applies — `c_out = min(c₁, c₂)` — with the declared ceiling as one
+/// operand. A doubtful input (`input_c < ceiling`) is therefore NEVER
+/// laundered UP to the declared ceiling; certainty cannot increase.
+///
+/// Pure + total. Both operands are clamped to `[0,1]` defensively so a
+/// malformed declared ceiling cannot push the result out of range.
+///
+/// **Scope (honest):** this is the mathematical rule, ready to wire.
+/// Driving it from live step execution needs a path from a step's
+/// effect-row provenance annotation to the runtime ψ-envelope of the
+/// value it produces — today effect rows are static contract metadata,
+/// not runtime certainty carriers, so that plumbing is a separate
+/// feature. The rule here is the contract that plumbing will call.
+pub fn apply_provenance_ceiling(input_c: f64, ceiling: f64) -> f64 {
+    input_c.clamp(0.0, 1.0).min(ceiling.clamp(0.0, 1.0))
+}
+
 // ── JSON projection (lossy) ─────────────────────────────────────────────────
 
 /// π_JSON(ψ) — lossy projection that discards epistemic tensor.
@@ -377,9 +406,8 @@ pub fn from_ir(
     provenance: &str,
     derivation: &str,
 ) -> Result<LambdaData, LdError> {
-    let d = Derivation::from_str(derivation).ok_or_else(|| {
-        LdError::InvariantViolation(format!("unknown derivation '{derivation}'"))
-    })?;
+    let d = Derivation::from_str(derivation)
+        .ok_or_else(|| LdError::InvariantViolation(format!("unknown derivation '{derivation}'")))?;
 
     let ld = LambdaData {
         name: name.to_string(),
@@ -403,7 +431,8 @@ fn write_str(buf: &mut Vec<u8>, s: &str) -> Result<(), LdError> {
     if bytes.len() > u16::MAX as usize {
         return Err(LdError::InvariantViolation(format!(
             "string too long for ΛD format: {} bytes (max {})",
-            bytes.len(), u16::MAX
+            bytes.len(),
+            u16::MAX
         )));
     }
     buf.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
@@ -413,17 +442,15 @@ fn write_str(buf: &mut Vec<u8>, s: &str) -> Result<(), LdError> {
 
 fn read_str(cursor: &mut io::Cursor<&[u8]>) -> Result<String, LdError> {
     let mut len_bytes = [0u8; 2];
-    cursor.read_exact(&mut len_bytes).map_err(|_| {
-        LdError::DecodeError("truncated: missing string length".into())
-    })?;
+    cursor
+        .read_exact(&mut len_bytes)
+        .map_err(|_| LdError::DecodeError("truncated: missing string length".into()))?;
     let len = u16::from_le_bytes(len_bytes) as usize;
     let mut buf = vec![0u8; len];
-    cursor.read_exact(&mut buf).map_err(|_| {
-        LdError::DecodeError("truncated: string payload incomplete".into())
-    })?;
-    String::from_utf8(buf).map_err(|_| {
-        LdError::DecodeError("invalid UTF-8 in string field".into())
-    })
+    cursor
+        .read_exact(&mut buf)
+        .map_err(|_| LdError::DecodeError("truncated: string payload incomplete".into()))?;
+    String::from_utf8(buf).map_err(|_| LdError::DecodeError("invalid UTF-8 in string field".into()))
 }
 
 // ── CLI entry point ─────────────────────────────────────────────────────────
@@ -471,7 +498,11 @@ fn run_ld_encode(file: &str) -> i32 {
     let mut count = 0;
     for decl in &program.declarations {
         if let crate::ast::Declaration::LambdaData(ld_def) = decl {
-            let derivation = if ld_def.derivation.is_empty() { "raw" } else { &ld_def.derivation };
+            let derivation = if ld_def.derivation.is_empty() {
+                "raw"
+            } else {
+                &ld_def.derivation
+            };
             let ld = match from_ir(
                 &ld_def.name,
                 &ld_def.ontology,
@@ -503,7 +534,10 @@ fn run_ld_encode(file: &str) -> i32 {
             }
             println!(
                 "  \u{2713} {} \u{2192} {out_path} ({} bytes, c={}, \u{03B4}={})",
-                ld_def.name, bytes.len(), ld.certainty, ld.derivation.as_str()
+                ld_def.name,
+                bytes.len(),
+                ld.certainty,
+                ld.derivation.as_str()
             );
             count += 1;
         }
@@ -552,6 +586,43 @@ fn run_ld_inspect(file: &str) -> i32 {
         println!("  \u{03C1} (provenance): {}", ld.provenance);
     }
     println!("  \u{03B4} (derivation): {}", ld.derivation.as_str());
-    println!("\n  format: \u{039B}D v{FORMAT_VERSION} ({} bytes)", data.len());
+    println!(
+        "\n  format: \u{039B}D v{FORMAT_VERSION} ({} bytes)",
+        data.len()
+    );
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_provenance_ceiling;
+
+    /// §Fase 53.d.2 — tainted-overriding: the ceiling is a CEILING.
+    #[test]
+    fn provenance_ceiling_is_a_ceiling_not_a_floor() {
+        // input BELOW the ceiling → input wins (no laundering up).
+        assert_eq!(apply_provenance_ceiling(0.40, 0.95), 0.40);
+        // input ABOVE the ceiling → ceiling caps it.
+        assert_eq!(apply_provenance_ceiling(0.99, 0.80), 0.80);
+        // equal → either.
+        assert_eq!(apply_provenance_ceiling(0.80, 0.80), 0.80);
+    }
+
+    /// Theorem 5.1 symmetry: it is `min`, commutative.
+    #[test]
+    fn provenance_ceiling_is_min() {
+        assert_eq!(
+            apply_provenance_ceiling(0.30, 0.70),
+            apply_provenance_ceiling(0.70, 0.30)
+        );
+        assert_eq!(apply_provenance_ceiling(0.30, 0.70), 0.30);
+    }
+
+    /// Defensive clamping: out-of-range operands cannot escape [0,1].
+    #[test]
+    fn provenance_ceiling_clamps_out_of_range() {
+        assert_eq!(apply_provenance_ceiling(1.5, 0.9), 0.9);
+        assert_eq!(apply_provenance_ceiling(0.5, 2.0), 0.5);
+        assert_eq!(apply_provenance_ceiling(-0.2, 0.9), 0.0);
+    }
 }

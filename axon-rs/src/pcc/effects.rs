@@ -23,8 +23,16 @@
 /// effect-row entry `base` or `base:qualifier` is well-formed only if
 /// `base` is in this set.
 pub const EFFECT_BASES: &[&str] = &[
-    "io", "network", "pure", "random", "storage", "stream", "trust",
-    "sensitive", "legal", "ots",
+    "io",
+    "network",
+    "pure",
+    "random",
+    "storage",
+    "stream",
+    "trust",
+    "sensitive",
+    "legal",
+    "ots",
 ];
 
 /// Effects that REQUIRE a `:qualifier` to be sound. `stream` needs a
@@ -46,6 +54,25 @@ pub fn split_effect(entry: &str) -> (&str, Option<&str>) {
 /// Whether `base` is in the closed catalog.
 pub fn is_known_base(base: &str) -> bool {
     EFFECT_BASES.contains(&base)
+}
+
+/// §Fase 53.c.2 — the built-in `epistemic:<level>` provenance axis.
+/// Mirror of `axon_frontend::type_checker::VALID_EPISTEMIC_LEVELS`.
+/// `epistemic` is NOT an enforceable base — it is a ΛD confidence
+/// annotation (PROVENANCE-class), carrying no runtime capability. The
+/// frontend parser captures `epistemic:<level>` into a dedicated field,
+/// but the IR generator re-injects it into the tool's effect_row as the
+/// string `epistemic:<level>` (`ir_generator.rs`). So the PCC checker
+/// MUST recognize it as a valid provenance entry — else every tool
+/// declaring an epistemic level is wrongly refuted as an unknown base
+/// (the pre-§53.c.2 bug Kivi brief #15 hit, forcing them to strip the
+/// ΛD wedge). This is the built-in analogue of an `extension`-declared
+/// provenance base (§53.d).
+pub const EPISTEMIC_LEVELS: &[&str] = &["believe", "doubt", "know", "speculate"];
+
+/// Whether `entry` is a built-in `epistemic:<level>` provenance member.
+pub fn is_epistemic_provenance(entry: &str) -> bool {
+    matches!(entry.split_once(':'), Some(("epistemic", level)) if EPISTEMIC_LEVELS.contains(&level))
 }
 
 /// Whether `base` requires a qualifier to be sound.
