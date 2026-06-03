@@ -132,10 +132,16 @@ async fn kivi_shape_emits_openai_wire_bytes_end_to_end() {
         "OpenAI spec: first chunk emits role-marker `delta: {{\"role\": \"assistant\"}}`. \
          Body: {body:?}"
     );
+    // This Kivi-shape flow applies a STREAM-PRODUCER tool
+    // (`apply: chat_token_stream`, `effects: <stream:drop_oldest>`), so the
+    // content-deltas carry the §Fase 34 tool-stream stub chunks
+    // (`[stub-stream] <tool>(…)`), NOT the LLM-backend `(stub)` placeholder
+    // — the latter is only emitted when the LLM `StubBackend::stream()`
+    // drives the tokens (a flow with no stream-producer tool).
     assert!(
-        body.contains("\"content\":\"(stub)\""),
-        "OpenAI spec: content-delta `delta: {{\"content\": \"...\"}}` MUST \
-         carry the stub-backend token. Body: {body:?}"
+        body.contains("[stub-stream] chat_token_stream("),
+        "OpenAI spec: content-delta `delta: {{\"content\": \"...\"}}` MUST carry \
+         the stream-producer tool's chunk token. Body: {body:?}"
     );
     assert!(
         body.contains("\"finish_reason\":\"stop\""),

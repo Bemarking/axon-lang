@@ -107,7 +107,18 @@ struct AsyncMetrics {
 fn run_sync(source: &str, source_file: &str, flow_name: &str) -> Result<ServerRunnerMetrics, String> {
     let (_program, ir) = axon::flow_plan::compile_source_to_ir(source, source_file)
         .map_err(|e| format!("compile failed: {e:?}"))?;
-    execute_server_flow(&ir, flow_name, "stub", source_file, None, None)
+    // §Fase 37.y (D3) — execute_server_flow gained `request_path` +
+    // `request_query` (empty maps for this non-dynamic-route harness).
+    execute_server_flow(
+        &ir,
+        flow_name,
+        "stub",
+        source_file,
+        None,
+        None,
+        &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
+    )
 }
 
 /// Drive the async dispatcher path on the same inputs + collect the
@@ -133,6 +144,9 @@ async fn run_async(source: String, source_file: String, flow_name: String) -> As
         warnings,
         None,
         None,
+        // §Fase 37.y (D3) — request_path + request_query (empty maps).
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
     )
     .await;
 

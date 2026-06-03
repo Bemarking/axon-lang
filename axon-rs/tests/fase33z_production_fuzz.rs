@@ -235,6 +235,9 @@ async fn drive_production_path(
         warnings,
         None,
         None,
+        // §Fase 37.y (D3) — request_path + request_query (empty maps).
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
     )
     .await;
 
@@ -890,6 +893,9 @@ async fn run_async_snapshot(
         warnings,
         None,
         None,
+        // §Fase 37.y (D3) — request_path + request_query (empty maps).
+        std::collections::HashMap::new(),
+        std::collections::HashMap::new(),
     )
     .await;
 
@@ -988,7 +994,16 @@ async fn fuzz_s4_parity_determinism_stress() {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let sync = execute_server_flow(&ir, flow_name, "stub", &source_file, None, None);
+        let sync = execute_server_flow(
+            &ir,
+            flow_name,
+            "stub",
+            &source_file,
+            None,
+            None,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+        );
         if let Ok(sync_metrics) = sync {
             if sync_metrics.success != baseline.success {
                 nondeterministic.push(format!(
