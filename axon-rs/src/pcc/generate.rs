@@ -14,10 +14,9 @@ use crate::ir_nodes::IRProgram;
 
 use super::effects;
 use super::proof_term::{
-    CapabilityContainmentWitness, CapabilityIsolationWitness,
-    ComplianceCoverageWitness, EffectRowSoundnessWitness, ProofTerm,
-    PropertyClass, ResourceBoundsWitness, ShieldHaltGuaranteeWitness, Witness,
-    MAX_RETRIES, VALID_BREACH_POLICIES,
+    CapabilityContainmentWitness, CapabilityIsolationWitness, ComplianceCoverageWitness,
+    EffectRowSoundnessWitness, ProofTerm, PropertyClass, ResourceBoundsWitness,
+    ShieldHaltGuaranteeWitness, Witness, MAX_RETRIES, VALID_BREACH_POLICIES,
 };
 
 /// Canonical SHA-256 hex digest of the IR artifact. Reuses the
@@ -99,22 +98,15 @@ pub fn derive_compliance_coverage_witness(
 /// `endpoints` node family, so this one walk covers both. Endpoints
 /// with no compliance declaration produce no proof (nothing to
 /// certify).
-pub fn generate_compliance_coverage_proofs(
-    ir: &IRProgram,
-    axon_version: &str,
-) -> Vec<ProofTerm> {
+pub fn generate_compliance_coverage_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
     let digest = artifact_digest(ir);
     let mut proofs = Vec::new();
     for ep in &ir.endpoints {
         if ep.compliance.is_empty() {
             continue;
         }
-        let witness = derive_compliance_coverage_witness(
-            &ep.name,
-            &ep.compliance,
-            &ep.shield_ref,
-            ir,
-        );
+        let witness =
+            derive_compliance_coverage_witness(&ep.name, &ep.compliance, &ep.shield_ref, ir);
         proofs.push(ProofTerm {
             property: PropertyClass::ComplianceCoverage,
             artifact_digest: digest.clone(),
@@ -147,12 +139,14 @@ pub fn derive_effect_row_soundness_witness(
     let mut has_other = false;
 
     for entry in &declared_effects {
-        // §Fase 53.d — an extension-declared provenance member is accepted
-        // VERBATIM (the full entry). It carries no runtime capability
-        // (invariant #2), so it is neither an unknown base nor subject to
-        // qualifier enforcement; it counts as "other" for purity (a tool
-        // declaring `pure` + a provenance effect is still a contradiction).
-        if extension_effect_members.contains(entry) {
+        // §Fase 53.d / §53.c.2 — a PROVENANCE member is accepted VERBATIM
+        // (the full entry). Two sources: an `extension`-declared member,
+        // or the built-in `epistemic:<level>` confidence axis. Both carry
+        // no runtime capability (invariant #2), so neither is an unknown
+        // base nor subject to qualifier enforcement; both count as "other"
+        // for purity (a tool declaring `pure` + a provenance effect is
+        // still a contradiction).
+        if extension_effect_members.contains(entry) || effects::is_epistemic_provenance(entry) {
             has_other = true;
             continue;
         }
@@ -222,10 +216,7 @@ pub fn extension_effect_members(ir: &IRProgram) -> std::collections::HashSet<Str
 /// §51.b — generate effect-row-soundness proofs for every tool in `ir`
 /// that declares a non-empty `effects: <...>` row. Tools with no
 /// declared effects produce no proof (nothing to certify).
-pub fn generate_effect_row_soundness_proofs(
-    ir: &IRProgram,
-    axon_version: &str,
-) -> Vec<ProofTerm> {
+pub fn generate_effect_row_soundness_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
     let digest = artifact_digest(ir);
     // §Fase 53.d — provenance members declared by the artifact's own
     // extensions, re-derived once for the whole program.
@@ -258,8 +249,7 @@ pub fn derive_capability_isolation_witness(
     store_name: &str,
     capability: &str,
 ) -> CapabilityIsolationWitness {
-    let malformed =
-        !capability.is_empty() && !crate::parser::is_valid_capability_slug(capability);
+    let malformed = !capability.is_empty() && !crate::parser::is_valid_capability_slug(capability);
     CapabilityIsolationWitness {
         store_name: store_name.to_string(),
         capability: capability.to_string(),
@@ -271,18 +261,14 @@ pub fn derive_capability_isolation_witness(
 /// in `ir` that declares a non-empty `capability` gate. Stores with no
 /// gate produce no proof (nothing to certify — an ungated store is out
 /// of scope for the gate-integrity property).
-pub fn generate_capability_isolation_proofs(
-    ir: &IRProgram,
-    axon_version: &str,
-) -> Vec<ProofTerm> {
+pub fn generate_capability_isolation_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
     let digest = artifact_digest(ir);
     let mut proofs = Vec::new();
     for store in &ir.axonstore_specs {
         if store.capability.is_empty() {
             continue;
         }
-        let witness =
-            derive_capability_isolation_witness(&store.name, &store.capability);
+        let witness = derive_capability_isolation_witness(&store.name, &store.capability);
         proofs.push(ProofTerm {
             property: PropertyClass::CapabilityIsolation,
             artifact_digest: digest.clone(),
@@ -295,10 +281,7 @@ pub fn generate_capability_isolation_proofs(
 
 /// §51.d — derive the retry-bound witness for one endpoint. Pure +
 /// total. Shared with the checker (D51.2).
-pub fn derive_endpoint_retry_witness(
-    endpoint_name: &str,
-    retries: i64,
-) -> ResourceBoundsWitness {
+pub fn derive_endpoint_retry_witness(endpoint_name: &str, retries: i64) -> ResourceBoundsWitness {
     ResourceBoundsWitness::EndpointRetry {
         endpoint_name: endpoint_name.to_string(),
         retries,
@@ -308,10 +291,7 @@ pub fn derive_endpoint_retry_witness(
 
 /// §51.d — derive the credit-positivity witness for one socket's
 /// DECLARED credit window. Pure + total. Shared with the checker.
-pub fn derive_socket_credit_witness(
-    socket_name: &str,
-    credit: i64,
-) -> ResourceBoundsWitness {
+pub fn derive_socket_credit_witness(socket_name: &str, credit: i64) -> ResourceBoundsWitness {
     ResourceBoundsWitness::SocketCredit {
         socket_name: socket_name.to_string(),
         credit,
@@ -325,10 +305,7 @@ pub fn derive_socket_credit_witness(
 /// unspecified credit produce no proof (unspecified is a legitimate
 /// type state, not a bound to certify). `timeout` is out of scope by
 /// design (closed duration enum, bounded at parse).
-pub fn generate_resource_bounds_proofs(
-    ir: &IRProgram,
-    axon_version: &str,
-) -> Vec<ProofTerm> {
+pub fn generate_resource_bounds_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
     let digest = artifact_digest(ir);
     let mut proofs = Vec::new();
     for ep in &ir.endpoints {
@@ -376,18 +353,14 @@ pub fn derive_shield_halt_witness(
 /// §51.e — generate shield-halt-guarantee proofs for every shield in
 /// `ir` that declares a non-empty `on_breach` policy. Shields with no
 /// breach policy declared produce no proof (no guarantee to certify).
-pub fn generate_shield_halt_guarantee_proofs(
-    ir: &IRProgram,
-    axon_version: &str,
-) -> Vec<ProofTerm> {
+pub fn generate_shield_halt_guarantee_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
     let digest = artifact_digest(ir);
     let mut proofs = Vec::new();
     for shield in &ir.shields {
         if shield.on_breach.is_empty() {
             continue;
         }
-        let witness =
-            derive_shield_halt_witness(&shield.name, &shield.on_breach, &shield.scan);
+        let witness = derive_shield_halt_witness(&shield.name, &shield.on_breach, &shield.scan);
         proofs.push(ProofTerm {
             property: PropertyClass::ShieldHaltGuarantee,
             artifact_digest: digest.clone(),
@@ -436,10 +409,7 @@ pub fn generate_shield_halt_guarantee_proofs(
 ///   which today lives ONLY at program level and is unreachable from a
 ///   flow body) ever enters `IRFlowNode`, this is where transitive
 ///   cross-flow reachability must be REOPENED (§51.x.3).
-fn collect_store_accesses(
-    steps: &[crate::ir_nodes::IRFlowNode],
-    out: &mut Vec<String>,
-) {
+fn collect_store_accesses(steps: &[crate::ir_nodes::IRFlowNode], out: &mut Vec<String>) {
     use crate::ir_nodes::IRFlowNode as N;
     for step in steps {
         match step {
@@ -539,12 +509,10 @@ pub fn derive_capability_containment_witness(
     // uncovered = reached_gates \ declared_requires (the gates the flow
     // reaches that the endpoint does not declare). Reuses the canonical
     // `covers` predicate (required \ provided).
-    let mut uncovered_gates: Vec<String> = crate::esk::compliance::covers(
-        declared_requires.iter(),
-        reached_gates.iter(),
-    )
-    .into_iter()
-    .collect();
+    let mut uncovered_gates: Vec<String> =
+        crate::esk::compliance::covers(declared_requires.iter(), reached_gates.iter())
+            .into_iter()
+            .collect();
     uncovered_gates.sort();
 
     CapabilityContainmentWitness {

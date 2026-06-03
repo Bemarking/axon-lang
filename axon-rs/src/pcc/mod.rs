@@ -38,20 +38,18 @@ pub mod proof_term;
 
 pub use checker::{check_bundle, check_proof, BundleReport, CheckOutcome, ProofCheck};
 pub use generate::{
-    artifact_digest, derive_capability_containment_witness,
-    derive_capability_isolation_witness, derive_compliance_coverage_witness,
-    derive_effect_row_soundness_witness, derive_endpoint_retry_witness,
-    derive_shield_halt_witness, derive_socket_credit_witness,
+    artifact_digest, derive_capability_containment_witness, derive_capability_isolation_witness,
+    derive_compliance_coverage_witness, derive_effect_row_soundness_witness,
+    derive_endpoint_retry_witness, derive_shield_halt_witness, derive_socket_credit_witness,
     generate_all_proofs, generate_capability_containment_proofs,
     generate_capability_isolation_proofs, generate_compliance_coverage_proofs,
     generate_effect_row_soundness_proofs, generate_resource_bounds_proofs,
     generate_shield_halt_guarantee_proofs,
 };
 pub use proof_term::{
-    CapabilityContainmentWitness, CapabilityIsolationWitness,
-    ComplianceCoverageWitness, EffectRowSoundnessWitness, ProofBundle,
-    ProofTerm, PropertyClass, ResourceBoundsWitness, ShieldHaltGuaranteeWitness,
-    Witness, MAX_RETRIES, VALID_BREACH_POLICIES,
+    CapabilityContainmentWitness, CapabilityIsolationWitness, ComplianceCoverageWitness,
+    EffectRowSoundnessWitness, ProofBundle, ProofTerm, PropertyClass, ResourceBoundsWitness,
+    ShieldHaltGuaranteeWitness, Witness, MAX_RETRIES, VALID_BREACH_POLICIES,
 };
 
 #[cfg(test)]
@@ -122,7 +120,11 @@ mod tests {
             .push(endpoint("ChatEndpoint", &["HIPAA", "GDPR"], "PhiGate"));
 
         let proofs = generate_compliance_coverage_proofs(&ir, VERSION);
-        assert_eq!(proofs.len(), 1, "one compliance-bearing endpoint => one proof");
+        assert_eq!(
+            proofs.len(),
+            1,
+            "one compliance-bearing endpoint => one proof"
+        );
         assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
     }
 
@@ -162,8 +164,7 @@ mod tests {
     #[test]
     fn compliance_without_shield_is_refuted() {
         let mut ir = empty_ir();
-        ir.endpoints
-            .push(endpoint("NoGuard", &["HIPAA"], "")); // empty shield_ref
+        ir.endpoints.push(endpoint("NoGuard", &["HIPAA"], "")); // empty shield_ref
         let proofs = generate_compliance_coverage_proofs(&ir, VERSION);
         assert_eq!(proofs.len(), 1);
         match check_proof(&proofs[0], &ir) {
@@ -196,8 +197,7 @@ mod tests {
     fn phantom_regulatory_class_is_refuted() {
         let mut ir = empty_ir();
         ir.shields.push(shield("PhiGate", &["HIPAA"]));
-        ir.endpoints
-            .push(endpoint("Typo", &["HIPPA"], "PhiGate")); // HIPPA, not HIPAA
+        ir.endpoints.push(endpoint("Typo", &["HIPPA"], "PhiGate")); // HIPPA, not HIPAA
         let proofs = generate_compliance_coverage_proofs(&ir, VERSION);
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => {
@@ -236,7 +236,8 @@ mod tests {
     fn forged_hidden_unknown_class_rejected() {
         let mut ir = empty_ir();
         ir.shields.push(shield("PhiGate", &["HIPAA"]));
-        ir.endpoints.push(endpoint("Hide", &["NOTACLASS"], "PhiGate"));
+        ir.endpoints
+            .push(endpoint("Hide", &["NOTACLASS"], "PhiGate"));
         let mut proofs = generate_compliance_coverage_proofs(&ir, VERSION);
         // Tamper: pretend there are no unknown classes.
         if let Witness::ComplianceCoverage(ref mut w) = proofs[0].witness {
@@ -282,8 +283,7 @@ mod tests {
     fn proof_for_absent_endpoint_refuted_not_panic() {
         let mut ir = empty_ir();
         ir.shields.push(shield("PhiGate", &["HIPAA"]));
-        ir.endpoints
-            .push(endpoint("Real", &["HIPAA"], "PhiGate"));
+        ir.endpoints.push(endpoint("Real", &["HIPAA"], "PhiGate"));
         let mut proofs = generate_compliance_coverage_proofs(&ir, VERSION);
         // Tamper the endpoint name to one not in the IR, and re-stamp
         // the digest so we get past the digest gate to the endpoint
@@ -329,7 +329,10 @@ mod tests {
         ));
         let proofs = generate_compliance_coverage_proofs(&ir, VERSION);
         if let Witness::ComplianceCoverage(ref w) = proofs[0].witness {
-            assert_eq!(w.required_classes, vec!["GDPR".to_string(), "HIPAA".to_string()]);
+            assert_eq!(
+                w.required_classes,
+                vec!["GDPR".to_string(), "HIPAA".to_string()]
+            );
         } else {
             panic!("expected ComplianceCoverage witness");
         }
@@ -339,12 +342,27 @@ mod tests {
     /// §51.a property-class slug is stable (wire contract).
     #[test]
     fn property_class_slug_stable() {
-        assert_eq!(PropertyClass::ComplianceCoverage.slug(), "compliance_coverage");
-        assert_eq!(PropertyClass::EffectRowSoundness.slug(), "effect_row_soundness");
-        assert_eq!(PropertyClass::CapabilityIsolation.slug(), "capability_isolation");
+        assert_eq!(
+            PropertyClass::ComplianceCoverage.slug(),
+            "compliance_coverage"
+        );
+        assert_eq!(
+            PropertyClass::EffectRowSoundness.slug(),
+            "effect_row_soundness"
+        );
+        assert_eq!(
+            PropertyClass::CapabilityIsolation.slug(),
+            "capability_isolation"
+        );
         assert_eq!(PropertyClass::ResourceBounds.slug(), "resource_bounds");
-        assert_eq!(PropertyClass::ShieldHaltGuarantee.slug(), "shield_halt_guarantee");
-        assert_eq!(PropertyClass::CapabilityContainment.slug(), "capability_containment");
+        assert_eq!(
+            PropertyClass::ShieldHaltGuarantee.slug(),
+            "shield_halt_guarantee"
+        );
+        assert_eq!(
+            PropertyClass::CapabilityContainment.slug(),
+            "capability_containment"
+        );
     }
 
     // ── §Fase 51.b — EffectRowSoundness ──────────────────────────────
@@ -435,7 +453,10 @@ mod tests {
         let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => {
-                assert!(reason.contains("invalid backpressure policy"), "got: {reason}");
+                assert!(
+                    reason.contains("invalid backpressure policy"),
+                    "got: {reason}"
+                );
             }
             other => panic!("expected invalid-qualifier Refuted, got {other:?}"),
         }
@@ -469,7 +490,8 @@ mod tests {
     #[test]
     fn extension_declared_provenance_base_verifies() {
         let mut ir = empty_ir();
-        ir.extensions.push(effects_ext("risk_axis", &["risk:elevated"]));
+        ir.extensions
+            .push(effects_ext("risk_axis", &["risk:elevated"]));
         ir.tools.push(tool("Fetch", &["network", "risk:elevated"]));
         let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
         assert_eq!(proofs.len(), 1);
@@ -483,7 +505,8 @@ mod tests {
     fn undeclared_custom_base_refuted() {
         let mut ir = empty_ir();
         // extension declares `risk:elevated`, NOT `risk:guess`.
-        ir.extensions.push(effects_ext("risk_axis", &["risk:elevated"]));
+        ir.extensions
+            .push(effects_ext("risk_axis", &["risk:elevated"]));
         ir.tools.push(tool("Fetch", &["risk:guess"]));
         let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
         match check_proof(&proofs[0], &ir) {
@@ -514,6 +537,44 @@ mod tests {
             set.contains("risk:elevated"),
             "a genuinely custom base must be a provenance member"
         );
+    }
+
+    // ── §Fase 53.c.2 — built-in `epistemic:<level>` provenance axis ──
+
+    /// §53.c.2 — a tool declaring the built-in `epistemic:<level>` axis
+    /// VERIFIES (no `extension` needed). This is the Kivi brief #15 case:
+    /// pre-§53.c.2 the IR re-injected `epistemic:believe` into the effect
+    /// row and PCC refuted it as an unknown base, forcing the strip.
+    #[test]
+    fn builtin_epistemic_level_verifies() {
+        for level in ["believe", "doubt", "know", "speculate"] {
+            let mut ir = empty_ir();
+            ir.tools
+                .push(tool("Fetch", &["network", &format!("epistemic:{level}")]));
+            let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
+            assert_eq!(proofs.len(), 1);
+            assert_eq!(
+                check_proof(&proofs[0], &ir),
+                CheckOutcome::Verified,
+                "epistemic:{level} must verify (built-in provenance axis)"
+            );
+        }
+    }
+
+    /// §53.c.2 — an `epistemic:<bogus>` level (not in the closed catalog)
+    /// still REFUTES (the axis is closed, not a wildcard prefix).
+    #[test]
+    fn unknown_epistemic_level_refuted() {
+        let mut ir = empty_ir();
+        ir.tools.push(tool("X", &["epistemic:guess"]));
+        let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("unknown base"), "got: {reason}");
+                assert!(reason.contains("epistemic:guess"), "got: {reason}");
+            }
+            other => panic!("expected unknown-epistemic-level Refuted, got {other:?}"),
+        }
     }
 
     /// `pure` alongside another effect → purity contradiction → Refuted.
@@ -652,7 +713,10 @@ mod tests {
         let proofs = generate_capability_isolation_proofs(&ir, VERSION);
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => {
-                assert!(reason.contains("malformed capability gate"), "got: {reason}");
+                assert!(
+                    reason.contains("malformed capability gate"),
+                    "got: {reason}"
+                );
                 assert!(reason.contains("Legal.Read"), "got: {reason}");
             }
             other => panic!("expected malformed-gate Refuted, got {other:?}"),
@@ -770,7 +834,8 @@ mod tests {
     #[test]
     fn retry_storm_refuted() {
         let mut ir = empty_ir();
-        ir.endpoints.push(endpoint_retries("Storm", MAX_RETRIES + 1));
+        ir.endpoints
+            .push(endpoint_retries("Storm", MAX_RETRIES + 1));
         let proofs = generate_resource_bounds_proofs(&ir, VERSION);
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => {
@@ -852,7 +917,10 @@ mod tests {
         };
         match check_proof(&bogus, &ir) {
             CheckOutcome::Refuted { reason } => {
-                assert!(reason.contains("no declared backpressure credit"), "got: {reason}");
+                assert!(
+                    reason.contains("no declared backpressure credit"),
+                    "got: {reason}"
+                );
             }
             other => panic!("expected forged-socket Refuted, got {other:?}"),
         }
@@ -898,7 +966,8 @@ mod tests {
     #[test]
     fn valid_halt_with_scan_verifies() {
         let mut ir = empty_ir();
-        ir.shields.push(shield_breach("Guard", "halt", &["pii_leak"]));
+        ir.shields
+            .push(shield_breach("Guard", "halt", &["pii_leak"]));
         let proofs = generate_shield_halt_guarantee_proofs(&ir, VERSION);
         assert_eq!(proofs.len(), 1);
         assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
@@ -927,7 +996,8 @@ mod tests {
     #[test]
     fn unknown_breach_policy_refuted() {
         let mut ir = empty_ir();
-        ir.shields.push(shield_breach("Typo", "hault", &["pii_leak"]));
+        ir.shields
+            .push(shield_breach("Typo", "hault", &["pii_leak"]));
         let proofs = generate_shield_halt_guarantee_proofs(&ir, VERSION);
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => {
@@ -978,12 +1048,15 @@ mod tests {
     #[test]
     fn shield_halt_digest_mismatch_rejected() {
         let mut ir_a = empty_ir();
-        ir_a.shields.push(shield_breach("Guard", "halt", &["pii_leak"]));
+        ir_a.shields
+            .push(shield_breach("Guard", "halt", &["pii_leak"]));
         let proofs = generate_shield_halt_guarantee_proofs(&ir_a, VERSION);
 
         let mut ir_b = empty_ir();
-        ir_b.shields.push(shield_breach("Guard", "halt", &["pii_leak"]));
-        ir_b.shields.push(shield_breach("Other", "deflect", &["toxicity"])); // changes digest
+        ir_b.shields
+            .push(shield_breach("Guard", "halt", &["pii_leak"]));
+        ir_b.shields
+            .push(shield_breach("Other", "deflect", &["toxicity"])); // changes digest
 
         assert_eq!(check_proof(&proofs[0], &ir_b), CheckOutcome::DigestMismatch);
     }
@@ -992,7 +1065,8 @@ mod tests {
     #[test]
     fn shield_halt_json_round_trips_and_verifies() {
         let mut ir = empty_ir();
-        ir.shields.push(shield_breach("Guard", "halt", &["pii_leak", "jailbreak"]));
+        ir.shields
+            .push(shield_breach("Guard", "halt", &["pii_leak", "jailbreak"]));
         let proofs = generate_shield_halt_guarantee_proofs(&ir, VERSION);
         let json = serde_json::to_string(&proofs[0]).expect("serialize");
         let restored: ProofTerm = serde_json::from_str(&json).expect("deserialize");
@@ -1003,11 +1077,7 @@ mod tests {
     // ── §Fase 51.x — CapabilityContainment ───────────────────────────
 
     /// An endpoint with the given execute_flow + declared requires.
-    fn endpoint_requires(
-        name: &str,
-        execute_flow: &str,
-        requires: &[&str],
-    ) -> IRAxonEndpoint {
+    fn endpoint_requires(name: &str, execute_flow: &str, requires: &[&str]) -> IRAxonEndpoint {
         let mut e = endpoint(name, &[], "");
         e.execute_flow = execute_flow.to_string();
         e.requires_capabilities = requires.iter().map(|s| s.to_string()).collect();
@@ -1044,10 +1114,7 @@ mod tests {
 
     /// A flow that reaches `store_name` ONLY inside a conditional
     /// then-branch (exercises the recursive store walk).
-    fn flow_reaching_in_conditional(
-        name: &str,
-        store_name: &str,
-    ) -> crate::ir_nodes::IRFlow {
+    fn flow_reaching_in_conditional(name: &str, store_name: &str) -> crate::ir_nodes::IRFlow {
         let cond = crate::ir_nodes::IRFlowNode::Conditional(crate::ir_nodes::IRConditional {
             node_type: "conditional",
             source_line: 1,
@@ -1086,10 +1153,13 @@ mod tests {
         let mut ir = empty_ir();
         ir.axonstore_specs.push(store("Ledger", "data.read"));
         ir.flows.push(flow_reaching("Chat", &["Ledger"]));
-        ir.endpoints
-            .push(endpoint_requires("Leaky", "Chat", &[])); // declares nothing
+        ir.endpoints.push(endpoint_requires("Leaky", "Chat", &[])); // declares nothing
         let proofs = generate_capability_containment_proofs(&ir, VERSION);
-        assert_eq!(proofs.len(), 1, "reached-gate-with-no-requires must produce a proof");
+        assert_eq!(
+            proofs.len(),
+            1,
+            "reached-gate-with-no-requires must produce a proof"
+        );
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => {
                 assert!(reason.contains("capability leak"), "got: {reason}");
@@ -1128,7 +1198,10 @@ mod tests {
         let proofs = generate_capability_containment_proofs(&ir, VERSION);
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => {
-                assert!(reason.contains("not present in the artifact"), "got: {reason}");
+                assert!(
+                    reason.contains("not present in the artifact"),
+                    "got: {reason}"
+                );
             }
             other => panic!("expected unresolved-flow Refuted, got {other:?}"),
         }
@@ -1235,15 +1308,23 @@ mod tests {
     #[test]
     fn bundle_report_all_verified_for_clean_program() {
         let mut ir = empty_ir();
-        ir.shields.push(shield_breach("Guard", "halt", &["pii_leak"]));
+        ir.shields
+            .push(shield_breach("Guard", "halt", &["pii_leak"]));
         ir.axonstore_specs.push(store("Ledger", "data.read"));
         ir.flows.push(flow_reaching("Chat", &["Ledger"]));
         ir.endpoints
             .push(endpoint_requires("ChatEndpoint", "Chat", &["data.read"]));
 
         let report = check_bundle(&bundle_for(&ir), &ir);
-        assert!(!report.results.is_empty(), "clean program still yields proofs");
-        assert!(report.all_verified(), "every proof must verify: {:?}", report.refutations());
+        assert!(
+            !report.results.is_empty(),
+            "clean program still yields proofs"
+        );
+        assert!(
+            report.all_verified(),
+            "every proof must verify: {:?}",
+            report.refutations()
+        );
         assert!(report.refutations().is_empty());
     }
 
@@ -1256,15 +1337,18 @@ mod tests {
         let mut ir = empty_ir();
         ir.axonstore_specs.push(store("Ledger", "data.read"));
         ir.flows.push(flow_reaching("Chat", &["Ledger"]));
-        ir.endpoints
-            .push(endpoint_requires("Leaky", "Chat", &[])); // declares nothing
+        ir.endpoints.push(endpoint_requires("Leaky", "Chat", &[])); // declares nothing
 
         let report = check_bundle(&bundle_for(&ir), &ir);
-        assert!(!report.all_verified(), "a capability leak must be non-deployable");
+        assert!(
+            !report.all_verified(),
+            "a capability leak must be non-deployable"
+        );
         let refs = report.refutations();
         assert!(!refs.is_empty());
         assert!(
-            refs.iter().any(|r| r.property == PropertyClass::CapabilityContainment),
+            refs.iter()
+                .any(|r| r.property == PropertyClass::CapabilityContainment),
             "the leak must surface as a CapabilityContainment refutation"
         );
         assert!(
@@ -1278,7 +1362,8 @@ mod tests {
     #[test]
     fn bundle_report_matches_per_proof_check() {
         let mut ir = empty_ir();
-        ir.shields.push(shield_breach("Guard", "halt", &["pii_leak"]));
+        ir.shields
+            .push(shield_breach("Guard", "halt", &["pii_leak"]));
         ir.endpoints.push(endpoint("E", &["HIPAA"], "Guard"));
         let bundle = bundle_for(&ir);
         let report = check_bundle(&bundle, &ir);
@@ -1349,8 +1434,7 @@ mod tests {
     fn reachability_walk_documents_transitive_reopen() {
         const GEN_SRC: &str = include_str!("generate.rs");
         assert!(
-            GEN_SRC.contains("REOPENED (§51.x.3)")
-                || GEN_SRC.contains("REOPEN"),
+            GEN_SRC.contains("REOPENED (§51.x.3)") || GEN_SRC.contains("REOPEN"),
             "the walk must keep the note on where to reopen transitive \
              cross-flow reachability if a flow-invocation node ever joins \
              IRFlowNode"
@@ -1373,12 +1457,7 @@ mod tests {
             source_column: 1,
         }));
         ir.flows.push(flow);
-        let w = derive_capability_containment_witness(
-            "E",
-            "Chat",
-            &["data.read".to_string()],
-            &ir,
-        );
+        let w = derive_capability_containment_witness("E", "Chat", &["data.read".to_string()], &ir);
         // Only the gated store contributes; the leaf adds nothing.
         assert_eq!(w.reached_gates, vec!["data.read".to_string()]);
         assert!(w.uncovered_gates.is_empty());
