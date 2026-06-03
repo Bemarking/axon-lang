@@ -3476,7 +3476,19 @@ impl Parser {
         self.advance();
         let tool_name = self.consume_any_ident_or_kw()?.value.clone();
         let mut argument = String::new();
-        // "on" argument
+        // "on" argument — §Fase 54.b: the argument binds a value into the
+        // tool dispatch. Two forms, both accepted by `consume_any_ident_or_kw`:
+        //   * a STRING LITERAL carrying interpolation — `on "${query}"` /
+        //     `on "$query"` — resolved at dispatch (`runner.rs` →
+        //     `ExecContext::interpolate`) against the request-bound flow
+        //     parameters (`request_binding::bind_request`). THIS is how a
+        //     request param reaches the tool.
+        //   * a BARE identifier / literal — `on query` / `on 42` — passed
+        //     through verbatim (no `$` ⇒ no interpolation), i.e. a literal
+        //     argument. Unchanged from the pre-54.b behavior.
+        // (Unquoted `${query}` is intentionally NOT a form — interpolation
+        // lives inside string literals everywhere in Axon; the lexer guides
+        // a bare `$` toward quoting.)
         if !self.at_declaration_start() && !self.check(TokenType::RBrace) {
             let next = self.current().clone();
             if next.value == "on" {
