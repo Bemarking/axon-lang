@@ -1,0 +1,50 @@
+// AXON Example — Tool Dispatch (§Fase 54)
+//
+// The canonical shape of the flow-level `use <Tool> on <arg>` primitive.
+// A request parameter is bound BY NAME and handed to a native tool via an
+// interpolating string-literal argument (`on "${query}"`). The tool runs
+// natively — intercepted by the runtime tool registry — instead of being
+// simulated by the LLM.
+//
+// Two rules this example encodes (both enforced by the compiler as of
+// §Fase 54):
+//   1. Tool dispatch is FLOW-LEVEL. A `use` written inside a `step { }`
+//      body is a parse error (§54.a) — it would silently degrade to an
+//      unconstrained LLM step. The legitimate in-step form is `apply:`.
+//   2. The `on "${query}"` argument interpolates the request-bound
+//      parameter at dispatch (§54.b). A bare `on query` is a literal.
+
+tool WebSearch {
+  provider: brave
+  max_results: 5
+  timeout: 10s
+}
+
+type ResearchRequest {
+  query: String
+}
+
+type SearchReport {
+  summary: String
+}
+
+flow ResearchQuery(query: String) -> SearchReport {
+  // Flow-level dispatch: `query` is the bound request parameter; the
+  // `on "${query}"` argument interpolates it at dispatch time.
+  use WebSearch on "${query}"
+
+  step Summarize {
+    ask: "Summarize the retrieved results for the user's query"
+    output: SearchReport
+  }
+}
+
+axonendpoint ResearchApi {
+  method: POST
+  path: "/research"
+  body: ResearchRequest
+  execute: ResearchQuery
+  // v2.0.0 wire contract: a JSON-transport response is the ψ-vector
+  // envelope `FlowEnvelope<T>`, never a bare result type (axon-E039).
+  output: FlowEnvelope<SearchReport>
+}

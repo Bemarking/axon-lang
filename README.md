@@ -164,6 +164,7 @@ Remove the `shield` line and `axon check` fails with *"endpoint 'Api' sends regu
 - [`examples/banking_reference.axon`](examples/banking_reference.axon) — PCI_DSS + SOX + SOC 2
 - [`examples/government_reference.axon`](examples/government_reference.axon) — FISMA + NIST 800-53 + SOC 2
 - [`examples/ui/healthcare_console.axon`](examples/ui/healthcare_console.axon) — UI built on top of the healthcare backend with compile-time κ-redacted renders
+- [`examples/tool_dispatch.axon`](examples/tool_dispatch.axon) — flow-level `use <Tool> on "${param}"` native tool dispatch with request-parameter binding (§Fase 54)
 
 ### Academic references
 
