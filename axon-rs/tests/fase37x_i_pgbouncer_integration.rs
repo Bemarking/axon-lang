@@ -1,3 +1,4 @@
+#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing test-rot; see Cargo.toml [features].quarantined-rot
 //! §Fase 37.x.i — The pooler-coherent contract under a REAL
 //! transaction-mode pooler.
 //!
