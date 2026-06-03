@@ -275,6 +275,10 @@ fn random_column_set(rng: &mut Lcg) -> ColumnSet {
                 not_null: rng.next_bool(),
                 unique: false,
                 default_value: String::new(),
+                // §Fase 38.x.c — field added by release e92c8ed; the fuzz
+                // generator does not exercise IDENTITY columns, so the D5
+                // default (false) preserves the prior corpus exactly.
+                identity: false,
                 line: 0,
                 column: 0,
             })
