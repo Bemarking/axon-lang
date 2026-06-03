@@ -187,6 +187,7 @@ fn full_envelope_fixture() -> CompleteEnvelope {
             // (D4 byte-compat with the pre-34.i wire shape).
             ..Default::default()
         }],
+        epistemic_envelopes: Vec::new(),
     }
 }
 
@@ -206,6 +207,7 @@ fn minimal_envelope_fixture() -> CompleteEnvelope {
         enforcement_summaries: Vec::new(),
         runtime_warnings: Vec::new(),
         step_audit_records: Vec::new(),
+        epistemic_envelopes: Vec::new(),
     }
 }
 

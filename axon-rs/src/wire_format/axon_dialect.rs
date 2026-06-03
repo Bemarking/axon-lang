@@ -219,6 +219,20 @@ impl AxonDialectAdapter {
                 .expect("json object")
                 .insert("warnings".to_string(), serde_json::Value::Array(arr));
         }
+        // §Fase 55.b — epistemic_envelopes array, elided when empty. The
+        // key + element shape ({base, scope, confidence}) match the sync
+        // `FlowEnvelope.epistemic_envelopes` byte-for-byte (§55.c parity).
+        if !envelope.epistemic_envelopes.is_empty() {
+            let arr = envelope
+                .epistemic_envelopes
+                .iter()
+                .map(|e| serde_json::to_value(e).unwrap_or(serde_json::Value::Null))
+                .collect::<Vec<_>>();
+            data.as_object_mut().expect("json object").insert(
+                "epistemic_envelopes".to_string(),
+                serde_json::Value::Array(arr),
+            );
+        }
         let event_id = self.next_id();
         Event::default()
             .event("axon.complete")

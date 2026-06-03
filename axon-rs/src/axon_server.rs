@@ -2120,6 +2120,17 @@ pub struct ServerExecutionResult {
     /// into the wire envelope's `blame_attribution` field verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blame_attribution: Option<crate::wire_envelope::BlameContext>,
+
+    /// §Fase 55.b — per-tool epistemic envelopes (`base`, `scope`,
+    /// `confidence`) for every flow-level `use <Tool>` whose tool declares
+    /// an `epistemic:<level>` effect. Propagated from the runner's
+    /// IR-derived capture and written into
+    /// `FlowEnvelope.epistemic_envelopes` by the converter; the streaming
+    /// path derives the identical set via
+    /// `resolve_epistemic_envelopes_for_flow`. Empty (and elided from the
+    /// wire) for flows that dispatch no epistemic-annotated tool.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub epistemic_envelopes: Vec<crate::epistemic_capture::EpistemicEnvelope>,
 }
 
 /// §Fase 33.x.d — Wire-serializable mirror of
@@ -2247,6 +2258,8 @@ fn server_execute(
         // §Fase 39.c.y + 39.c.z — propagate from runtime walk.
         provenance_events: run_res.provenance_events,
         blame_attribution: run_res.blame_attribution,
+        // §Fase 55.b — propagate the IR-derived epistemic envelopes.
+        epistemic_envelopes: run_res.epistemic_envelopes,
     })
 }
 
@@ -18659,6 +18672,33 @@ fn resolve_stream_policies_for_flow(
     out
 }
 
+/// §Fase 55.b — re-derive the flow's epistemic envelopes from source for
+/// the streaming path, via the SAME `epistemic_capture::collect_for_flow`
+/// the synchronous runner calls — so the streaming `axon.complete` carries
+/// byte-identical `(base, scope, confidence)` triples (the §55.c parity
+/// invariant). Best-effort: a lex / parse failure yields an empty vec and
+/// the stream proceeds unchanged (mirrors `resolve_stream_policies_for_flow`).
+fn resolve_epistemic_envelopes_for_flow(
+    source: &str,
+    source_file: &str,
+    flow_name: &str,
+) -> Vec<crate::epistemic_capture::EpistemicEnvelope> {
+    let tokens = match crate::lexer::Lexer::new(source, source_file).tokenize() {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let program = match crate::parser::Parser::new(tokens).parse() {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let ir = crate::ir_generator::IRGenerator::new().generate(&program);
+    ir.flows
+        .iter()
+        .find(|f| f.name == flow_name)
+        .map(|f| crate::epistemic_capture::collect_for_flow(f, &ir.tools, 1.0))
+        .unwrap_or_default()
+}
+
 /// §Fase 33.f — Handles returned by [`server_execute_streaming`].
 ///
 /// Bundles the [`FlowExecutionEvent`] receiver with an "exited"
@@ -19144,6 +19184,15 @@ async fn execute_sse_handler_inner(
                 .map(|(step, slug)| (step, slug.to_string()))
                 .collect::<Vec<_>>();
 
+                // §Fase 55.b — resolve the epistemic envelopes once per
+                // execution (same derivation as the sync path) so the
+                // axon.complete envelope surfaces the Theorem 5.1 triples.
+                let epistemic_envelopes = resolve_epistemic_envelopes_for_flow(
+                    &source,
+                    &source_file,
+                    &flow_name_owned,
+                );
+
                 // §Fase 33.f cancel-safety — bind the executor's
                 // lifetime to this spawned task. If the task is
                 // aborted (e.g. axum drops the Sse response because
@@ -19374,6 +19423,7 @@ async fn execute_sse_handler_inner(
                                 enforcement_summaries: summaries_vec,
                                 runtime_warnings: warnings_vec,
                                 step_audit_records: step_audit_vec,
+                                epistemic_envelopes: epistemic_envelopes.clone(),
                             };
                             wire_adapter.build_complete_envelope_event(&envelope)
                         }

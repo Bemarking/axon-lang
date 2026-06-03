@@ -530,6 +530,7 @@ fn s7_complete_envelope_field_set_is_locked() {
         enforcement_summaries: Vec::new(),
         runtime_warnings: Vec::new(),
         step_audit_records: Vec::new(),
+        epistemic_envelopes: Vec::new(),
     };
     // Touch every field at the use site to lock the read surface.
     let _ = envelope.trace_id;
