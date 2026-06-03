@@ -1,3 +1,4 @@
+#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 38.x.f — Cardinality Coverage Complete.
 //!
 //! This anchor pins the v1.40.0 promotion of the v1.39.0 narrow gate

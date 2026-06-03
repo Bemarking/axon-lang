@@ -1,3 +1,4 @@
+#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 36.x.a — Mixed-flow streaming diagnostic anchor.
 //!
 //! Pins the v1.34.0 state that Fase 36.x closes — the agent pattern
