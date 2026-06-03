@@ -2820,9 +2820,37 @@ impl Parser {
                     self.consume(TokenType::Colon)?;
                     node.apply_ref = self.consume_any_ident_or_kw()?.value;
                 }
-                // Sub-constructs (use, probe, reason, weave, stream) → skip structurally
-                TokenType::Use
-                | TokenType::Probe
+                // §Fase 54.a — a `use` nested inside a `step { }` body used
+                // to be skipped structurally (grouped with the sub-constructs
+                // below), silently degrading the tool dispatch to an
+                // unconstrained LLM step with NO diagnostic. That fallthrough
+                // drops the AST node before the type-checker can see it, so the
+                // resource the tool would provision is never linearly accounted
+                // for (use_tool soundness). Reject it here, at the parser —
+                // the only place that still sees the token — and redirect to
+                // the canonical forms.
+                TokenType::Use => {
+                    let tool = self
+                        .tokens
+                        .get(self.pos + 1)
+                        .map(|t| t.value.as_str())
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or("<Tool>");
+                    return Err(ParseError {
+                        message: format!(
+                            "`use` is not valid inside a `step {{ }}` body — the tool dispatch \
+                             would be silently dropped. To invoke a tool, either write the \
+                             flow-level step `use {tool} on <arg>` (outside this block), or bind \
+                             it inside this step with `apply: {tool}`. To attach a persona, put \
+                             it in the step header: `step <name> use <Persona> {{ … }}`."
+                        ),
+                        line: inner.line,
+                        column: inner.column,
+                        ..Default::default()
+                    });
+                }
+                // Sub-constructs (probe, reason, weave, stream) → skip structurally
+                TokenType::Probe
                 | TokenType::Reason
                 | TokenType::Weave
                 | TokenType::Stream => {
@@ -2831,7 +2859,7 @@ impl Parser {
                 _ => {
                     return Err(ParseError {
                         message: format!(
-                            "Unexpected token in step body: '{}' — expected given, ask, use, \
+                            "Unexpected token in step body: '{}' — expected given, ask, \
                              probe, reason, weave, stream, output, confidence_floor, navigate, apply",
                             inner.value
                         ),
