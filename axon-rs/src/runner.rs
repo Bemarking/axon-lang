@@ -2439,6 +2439,26 @@ pub struct ServerRunnerMetrics {
     pub epistemic_envelopes: Vec<crate::epistemic_capture::EpistemicEnvelope>,
 }
 
+/// §Fase 55.b/c — derive a flow's epistemic envelopes from the IR. This is
+/// the SINGLE site both transports funnel through — the synchronous runner
+/// calls it directly with its in-hand `ir`; the streaming
+/// `axon_server::resolve_epistemic_envelopes_for_flow` re-derives the IR
+/// from source and calls THIS function — so the sync `FlowEnvelope` and the
+/// streaming `axon.complete` carry byte-identical `(base, scope, confidence)`
+/// triples by construction (the §55.c parity invariant: there is exactly
+/// one derivation, never two that could drift). `input_confidence = 1.0`:
+/// a top-level flow's ψ is clean before any tool degrades it.
+pub fn derive_epistemic_envelopes_for_flow(
+    ir: &crate::ir_nodes::IRProgram,
+    flow_name: &str,
+) -> Vec<crate::epistemic_capture::EpistemicEnvelope> {
+    ir.flows
+        .iter()
+        .find(|f| f.name == flow_name)
+        .map(|f| crate::epistemic_capture::collect_for_flow(f, &ir.tools, 1.0))
+        .unwrap_or_default()
+}
+
 pub fn execute_server_flow(
     ir: &crate::ir_nodes::IRProgram,
     flow_name: &str,
@@ -2822,17 +2842,9 @@ pub fn execute_server_flow(
     // breach > backend soft-fail > type mismatch. The first
     // surfaced wins per `merge_blame`'s stable tie-break.
 
-    // §Fase 55.b — capture the epistemic envelope of every tool dispatch
-    // in this flow from the IR (the SAME derivation the streaming path
-    // re-runs from source). `input_confidence = 1.0`: a top-level flow's
-    // ψ is clean before any tool degrades it, so each tool's own ceiling
-    // is what surfaces.
-    let epistemic_envelopes = ir
-        .flows
-        .iter()
-        .find(|f| f.name == flow_name)
-        .map(|f| crate::epistemic_capture::collect_for_flow(f, &ir.tools, 1.0))
-        .unwrap_or_default();
+    // §Fase 55.b/c — capture the epistemic envelopes via the SINGLE shared
+    // derivation (the streaming path funnels through the same function).
+    let epistemic_envelopes = derive_epistemic_envelopes_for_flow(ir, flow_name);
 
     Ok(ServerRunnerMetrics {
         success,
