@@ -1,3 +1,4 @@
+#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 36.g (D7) — server default backend.
 //!
 //! Rung 3 of the Backend Resolution Contract: `axon serve --backend

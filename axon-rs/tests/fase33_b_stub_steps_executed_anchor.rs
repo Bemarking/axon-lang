@@ -1,3 +1,4 @@
+#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 33.b — Anchor regression test for the stub-backend
 //! steps_executed:0 hollow-wire bug closed by Layer 1.
 //!

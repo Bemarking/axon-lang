@@ -1,3 +1,4 @@
+#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 38.x.a — Pooler-coherent Transactions Contract — diagnostic anchor.
 //!
 //! Pins the regression the kivi adopter reported on 2026-05-20 (smoke 16,

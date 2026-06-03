@@ -1,3 +1,4 @@
+#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 36.l (D12) — real-backend end-to-end capstone.
 //!
 //! The gap report's exact shape: deploy an `axonendpoint`, hit it

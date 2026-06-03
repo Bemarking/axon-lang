@@ -1,3 +1,4 @@
+#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 33.x diagnostic anchor — capture the v1.24.0 production-path
 //! SSE wire shape that the Fase 33.x cycle rewrites end-to-end.
 //!

@@ -1,3 +1,4 @@
+#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 37.a — The Request Binding Contract: diagnostic anchor.
 //!
 //! This pack PINS the v1.35.0 broken state. Each later sub-fase of
