@@ -149,6 +149,7 @@ pub mod flow_dispatcher;
 /// in 33.z.e).
 pub mod streaming_via_dispatcher;
 pub mod flow_version;
+pub mod epistemic_capture;
 pub mod exec_context;
 pub mod graceful_shutdown;
 pub mod graph_export;
