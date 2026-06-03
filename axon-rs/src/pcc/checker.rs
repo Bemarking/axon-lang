@@ -251,8 +251,15 @@ fn check_effect_row_soundness(
         }
     };
 
-    // Re-derive independently — do NOT trust the witness.
-    let actual = derive_effect_row_soundness_witness(&tool.name, &tool.effect_row);
+    // Re-derive independently — do NOT trust the witness. §Fase 53.d:
+    // the extension provenance members are re-derived from the SAME
+    // artifact (`ir`), so an extension-declared base verifies, while a
+    // base no extension declares still refutes. Soundness invariant #1:
+    // the verifier reads the artifact's own `extensions`, never an
+    // external registry.
+    let ext_members = super::generate::extension_effect_members(ir);
+    let actual =
+        derive_effect_row_soundness_witness(&tool.name, &tool.effect_row, &ext_members);
 
     if actual != *claimed {
         return CheckOutcome::Refuted {

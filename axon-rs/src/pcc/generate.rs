@@ -131,6 +131,12 @@ pub fn generate_compliance_coverage_proofs(
 pub fn derive_effect_row_soundness_witness(
     tool_name: &str,
     effect_row: &[String],
+    // §Fase 53.d — the extension-declared PROVENANCE members the checker
+    // honors, re-derived INDEPENDENTLY from the artifact's own
+    // `extensions` by the caller (see `extension_effect_members`). Empty
+    // for an artifact with no `extension` declarations (byte-identical
+    // pre-§53 behavior).
+    extension_effect_members: &std::collections::HashSet<String>,
 ) -> EffectRowSoundnessWitness {
     let declared_effects = canonical_classes(effect_row);
 
@@ -141,6 +147,15 @@ pub fn derive_effect_row_soundness_witness(
     let mut has_other = false;
 
     for entry in &declared_effects {
+        // §Fase 53.d — an extension-declared provenance member is accepted
+        // VERBATIM (the full entry). It carries no runtime capability
+        // (invariant #2), so it is neither an unknown base nor subject to
+        // qualifier enforcement; it counts as "other" for purity (a tool
+        // declaring `pure` + a provenance effect is still a contradiction).
+        if extension_effect_members.contains(entry) {
+            has_other = true;
+            continue;
+        }
         let (base, qualifier) = effects::split_effect(entry);
         if !effects::is_known_base(base) {
             unknown_bases.push(entry.clone());
@@ -179,6 +194,31 @@ pub fn derive_effect_row_soundness_witness(
     }
 }
 
+/// §Fase 53.d — the set of extension-declared PROVENANCE effect members
+/// the PCC checker honors, re-derived INDEPENDENTLY from the artifact's
+/// own `extensions` (soundness invariant #1 — the verifier never trusts
+/// an external registry or the producer's compiler; D51.2). Invariant #2
+/// is enforced here independently: a member whose base IS a canonical
+/// enforceable base is NOT a provenance member (it is not "rescued" by
+/// the extension), so it is excluded and falls through to the canonical
+/// base/qualifier checks. Both the prover and the checker call this over
+/// the SAME `ir`, so the re-derived witnesses agree by construction.
+pub fn extension_effect_members(ir: &IRProgram) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    for ext in &ir.extensions {
+        if ext.category != "effects" {
+            continue;
+        }
+        for m in &ext.members {
+            let (base, _) = effects::split_effect(&m.name);
+            if !effects::is_known_base(base) {
+                set.insert(m.name.clone());
+            }
+        }
+    }
+    set
+}
+
 /// §51.b — generate effect-row-soundness proofs for every tool in `ir`
 /// that declares a non-empty `effects: <...>` row. Tools with no
 /// declared effects produce no proof (nothing to certify).
@@ -187,13 +227,16 @@ pub fn generate_effect_row_soundness_proofs(
     axon_version: &str,
 ) -> Vec<ProofTerm> {
     let digest = artifact_digest(ir);
+    // §Fase 53.d — provenance members declared by the artifact's own
+    // extensions, re-derived once for the whole program.
+    let ext_members = extension_effect_members(ir);
     let mut proofs = Vec::new();
     for tool in &ir.tools {
         if tool.effect_row.is_empty() {
             continue;
         }
         let witness =
-            derive_effect_row_soundness_witness(&tool.name, &tool.effect_row);
+            derive_effect_row_soundness_witness(&tool.name, &tool.effect_row, &ext_members);
         proofs.push(ProofTerm {
             property: PropertyClass::EffectRowSoundness,
             artifact_digest: digest.clone(),

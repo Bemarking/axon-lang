@@ -441,6 +441,81 @@ mod tests {
         }
     }
 
+    // ── §Fase 53.d — extension-declared provenance bases ─────────────
+
+    /// Build an `effects`-category extension with the given members
+    /// (no metadata).
+    fn effects_ext(name: &str, members: &[&str]) -> crate::ir_nodes::IRExtension {
+        crate::ir_nodes::IRExtension {
+            node_type: "extension",
+            source_line: 1,
+            source_column: 1,
+            name: name.to_string(),
+            category: "effects".to_string(),
+            members: members
+                .iter()
+                .map(|m| crate::ir_nodes::IRExtensionMember {
+                    name: m.to_string(),
+                    semantics: None,
+                    default_confidence: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// §53.d — a tool using an extension-declared provenance base
+    /// VERIFIES (the proof is self-contained: the verifier re-derives
+    /// the provenance set from the artifact's own `extensions`).
+    #[test]
+    fn extension_declared_provenance_base_verifies() {
+        let mut ir = empty_ir();
+        ir.extensions.push(effects_ext("risk_axis", &["risk:elevated"]));
+        ir.tools.push(tool("Fetch", &["network", "risk:elevated"]));
+        let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// §53.d — a custom base that NO extension declares still REFUTES
+    /// (only the declared members are honored — the catalog is not
+    /// silently opened).
+    #[test]
+    fn undeclared_custom_base_refuted() {
+        let mut ir = empty_ir();
+        // extension declares `risk:elevated`, NOT `risk:guess`.
+        ir.extensions.push(effects_ext("risk_axis", &["risk:elevated"]));
+        ir.tools.push(tool("Fetch", &["risk:guess"]));
+        let proofs = generate_effect_row_soundness_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("unknown base"), "got: {reason}");
+                assert!(reason.contains("risk:guess"), "got: {reason}");
+            }
+            other => panic!("expected undeclared-base Refuted, got {other:?}"),
+        }
+    }
+
+    /// §53.d (invariant #2, PCC independence) — the checker's provenance
+    /// set EXCLUDES a member whose base is a canonical enforceable base.
+    /// PCC enforces this itself; it does not trust that the type-checker
+    /// ran. (`io:bypass` is excluded; `risk:elevated` is included.)
+    #[test]
+    fn pcc_provenance_set_excludes_canonical_shadow() {
+        let mut ir = empty_ir();
+        ir.extensions
+            .push(effects_ext("mixed", &["io:bypass_shield", "risk:elevated"]));
+        let set = super::generate::extension_effect_members(&ir);
+        assert!(
+            !set.contains("io:bypass_shield"),
+            "a member shadowing the canonical enforceable base `io` must NOT \
+             become a provenance member (invariant #2)"
+        );
+        assert!(
+            set.contains("risk:elevated"),
+            "a genuinely custom base must be a provenance member"
+        );
+    }
+
     /// `pure` alongside another effect → purity contradiction → Refuted.
     #[test]
     fn purity_violation_refuted() {
@@ -495,9 +570,11 @@ mod tests {
         let bogus = ProofTerm {
             property: PropertyClass::ComplianceCoverage, // mismatch
             artifact_digest: digest,
-            witness: Witness::EffectRowSoundness(
-                derive_effect_row_soundness_witness("Fetch", &["network".to_string()]),
-            ),
+            witness: Witness::EffectRowSoundness(derive_effect_row_soundness_witness(
+                "Fetch",
+                &["network".to_string()],
+                &std::collections::HashSet::new(),
+            )),
             axon_version: VERSION.to_string(),
         };
         assert_eq!(check_proof(&bogus, &ir), CheckOutcome::UnknownProperty);
