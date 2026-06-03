@@ -18672,13 +18672,16 @@ fn resolve_stream_policies_for_flow(
     out
 }
 
-/// §Fase 55.b — re-derive the flow's epistemic envelopes from source for
-/// the streaming path, via the SAME `epistemic_capture::collect_for_flow`
-/// the synchronous runner calls — so the streaming `axon.complete` carries
-/// byte-identical `(base, scope, confidence)` triples (the §55.c parity
-/// invariant). Best-effort: a lex / parse failure yields an empty vec and
-/// the stream proceeds unchanged (mirrors `resolve_stream_policies_for_flow`).
-fn resolve_epistemic_envelopes_for_flow(
+/// §Fase 55.b/c — re-derive the flow's epistemic envelopes from source for
+/// the streaming path. Parses + generates the IR, then DELEGATES to the
+/// single shared `runner::derive_epistemic_envelopes_for_flow` the sync
+/// runner also calls — so the streaming `axon.complete` and the sync
+/// `FlowEnvelope` carry byte-identical `(base, scope, confidence)` triples
+/// by construction (there is exactly one derivation, never two that could
+/// drift — the §55.c parity invariant). Best-effort: a lex / parse failure
+/// yields an empty vec and the stream proceeds unchanged (mirrors
+/// `resolve_stream_policies_for_flow`).
+pub fn resolve_epistemic_envelopes_for_flow(
     source: &str,
     source_file: &str,
     flow_name: &str,
@@ -18692,11 +18695,7 @@ fn resolve_epistemic_envelopes_for_flow(
         Err(_) => return Vec::new(),
     };
     let ir = crate::ir_generator::IRGenerator::new().generate(&program);
-    ir.flows
-        .iter()
-        .find(|f| f.name == flow_name)
-        .map(|f| crate::epistemic_capture::collect_for_flow(f, &ir.tools, 1.0))
-        .unwrap_or_default()
+    crate::runner::derive_epistemic_envelopes_for_flow(&ir, flow_name)
 }
 
 /// §Fase 33.f — Handles returned by [`server_execute_streaming`].
