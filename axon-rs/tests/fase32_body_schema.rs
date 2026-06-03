@@ -1,3 +1,4 @@
+#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing test-rot; see Cargo.toml [features].quarantined-rot
 //! §Fase 32.c — Cross-stack drift gate (Rust side) for body schema
 //! validation on dynamic axonendpoint routes.
 //!

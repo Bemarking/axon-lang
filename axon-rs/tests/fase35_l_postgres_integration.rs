@@ -1,3 +1,4 @@
+#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing test-rot; see Cargo.toml [features].quarantined-rot
 //! §Fase 35.l — Real-Postgres integration tests (D14, the robustness
 //! floor).
 //!

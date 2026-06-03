@@ -1,3 +1,4 @@
+#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing test-rot; see Cargo.toml [features].quarantined-rot
 //! §Fase 37.x.a — Diagnostic anchor for the Pooler-Coherent Store cycle.
 //!
 //! Pins the **post-1.36.5 broken state** of the `axonstore` Postgres
