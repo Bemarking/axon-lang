@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 37.e (D6) — honest streaming failure.
 //!
 //! The adopter's Finding B: a streaming flow that errored emitted a
@@ -19,9 +18,13 @@
 //! Fase 37.e makes flow-execution failure on the streaming wire
 //! honest. A stream that dies says why.
 //!
-//! Deterministic + infra-free: the §1–§3 + §5 flows fail at the
-//! `sqlite`-registry stage (no DB); §4 fails connecting to a dead
-//! port (no DB needed for the connection to be refused).
+//! Deterministic + infra-free: §1–§4 fail connecting to a dead
+//! postgresql port (no DB needed for the connection to be refused —
+//! `StoreRegistry::build` is lazy for postgresql so the route mounts,
+//! then errors mid-walk at the `retrieve` node). §5 is the happy
+//! path. (Pre-§35.f these used a `sqlite` store; the closed catalog
+//! `{in_memory, postgresql}` now rejects `sqlite` at DEPLOY time, so
+//! it can no longer drive a request-time streaming error.)
 
 use axon::axon_server::{build_router, ServerConfig};
 use axum::body::Body;
@@ -77,10 +80,20 @@ async fn hit_sse(app: &axum::Router, path: &str) -> String {
 const ECHO_TOOL: &str = "tool Echo { provider: stub_stream description: \"echo\" \
                           effects: <stream:drop_oldest> }\n";
 
-/// A flow that fails at the `sqlite`-registry stage, behind `dialect`.
-fn sqlite_error_program(endpoint: &str, path: &str, dialect: &str) -> String {
+/// A flow that fails at request time on the streaming wire, behind
+/// `dialect`. §Fase 35.f closed the axonstore catalog to
+/// `{in_memory, postgresql}` — `sqlite` is now an UnknownBackend that
+/// `StoreRegistry::build` rejects at DEPLOY time (the route never
+/// mounts), so it can no longer drive a request-time streaming error.
+/// A `postgresql` store pointed at a dead port is the canonical
+/// request-time failure: `StoreRegistry::build` is lazy for
+/// postgresql, so the flow deploys + mounts, then errors mid-walk at
+/// the `retrieve` node when the connection is refused — which the
+/// §Fase 37.e diagnostic NAMES on the wire.
+fn dead_store_error_program(endpoint: &str, path: &str, dialect: &str) -> String {
     format!(
-        "axonstore bad {{ backend: sqlite connection: \"x\" }}\n\
+        "axonstore bad {{ backend: postgresql \
+             connection: \"postgres://127.0.0.1:1/axon_37e_dead\" }}\n\
          {ECHO_TOOL}\
          flow ErrFlow() -> Unit {{\n\
              retrieve bad {{ where: \"1 = 1\" as: r }}\n\
@@ -96,7 +109,7 @@ fn sqlite_error_program(endpoint: &str, path: &str, dialect: &str) -> String {
 #[tokio::test]
 async fn s1_openai_dialect_surfaces_the_error_detail() {
     let app = build_router(server_cfg());
-    deploy(&app, &sqlite_error_program("OErrE", "/oerr", "openai")).await;
+    deploy(&app, &dead_store_error_program("OErrE", "/oerr", "openai")).await;
 
     let wire = hit_sse(&app, "/oerr").await;
 
@@ -106,10 +119,11 @@ async fn s1_openai_dialect_surfaces_the_error_detail() {
          `[DONE]`. Wire:\n{wire}"
     );
     assert!(
-        wire.contains("axonstore registry"),
+        wire.contains("failed at retrieve from 'bad'"),
         "§37.e D6 — the openai `axon_metadata` frame must surface the \
          `FlowError.error` diagnostic in its `error` field — the wire \
-         says WHY, not just THAT it errored. Wire:\n{wire}"
+         names the FAILING NODE (`failed at retrieve from 'bad'`), so \
+         it says WHY, not just THAT it errored. Wire:\n{wire}"
     );
 }
 
@@ -118,7 +132,7 @@ async fn s1_openai_dialect_surfaces_the_error_detail() {
 #[tokio::test]
 async fn s2_axon_dialect_surfaces_the_error_detail() {
     let app = build_router(server_cfg());
-    deploy(&app, &sqlite_error_program("AErrE", "/aerr", "axon")).await;
+    deploy(&app, &dead_store_error_program("AErrE", "/aerr", "axon")).await;
 
     let wire = hit_sse(&app, "/aerr").await;
 
@@ -128,9 +142,9 @@ async fn s2_axon_dialect_surfaces_the_error_detail() {
          Wire:\n{wire}"
     );
     assert!(
-        wire.contains("axonstore registry"),
+        wire.contains("failed at retrieve from 'bad'"),
         "§37.e D6 — the `axon.error` event carries the `error` \
-         diagnostic. Wire:\n{wire}"
+         diagnostic naming the failing node. Wire:\n{wire}"
     );
 }
 
@@ -139,7 +153,7 @@ async fn s2_axon_dialect_surfaces_the_error_detail() {
 #[tokio::test]
 async fn s3_anthropic_dialect_surfaces_the_error_detail() {
     let app = build_router(server_cfg());
-    deploy(&app, &sqlite_error_program("NErrE", "/nerr", "anthropic")).await;
+    deploy(&app, &dead_store_error_program("NErrE", "/nerr", "anthropic")).await;
 
     let wire = hit_sse(&app, "/nerr").await;
 
@@ -149,9 +163,9 @@ async fn s3_anthropic_dialect_surfaces_the_error_detail() {
          Wire:\n{wire}"
     );
     assert!(
-        wire.contains("axonstore registry"),
+        wire.contains("failed at retrieve from 'bad'"),
         "§37.e D6 — the anthropic `axon.metadata` frame must surface \
-         the `error` diagnostic. Wire:\n{wire}"
+         the `error` diagnostic naming the failing node. Wire:\n{wire}"
     );
 }
 

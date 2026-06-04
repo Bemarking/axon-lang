@@ -17,7 +17,7 @@ type ClinicalTrial compliance [HIPAA, GxP] {
   participant_id: String
 }
 
-flow SummarizeRecord(r: PatientRecord) -> PatientRecord {
+flow SummarizeRecord(id: String) -> PatientRecord {
   step Review {
     ask: "Summarize"
     output: PatientRecord
@@ -37,7 +37,7 @@ axonendpoint PatientAPI {
   path:    "/patients"
   body:    PatientRecord
   execute: SummarizeRecord
-  output:  PatientRecord
+  output:  FlowEnvelope<PatientRecord>
   shield:  PHIShield
   compliance: [HIPAA, GDPR]
 }

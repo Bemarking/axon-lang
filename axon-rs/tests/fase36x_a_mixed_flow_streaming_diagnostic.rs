@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 36.x.a — Mixed-flow streaming diagnostic anchor.
 //!
 //! Pins the v1.34.0 state that Fase 36.x closes — the agent pattern
@@ -118,25 +117,38 @@ async fn s2_streaming_error_path_emits_exactly_one_terminator_post_36xc() {
     // form (exactly one terminator) and stands as the regression
     // guard.
     //
-    // A `sqlite` store type-checks (sqlite ∈ VALID_STORE_BACKENDS)
-    // but the runtime registry only implements `postgresql` +
-    // `in_memory` — `StoreRegistry::build` rejects `sqlite` with
-    // `UnknownBackend`, so the streaming producer terminates via
-    // `FlowError`. Deterministic — no env, no database.
+    // §Fase 35.f closed the axonstore catalog to `{in_memory,
+    // postgresql}` — `sqlite` is now an UnknownBackend that
+    // `StoreRegistry::build` rejects at DEPLOY time (the route never
+    // mounts), so it can no longer drive a request-time streaming
+    // error. A `postgresql` store pointed at a dead port is the
+    // canonical request-time failure: `StoreRegistry::build` is lazy
+    // for postgresql, so the flow deploys + mounts, then errors
+    // mid-walk at the `retrieve` node when the connection is refused —
+    // the streaming producer terminates via `FlowError`. Deterministic
+    // — no live database (the port is closed). `transport: sse(axon)`
+    // selects the axon dialect so the terminator is `axon.error` /
+    // `axon.complete`.
     let app = build_router(server_cfg());
-    let src = "axonstore mem { backend: sqlite connection: \"file:x.db\" }\n\
+    let src = "axonstore mem { backend: postgresql \
+            connection: \"postgres://127.0.0.1:1/axon_36xa_dead\" }\n\
         flow ChatFlow() -> Unit {\n\
             retrieve mem { where: \"kind = 'history'\" as: history }\n\
             step Generate { ask: \"deliberate\" output: Stream<Token> }\n\
         }\n\
         axonendpoint ChatE { method: POST path: \"/chat\" execute: ChatFlow \
-        backend: stub transport: sse }";
+        backend: stub transport: sse(axon) }";
     let (dstatus, dbody) = deploy(&app, src).await;
     assert_eq!(
         dstatus,
         StatusCode::OK,
-        "§36.x.a §2: a `sqlite` store type-checks — the deploy must \
-         succeed. Body: {dbody}"
+        "§36.x.a §2: a `postgresql` store deploys (lazy build) — the \
+         deploy must succeed + mount the route. Body: {dbody}"
+    );
+    assert_eq!(
+        dbody.get("success").and_then(|v| v.as_bool()),
+        Some(true),
+        "§36.x.a §2: the deploy must succeed + mount the route. Body: {dbody}"
     );
 
     let (status, wire) = hit_sse(&app, "/chat").await;

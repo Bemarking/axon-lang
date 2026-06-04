@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 36.l (D9) — backwards-compatibility corpus.
 //!
 //! D9 is absolute: the ONLY behavior change Fase 36 introduces is
@@ -82,12 +81,13 @@ async fn d9_v1_execute_explicit_backend_unchanged() {
         post_json(&app, "/v1/execute", serde_json::json!({"flow": "Chat", "backend": "stub"}))
             .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        json["success"], true,
-        "36.l D9: `/v1/execute` with an explicit backend must be \
-         byte-unchanged. Body: {json}"
+    // v2.0.0 FlowEnvelope wire: a real step ran (no top-level `success`).
+    assert!(
+        json["step_audit"]["steps_executed"].as_u64().unwrap_or(0) >= 1,
+        "36.l D9: `/v1/execute` with an explicit backend must run a real \
+         step. Body: {json}"
     );
-    assert_eq!(json["backend"], "stub");
+    assert_eq!(json["execution_metrics"]["backend"], "stub");
 }
 
 // ─── §2 — request-struct serde defaults are unchanged-or-honest ────
@@ -187,10 +187,12 @@ async fn d9_endpoint_runs_resolved_backend_with_zero_source_change() {
 
     let (status, json) = post_json(&app, "/chat", serde_json::json!({})).await;
     assert_eq!(status, StatusCode::OK, "Body: {json}");
+    // v2.0.0 FlowEnvelope wire: resolution is visible via backend_resolution
+    // and a real step ran (steps_executed under step_audit).
     assert_eq!(
-        json["success"], true,
+        json["backend_resolution"]["backend"], "stub",
         "36.l D9: an undeclared-backend endpoint resolves its backend \
          down the ladder and runs — never a silent no-op. Body: {json}"
     );
-    assert!(json["steps_executed"].as_u64().unwrap_or(0) >= 1);
+    assert!(json["step_audit"]["steps_executed"].as_u64().unwrap_or(0) >= 1);
 }

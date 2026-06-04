@@ -91,19 +91,6 @@ futures = "0.3"
 bytes = "1"
 axon-csys = { path = "../axon-csys", version = "=0.2.0" }
 
-[features]
-# §Fase 55.d gating (founder-approved 2026-06-03) — quarantine the
-# pre-existing test-rot in subsystems UNRELATED to §54/§55 (postgres /
-# pgbouncer / pooler integration, terminator fuzz, body-schema) so a
-# default `cargo test` stays strictly green for the type core + the
-# parity-envelope serialization + the §55 epistemic-wire validation. The
-# quarantined integration-test files are gated with
-# `#![cfg(feature = "quarantined-rot")]`; the dedicated infra-debt sprint
-# runs `cargo test --features quarantined-rot` to surface + repair them,
-# then removes both the gates and this feature. Tracked in the
-# [INFRA-DEBT] Arity Drift + Test-Rot remediation ticket.
-quarantined-rot = []
-
 [dev-dependencies]
 # §Fase 41.d — client-side WebSocket for the session-typed runtime's E2E
 # tests. `tokio-tungstenite` is the same library axum's `ws` feature pulls in

@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing test-rot; see Cargo.toml [features].quarantined-rot
 //! §Fase 32.c — Cross-stack drift gate (Rust side) for body schema
 //! validation on dynamic axonendpoint routes.
 //!
@@ -363,6 +362,10 @@ fn body_validation_error_serialises_to_locked_shape() {
         expected: "Y".to_string(),
         got: "string".to_string(),
         hint: "h".to_string(),
+        expected_cardinality: String::new(),
+        got_cardinality: String::new(),
+        got_length: None,
+        remediation_url: String::new(),
     };
     let s = serde_json::to_value(&err).unwrap();
     assert_eq!(s["expected_type"], "X");

@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 37.a — The Request Binding Contract: diagnostic anchor.
 //!
 //! This pack PINS the v1.35.0 broken state. Each later sub-fase of
@@ -173,10 +172,16 @@ async fn s2_control_let_binding_does_interpolate() {
 
 // ── §3 — FINDING B: an errored streaming flow is hollow ─────────────
 
-/// A flow that errors on the streaming path (a `sqlite` axonstore
-/// type-checks but has no runtime backend → `StoreRegistry::build`
-/// fails → `FlowError`). The endpoint declares the `openai` SSE
-/// dialect.
+/// A flow that errors on the streaming path. A `postgresql` axonstore
+/// pointed at a dead port type-checks AND deploys (its
+/// `StoreRegistry::build` is lazy), then fails mid-walk at the
+/// `retrieve` node when the connection is refused → `FlowError`. The
+/// endpoint declares the `openai` SSE dialect.
+///
+/// (§Fase 35.f closed the axonstore catalog to `{in_memory,
+/// postgresql}`; `sqlite` — the pre-§35.f vehicle here — is now an
+/// UnknownBackend rejected at DEPLOY time, so the route would never
+/// mount and the request-time streaming error could not be observed.)
 ///
 /// §Fase 37.e (D6) SHIPPED — this assertion was inverted in place: it
 /// pinned the v1.35.0 hollow terminator (the openai dialect dropped
@@ -186,9 +191,10 @@ async fn s2_control_let_binding_does_interpolate() {
 async fn s3_errored_streaming_flow_names_why_it_failed() {
     let app = build_router(server_cfg());
     // `Echo`'s `<stream:…>` effect makes the flow stream-producing so
-    // `transport: sse` type-checks; the flow errors at registry build
-    // BEFORE the step runs.
-    let src = "axonstore bad { backend: sqlite connection: \"x\" }\n\
+    // `transport: sse` type-checks; the flow errors mid-walk at the
+    // `retrieve` node (dead postgresql port) BEFORE the step runs.
+    let src = "axonstore bad { backend: postgresql \
+            connection: \"postgres://127.0.0.1:1/axon_37a_dead\" }\n\
         tool Echo { provider: stub_stream description: \"echo\" \
                     effects: <stream:drop_oldest> }\n\
         flow ErrFlow() -> Unit {\n\
@@ -214,13 +220,14 @@ async fn s3_errored_streaming_flow_names_why_it_failed() {
          Wire:\n{wire}"
     );
     // ── §Fase 37.e SHIPPED — honest failure ────────────────────────
-    // … and now it says WHY. The `FlowError.error` string for a failed
-    // store registry build (`axonstore registry: <detail>`) reaches
-    // the wire — the openai dialect surfaces it in the axon_metadata
-    // frame's `error` field.
+    // … and now it says WHY. The `FlowError.error` string for a mid-
+    // walk dispatch failure (`flow '…' failed at retrieve from
+    // 'bad': …`) reaches the wire — the openai dialect surfaces it in
+    // the axon_metadata frame's `error` field.
     assert!(
-        wire.contains("axonstore"),
+        wire.contains("failed at retrieve from 'bad'"),
         "§37.e D6 — the error DETAIL must reach the wire: a streaming \
-         flow that fails names WHY, not just THAT. Wire:\n{wire}"
+         flow that fails names WHY (the failing node), not just THAT. \
+         Wire:\n{wire}"
     );
 }

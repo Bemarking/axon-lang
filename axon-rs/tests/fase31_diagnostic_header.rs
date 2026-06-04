@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 31.e — Runtime `X-Axon-Stream-Available` diagnostic header.
 //!
 //! D5 ratified 2026-05-11 bloque. The runtime attaches this header
@@ -383,8 +382,10 @@ async fn header_does_not_mutate_response_body() {
     let json1: serde_json::Value = serde_json::from_slice(&bytes1).unwrap();
 
     // Body must have the canonical /v1/execute keys.
+    // v2.0.0 FlowEnvelope wire contract: no top-level `success`; the
+    // canonical envelope exposes `result`, `step_audit`, `trace_id`, etc.
     assert!(json1.is_object());
-    for key in ["trace_id", "success"] {
+    for key in ["trace_id", "result", "step_audit"] {
         assert!(
             json1.get(key).is_some(),
             "body missing canonical key '{key}': {json1}"

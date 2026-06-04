@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 33.b — Anchor regression test for the stub-backend
 //! steps_executed:0 hollow-wire bug closed by Layer 1.
 //!
@@ -87,12 +86,15 @@ async fn v1_execute_stub_backend_reports_nonzero_steps_executed() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     // Pre-fix this was 0 — the report was empty for stub path.
-    let steps = payload["steps_executed"].as_u64().unwrap_or(99);
+    // v2.0.0 FlowEnvelope wire contract: step metrics are nested under
+    // the `step_audit` slot (no top-level `steps_executed`/`step_names`).
+    let step_audit = &payload["step_audit"];
+    let steps = step_audit["steps_executed"].as_u64().unwrap_or(99);
     assert!(
         steps >= 1,
         "steps_executed must be >= 1 for the stub path (got {steps}); regression of Fase 33.b Layer 1 fix"
     );
-    let step_names = payload["step_names"].as_array().expect("step_names array");
+    let step_names = step_audit["step_names"].as_array().expect("step_names array");
     assert!(
         !step_names.is_empty(),
         "step_names must be non-empty for the stub path; regression of Fase 33.b Layer 1 fix"

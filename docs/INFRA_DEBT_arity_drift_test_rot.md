@@ -1,9 +1,38 @@
 # [INFRA-DEBT] Remediación Sistémica de Arity Drift y Test-Rot en `cargo test`
 
-> **Status:** OPEN — opened 2026-06-03 (founder-directed, alongside the §Fase 55 cut).
+> **Status:** ✅ **RESOLVED 2026-06-03** (sprint executed right after the §54/§55
+> release). A default `cargo test` on `axon-rs` is now **strictly green** — the rot
+> was REPAIRED (not gated): every quarantined target was fixed against the current
+> v2.7.0 contract, the `quarantined-rot` Cargo feature + every `#![cfg(...)]` gate
+> were removed, and the 4 Postgres/pooler integration targets were restored to the
+> default suite (they skip-pass hermetically via `pg_or_skip!` and run for real in
+> the DB CI lane). The ONLY residual is 2 cross-stack Python-IR golden parity tests
+> left `#[ignore]` (the golden was produced by the now-purged Python stack encoding
+> the pre-v2.0.0 contract — it cannot be regenerated without that stack).
 > **Scope:** `axon-rs` integration test suite (`axon-rs/tests/`).
-> **Priority:** dedicated cleanup sprint, scheduled immediately **after** the §54/§55
-> coordinated release. Independent of the §54/§55 work.
+
+## Resolution (2026-06-03)
+
+- **18 non-DB targets repaired** (FlowEnvelope-shape JSON paths, axon-E039
+  `output: FlowEnvelope<T>` wraps, §37.y arity, stale `[stub-stream]` tokens, stale
+  version strings, `BodyValidationError` new fields). No assertion weakened — stale
+  expectations were re-pointed to the current correct contract.
+- **12 `#[ignore]` tests un-ignored + fixed** (integration.rs ×11 + fase30 ×1);
+  **2** kept `#[ignore]` (the Python-IR goldens — needs golden regen, tracked below).
+- **4 DB targets restored** (fase35_l / fase37x_a / fase37x_i / fase38x_a): the real
+  compile rot was §Fase 37.x.j adding a leading `conn: &mut StoreConn` to the
+  `PostgresStoreBackend` methods; the test call sites were threaded with a `StoreConn`.
+  They skip-pass without a DB and run for real when `AXON_TEST_DATABASE_URL` is set.
+- A couple of error-path streaming tests were re-grounded on a dead-port `postgresql`
+  store (the closed axonstore catalog removed `sqlite`) — deterministic, no live DB.
+- `cargo test --no-fail-fast` → **strictly green** (~4.5k passed, 0 failed, only the 2
+  Python goldens ignored). No `src/` or `Cargo.toml`-version changes; test files only.
+
+### Residual (1 small follow-up)
+- [ ] `integration.rs::parity_fase1_5_{byte_identical,structural}_matches_python_golden`
+      — regenerate `tests/parity/fase1_through_5_plus_compliance.python.ir.json` from the
+      current Rust IR (or retire the cross-stack golden), then un-ignore. The emit path
+      `parity_fase1_5_emit_rust_ir_for_diff` already writes the current Rust IR.
 
 ## Summary
 

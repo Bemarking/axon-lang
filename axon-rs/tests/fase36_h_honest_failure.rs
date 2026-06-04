@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 36.h (D5) — no silent stub, honest failure.
 //!
 //! The Backend Resolution Contract is total: when every ladder rung
@@ -258,6 +257,6 @@ async fn s4_explicit_stub_is_a_legal_optin_never_honest_failure() {
     );
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["backend"], "stub");
-    assert_eq!(json["success"], true);
+    assert_eq!(json["execution_metrics"]["backend"], "stub");
+    assert!(json["step_audit"]["steps_executed"].as_u64().unwrap_or(0) >= 1);
 }

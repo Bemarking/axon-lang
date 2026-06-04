@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 37.b (D1, D4) — The Request Binding Contract: runtime delivery.
 //!
 //! An `axonendpoint` declares `body: T` and `execute: F`; the request
@@ -260,15 +259,18 @@ async fn s5_request_binding_holds_on_the_json_transport() {
 
     let resp = hit_json(&app, "/json", r#"{"payload":"JSON_VALUE_B2"}"#).await;
 
+    // §Fase 39.b — the JSON transport now returns a FlowEnvelope: no
+    // top-level `success`; the step trail lives under `step_audit`. A
+    // clean execution carries `errors: 0`.
     assert_eq!(
-        resp.get("success").and_then(|v| v.as_bool()),
-        Some(true),
+        resp.pointer("/step_audit/errors").and_then(|v| v.as_u64()),
+        Some(0),
         "§37.b D1 — a parameterised flow behind `transport: json` must \
          execute through the synchronous runner with the request body \
-         threaded + bound. Response: {resp}"
+         threaded + bound (FlowEnvelope, errors:0). Response: {resp}"
     );
     assert_eq!(
-        resp.get("steps_executed").and_then(|v| v.as_u64()),
+        resp.pointer("/step_audit/steps_executed").and_then(|v| v.as_u64()),
         Some(1),
         "§37.b — the single step executed. Response: {resp}"
     );
