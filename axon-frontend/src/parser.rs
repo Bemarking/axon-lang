@@ -2293,6 +2293,8 @@ impl Parser {
             runtime: String::new(),
             sandbox: None,
             effects: None,
+            parameters: Vec::new(),
+            output_type: None,
             loc,
             leading_trivia: Vec::new(),
             trailing_trivia: Vec::new(),
@@ -2318,11 +2320,42 @@ impl Parser {
                 "runtime" => node.runtime = self.consume_any_ident_or_kw()?.value,
                 "sandbox" => node.sandbox = Some(self.parse_bool()?),
                 "effects" => node.effects = Some(self.parse_effect_row()?),
+                // §Fase 58.a — the tool's typed input schema + output type.
+                "parameters" => node.parameters = self.parse_tool_param_schema()?,
+                "output_type" => node.output_type = Some(self.parse_output_type_string()?),
                 _ => self.skip_value(),
             }
         }
         self.consume(TokenType::RBrace)?;
         Ok(node)
+    }
+
+    /// §Fase 58.a — parse a tool's INPUT SCHEMA: a brace-delimited list of
+    /// `name: Type` parameters (`parameters: { query: String, max_results: Int }`).
+    /// Reuses the flow-parameter shape (`Parameter`), so the same `TypeExpr`
+    /// grammar — generics like `List<T>`, `?`-optionals — applies. A trailing
+    /// comma is tolerated; an empty `{}` yields no parameters.
+    fn parse_tool_param_schema(&mut self) -> Result<Vec<Parameter>, ParseError> {
+        self.consume(TokenType::LBrace)?;
+        let mut params = Vec::new();
+        while !self.check(TokenType::RBrace) {
+            let name = self.consume(TokenType::Identifier)?;
+            let ploc = self.loc_of(&name);
+            self.consume(TokenType::Colon)?;
+            let type_expr = self.parse_type_expr()?;
+            params.push(Parameter {
+                name: name.value,
+                type_expr,
+                loc: ploc,
+            });
+            if self.check(TokenType::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(params)
     }
 
     fn parse_filter_expression(&mut self) -> Result<String, ParseError> {
