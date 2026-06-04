@@ -131,6 +131,18 @@ struct CompiledStep {
     /// falls back to the flow's user bindings (v1.31.0).
     #[serde(skip_serializing_if = "Option::is_none")]
     store_fields: Option<Vec<(String, String)>>,
+    /// §Fase 58.e — for a `use Tool(k = v, …)` dispatch: the bound keyword
+    /// args `(name, raw value)`. Non-empty ⇒ the runtime assembles a STRUCTURED
+    /// JSON request body (`{"query":"…","max_results":5}`) instead of the flat
+    /// `{"input": …}`. Empty for the legacy single-`on <arg>` form (D5).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_named_args: Vec<(String, String)>,
+    /// §Fase 58.e — the called tool's declared `(param, type)` schema, resolved
+    /// from `ir.tools` at build time so the runtime coerces each arg value to
+    /// its DECLARED JSON type (a `String` param stays a string even when its
+    /// value is all-digits) without reaching back into the IR.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_param_types: Vec<(String, String)>,
 }
 
 /// Fase 17.c — payload carried inside a CompiledStep for `let X = value`
@@ -283,6 +295,33 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             _ => None,
         };
 
+        // §Fase 58.e — the structured keyword args of a `use Tool(k = v, …)`
+        // dispatch, plus the called tool's declared `(param, type)` schema
+        // (resolved once from `ir.tools`) so the runtime coerces each value to
+        // its declared JSON type. Both empty for the legacy single-arg form.
+        let (tool_named_args, tool_param_types) = match node {
+            IRFlowNode::UseTool(s) => {
+                let named: Vec<(String, String)> = s
+                    .named_args
+                    .iter()
+                    .map(|a| (a.name.clone(), a.value.clone()))
+                    .collect();
+                let types: Vec<(String, String)> = ir
+                    .tools
+                    .iter()
+                    .find(|t| t.name == s.tool_name)
+                    .map(|t| {
+                        t.parameters
+                            .iter()
+                            .map(|p| (p.name.clone(), p.type_name.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (named, types)
+            }
+            _ => (Vec::new(), Vec::new()),
+        };
+
         // Extract memory expression for remember/recall/persist/retrieve/mutate/purge
         let memory_expression = match node {
             IRFlowNode::Remember(s) => Some(s.expression.clone()),
@@ -362,10 +401,61 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             lambda_apply_payload,
             let_payload,
             store_fields,
+            tool_named_args,
+            tool_param_types,
         });
     }
 
     steps
+}
+
+/// §Fase 58.e — assemble the STRUCTURED JSON request body for a `use Tool(k =
+/// v, …)` dispatch from its ALREADY-INTERPOLATED `(name, value)` args. Each
+/// value is coerced to its DECLARED parameter type so the tool backend receives
+/// `{"query":"Acme","max_results":5,"safe":true}` — not a flat
+/// `{"input": "…"}`. serde builds the object, so JSON escaping is correct.
+fn build_structured_tool_body(
+    interpolated_args: &[(String, String)],
+    param_types: &[(String, String)],
+) -> String {
+    let mut map = serde_json::Map::new();
+    for (name, value) in interpolated_args {
+        let declared = param_types
+            .iter()
+            .find(|(p, _)| p == name)
+            .map(|(_, t)| t.as_str());
+        map.insert(name.clone(), coerce_tool_arg_value(value, declared));
+    }
+    serde_json::Value::Object(map).to_string()
+}
+
+/// §Fase 58.e — coerce an interpolated arg value to JSON per its DECLARED type.
+/// `Int`/`Float`/`Bool` parse into the matching JSON scalar; a value that does
+/// not parse falls back to a JSON string (the §58.d type-checker already flags
+/// a literal mismatch at compile time — interpolated/runtime values are coerced
+/// leniently rather than dropped). `String`, custom domain types, lists, and
+/// unknown / schema-less (`None`) stay JSON strings — so a `String` parameter
+/// keeps its value verbatim even when it is all-digits.
+fn coerce_tool_arg_value(value: &str, declared_type: Option<&str>) -> serde_json::Value {
+    let base = declared_type.map(|t| t.trim_end_matches('?').split('<').next().unwrap_or(t));
+    match base {
+        Some("Int") => value
+            .parse::<i64>()
+            .map(|i| serde_json::Value::Number(i.into()))
+            .unwrap_or_else(|_| serde_json::Value::String(value.to_string())),
+        Some("Float") => value
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(serde_json::Value::Number)
+            .unwrap_or_else(|| serde_json::Value::String(value.to_string())),
+        Some("Bool") => match value {
+            "true" => serde_json::Value::Bool(true),
+            "false" => serde_json::Value::Bool(false),
+            _ => serde_json::Value::String(value.to_string()),
+        },
+        _ => serde_json::Value::String(value.to_string()),
+    }
 }
 
 fn extract_step_info(node: &IRFlowNode) -> (String, String, String) {
@@ -1338,8 +1428,19 @@ async fn execute_real_async(
 
                     // Native tool steps
                     if step.step_type == "use_tool" {
-                        let raw_arg = step.tool_argument.as_deref().unwrap_or("");
-                        let arg = ctx_snapshot.interpolate(raw_arg);
+                        // §Fase 58.e — `use Tool(k = v, …)` assembles a typed
+                        // structured JSON body; the legacy single-`on <arg>`
+                        // form keeps the flat interpolation (D5).
+                        let arg = if !step.tool_named_args.is_empty() {
+                            let interpolated: Vec<(String, String)> = step
+                                .tool_named_args
+                                .iter()
+                                .map(|(n, v)| (n.clone(), ctx_snapshot.interpolate(v)))
+                                .collect();
+                            build_structured_tool_body(&interpolated, &step.tool_param_types)
+                        } else {
+                            ctx_snapshot.interpolate(step.tool_argument.as_deref().unwrap_or(""))
+                        };
                         if let Some(result) = registry.dispatch(&step.step_name, &arg) {
                             return parallel::WaveStepResult {
                                 step_name: step_name.to_string(),
@@ -1459,8 +1560,19 @@ async fn execute_real_async(
 
             // ── Native tool interception ────────────────────────
             if step.step_type == "use_tool" {
-                let raw_arg = step.tool_argument.as_deref().unwrap_or("");
-                let arg = ctx.interpolate(raw_arg);
+                // §Fase 58.e — `use Tool(k = v, …)` assembles a typed structured
+                // JSON body; the legacy single-`on <arg>` form keeps the flat
+                // interpolation (D5).
+                let arg = if !step.tool_named_args.is_empty() {
+                    let interpolated: Vec<(String, String)> = step
+                        .tool_named_args
+                        .iter()
+                        .map(|(n, v)| (n.clone(), ctx.interpolate(v)))
+                        .collect();
+                    build_structured_tool_body(&interpolated, &step.tool_param_types)
+                } else {
+                    ctx.interpolate(step.tool_argument.as_deref().unwrap_or(""))
+                };
                 if let Some(result) = registry.dispatch(&step.step_name, &arg) {
                     let status = if result.success { "ok" } else { "error" };
                     if !json {
@@ -3134,6 +3246,110 @@ pub fn run_run(
 }
 
 // ── §Fase 35.e — sync-runner axonstore wiring tests ─────────────────
+
+#[cfg(test)]
+mod fase58e_tests {
+    use super::*;
+
+    #[test]
+    fn coerce_respects_declared_int_float_bool() {
+        assert_eq!(coerce_tool_arg_value("5", Some("Int")), serde_json::json!(5));
+        assert_eq!(
+            coerce_tool_arg_value("3.14", Some("Float")),
+            serde_json::json!(3.14)
+        );
+        assert_eq!(
+            coerce_tool_arg_value("true", Some("Bool")),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            coerce_tool_arg_value("false", Some("Bool")),
+            serde_json::json!(false)
+        );
+    }
+
+    #[test]
+    fn coerce_keeps_string_param_verbatim_even_if_all_digits() {
+        // Robustness invariant: a `String` param is NEVER numified.
+        assert_eq!(
+            coerce_tool_arg_value("12345", Some("String")),
+            serde_json::json!("12345")
+        );
+        assert_eq!(
+            coerce_tool_arg_value("Acme Corp", Some("String")),
+            serde_json::json!("Acme Corp")
+        );
+    }
+
+    #[test]
+    fn coerce_optional_and_generic_types_use_base() {
+        assert_eq!(coerce_tool_arg_value("7", Some("Int?")), serde_json::json!(7));
+        // `List<String>` → base `List` → not a scalar → string.
+        assert_eq!(
+            coerce_tool_arg_value("x", Some("List<String>")),
+            serde_json::json!("x")
+        );
+    }
+
+    #[test]
+    fn coerce_unparseable_scalar_falls_back_to_string_not_dropped() {
+        // Declared Int/Bool but the (interpolated) value isn't one → lenient
+        // string rather than a drop. The §58.d type-checker already flags a
+        // literal mismatch at compile time.
+        assert_eq!(
+            coerce_tool_arg_value("not-a-number", Some("Int")),
+            serde_json::json!("not-a-number")
+        );
+        assert_eq!(
+            coerce_tool_arg_value("maybe", Some("Bool")),
+            serde_json::json!("maybe")
+        );
+    }
+
+    #[test]
+    fn coerce_unknown_or_schemaless_param_is_string() {
+        assert_eq!(coerce_tool_arg_value("5", None), serde_json::json!("5"));
+        assert_eq!(
+            coerce_tool_arg_value("5", Some("SearchResults")),
+            serde_json::json!("5")
+        );
+    }
+
+    #[test]
+    fn build_body_assembles_typed_structured_object() {
+        let args = vec![
+            ("query".to_string(), "Acme Corp".to_string()),
+            ("max_results".to_string(), "5".to_string()),
+            ("safesearch".to_string(), "true".to_string()),
+        ];
+        let types = vec![
+            ("query".to_string(), "String".to_string()),
+            ("max_results".to_string(), "Int".to_string()),
+            ("safesearch".to_string(), "Bool".to_string()),
+        ];
+        let v: serde_json::Value =
+            serde_json::from_str(&build_structured_tool_body(&args, &types)).unwrap();
+        assert_eq!(v["query"], serde_json::json!("Acme Corp"));
+        assert_eq!(v["max_results"], serde_json::json!(5));
+        assert_eq!(v["safesearch"], serde_json::json!(true));
+        // NOT the flat `{"input": …}` legacy shape.
+        assert!(v.get("input").is_none());
+    }
+
+    #[test]
+    fn build_body_escapes_special_characters_via_serde() {
+        let args = vec![("query".to_string(), "a\"b\nc".to_string())];
+        let types = vec![("query".to_string(), "String".to_string())];
+        let v: serde_json::Value =
+            serde_json::from_str(&build_structured_tool_body(&args, &types)).unwrap();
+        assert_eq!(v["query"], serde_json::json!("a\"b\nc"));
+    }
+
+    #[test]
+    fn build_body_empty_args_is_empty_object() {
+        assert_eq!(build_structured_tool_body(&[], &[]), "{}");
+    }
+}
 
 #[cfg(test)]
 mod fase35e_tests {
