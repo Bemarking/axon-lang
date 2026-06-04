@@ -4754,10 +4754,141 @@ impl<'a> TypeChecker<'a> {
                 FlowStep::Emit(n) => self.check_emit(n),
                 FlowStep::Publish(n) => self.check_publish(n),
                 FlowStep::Discover(n) => self.check_discover(n),
+                // §Fase 58.d — validate a tool dispatch against the tool's
+                // declared input schema (W2 / CT-2 caller blame, pre-HTTP).
+                FlowStep::UseTool(n) => {
+                    match self.symbols.lookup(&n.tool_name) {
+                        None => self.emit(
+                            format!("Unknown tool '{}' in flow '{}'", n.tool_name, flow_name),
+                            &n.loc,
+                        ),
+                        Some(sym) if sym.kind != "tool" => self.emit(
+                            format!("'{}' is a {}, not a tool", n.tool_name, sym.kind),
+                            &n.loc,
+                        ),
+                        _ => self.check_use_tool_args(n),
+                    }
+                }
                 // All other steps: no cross-reference checks needed
                 _ => {}
             }
         }
+    }
+
+    /// §Fase 58.d — validate a `use Tool(k = v, …)` call against the tool's
+    /// declared input schema (W2): the contract the type-checker enforces so a
+    /// malformed invocation is CALLER blame (CT-2) at compile time, BEFORE any
+    /// HTTP dispatch. Checks: every named arg is a declared parameter; no
+    /// duplicates; every required (non-optional) parameter is supplied; and a
+    /// best-effort literal type-alignment. The legacy single-`on <arg>` form is
+    /// untyped and skipped (§58 D5 back-compat), as is a schema-less tool (no
+    /// `parameters:` → no contract to enforce). The `apply: Tool given:
+    /// <struct>` splat (D3) is validated separately (§58.d.2).
+    fn check_use_tool_args(&mut self, n: &UseToolStep) {
+        let UseArgs::Named(pairs) = &n.args else {
+            return; // LegacyPositional — no schema validation (D5).
+        };
+        let params = self.tool_parameters(&n.tool_name);
+        if params.is_empty() {
+            return; // schema-less tool — no contract.
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (name, value) in pairs {
+            if !seen.insert(name.clone()) {
+                self.emit(
+                    format!("Duplicate argument '{}' in call to tool '{}'", name, n.tool_name),
+                    &n.loc,
+                );
+                continue;
+            }
+            match params.iter().find(|p| &p.0 == name) {
+                None => self.emit(
+                    format!("Tool '{}' has no parameter '{}'", n.tool_name, name),
+                    &n.loc,
+                ),
+                Some((_, decl_ty, _)) => {
+                    if let Some(val_ty) = Self::infer_arg_literal_type(value) {
+                        if !Self::tool_arg_types_align(&val_ty, decl_ty) {
+                            self.emit(
+                                format!(
+                                    "Type mismatch for parameter '{}' of tool '{}': expected {}, got {}",
+                                    name, n.tool_name, decl_ty, val_ty
+                                ),
+                                &n.loc,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Missing required (non-optional) parameters.
+        for (pname, _ty, optional) in &params {
+            if !optional && !pairs.iter().any(|(name, _)| name == pname) {
+                self.emit(
+                    format!("Missing required argument '{}' for tool '{}'", pname, n.tool_name),
+                    &n.loc,
+                );
+            }
+        }
+    }
+
+    /// §Fase 58.d — the `(name, flat-type, optional)` schema of a declared
+    /// tool. Empty when the tool declares no `parameters:` (schema-less /
+    /// back-compat) or is undeclared (the existence check already emitted).
+    fn tool_parameters(&self, tool_name: &str) -> Vec<(String, String, bool)> {
+        self.program
+            .declarations
+            .iter()
+            .find_map(|d| match d {
+                Declaration::Tool(t) if t.name == tool_name => Some(t),
+                _ => None,
+            })
+            .map(|t| {
+                t.parameters
+                    .iter()
+                    .map(|p| {
+                        let mut ty = p.type_expr.name.clone();
+                        if !p.type_expr.generic_param.is_empty() {
+                            ty = format!("{}<{}>", ty, p.type_expr.generic_param);
+                        }
+                        (p.name.clone(), ty, p.type_expr.optional)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// §Fase 58.d — infer a named-arg VALUE's type only when it is an
+    /// UNAMBIGUOUS literal. The frontend stored the value as a bare string, so
+    /// a bare identifier is ambiguous (the string literal `"x"` and the
+    /// reference `x` both lower to `x`) → `None`, skipping the check to stay
+    /// sound (no false positives). Interpolation (`${…}`) is runtime-dependent
+    /// → also `None`. Only numeric / boolean literals — which the lexer cannot
+    /// confuse with an identifier — are typed.
+    fn infer_arg_literal_type(value: &str) -> Option<String> {
+        if value == "true" || value == "false" {
+            return Some("Bool".to_string());
+        }
+        if value.contains('.') && value.parse::<f64>().is_ok() {
+            return Some("Float".to_string());
+        }
+        let digits = value.strip_prefix('-').unwrap_or(value);
+        if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+            return Some("Int".to_string());
+        }
+        None
+    }
+
+    /// §Fase 58.d — whether an inferred literal value type aligns with a
+    /// declared parameter type. `Any` accepts anything; an `Int` coerces into a
+    /// `Float` parameter; otherwise the base types must match.
+    fn tool_arg_types_align(value_ty: &str, decl_ty: &str) -> bool {
+        let base = decl_ty
+            .trim_end_matches('?')
+            .split('<')
+            .next()
+            .unwrap_or(decl_ty);
+        base == "Any" || base == value_ty || (base == "Float" && value_ty == "Int")
     }
 
     fn check_store_ref(&mut self, store_name: &str, flow_name: &str, loc: &Loc) {
