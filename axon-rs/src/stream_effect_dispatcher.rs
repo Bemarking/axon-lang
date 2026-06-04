@@ -384,6 +384,8 @@ mod tests {
                 epistemic_level: String::new(),
                 loc: loc(),
             }),
+            parameters: Vec::new(),
+            output_type: None,
             loc: loc(),
             leading_trivia: Vec::new(),
             trailing_trivia: Vec::new(),

@@ -338,6 +338,27 @@ impl IRGenerator {
             sandbox: n.sandbox,
             input_schema: Vec::new(),
             output_schema: String::new(),
+            // §Fase 58.c — carry the typed input schema + output type into the
+            // IR (the §32 input_schema/output_schema above stay the validation
+            // hints; these are the D1 type contract).
+            parameters: n
+                .parameters
+                .iter()
+                .map(|p| {
+                    let mut type_name = p.type_expr.name.clone();
+                    if !p.type_expr.generic_param.is_empty() {
+                        type_name.push('<');
+                        type_name.push_str(&p.type_expr.generic_param);
+                        type_name.push('>');
+                    }
+                    crate::ir_nodes::IRToolParam {
+                        name: p.name.clone(),
+                        type_name,
+                        optional: p.type_expr.optional,
+                    }
+                })
+                .collect(),
+            output_type: n.output_type.clone(),
             effect_row,
         }
     }
@@ -514,11 +535,20 @@ impl IRGenerator {
                 source_column: s.loc.column,
                 tool_name: s.tool_name.clone(),
                 // §Fase 58.b — `LegacyPositional` projects its string verbatim
-                // (D5, unchanged IR). `Named` args carry no single string; their
-                // structured IR lands in §58.c, so they project an empty
-                // argument here (the type-checker §58.d validates them from the
-                // AST, not the IR).
+                // (D5, unchanged IR). `Named` keeps the legacy `argument` empty
+                // and carries its pairs in `named_args` below (§58.c).
                 argument: s.args.legacy_argument(),
+                // §Fase 58.c — structured keyword args survive to the IR.
+                named_args: match &s.args {
+                    UseArgs::Named(pairs) => pairs
+                        .iter()
+                        .map(|(name, value)| crate::ir_nodes::IRNamedArg {
+                            name: name.clone(),
+                            value: value.clone(),
+                        })
+                        .collect(),
+                    UseArgs::LegacyPositional(_) => Vec::new(),
+                },
             }),
             FlowStep::Remember(s) => IRFlowNode::Remember(IRRememberStep {
                 node_type: "remember",

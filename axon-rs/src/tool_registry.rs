@@ -325,6 +325,8 @@ mod tests {
                 sandbox: None,
                 input_schema: Vec::new(),
                 output_schema: String::new(),
+                parameters: Vec::new(),
+                output_type: None,
                 effect_row: vec!["stream:drop_oldest".to_string()],
             },
             IRToolSpec {
@@ -340,6 +342,8 @@ mod tests {
                 sandbox: None,
                 input_schema: Vec::new(),
                 output_schema: String::new(),
+                parameters: Vec::new(),
+                output_type: None,
                 effect_row: vec!["compute".to_string()],
             },
         ];
@@ -418,6 +422,8 @@ mod tests {
                 sandbox: None,
                 input_schema: Vec::new(),
                 output_schema: String::new(),
+                parameters: Vec::new(),
+                output_type: None,
                 effect_row: Vec::new(),
             },
             IRToolSpec {
@@ -433,6 +439,8 @@ mod tests {
                 sandbox: Some(true),
                 input_schema: Vec::new(),
                 output_schema: String::new(),
+                parameters: Vec::new(),
+                output_type: None,
                 effect_row: Vec::new(),
             },
         ];

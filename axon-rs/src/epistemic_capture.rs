@@ -230,6 +230,8 @@ mod tests {
             sandbox: None,
             input_schema: Vec::new(),
             output_schema: String::new(),
+            parameters: Vec::new(),
+            output_type: None,
             effect_row: effects.iter().map(|e| e.to_string()).collect(),
         }
     }
@@ -241,6 +243,7 @@ mod tests {
             source_column: 0,
             tool_name: tool_name.into(),
             argument: "${query}".into(),
+            named_args: Vec::new(),
         })
     }
 

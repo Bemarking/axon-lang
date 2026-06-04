@@ -356,6 +356,7 @@ mod tests {
             source_column: 0,
             tool_name: "calculator".into(),
             argument: "input".into(),
+            named_args: Vec::new(),
         };
         let outcome = run_use_tool(&node, &mut ctx).await.unwrap();
         match outcome {
@@ -406,6 +407,7 @@ mod tests {
             source_column: 0,
             tool_name: "x".into(),
             argument: "y".into(),
+            named_args: Vec::new(),
         };
         assert!(matches!(
             run_use_tool(&ut, &mut ctx).await,

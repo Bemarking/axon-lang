@@ -382,6 +382,8 @@ mod tests {
             sandbox: None,
             input_schema: Vec::new(),
             output_schema: String::new(),
+            parameters: Vec::new(),
+            output_type: None,
             effect_row: effects.iter().map(|s| s.to_string()).collect(),
         }
     }
