@@ -424,6 +424,7 @@ mod tests {
             node_type: "UseTool",
             source_line: 1, source_column: 1,
             tool_name: "search".into(), argument: "q".into(),
+            named_args: Vec::new(),
         });
         assert_eq!(classify_node(&tool), StepKind::ToolCall);
 
@@ -461,6 +462,7 @@ mod tests {
             IRFlowNode::UseTool(IRUseToolStep {
                 node_type: "UseTool", source_line: 3, source_column: 1,
                 tool_name: "t".into(), argument: "a".into(),
+                named_args: Vec::new(),
             }),
         ];
 

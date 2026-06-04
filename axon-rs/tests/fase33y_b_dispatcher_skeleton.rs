@@ -129,6 +129,7 @@ fn use_tool_node() -> IRFlowNode {
         source_column: 0,
         tool_name: String::new(),
         argument: String::new(),
+        named_args: Vec::new(),
     })
 }
 

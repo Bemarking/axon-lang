@@ -199,6 +199,7 @@ fn random_use_tool(lcg: &mut Lcg) -> IRFlowNode {
         source_column: 0,
         tool_name: lcg.ascii_with_random_len(12),
         argument: lcg.ascii_with_random_len(20),
+        named_args: Vec::new(),
     })
 }
 

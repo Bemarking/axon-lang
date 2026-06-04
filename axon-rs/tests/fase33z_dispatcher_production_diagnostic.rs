@@ -821,6 +821,7 @@ fn d1_catalog_totality_pin_45_variants() {
             source_column: 0,
             tool_name: String::new(),
             argument: String::new(),
+            named_args: Vec::new(),
         }),
         IRFlowNode::Remember(IRRememberStep {
             node_type: "remember",

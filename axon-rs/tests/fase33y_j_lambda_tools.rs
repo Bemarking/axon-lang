@@ -59,6 +59,7 @@ fn use_tool_node(tool: &str, arg: &str) -> IRFlowNode {
         source_column: 0,
         tool_name: tool.into(),
         argument: arg.into(),
+        named_args: Vec::new(),
     })
 }
 
@@ -351,6 +352,7 @@ async fn fuzz_use_tool_never_panics() {
             source_column: 0,
             tool_name: lcg.ascii_with_random_len(20),
             argument: lcg.ascii_with_random_len(30),
+            named_args: Vec::new(),
         });
         let outcome = dispatch_node(&node, &mut ctx).await;
         assert_no_panic(&format!("use_tool iter={iter}"), &outcome);
@@ -385,6 +387,7 @@ async fn fuzz_lambda_use_tool_cancel_random_pre_dispatch() {
                 source_column: 0,
                 tool_name: "t".into(),
                 argument: "a".into(),
+                named_args: Vec::new(),
             })
         };
 

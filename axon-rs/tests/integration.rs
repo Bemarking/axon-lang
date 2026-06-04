@@ -2760,6 +2760,8 @@ fn tool_registry_from_ir_specs() {
             sandbox: None,
             input_schema: Vec::new(),
             output_schema: String::new(),
+            parameters: Vec::new(),
+            output_type: None,
             effect_row: Vec::new(),
         },
     ]);

@@ -571,6 +571,28 @@ pub struct IRAnchor {
 
 // ── Tool ─────────────────────────────────────────────────────────────────────
 
+/// §Fase 58.c — one typed parameter of a tool's input schema (the IR mirror of
+/// the AST `Parameter`). `type_name` is the flattened BASE type string
+/// (`String`, `List<String>`); optionality (`T?`) is carried in `optional`, so
+/// `required` is derivable with no parallel bool (§58 D1, single source of
+/// truth). Lossless round-trip is gated in §58.i.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct IRToolParam {
+    pub name: String,
+    pub type_name: String,
+    pub optional: bool,
+}
+
+/// §Fase 58.c — one bound keyword argument of a `use Tool(k = v, …)` call (the
+/// IR mirror of `UseArgs::Named`). `value` is an expression string (the
+/// frontend has no structured `Expr`). The runtime (§58.e) assembles these into
+/// the structured JSON request body.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct IRNamedArg {
+    pub name: String,
+    pub value: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct IRToolSpec {
     pub node_type: &'static str,
@@ -585,6 +607,16 @@ pub struct IRToolSpec {
     pub sandbox: Option<bool>,
     pub input_schema: Vec<String>,
     pub output_schema: String,
+    /// §Fase 58.c — the tool's typed INPUT SCHEMA (D1). Distinct from the §32
+    /// `input_schema`/`output_schema` validation hints (those say HOW to
+    /// validate raw output: JSON/number/…); these are the caller↔tool TYPE
+    /// contract the type-checker enforces (§58.d) and the runtime binds
+    /// structured args against (§58.e). Empty for a schema-less tool (D5).
+    pub parameters: Vec<IRToolParam>,
+    /// §Fase 58.c — the tool's declared OUTPUT type (D8), so `${Step.output}`
+    /// is typed. `None` when undeclared. Single source of truth (lives here,
+    /// not denormalised onto each call site).
+    pub output_type: Option<String>,
     pub effect_row: Vec<String>,
 }
 
@@ -853,6 +885,11 @@ pub struct IRUseToolStep {
     pub source_column: u32,
     pub tool_name: String,
     pub argument: String,
+    /// §Fase 58.c — the bound keyword args of `use Tool(k = v, …)` (W1: the
+    /// structured args survive to the IR, no longer collapsed to one opaque
+    /// string). Empty for the legacy single-`on <arg>` form (`argument`
+    /// carries that, D5).
+    pub named_args: Vec<IRNamedArg>,
 }
 
 #[derive(Debug, Clone, Serialize)]
