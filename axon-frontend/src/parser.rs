@@ -2339,7 +2339,10 @@ impl Parser {
         self.consume(TokenType::LBrace)?;
         let mut params = Vec::new();
         while !self.check(TokenType::RBrace) {
-            let name = self.consume(TokenType::Identifier)?;
+            // Accept a keyword-as-name (`filter`, `type`, `domain`, …) — real
+            // adopter tool schemas use such parameter names; the `:` after it
+            // disambiguates.
+            let name = self.consume_any_ident_or_kw()?;
             let ploc = self.loc_of(&name);
             self.consume(TokenType::Colon)?;
             let type_expr = self.parse_type_expr()?;
@@ -3508,38 +3511,65 @@ impl Parser {
         let tok = self.current().clone();
         self.advance();
         let tool_name = self.consume_any_ident_or_kw()?.value.clone();
-        let mut argument = String::new();
-        // "on" argument — §Fase 54.b: the argument binds a value into the
-        // tool dispatch. Two forms, both accepted by `consume_any_ident_or_kw`:
-        //   * a STRING LITERAL carrying interpolation — `on "${query}"` /
-        //     `on "$query"` — resolved at dispatch (`runner.rs` →
-        //     `ExecContext::interpolate`) against the request-bound flow
-        //     parameters (`request_binding::bind_request`). THIS is how a
-        //     request param reaches the tool.
-        //   * a BARE identifier / literal — `on query` / `on 42` — passed
-        //     through verbatim (no `$` ⇒ no interpolation), i.e. a literal
-        //     argument. Unchanged from the pre-54.b behavior.
-        // (Unquoted `${query}` is intentionally NOT a form — interpolation
-        // lives inside string literals everywhere in Axon; the lexer guides
-        // a bare `$` toward quoting.)
-        if !self.at_declaration_start() && !self.check(TokenType::RBrace) {
-            let next = self.current().clone();
-            if next.value == "on" {
-                self.advance();
-                argument = self.consume_any_ident_or_kw()?.value.clone();
+        // §Fase 58.b — two mutually-exclusive `use` argument surfaces:
+        //   * `use Tool(query = "${q}", max_results = 5)` — D2 canonical
+        //     multi-field keyword args (§58.b `UseArgs::Named`).
+        //   * `use Tool on "${arg}"` / `on query` — the §54.b single positional
+        //     argument (D5 back-compat, `UseArgs::LegacyPositional`):
+        //       - a STRING LITERAL carrying interpolation (`on "${query}"`)
+        //         resolved at dispatch against request-bound flow params;
+        //       - a BARE identifier / literal (`on query` / `on 42`) verbatim.
+        //     (Unquoted `${query}` is intentionally NOT a form — interpolation
+        //     lives inside string literals everywhere in Axon.)
+        let args = if self.check(TokenType::LParen) {
+            UseArgs::Named(self.parse_named_arg_list()?)
+        } else {
+            let mut argument = String::new();
+            if !self.at_declaration_start() && !self.check(TokenType::RBrace) {
+                let next = self.current().clone();
+                if next.value == "on" {
+                    self.advance();
+                    argument = self.consume_any_ident_or_kw()?.value.clone();
+                }
             }
-        }
+            UseArgs::LegacyPositional(argument)
+        };
         if self.check(TokenType::LBrace) {
             self.skip_braced_block()?;
         }
         Ok(FlowStep::UseTool(UseToolStep {
             tool_name,
-            argument,
+            args,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
             },
         }))
+    }
+
+    /// §Fase 58.b — parse `(name = value, …)` keyword args for the canonical
+    /// `use Tool(...)` multi-field dispatch. Values are captured as expression
+    /// strings (StringLit / Integer / Float / Bool / dotted identifier / list)
+    /// via the shared `parse_let_atom`, since the frontend has no structured
+    /// `Expr`. A trailing comma is tolerated; `()` yields no args.
+    fn parse_named_arg_list(&mut self) -> Result<Vec<(String, String)>, ParseError> {
+        self.consume(TokenType::LParen)?;
+        let mut args = Vec::new();
+        while !self.check(TokenType::RParen) {
+            // Accept a keyword-as-name (`filter`, `type`, `from`, …) — real
+            // adopter schemas use such names; the following `=` disambiguates.
+            let name = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Assign)?;
+            let value = self.parse_let_atom()?;
+            args.push((name, value));
+            if self.check(TokenType::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.consume(TokenType::RParen)?;
+        Ok(args)
     }
 
     fn parse_remember_step(&mut self) -> Result<FlowStep, ParseError> {

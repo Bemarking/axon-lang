@@ -61,7 +61,9 @@ fn dispatches_websearch_flow_level_with_interpolated_request_param() {
 
     assert_eq!(use_tool.tool_name, "WebSearch");
     assert_eq!(
-        use_tool.argument, "${query}",
+        // §58.b — positional arg now in `UseArgs::LegacyPositional`.
+        use_tool.args.legacy_argument(),
+        "${query}",
         "the dispatch argument must carry the verbatim `${{query}}` interpolation so the \
          runtime resolves it against the bound request parameter (§54.b)"
     );

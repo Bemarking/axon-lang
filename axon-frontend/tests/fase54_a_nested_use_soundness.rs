@@ -106,7 +106,8 @@ fn flow_level_use_tool_still_parses_to_use_tool_node() {
         .find_map(|s| if let FlowStep::UseTool(u) = s { Some(u) } else { None })
         .expect("the flow-level `use Search on query` must parse to FlowStep::UseTool");
     assert_eq!(use_tool.tool_name, "Search");
-    assert_eq!(use_tool.argument, "query");
+    // §58.b — the positional arg now lives in `UseArgs::LegacyPositional`.
+    assert_eq!(use_tool.args.legacy_argument(), "query");
 }
 
 // ─── §3 — the step-header persona form is unaffected ────────────────

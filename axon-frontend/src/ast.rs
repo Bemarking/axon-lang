@@ -1486,10 +1486,42 @@ pub struct WeaveStep {
     pub style: String,
     pub loc: Loc,
 }
+/// §Fase 58.b — the closed catalog of `use <Tool>` argument forms. The
+/// invocation surfaces are mutually exclusive, so a sum type models them
+/// exactly (no ambiguous dual-empty state). NOTE: `apply: Tool given: <struct>`
+/// (the splat form) is NOT here — it rides `StepNode.apply_ref` and is
+/// validated against the tool schema in §58.d, not parsed as a `use`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UseArgs {
+    /// `use Tool on "${arg}"` / `use Tool on query` — the §54.b single
+    /// positional argument. D5 back-compat: behaves byte-identically to the
+    /// pre-58 `argument: String` (empty string when no `on` clause).
+    LegacyPositional(String),
+    /// `use Tool(query = "${q}", max_results = 5)` — D2 canonical multi-field
+    /// keyword args. Each value is captured as an expression STRING (the
+    /// frontend has no structured `Expr`; mirrors `argument` /
+    /// `parse_argument_list`). The type-checker (§58.d) validates each pair
+    /// against the tool's declared input schema (W2 / CT-2 caller blame).
+    Named(Vec<(String, String)>),
+}
+
+impl UseArgs {
+    /// §58.b transitional — the legacy single-arg string for the IR `argument`
+    /// field (still `String` until §58.c carries structured named args).
+    /// `Named` projects an empty argument here; the type-checker validates
+    /// named args from the AST, and §58.c/e wire their structured dispatch.
+    pub fn legacy_argument(&self) -> String {
+        match self {
+            UseArgs::LegacyPositional(s) => s.clone(),
+            UseArgs::Named(_) => String::new(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct UseToolStep {
     pub tool_name: String,
-    pub argument: String,
+    pub args: UseArgs,
     pub loc: Loc,
 }
 #[derive(Debug)]

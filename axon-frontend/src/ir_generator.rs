@@ -513,7 +513,12 @@ impl IRGenerator {
                 source_line: s.loc.line,
                 source_column: s.loc.column,
                 tool_name: s.tool_name.clone(),
-                argument: s.argument.clone(),
+                // §Fase 58.b — `LegacyPositional` projects its string verbatim
+                // (D5, unchanged IR). `Named` args carry no single string; their
+                // structured IR lands in §58.c, so they project an empty
+                // argument here (the type-checker §58.d validates them from the
+                // AST, not the IR).
+                argument: s.args.legacy_argument(),
             }),
             FlowStep::Remember(s) => IRFlowNode::Remember(IRRememberStep {
                 node_type: "remember",
