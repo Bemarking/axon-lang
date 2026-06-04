@@ -43,8 +43,9 @@ fn use_tool_argument(src: &str) -> String {
         .iter()
         .find_map(|s| if let FlowStep::UseTool(u) = s { Some(u) } else { None })
         .expect("FlowStep::UseTool")
-        .argument
-        .clone()
+        // §58.b — the §54.b positional arg is now `UseArgs::LegacyPositional`.
+        .args
+        .legacy_argument()
 }
 
 const HEAD: &str = "axonendpoint E { method: POST path: \"/f\" execute: F }";
