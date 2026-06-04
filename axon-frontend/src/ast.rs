@@ -1113,6 +1113,18 @@ pub struct ToolDefinition {
     pub runtime: String,
     pub sandbox: Option<bool>,
     pub effects: Option<EffectRow>,
+    /// §Fase 58.a — the tool's typed INPUT SCHEMA (W2: the caller↔tool
+    /// contract). Each entry is a named, typed parameter that the canonical
+    /// `use Tool(k = v, …)` invocation binds against and the type-checker
+    /// validates the caller's args against (CT-2 caller blame, pre-HTTP).
+    /// Empty for a schema-less tool — the legacy single-`on <arg>` form still
+    /// applies (§58 D5 back-compat). Reuses `Parameter` (same `TypeExpr`
+    /// grammar as flow params).
+    pub parameters: Vec<Parameter>,
+    /// §Fase 58.a — the tool's declared OUTPUT type, so a tool-step's result
+    /// is referenceable as `${Step.output}` with a real type (§58 D8). Flat
+    /// string (mirrors step `output:`); `None` when undeclared.
+    pub output_type: Option<String>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
