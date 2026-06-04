@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing test-rot; see Cargo.toml [features].quarantined-rot
 //! §Fase 37.x.i — The pooler-coherent contract under a REAL
 //! transaction-mode pooler.
 //!
@@ -66,6 +65,13 @@ const T_UUID_3: &str = "ae5a3d34-9c26-6b9a-bf27-3f8f14e8e4c3";
 
 fn empty_bindings() -> std::collections::HashMap<String, String> {
     std::collections::HashMap::new()
+}
+
+/// §Fase 37.x.j — legacy pool-backed connection source. These pooler
+/// integration tests exercise the non-pinned op path against whatever
+/// session topology the env-var DSN provides.
+fn sc(backend: &PostgresStoreBackend) -> axon::store::store_conn::StoreConn<'_> {
+    axon::store::store_conn::StoreConn::pool(backend.pool())
 }
 
 // ── Harness ─────────────────────────────────────────────────────────
@@ -178,6 +184,7 @@ async fn t1_smoke15_uuid_pk_in_non_default_schema_canonical_agent_flow() {
     // — Step 1: PERSIST the row (the agent's first state-write). —
     let inserted = backend
         .insert(
+            &mut sc(&backend),
             table,
             &[
                 ("tenant_id".to_string(), SqlValue::Text(T_UUID_1.to_string())),
@@ -201,6 +208,7 @@ async fn t1_smoke15_uuid_pk_in_non_default_schema_canonical_agent_flow() {
     for attempt in 1..=3 {
         let rows = backend
             .query(
+                &mut sc(&backend),
                 table,
                 &format!("tenant_id = '{T_UUID_1}'"),
                 &empty_bindings(),
@@ -265,6 +273,7 @@ async fn t2_pool_churn_two_tables_twenty_ops_all_succeed() {
     for (table, uuid) in [("alpha", T_UUID_1), ("beta", T_UUID_2)] {
         backend
             .insert(
+                &mut sc(&backend),
                 table,
                 &[
                     ("id".to_string(), SqlValue::Text(uuid.to_string())),
@@ -288,6 +297,7 @@ async fn t2_pool_churn_two_tables_twenty_ops_all_succeed() {
         };
         let rows = backend
             .query(
+                &mut sc(&backend),
                 table,
                 &format!("id = '{uuid}'"),
                 &empty_bindings(),
@@ -338,6 +348,7 @@ async fn t3_forced_cache_miss_introspect_and_operate_pin_one_backend() {
     // Seed one row.
     backend
         .insert(
+            &mut sc(&backend),
             table,
             &[
                 ("event_id".to_string(), SqlValue::Text(T_UUID_1.to_string())),
@@ -376,6 +387,7 @@ async fn t3_forced_cache_miss_introspect_and_operate_pin_one_backend() {
             .expect("t3: each DSN variant must parse");
         let rows = fresh_backend
             .query(
+                &mut sc(&fresh_backend),
                 table,
                 &format!("event_id = '{T_UUID_1}'"),
                 &empty_bindings(),
@@ -425,6 +437,7 @@ async fn t4_d9_self_heal_after_alter_table_under_pooler() {
     // Seed + first retrieve — populates the schema cache.
     backend
         .insert(
+            &mut sc(&backend),
             table,
             &[
                 ("probe".to_string(), SqlValue::Text(T_UUID_3.to_string())),
@@ -435,6 +448,7 @@ async fn t4_d9_self_heal_after_alter_table_under_pooler() {
         .expect("t4 seed");
     backend
         .query(
+            &mut sc(&backend),
             table,
             &format!("probe = '{T_UUID_3}'"),
             &empty_bindings(),
@@ -459,6 +473,7 @@ async fn t4_d9_self_heal_after_alter_table_under_pooler() {
     // `probe text`, the retry runs `"col"::text = $N` and succeeds.
     let rows = backend
         .query(
+            &mut sc(&backend),
             table,
             &format!("probe = '{T_UUID_3}'"),
             &empty_bindings(),
@@ -544,6 +559,7 @@ async fn t5_sequential_transactions_across_pooled_connections() {
         let row_id = format!("11111111-2222-3333-4444-{:012}", n);
         let result = backend
             .insert(
+                &mut sc(&backend),
                 &qualified,
                 &[
                     ("id".to_string(), SqlValue::Text(row_id.clone())),
@@ -570,6 +586,7 @@ async fn t5_sequential_transactions_across_pooled_connections() {
         // Round-trip retrieve to also exercise the read tx path.
         let rows = backend
             .query(
+                &mut sc(&backend),
                 &qualified,
                 "id = ${id}",
                 &std::collections::HashMap::from([("id".to_string(), row_id.clone())]),

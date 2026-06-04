@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 36.g (D7) — server default backend.
 //!
 //! Rung 3 of the Backend Resolution Contract: `axon serve --backend
@@ -142,12 +141,12 @@ async fn s4_server_default_feeds_rung_3_over_the_registry() {
 
     let json = hit_json(&app, "/chat").await;
     assert_eq!(
-        json["backend"], "stub",
+        json["execution_metrics"]["backend"], "stub",
         "36.g D7: an undeclared route must resolve to the server \
          default `stub` (rung 3) — outranking the `anthropic` registry \
          entry (rung 4a). Body: {json}"
     );
-    assert_eq!(json["success"], true);
+    assert!(json["step_audit"]["steps_executed"].as_u64().unwrap_or(0) >= 1);
 }
 
 // ─── §5 — the route declaration (rung 2) outranks the server default
@@ -168,11 +167,11 @@ async fn s5_route_declaration_outranks_server_default() {
 
     let json = hit_json(&app, "/chat").await;
     assert_eq!(
-        json["backend"], "stub",
+        json["execution_metrics"]["backend"], "stub",
         "36.g D7: the route's declared `backend: stub` (rung 2) must \
          outrank the server default `openai` (rung 3). Body: {json}"
     );
-    assert_eq!(json["success"], true);
+    assert!(json["step_audit"]["steps_executed"].as_u64().unwrap_or(0) >= 1);
 }
 
 // ─── §6 — no server default: undeclared route still dispatches ─────
@@ -189,6 +188,6 @@ async fn s6_no_server_default_undeclared_route_still_dispatches() {
     )
     .await;
     let json = hit_json(&app, "/plain").await;
-    assert_eq!(json["backend"], "stub");
-    assert_eq!(json["success"], true);
+    assert_eq!(json["execution_metrics"]["backend"], "stub");
+    assert!(json["step_audit"]["steps_executed"].as_u64().unwrap_or(0) >= 1);
 }

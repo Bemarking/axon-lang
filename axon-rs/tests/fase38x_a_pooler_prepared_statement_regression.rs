@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 38.x.a — Pooler-coherent Transactions Contract — diagnostic anchor.
 //!
 //! Pins the regression the kivi adopter reported on 2026-05-20 (smoke 16,
@@ -133,13 +132,22 @@ fn s2_d3_observability_no_silent_swallows() {
         silent_swallows
     );
 
-    let warn_sites = grep_store_lines("d_letter = \"D3+38.x.a\"");
+    // §Fase 37.x.j.11/.12 superseded the original §38.x.a `d_letter =
+    // "D3+38.x.a"` swallow-and-warn sites with a STRONGER pattern:
+    // rollback the introspect-in-tx transaction and propagate the
+    // primary error directly (no bare-table cascade). The observability
+    // invariant is unchanged — one structured `tracing::warn!` per
+    // introspection-failure path (query / persist / mutate / purge /
+    // row_stream) — only the `d_letter` label tracks the superseding
+    // sub-fase (`37.x.j.11` for the 4 backend ops, `37.x.j.12` for the
+    // stream cursor).
+    let warn_sites = grep_store_lines("d_letter = \"37.x.j.1");
     assert!(
         warn_sites.len() >= 5,
-        "v1.38.1 must emit at least 5 structured `tracing::warn!` sites \
-         carrying `d_letter = \"D3+38.x.a\"` (one per silent-swallow path \
-         replaced: query / persist / mutate / purge / row_stream). \
-         Found: {} sites at:\n{:#?}",
+        "v1.38.1+ must emit at least 5 structured `tracing::warn!` sites \
+         carrying a `d_letter = \"37.x.j.1…\"` label (one per \
+         introspection-failure path replaced: query / persist / mutate / \
+         purge / row_stream). Found: {} sites at:\n{:#?}",
         warn_sites.len(),
         warn_sites
     );
@@ -155,13 +163,17 @@ fn s2_d3_observability_no_silent_swallows() {
 /// description of what fell through.
 #[test]
 fn s3_d3_invariant_warnings_carry_primary_error() {
-    let warn_sites_with_error_field = grep_store_lines("error = %e");
+    // §Fase 37.x.j.11/.12 — the superseding warn sites bind the primary
+    // error as `error = %introspect_err` (the introspection failure that
+    // is now rolled back + propagated, rather than swallowed). The
+    // invariant is identical: every D3 warn carries the primary error.
+    let warn_sites_with_error_field = grep_store_lines("error = %introspect_err");
     assert!(
         warn_sites_with_error_field.len() >= 5,
         "every D3 `tracing::warn!` must carry the primary error via \
-         `error = %e`. Found {} sites; expected ≥5. The adopter relies \
-         on this field to diagnose the root cause (e.g. `sqlx_s_N already \
-         exists`). Sites:\n{:#?}",
+         the `error = %…` field. Found {} sites; expected ≥5. The adopter \
+         relies on this field to diagnose the root cause (e.g. `sqlx_s_N \
+         already exists`). Sites:\n{:#?}",
         warn_sites_with_error_field.len(),
         warn_sites_with_error_field
     );

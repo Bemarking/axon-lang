@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing test-rot; see Cargo.toml [features].quarantined-rot
 //! §Fase 37.x.a — Diagnostic anchor for the Pooler-Coherent Store cycle.
 //!
 //! Pins the **post-1.36.5 broken state** of the `axonstore` Postgres
@@ -64,6 +63,12 @@ const ADOPTER_UUID: &str = "83d078e1-b372-42ba-9572-ff8dc521386e";
 /// An empty bindings / column-types map — the unknown-schema state.
 fn empty() -> HashMap<String, String> {
     HashMap::new()
+}
+
+/// §Fase 37.x.j — legacy pool-backed connection source for the
+/// backend ops exercised by the real-Postgres anchors (§3 + §4).
+fn sc(backend: &PostgresStoreBackend) -> axon::store::store_conn::StoreConn<'_> {
+    axon::store::store_conn::StoreConn::pool(backend.pool())
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -288,6 +293,7 @@ async fn s3_schema_cache_self_heals_after_a_live_alter_table() {
     // the typed-column filter works (`"probe" = $1::uuid`).
     backend
         .insert(
+            &mut sc(&backend),
             table,
             &[
                 ("probe".to_string(), SqlValue::Text(ADOPTER_UUID.to_string())),
@@ -297,7 +303,7 @@ async fn s3_schema_cache_self_heals_after_a_live_alter_table() {
         .await
         .expect("§3: seed insert");
     let before = backend
-        .query(table, &format!("probe = '{ADOPTER_UUID}'"), &empty())
+        .query(&mut sc(&backend), table, &format!("probe = '{ADOPTER_UUID}'"), &empty())
         .await;
     assert!(
         before.is_ok(),
@@ -319,7 +325,7 @@ async fn s3_schema_cache_self_heals_after_a_live_alter_table() {
     // `(dsn, table)` entry and retries once with fresh introspection
     // (`probe` is now `text`) → the retry succeeds.
     let after = backend
-        .query(table, &format!("probe = '{ADOPTER_UUID}'"), &empty())
+        .query(&mut sc(&backend), table, &format!("probe = '{ADOPTER_UUID}'"), &empty())
         .await;
     eprintln!(
         "§3 (37.x.f — D9 self-healing schema cache):\n\
@@ -404,7 +410,7 @@ async fn s4_multi_schema_table_resolves_silently_by_search_path_order() {
     // An unqualified `retrieve` resolves SILENTLY to the first schema on
     // the `search_path` — no ambiguity signal, no diagnostic.
     let rows = backend
-        .query(table, "", &empty())
+        .query(&mut sc(&backend), table, "", &empty())
         .await
         .expect("§4: the unqualified retrieve resolves");
     let picked = rows.first().and_then(|r| r.get("which")).cloned();

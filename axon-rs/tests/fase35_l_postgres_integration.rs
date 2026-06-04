@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing test-rot; see Cargo.toml [features].quarantined-rot
 //! §Fase 35.l — Real-Postgres integration tests (D14, the robustness
 //! floor).
 //!
@@ -43,6 +42,14 @@ use axon::stream_effect::BackpressurePolicy;
 /// only literal `where` clauses (no `${name}` placeholders).
 fn nb() -> std::collections::HashMap<String, String> {
     std::collections::HashMap::new()
+}
+
+/// §Fase 37.x.j — legacy pool-backed connection source for the
+/// backend ops. The integration tests exercise the v1.38.5 (and
+/// earlier) non-pinned path; every op acquires a fresh logical
+/// connection from the pool.
+fn sc(backend: &PostgresStoreBackend) -> axon::store::store_conn::StoreConn<'_> {
+    axon::store::store_conn::StoreConn::pool(backend.pool())
 }
 
 // ── Harness ─────────────────────────────────────────────────────────
@@ -118,6 +125,7 @@ async fn t1_substrate_insert_then_query_round_trip() {
 
     let inserted = backend
         .insert(
+            &mut sc(&backend),
             table,
             &[
                 ("id".into(), SqlValue::Integer(7)),
@@ -129,7 +137,7 @@ async fn t1_substrate_insert_then_query_round_trip() {
         .expect("insert");
     assert_eq!(inserted, 1, "one row persisted");
 
-    let rows = backend.query(table, "id = 7", &nb()).await.expect("query");
+    let rows = backend.query(&mut sc(&backend), table, "id = 7", &nb()).await.expect("query");
     assert_eq!(rows.len(), 1, "the persisted row is retrievable");
     assert_eq!(rows[0].get("name"), Some(&serde_json::json!("alice")));
     assert_eq!(rows[0].get("active"), Some(&serde_json::json!(true)));
@@ -143,17 +151,17 @@ async fn t2_substrate_mutate_updates_real_rows() {
     let table = "fase35l_t2_mutate";
     fresh_table(&backend, table, "id INTEGER, status TEXT").await;
     backend
-        .insert(table, &[("id".into(), SqlValue::Integer(1)), ("status".into(), text("draft"))])
+        .insert(&mut sc(&backend), table, &[("id".into(), SqlValue::Integer(1)), ("status".into(), text("draft"))])
         .await
         .expect("seed");
 
     let affected = backend
-        .mutate(table, "id = 1", &[("status".into(), text("published"))], &nb())
+        .mutate(&mut sc(&backend), table, "id = 1", &[("status".into(), text("published"))], &nb())
         .await
         .expect("mutate");
     assert_eq!(affected, 1);
 
-    let rows = backend.query(table, "id = 1", &nb()).await.expect("query");
+    let rows = backend.query(&mut sc(&backend), table, "id = 1", &nb()).await.expect("query");
     assert_eq!(rows[0].get("status"), Some(&serde_json::json!("published")));
 
     drop_table(&backend, table).await;
@@ -166,14 +174,14 @@ async fn t3_substrate_purge_deletes_real_rows() {
     fresh_table(&backend, table, "id INTEGER").await;
     for i in 1..=5 {
         backend
-            .insert(table, &[("id".into(), SqlValue::Integer(i))])
+            .insert(&mut sc(&backend), table, &[("id".into(), SqlValue::Integer(i))])
             .await
             .expect("seed");
     }
 
-    let purged = backend.purge(table, "id <= 3", &nb()).await.expect("purge");
+    let purged = backend.purge(&mut sc(&backend), table, "id <= 3", &nb()).await.expect("purge");
     assert_eq!(purged, 3, "three rows deleted");
-    let survivors = backend.query(table, "", &nb()).await.expect("query");
+    let survivors = backend.query(&mut sc(&backend), table, "", &nb()).await.expect("query");
     assert_eq!(survivors.len(), 2, "two rows survive");
 
     drop_table(&backend, table).await;
@@ -200,7 +208,7 @@ async fn t4_pillar_i_confidence_floor_filters_real_rows() {
     }
 
     let outcome =
-        stream_retrieve(&backend, table, "", BackpressurePolicy::DegradeQuality, 1000, &CancellationFlag::new(), &nb())
+        stream_retrieve(&backend, &mut sc(&backend), table, "", BackpressurePolicy::DegradeQuality, 1000, &CancellationFlag::new(), &nb())
             .await
             .expect("stream_retrieve");
     assert_eq!(outcome.rows.len(), 5, "all five rows off the cursor");
@@ -237,7 +245,7 @@ async fn t5_pillar_iii_drop_oldest_bounds_a_real_cursor() {
     seed_n(&backend, table, 50).await;
 
     let outcome = stream_retrieve(
-        &backend, table, "", BackpressurePolicy::DropOldest, 10, &CancellationFlag::new(),
+        &backend, &mut sc(&backend), table, "", BackpressurePolicy::DropOldest, 10, &CancellationFlag::new(),
         &nb(),
     )
     .await
@@ -256,7 +264,7 @@ async fn t6_pillar_iii_pause_upstream_truncates_a_real_cursor() {
     seed_n(&backend, table, 50).await;
 
     let outcome = stream_retrieve(
-        &backend, table, "", BackpressurePolicy::PauseUpstream, 10, &CancellationFlag::new(),
+        &backend, &mut sc(&backend), table, "", BackpressurePolicy::PauseUpstream, 10, &CancellationFlag::new(),
         &nb(),
     )
     .await
@@ -274,7 +282,7 @@ async fn t7_pillar_iii_fail_errors_past_the_bound() {
     seed_n(&backend, table, 50).await;
 
     let result = stream_retrieve(
-        &backend, table, "", BackpressurePolicy::Fail, 10, &CancellationFlag::new(),
+        &backend, &mut sc(&backend), table, "", BackpressurePolicy::Fail, 10, &CancellationFlag::new(),
         &nb(),
     )
     .await;
@@ -292,7 +300,7 @@ async fn t8_pillar_iii_cancel_stops_the_real_drain() {
     let cancel = CancellationFlag::new();
     cancel.cancel(); // pre-cancelled
     let outcome = stream_retrieve(
-        &backend, table, "", BackpressurePolicy::DegradeQuality, 1000, &cancel,
+        &backend, &mut sc(&backend), table, "", BackpressurePolicy::DegradeQuality, 1000, &cancel,
         &nb(),
     )
     .await
@@ -327,7 +335,7 @@ async fn t9_type_mapping_is_json_safe_for_every_supported_type() {
     )
     .await;
 
-    let rows = backend.query(table, "", &nb()).await.expect("query");
+    let rows = backend.query(&mut sc(&backend), table, "", &nb()).await.expect("query");
     assert_eq!(rows.len(), 1);
     let r = &rows[0];
     // The kivi-reported Python pain — UUID / TIMESTAMPTZ / NUMERIC are
@@ -358,18 +366,18 @@ async fn t10_pillar_ii_audit_chain_records_real_mutations() {
     let mut chain = StoreAuditChain::new();
 
     let n = backend
-        .insert(table, &[("id".into(), SqlValue::Integer(1)), ("v".into(), text("a"))])
+        .insert(&mut sc(&backend), table, &[("id".into(), SqlValue::Integer(1)), ("v".into(), text("a"))])
         .await
         .expect("insert");
     chain.record(StoreMutationKind::Persist, table, &format!("{n} row(s)"));
 
     let n = backend
-        .mutate(table, "id = 1", &[("v".into(), text("b"))], &nb())
+        .mutate(&mut sc(&backend), table, "id = 1", &[("v".into(), text("b"))], &nb())
         .await
         .expect("mutate");
     chain.record(StoreMutationKind::Mutate, table, &format!("{n} row(s)"));
 
-    let n = backend.purge(table, "id = 1", &nb()).await.expect("purge");
+    let n = backend.purge(&mut sc(&backend), table, "id = 1", &nb()).await.expect("purge");
     chain.record(StoreMutationKind::Purge, table, &format!("{n} row(s)"));
 
     // The mutation history of three REAL operations verifies Intact.
@@ -438,7 +446,7 @@ async fn t12_d4_a_malicious_where_value_cannot_drop_a_real_table() {
     let table = "fase35l_t12_injection";
     fresh_table(&backend, table, "id INTEGER, name TEXT").await;
     backend
-        .insert(table, &[("id".into(), SqlValue::Integer(1)), ("name".into(), text("safe"))])
+        .insert(&mut sc(&backend), table, &[("id".into(), SqlValue::Integer(1)), ("name".into(), text("safe"))])
         .await
         .expect("seed");
 
@@ -446,11 +454,11 @@ async fn t12_d4_a_malicious_where_value_cannot_drop_a_real_table() {
     // build_pg_where parameterizes it — Postgres treats it as a literal
     // string to compare, NOT as SQL. The table survives.
     let malicious = format!("name = '; DROP TABLE {table}; --'");
-    let rows = backend.query(table, &malicious, &nb()).await.expect("query runs");
+    let rows = backend.query(&mut sc(&backend), table, &malicious, &nb()).await.expect("query runs");
     assert!(rows.is_empty(), "no row literally named the payload");
 
     // The table is still here — the injection was inert.
-    let survivors = backend.query(table, "", &nb()).await.expect("table intact");
+    let survivors = backend.query(&mut sc(&backend), table, "", &nb()).await.expect("table intact");
     assert_eq!(survivors.len(), 1, "the injection did NOT drop the table");
 
     drop_table(&backend, table).await;
@@ -476,6 +484,7 @@ async fn t13_typed_column_write_and_read_round_trip() {
     // type text`.
     backend
         .insert(
+            &mut sc(&backend),
             table,
             &[
                 ("tid".into(), text(uuid)),
@@ -489,7 +498,7 @@ async fn t13_typed_column_write_and_read_round_trip() {
     // §1.36.1 — `retrieve` filtering on the `uuid` column: the column
     // is cast to text in the `where` clause, the text value matches.
     let rows = backend
-        .query(table, &format!("tid = '{uuid}'"), &nb())
+        .query(&mut sc(&backend), table, &format!("tid = '{uuid}'"), &nb())
         .await
         .expect("retrieve by uuid");
     assert_eq!(rows.len(), 1, "the row written to the uuid column round-trips");
@@ -497,6 +506,7 @@ async fn t13_typed_column_write_and_read_round_trip() {
     // §v1.36.2 — `mutate` the `integer` column: the SET value is cast.
     let updated = backend
         .mutate(
+            &mut sc(&backend),
             table,
             &format!("tid = '{uuid}'"),
             &[("n".into(), text("99"))],
@@ -584,6 +594,7 @@ async fn t14_introspection_resolves_a_table_outside_current_schema() {
     // the legacy schema and casts `$N::uuid` / `$N::text`.
     backend
         .insert(
+            &mut sc(&backend),
             table,
             &[("tid".into(), text(uuid)), ("label".into(), text("probe"))],
         )
@@ -593,7 +604,7 @@ async fn t14_introspection_resolves_a_table_outside_current_schema() {
     // retrieve filtering on the `uuid` column — pre-v1.36.5 this is the
     // adopter's exact failure (`operator does not exist: uuid = text`).
     let rows = backend
-        .query(table, &format!("tid = '{uuid}'"), &nb())
+        .query(&mut sc(&backend), table, &format!("tid = '{uuid}'"), &nb())
         .await
         .expect(
             "§v1.36.5 — retrieve resolves a uuid column outside current_schema()",
@@ -623,6 +634,7 @@ async fn t15_coherent_session_miss_then_hit() {
     // First op — a cache MISS: resolve + INSERT in one transaction.
     let inserted = backend
         .insert(
+            &mut sc(&backend),
             table,
             &[
                 ("id".into(), SqlValue::Integer(1)),
@@ -636,7 +648,7 @@ async fn t15_coherent_session_miss_then_hit() {
     // Second op — a cache HIT: runs without a transaction, and SEES the
     // miss-path write (it was committed when the miss-path txn closed).
     let rows = backend
-        .query(table, "id = 1", &nb())
+        .query(&mut sc(&backend), table, "id = 1", &nb())
         .await
         .expect("§37.x.d — the hit-path query needs no transaction");
     assert_eq!(
@@ -648,11 +660,11 @@ async fn t15_coherent_session_miss_then_hit() {
 
     // A third op — still a HIT — mutates; the result is correct.
     let updated = backend
-        .mutate(table, "id = 1", &[("label".into(), text("hit"))], &nb())
+        .mutate(&mut sc(&backend), table, "id = 1", &[("label".into(), text("hit"))], &nb())
         .await
         .expect("§37.x.d — the hit-path mutate");
     assert_eq!(updated, 1);
-    let rows = backend.query(table, "id = 1", &nb()).await.expect("query");
+    let rows = backend.query(&mut sc(&backend), table, "id = 1", &nb()).await.expect("query");
     assert_eq!(rows[0].get("label"), Some(&serde_json::json!("hit")));
 
     drop_table(&backend, table).await;
@@ -676,7 +688,7 @@ async fn t16_d9_write_self_heals_without_double_writing() {
 
     // First write — a cache MISS — caches `{id: int4}`.
     backend
-        .insert(table, &[("id".into(), SqlValue::Integer(1))])
+        .insert(&mut sc(&backend), table, &[("id".into(), SqlValue::Integer(1))])
         .await
         .expect("§37.x.f — the seed insert");
 
@@ -692,7 +704,7 @@ async fn t16_d9_write_self_heals_without_double_writing() {
     // into the now-`text` column → SQLSTATE 42804 → D9 evicts + retries
     // once with fresh introspection (`id` is now `text`) → succeeds.
     let inserted = backend
-        .insert(table, &[("id".into(), text("3"))])
+        .insert(&mut sc(&backend), table, &[("id".into(), text("3"))])
         .await
         .expect("§37.x.f (D9) — the write SELF-HEALS after the drift");
     assert_eq!(inserted, 1, "the self-healed insert reports one row");
@@ -700,7 +712,7 @@ async fn t16_d9_write_self_heals_without_double_writing() {
     // The retry-safety proof: the drifted first attempt wrote ZERO rows
     // (a parse/plan-time rejection), so the table holds EXACTLY the
     // seed row + the one self-healed row — no double-write.
-    let rows = backend.query(table, "", &nb()).await.expect("count");
+    let rows = backend.query(&mut sc(&backend), table, "", &nb()).await.expect("count");
     assert_eq!(
         rows.len(),
         2,

@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 36.l (D12) — real-backend end-to-end capstone.
 //!
 //! The gap report's exact shape: deploy an `axonendpoint`, hit it
@@ -122,9 +121,10 @@ async fn s1_full_chain_deploy_resolve_route_execute_observe() {
     let json: serde_json::Value = serde_json::from_slice(&h.body).unwrap();
     // D11 — a REAL step ran (the gap report's `steps_executed: 0` is
     // structurally inverted).
-    assert_eq!(json["success"], true, "Body: {json}");
+    // v2.0.0 FlowEnvelope wire: no top-level `success`; a real step ran
+    // is observable via step_audit.steps_executed.
     assert!(
-        json["steps_executed"].as_u64().unwrap_or(0) >= 1,
+        json["step_audit"]["steps_executed"].as_u64().unwrap_or(0) >= 1,
         "36.l D11: the deployed endpoint runs a real step. Body: {json}"
     );
     // D8 — resolution observability in the body.

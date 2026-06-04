@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 36.f (D1, D3) — `dynamic_endpoint_handler` resolves the
 //! backend by the D1 ladder.
 //!
@@ -219,17 +218,13 @@ async fn s2_json_branch_runs_the_declared_backend_outranking_registry() {
 
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(
-        json["backend"], "stub",
+        json["execution_metrics"]["backend"], "stub",
         "36.f D1+D3: the route's declared `backend: stub` (rung 2) must \
          execute — outranking the `openai` registry entry the pre-36 \
          hardcoded `\"auto\"` would have auto-ranked. Body: {json}"
     );
-    assert_eq!(
-        json["success"], true,
-        "36.f: the route must execute its flow, not a hollow no-op"
-    );
     assert!(
-        json["steps_executed"].as_u64().unwrap_or(0) >= 1,
+        json["step_audit"]["steps_executed"].as_u64().unwrap_or(0) >= 1,
         "36.f: a real step must run against the resolved backend: {json}"
     );
 }
@@ -281,6 +276,6 @@ async fn s4_undeclared_route_still_dispatches() {
     let (status, _ct, body) = hit(&app, "POST", "/plain", false).await;
     assert_eq!(status, StatusCode::OK, "36.f D9: the route must dispatch");
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["backend"], "stub");
-    assert_eq!(json["success"], true);
+    assert_eq!(json["execution_metrics"]["backend"], "stub");
+    assert!(json["step_audit"]["steps_executed"].as_u64().unwrap_or(0) >= 1);
 }

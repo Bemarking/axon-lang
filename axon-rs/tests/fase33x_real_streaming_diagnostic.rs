@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 33.x diagnostic anchor — capture the v1.24.0 production-path
 //! SSE wire shape that the Fase 33.x cycle rewrites end-to-end.
 //!
@@ -378,11 +377,11 @@ async fn d2_post_33_x_d_stream_policies_and_enforcement_summary_both_present() {
         .get("Generate")
         .expect("summary keyed by step_name 'Generate'");
     assert_eq!(generate_summary["policy_slug"], "drop_oldest");
-    // For the stub backend (1-chunk stream), the enforcer pushed
-    // exactly the chunks it received from the source and the
-    // consumer drained all of them — no policy fired.
-    assert_eq!(generate_summary["chunks_pushed"].as_u64(), Some(1));
-    assert_eq!(generate_summary["chunks_delivered"].as_u64(), Some(1));
+    // For the stub stream-producer tool, the enforcer pushed exactly
+    // the chunks it received from the source and the consumer drained
+    // all of them — no policy fired.
+    assert_eq!(generate_summary["chunks_pushed"].as_u64(), Some(4));
+    assert_eq!(generate_summary["chunks_delivered"].as_u64(), Some(4));
     assert_eq!(generate_summary["drop_oldest_hits"].as_u64(), Some(0));
     assert_eq!(generate_summary["degrade_quality_hits"].as_u64(), Some(0));
     assert_eq!(generate_summary["pause_upstream_blocks"].as_u64(), Some(0));
@@ -530,7 +529,7 @@ async fn d6_post_33_x_f_replay_returns_step_audit_for_sse_flow() {
     let entry = &step_audit[0];
     assert_eq!(entry["step_name"], "Generate");
     assert_eq!(entry["step_index"].as_u64(), Some(0));
-    assert_eq!(entry["tokens_emitted"].as_u64(), Some(1));
+    assert_eq!(entry["tokens_emitted"].as_u64(), Some(3));
     // The declared `<stream:drop_oldest>` effect surfaces in the
     // audit record's `effect_policy_applied` field.
     assert_eq!(entry["effect_policy_applied"], "drop_oldest");

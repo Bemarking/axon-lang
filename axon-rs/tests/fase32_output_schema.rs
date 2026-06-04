@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 32.d — Output schema validation gate end-to-end tests.
 //!
 //! D5 ratificada 2026-05-11. Verifies the response-side schema
@@ -151,8 +150,13 @@ async fn output_string_rejects_object_response_with_owasp_500() {
     // string. The validator catches the mismatch and the gate fires
     // a generic 500 with NO schema details exposed.
     let app = build_router(server_cfg());
-    let src = "flow Ping() -> String { let result = \"pong\" return result }\n\
-               axonendpoint Wrong { method: POST path: \"/wrong\" execute: Ping output: String }";
+    // v2.0.0 wire contract: json transport requires `FlowEnvelope<T>`.
+    // The flow declares `-> Integer` (so the endpoint compiles), but the
+    // stub runtime always emits `result: "(stub)"` (a STRING) — so the
+    // envelope's `result` slot fails to validate against the inner
+    // `Integer`, firing the D5 output-schema gate exactly as before.
+    let src = "flow Ping() -> Integer { let result = 1 return result }\n\
+               axonendpoint Wrong { method: POST path: \"/wrong\" execute: Ping output: FlowEnvelope<Integer> }";
     deploy(app.clone(), src).await;
 
     let resp = app.oneshot(post_to("/wrong")).await.expect("request");
@@ -187,8 +191,11 @@ async fn output_string_rejects_object_response_with_owasp_500() {
 #[tokio::test]
 async fn output_schema_violation_recorded_in_audit_log_with_full_diagnostic() {
     let app = build_router(server_cfg());
-    let src = "flow Ping() -> String { let result = \"pong\" return result }\n\
-               axonendpoint Wrong { method: POST path: \"/wrong-audit\" execute: Ping output: String }";
+    // See `output_string_rejects_object_response_with_owasp_500` — the
+    // flow returns `Integer` but the stub emits a STRING `result`, so the
+    // `FlowEnvelope<Integer>` inner-T validation fails at the D5 gate.
+    let src = "flow Ping() -> Integer { let result = 1 return result }\n\
+               axonendpoint Wrong { method: POST path: \"/wrong-audit\" execute: Ping output: FlowEnvelope<Integer> }";
     deploy(app.clone(), src).await;
 
     // Get the audit log starting size so we can find OUR entry.
@@ -319,8 +326,11 @@ async fn unknown_path_404_passes_through_not_500_validation_error() {
 #[tokio::test]
 async fn trace_id_in_500_envelope_is_uuid_v4_shape() {
     let app = build_router(server_cfg());
-    let src = "flow Ping() -> String { let result = \"pong\" return result }\n\
-               axonendpoint Wrong { method: POST path: \"/wrong-uuid\" execute: Ping output: String }";
+    // See `output_string_rejects_object_response_with_owasp_500` — the
+    // flow returns `Integer` but the stub emits a STRING `result`, so the
+    // `FlowEnvelope<Integer>` inner-T validation fails at the D5 gate.
+    let src = "flow Ping() -> Integer { let result = 1 return result }\n\
+               axonendpoint Wrong { method: POST path: \"/wrong-uuid\" execute: Ping output: FlowEnvelope<Integer> }";
     deploy(app.clone(), src).await;
 
     let resp = app.oneshot(post_to("/wrong-uuid")).await.expect("request");

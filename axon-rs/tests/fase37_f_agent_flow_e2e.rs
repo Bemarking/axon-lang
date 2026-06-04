@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing runtime test-rot (axon-E039 v2.0.0 / stale goldens); see Cargo.toml [features].quarantined-rot
 //! §Fase 37.f (D1, D3, D5) — the Request Binding Contract end-to-end
 //! on the canonical agent flow.
 //!
@@ -175,11 +174,16 @@ async fn s2_body_param_round_trips_through_the_store() {
 #[tokio::test]
 async fn s3_errored_agent_flow_names_why_on_the_wire() {
     let app = build_router(server_cfg());
-    // A `sqlite` store has no runtime backend → the flow errors at
-    // registry build. Even with the body bound, the wire must say WHY.
+    // A `postgresql` store pointed at a dead port deploys (lazy build)
+    // then errors mid-walk at the `retrieve` node when the connection
+    // is refused. Even with the body bound, the wire must say WHY.
+    // (§Fase 35.f closed the axonstore catalog to `{in_memory,
+    // postgresql}`; `sqlite` — the pre-§35.f vehicle — is now rejected
+    // at DEPLOY time, so the route would never mount.)
     let src = format!(
         "type ErrBody {{ tenant_id: String }}\n\
-         axonstore bad {{ backend: sqlite connection: \"x\" }}\n\
+         axonstore bad {{ backend: postgresql \
+             connection: \"postgres://127.0.0.1:1/axon_37f_dead\" }}\n\
          {ECHO_TOOL}\
          flow ErrAgent(tenant_id: String) -> Unit {{\n\
              retrieve bad {{ where: \"ctx\" as: r }}\n\
@@ -193,10 +197,10 @@ async fn s3_errored_agent_flow_names_why_on_the_wire() {
     let wire = hit_sse(&app, "/erragent", r#"{"tenant_id":"TEN_F3"}"#).await;
 
     assert!(
-        wire.contains("axon.error") && wire.contains("axonstore registry"),
+        wire.contains("axon.error") && wire.contains("failed at retrieve from 'bad'"),
         "§37.f D6 — an agent flow that errors emits an honest \
-         `axon.error` naming the cause, not a hollow terminator. \
-         Wire:\n{wire}"
+         `axon.error` naming the cause (the failing node), not a \
+         hollow terminator. Wire:\n{wire}"
     );
     assert!(
         !wire.contains("axon.complete"),
@@ -223,15 +227,18 @@ async fn s4_agent_flow_runs_on_the_json_transport() {
 
     let resp = hit_json(&app, "/jsonagent", r#"{"topic":"TOPIC_F4"}"#).await;
 
+    // §Fase 39.b — the JSON transport returns a FlowEnvelope: no
+    // top-level `success`; the step trail lives under `step_audit`. A
+    // clean execution carries `errors: 0`.
     assert_eq!(
-        resp.get("success").and_then(|v| v.as_bool()),
-        Some(true),
+        resp.pointer("/step_audit/errors").and_then(|v| v.as_u64()),
+        Some(0),
         "§37.f D1 — the agent flow runs through the synchronous JSON \
-         transport with the request body threaded + bound. \
-         Response: {resp}"
+         transport with the request body threaded + bound (FlowEnvelope, \
+         errors:0). Response: {resp}"
     );
     assert_eq!(
-        resp.get("steps_executed").and_then(|v| v.as_u64()),
+        resp.pointer("/step_audit/steps_executed").and_then(|v| v.as_u64()),
         Some(3),
         "§37.f — all three nodes (retrieve, step, persist) executed. \
          Response: {resp}"

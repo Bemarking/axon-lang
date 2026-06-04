@@ -312,7 +312,6 @@ async fn stream_effect_flow_without_accept_stays_json() {
 // ──────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
-#[ignore = "INFRA-DEBT: pre-existing test-rot — asserts a top-level `success` field, but the v2.0.0 wire (Fase 39) returns a FlowEnvelope ψ-vector with no `success`; [INFRA-DEBT] Arity Drift + Test-Rot ticket"]
 async fn v1_20_0_client_no_accept_header_gets_json_verbatim() {
     let app = build_router(server_cfg());
     let app = deploy(app, "flow F() { step S { ask: \"hi\" } }\n").await;
@@ -323,7 +322,10 @@ async fn v1_20_0_client_no_accept_header_gets_json_verbatim() {
     assert_eq!(status, StatusCode::OK);
     assert!(ct.starts_with("application/json"));
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(json.get("success").is_some());
+    // v2.0.0 wire (Fase 39): the no-Accept client gets a valid JSON
+    // FlowEnvelope body (ψ-vector), which carries `trace_id` rather than
+    // the legacy top-level `success` flag.
+    assert!(json.get("trace_id").is_some());
 }
 
 #[tokio::test]

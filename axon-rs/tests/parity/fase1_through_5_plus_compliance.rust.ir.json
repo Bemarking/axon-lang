@@ -86,8 +86,8 @@
           "node_type": "parameter",
           "source_line": 20,
           "source_column": 22,
-          "name": "r",
-          "type_name": "PatientRecord",
+          "name": "id",
+          "type_name": "String",
           "generic_param": "",
           "optional": false
         }
@@ -222,7 +222,7 @@
       "path": "/patients",
       "body_type": "PatientRecord",
       "execute_flow": "SummarizeRecord",
-      "output_type": "PatientRecord",
+      "output_type": "FlowEnvelope<PatientRecord>",
       "shield_ref": "PHIShield",
       "retries": 0,
       "timeout": "",
@@ -584,5 +584,6 @@
     }
   ],
   "channels": [],
+  "sockets": [],
   "effects": []
 }

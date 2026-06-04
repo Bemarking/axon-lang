@@ -1,4 +1,3 @@
-#![cfg(feature = "quarantined-rot")] // INFRA-DEBT gate (§55.d) — pre-existing test-rot; see Cargo.toml [features].quarantined-rot
 //! §Fase 36.x.f (D1, D6) — exactly-one-terminator property/fuzz pass.
 //!
 //! The streaming producer (`run_streaming_via_dispatcher`) must emit
@@ -133,6 +132,8 @@ async fn run_shape(
         Arc::new(Mutex::new(Vec::new())),
         None,
         None,
+        HashMap::new(),
+        HashMap::new(),
     )
     .await;
     let mut events = Vec::new();

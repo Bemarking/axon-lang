@@ -1107,7 +1107,6 @@ fn run_contract_analyzer_stub() {
 }
 
 #[test]
-#[ignore = "INFRA-DEBT: pre-existing test-rot; [INFRA-DEBT] Arity Drift + Test-Rot ticket"]
 fn run_contract_analyzer_with_trace() {
     // Full pipeline with trace
     let trace_path = "../examples/contract_analyzer.trace.json";
@@ -1130,7 +1129,7 @@ fn run_contract_analyzer_with_trace() {
         .expect("trace file should be written");
     let trace: serde_json::Value = serde_json::from_str(&trace_json)
         .expect("trace should be valid JSON");
-    assert!(trace["_meta"]["axon_version"].as_str().unwrap().starts_with("1."));
+    assert!(trace["_meta"]["axon_version"].as_str().unwrap().starts_with("2."));
     assert!(trace["events"].as_array().unwrap().len() >= 3); // unit_start + steps + unit_complete
 
     // Clean up
@@ -2933,7 +2932,6 @@ fn step_deps_builtin_vars_ignored() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "INFRA-DEBT: pre-existing test-rot (stale schema/version header); [INFRA-DEBT] Arity Drift + Test-Rot ticket"]
 fn plan_export_schema_header() {
     use axon::plan_export::*;
 
@@ -2949,7 +2947,7 @@ fn plan_export_schema_header() {
 
     assert_eq!(parsed["_schema"]["type"], "axon.plan");
     assert_eq!(parsed["_schema"]["version"], "1.0.0");
-    assert!(parsed["_schema"]["axon_version"].as_str().unwrap().starts_with("1."));
+    assert!(parsed["_schema"]["axon_version"].as_str().unwrap().starts_with("2."));
 }
 
 #[test]
@@ -3074,7 +3072,6 @@ fn run_export_plan_flag() {
 }
 
 #[test]
-#[ignore = "INFRA-DEBT: pre-existing test-rot (stale axon_version string); [INFRA-DEBT] Arity Drift + Test-Rot ticket"]
 fn execution_report_has_schema_header() {
     use axon::hooks::HookManager;
     use axon::output::{ReportBuilder, ExecutionReport};
@@ -3087,7 +3084,7 @@ fn execution_report_has_schema_header() {
 
     assert_eq!(parsed["_schema"]["type"], "axon.report");
     assert_eq!(parsed["_schema"]["version"], "1.0.0");
-    assert!(parsed["_schema"]["axon_version"].as_str().unwrap().starts_with("1."));
+    assert!(parsed["_schema"]["axon_version"].as_str().unwrap().starts_with("2."));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3402,7 +3399,6 @@ fn emcp_mcp_no_longer_falls_through() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[tokio::test]
-#[ignore = "INFRA-DEBT: pre-existing test-rot; [INFRA-DEBT] Arity Drift + Test-Rot ticket"]
 async fn server_health_endpoint() {
     use axon::axon_server::{build_router, ServerConfig};
     use axum::body::Body;
@@ -3436,7 +3432,7 @@ async fn server_health_endpoint() {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["status"], "healthy");
-    assert!(json["axon_version"].as_str().unwrap().starts_with("1."));
+    assert!(json["axon_version"].as_str().unwrap().starts_with("2."));
 }
 
 #[tokio::test]
@@ -28827,7 +28823,7 @@ fn fase4_nodes_prelude() -> &'static str {
             }
         }
         resource Db { kind: postgres }
-        axonendpoint Api { method: GET path: "/x" execute: Noop output: Data }
+        axonendpoint Api { method: GET path: "/x" execute: Noop output: FlowEnvelope<Data> }
     "#
 }
 
@@ -28891,7 +28887,6 @@ fn fase4_session_duality_message_type_mismatch_is_type_error() {
 }
 
 #[test]
-#[ignore = "INFRA-DEBT: pre-existing test-rot; [INFRA-DEBT] Arity Drift + Test-Rot ticket"]
 fn fase4_session_different_length_is_type_error() {
     let errors = type_check(r#"
         session S {
@@ -28900,7 +28895,8 @@ fn fase4_session_different_length_is_type_error() {
         }
     "#);
     assert!(
-        errors.iter().any(|e| e.message.contains("different lengths")),
+        errors.iter().any(|e| e.message.contains("duality violation")
+            && e.message.contains("expected the dual")),
         "got {errors:?}"
     );
 }
@@ -28926,7 +28922,6 @@ fn fase4_session_loop_and_end_are_dual() {
 }
 
 #[test]
-#[ignore = "INFRA-DEBT: pre-existing test-rot (axon-E039 bare output, v2.0.0 FlowEnvelope rule); [INFRA-DEBT] Arity Drift + Test-Rot ticket"]
 fn fase4_topology_minimal_compiles_clean() {
     let ir = compile_json(&format!(r#"{}
         session S {{
@@ -29384,7 +29379,6 @@ fn fase5_heal_max_patches_zero_is_type_error() {
 /// next to the Python golden so a byte-identical diff can be performed
 /// externally (CI, local `diff -u`). Produces `*.rust.ir.json`.
 #[test]
-#[ignore = "INFRA-DEBT: pre-existing test-rot (stale python IR golden); [INFRA-DEBT] Arity Drift + Test-Rot ticket"]
 fn parity_fase1_5_emit_rust_ir_for_diff() {
     use std::fs;
     use std::path::PathBuf;
@@ -29401,7 +29395,7 @@ fn parity_fase1_5_emit_rust_ir_for_diff() {
 }
 
 #[test]
-#[ignore = "INFRA-DEBT: pre-existing test-rot (stale python IR golden); [INFRA-DEBT] Arity Drift + Test-Rot ticket"]
+#[ignore = "INFRA-DEBT: stale Python IR golden — cross-stack parity check pending golden regen; see docs/INFRA_DEBT_arity_drift_test_rot.md"]
 fn parity_fase1_5_byte_identical_matches_python_golden() {
     // §8.2.h final gate — Rust IR JSON must match Python's reference
     // byte-for-byte (after line-ending normalisation, because Python's
@@ -29461,7 +29455,7 @@ fn parity_fase1_5_byte_identical_matches_python_golden() {
 }
 
 #[test]
-#[ignore = "INFRA-DEBT: pre-existing test-rot (stale python IR golden); [INFRA-DEBT] Arity Drift + Test-Rot ticket"]
+#[ignore = "INFRA-DEBT: stale Python IR golden — cross-stack parity check pending golden regen; see docs/INFRA_DEBT_arity_drift_test_rot.md"]
 fn parity_fase1_5_structural_matches_python_golden() {
     use std::fs;
     use std::path::PathBuf;
@@ -29612,12 +29606,11 @@ fn fase6_1_manifest_compliance_already_supported() {
 }
 
 #[test]
-#[ignore = "INFRA-DEBT: pre-existing test-rot (axon-E039 bare output, v2.0.0 FlowEnvelope rule); [INFRA-DEBT] Arity Drift + Test-Rot ticket"]
 fn fase6_1_axonendpoint_carries_compliance_into_ir() {
     let ir = compile_json(r#"
         type Req { q: String }
         type Rep { a: String }
-        flow Handle(r: Req) -> Rep {
+        flow Handle(q: String) -> Rep {
             step Reply {
                 ask: "reply"
                 output: Rep
@@ -29628,7 +29621,7 @@ fn fase6_1_axonendpoint_carries_compliance_into_ir() {
             path: "/v1/chat"
             body: Req
             execute: Handle
-            output: Rep
+            output: FlowEnvelope<Rep>
             compliance: [HIPAA, GDPR]
         }
     "#);
@@ -29650,7 +29643,6 @@ fn fase6_1_compliance_preserves_field_order_in_ir() {
 }
 
 #[test]
-#[ignore = "INFRA-DEBT: pre-existing test-rot (axon-E039 bare output, v2.0.0 FlowEnvelope rule); [INFRA-DEBT] Arity Drift + Test-Rot ticket"]
 fn fase6_1_full_regulated_program_compiles_clean() {
     // Integration: type + shield + manifest + axonendpoint all carrying
     // overlapping κ — mirrors the healthcare_reference.axon shape.
@@ -29659,7 +29651,7 @@ fn fase6_1_full_regulated_program_compiles_clean() {
             id:   String
             ssn:  String
         }
-        flow Handle(r: PatientRecord) -> PatientRecord {
+        flow Handle(id: String) -> PatientRecord {
             step Reply {
                 ask: "reply"
                 output: PatientRecord
@@ -29683,7 +29675,7 @@ fn fase6_1_full_regulated_program_compiles_clean() {
             path: "/patients"
             body: PatientRecord
             execute: Handle
-            output: PatientRecord
+            output: FlowEnvelope<PatientRecord>
             shield: PHI
             compliance: [HIPAA, GDPR]
         }
