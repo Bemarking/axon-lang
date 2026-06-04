@@ -6,9 +6,10 @@
 > v2.7.0 contract, the `quarantined-rot` Cargo feature + every `#![cfg(...)]` gate
 > were removed, and the 4 Postgres/pooler integration targets were restored to the
 > default suite (they skip-pass hermetically via `pg_or_skip!` and run for real in
-> the DB CI lane). The ONLY residual is 2 cross-stack Python-IR golden parity tests
-> left `#[ignore]` (the golden was produced by the now-purged Python stack encoding
-> the pre-v2.0.0 contract — it cannot be regenerated without that stack).
+> the DB CI lane). **Zero residual** — the 2 obsolete cross-stack Rust↔Python IR
+> parity tests were RETIRED (Python is purged; there is no second stack) and REPLACED
+> by a Rust-native IR regression snapshot (see below), so IR-shape regression coverage
+> is preserved without the dead premise.
 > **Scope:** `axon-rs` integration test suite (`axon-rs/tests/`).
 
 ## Resolution (2026-06-03)
@@ -28,11 +29,20 @@
 - `cargo test --no-fail-fast` → **strictly green** (~4.5k passed, 0 failed, only the 2
   Python goldens ignored). No `src/` or `Cargo.toml`-version changes; test files only.
 
-### Residual (1 small follow-up)
-- [ ] `integration.rs::parity_fase1_5_{byte_identical,structural}_matches_python_golden`
-      — regenerate `tests/parity/fase1_through_5_plus_compliance.python.ir.json` from the
-      current Rust IR (or retire the cross-stack golden), then un-ignore. The emit path
-      `parity_fase1_5_emit_rust_ir_for_diff` already writes the current Rust IR.
+### Residual — RESOLVED (2026-06-03, founder-QA'd)
+The QA established: the §Fase 8.2.h tests were a Rust↔**Python** IR cross-stack parity
+gate, but the Python axon implementation is **purged** (the package is a thin native
+launcher) — there is no second stack to be parity with, and `python.ir.json` was a
+frozen May-20 fossil of the pre-v2.0.0 contract. Decision (founder): retire the dead
+tests, but DON'T lose IR-shape regression coverage. Done:
+- DELETED the 3 obsolete tests (`parity_fase1_5_{emit,byte_identical,structural}`) +
+  `python.ir.json` + `rust.ir.json`.
+- ADDED `integration.rs::fase1_5_rust_ir_regression_snapshot` — a Rust-native byte
+  snapshot of the comprehensive fase1–5+compliance fixture's IR against a committed
+  `tests/parity/fase1_through_5_plus_compliance.ir.golden.json` (strictly stronger than
+  the old structural gate). One-command regen on intentional IR change:
+  `AXON_REGEN_IR_GOLDEN=1 cargo test --test integration fase1_5_rust_ir_regression_snapshot`.
+- `cargo test --test integration` → 860 passed, **0 ignored**. Ticket fully closed.
 
 ## Summary
 
