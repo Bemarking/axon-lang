@@ -29366,190 +29366,69 @@ fn fase5_heal_max_patches_zero_is_type_error() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════════════
-// §Fase 8.2.h — Rust↔Python IR structural parity gate.
-//
-// Divergences that prevent byte-identical output are catalogued in
-// docs/fase/fase8_parity_divergences.md (D1–D4). This test verifies everything
-// ELSE: same declaration counts, same named symbols, compliance arrays
-// match item-for-item. A regression here signals that the Rust IR drifted
-// away from the Python reference.
+// §Fase 8.2.h was the Rust↔Python IR cross-stack parity gate. RETIRED
+// 2026-06-03: the Python axon implementation has been purged (the `axon`
+// package is now a thin native-binary launcher), so there is no second
+// stack to be parity WITH — the frozen `python.ir.json` golden encoded the
+// dead pre-v2.0.0 contract. Replaced by the Rust-native IR regression
+// snapshot below: same coverage (the full IR shape over the comprehensive
+// fase1–5 + compliance program), honest premise, one-command regeneration.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Writes the Rust IR JSON for the canonical fixture to a known path
-/// next to the Python golden so a byte-identical diff can be performed
-/// externally (CI, local `diff -u`). Produces `*.rust.ir.json`.
+/// §IR regression snapshot — the canonical fase1–5+compliance fixture must
+/// lower to a byte-stable IR. Catches ANY unintended drift in declaration
+/// counts, field ordering, emitted values, or compliance arrays (strictly
+/// stronger than the old structural gate). The IR serialization is
+/// deterministic (serde struct field order + Vec-backed declaration
+/// buckets), so a byte snapshot is stable.
+///
+/// To intentionally update the golden after an IR change:
+///   `AXON_REGEN_IR_GOLDEN=1 cargo test --test integration fase1_5_rust_ir_regression_snapshot`
+/// then review the diff and commit `tests/parity/*.ir.golden.json`.
 #[test]
-fn parity_fase1_5_emit_rust_ir_for_diff() {
+fn fase1_5_rust_ir_regression_snapshot() {
     use std::fs;
     use std::path::PathBuf;
 
     let base: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "parity"].iter().collect();
     let source = fs::read_to_string(base.join("fase1_through_5_plus_compliance.axon"))
-        .expect("fixture missing");
+        .expect("fixture .axon missing");
     let ir = compile_ir(&source);
-    // Match Python: indent=2, ensure_ascii=False, no sort_keys.
-    let rust_json = serde_json::to_string_pretty(&ir).expect("serialize rust ir");
-    let out = base.join("fase1_through_5_plus_compliance.rust.ir.json");
-    fs::write(&out, rust_json).expect("write rust ir");
-    println!("Rust IR emitted to {}", out.display());
-}
+    let actual = serde_json::to_string_pretty(&ir).expect("serialize rust ir");
+    let golden_path = base.join("fase1_through_5_plus_compliance.ir.golden.json");
 
-#[test]
-#[ignore = "INFRA-DEBT: stale Python IR golden — cross-stack parity check pending golden regen; see docs/INFRA_DEBT_arity_drift_test_rot.md"]
-fn parity_fase1_5_byte_identical_matches_python_golden() {
-    // §8.2.h final gate — Rust IR JSON must match Python's reference
-    // byte-for-byte (after line-ending normalisation, because Python's
-    // `Path.write_text` emits CRLF on Windows while Rust emits LF).
-    //
-    // Any drift in: (a) field ordering inside structs, (b) emitted values,
-    // (c) presence/absence of fields, or (d) array lengths blows this test.
-    // Known soft divergences have been fixed in §8.2.h.1–h.3; this gate
-    // is now the canonical signal that they stay fixed.
-    use std::fs;
-    use std::path::PathBuf;
-
-    let base: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "parity"].iter().collect();
-    let source = fs::read_to_string(base.join("fase1_through_5_plus_compliance.axon"))
-        .expect("fixture missing");
-    let golden_raw = fs::read_to_string(
-        base.join("fase1_through_5_plus_compliance.python.ir.json"),
-    )
-    .expect("python golden IR JSON missing — regenerate via \
-             `python -m axon.cli compile <fixture> -o <golden>`");
-
-    // The Python CLI appends a `_meta` CLI-annotation envelope that the
-    // core IRGenerator does not produce. Strip it before comparison; the
-    // envelope itself gets its own parity sub-phase (§8.2.h.4) once the
-    // Rust CLI ships.
-    let mut golden_value: serde_json::Value =
-        serde_json::from_str(&golden_raw).expect("golden JSON parses");
-    if let Some(obj) = golden_value.as_object_mut() {
-        obj.remove("_meta");
+    // Regeneration path — opt-in, explicit. Writes the golden and returns.
+    if std::env::var("AXON_REGEN_IR_GOLDEN").is_ok() {
+        fs::write(&golden_path, &actual).expect("write golden");
+        println!("regenerated IR golden at {}", golden_path.display());
+        return;
     }
 
-    let rust_ir = compile_ir(&source);
-    let rust_value = serde_json::to_value(&rust_ir).expect("serialize rust ir");
-
-    // Re-serialise both via the same writer so whitespace / escaping match.
-    let py_canon = serde_json::to_string_pretty(&golden_value).expect("re-ser py");
-    let rust_canon = serde_json::to_string_pretty(&rust_value).expect("re-ser rust");
-
-    if py_canon != rust_canon {
-        // Produce a compact unified diff-style hint on mismatch.
-        let py_lines: Vec<&str> = py_canon.lines().collect();
-        let rust_lines: Vec<&str> = rust_canon.lines().collect();
-        for (i, (p, r)) in py_lines.iter().zip(rust_lines.iter()).enumerate() {
-            if p != r {
+    let golden = fs::read_to_string(&golden_path).expect(
+        "IR golden missing — regenerate with \
+         `AXON_REGEN_IR_GOLDEN=1 cargo test --test integration fase1_5_rust_ir_regression_snapshot`",
+    );
+    // Normalise line endings (the golden may be checked out CRLF on Windows).
+    let g = golden.replace("\r\n", "\n");
+    let a = actual.replace("\r\n", "\n");
+    if g != a {
+        for (i, (gl, al)) in g.lines().zip(a.lines()).enumerate() {
+            if gl != al {
                 panic!(
-                    "byte-identical parity broke at line {i}:\n- python: {p}\n+ rust:   {r}\n\
-                     \n(full files under tests/parity/*.ir.json)"
+                    "IR regression at line {i}:\n- golden: {gl}\n+ actual: {al}\n\n\
+                     If this IR change is intentional, regenerate the golden:\n  \
+                     AXON_REGEN_IR_GOLDEN=1 cargo test --test integration \
+                     fase1_5_rust_ir_regression_snapshot"
                 );
             }
         }
         panic!(
-            "length mismatch after zipped compare: python={} lines, rust={} lines",
-            py_lines.len(),
-            rust_lines.len()
+            "IR regression: line count differs (golden={}, actual={}). \
+             Regenerate if intentional.",
+            g.lines().count(),
+            a.lines().count()
         );
     }
-}
-
-#[test]
-#[ignore = "INFRA-DEBT: stale Python IR golden — cross-stack parity check pending golden regen; see docs/INFRA_DEBT_arity_drift_test_rot.md"]
-fn parity_fase1_5_structural_matches_python_golden() {
-    use std::fs;
-    use std::path::PathBuf;
-
-    let base: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "parity"].iter().collect();
-    let source = fs::read_to_string(base.join("fase1_through_5_plus_compliance.axon"))
-        .expect("fixture .axon file missing");
-    let golden_str = fs::read_to_string(
-        base.join("fase1_through_5_plus_compliance.python.ir.json"),
-    )
-    .expect("python golden IR JSON missing — regenerate with \
-             python -m axon.cli compile <fixture> -o <golden>");
-
-    let rust_ir = compile_json(&source);
-    let py: serde_json::Value = serde_json::from_str(&golden_str).expect("golden JSON parses");
-
-    // Program-level invariants.
-    assert_eq!(rust_ir["node_type"], py["node_type"]);
-
-    // Named declaration buckets whose parity is already complete.
-    for bucket in [
-        "types", "flows", "shields", "endpoints", "resources", "fabrics",
-        "manifests", "observations", "reconciles", "leases", "ensembles",
-        "sessions", "topologies", "immunes", "reflexes", "heals",
-    ] {
-        let py_arr = py[bucket].as_array().unwrap_or_else(|| panic!("python golden missing '{bucket}'"));
-        let rust_arr = rust_ir[bucket]
-            .as_array()
-            .unwrap_or_else(|| panic!("rust IR missing '{bucket}'"));
-        assert_eq!(
-            rust_arr.len(),
-            py_arr.len(),
-            "bucket '{bucket}' length differs (rust={}, python={})",
-            rust_arr.len(),
-            py_arr.len()
-        );
-        // Named-identifier symmetry.
-        let py_names: Vec<&str> = py_arr
-            .iter()
-            .filter_map(|v| v["name"].as_str())
-            .collect();
-        let rust_names: Vec<&str> = rust_arr
-            .iter()
-            .filter_map(|v| v["name"].as_str())
-            .collect();
-        assert_eq!(
-            rust_names, py_names,
-            "bucket '{bucket}' named-identifier order drifted"
-        );
-    }
-
-    // Compliance (κ) must round-trip on every carrier.
-    let carriers: &[(&str, &str)] = &[
-        ("types", "PatientRecord"),
-        ("types", "ClinicalTrial"),
-        ("shields", "PHIShield"),
-        ("manifests", "Prod"),
-        ("endpoints", "PatientAPI"),
-    ];
-    for (bucket, name) in carriers {
-        let py_entry = py[bucket]
-            .as_array().unwrap()
-            .iter()
-            .find(|v| v["name"].as_str() == Some(name))
-            .unwrap_or_else(|| panic!("python golden missing {bucket}[{name}]"));
-        let rust_entry = rust_ir[bucket]
-            .as_array().unwrap()
-            .iter()
-            .find(|v| v["name"].as_str() == Some(name))
-            .unwrap_or_else(|| panic!("rust IR missing {bucket}[{name}]"));
-        assert_eq!(
-            rust_entry["compliance"], py_entry["compliance"],
-            "{bucket}[{name}].compliance drifted — rust={:?}, python={:?}",
-            rust_entry["compliance"], py_entry["compliance"]
-        );
-    }
-
-    // node_type rename verified (divergence D4 resolved at lowering):
-    assert_eq!(rust_ir["endpoints"][0]["node_type"], "endpoint");
-    assert_eq!(py["endpoints"][0]["node_type"], "endpoint");
-
-    // Shield default strategy lowering:
-    assert_eq!(rust_ir["shields"][0]["strategy"], "pattern");
-    assert_eq!(py["shields"][0]["strategy"], "pattern");
-
-    // Session roles: both sides of the binary protocol present.
-    assert_eq!(rust_ir["sessions"][0]["roles"].as_array().unwrap().len(), 2);
-    assert_eq!(py["sessions"][0]["roles"].as_array().unwrap().len(), 2);
-
-    // Topology edges count matches.
-    assert_eq!(
-        rust_ir["topologies"][0]["edges"].as_array().unwrap().len(),
-        py["topologies"][0]["edges"].as_array().unwrap().len(),
-    );
 }
 
 #[test]
