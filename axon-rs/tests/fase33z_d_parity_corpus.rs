@@ -118,6 +118,7 @@ fn run_sync(source: &str, source_file: &str, flow_name: &str) -> Result<ServerRu
         None,
         &std::collections::HashMap::new(),
         &std::collections::HashMap::new(),
+        None, // §Fase 58.g — tool_base_url
     )
 }
 
@@ -147,6 +148,7 @@ async fn run_async(source: String, source_file: String, flow_name: String) -> As
         // §Fase 37.y (D3) — request_path + request_query (empty maps).
         std::collections::HashMap::new(),
         std::collections::HashMap::new(),
+        None, // §Fase 58.g — tool_base_url
     )
     .await;
 

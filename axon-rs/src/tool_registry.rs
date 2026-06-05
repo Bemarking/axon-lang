@@ -88,6 +88,43 @@ pub fn derive_is_streaming(effect_row: &[String]) -> bool {
     effect_row.iter().any(|e| e.starts_with("stream:"))
 }
 
+/// §Fase 58.g — resolve a tool's declared `runtime` into a concrete
+/// dispatch URL against a per-tenant / per-server **base URL** (D7).
+///
+/// The resolution rule (config-driven provider→endpoint, never
+/// hardcoded in the compiler):
+///
+/// - An ALREADY-ABSOLUTE `runtime` (`http://…` / `https://…`) is used
+///   verbatim — the program pinned its own endpoint (D5 back-compat).
+/// - Otherwise the declared `runtime` is treated as a **slug / path**
+///   and joined onto `base_url`: `{base}/{slug}`. An empty `runtime`
+///   falls back to the tool's name as the slug, so a `tool Crm {
+///   provider: http }` with no `runtime:` resolves to `{base}/Crm`.
+/// - An empty `base_url` is a no-op (returns `runtime` unchanged) — the
+///   adopter hasn't wired a tool-server, so a relative runtime stays
+///   relative and the dispatcher surfaces the actionable "no/invalid
+///   endpoint URL" diagnostic.
+///
+/// Leading/trailing slashes are normalised so the join never produces a
+/// `//` or a missing separator.
+pub fn resolve_tool_endpoint(runtime: &str, tool_name: &str, base_url: &str) -> String {
+    let rt = runtime.trim();
+    if rt.starts_with("http://") || rt.starts_with("https://") {
+        return runtime.to_string();
+    }
+    let base = base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return runtime.to_string();
+    }
+    let slug = if rt.is_empty() { tool_name } else { rt };
+    let slug = slug.trim_start_matches('/');
+    if slug.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}/{slug}")
+    }
+}
+
 /// Where the tool was defined.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolSource {
@@ -198,6 +235,33 @@ impl ToolRegistry {
     /// Register a single tool entry directly.
     pub fn register(&mut self, entry: ToolEntry) {
         self.tools.insert(entry.name.clone(), entry);
+    }
+
+    /// §Fase 58.g — resolve every URL-dispatched **program** tool's
+    /// relative `runtime` against `base_url` (D7, see
+    /// [`resolve_tool_endpoint`]). Only `http` / `mcp` providers carry a
+    /// dispatch URL, so only those are rewritten; `native` / `stub`
+    /// builtins (and any tool whose `runtime` is already absolute) are
+    /// left untouched. A blank `base_url` is a no-op.
+    ///
+    /// Called by the server entry points (`execute_server_flow` /
+    /// `run_streaming_via_dispatcher`) when the caller supplies a
+    /// per-tenant / per-server tool base URL — the request-scoped
+    /// registry is rewritten before any dispatch, so resolution is
+    /// per-request with zero cross-tenant leakage (§58 D10).
+    pub fn resolve_relative_endpoints(&mut self, base_url: &str) {
+        if base_url.trim().is_empty() {
+            return;
+        }
+        for entry in self.tools.values_mut() {
+            if entry.source != ToolSource::Program {
+                continue;
+            }
+            if entry.provider != "http" && entry.provider != "mcp" {
+                continue;
+            }
+            entry.runtime = resolve_tool_endpoint(&entry.runtime, &entry.name, base_url);
+        }
     }
 
     /// Look up a tool by name.
@@ -569,6 +633,132 @@ mod tests {
         // Now dispatches via stub, not native
         let result = reg.dispatch("Calculator", "2+3").unwrap();
         assert_eq!(result.output, "[stub] Calculator(2+3)");
+    }
+
+    // §Fase 58.g — endpoint resolution (D7).
+
+    #[test]
+    fn resolve_tool_endpoint_absolute_passthrough() {
+        // Already-absolute runtimes are pinned by the program (D5).
+        assert_eq!(
+            resolve_tool_endpoint("https://api.example.com/x", "T", "https://base"),
+            "https://api.example.com/x"
+        );
+        assert_eq!(
+            resolve_tool_endpoint("http://h/x", "T", "https://base"),
+            "http://h/x"
+        );
+    }
+
+    #[test]
+    fn resolve_tool_endpoint_relative_joined_to_base() {
+        assert_eq!(
+            resolve_tool_endpoint("/crm/search", "CrmRadar", "https://tools.acme.io"),
+            "https://tools.acme.io/crm/search"
+        );
+        // No leading slash on the slug works too.
+        assert_eq!(
+            resolve_tool_endpoint("crm/search", "CrmRadar", "https://tools.acme.io/"),
+            "https://tools.acme.io/crm/search"
+        );
+    }
+
+    #[test]
+    fn resolve_tool_endpoint_empty_runtime_uses_tool_name() {
+        assert_eq!(
+            resolve_tool_endpoint("", "CrmRadar", "https://tools.acme.io"),
+            "https://tools.acme.io/CrmRadar"
+        );
+    }
+
+    #[test]
+    fn resolve_tool_endpoint_empty_base_is_noop() {
+        // No base wired → relative runtime stays relative (the
+        // dispatcher then surfaces the actionable diagnostic).
+        assert_eq!(resolve_tool_endpoint("/crm", "T", ""), "/crm");
+        assert_eq!(resolve_tool_endpoint("", "T", "   "), "");
+    }
+
+    #[test]
+    fn resolve_relative_endpoints_only_rewrites_http_mcp_program_tools() {
+        let mut reg = ToolRegistry::new();
+        reg.register(ToolEntry {
+            name: "CrmRadar".to_string(),
+            provider: "http".to_string(),
+            timeout: String::new(),
+            runtime: "/crm/search".to_string(),
+            sandbox: None,
+            max_results: None,
+            output_schema: String::new(),
+            effect_row: Vec::new(),
+            parameters: Vec::new(),
+            source: ToolSource::Program,
+            is_streaming: false,
+        });
+        reg.register(ToolEntry {
+            name: "FhirMcp".to_string(),
+            provider: "mcp".to_string(),
+            timeout: String::new(),
+            runtime: "fhir".to_string(),
+            sandbox: None,
+            max_results: None,
+            output_schema: String::new(),
+            effect_row: Vec::new(),
+            parameters: Vec::new(),
+            source: ToolSource::Program,
+            is_streaming: false,
+        });
+        reg.register(ToolEntry {
+            name: "Pinned".to_string(),
+            provider: "http".to_string(),
+            timeout: String::new(),
+            runtime: "https://pinned.example.com/api".to_string(),
+            sandbox: None,
+            max_results: None,
+            output_schema: String::new(),
+            effect_row: Vec::new(),
+            parameters: Vec::new(),
+            source: ToolSource::Program,
+            is_streaming: false,
+        });
+
+        reg.resolve_relative_endpoints("https://tenant-acme.tools.internal");
+
+        assert_eq!(
+            reg.get("CrmRadar").unwrap().runtime,
+            "https://tenant-acme.tools.internal/crm/search"
+        );
+        assert_eq!(
+            reg.get("FhirMcp").unwrap().runtime,
+            "https://tenant-acme.tools.internal/fhir"
+        );
+        // Absolute runtime untouched (D5).
+        assert_eq!(
+            reg.get("Pinned").unwrap().runtime,
+            "https://pinned.example.com/api"
+        );
+        // Built-ins (native) never carry a URL → untouched.
+        assert_eq!(reg.get("Calculator").unwrap().runtime, "");
+    }
+
+    #[test]
+    fn resolve_relative_endpoints_blank_base_is_noop() {
+        let mut reg = ToolRegistry::new();
+        reg.register(ToolEntry {
+            name: "T".to_string(),
+            provider: "http".to_string(),
+            timeout: String::new(),
+            runtime: "/x".to_string(),
+            sandbox: None,
+            max_results: None,
+            output_schema: String::new(),
+            effect_row: Vec::new(),
+            parameters: Vec::new(),
+            source: ToolSource::Program,
+            is_streaming: false,
+        });
+        reg.resolve_relative_endpoints("   ");
+        assert_eq!(reg.get("T").unwrap().runtime, "/x");
     }
 
     #[test]

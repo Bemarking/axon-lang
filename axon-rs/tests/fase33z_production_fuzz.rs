@@ -238,6 +238,7 @@ async fn drive_production_path(
         // §Fase 37.y (D3) — request_path + request_query (empty maps).
         std::collections::HashMap::new(),
         std::collections::HashMap::new(),
+        None, // §Fase 58.g — tool_base_url
     )
     .await;
 
@@ -896,6 +897,7 @@ async fn run_async_snapshot(
         // §Fase 37.y (D3) — request_path + request_query (empty maps).
         std::collections::HashMap::new(),
         std::collections::HashMap::new(),
+        None, // §Fase 58.g — tool_base_url
     )
     .await;
 
@@ -1003,6 +1005,7 @@ async fn fuzz_s4_parity_determinism_stress() {
             None,
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
+            None, // §Fase 58.g — tool_base_url
         );
         if let Ok(sync_metrics) = sync {
             if sync_metrics.success != baseline.success {

@@ -168,6 +168,12 @@ pub async fn run_streaming_via_dispatcher(
     request_path: std::collections::HashMap<String, String>,
     // §Fase 37.y (D3) — URL query string parsed name → value.
     request_query: std::collections::HashMap<String, String>,
+    // §Fase 58.g (D7) — optional per-tenant / per-server tool base URL.
+    // When `Some`, every URL-dispatched program tool with a RELATIVE
+    // `runtime` is resolved against it before the dispatcher walks any
+    // node (`{base}/{slug}`); absolute runtimes stay verbatim (D5).
+    // `None` → no resolution (the pre-§58.g behavior).
+    tool_base_url: Option<String>,
 ) {
     // Cancel-safety helper — mirrors the legacy path's `emit` closure.
     // Returns `Err(())` when the producer should exit early (cancel
@@ -405,6 +411,13 @@ pub async fn run_streaming_via_dispatcher(
     let tool_registry = {
         let mut reg = crate::tool_registry::ToolRegistry::new();
         reg.register_from_ir(&ir.tools);
+        // §Fase 58.g (D7) — resolve relative tool runtimes against the
+        // caller-supplied per-tenant / per-server base URL. This `reg`
+        // is request-scoped (fresh per stream) → no cross-tenant
+        // leakage (§58 D10).
+        if let Some(base) = tool_base_url.as_deref() {
+            reg.resolve_relative_endpoints(base);
+        }
         std::sync::Arc::new(reg)
     };
 
@@ -672,6 +685,7 @@ mod tests {
             None,
             std::collections::HashMap::new(),
             std::collections::HashMap::new(),
+            None, // §Fase 58.g — tool_base_url
         )
         .await;
 
@@ -725,6 +739,7 @@ mod tests {
             None,
             std::collections::HashMap::new(),
             std::collections::HashMap::new(),
+            None, // §Fase 58.g — tool_base_url
         )
         .await;
 
@@ -786,6 +801,7 @@ mod tests {
             None,
             std::collections::HashMap::new(),
             std::collections::HashMap::new(),
+            None, // §Fase 58.g — tool_base_url
         )
         .await;
 
@@ -829,6 +845,7 @@ mod tests {
             None,
             std::collections::HashMap::new(),
             std::collections::HashMap::new(),
+            None, // §Fase 58.g — tool_base_url
         )
         .await;
 
