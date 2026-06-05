@@ -24,10 +24,12 @@ use axon_emcp::knowledge::{Catalog, ExampleTopic};
 /// requires touching all three sides; the test catches the drift if
 /// any side is forgotten.
 const EXPECTED: &[(&str, ExampleTopic)] = &[
-    // Composition (4)
+    // Composition (5)
     ("flow_step_basic", ExampleTopic::Composition),
     ("flow_chaining", ExampleTopic::Composition),
     ("tool_use_basic", ExampleTopic::Composition),
+    // §Fase 58.h — the structured `use <Tool>(k = v, …)` dispatch form.
+    ("tool_structured_args", ExampleTopic::Composition),
     ("weave_braid", ExampleTopic::Composition),
     // Session types (2)
     ("session_chat_duality", ExampleTopic::SessionTypes),
