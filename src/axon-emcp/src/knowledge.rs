@@ -1334,6 +1334,8 @@ Body prose.
             (ReferenceKind::Grammar, "ebnf"),
             (ReferenceKind::Logic, "flow_composition"),
             (ReferenceKind::Logic, "session_duality"),
+            // §Fase 59 — the use/apply law (dispatch vs cognitive delegation).
+            (ReferenceKind::Logic, "dispatch_vs_cognition"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1377,7 +1379,7 @@ Body prose.
         );
         assert_eq!(
             cat.reference_count_of(ReferenceKind::Logic),
-            2,
+            3,
             "logic family count drift"
         );
         assert_eq!(
