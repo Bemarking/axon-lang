@@ -66,7 +66,7 @@ def test_version_smoke() -> None:
     result = _run("version")
 
     assert result.returncode == 0
-    assert result.stdout.strip() == "axon-lang 2.7.0"
+    assert result.stdout.strip() == "axon-lang 2.8.0"
     assert result.stderr == ""
 
 
@@ -110,7 +110,7 @@ def test_compile_stdout_smoke() -> None:
     source_field = _normalize_cli_path(payload["_meta"]["source"])
     assert source_field.endswith("examples/contract_analyzer.axon")
     assert payload["_meta"]["backend"] == "anthropic"
-    assert payload["_meta"]["axon_version"] == "2.7.0"
+    assert payload["_meta"]["axon_version"] == "2.8.0"
 
 
 def test_compile_missing_file_smoke() -> None:
