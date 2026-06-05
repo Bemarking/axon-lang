@@ -16,7 +16,8 @@ use super::effects;
 use super::proof_term::{
     CapabilityContainmentWitness, CapabilityIsolationWitness, ComplianceCoverageWitness,
     EffectRowSoundnessWitness, ProofTerm, PropertyClass, ResourceBoundsWitness,
-    ShieldHaltGuaranteeWitness, Witness, MAX_RETRIES, VALID_BREACH_POLICIES,
+    ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness, MAX_RETRIES,
+    VALID_BREACH_POLICIES,
 };
 
 /// Canonical SHA-256 hex digest of the IR artifact. Reuses the
@@ -559,11 +560,265 @@ pub fn generate_capability_containment_proofs(
     proofs
 }
 
+// ── §Fase 58.i — ToolCallSoundness ───────────────────────────────────
+
+/// §58.i — mirror of the §58.d `infer_arg_literal_type` (a type-checker
+/// private fn). PCC re-states the spec INDEPENDENTLY (D51.2 — the
+/// verifier never trusts the compiler): only an UNAMBIGUOUS literal is
+/// typed. A bare identifier (`x` — the frontend stored the value as a
+/// bare string, so the literal `"x"` and the reference `x` are
+/// indistinguishable) and a `${…}` interpolation are runtime-resolved →
+/// `None` (skipped, so no false positives). Cross-stack spec pin: a
+/// drift gate keeps this in lockstep with the frontend rule.
+fn infer_arg_literal_type(value: &str) -> Option<&'static str> {
+    if value == "true" || value == "false" {
+        return Some("Bool");
+    }
+    if value.contains('.') && value.parse::<f64>().is_ok() {
+        return Some("Float");
+    }
+    let digits = value.strip_prefix('-').unwrap_or(value);
+    if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+        return Some("Int");
+    }
+    None
+}
+
+/// §58.i — mirror of the §58.d `tool_arg_types_align`. `Any` accepts
+/// anything; an `Int` coerces into a `Float` parameter; otherwise the
+/// declared base type (stripping the `?` optional marker + any
+/// `<generic>`) must equal the inferred literal type.
+fn tool_arg_types_align(value_ty: &str, decl_ty: &str) -> bool {
+    let base = decl_ty.trim_end_matches('?').split('<').next().unwrap_or(decl_ty);
+    base == "Any" || base == value_ty || (base == "Float" && value_ty == "Int")
+}
+
+/// §58.i — collect, in deterministic walk order, every NAMED-args
+/// `use <Tool>(k = v, …)` call in a flow's steps, recursing into
+/// conditional branches + for-in bodies (a `use` cannot nest in a step
+/// body — §54.a — but the IR model permits it inside flow-level control
+/// flow, so the walk descends there). The legacy `use <Tool> on <arg>`
+/// form has empty `named_args` and is excluded (schema-less, D5).
+///
+/// Like [`collect_store_accesses`], the match is EXHAUSTIVE — no `_`
+/// wildcard — so a future `IRFlowNode` variant carrying a nested body
+/// breaks compilation here until a maintainer classifies it (a wildcard
+/// could let a nested `use` call silently escape soundness checking). A
+/// source gate pins the absence of a wildcard.
+fn collect_named_use_tool_calls<'a>(
+    steps: &'a [crate::ir_nodes::IRFlowNode],
+    out: &mut Vec<&'a crate::ir_nodes::IRUseToolStep>,
+) {
+    use crate::ir_nodes::IRFlowNode as N;
+    for step in steps {
+        match step {
+            // ── target — a structured (keyword-arg) tool dispatch ──
+            N::UseTool(u) => {
+                if !u.named_args.is_empty() {
+                    out.push(u);
+                }
+            }
+            // ── nesting — the only nodes with a nested IRFlowNode body ──
+            N::Conditional(c) => {
+                collect_named_use_tool_calls(&c.then_body, out);
+                collect_named_use_tool_calls(&c.else_body, out);
+            }
+            N::ForIn(f) => collect_named_use_tool_calls(&f.body, out),
+            // ── leaves — no nested body. Listed EXPLICITLY (no `_`
+            // wildcard) so a future nesting variant forces a deliberate
+            // classification at compile time. ──
+            N::Step(_)
+            | N::Probe(_)
+            | N::Reason(_)
+            | N::Validate(_)
+            | N::Refine(_)
+            | N::Weave(_)
+            | N::Remember(_)
+            | N::Recall(_)
+            | N::Let(_)
+            | N::Return(_)
+            | N::Break(_)
+            | N::Continue(_)
+            | N::LambdaDataApply(_)
+            | N::Par(_)
+            | N::Hibernate(_)
+            | N::Deliberate(_)
+            | N::Consensus(_)
+            | N::Forge(_)
+            | N::Focus(_)
+            | N::Associate(_)
+            | N::Aggregate(_)
+            | N::Explore(_)
+            | N::Ingest(_)
+            | N::ShieldApply(_)
+            | N::Stream(_)
+            | N::Navigate(_)
+            | N::Drill(_)
+            | N::Trail(_)
+            | N::Corroborate(_)
+            | N::OtsApply(_)
+            | N::MandateApply(_)
+            | N::ComputeApply(_)
+            | N::Listen(_)
+            | N::DaemonStep(_)
+            | N::Emit(_)
+            | N::Publish(_)
+            | N::Discover(_)
+            | N::Retrieve(_)
+            | N::Persist(_)
+            | N::Mutate(_)
+            | N::Purge(_)
+            | N::Transact(_) => {}
+        }
+    }
+}
+
+/// §58.i — sort + dedup a name list into the canonical witness form.
+fn canonical_names(raw: &[String]) -> Vec<String> {
+    let mut v = raw.to_vec();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// §58.i — derive a [`ToolCallSoundnessWitness`] for the `use Tool(k=v)`
+/// call at `call_index` (deterministic walk order) in flow `flow_name`.
+/// Pure + total. Shared with the checker's re-derivation path (D51.2) —
+/// the checker re-walks the SAME digest-bound IR, so producer + verifier
+/// compute identically. `None` when the flow is absent or the index is
+/// out of range (the checker renders that as a "call site not present"
+/// refutation).
+pub fn derive_tool_call_soundness_witness(
+    flow_name: &str,
+    call_index: usize,
+    ir: &IRProgram,
+) -> Option<ToolCallSoundnessWitness> {
+    let flow = ir.flows.iter().find(|f| f.name == flow_name)?;
+    let mut calls = Vec::new();
+    collect_named_use_tool_calls(&flow.steps, &mut calls);
+    let call = calls.get(call_index)?;
+
+    let tool_name = call.tool_name.clone();
+    let arg_pairs: Vec<(String, String)> = call
+        .named_args
+        .iter()
+        .map(|a| (a.name.clone(), a.value.clone()))
+        .collect();
+    let arg_names: Vec<String> = arg_pairs.iter().map(|(n, _)| n.clone()).collect();
+
+    // The called tool's declared schema (name, type, optional). Empty if
+    // the tool is undeclared or schema-less.
+    let params: Vec<(String, String, bool)> = ir
+        .tools
+        .iter()
+        .find(|t| t.name == tool_name)
+        .map(|t| {
+            t.parameters
+                .iter()
+                .map(|p| (p.name.clone(), p.type_name.clone(), p.optional))
+                .collect()
+        })
+        .unwrap_or_default();
+    let schema_present = !params.is_empty();
+    let declared_params = canonical_names(
+        &params.iter().map(|(n, _, _)| n.clone()).collect::<Vec<_>>(),
+    );
+
+    // Duplicates: an arg name supplied more than once.
+    let mut seen = std::collections::HashSet::new();
+    let mut dup = std::collections::HashSet::new();
+    for name in &arg_names {
+        if !seen.insert(name.clone()) {
+            dup.insert(name.clone());
+        }
+    }
+    let duplicate_args = canonical_names(&dup.into_iter().collect::<Vec<_>>());
+
+    // Unknown: an arg naming no declared parameter.
+    let unknown_args = canonical_names(
+        &arg_names
+            .iter()
+            .filter(|n| !params.iter().any(|(p, _, _)| &p == n))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+
+    // Missing required: a non-optional param not supplied.
+    let mut missing_required: Vec<String> = params
+        .iter()
+        .filter(|(p, _, optional)| !optional && !arg_names.iter().any(|n| n == p))
+        .map(|(p, _, _)| p.clone())
+        .collect();
+    missing_required.sort();
+    missing_required.dedup();
+
+    // Literal type mismatches (conservative — decidable literals only).
+    let mut type_mismatches: Vec<String> = Vec::new();
+    for (name, value) in &arg_pairs {
+        if let Some((_, decl_ty, _)) = params.iter().find(|(p, _, _)| p == name) {
+            if let Some(val_ty) = infer_arg_literal_type(value) {
+                if !tool_arg_types_align(val_ty, decl_ty) {
+                    type_mismatches.push(format!("{name}:{decl_ty}:{val_ty}"));
+                }
+            }
+        }
+    }
+    type_mismatches.sort();
+    type_mismatches.dedup();
+
+    Some(ToolCallSoundnessWitness {
+        flow_name: flow_name.to_string(),
+        call_index,
+        tool_name,
+        arg_names,
+        declared_params,
+        schema_present,
+        unknown_args,
+        duplicate_args,
+        missing_required,
+        type_mismatches,
+    })
+}
+
+/// §58.i — generate tool-call-soundness proofs: one proof per structured
+/// `use <Tool>(k = v, …)` call whose called tool declares a NON-EMPTY
+/// `parameters:` schema. A call to a schema-less tool, an undeclared
+/// tool, or the legacy `on <arg>` form carries no contract → no proof
+/// (nothing to certify — mirrors "no effects → no effect-row proof").
+pub fn generate_tool_call_soundness_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for flow in &ir.flows {
+        let mut calls = Vec::new();
+        collect_named_use_tool_calls(&flow.steps, &mut calls);
+        for (call_index, _) in calls.iter().enumerate() {
+            // Derive from (flow, index) so producer + checker share the
+            // exact path. `None` is unreachable here (we just walked the
+            // same flow), but stay total.
+            let Some(witness) = derive_tool_call_soundness_witness(&flow.name, call_index, ir)
+            else {
+                continue;
+            };
+            // Nothing to certify for a schema-less / undeclared tool.
+            if !witness.schema_present {
+                continue;
+            }
+            proofs.push(ProofTerm {
+                property: PropertyClass::ToolCallSoundness,
+                artifact_digest: digest.clone(),
+                witness: Witness::ToolCallSoundness(witness),
+                axon_version: axon_version.to_string(),
+            });
+        }
+    }
+    proofs
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
 /// generator (compliance / effects / capability-gate / resources /
-/// shields / capability-containment) — one bundle covering every
-/// certifiable property an apx program declares.
+/// shields / capability-containment / tool-call-soundness) — one bundle
+/// covering every certifiable property an apx program declares.
 pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
     let mut proofs = Vec::new();
     proofs.extend(generate_compliance_coverage_proofs(ir, axon_version));
@@ -572,5 +827,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_resource_bounds_proofs(ir, axon_version));
     proofs.extend(generate_shield_halt_guarantee_proofs(ir, axon_version));
     proofs.extend(generate_capability_containment_proofs(ir, axon_version));
+    proofs.extend(generate_tool_call_soundness_proofs(ir, axon_version));
     proofs
 }

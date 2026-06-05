@@ -41,15 +41,17 @@ pub use generate::{
     artifact_digest, derive_capability_containment_witness, derive_capability_isolation_witness,
     derive_compliance_coverage_witness, derive_effect_row_soundness_witness,
     derive_endpoint_retry_witness, derive_shield_halt_witness, derive_socket_credit_witness,
-    generate_all_proofs, generate_capability_containment_proofs,
-    generate_capability_isolation_proofs, generate_compliance_coverage_proofs,
-    generate_effect_row_soundness_proofs, generate_resource_bounds_proofs,
-    generate_shield_halt_guarantee_proofs,
+    derive_tool_call_soundness_witness, generate_all_proofs,
+    generate_capability_containment_proofs, generate_capability_isolation_proofs,
+    generate_compliance_coverage_proofs, generate_effect_row_soundness_proofs,
+    generate_resource_bounds_proofs, generate_shield_halt_guarantee_proofs,
+    generate_tool_call_soundness_proofs,
 };
 pub use proof_term::{
     CapabilityContainmentWitness, CapabilityIsolationWitness, ComplianceCoverageWitness,
     EffectRowSoundnessWitness, ProofBundle, ProofTerm, PropertyClass, ResourceBoundsWitness,
-    ShieldHaltGuaranteeWitness, Witness, MAX_RETRIES, VALID_BREACH_POLICIES,
+    ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness, MAX_RETRIES,
+    VALID_BREACH_POLICIES,
 };
 
 #[cfg(test)]
@@ -362,6 +364,10 @@ mod tests {
         assert_eq!(
             PropertyClass::CapabilityContainment.slug(),
             "capability_containment"
+        );
+        assert_eq!(
+            PropertyClass::ToolCallSoundness.slug(),
+            "tool_call_soundness"
         );
     }
 
@@ -1477,5 +1483,398 @@ mod tests {
         let report = check_bundle(&bundle, &ir);
         assert!(report.all_verified());
         assert!(report.refutations().is_empty());
+    }
+
+    // ── §Fase 58.i — ToolCallSoundness ───────────────────────────────
+
+    /// A tool declaring the given `(name, type, optional)` input schema.
+    fn tool_with_params(name: &str, params: &[(&str, &str, bool)]) -> IRToolSpec {
+        let mut t = tool(name, &[]); // reuse base (effect_row empty)
+        t.provider = "http".to_string();
+        t.parameters = params
+            .iter()
+            .map(|(n, ty, opt)| crate::ir_nodes::IRToolParam {
+                name: n.to_string(),
+                type_name: ty.to_string(),
+                optional: *opt,
+            })
+            .collect();
+        t
+    }
+
+    /// A flow-level `use <Tool>(k = v, …)` call node.
+    fn use_named(tool_name: &str, args: &[(&str, &str)]) -> crate::ir_nodes::IRFlowNode {
+        crate::ir_nodes::IRFlowNode::UseTool(crate::ir_nodes::IRUseToolStep {
+            node_type: "use_tool",
+            source_line: 1,
+            source_column: 1,
+            tool_name: tool_name.to_string(),
+            argument: String::new(),
+            named_args: args
+                .iter()
+                .map(|(n, v)| crate::ir_nodes::IRNamedArg {
+                    name: n.to_string(),
+                    value: v.to_string(),
+                })
+                .collect(),
+        })
+    }
+
+    /// The legacy positional `use <Tool> on <arg>` call node (no named args).
+    fn use_legacy(tool_name: &str, arg: &str) -> crate::ir_nodes::IRFlowNode {
+        crate::ir_nodes::IRFlowNode::UseTool(crate::ir_nodes::IRUseToolStep {
+            node_type: "use_tool",
+            source_line: 1,
+            source_column: 1,
+            tool_name: tool_name.to_string(),
+            argument: arg.to_string(),
+            named_args: Vec::new(),
+        })
+    }
+
+    /// A flow whose body is the given step nodes.
+    fn flow_with_steps(name: &str, steps: Vec<crate::ir_nodes::IRFlowNode>) -> crate::ir_nodes::IRFlow {
+        let mut f = flow_reaching(name, &[]);
+        f.steps = steps;
+        f
+    }
+
+    /// The canonical schema for the tests: company:String, max_results:Int,
+    /// active:Bool? (active optional).
+    fn crm_tool() -> IRToolSpec {
+        tool_with_params(
+            "CrmRadar",
+            &[
+                ("company", "String", false),
+                ("max_results", "Int", false),
+                ("active", "Bool", true),
+            ],
+        )
+    }
+
+    /// Happy path: a structured call satisfying the schema verifies. The
+    /// bare-identifier `company` arg is runtime-resolved (skipped); the
+    /// Int + Bool literals align; the optional `active` may be omitted.
+    #[test]
+    fn sound_tool_call_verifies() {
+        let mut ir = empty_ir();
+        ir.tools.push(crm_tool());
+        ir.flows.push(flow_with_steps(
+            "Scan",
+            vec![use_named("CrmRadar", &[("company", "company"), ("max_results", "5")])],
+        ));
+        let proofs = generate_tool_call_soundness_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 1, "one schema-full structured call => one proof");
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// An unknown argument name → Refuted.
+    #[test]
+    fn unknown_arg_refuted() {
+        let mut ir = empty_ir();
+        ir.tools.push(crm_tool());
+        ir.flows.push(flow_with_steps(
+            "Scan",
+            vec![use_named(
+                "CrmRadar",
+                &[("company", "x"), ("max_results", "5"), ("bogus", "1")],
+            )],
+        ));
+        let proofs = generate_tool_call_soundness_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("does not declare"), "got: {reason}");
+                assert!(reason.contains("bogus"), "got: {reason}");
+            }
+            other => panic!("expected unknown-arg Refuted, got {other:?}"),
+        }
+    }
+
+    /// A duplicate argument → Refuted.
+    #[test]
+    fn duplicate_arg_refuted() {
+        let mut ir = empty_ir();
+        ir.tools.push(crm_tool());
+        ir.flows.push(flow_with_steps(
+            "Scan",
+            vec![use_named(
+                "CrmRadar",
+                &[("company", "a"), ("company", "b"), ("max_results", "5")],
+            )],
+        ));
+        let proofs = generate_tool_call_soundness_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("duplicate"), "got: {reason}");
+                assert!(reason.contains("company"), "got: {reason}");
+            }
+            other => panic!("expected duplicate Refuted, got {other:?}"),
+        }
+    }
+
+    /// A missing required argument → Refuted.
+    #[test]
+    fn missing_required_refuted() {
+        let mut ir = empty_ir();
+        ir.tools.push(crm_tool());
+        // omit `max_results` (required); supply only `company`.
+        ir.flows.push(flow_with_steps(
+            "Scan",
+            vec![use_named("CrmRadar", &[("company", "x")])],
+        ));
+        let proofs = generate_tool_call_soundness_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("omits required"), "got: {reason}");
+                assert!(reason.contains("max_results"), "got: {reason}");
+            }
+            other => panic!("expected missing-required Refuted, got {other:?}"),
+        }
+    }
+
+    /// An optional param omitted verifies (not "missing required").
+    #[test]
+    fn optional_param_omitted_verifies() {
+        let mut ir = empty_ir();
+        ir.tools.push(crm_tool());
+        // `active` is optional → omitting it is fine.
+        ir.flows.push(flow_with_steps(
+            "Scan",
+            vec![use_named("CrmRadar", &[("company", "x"), ("max_results", "5")])],
+        ));
+        let proofs = generate_tool_call_soundness_proofs(&ir, VERSION);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// A literal type mismatch (Int literal into a String param) → Refuted.
+    #[test]
+    fn literal_type_mismatch_refuted() {
+        let mut ir = empty_ir();
+        ir.tools.push(crm_tool());
+        // company:String given the Int literal `5`.
+        ir.flows.push(flow_with_steps(
+            "Scan",
+            vec![use_named("CrmRadar", &[("company", "5"), ("max_results", "5")])],
+        ));
+        let proofs = generate_tool_call_soundness_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("type mismatch"), "got: {reason}");
+                assert!(reason.contains("company:String:Int"), "got: {reason}");
+            }
+            other => panic!("expected type-mismatch Refuted, got {other:?}"),
+        }
+    }
+
+    /// Int coerces into a Float parameter (no mismatch).
+    #[test]
+    fn int_into_float_param_verifies() {
+        let mut ir = empty_ir();
+        ir.tools
+            .push(tool_with_params("Calc", &[("ratio", "Float", false)]));
+        ir.flows.push(flow_with_steps(
+            "Run",
+            vec![use_named("Calc", &[("ratio", "5")])], // Int literal into Float
+        ));
+        let proofs = generate_tool_call_soundness_proofs(&ir, VERSION);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// A schema-less tool (no `parameters:`) produces NO proof — there is
+    /// no arg contract to certify.
+    #[test]
+    fn schema_less_tool_no_proof() {
+        let mut ir = empty_ir();
+        ir.tools.push(tool("Plain", &["network"])); // no parameters
+        ir.flows.push(flow_with_steps(
+            "Scan",
+            vec![use_named("Plain", &[("anything", "1")])],
+        ));
+        assert!(generate_tool_call_soundness_proofs(&ir, VERSION).is_empty());
+    }
+
+    /// The legacy `use <Tool> on <arg>` form produces NO proof (schema-
+    /// less by construction — D5 back-compat).
+    #[test]
+    fn legacy_on_form_no_proof() {
+        let mut ir = empty_ir();
+        ir.tools.push(crm_tool());
+        ir.flows
+            .push(flow_with_steps("Scan", vec![use_legacy("CrmRadar", "${q}")]));
+        assert!(generate_tool_call_soundness_proofs(&ir, VERSION).is_empty());
+    }
+
+    /// Two calls to the SAME tool (one sound, one defective) are
+    /// distinguished by `call_index`: the sound one verifies, the
+    /// defective one refutes.
+    #[test]
+    fn two_calls_same_tool_distinguished() {
+        let mut ir = empty_ir();
+        ir.tools.push(crm_tool());
+        ir.flows.push(flow_with_steps(
+            "Scan",
+            vec![
+                use_named("CrmRadar", &[("company", "x"), ("max_results", "5")]), // sound
+                use_named("CrmRadar", &[("company", "x"), ("bogus", "1")]),       // defective
+            ],
+        ));
+        let proofs = generate_tool_call_soundness_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 2);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+        match check_proof(&proofs[1], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                // proofs[1] is the defective call: it omits `max_results`
+                // AND passes the unknown `bogus`.
+                assert!(
+                    reason.contains("bogus") || reason.contains("max_results"),
+                    "got: {reason}"
+                );
+            }
+            other => panic!("expected Refuted for the defective call, got {other:?}"),
+        }
+    }
+
+    /// A defective call nested inside a conditional branch is caught (the
+    /// recursive walk descends into then/else bodies).
+    #[test]
+    fn nested_conditional_call_is_caught() {
+        let mut ir = empty_ir();
+        ir.tools.push(crm_tool());
+        let cond = crate::ir_nodes::IRFlowNode::Conditional(crate::ir_nodes::IRConditional {
+            node_type: "conditional",
+            source_line: 1,
+            source_column: 1,
+            condition: "x".to_string(),
+            comparison_op: "==".to_string(),
+            comparison_value: "1".to_string(),
+            then_body: vec![use_named("CrmRadar", &[("company", "x"), ("ghost", "1")])],
+            else_body: Vec::new(),
+            conditions: Vec::new(),
+            conjunctor: String::new(),
+        });
+        ir.flows.push(flow_with_steps("Branchy", vec![cond]));
+        let proofs = generate_tool_call_soundness_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 1, "the nested call must be discovered");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("ghost"), "got: {reason}");
+            }
+            other => panic!("expected nested-call Refuted, got {other:?}"),
+        }
+    }
+
+    /// ADVERSARIAL (D51.2): a forged witness hiding an unknown argument
+    /// (clearing `unknown_args`) is rejected — the checker recomputes.
+    #[test]
+    fn forged_hidden_unknown_arg_rejected() {
+        let mut ir = empty_ir();
+        ir.tools.push(crm_tool());
+        ir.flows.push(flow_with_steps(
+            "Scan",
+            vec![use_named(
+                "CrmRadar",
+                &[("company", "x"), ("max_results", "5"), ("sneaky", "1")],
+            )],
+        ));
+        let mut proofs = generate_tool_call_soundness_proofs(&ir, VERSION);
+        if let Witness::ToolCallSoundness(ref mut w) = proofs[0].witness {
+            w.unknown_args.clear(); // the lie
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("disagrees with artifact"), "got: {reason}");
+            }
+            other => panic!("expected forged Refuted, got {other:?}"),
+        }
+    }
+
+    /// ADVERSARIAL: a witness naming a call index absent from the artifact
+    /// is Refuted (not a panic).
+    #[test]
+    fn proof_for_absent_call_index_refuted() {
+        let mut ir = empty_ir();
+        ir.tools.push(crm_tool());
+        ir.flows.push(flow_with_steps(
+            "Scan",
+            vec![use_named("CrmRadar", &[("company", "x"), ("max_results", "5")])],
+        ));
+        let mut proofs = generate_tool_call_soundness_proofs(&ir, VERSION);
+        if let Witness::ToolCallSoundness(ref mut w) = proofs[0].witness {
+            w.call_index = 9; // no such call
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("no structured `use` call at index"), "got: {reason}");
+            }
+            other => panic!("expected absent-call Refuted, got {other:?}"),
+        }
+    }
+
+    /// Digest binding holds for tool-call proofs.
+    #[test]
+    fn tool_call_proof_digest_mismatch_rejected() {
+        let mut ir_a = empty_ir();
+        ir_a.tools.push(crm_tool());
+        ir_a.flows.push(flow_with_steps(
+            "Scan",
+            vec![use_named("CrmRadar", &[("company", "x"), ("max_results", "5")])],
+        ));
+        let proofs = generate_tool_call_soundness_proofs(&ir_a, VERSION);
+
+        let mut ir_b = empty_ir();
+        ir_b.tools.push(crm_tool());
+        ir_b.flows.push(flow_with_steps(
+            "Scan",
+            vec![use_named("CrmRadar", &[("company", "x"), ("max_results", "5")])],
+        ));
+        ir_b.tools.push(tool("Extra", &["network"])); // changes digest
+
+        assert_eq!(check_proof(&proofs[0], &ir_b), CheckOutcome::DigestMismatch);
+    }
+
+    /// Tool-call proof round-trips through JSON and still verifies.
+    #[test]
+    fn tool_call_proof_json_round_trips_and_verifies() {
+        let mut ir = empty_ir();
+        ir.tools.push(crm_tool());
+        ir.flows.push(flow_with_steps(
+            "Scan",
+            vec![use_named(
+                "CrmRadar",
+                &[("company", "x"), ("max_results", "5"), ("active", "true")],
+            )],
+        ));
+        let proofs = generate_tool_call_soundness_proofs(&ir, VERSION);
+        let json = serde_json::to_string(&proofs[0]).expect("serialize");
+        let restored: ProofTerm = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored, proofs[0]);
+        assert_eq!(check_proof(&restored, &ir), CheckOutcome::Verified);
+    }
+
+    /// `generate_all_proofs` includes the tool-call-soundness class, and a
+    /// defective call makes the bundle non-deployable (the §52 deploy-gate
+    /// signal).
+    #[test]
+    fn all_proofs_includes_tool_call_soundness_and_flags_defect() {
+        let mut ir = empty_ir();
+        ir.tools.push(crm_tool());
+        ir.flows.push(flow_with_steps(
+            "Scan",
+            vec![use_named("CrmRadar", &[("company", "5"), ("max_results", "5")])], // Int into String
+        ));
+        let bundle = bundle_for(&ir);
+        assert!(
+            bundle
+                .proofs
+                .iter()
+                .any(|p| p.property == PropertyClass::ToolCallSoundness),
+            "generate_all_proofs must include the tool-call-soundness class"
+        );
+        let report = check_bundle(&bundle, &ir);
+        assert!(!report.all_verified(), "a literal type mismatch is non-deployable");
+        assert!(report
+            .refutations()
+            .iter()
+            .any(|r| r.property == PropertyClass::ToolCallSoundness));
     }
 }

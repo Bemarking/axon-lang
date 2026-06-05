@@ -29,6 +29,7 @@ use super::generate::{
     derive_capability_isolation_witness, derive_compliance_coverage_witness,
     derive_effect_row_soundness_witness, derive_endpoint_retry_witness,
     derive_shield_halt_witness, derive_socket_credit_witness,
+    derive_tool_call_soundness_witness,
 };
 use super::proof_term::{ProofTerm, PropertyClass, ResourceBoundsWitness, Witness};
 
@@ -83,6 +84,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         }
         (PropertyClass::CapabilityContainment, Witness::CapabilityContainment(w)) => {
             check_capability_containment(w, ir)
+        }
+        (PropertyClass::ToolCallSoundness, Witness::ToolCallSoundness(w)) => {
+            check_tool_call_soundness(w, ir)
         }
         _ => CheckOutcome::UnknownProperty,
     }
@@ -549,6 +553,86 @@ fn check_capability_containment(
             reason: format!(
                 "endpoint '{}' reaches store(s) gated by capabilit(ies) {:?} that its declared `requires:` {:?} does not cover — a capability leak (a request satisfying the declared requires could reach a store it is not authorized for)",
                 actual.endpoint_name, actual.uncovered_gates, actual.declared_requires
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §58.i — re-derive the tool-call-soundness witness from the named flow
+/// + call site and verify it against the proof, then render the verdict.
+/// Independent of the producer (D51.2): the checker re-walks the SAME
+/// digest-bound IR, locates the call at `call_index`, re-reads the called
+/// tool's `parameters:` schema, and recomputes every fact; a forged
+/// witness (e.g. hiding an unknown argument or a type mismatch) is
+/// rejected because the recomputation disagrees.
+fn check_tool_call_soundness(
+    claimed: &super::proof_term::ToolCallSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    // Re-derive independently — do NOT trust the witness. `None` ⟹ the
+    // flow or the call site named by the witness is absent from this
+    // artifact (forged / stale proof).
+    let actual = match derive_tool_call_soundness_witness(
+        &claimed.flow_name,
+        claimed.call_index,
+        ir,
+    ) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "flow '{}' has no structured `use` call at index {} in this artifact",
+                    claimed.flow_name, claimed.call_index
+                ),
+            }
+        }
+    };
+
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+
+    // Verdict on the re-derived (trusted) facts.
+    if !actual.schema_present {
+        // A schema-less / undeclared tool carries no arg contract — there
+        // is nothing to certify, so a proof for it is vacuously verified
+        // (generation never emits one; this stays total for a hand-built
+        // witness).
+        return CheckOutcome::Verified;
+    }
+    if !actual.unknown_args.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "call to tool '{}' in flow '{}' passes argument(s) {:?} the tool does not declare (declared parameters: {:?})",
+                actual.tool_name, actual.flow_name, actual.unknown_args, actual.declared_params
+            ),
+        };
+    }
+    if !actual.duplicate_args.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "call to tool '{}' in flow '{}' supplies duplicate argument(s) {:?}",
+                actual.tool_name, actual.flow_name, actual.duplicate_args
+            ),
+        };
+    }
+    if !actual.missing_required.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "call to tool '{}' in flow '{}' omits required argument(s) {:?}",
+                actual.tool_name, actual.flow_name, actual.missing_required
+            ),
+        };
+    }
+    if !actual.type_mismatches.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "call to tool '{}' in flow '{}' has literal-argument type mismatch(es) {:?} (each `arg:expected:got`)",
+                actual.tool_name, actual.flow_name, actual.type_mismatches
             ),
         };
     }
