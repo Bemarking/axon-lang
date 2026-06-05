@@ -22,6 +22,7 @@ fn sample_envelope() -> EpistemicEnvelope {
         base: "speculate".into(),
         scope: "tool:WebSearch".into(),
         confidence: 0.80,
+        output_type: None, // §58.i.2 — no declared output type on this sample
     }
 }
 

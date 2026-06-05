@@ -38,6 +38,7 @@ fn eps(base: &str, confidence: f64) -> EpistemicEnvelope {
         base: base.into(),
         scope: format!("tool:{base}"),
         confidence,
+        output_type: None, // §58.i.2 — headline-certainty test is output-type-agnostic
     }
 }
 
