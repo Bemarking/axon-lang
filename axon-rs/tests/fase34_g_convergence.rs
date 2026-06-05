@@ -134,6 +134,7 @@ fn stream_tool_entry(
         max_results: None,
         output_schema: String::new(),
         effect_row: row,
+        parameters: Vec::new(),
         source: ToolSource::Program,
         is_streaming,
     }
@@ -779,6 +780,7 @@ async fn s6_disjunct_b_without_stream_policy_takes_direct_drain_path_counters_ze
         max_results: None,
         output_schema: String::new(),
         effect_row: vec!["compute".into()], // no stream prefix
+        parameters: Vec::new(),
         source: ToolSource::Program,
         is_streaming: true, // programmatically flagged
     };

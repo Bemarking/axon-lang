@@ -83,6 +83,7 @@ fn entry(
         max_results: None,
         output_schema: String::new(),
         effect_row: effect_row.into_iter().map(String::from).collect(),
+        parameters: Vec::new(),
         source: ToolSource::Program,
         is_streaming,
     }

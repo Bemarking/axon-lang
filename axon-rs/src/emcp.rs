@@ -824,6 +824,9 @@ impl Tool for McpStreamingTool {
             max_results: None,
             output_schema: String::new(),
             effect_row: Vec::new(),
+            // §Fase 58.f.2 — reconstructed entry for the legacy sync
+            // delegate; no typed input schema needed on this path.
+            parameters: Vec::new(),
             source: crate::tool_registry::ToolSource::Program,
             is_streaming: false,
         };
@@ -1139,6 +1142,7 @@ mod tests {
             max_results: None,
             output_schema: "JSON".to_string(),
             effect_row: vec!["network".to_string(), "epistemic:speculate".to_string()],
+            parameters: Vec::new(),
             source: ToolSource::Program,
             // §Fase 34.c — MCP tools default to non-streaming; effect_row
             // carries `network` + `epistemic:speculate` but no `stream:`

@@ -36,6 +36,15 @@ pub struct ToolEntry {
     pub max_results: Option<i64>,
     pub output_schema: String,
     pub effect_row: Vec<String>,
+    /// §Fase 58.f.2 — the tool's typed INPUT SCHEMA (D1) as resolved
+    /// `(param_name, type_name)` pairs, populated from
+    /// `IRToolSpec.parameters` at [`ToolRegistry::register_from_ir`].
+    /// The streaming dispatcher's `run_use_tool` reads this to coerce
+    /// each `use Tool(k = v, …)` arg to its declared JSON type — the
+    /// SAME `coerce_tool_arg_value` discipline the synchronous server
+    /// path (§58.e/58.f) applies via `CompiledStep.tool_param_types`.
+    /// Empty for a schema-less tool (D5) and for the built-ins.
+    pub parameters: Vec<(String, String)>,
     pub source: ToolSource,
     /// §Fase 34.c (v1.29.0) — Whether this tool is a stream
     /// producer. Auto-derived at registration time from
@@ -119,6 +128,9 @@ impl ToolRegistry {
                 max_results: None,
                 output_schema: "number".to_string(),
                 effect_row: vec!["compute".to_string()],
+                // §Fase 58.f.2 — built-ins declare no typed input schema;
+                // they accept the legacy positional `on <arg>` form.
+                parameters: Vec::new(),
                 source: ToolSource::Builtin,
                 // §Fase 34.c — Calculator declares `compute` effect only.
                 // No stream effect → is_streaming = false.
@@ -136,6 +148,8 @@ impl ToolRegistry {
                 max_results: None,
                 output_schema: String::new(),
                 effect_row: vec!["read".to_string()],
+                // §Fase 58.f.2 — see Calculator: no typed input schema.
+                parameters: Vec::new(),
                 source: ToolSource::Builtin,
                 // §Fase 34.c — DateTimeTool declares `read` effect only.
                 is_streaming: false,
@@ -153,6 +167,15 @@ impl ToolRegistry {
     pub fn register_from_ir(&mut self, tool_specs: &[IRToolSpec]) {
         for spec in tool_specs {
             let is_streaming = derive_is_streaming(&spec.effect_row);
+            // §Fase 58.f.2 — resolve the typed input schema (D1) into
+            // `(name, type_name)` pairs, matching the synchronous path's
+            // `CompiledStep.tool_param_types` (runner.rs §58.e) so the
+            // streaming `run_use_tool` coerces args identically.
+            let parameters: Vec<(String, String)> = spec
+                .parameters
+                .iter()
+                .map(|p| (p.name.clone(), p.type_name.clone()))
+                .collect();
             self.tools.insert(
                 spec.name.clone(),
                 ToolEntry {
@@ -164,6 +187,7 @@ impl ToolRegistry {
                     max_results: spec.max_results,
                     output_schema: spec.output_schema.clone(),
                     effect_row: spec.effect_row.clone(),
+                    parameters,
                     source: ToolSource::Program,
                     is_streaming,
                 },
@@ -392,6 +416,7 @@ mod tests {
             max_results: Some(5),
             output_schema: String::new(),
             effect_row: Vec::new(),
+            parameters: Vec::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -482,6 +507,7 @@ mod tests {
             max_results: None,
             output_schema: String::new(),
             effect_row: Vec::new(),
+            parameters: Vec::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -503,6 +529,7 @@ mod tests {
             max_results: Some(5),
             output_schema: String::new(),
             effect_row: Vec::new(),
+            parameters: Vec::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -530,6 +557,7 @@ mod tests {
             max_results: None,
             output_schema: String::new(),
             effect_row: Vec::new(),
+            parameters: Vec::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -555,6 +583,7 @@ mod tests {
             max_results: None,
             output_schema: String::new(),
             effect_row: Vec::new(),
+            parameters: Vec::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
@@ -567,6 +596,7 @@ mod tests {
             max_results: None,
             output_schema: String::new(),
             effect_row: Vec::new(),
+            parameters: Vec::new(),
             source: ToolSource::Program,
             is_streaming: false,
         });
