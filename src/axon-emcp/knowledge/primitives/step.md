@@ -138,22 +138,33 @@ step LookupPatient {
 
 ### `apply:` (optional)
 
-A **declared-flow name**. When present, the step *invokes* the
-named flow with the `given:` expression as its argument, rather
-than calling the cognitive backend. This is the canonical way to
-compose flows.
+A **declared-flow name** (flow composition) **or a declared
+tool** (run the tool as this step's backend). When present, the
+step *invokes* the named flow/tool with the `given:` expression
+as its argument, rather than calling the cognitive backend.
 
 ```axon
 step EnrichWithLegalContext {
     given: extracted_entities
-    apply: AnalyzeLegalContext
+    apply: AnalyzeLegalContext      # compose a sub-flow
     output: EnrichedEntityMap
 }
 ```
 
-The applied flow's parameters and return type must align with
-`given:` and `output:`; the type checker enforces this at compile
-time.
+For **flow composition**, the applied flow's parameters and return
+type are expected to align with `given:` and `output:` (the
+intended contract).
+
+> **Enforcement note (§Fase 58).** The type-checked, structured
+> way to invoke a **tool** with named, schema-validated arguments
+> is the **flow-level** `use <Tool>(k = v, …)` form — the
+> type-checker validates the call against the tool's declared
+> `parameters:` schema at compile time (CT-2 caller blame, before
+> any dispatch). See `axon://primitives/tool`. The step-level
+> `apply: <Tool> given: <struct>` splat (auto-mapping a struct's
+> fields onto the tool schema) is a planned refinement and is not
+> yet compile-validated; until then prefer `use <Tool>(k = v, …)`
+> at flow level for typed tool calls.
 
 ## Sub-constructs (one per step)
 

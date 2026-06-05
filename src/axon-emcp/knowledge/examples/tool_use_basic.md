@@ -1,7 +1,7 @@
 ---
 name: tool_use_basic
 title: Flow that uses a tool with a declared backend
-summary: Shows the canonical `tool` primitive — a named backend with effects, timeout, and provider — invoked from a step via `apply:`.
+summary: Shows the `tool` primitive — a named backend with effects, timeout, and provider — invoked from a step via `apply:`. (For typed, schema-validated tool calls with structured arguments, see the flow-level `use <Tool>(k = v, …)` form in `axon://primitives/tool`.)
 topic: composition
 primitives:
   - persona
@@ -10,9 +10,16 @@ primitives:
   - tool
 ---
 
-// A step invokes a named tool via `apply:`. The tool declares its
-// provider + effects + timeout once; every step that uses it
-// inherits those constraints.
+// A step invokes a named tool via `apply:` — running the tool as
+// that step's backend. The tool declares its provider + effects +
+// timeout once; every step that uses it inherits those constraints.
+//
+// This is ONE of two canonical tool surfaces. The other is the
+// flow-level `use <Tool>(k = v, …)` dispatch (typed, schema-
+// validated structured args, real HTTP/MCP dispatch) — see
+// `axon://primitives/tool`. Use `apply:` to run a tool as a step's
+// backend; use `use <Tool>(…)` for an explicit, typed call whose
+// result a later step consumes.
 
 persona Translator {
     domain: ["translation"]
