@@ -2592,6 +2592,12 @@ pub fn execute_server_flow(
     // deferred per plan vivo §7); axum's `Query<HashMap>` extractor
     // provides this shape.
     request_query: &std::collections::HashMap<String, String>,
+    // §Fase 58.g (D7) — optional per-tenant / per-server tool base URL.
+    // When `Some`, every URL-dispatched program tool with a RELATIVE
+    // `runtime` is resolved against it (`{base}/{slug}`) so the adopter
+    // wires their tool-server via config without touching the program;
+    // absolute runtimes stay verbatim (D5). `None` → no resolution.
+    tool_base_url: Option<&str>,
 ) -> Result<ServerRunnerMetrics, String> {
     let mut target_run = None;
     for run in &ir.runs {
@@ -2714,6 +2720,12 @@ pub fn execute_server_flow(
     // between concurrent flows (§58 D10). Provider→URL resolves via each tool's
     // declared `runtime:` field (D7); the §58.e structured body then POSTs to it.
     registry.register_from_ir(&ir.tools);
+    // §Fase 58.g (D7) — resolve relative tool runtimes against the
+    // caller-supplied per-tenant / per-server base URL. Request-scoped
+    // (this `registry` is a per-call local) → no cross-tenant leakage.
+    if let Some(base) = tool_base_url {
+        registry.resolve_relative_endpoints(base);
+    }
 
     // §Fase 35.e — build the axonstore registry from the program's
     // declarations. The D2 closed-catalog gate runs here: an unknown

@@ -2230,6 +2230,11 @@ fn server_execute(
         request_body,
         request_path,
         request_query,
+        // §Fase 58.g (D7) — the OSS server resolves relative tool
+        // runtimes against the `AXON_TOOL_BASE_URL` env (single-tenant
+        // per-process); the multi-tenant per-tenant override is the
+        // enterprise executor's concern. Unset → no resolution (D5).
+        std::env::var("AXON_TOOL_BASE_URL").ok().as_deref(),
     )?;
 
     // Count anchors from IR
@@ -18836,6 +18841,11 @@ pub fn server_execute_streaming(
     request_path: HashMap<String, String>,
     // §Fase 37.y (D3) — URL query string parsed name → value.
     request_query: HashMap<String, String>,
+    // §Fase 58.g (D7) — optional per-tenant / per-server tool base URL,
+    // threaded to the dispatcher so relative program-tool runtimes
+    // resolve to `{base}/{slug}` (absolute runtimes stay verbatim, D5).
+    // `None` → no resolution.
+    tool_base_url: Option<String>,
 ) -> StreamingExecution {
     use crate::flow_execution_event::FlowExecutionEvent;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<FlowExecutionEvent>();
@@ -18964,6 +18974,8 @@ pub fn server_execute_streaming(
             // §Fase 37.y — path + query into the dispatcher.
             request_path,
             request_query,
+            // §Fase 58.g (D7) — per-tenant tool base URL.
+            tool_base_url,
         )
         .await;
         exited_for_dispatcher.notify_waiters();
@@ -19227,6 +19239,10 @@ async fn execute_sse_handler_inner(
                     // §Fase 37.y — path captures + query string.
                     request_path_for_task,
                     request_query_for_task,
+                    // §Fase 58.g (D7) — env-driven tool base URL for the
+                    // OSS streaming server (single-tenant per-process);
+                    // enterprise threads its per-tenant override.
+                    std::env::var("AXON_TOOL_BASE_URL").ok(),
                 );
 
                 // §Fase 33.z.k.g.2 — Construct the wire-format adapter

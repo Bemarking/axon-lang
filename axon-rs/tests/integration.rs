@@ -18986,6 +18986,7 @@ fn execute_server_flow_accepts_api_key_override() {
         None,
         &std::collections::HashMap::new(),
         &std::collections::HashMap::new(),
+        None, // §Fase 58.g — tool_base_url
     );
     assert!(result.is_err()); // flow not found, but the function accepted the args
 
@@ -18999,6 +19000,7 @@ fn execute_server_flow_accepts_api_key_override() {
         None,
         &std::collections::HashMap::new(),
         &std::collections::HashMap::new(),
+        None, // §Fase 58.g — tool_base_url
     );
     assert!(result2.is_err()); // flow not found, but key override was accepted
 }
