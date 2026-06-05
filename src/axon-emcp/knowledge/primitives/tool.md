@@ -6,13 +6,15 @@ top_level: true
 since: v0.1.0 (initial language)
 grammar: |
   tool <Name> {
-      provider: <ident>               # required — provider slug (brave, tavily, exa, code_interpreter, ...)
+      provider: <ident>               # required — provider slug (http, mcp, brave, code_interpreter, ...)
+      parameters: { k: Type, ... }    # optional (§Fase 58) — typed INPUT schema (the call contract)
+      output_type: <Type>             # optional (§Fase 58) — declared OUTPUT type of the tool result
       max_results: <integer>          # optional — cap on returned items
       filter: <expr>                  # optional — server-side filter expression
       timeout: <duration>             # optional — wall-clock budget (e.g. 10s, 500ms)
-      runtime: <ident>                # optional — runtime hint (e.g. native | sandboxed)
+      runtime: <ident>                # optional — runtime hint / endpoint slug (native | sandboxed | <slug>)
       sandbox: <true|false>           # optional — force-execute inside a sandboxed worker
-      effects: <effect-row>           # optional — declared effects (<net:egress>, <io:read>, ...)
+      effects: <effect-row>           # optional — declared effects (<network>, <io>, ...)
   }
 ---
 
@@ -63,9 +65,45 @@ the slug parses as an identifier but does NOT validate it
 against the catalog — the binding is deployment-time so the
 same axon source can target multiple backends.
 
-Common slugs: `brave`, `tavily`, `exa`, `serper`, `bing`,
+Common slugs: `http` (REST endpoint dispatch), `mcp` (ℰMCP
+JSON-RPC transducer), `brave`, `tavily`, `exa`, `serper`, `bing`,
 `google_cse`, `code_interpreter`, `python_repl`, `bash`,
-`http_fetch`, `sql`, `vector_search`, `wikidata`.
+`http_fetch`, `sql`, `vector_search`, `wikidata`. The `http` and
+`mcp` providers dispatch a **real** call to the tool-server (see
+*Calling a tool* below); other slugs that the runtime registry
+does not handle locally fall through to the model's tool-use
+surface.
+
+### `parameters:` (optional, §Fase 58)
+
+The tool's **typed input schema** — the call contract. A
+brace-delimited list of `name: Type` pairs:
+
+```axon
+parameters: { company: String, max_results: Int, active: Bool }
+```
+
+The schema reuses the full type-expression grammar (generics like
+`List<T>`, `?`-optionals); a parameter whose type ends in `?` is
+**optional**, every other parameter is **required**. The schema is
+the signature the type-checker validates a `use <Tool>(k = v, …)`
+call against (§58.d) — an unknown argument name, a duplicate, a
+missing required parameter, or a literal type mismatch is a
+**compile-time CALLER error** (CT-2 blame), surfaced *before* any
+dispatch. A tool with **no** `parameters:` is schema-less: it
+accepts the legacy single-argument `use <Tool> on <arg>` form and
+its calls are not arg-validated (§58 D5 back-compat).
+
+### `output_type:` (optional, §Fase 58)
+
+The tool's **declared output type**. After a real dispatch, the
+result is bound for downstream reference (the tool-step's typed
+output), so the declared type participates in the semantic type
+system rather than being an opaque blob.
+
+```axon
+output_type: CrmReport
+```
 
 ### `max_results:` (optional)
 
@@ -156,17 +194,64 @@ invocation lands in the audit hash-chain with the row attached.
 
 ## Calling a tool
 
-A tool is not invoked by a literal `call <Tool>` statement; the
-backend's tool-use surface (OpenAI tools, Anthropic tools,
-JSON-RPC tool calls) makes them available to the model
-implicitly while the surrounding step runs. The step author
-biases towards a tool via the prompt (e.g. *"Search the web for
-recent rulings on …"*), and the runtime exposes the declared
-`tool`s as candidates.
+There are two ways a declared tool is invoked.
 
-In strict-tool mode (`run … effort: strict`), the runtime
-restricts the model to ONLY the tools declared at module level;
-non-declared tool calls are rejected as protocol violations.
+### 1. Explicit dispatch (§Fase 58) — the typed, real-dispatch path
+
+A **flow-level** `use <Tool>(…)` statement dispatches a real call
+to the tool-server and binds the typed result. Two surface forms:
+
+```axon
+# Structured, multi-field — the canonical form for typed args.
+# Each named arg is validated against the tool's `parameters:`
+# schema at compile time; the runtime assembles a typed JSON body
+# ({"company":"Acme","max_results":5,"active":true}) and POSTs it.
+use CrmRadar(company = "Acme", max_results = 5, active = true)
+
+# Legacy single-argument (§Fase 54.b, D5 back-compat). `on
+# "${param}"` interpolates a bound request/flow parameter; the
+# body is wrapped as {"input": <arg>}.
+use WebSearch on "${query}"
+```
+
+Both are **flow-level**: a `use` written inside a `step { }` body
+is a parse error (§54.a) — it would silently degrade to an
+unconstrained LLM step. The in-step equivalent is `apply: <Tool>`
+on a step (run the tool as that step's backend).
+
+The dispatch is real on **both** transports: the synchronous
+endpoint path (`execute_server_flow`) and the SSE / streaming path
+(`server_execute_streaming`). For the `http` / `mcp` providers the
+runtime POSTs to the tool's resolved endpoint and binds the
+response under `<ToolName>_result`; a provider the registry does
+not handle locally falls through to the model (form 2).
+
+### 2. Implicit tool-use surface
+
+The backend's native tool-use surface (OpenAI tools, Anthropic
+tools, JSON-RPC tool calls) also makes declared tools available to
+the model while the surrounding step runs. The step author biases
+towards a tool via the prompt (e.g. *"Search the web for recent
+rulings on …"*), and the runtime exposes the declared `tool`s as
+candidates. In strict-tool mode (`run … effort: strict`), the
+runtime restricts the model to ONLY the tools declared at module
+level; non-declared tool calls are rejected as protocol
+violations.
+
+## Wiring the endpoint (§Fase 58.g)
+
+For the URL-dispatched providers (`http` / `mcp`), the call
+endpoint is **config-driven**, so the same source runs against any
+tool-server without edits:
+
+- A tool whose `runtime:` is an absolute `http(s)://…` URL is used
+  verbatim (the program pinned it).
+- Otherwise the `runtime:` slug (or, when omitted, the tool name)
+  is resolved against a **base URL**: `{base}/{slug}`. The base is
+  the `AXON_TOOL_BASE_URL` env on the OSS server, or — on the
+  enterprise multi-tenant server — the per-tenant `tool.base_url`
+  config key (which overrides the env). Resolution is per-request,
+  so concurrent tenants never share endpoints.
 
 ## What this primitive is NOT
 
@@ -179,9 +264,13 @@ non-declared tool calls are rejected as protocol violations.
   compiler will reject a bash binding without an explicit
   `effects:` row in strict-policy modules.
 - **Not a function in the host language.** Calling a tool
-  produces an audited side effect, not a typed return value
-  the next step can reference via `<Tool>.output` — for typed
-  composition use `apply` on a flow that wraps the tool.
+  produces an audited side effect. As of §Fase 58, an
+  explicitly-dispatched tool (`use <Tool>(…)`) DOES bind a typed
+  result — declare `output_type:` to give it a type, and the
+  runtime binds the response under `<ToolName>_result` for a
+  subsequent step to consume. (The implicit model-tool-use surface,
+  by contrast, still folds tool calls into the surrounding step's
+  generation rather than producing a standalone value.)
 - **Not nested inside a flow.** Tools are declared at module
   scope and referenced implicitly by the runtime; there is no
   inline tool grammar.
