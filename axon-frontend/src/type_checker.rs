@@ -4769,6 +4769,9 @@ impl<'a> TypeChecker<'a> {
                         _ => self.check_use_tool_args(n),
                     }
                 }
+                // §Fase 58.d.2 (D3) — `apply: <Tool> given: <struct>` splat:
+                // validate the struct's fields against the tool schema.
+                FlowStep::Step(s) => self.check_apply_splat(s, steps),
                 // All other steps: no cross-reference checks needed
                 _ => {}
             }
@@ -4889,6 +4892,129 @@ impl<'a> TypeChecker<'a> {
             .next()
             .unwrap_or(decl_ty);
         base == "Any" || base == value_ty || (base == "Float" && value_ty == "Int")
+    }
+
+    /// §Fase 58.d.2 (D3) — validate an `apply: <Tool> given: <struct>`
+    /// splat: the `given:` struct's fields auto-map onto the tool's
+    /// declared `parameters:` schema BY NAME, and the type-checker
+    /// validates name + type exactly. This closes the §58.d deferral (the
+    /// keyword form `use Tool(k = v, …)` was the §58.d half; this is the
+    /// step-`apply:` half).
+    ///
+    /// Fires ONLY when (a) `apply_ref` resolves to a declared **tool**
+    /// with a non-empty `parameters:` schema (a flow `apply:` is
+    /// composition, not a tool splat), and (b) `given:` resolves to a
+    /// known struct type — otherwise it conservatively skips (zero false
+    /// positives, mirroring §58.d). Catches a required parameter the
+    /// struct does not supply (CT-2 caller blame, pre-dispatch) and a
+    /// struct field whose type does not align with the same-named
+    /// parameter. Extra struct fields with no matching parameter are NOT
+    /// flagged — the splat maps by name, so a richer caller struct is a
+    /// legitimate pattern (sound: no false positive).
+    fn check_apply_splat(&mut self, step: &StepNode, steps: &[FlowStep]) {
+        if step.apply_ref.is_empty() || step.given.trim().is_empty() {
+            return;
+        }
+        // (a) `apply_ref` must be a declared TOOL.
+        match self.symbols.lookup(&step.apply_ref) {
+            Some(sym) if sym.kind == "tool" => {}
+            _ => return,
+        }
+        let params = self.tool_parameters(&step.apply_ref);
+        if params.is_empty() {
+            return; // schema-less tool → no contract to splat against (D5).
+        }
+        // (b) `given:` must resolve to a known struct type.
+        let Some(type_name) = self.resolve_given_struct_type(&step.given, steps) else {
+            return;
+        };
+        let Some(fields) = self.struct_fields(&type_name) else {
+            return; // not a declared struct (a primitive / generic / unknown).
+        };
+
+        // Missing required parameter (no same-named struct field).
+        for (pname, _pty, optional) in &params {
+            if !optional && !fields.iter().any(|(fname, _)| fname == pname) {
+                self.emit(
+                    format!(
+                        "`apply: {tool} given: {ty}` does not supply required parameter '{pname}' — the '{ty}' struct has no field named '{pname}'",
+                        tool = step.apply_ref,
+                        ty = type_name,
+                    ),
+                    &step.loc,
+                );
+            }
+        }
+        // Type mismatch on a matched field.
+        for (fname, fty) in &fields {
+            if let Some((_, pty, _)) = params.iter().find(|(p, _, _)| p == fname) {
+                if !Self::splat_types_align(fty, pty) {
+                    self.emit(
+                        format!(
+                            "`apply: {tool} given: {ty}` field '{fname}' has type {fty} but tool '{tool}' parameter '{fname}' expects {pty}",
+                            tool = step.apply_ref,
+                            ty = type_name,
+                        ),
+                        &step.loc,
+                    );
+                }
+            }
+        }
+    }
+
+    /// §58.d.2 — resolve the `given:` expression to a struct TYPE name,
+    /// when statically knowable: a flow parameter (its declared type) or a
+    /// `<Step>.output` reference (the prior step's declared `output:`
+    /// type). Returns `None` for anything else (a `let` binding, a field
+    /// projection, a literal) — the splat then conservatively skips.
+    fn resolve_given_struct_type(&self, given: &str, steps: &[FlowStep]) -> Option<String> {
+        let g = given.trim();
+        // `<Step>.output` → that step's declared output type.
+        if let Some(step_name) = g.strip_suffix(".output") {
+            return steps.iter().find_map(|s| match s {
+                FlowStep::Step(st) if st.name == step_name && !st.output_type.is_empty() => {
+                    Some(st.output_type.clone())
+                }
+                _ => None,
+            });
+        }
+        // A flow parameter → its declared type.
+        self.current_flow_params.get(g).map(|t| t.to_string())
+    }
+
+    /// §58.d.2 — the declared field schema `(name, flat-type)` of a struct
+    /// type, or `None` when `type_name` is not a declared `type … { … }`
+    /// (a primitive / generic / unknown). The flat-type mirrors the tool
+    /// parameter flat-type (`Base<Generic>`), so the two compare directly.
+    fn struct_fields(&self, type_name: &str) -> Option<Vec<(String, String)>> {
+        self.program.declarations.iter().find_map(|d| match d {
+            Declaration::Type(t) if t.name == type_name => Some(
+                t.fields
+                    .iter()
+                    .map(|f| {
+                        let mut ty = f.type_expr.name.clone();
+                        if !f.type_expr.generic_param.is_empty() {
+                            ty = format!("{}<{}>", ty, f.type_expr.generic_param);
+                        }
+                        (f.name.clone(), ty)
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+    }
+
+    /// §58.d.2 — whether a struct field's declared type aligns with the
+    /// same-named tool parameter's declared type. `Any` parameter accepts
+    /// anything; an `Int` field coerces into a `Float` parameter;
+    /// otherwise the types must match exactly (generics included), modulo
+    /// the `?` optional marker.
+    fn splat_types_align(field_ty: &str, param_ty: &str) -> bool {
+        let f = field_ty.trim_end_matches('?');
+        let p = param_ty.trim_end_matches('?');
+        let pbase = p.split('<').next().unwrap_or(p);
+        let fbase = f.split('<').next().unwrap_or(f);
+        pbase == "Any" || f == p || (pbase == "Float" && fbase == "Int")
     }
 
     fn check_store_ref(&mut self, store_name: &str, flow_name: &str, loc: &Loc) {
