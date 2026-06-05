@@ -99,6 +99,23 @@ pub enum PropertyClass {
     /// unresolvable `execute_flow` is REFUTED (cannot certify
     /// containment for a flow the artifact does not contain).
     CapabilityContainment,
+    /// §58.i — every structured `use <Tool>(k = v, …)` call satisfies the
+    /// called tool's declared `parameters:` input schema: no argument
+    /// names a parameter the tool does not declare; no argument is
+    /// supplied twice; every required (non-optional) parameter is
+    /// supplied; and every UNAMBIGUOUS-LITERAL argument's type aligns
+    /// with the declared type. This makes the §58.d CT-2 caller-blame
+    /// check an INDEPENDENTLY-VERIFIABLE proof — the tool schema rides
+    /// the bundle and the verifier re-derives the call's soundness from
+    /// the artifact, never trusting the compiler that ran the type-check
+    /// (D1). Literal-type alignment is CONSERVATIVE (only Int/Float/Bool
+    /// literals; bare identifiers + `${…}` interpolations are
+    /// runtime-resolved and skipped — zero false positives), so the
+    /// structural facts (unknown / duplicate / missing) are always
+    /// certified and the literal-type facts are certified where decidable
+    /// statically. A schema-less tool (no `parameters:`) and the legacy
+    /// `use <Tool> on <arg>` form carry no contract → no proof (D5).
+    ToolCallSoundness,
 }
 
 /// §51.e — the closed breach-policy catalog. Mirror of
@@ -125,6 +142,7 @@ impl PropertyClass {
             PropertyClass::ResourceBounds => "resource_bounds",
             PropertyClass::ShieldHaltGuarantee => "shield_halt_guarantee",
             PropertyClass::CapabilityContainment => "capability_containment",
+            PropertyClass::ToolCallSoundness => "tool_call_soundness",
         }
     }
 }
@@ -285,6 +303,52 @@ pub struct CapabilityContainmentWitness {
     pub uncovered_gates: Vec<String>,
 }
 
+/// §58.i — witness for [`PropertyClass::ToolCallSoundness`].
+///
+/// The derivation for ONE structured `use <Tool>(k = v, …)` call site.
+/// The checker re-walks the named flow, locates the call at `call_index`
+/// (deterministic walk order over the same digest-bound IR), re-reads
+/// the called tool's `parameters:` schema, and recomputes every fact; a
+/// forged witness (e.g. hiding an unknown argument) is rejected because
+/// the recomputation disagrees (D51.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCallSoundnessWitness {
+    /// The flow containing the call.
+    pub flow_name: String,
+    /// Ordinal of this call among ALL named-arg `use` calls in the flow,
+    /// in deterministic walk order (recursing into conditional branches +
+    /// for-in bodies). Locates the exact call site so the checker
+    /// re-derives the SAME one (two calls to the same tool in one flow
+    /// are distinguished).
+    pub call_index: usize,
+    /// The tool the call invokes.
+    pub tool_name: String,
+    /// The argument names supplied at the call, in SOURCE ORDER (so a
+    /// duplicate is visible). Re-derived from the IR call.
+    pub arg_names: Vec<String>,
+    /// The called tool's declared parameter names, sorted + deduped
+    /// (context + forgery surface). Empty if the tool is undeclared.
+    pub declared_params: Vec<String>,
+    /// Whether the called tool is declared with a NON-EMPTY `parameters:`
+    /// schema. A generated proof always has this `true` (a schema-less /
+    /// undeclared tool carries no contract → no proof).
+    pub schema_present: bool,
+    /// Args naming a parameter the tool does not declare, sorted +
+    /// deduped. Empty for a verifying proof.
+    pub unknown_args: Vec<String>,
+    /// Argument names supplied more than once, sorted + deduped. Empty
+    /// for a verifying proof.
+    pub duplicate_args: Vec<String>,
+    /// Required (non-optional) parameters not supplied, sorted. Empty for
+    /// a verifying proof.
+    pub missing_required: Vec<String>,
+    /// Unambiguous-literal args whose type does not align with the
+    /// declared type, each `name:expected:got`, sorted. Empty for a
+    /// verifying proof. (Bare identifiers / `${…}` interpolations are
+    /// runtime-resolved → not inferred → never listed.)
+    pub type_mismatches: Vec<String>,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,6 +360,7 @@ pub enum Witness {
     ResourceBounds(ResourceBoundsWitness),
     ShieldHaltGuarantee(ShieldHaltGuaranteeWitness),
     CapabilityContainment(CapabilityContainmentWitness),
+    ToolCallSoundness(ToolCallSoundnessWitness),
 }
 
 impl Witness {
@@ -316,6 +381,7 @@ impl Witness {
             }) => socket_name,
             Witness::ShieldHaltGuarantee(w) => &w.shield_name,
             Witness::CapabilityContainment(w) => &w.endpoint_name,
+            Witness::ToolCallSoundness(w) => &w.tool_name,
         }
     }
 }
