@@ -4769,9 +4769,10 @@ impl<'a> TypeChecker<'a> {
                         _ => self.check_use_tool_args(n),
                     }
                 }
-                // §Fase 58.d.2 (D3) — `apply: <Tool> given: <struct>` splat:
-                // validate the struct's fields against the tool schema.
-                FlowStep::Step(s) => self.check_apply_splat(s, steps),
+                // §Fase 59 (D2) — `apply: <Tool>` on a schema-bearing tool is
+                // cognitive delegation; the honest-compiler `axon-W004` points
+                // the adopter to the deterministic `use <Tool>(k=v)` form.
+                FlowStep::Step(s) => self.check_apply_tool(s),
                 // All other steps: no cross-reference checks needed
                 _ => {}
             }
@@ -4894,127 +4895,43 @@ impl<'a> TypeChecker<'a> {
         base == "Any" || base == value_ty || (base == "Float" && value_ty == "Int")
     }
 
-    /// §Fase 58.d.2 (D3) — validate an `apply: <Tool> given: <struct>`
-    /// splat: the `given:` struct's fields auto-map onto the tool's
-    /// declared `parameters:` schema BY NAME, and the type-checker
-    /// validates name + type exactly. This closes the §58.d deferral (the
-    /// keyword form `use Tool(k = v, …)` was the §58.d half; this is the
-    /// step-`apply:` half).
+    /// §Fase 59 (D2/D3) — the honest-compiler guidance for `apply: <Tool>`.
     ///
-    /// Fires ONLY when (a) `apply_ref` resolves to a declared **tool**
-    /// with a non-empty `parameters:` schema (a flow `apply:` is
-    /// composition, not a tool splat), and (b) `given:` resolves to a
-    /// known struct type — otherwise it conservatively skips (zero false
-    /// positives, mirroring §58.d). Catches a required parameter the
-    /// struct does not supply (CT-2 caller blame, pre-dispatch) and a
-    /// struct field whose type does not align with the same-named
-    /// parameter. Extra struct fields with no matching parameter are NOT
-    /// flagged — the splat maps by name, so a richer caller struct is a
-    /// legitimate pattern (sound: no false positive).
-    fn check_apply_splat(&mut self, step: &StepNode, steps: &[FlowStep]) {
-        if step.apply_ref.is_empty() || step.given.trim().is_empty() {
+    /// `apply: <Tool>` is **cognitive delegation**: the step runs as an LLM
+    /// reasoning call with the tool made available to the model, which
+    /// decides STOCHASTICALLY whether to invoke it. It is NOT a
+    /// deterministic typed dispatch, and `given:` is NOT splatted at
+    /// runtime. When `apply: <Tool>` references a tool that declares a
+    /// `parameters:` schema, the adopter almost certainly meant a
+    /// deterministic call — so emit `axon-W004` naming the nature +
+    /// redirecting to the one deterministic, CT-2-validated, real-dispatch
+    /// surface: flow-level `use <Tool>(k = v, …)`.
+    ///
+    /// This SUPERSEDES the §58.d.2 splat type-check. Those hard errors
+    /// (`missing required` / `type mismatch`) validated a deterministic
+    /// contract the runtime never honors — the "illusion of control" that
+    /// moved the fence. §59 removes the phantom errors; the real CT-2
+    /// validation lives on `use <Tool>(k = v, …)` (§58.d, untouched). The
+    /// fence stays put: no runtime splat is invented (D6 — the LLM stays
+    /// stochastic; the compiler only indicates the path).
+    ///
+    /// Fires ONLY for `apply: <Tool>` where `<Tool>` is a declared tool
+    /// with a NON-EMPTY `parameters:` schema. A schema-less tool applied
+    /// cognitively is legitimate (no warning, D7); `apply: <Flow>` is
+    /// composition (no warning).
+    fn check_apply_tool(&mut self, step: &StepNode) {
+        if step.apply_ref.is_empty() {
             return;
         }
-        // (a) `apply_ref` must be a declared TOOL.
         match self.symbols.lookup(&step.apply_ref) {
             Some(sym) if sym.kind == "tool" => {}
-            _ => return,
+            _ => return, // a flow apply (composition) or unknown → not this rule.
         }
         let params = self.tool_parameters(&step.apply_ref);
         if params.is_empty() {
-            return; // schema-less tool → no contract to splat against (D5).
+            return; // schema-less tool → cognitive apply is legitimate (D7).
         }
-        // (b) `given:` must resolve to a known struct type.
-        let Some(type_name) = self.resolve_given_struct_type(&step.given, steps) else {
-            return;
-        };
-        let Some(fields) = self.struct_fields(&type_name) else {
-            return; // not a declared struct (a primitive / generic / unknown).
-        };
-
-        // Missing required parameter (no same-named struct field).
-        for (pname, _pty, optional) in &params {
-            if !optional && !fields.iter().any(|(fname, _)| fname == pname) {
-                self.emit(
-                    format!(
-                        "`apply: {tool} given: {ty}` does not supply required parameter '{pname}' — the '{ty}' struct has no field named '{pname}'",
-                        tool = step.apply_ref,
-                        ty = type_name,
-                    ),
-                    &step.loc,
-                );
-            }
-        }
-        // Type mismatch on a matched field.
-        for (fname, fty) in &fields {
-            if let Some((_, pty, _)) = params.iter().find(|(p, _, _)| p == fname) {
-                if !Self::splat_types_align(fty, pty) {
-                    self.emit(
-                        format!(
-                            "`apply: {tool} given: {ty}` field '{fname}' has type {fty} but tool '{tool}' parameter '{fname}' expects {pty}",
-                            tool = step.apply_ref,
-                            ty = type_name,
-                        ),
-                        &step.loc,
-                    );
-                }
-            }
-        }
-    }
-
-    /// §58.d.2 — resolve the `given:` expression to a struct TYPE name,
-    /// when statically knowable: a flow parameter (its declared type) or a
-    /// `<Step>.output` reference (the prior step's declared `output:`
-    /// type). Returns `None` for anything else (a `let` binding, a field
-    /// projection, a literal) — the splat then conservatively skips.
-    fn resolve_given_struct_type(&self, given: &str, steps: &[FlowStep]) -> Option<String> {
-        let g = given.trim();
-        // `<Step>.output` → that step's declared output type.
-        if let Some(step_name) = g.strip_suffix(".output") {
-            return steps.iter().find_map(|s| match s {
-                FlowStep::Step(st) if st.name == step_name && !st.output_type.is_empty() => {
-                    Some(st.output_type.clone())
-                }
-                _ => None,
-            });
-        }
-        // A flow parameter → its declared type.
-        self.current_flow_params.get(g).map(|t| t.to_string())
-    }
-
-    /// §58.d.2 — the declared field schema `(name, flat-type)` of a struct
-    /// type, or `None` when `type_name` is not a declared `type … { … }`
-    /// (a primitive / generic / unknown). The flat-type mirrors the tool
-    /// parameter flat-type (`Base<Generic>`), so the two compare directly.
-    fn struct_fields(&self, type_name: &str) -> Option<Vec<(String, String)>> {
-        self.program.declarations.iter().find_map(|d| match d {
-            Declaration::Type(t) if t.name == type_name => Some(
-                t.fields
-                    .iter()
-                    .map(|f| {
-                        let mut ty = f.type_expr.name.clone();
-                        if !f.type_expr.generic_param.is_empty() {
-                            ty = format!("{}<{}>", ty, f.type_expr.generic_param);
-                        }
-                        (f.name.clone(), ty)
-                    })
-                    .collect(),
-            ),
-            _ => None,
-        })
-    }
-
-    /// §58.d.2 — whether a struct field's declared type aligns with the
-    /// same-named tool parameter's declared type. `Any` parameter accepts
-    /// anything; an `Int` field coerces into a `Float` parameter;
-    /// otherwise the types must match exactly (generics included), modulo
-    /// the `?` optional marker.
-    fn splat_types_align(field_ty: &str, param_ty: &str) -> bool {
-        let f = field_ty.trim_end_matches('?');
-        let p = param_ty.trim_end_matches('?');
-        let pbase = p.split('<').next().unwrap_or(p);
-        let fbase = f.split('<').next().unwrap_or(f);
-        pbase == "Any" || f == p || (pbase == "Float" && fbase == "Int")
+        self.warn(build_w004_message(&step.apply_ref, &params), &step.loc);
     }
 
     fn check_store_ref(&mut self, store_name: &str, flow_name: &str, loc: &Loc) {
@@ -5942,6 +5859,37 @@ pub const W001_CODE: &str = "axon-W001";
 /// 33.x.g); the `axon-Wnnn` namespace is shared across the frontend
 /// and the runtime, so the next free slot is `axon-W003`.
 pub const W003_CODE: &str = "axon-W003";
+
+/// §Fase 59 (D2) — warning code for `apply: <Tool>` on a tool that
+/// declares a typed `parameters:` schema. The `axon-Wnnn` namespace is
+/// shared across the frontend + runtime; W001/W002/W003 are taken, so
+/// this is the next free slot.
+pub const W004_CODE: &str = "axon-W004";
+
+/// §Fase 59 (D2) — build the canonical `axon-W004` message. `apply: <Tool>`
+/// on a schema-bearing tool is COGNITIVE DELEGATION (the LLM decides
+/// whether to invoke the tool), NOT a deterministic dispatch — and `given:`
+/// is not splatted at runtime. Point the adopter at the one deterministic,
+/// CT-2-validated, real-dispatch surface (flow-level `use <Tool>(k=v)`),
+/// listing the declared params so the conversion is paste-actionable. The
+/// canonical law is `axon://logic/dispatch_vs_cognition`.
+fn build_w004_message(tool_name: &str, params: &[(String, String, bool)]) -> String {
+    let tool = tool_name;
+    let call = params
+        .iter()
+        .map(|(n, _, _)| format!("{n} = …"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "warning[{W004_CODE}]: `apply: {tool}` runs '{tool}' as a COGNITIVE step \
+         backend — the step executes as an LLM reasoning call and the model decides \
+         stochastically whether to invoke the tool; it is NOT a deterministic \
+         dispatch, and `given:` is not splatted at runtime. '{tool}' declares a typed \
+         `parameters:` schema, so for a deterministic, schema-validated, real dispatch \
+         use the flow-level form `use {tool}({call})` (with `provider: http`/`mcp` + a \
+         wired endpoint). See axon://logic/dispatch_vs_cognition."
+    )
+}
 
 /// §Fase 36.k (D10) — build the canonical `axon-W003` message: an
 /// `axonendpoint` that declares no `backend:` relies on ladder
