@@ -1,0 +1,123 @@
+---
+name: dispatch_vs_cognition
+title: "Tool dispatch vs cognitive delegation — `use <Tool>(k=v)` vs `apply: <Tool>`"
+summary: "The law that separates a deterministic, typed tool CALL (`use <Tool>(k=v)`) from COGNITIVE DELEGATION of a tool to the model (`apply: <Tool>`). They are two distinct epistemic operations, not one feature with two syntaxes. Choose by intent; the compiler (axon-W004) indicates the path."
+---
+
+# Tool dispatch vs cognitive delegation
+
+AXON gives you **two distinct ways** to involve a `tool` in a flow. They
+are **not** interchangeable, and they are **not** "the same thing, one
+deterministic and one broken." They are two different *epistemic
+operations*. Picking the wrong one is the single most common migration
+error — so this page is the law.
+
+## The two operations
+
+### 1. `use <Tool>(k = v, …)` — deterministic tool dispatch
+
+A **flow-level** statement. The program asserts the call: the compiler
+validates the named arguments against the tool's `parameters:` schema
+(caller-blame, *before* any dispatch), the runtime assembles a typed JSON
+body, and it executes **directly** against the tool-server — **the LLM is
+never involved.** Deterministic, predictable, audited.
+
+```axon
+tool CrmRadar {
+  provider: http                                       # ← see "the provider contract" below
+  parameters: { company: String, max_results: Int, active: Bool }
+  output_type: CrmReport
+}
+flow ScanCrm(company: String) -> CrmReport {
+  use CrmRadar(company = company, max_results = 5, active = true)   # ← direct dispatch, no LLM
+  step Summarize { ask: "Summarise ${CrmRadar_result}" output: CrmReport }
+  return Summarize.output
+}
+```
+
+### 2. `apply: <Tool>` — cognitive delegation
+
+A **step backend**. The step runs as an **LLM reasoning call** with the
+tool made *available* to the model. The model decides, **stochastically**,
+whether (and how) to invoke it. This is genuine cognition — bounded
+rationality under uncertainty — not a deterministic call.
+
+```axon
+flow Investigate(brief: Brief) -> Finding {
+  step Research use Analyst {
+    given: brief
+    apply: WebScout          # the model reasons and MAY call WebScout
+    ask: "Investigate the brief and synthesise a finding"
+    output: Finding
+  }
+}
+```
+
+## Why they are different (the four pillars)
+
+| | `use <Tool>(k=v)` | `apply: <Tool>` |
+|---|---|---|
+| **Mathematics** | a typed effect invocation — a morphism with a validated signature | a stochastic kernel (the LLM), its output bounded by the epistemic lattice ceiling |
+| **Logic** | CT-2: a malformed call is a *provable* caller error at compile time | you cannot *prove* it calls — invocation is a decision, not a deduction |
+| **Philosophy** | the program's assertion (apodictic about the call; the result decays per Theorem 5.1) | delegated judgement under uncertainty — the stochasticity is honest and surfaced (the epistemic envelope) |
+| **Computation** | direct dispatch to the tool-server | the model as a runtime that *may* emit a tool-call |
+
+In operating-system terms: `use` is a **syscall** (the program invokes the
+service, deterministically); `apply:` is **delegating cognition** (you give
+a reasoning process a capability and let it decide). Both are first-class.
+
+> **AXON does not pretend the LLM is deterministic.** It contains the
+> model's stochasticity and *surfaces* it (the lattice, the epistemic
+> envelope). You choose `use` where you need determinism, and `apply:`
+> where you genuinely want the model to reason with a tool available. Do
+> not write `apply:` expecting a deterministic call — that is asking the
+> LLM to be deterministic, which contradicts what `apply:` *is*.
+
+## The provider contract (required for real dispatch)
+
+`use <Tool>(k=v)` dispatches directly **only** for tools whose `provider:`
+the runtime tool-registry handles: **`http`** and **`mcp`** (plus the
+built-in `native`/`stub` for testing). A tool declared with a
+model-native slug — `tavily`, `brave`, `openai`, … — is **not** directly
+dispatched: it falls through to the LLM's own tool-use surface, *even with
+`use(k=v)`*. So a deterministic call is **two** decisions:
+
+1. **Form:** `use <Tool>(k = v, …)` (flow-level), not `apply:`.
+2. **Provider:** `provider: http` (or `mcp`) + a wired endpoint (an
+   absolute `runtime:` URL, or a relative slug resolved against the
+   server/per-tenant tool base URL).
+
+## The compiler indicates the path (`axon-W004`)
+
+Because the distinction is easy to miss, the type-checker is the honest
+guide: when you write `apply: <Tool>` on a tool that declares a
+`parameters:` schema, `axon check` emits **`axon-W004`** — it names the
+cognitive nature, and redirects you to the deterministic
+`use <Tool>(k = v, …)` form (listing the schema's parameters). The
+compiler **never silently makes `apply:` deterministic**; it tells you
+which operation you wrote and which one achieves determinism.
+
+## Migrating a skill that should be deterministic
+
+```axon
+# ❌ Cognitive delegation — runs as an LLM step; the model decides
+flow Scan(req: LeadRequest) -> CrmReport {
+  step Render { given: req apply: CrmRadar ask: "scan" output: CrmReport }
+  return Render.output
+}
+
+# ✅ Deterministic dispatch — direct, schema-validated, no LLM
+flow Scan(company: String) -> CrmReport {
+  use CrmRadar(company = company, max_results = 5, active = true)
+  step Summarize { ask: "Summarise ${CrmRadar_result}" output: CrmReport }
+  return Summarize.output
+}
+```
+
+## See also
+
+- `axon://primitives/tool` — the `tool` declaration (`parameters:`,
+  `output_type:`, providers, endpoint wiring).
+- `axon://primitives/step` — `apply:` as a step backend.
+- `axon://logic/flow_composition` — `apply: <Flow>` (composition), the
+  *other* meaning of `apply:`.
