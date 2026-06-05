@@ -67,6 +67,18 @@ pub struct EpistemicEnvelope {
     /// The input certainty `ψ.c` clamped to the level's ceiling
     /// (`min(input, ceiling)` — never raised; "no silent upgrade").
     pub confidence: f64,
+    /// §Fase 58.i.2 (D9) — the tool's DECLARED output type (`output_type:`,
+    /// §58 D8), when it has one. This ties the epistemic ceiling to the
+    /// TYPED output the dispatch produces: the `(base, scope, confidence)`
+    /// triple is the ceiling on a value of THIS type, so a downstream
+    /// `${Step.output}` / `reason { given: Step }` reference inherits the
+    /// declared output's epistemic position in the lattice. `None` for a
+    /// tool that declares no `output_type` (the §55 byte-identical wire —
+    /// the field is ELIDED, not emitted as null, so existing flows are
+    /// unchanged). Additive: a tool with `output_type` is a §58-new
+    /// construct, so no pre-§58 flow's wire shifts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_type: Option<String>,
 }
 
 /// Extract the epistemic level from an effect row whose entries have the
@@ -93,10 +105,14 @@ pub fn epistemic_level_of(effect_row: &[String]) -> Option<&str> {
 /// `confidence` is `apply_provenance_ceiling(input_confidence, ceiling)` —
 /// the ceiling is a maximum, so a high-confidence input is degraded to the
 /// level's cap while a low-confidence input is left untouched.
+/// * `output_type` — the tool's declared `output_type:` (§58 D8), or
+///   `None`. §58.i.2 (D9): when present, it rides the envelope so the
+///   ceiling is tied to the typed output the dispatch yields.
 pub fn capture(
     effect_row: &[String],
     scope: &str,
     input_confidence: f64,
+    output_type: Option<&str>,
 ) -> Option<EpistemicEnvelope> {
     let level = epistemic_level_of(effect_row)?;
     let ceiling = level_ceiling(level)?;
@@ -104,6 +120,7 @@ pub fn capture(
         base: level.to_string(),
         scope: scope.to_string(),
         confidence: apply_provenance_ceiling(input_confidence, ceiling),
+        output_type: output_type.map(|s| s.to_string()),
     })
 }
 
@@ -135,6 +152,9 @@ pub fn collect_for_flow(
                     &tool.effect_row,
                     &format!("tool:{}", u.tool_name),
                     input_confidence,
+                    // §58.i.2 (D9) — the declared output type rides the
+                    // envelope so the ceiling binds to the typed result.
+                    tool.output_type.as_deref(),
                 )
             }
             _ => None,
@@ -182,7 +202,7 @@ mod tests {
     fn no_epistemic_entry_yields_none() {
         let row = vec!["network".to_string(), "read".to_string()];
         assert_eq!(epistemic_level_of(&row), None);
-        assert_eq!(capture(&row, "tool:Search", 0.9), None);
+        assert_eq!(capture(&row, "tool:Search", 0.9, None), None);
     }
 
     #[test]
@@ -190,17 +210,18 @@ mod tests {
         // A `speculate` tool caps confidence at 0.80 even if the input ψ
         // arrives near-certain — the Theorem 5.1 degradation, observable.
         let row = vec!["epistemic:speculate".to_string()];
-        let env = capture(&row, "tool:WebSearch", 0.97).expect("epistemic envelope");
+        let env = capture(&row, "tool:WebSearch", 0.97, None).expect("epistemic envelope");
         assert_eq!(env.base, "speculate");
         assert_eq!(env.scope, "tool:WebSearch");
         assert_eq!(env.confidence, 0.80);
+        assert_eq!(env.output_type, None);
     }
 
     #[test]
     fn low_confidence_input_is_left_untouched_by_a_higher_ceiling() {
         // No silent UPGRADE: a `know` tool does not raise a doubtful input.
         let row = vec!["epistemic:know".to_string()];
-        let env = capture(&row, "step:Resolve", 0.30).expect("epistemic envelope");
+        let env = capture(&row, "step:Resolve", 0.30, None).expect("epistemic envelope");
         assert_eq!(env.base, "know");
         assert_eq!(env.confidence, 0.30, "the ceiling is a max, never a floor");
     }
@@ -209,9 +230,9 @@ mod tests {
     fn out_of_range_input_is_clamped_into_the_unit_interval_then_capped() {
         let row = vec!["epistemic:doubt".to_string()];
         // 1.5 → clamp to 1.0 → cap at doubt's 0.50.
-        assert_eq!(capture(&row, "tool:T", 1.5).unwrap().confidence, 0.50);
+        assert_eq!(capture(&row, "tool:T", 1.5, None).unwrap().confidence, 0.50);
         // -0.2 → clamp to 0.0 → still 0.0.
-        assert_eq!(capture(&row, "tool:T", -0.2).unwrap().confidence, 0.0);
+        assert_eq!(capture(&row, "tool:T", -0.2, None).unwrap().confidence, 0.0);
     }
 
     // ── §55.b — collect_for_flow (IR-driven derivation) ──────────────
@@ -276,12 +297,116 @@ mod tests {
             base: "speculate".into(),
             scope: "tool:WebSearch".into(),
             confidence: 0.80,
+            output_type: None,
         });
         assert_eq!(envs[1], EpistemicEnvelope {
             base: "know".into(),
             scope: "tool:ExactLookup".into(),
             confidence: 0.99,
+            output_type: None,
         });
+    }
+
+    // ── §Fase 58.i.2 (D9) — output_type rides the lattice envelope ────
+
+    /// A tool declaring BOTH an epistemic level AND an `output_type` ties
+    /// the ceiling to the typed output: the envelope carries the declared
+    /// type, so a downstream `${Step.output}` reference inherits the
+    /// epistemic position of a value of THAT type.
+    fn tool_with_output(name: &str, effects: &[&str], output_type: &str) -> IRToolSpec {
+        let mut t = tool(name, effects);
+        t.output_type = Some(output_type.to_string());
+        t
+    }
+
+    #[test]
+    fn output_type_rides_the_envelope_when_declared() {
+        let env = capture(
+            &["epistemic:believe".to_string()],
+            "tool:CrmRadar",
+            1.0,
+            Some("CrmReport"),
+        )
+        .expect("epistemic envelope");
+        assert_eq!(env.base, "believe");
+        assert_eq!(env.confidence, 0.95, "believe ceiling");
+        assert_eq!(
+            env.output_type.as_deref(),
+            Some("CrmReport"),
+            "the declared output type rides the envelope (D9)"
+        );
+    }
+
+    #[test]
+    fn collect_for_flow_attaches_output_type_from_the_tool() {
+        let tools = vec![tool_with_output(
+            "CrmRadar",
+            &["network", "epistemic:speculate"],
+            "CrmReport",
+        )];
+        let flow = flow_with_steps(vec![use_tool("CrmRadar")]);
+        let envs = collect_for_flow(&flow, &tools, 1.0);
+        assert_eq!(envs.len(), 1);
+        assert_eq!(
+            envs[0],
+            EpistemicEnvelope {
+                base: "speculate".into(),
+                scope: "tool:CrmRadar".into(),
+                confidence: 0.80,
+                output_type: Some("CrmReport".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn output_type_is_elided_from_the_wire_when_absent() {
+        // §55 wire byte-compat: a tool with no output_type serializes
+        // WITHOUT the field (skip-if-none), so pre-§58 flows are unchanged.
+        let env = capture(&["epistemic:doubt".to_string()], "tool:T", 0.4, None).unwrap();
+        let json = serde_json::to_value(&env).unwrap();
+        assert!(
+            json.get("output_type").is_none(),
+            "output_type must be elided (not null) when absent: {json}"
+        );
+        assert_eq!(json["base"], "doubt");
+        assert_eq!(json["confidence"], 0.4);
+    }
+
+    #[test]
+    fn output_type_is_present_on_the_wire_when_declared() {
+        let env = capture(
+            &["epistemic:know".to_string()],
+            "tool:Exact",
+            1.0,
+            Some("Answer"),
+        )
+        .unwrap();
+        let json = serde_json::to_value(&env).unwrap();
+        assert_eq!(json["output_type"], "Answer");
+    }
+
+    #[test]
+    fn envelope_round_trips_through_json_with_output_type() {
+        let env = capture(
+            &["epistemic:believe".to_string()],
+            "tool:CrmRadar",
+            1.0,
+            Some("CrmReport"),
+        )
+        .unwrap();
+        let json = serde_json::to_string(&env).unwrap();
+        let back: EpistemicEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, env);
+    }
+
+    #[test]
+    fn legacy_wire_without_output_type_deserializes_to_none() {
+        // §55 back-compat: an old (pre-§58) wire envelope carries no
+        // `output_type` key; `#[serde(default)]` restores it as None.
+        let legacy = r#"{"base":"speculate","scope":"tool:Old","confidence":0.8}"#;
+        let env: EpistemicEnvelope = serde_json::from_str(legacy).unwrap();
+        assert_eq!(env.output_type, None);
+        assert_eq!(env.base, "speculate");
     }
 
     #[test]

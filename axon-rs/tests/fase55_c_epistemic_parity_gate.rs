@@ -162,11 +162,13 @@ fn derivation_surfaces_the_expected_triples_from_source() {
                 base: "speculate".into(),
                 scope: "tool:WebSearch".into(),
                 confidence: 0.80,
+                output_type: None, // §58.i.2 — these sample tools declare no output_type
             },
             EpistemicEnvelope {
                 base: "know".into(),
                 scope: "tool:ExactLookup".into(),
                 confidence: 0.99,
+                output_type: None,
             },
         ],
         "an epistemic:speculate tool MUST surface confidence ≤ 0.80 and an \
