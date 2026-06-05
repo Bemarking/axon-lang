@@ -2705,6 +2705,15 @@ pub fn execute_server_flow(
 
     let mut report = crate::output::ReportBuilder::new(source_file, backend, "json");
     let mut registry = crate::tool_registry::ToolRegistry::new();
+    // §Fase 58.f — register the program's declared tools on the SERVER path
+    // (the CLI path already does this in `run_run`). Without this, every
+    // program-declared `tool { provider: http … }` missed the registry and the
+    // step silently degraded to an LLM call (the brief #22 / #17 finding). This
+    // `registry` is a per-call local (built fresh above for THIS request), so
+    // registration is request-scoped — no cross-tenant tool contamination
+    // between concurrent flows (§58 D10). Provider→URL resolves via each tool's
+    // declared `runtime:` field (D7); the §58.e structured body then POSTs to it.
+    registry.register_from_ir(&ir.tools);
 
     // §Fase 35.e — build the axonstore registry from the program's
     // declarations. The D2 closed-catalog gate runs here: an unknown
