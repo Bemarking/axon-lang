@@ -414,7 +414,7 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
 /// value is coerced to its DECLARED parameter type so the tool backend receives
 /// `{"query":"Acme","max_results":5,"safe":true}` — not a flat
 /// `{"input": "…"}`. serde builds the object, so JSON escaping is correct.
-fn build_structured_tool_body(
+pub(crate) fn build_structured_tool_body(
     interpolated_args: &[(String, String)],
     param_types: &[(String, String)],
 ) -> String {
@@ -436,7 +436,7 @@ fn build_structured_tool_body(
 /// leniently rather than dropped). `String`, custom domain types, lists, and
 /// unknown / schema-less (`None`) stay JSON strings — so a `String` parameter
 /// keeps its value verbatim even when it is all-digits.
-fn coerce_tool_arg_value(value: &str, declared_type: Option<&str>) -> serde_json::Value {
+pub(crate) fn coerce_tool_arg_value(value: &str, declared_type: Option<&str>) -> serde_json::Value {
     let base = declared_type.map(|t| t.trim_end_matches('?').split('<').next().unwrap_or(t));
     match base {
         Some("Int") => value

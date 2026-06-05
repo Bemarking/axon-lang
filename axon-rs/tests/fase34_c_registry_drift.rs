@@ -317,6 +317,7 @@ fn s6_register_direct_path_respects_caller_set_is_streaming() {
         max_results: None,
         output_schema: String::new(),
         effect_row: vec!["custom_effect".to_string()],
+        parameters: Vec::new(),
         source: ToolSource::Program,
         // Adopter explicitly flags as streaming even though
         // effect_row doesn't have `stream:` prefix. This is a

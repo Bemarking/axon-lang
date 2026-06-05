@@ -441,6 +441,7 @@ fn s6_tool_registry_is_streaming_field_present_post_34_c() {
         max_results: None,
         output_schema: String::new(),
         effect_row: vec!["stream:drop_oldest".to_string()],
+        parameters: Vec::new(),
         source: axon::tool_registry::ToolSource::Program,
         // §Fase 34.c — Caller sets explicitly OR uses derive helper.
         is_streaming: derive_is_streaming(&["stream:drop_oldest".to_string()]),
@@ -461,6 +462,7 @@ fn s6_tool_registry_is_streaming_field_present_post_34_c() {
         max_results: None,
         output_schema: String::new(),
         effect_row: vec!["compute".to_string(), "read".to_string()],
+        parameters: Vec::new(),
         source: axon::tool_registry::ToolSource::Program,
         is_streaming: derive_is_streaming(&[
             "compute".to_string(),

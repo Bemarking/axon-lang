@@ -126,7 +126,7 @@ pub async fn run_lambda_data_apply(
         ctx.let_bindings.insert(output_key, result.clone());
     }
 
-    emit_step_complete(ctx, &step_name, step_index, &result, 0)?;
+    emit_step_complete(ctx, &step_name, step_index, &result, 0, true)?;
 
     Ok(NodeOutcome::Completed {
         output: result,
@@ -139,17 +139,27 @@ pub async fn run_lambda_data_apply(
 //  UseTool (Fase 22 mid-step tool dispatch)
 // ────────────────────────────────────────────────────────────────────
 
-/// UseTool handler. Wire shape: `step_type: "use_tool"`. Resolves
-/// the tool invocation via [`invoke_tool`] + binds result under
-/// `<tool_name>_result` canonical key in `ctx.let_bindings`.
+/// UseTool handler. Wire shape: `step_type: "use_tool"`. Binds the
+/// result under the `<tool_name>_result` canonical key in
+/// `ctx.let_bindings`.
 ///
-/// # 33.y.k integration note
+/// # §Fase 58.f.2 — real dispatch on the streaming path
 ///
-/// The full D8 cross-cutting fix that plumbs `ChatRequest.tools`
-/// through every `pure_shape`-routed handler so `apply: <tool>` on
-/// a Step activates real upstream tool-calling on the SSE wire
-/// lands in **Fase 33.y.k**. 33.y.j ships the structural wire
-/// shape for the explicit `use_tool: <name>` IR variant.
+/// When the request-scoped `ctx.tool_registry` (wired by
+/// `run_streaming_via_dispatcher` since §36.i, so it is populated on
+/// every production SSE flow) resolves the tool to a locally-
+/// dispatchable provider (`native` / `stub` / `http` / `mcp`), the
+/// handler POSTs the STRUCTURED JSON body assembled from
+/// `node.named_args` (keyword form, D2) — or the interpolated single
+/// argument (legacy `on <arg>`, D5) — to the tool's `runtime:`
+/// endpoint (D7) and binds the real response. This retires the
+/// `"tool:<name>(<arg>)"` placeholder on the SSE path, reaching
+/// dispatch parity with the synchronous server path (§58.f).
+///
+/// The placeholder ([`invoke_tool`]) survives ONLY as the D5
+/// fall-back for tools with no registry, an unregistered name, or a
+/// provider that intentionally falls through to the LLM (e.g.
+/// `brave`) — those keep their pre-58 behavior byte-for-byte.
 pub async fn run_use_tool(
     node: &IRUseToolStep,
     ctx: &mut DispatchCtx,
@@ -167,20 +177,100 @@ pub async fn run_use_tool(
     };
     emit_step_start(ctx, &step_name, step_index, "use_tool")?;
 
-    let result = invoke_tool(&node.tool_name, &node.argument, ctx);
+    // §Fase 58.f.2 — attempt a real dispatch; honor cancel observed
+    // while the (potentially blocking, network-bound) call ran.
+    let (result, success) = match dispatch_use_tool_real(node, ctx).await {
+        Some(tool_result) => (tool_result.output, tool_result.success),
+        // D5 — no registry / unregistered / LLM-routed provider →
+        // the canonical placeholder, unchanged from pre-58.
+        None => (invoke_tool(&node.tool_name, &node.argument, ctx), true),
+    };
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
 
     if !node.tool_name.is_empty() {
         ctx.let_bindings
             .insert(format!("{}_result", node.tool_name), result.clone());
     }
 
-    emit_step_complete(ctx, &step_name, step_index, &result, 0)?;
+    emit_step_complete(ctx, &step_name, step_index, &result, 0, success)?;
 
     Ok(NodeOutcome::Completed {
         output: result,
         tokens_emitted: 0,
         step_index,
     })
+}
+
+/// §Fase 58.f.2 — attempt a REAL tool dispatch on the streaming path.
+///
+/// Returns `Some(ToolResult)` when `ctx.tool_registry` resolves the
+/// tool to a locally-dispatchable provider; `None` when there is no
+/// registry, the tool is unregistered, or its provider falls through
+/// to the LLM — the caller then keeps the canonical placeholder (D5).
+///
+/// The structured `use Tool(k = v, …)` body is assembled with the
+/// SAME `(name, type)` coercion the synchronous server path applies
+/// (`runner::build_structured_tool_body`, §58.e), reading the typed
+/// schema carried on the [`crate::tool_registry::ToolEntry`] (§58.f.2
+/// piece 1). Interpolation of arg values mirrors the sync path's
+/// [`crate::exec_context::ExecContext::interpolate`] via the shared
+/// `interpolate_vars` helper over `ctx.let_bindings`.
+///
+/// `registry.dispatch` uses a blocking `reqwest` client for the
+/// `http` / `mcp` providers; calling it directly inside the tokio
+/// runtime would panic, so the dispatch runs on the blocking pool via
+/// `spawn_blocking` (D6). The request-scoped registry is `Arc`-cloned
+/// into the task — never a shared mutable global (D10).
+async fn dispatch_use_tool_real(
+    node: &IRUseToolStep,
+    ctx: &DispatchCtx,
+) -> Option<crate::tool_executor::ToolResult> {
+    let registry = ctx.tool_registry.clone()?;
+    // Resolve the typed input schema for coercion. The borrow ends
+    // here (cloned) so `registry` can move into `spawn_blocking`.
+    let parameters = registry.get(&node.tool_name)?.parameters.clone();
+
+    // Assemble the request argument: a structured JSON body for the
+    // keyword form (D2), or the interpolated single argument for the
+    // legacy `on <arg>` form (D5).
+    let argument = if node.named_args.is_empty() {
+        crate::exec_context::interpolate_vars(&node.argument, &ctx.let_bindings)
+    } else {
+        let interpolated: Vec<(String, String)> = node
+            .named_args
+            .iter()
+            .map(|a| {
+                (
+                    a.name.clone(),
+                    crate::exec_context::interpolate_vars(&a.value, &ctx.let_bindings),
+                )
+            })
+            .collect();
+        crate::runner::build_structured_tool_body(&interpolated, &parameters)
+    };
+
+    let tool_name = node.tool_name.clone();
+    let registry_for_task = registry.clone();
+    match tokio::task::spawn_blocking(move || {
+        registry_for_task.dispatch(&tool_name, &argument)
+    })
+    .await
+    {
+        Ok(opt) => opt,
+        // A join failure (panic in the blocking task) surfaces as a
+        // failed ToolResult rather than propagating a panic to the
+        // dispatcher — the consumer sees a clean error, never a hang.
+        Err(join_err) => Some(crate::tool_executor::ToolResult {
+            success: false,
+            output: format!(
+                "tool '{}' dispatch task failed: {join_err}",
+                node.tool_name
+            ),
+            tool_name: node.tool_name.clone(),
+        }),
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -209,12 +299,13 @@ fn emit_step_complete(
     step_index: usize,
     full_output: &str,
     tokens_output: u64,
+    success: bool,
 ) -> Result<(), DispatchError> {
     ctx.tx
         .send(FlowExecutionEvent::StepComplete {
             step_name: step_name.to_string(),
             step_index,
-            success: true,
+            success,
             full_output: full_output.to_string(),
             tokens_input: 0,
             tokens_output,

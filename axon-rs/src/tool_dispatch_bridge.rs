@@ -399,6 +399,7 @@ mod tests {
             max_results: None,
             output_schema: String::new(),
             effect_row,
+            parameters: Vec::new(),
             source: ToolSource::Program,
             is_streaming,
         }

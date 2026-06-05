@@ -2727,6 +2727,7 @@ fn tool_registry_program_tool_stub() {
         max_results: None,
         output_schema: String::new(),
         effect_row: Vec::new(),
+        parameters: Vec::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });
@@ -3107,6 +3108,7 @@ fn http_tool_dispatch_via_registry() {
         max_results: None,
         output_schema: "JSON".to_string(),
         effect_row: vec!["network".to_string()],
+        parameters: Vec::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });
@@ -3134,6 +3136,7 @@ fn http_tool_empty_url_fails() {
         max_results: None,
         output_schema: String::new(),
         effect_row: vec![],
+        parameters: Vec::new(),
         source: ToolSource::Program,
         is_streaming: false,
     };
@@ -3157,6 +3160,7 @@ fn http_tool_invalid_scheme_fails() {
         max_results: None,
         output_schema: String::new(),
         effect_row: vec![],
+        parameters: Vec::new(),
         source: ToolSource::Program,
         is_streaming: false,
     };
@@ -3182,6 +3186,7 @@ fn http_tool_no_longer_falls_through() {
         max_results: None,
         output_schema: String::new(),
         effect_row: vec!["network".to_string()],
+        parameters: Vec::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });
@@ -3301,6 +3306,7 @@ fn emcp_dispatch_via_registry() {
         max_results: None,
         output_schema: "JSON".to_string(),
         effect_row: vec!["network".to_string(), "epistemic:speculate".to_string()],
+        parameters: Vec::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });
@@ -3388,6 +3394,7 @@ fn emcp_mcp_no_longer_falls_through() {
         max_results: None,
         output_schema: "JSON".to_string(),
         effect_row: vec!["network".to_string(), "io".to_string(), "epistemic:speculate".to_string()],
+        parameters: Vec::new(),
         source: ToolSource::Program,
         is_streaming: false,
     });
