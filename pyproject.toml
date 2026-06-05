@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 # ──────────────────────────────────────────────────────────────────
 [project]
 name = "axon-lang"
-version = "2.8.0"
+version = "2.9.0"
 description = "AXON — the formal cognitive language. Native Rust + C23 runtime (v2.0.0 Pure Silicon Cognition). This PyPI package is a thin launcher that fetches + execs the precompiled native `axon` binary; the lexer, parser, type-checker, IR generator, runtime, server, and CLI are all native Rust + C23. `pip install axon-lang && axon check x.axon` works exactly like the native binary. Alternatives: `cargo install axon-lang`, GitHub Release binaries, or the axon-enterprise Docker image."
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -185,7 +185,7 @@ known-first-party = ["axon"]
 # `workflow_dispatch` invocation away.
 # ──────────────────────────────────────────────────────────────────
 [tool.bumpversion]
-current_version = "2.8.0"
+current_version = "2.9.0"
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 search = "{current_version}"
