@@ -35,6 +35,40 @@ flow ScanCrm(company: String) -> CrmReport {
 }
 ```
 
+#### Kwarg value forms (what `v` can be)
+
+In `use <Tool>(k = v)`, the value `v` is resolved at runtime by its kind:
+
+- **Literal** — a quoted string (`"hello"`), a number (`10`), a bool
+  (`true`), a list. Coerced to the parameter's declared JSON type. A quoted
+  string interpolates `${param}` / `${StepName}` inside it.
+- **Reference** — a bare identifier or a dotted step output, resolved
+  against the live bindings (like a `let`):
+  - a **flow parameter** — `company` → the request's `company` value;
+  - a **prior step's output** — `ExtractUrl.output` (or the bare step name
+    `ExtractUrl`) → that step's result. This is the **extract → dispatch**
+    pattern for multi-argument tools: each argument comes from its own
+    extraction step.
+
+```axon
+flow Pulse(brief: String) -> Report {
+  step ExtractUrl     { ask: "extract the URL from ${brief}"     output: String }
+  step ExtractCompany { ask: "extract the company from ${brief}" output: String }
+  use GeneratePulse(
+    url          = ExtractUrl.output,       # reference → the step's output
+    company_name = ExtractCompany.output,   # a distinct derived value per arg
+    source       = brief                    # reference → a flow parameter
+  )
+  step Summarize { ask: "summarise ${GeneratePulse_result}" output: Report }
+  return Summarize.output
+}
+```
+
+The type-checker validates a reference's **source type** against the
+declared parameter type (caller-blame, compile time) — a `url = ExtractCount.output`
+where the step outputs an `Int` and the parameter is a `String` is a
+compile error, not a runtime mismatch.
+
 ### 2. `apply: <Tool>` — cognitive delegation
 
 A **step backend**. The step runs as an **LLM reasoning call** with the
