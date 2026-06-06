@@ -4766,7 +4766,7 @@ impl<'a> TypeChecker<'a> {
                             format!("'{}' is a {}, not a tool", n.tool_name, sym.kind),
                             &n.loc,
                         ),
-                        _ => self.check_use_tool_args(n),
+                        _ => self.check_use_tool_args(n, steps),
                     }
                 }
                 // §Fase 59 (D2) — `apply: <Tool>` on a schema-bearing tool is
@@ -4788,7 +4788,7 @@ impl<'a> TypeChecker<'a> {
     /// untyped and skipped (§58 D5 back-compat), as is a schema-less tool (no
     /// `parameters:` → no contract to enforce). The `apply: Tool given:
     /// <struct>` splat (D3) is validated separately (§58.d.2).
-    fn check_use_tool_args(&mut self, n: &UseToolStep) {
+    fn check_use_tool_args(&mut self, n: &UseToolStep, steps: &[FlowStep]) {
         let UseArgs::Named(pairs) = &n.args else {
             return; // LegacyPositional — no schema validation (D5).
         };
@@ -4797,7 +4797,7 @@ impl<'a> TypeChecker<'a> {
             return; // schema-less tool — no contract.
         }
         let mut seen = std::collections::HashSet::new();
-        for (name, value) in pairs {
+        for (name, value, value_kind) in pairs {
             if !seen.insert(name.clone()) {
                 self.emit(
                     format!("Duplicate argument '{}' in call to tool '{}'", name, n.tool_name),
@@ -4811,7 +4811,27 @@ impl<'a> TypeChecker<'a> {
                     &n.loc,
                 ),
                 Some((_, decl_ty, _)) => {
-                    if let Some(val_ty) = Self::infer_arg_literal_type(value) {
+                    if value_kind == "reference" {
+                        // §Fase 60.c — a `"reference"` value (a flow-param or a
+                        // `Step.output`) is resolved at runtime against the
+                        // bindings; validate its SOURCE type against the declared
+                        // parameter type (the Q4 soundness contract). Conservative:
+                        // a reference whose source we cannot resolve in-checker (a
+                        // `let`, a runtime binding) is skipped — no false positive.
+                        if let Some(src_ty) = self.resolve_reference_type(value, steps) {
+                            let src_base =
+                                src_ty.trim_end_matches('?').split('<').next().unwrap_or(&src_ty);
+                            if !Self::tool_arg_types_align(src_base, decl_ty) {
+                                self.emit(
+                                    format!(
+                                        "Type mismatch for parameter '{}' of tool '{}': expected {}, got {} (from reference '{}')",
+                                        name, n.tool_name, decl_ty, src_ty, value
+                                    ),
+                                    &n.loc,
+                                );
+                            }
+                        }
+                    } else if let Some(val_ty) = Self::infer_arg_literal_type(value) {
                         if !Self::tool_arg_types_align(&val_ty, decl_ty) {
                             self.emit(
                                 format!(
@@ -4827,13 +4847,45 @@ impl<'a> TypeChecker<'a> {
         }
         // Missing required (non-optional) parameters.
         for (pname, _ty, optional) in &params {
-            if !optional && !pairs.iter().any(|(name, _)| name == pname) {
+            if !optional && !pairs.iter().any(|(name, _, _)| name == pname) {
                 self.emit(
                     format!("Missing required argument '{}' for tool '{}'", pname, n.tool_name),
                     &n.loc,
                 );
             }
         }
+    }
+
+    /// §Fase 60.c — resolve the declared TYPE of a `"reference"` kwarg value, when
+    /// statically knowable: a flow parameter (its declared type) or a `<Step>`
+    /// / `<Step>.output` reference (the step's declared `output:` type, or a
+    /// `use <Tool>`'s `output_type`). Returns `None` for anything else (a `let`
+    /// binding, a runtime value) so the caller conservatively skips — no false
+    /// positive, mirroring the §58.d literal stance.
+    fn resolve_reference_type(&self, reference: &str, steps: &[FlowStep]) -> Option<String> {
+        // A flow parameter — `company`.
+        if let Some(t) = self.current_flow_params.get(reference) {
+            return Some(t.to_string());
+        }
+        // A step output — `ExtractUrl` or `ExtractUrl.output`.
+        let step_name = reference.strip_suffix(".output").unwrap_or(reference);
+        steps.iter().find_map(|s| match s {
+            FlowStep::Step(st) if st.name == step_name && !st.output_type.is_empty() => {
+                Some(st.output_type.clone())
+            }
+            FlowStep::UseTool(u) if u.tool_name == step_name => {
+                self.tool_output_type(&u.tool_name)
+            }
+            _ => None,
+        })
+    }
+
+    /// §Fase 60.c — a declared tool's `output_type:`, when present.
+    fn tool_output_type(&self, tool_name: &str) -> Option<String> {
+        self.program.declarations.iter().find_map(|d| match d {
+            Declaration::Tool(t) if t.name == tool_name => t.output_type.clone(),
+            _ => None,
+        })
     }
 
     /// §Fase 58.d — the `(name, flat-type, optional)` schema of a declared

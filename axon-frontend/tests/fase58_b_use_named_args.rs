@@ -50,9 +50,20 @@ flow Research(q: String) -> Any {
     match first_use_tool(&program, "Research") {
         UseArgs::Named(pairs) => {
             assert_eq!(pairs.len(), 3, "three keyword args");
-            assert_eq!(pairs[0], ("query".to_string(), "${q}".to_string()));
-            assert_eq!(pairs[1], ("max_results".to_string(), "5".to_string()));
-            assert_eq!(pairs[2], ("safesearch".to_string(), "true".to_string()));
+            // §Fase 60 — each entry carries its value_kind. All three are
+            // literals (string / int / bool).
+            assert_eq!(
+                pairs[0],
+                ("query".to_string(), "${q}".to_string(), "literal".to_string())
+            );
+            assert_eq!(
+                pairs[1],
+                ("max_results".to_string(), "5".to_string(), "literal".to_string())
+            );
+            assert_eq!(
+                pairs[2],
+                ("safesearch".to_string(), "true".to_string(), "literal".to_string())
+            );
         }
         other => panic!("expected UseArgs::Named, got {other:?}"),
     }
@@ -123,8 +134,16 @@ flow F(prev: String) -> Any {
     );
     match first_use_tool(&program, "F") {
         UseArgs::Named(pairs) => {
-            assert_eq!(pairs[0], ("from".to_string(), "prev".to_string()));
-            assert_eq!(pairs[1], ("limit".to_string(), "10".to_string()));
+            // §Fase 60 — `from = prev` is a REFERENCE (bare identifier);
+            // `limit = 10` is a literal.
+            assert_eq!(
+                pairs[0],
+                ("from".to_string(), "prev".to_string(), "reference".to_string())
+            );
+            assert_eq!(
+                pairs[1],
+                ("limit".to_string(), "10".to_string(), "literal".to_string())
+            );
         }
         other => panic!("expected Named, got {other:?}"),
     }

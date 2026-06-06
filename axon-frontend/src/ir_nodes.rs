@@ -591,6 +591,12 @@ pub struct IRToolParam {
 pub struct IRNamedArg {
     pub name: String,
     pub value: String,
+    /// §Fase 60 — `"literal"` or `"reference"` (classified by `parse_let_atom`).
+    /// A `"reference"` value (a bare identifier or `Step.output`) is resolved at
+    /// runtime against the bindings (flow-param / `let` / step output), like a
+    /// `let` reference — instead of being passed as the literal name (the pre-60
+    /// bug). `"literal"` values keep `${…}` interpolation + typed coercion.
+    pub value_kind: String,
 }
 
 #[derive(Debug, Serialize)]

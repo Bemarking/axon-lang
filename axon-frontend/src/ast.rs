@@ -1498,11 +1498,15 @@ pub enum UseArgs {
     /// pre-58 `argument: String` (empty string when no `on` clause).
     LegacyPositional(String),
     /// `use Tool(query = "${q}", max_results = 5)` — D2 canonical multi-field
-    /// keyword args. Each value is captured as an expression STRING (the
-    /// frontend has no structured `Expr`; mirrors `argument` /
-    /// `parse_argument_list`). The type-checker (§58.d) validates each pair
-    /// against the tool's declared input schema (W2 / CT-2 caller blame).
-    Named(Vec<(String, String)>),
+    /// keyword args. Each entry is `(name, value, value_kind)`: `value` is the
+    /// expression STRING (the frontend has no structured `Expr`; mirrors
+    /// `argument` / `parse_argument_list`); `value_kind` is `"literal"` or
+    /// `"reference"` — the §Fase 60 classification from `parse_let_atom`, so the
+    /// runtime resolves a bare identifier / `Step.output` as a binding lookup
+    /// (like `let`) instead of passing the name literally. The type-checker
+    /// (§58.d + §60.c) validates each entry against the tool's declared input
+    /// schema (W2 / CT-2 caller blame) and references against their source.
+    Named(Vec<(String, String, String)>),
 }
 
 impl UseArgs {
