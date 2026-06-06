@@ -84,7 +84,7 @@ fn dispatches_crmradar_flow_level_with_named_keyword_args() {
     // §58.b — the structured keyword-arg form (NOT the legacy positional).
     match &use_tool.args {
         UseArgs::Named(pairs) => {
-            let names: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+            let names: Vec<&str> = pairs.iter().map(|(k, _, _)| k.as_str()).collect();
             assert_eq!(
                 names,
                 vec!["company", "max_results", "active"],

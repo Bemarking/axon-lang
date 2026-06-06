@@ -3552,7 +3552,7 @@ impl Parser {
     /// strings (StringLit / Integer / Float / Bool / dotted identifier / list)
     /// via the shared `parse_let_atom`, since the frontend has no structured
     /// `Expr`. A trailing comma is tolerated; `()` yields no args.
-    fn parse_named_arg_list(&mut self) -> Result<Vec<(String, String)>, ParseError> {
+    fn parse_named_arg_list(&mut self) -> Result<Vec<(String, String, String)>, ParseError> {
         self.consume(TokenType::LParen)?;
         let mut args = Vec::new();
         while !self.check(TokenType::RParen) {
@@ -3561,7 +3561,11 @@ impl Parser {
             let name = self.consume_any_ident_or_kw()?.value;
             self.consume(TokenType::Assign)?;
             let value = self.parse_let_atom()?;
-            args.push((name, value));
+            // §Fase 60 — `parse_let_atom` classified the value (`"literal"` vs
+            // `"reference"`); carry it so the runtime resolves a bare
+            // identifier / `Step.output` as a binding lookup, not a literal.
+            let value_kind = self.last_let_value_kind.clone();
+            args.push((name, value, value_kind));
             if self.check(TokenType::Comma) {
                 self.advance();
             } else {

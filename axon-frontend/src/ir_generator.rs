@@ -542,9 +542,10 @@ impl IRGenerator {
                 named_args: match &s.args {
                     UseArgs::Named(pairs) => pairs
                         .iter()
-                        .map(|(name, value)| crate::ir_nodes::IRNamedArg {
+                        .map(|(name, value, value_kind)| crate::ir_nodes::IRNamedArg {
                             name: name.clone(),
                             value: value.clone(),
+                            value_kind: value_kind.clone(),
                         })
                         .collect(),
                     UseArgs::LegacyPositional(_) => Vec::new(),
