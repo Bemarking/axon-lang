@@ -69,6 +69,55 @@ pub fn extract_refs(text: &str) -> HashSet<String> {
     refs
 }
 
+/// §Fase 61 — augment a step's dependency-analysis `argument` with the step
+/// references carried by a `use Tool(k = v)` call's keyword arguments.
+///
+/// [`analyze`] only scans `user_prompt` + `argument` for `${name}` references.
+/// A keyword-form tool call carries its values in `named_args`, NOT in the
+/// single-`on <arg>` string, so without this its data-dependencies are
+/// invisible: the scheduler classifies the call as a root and co-schedules it
+/// in the SAME wave as the steps it consumes — whose results are therefore
+/// absent from the call's pre-wave context snapshot, so the value resolves to
+/// empty (§60 reference) or to the literal name (pre-§60). This was the unifying
+/// root cause behind a multi-arg `use Tool` whose source steps are independent.
+///
+/// Each `named_args` entry is `(name, value, value_kind)`:
+/// - `"reference"` — the value names the producing step directly (`Extract` or
+///   `Extract.output`; the `.output` suffix maps to the step-name key, mirroring
+///   the runtime resolver in `exec_context`).
+/// - any other kind (`"literal"`) — the value may interpolate one via `${…}`.
+///
+/// We append the referenced names as `${name}` tokens to `base`, GATED to names
+/// that are real steps (`step_names`) so a bare flow-param reference adds no
+/// spurious dependency. The result feeds [`analyze`] as the step's `argument`;
+/// `extract_refs` then rediscovers them as ordinary dependency edges.
+pub fn use_tool_analysis_argument(
+    base: &str,
+    named_args: &[(String, String, String)],
+    step_names: &HashSet<&str>,
+) -> String {
+    let mut arg = base.to_string();
+    for (_name, value, kind) in named_args {
+        if kind == "reference" {
+            let dep = value.strip_suffix(".output").unwrap_or(value);
+            if step_names.contains(dep) {
+                arg.push_str(" ${");
+                arg.push_str(dep);
+                arg.push('}');
+            }
+        } else {
+            for r in extract_refs(value) {
+                if step_names.contains(r.as_str()) {
+                    arg.push_str(" ${");
+                    arg.push_str(&r);
+                    arg.push('}');
+                }
+            }
+        }
+    }
+    arg
+}
+
 // ── Step info for analysis ─────────────────────────────────────────────────
 
 /// Minimal step representation for dependency analysis.
@@ -489,6 +538,95 @@ mod tests {
 
         let graph = analyze(&steps);
         assert_eq!(graph.steps[1].depends_on, vec!["Gather"]);
+    }
+
+    // ── §Fase 61 — use Tool(k = v) named-arg dependencies ───────────────────
+
+    #[test]
+    fn use_tool_reference_dotted_creates_dep() {
+        let names: HashSet<&str> = ["ExtractUrl"].into_iter().collect();
+        let na = vec![("url".into(), "ExtractUrl.output".into(), "reference".into())];
+        let arg = use_tool_analysis_argument("", &na, &names);
+        assert!(extract_refs(&arg).contains("ExtractUrl"));
+    }
+
+    #[test]
+    fn use_tool_reference_bare_creates_dep() {
+        let names: HashSet<&str> = ["ExtractUrl"].into_iter().collect();
+        let na = vec![("url".into(), "ExtractUrl".into(), "reference".into())];
+        let arg = use_tool_analysis_argument("", &na, &names);
+        assert!(extract_refs(&arg).contains("ExtractUrl"));
+    }
+
+    #[test]
+    fn use_tool_literal_interpolation_creates_dep() {
+        let names: HashSet<&str> = ["ExtractCompany"].into_iter().collect();
+        let na = vec![("c".into(), "${ExtractCompany}".into(), "literal".into())];
+        let arg = use_tool_analysis_argument("", &na, &names);
+        assert!(extract_refs(&arg).contains("ExtractCompany"));
+    }
+
+    #[test]
+    fn use_tool_flow_param_reference_is_not_a_step_dep() {
+        // `src = user_input` — a flow-param reference is valid (§60.c type-checks
+        // it) but is NOT a step, so it must add no synthetic dependency token.
+        let names: HashSet<&str> = ["ExtractUrl"].into_iter().collect();
+        let na = vec![("src".into(), "user_input".into(), "reference".into())];
+        let arg = use_tool_analysis_argument("base", &na, &names);
+        assert!(!arg.contains("${user_input}"));
+        assert!(!extract_refs(&arg).contains("user_input"));
+    }
+
+    #[test]
+    fn use_tool_literal_plain_value_no_dep() {
+        let names: HashSet<&str> = ["ExtractUrl"].into_iter().collect();
+        let na = vec![("mode".into(), "production".into(), "literal".into())];
+        let arg = use_tool_analysis_argument("", &na, &names);
+        assert!(extract_refs(&arg).is_empty());
+    }
+
+    #[test]
+    fn use_tool_multi_arg_orders_after_independent_sources() {
+        // The Kivi repro: two independent extraction steps (roots that depend
+        // only on the flow-param) + a `use Tool` consuming both via `.output`.
+        // Pre-§61 the call was a root → same wave as its sources → snapshot
+        // race. Post-§61 the dependency is visible → a strictly later wave.
+        let names: HashSet<&str> =
+            ["ExtractCompany", "ExtractDomain", "GenerateRadar"].into_iter().collect();
+        let na = vec![
+            ("company".into(), "ExtractCompany.output".into(), "reference".into()),
+            ("domain".into(), "ExtractDomain.output".into(), "reference".into()),
+        ];
+        let arg = use_tool_analysis_argument("", &na, &names);
+        let steps = vec![
+            StepInfo {
+                name: "ExtractCompany".into(),
+                step_type: "step".into(),
+                user_prompt: "extract the company from ${user_input}".into(),
+                argument: String::new(),
+            },
+            StepInfo {
+                name: "ExtractDomain".into(),
+                step_type: "step".into(),
+                user_prompt: "extract the domain from ${user_input}".into(),
+                argument: String::new(),
+            },
+            StepInfo {
+                name: "GenerateRadar".into(),
+                step_type: "use_tool".into(),
+                user_prompt: String::new(),
+                argument: arg,
+            },
+        ];
+        let graph = analyze(&steps);
+        let radar = graph.steps.iter().find(|s| s.name == "GenerateRadar").unwrap();
+        assert!(radar.depends_on.contains(&"ExtractCompany".to_string()));
+        assert!(radar.depends_on.contains(&"ExtractDomain".to_string()));
+        assert!(!radar.is_root);
+
+        // The schedule must NOT place GenerateRadar in wave 0 with the extractors.
+        let sched = crate::parallel::build_schedule(&graph);
+        assert!(!sched.waves[0].steps.contains(&"GenerateRadar".to_string()));
     }
 
     #[test]
