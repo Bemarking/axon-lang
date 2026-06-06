@@ -244,7 +244,14 @@ async fn dispatch_use_tool_real(
             .map(|a| {
                 (
                     a.name.clone(),
-                    crate::exec_context::interpolate_vars(&a.value, &ctx.let_bindings),
+                    // §Fase 60 — resolve by value_kind: a `"reference"` (bare
+                    // identifier / `Step.output`) is a binding lookup, not a
+                    // literal name; `"literal"` keeps `${…}` interpolation.
+                    crate::exec_context::resolve_named_arg_value(
+                        &a.value,
+                        &a.value_kind,
+                        &ctx.let_bindings,
+                    ),
                 )
             })
             .collect();

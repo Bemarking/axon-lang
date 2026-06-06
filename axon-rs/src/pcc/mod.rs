@@ -1515,6 +1515,7 @@ mod tests {
                 .map(|(n, v)| crate::ir_nodes::IRNamedArg {
                     name: n.to_string(),
                     value: v.to_string(),
+                    value_kind: "literal".to_string(),
                 })
                 .collect(),
         })
