@@ -88,6 +88,14 @@ impl ExecContext {
         interpolate_vars(text, &self.vars)
     }
 
+    /// §Fase 60 — resolve a `use Tool(k = v)` keyword-arg value by its
+    /// `value_kind` (reference → binding lookup; literal → interpolation).
+    /// Delegates to the free [`resolve_named_arg_value`] so the sync runner and
+    /// the streaming dispatcher resolve kwargs byte-identically (D5).
+    pub fn resolve_named_arg(&self, value: &str, value_kind: &str) -> String {
+        resolve_named_arg_value(value, value_kind, &self.vars)
+    }
+
     /// Number of variables currently set.
     pub fn var_count(&self) -> usize {
         self.vars.len()
@@ -163,11 +171,97 @@ pub fn interpolate_vars(text: &str, vars: &HashMap<String, String>) -> String {
     out
 }
 
+/// §Fase 60 — resolve a `use Tool(k = v)` keyword-argument VALUE against the
+/// runtime bindings, by its frontend-classified `value_kind`:
+///
+/// - `"reference"` — a bare identifier (`company`), a `let` name, or a
+///   `Step.output` — resolved by binding lookup, mirroring the `let` reference
+///   handler ([`crate::flow_dispatcher::orchestration`]). Steps bind their output
+///   under their bare name, so a trailing `.output` maps to the step-name key.
+///   An unbound reference yields the empty string (the type-checker §60.c rejects
+///   unknown references at compile time, so a type-checked program never hits
+///   this) — never a silent passthrough of the literal name (the pre-60 bug).
+/// - anything else (`"literal"`) — `${…}` / `$name` interpolation, as before.
+///
+/// Shared by both dispatch paths (sync runner + streaming dispatcher) so kwarg
+/// value resolution is byte-identical (D5).
+pub fn resolve_named_arg_value(
+    value: &str,
+    value_kind: &str,
+    vars: &HashMap<String, String>,
+) -> String {
+    if value_kind == "reference" {
+        vars.get(value)
+            .or_else(|| value.strip_suffix(".output").and_then(|step| vars.get(step)))
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        interpolate_vars(value, vars)
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── §Fase 60 — resolve_named_arg_value ──────────────────────────────────
+
+    fn bindings() -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        m.insert("user_input".to_string(), "analiza https://acme.com".to_string());
+        m.insert("company".to_string(), "Acme".to_string());
+        // A step's output is bound under its (bare) step name in both paths.
+        m.insert("ExtractUrl".to_string(), "https://acme.com".to_string());
+        m
+    }
+
+    #[test]
+    fn reference_resolves_bare_flow_param() {
+        // The pre-60 bug: a bare identifier was passed literally. Now it resolves.
+        assert_eq!(
+            resolve_named_arg_value("company", "reference", &bindings()),
+            "Acme"
+        );
+    }
+
+    #[test]
+    fn reference_resolves_step_output_dotted_to_step_name_key() {
+        // `ExtractUrl.output` → strip `.output` → the step-name binding.
+        assert_eq!(
+            resolve_named_arg_value("ExtractUrl.output", "reference", &bindings()),
+            "https://acme.com"
+        );
+    }
+
+    #[test]
+    fn reference_resolves_bare_step_name() {
+        assert_eq!(
+            resolve_named_arg_value("ExtractUrl", "reference", &bindings()),
+            "https://acme.com"
+        );
+    }
+
+    #[test]
+    fn reference_unbound_is_empty_not_literal_name() {
+        // D6 — honest empty, never the literal name passthrough (the old bug).
+        assert_eq!(resolve_named_arg_value("nope", "reference", &bindings()), "");
+    }
+
+    #[test]
+    fn literal_keeps_interpolation_and_verbatim() {
+        // A `"literal"` value keeps `${…}` interpolation (back-compat, D5).
+        assert_eq!(
+            resolve_named_arg_value("${company}", "literal", &bindings()),
+            "Acme"
+        );
+        // A bare literal string is verbatim (NOT a binding lookup).
+        assert_eq!(
+            resolve_named_arg_value("Acme", "literal", &bindings()),
+            "Acme"
+        );
+    }
 
     #[test]
     fn new_context_has_unit_vars() {

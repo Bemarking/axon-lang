@@ -84,6 +84,8 @@ fn named(args: &[(&str, &str)]) -> Vec<IRNamedArg> {
         .map(|(n, v)| IRNamedArg {
             name: n.to_string(),
             value: v.to_string(),
+            // §Fase 60 — these fixtures pass literals / `${…}` interpolation.
+            value_kind: "literal".to_string(),
         })
         .collect()
 }
@@ -463,4 +465,81 @@ async fn http_legacy_positional_arg_wraps_as_input_envelope() {
     let received = cap.lock().await.clone().expect("captured body");
     let body: serde_json::Value = serde_json::from_str(&received).expect("valid JSON");
     assert_eq!(body["input"], serde_json::json!("hello world"));
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  §Fase 60 — kwarg REFERENCE values resolve from the bindings
+// ════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn named_arg_reference_resolves_step_output_at_dispatch() {
+    // §Fase 60 — a `"reference"` kwarg value (`ExtractTopic.output`) is
+    // resolved against the bindings (the prior step's output, bound under its
+    // step name) — NOT passed as the literal name (the pre-60 bug).
+    let mut reg = ToolRegistry::new();
+    reg.register(stub_entry(
+        "Search",
+        vec![("query".to_string(), "String".to_string())],
+    ));
+    let (mut ctx, _rx) = ctx_with(Some(reg));
+    // A prior step `ExtractTopic` bound its output under its step name.
+    ctx.let_bindings
+        .insert("ExtractTopic".to_string(), "quantum computing".to_string());
+
+    let node = use_node(
+        "Search",
+        "",
+        vec![IRNamedArg {
+            name: "query".to_string(),
+            value: "ExtractTopic.output".to_string(),
+            value_kind: "reference".to_string(),
+        }],
+    );
+
+    let outcome = run_use_tool(&node, &mut ctx).await.unwrap();
+    let output = match outcome {
+        NodeOutcome::Completed { output, .. } => output,
+        other => panic!("expected Completed, got {other:?}"),
+    };
+    let inner = output
+        .strip_prefix("[stub] Search(")
+        .and_then(|s| s.strip_suffix(")"))
+        .expect("stub wrapper");
+    let body: serde_json::Value = serde_json::from_str(inner).expect("structured JSON body");
+    // The RESOLVED value reached the wire — not the literal "ExtractTopic.output".
+    assert_eq!(body["query"], serde_json::json!("quantum computing"));
+}
+
+#[tokio::test]
+async fn named_arg_reference_to_flow_param_resolves() {
+    let mut reg = ToolRegistry::new();
+    reg.register(stub_entry(
+        "Search",
+        vec![("query".to_string(), "String".to_string())],
+    ));
+    let (mut ctx, _rx) = ctx_with(Some(reg));
+    ctx.let_bindings
+        .insert("company".to_string(), "Acme".to_string());
+
+    let node = use_node(
+        "Search",
+        "",
+        vec![IRNamedArg {
+            name: "query".to_string(),
+            value: "company".to_string(),
+            value_kind: "reference".to_string(),
+        }],
+    );
+
+    let outcome = run_use_tool(&node, &mut ctx).await.unwrap();
+    let output = match outcome {
+        NodeOutcome::Completed { output, .. } => output,
+        other => panic!("got {other:?}"),
+    };
+    let inner = output
+        .strip_prefix("[stub] Search(")
+        .and_then(|s| s.strip_suffix(")"))
+        .expect("stub wrapper");
+    let body: serde_json::Value = serde_json::from_str(inner).expect("JSON");
+    assert_eq!(body["query"], serde_json::json!("Acme"));
 }

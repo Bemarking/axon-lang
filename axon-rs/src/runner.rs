@@ -135,8 +135,11 @@ struct CompiledStep {
     /// args `(name, raw value)`. Non-empty ⇒ the runtime assembles a STRUCTURED
     /// JSON request body (`{"query":"…","max_results":5}`) instead of the flat
     /// `{"input": …}`. Empty for the legacy single-`on <arg>` form (D5).
+    /// §Fase 60 — each entry is `(name, raw value, value_kind)`; `value_kind`
+    /// (`"literal"` / `"reference"`) drives runtime resolution: a reference is a
+    /// binding lookup, a literal keeps `${…}` interpolation.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    tool_named_args: Vec<(String, String)>,
+    tool_named_args: Vec<(String, String, String)>,
     /// §Fase 58.e — the called tool's declared `(param, type)` schema, resolved
     /// from `ir.tools` at build time so the runtime coerces each arg value to
     /// its DECLARED JSON type (a `String` param stays a string even when its
@@ -301,10 +304,10 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
         // its declared JSON type. Both empty for the legacy single-arg form.
         let (tool_named_args, tool_param_types) = match node {
             IRFlowNode::UseTool(s) => {
-                let named: Vec<(String, String)> = s
+                let named: Vec<(String, String, String)> = s
                     .named_args
                     .iter()
-                    .map(|a| (a.name.clone(), a.value.clone()))
+                    .map(|a| (a.name.clone(), a.value.clone(), a.value_kind.clone()))
                     .collect();
                 let types: Vec<(String, String)> = ir
                     .tools
@@ -1435,7 +1438,11 @@ async fn execute_real_async(
                             let interpolated: Vec<(String, String)> = step
                                 .tool_named_args
                                 .iter()
-                                .map(|(n, v)| (n.clone(), ctx_snapshot.interpolate(v)))
+                                .map(|(n, v, kind)| {
+                                    // §Fase 60 — resolve by value_kind (reference
+                                    // → binding lookup; literal → interpolation).
+                                    (n.clone(), ctx_snapshot.resolve_named_arg(v, kind))
+                                })
                                 .collect();
                             build_structured_tool_body(&interpolated, &step.tool_param_types)
                         } else {
@@ -1567,7 +1574,9 @@ async fn execute_real_async(
                     let interpolated: Vec<(String, String)> = step
                         .tool_named_args
                         .iter()
-                        .map(|(n, v)| (n.clone(), ctx.interpolate(v)))
+                        // §Fase 60 — resolve by value_kind (reference → binding
+                        // lookup; literal → interpolation).
+                        .map(|(n, v, kind)| (n.clone(), ctx.resolve_named_arg(v, kind)))
                         .collect();
                     build_structured_tool_body(&interpolated, &step.tool_param_types)
                 } else {
