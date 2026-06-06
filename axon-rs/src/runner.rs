@@ -1281,15 +1281,24 @@ async fn execute_real_async(
         report.begin_unit(&unit.flow_name, &unit.persona_name);
 
         // Step dependency analysis + parallel schedule
+        // §Fase 61 — the set of producing step names, so a `use Tool(k = v)`
+        // call's keyword-arg references fold into the analysis argument (a flow-
+        // param reference is gated out). Without this the call's data-deps are
+        // invisible and the scheduler co-schedules it with its sources.
+        let step_name_set: std::collections::HashSet<&str> =
+            unit.steps.iter().map(|s| s.step_name.as_str()).collect();
         let step_infos: Vec<step_deps::StepInfo> = unit.steps.iter().map(|s| {
             step_deps::StepInfo {
                 name: s.step_name.clone(),
                 step_type: s.step_type.clone(),
                 user_prompt: s.user_prompt.clone(),
-                argument: s.tool_argument.as_deref()
-                    .or(s.memory_expression.as_deref())
-                    .unwrap_or("")
-                    .to_string(),
+                argument: step_deps::use_tool_analysis_argument(
+                    s.tool_argument.as_deref()
+                        .or(s.memory_expression.as_deref())
+                        .unwrap_or(""),
+                    &s.tool_named_args,
+                    &step_name_set,
+                ),
             }
         }).collect();
 
@@ -2440,15 +2449,22 @@ fn build_plan_export(
 
     for unit in units {
         // Build step infos for dependency analysis
+        // §Fase 61 — fold `use Tool(k = v)` keyword-arg references into the
+        // analysis argument so the plan reflects the real dependency edges.
+        let step_name_set: std::collections::HashSet<&str> =
+            unit.steps.iter().map(|s| s.step_name.as_str()).collect();
         let step_infos: Vec<step_deps::StepInfo> = unit.steps.iter().map(|s| {
             step_deps::StepInfo {
                 name: s.step_name.clone(),
                 step_type: s.step_type.clone(),
                 user_prompt: s.user_prompt.clone(),
-                argument: s.tool_argument.as_deref()
-                    .or(s.memory_expression.as_deref())
-                    .unwrap_or("")
-                    .to_string(),
+                argument: step_deps::use_tool_analysis_argument(
+                    s.tool_argument.as_deref()
+                        .or(s.memory_expression.as_deref())
+                        .unwrap_or(""),
+                    &s.tool_named_args,
+                    &step_name_set,
+                ),
             }
         }).collect();
 
