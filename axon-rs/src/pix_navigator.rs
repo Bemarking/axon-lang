@@ -600,6 +600,64 @@ impl RelevanceScorer for LexicalScorer {
     }
 }
 
+/// §Fase 62.A.3 — build the scoring prompt for a node against a query.
+/// Deterministic; the LLM is asked to *reason about the summary*, not to match
+/// embeddings (paper §2.3 — "reasoning about whether a section's summary
+/// suggests it contains the answer").
+pub fn build_score_prompt(query: &str, node: &PixNode) -> String {
+    format!(
+        "You are navigating a document by relevance, reading ONLY section \
+         summaries (not full text). Rate from 0 to 100 how likely this section — \
+         or one of its subsections — CONTAINS THE ANSWER to the query. Reply with \
+         ONLY the integer.\n\nQuery: {query}\nSection title: {}\nSection summary: \
+         {}\n\nScore (0-100):",
+        node.title, node.summary
+    )
+}
+
+/// §Fase 62.A.3 — parse an LLM score response to `[0, 1]`. Extracts the first
+/// number; a value `> 1` is read as a 0–100 percentage, otherwise as a 0–1
+/// fraction; both are clamped. A response with no number scores `0.0` (the LLM
+/// declined — treat as uninformative). Deterministic.
+pub fn parse_score(response: &str) -> f64 {
+    let mut num = String::new();
+    for ch in response.chars() {
+        if ch.is_ascii_digit() || (ch == '.' && !num.contains('.')) {
+            num.push(ch);
+        } else if !num.is_empty() {
+            break;
+        }
+    }
+    let n: f64 = num.trim_matches('.').parse().unwrap_or(0.0);
+    let frac = if n > 1.0 { n / 100.0 } else { n };
+    frac.clamp(0.0, 1.0)
+}
+
+/// §Fase 62.A.3 — the PRODUCTION [`RelevanceScorer`]: an LLM estimates
+/// `f_LLM(Q, summary) ≈ I(R; node | Q, path)` by reasoning about whether a
+/// section's summary suggests it holds the answer (paper §2.3).
+///
+/// The completion call is INJECTED (`complete`): it is async + backend-specific,
+/// while the navigator's `score` is synchronous, so the dispatch handler runs
+/// navigation under `spawn_blocking` with a blocking-call closure. The prompt +
+/// parser are deterministic and unit-tested; [`LexicalScorer`] remains the
+/// deterministic OSS reference the default handler uses.
+pub struct LlmRelevanceScorer<F>
+where
+    F: Fn(&str) -> String,
+{
+    pub complete: F,
+}
+
+impl<F> RelevanceScorer for LlmRelevanceScorer<F>
+where
+    F: Fn(&str) -> String,
+{
+    fn score(&self, query: &str, node: &PixNode, _path: &[NodeId]) -> f64 {
+        parse_score(&(self.complete)(&build_score_prompt(query, node)))
+    }
+}
+
 /// §Fase 62.A.3 — resolve a node by a dotted path of (case-insensitive) titles
 /// from the root, e.g. `["liability", "limitation"]`. Used by `drill` to locate
 /// the named subtree. Returns the deepest node whose title chain matches; `None`
@@ -969,5 +1027,55 @@ Either party may terminate with thirty days written notice.
         assert_eq!(tree.node(id2).unwrap().title, "Termination");
         // An unknown path is None.
         assert!(find_by_title_path(&tree, &["nonexistent"]).is_none());
+    }
+
+    // ── §62.A.3 LLM scorer (prompt + parse + trait impl) ─────────────────────
+
+    #[test]
+    fn parse_score_normalises_to_unit_interval() {
+        assert!((parse_score("85") - 0.85).abs() < 1e-9); // 0–100 percentage
+        assert!((parse_score("100") - 1.0).abs() < 1e-9);
+        assert!((parse_score("0") - 0.0).abs() < 1e-9);
+        assert!((parse_score("0.7") - 0.7).abs() < 1e-9); // already a fraction
+        assert!((parse_score("Score: 42 / 100") - 0.42).abs() < 1e-9); // first number
+        assert!((parse_score("the answer is likely here") - 0.0).abs() < 1e-9); // no number
+        assert!((parse_score("250") - 1.0).abs() < 1e-9); // clamped
+    }
+
+    #[test]
+    fn build_score_prompt_carries_query_and_summary() {
+        let n = PixNode {
+            id: 1,
+            title: "Limitation".into(),
+            summary: "liability is capped at contract value".into(),
+            location: Location::default(),
+            children: vec![],
+            content: Some("full text".into()),
+        };
+        let p = build_score_prompt("what is the cap", &n);
+        assert!(p.contains("what is the cap"), "carries the query");
+        assert!(p.contains("Limitation"), "carries the title");
+        assert!(p.contains("liability is capped at contract value"), "carries the summary");
+        assert!(p.contains("ONLY the integer"), "instructs a bare-integer reply");
+    }
+
+    #[test]
+    fn llm_scorer_uses_the_injected_completion() {
+        // A mock "LLM" that returns 90 for the answer section, 5 otherwise —
+        // proving the production scorer is a drop-in RelevanceScorer.
+        let scorer = LlmRelevanceScorer {
+            complete: |prompt: &str| {
+                if prompt.contains("Limitation") { "90".to_string() } else { "5".to_string() }
+            },
+        };
+        let hit = leaf(1, "Limitation", "capped");
+        let miss = leaf(2, "Preamble", "intro");
+        assert!((scorer.score("cap", &hit, &[]) - 0.90).abs() < 1e-9);
+        assert!((scorer.score("cap", &miss, &[]) - 0.05).abs() < 1e-9);
+
+        // It drives the navigator exactly like the lexical scorer.
+        let tree = index_markdown(DOC).unwrap();
+        let r = pix_navigate(&tree, "limitation cap", &NavConfig::default(), &scorer);
+        assert!(r.leaves.iter().any(|l| l.content.contains("capped at the contract value")));
     }
 }
