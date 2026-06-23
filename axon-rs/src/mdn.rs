@@ -463,6 +463,197 @@ pub fn navigate_corpus(
     MdnNavResult { selected, trail, total_gain }
 }
 
+// ── §Fase 62.B.3 — contradiction / balance + Jeffreys cost + shortest path ───
+
+/// The contradiction relation (paper Def 11): the document pairs `(Dᵢ, Dⱼ)`
+/// joined by a `contradict` edge — `Dᵢ` disputes a claim in `Dⱼ`.
+pub fn contradictions(corpus: &Corpus) -> Vec<(DocId, DocId)> {
+    corpus
+        .edges
+        .iter()
+        .filter(|e| e.etype == EdgeType::Contradict)
+        .map(|e| (e.from, e.to))
+        .collect()
+}
+
+/// Structural balance (Harary 1953; paper §2.3 NOTE). A signed corpus is
+/// **balanced** iff its documents 2-color so every positive (trust) edge is
+/// intra-color and every negative (distrust) edge is inter-color — equivalently,
+/// every cycle has an even number of negative edges. Balanced ⇒ clean epistemic
+/// consensus; **unbalanced ⇒ genuine controversy** requiring contradiction
+/// resolution. Neutral edges are ignored; edges are taken undirected for balance.
+pub fn is_balanced(corpus: &Corpus) -> bool {
+    // Signed undirected adjacency: (neighbour, positive?).
+    let mut adj: HashMap<DocId, Vec<(DocId, bool)>> = HashMap::new();
+    for e in &corpus.edges {
+        let pos = match e.etype.polarity() {
+            Polarity::Positive => true,
+            Polarity::Negative => false,
+            Polarity::Neutral => continue,
+        };
+        adj.entry(e.from).or_default().push((e.to, pos));
+        adj.entry(e.to).or_default().push((e.from, pos));
+    }
+
+    let mut color: HashMap<DocId, bool> = HashMap::new();
+    for &start in corpus.docs.keys() {
+        if color.contains_key(&start) {
+            continue;
+        }
+        color.insert(start, true);
+        let mut stack = vec![start];
+        while let Some(u) = stack.pop() {
+            let cu = color[&u];
+            if let Some(neighbours) = adj.get(&u) {
+                for &(v, pos) in neighbours {
+                    // + edge ⇒ same colour; − edge ⇒ opposite.
+                    let required = if pos { cu } else { !cu };
+                    match color.get(&v) {
+                        Some(&cv) => {
+                            if cv != required {
+                                return false; // a conflicting constraint ⇒ unbalanced.
+                            }
+                        }
+                        None => {
+                            color.insert(v, required);
+                            stack.push(v);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Jeffreys divergence `J(p, q) = KL(p‖q) + KL(q‖p)` — the symmetrized KL over
+/// two topic distributions (paper Def 5). A pseudo-metric: `J ≥ 0`, `J(p,p)=0`,
+/// symmetric. A small ε in the denominators keeps it finite when a coordinate is
+/// zero in one distribution but not the other.
+pub fn jeffreys_divergence(p: &[f64], q: &[f64]) -> f64 {
+    const EPS: f64 = 1e-12;
+    let n = p.len().max(q.len());
+    let mut j = 0.0;
+    for i in 0..n {
+        let pi = p.get(i).copied().unwrap_or(0.0).max(0.0);
+        let qi = q.get(i).copied().unwrap_or(0.0).max(0.0);
+        if pi > 0.0 {
+            j += pi * (pi / (qi + EPS)).ln();
+        }
+        if qi > 0.0 {
+            j += qi * (qi / (pi + EPS)).ln();
+        }
+    }
+    j.max(0.0)
+}
+
+/// The type-dependent cost coefficient `α_τ` (paper Def 5.1): following a
+/// citation is cheap; navigating a contradiction is expensive.
+pub fn type_cost_coefficient(etype: EdgeType) -> f64 {
+    match etype {
+        EdgeType::Corroborate => 0.5,
+        EdgeType::Elaborate => 0.7,
+        EdgeType::Cite => 1.0,
+        EdgeType::Supersede => 2.0,
+        EdgeType::Contradict => 3.0,
+        // Neutral structural edges: unit cost.
+        EdgeType::Depend | EdgeType::Implement | EdgeType::Exemplify => 1.0,
+    }
+}
+
+/// The type-weighted divergence cost of an edge: `c = α_τ · J(Dᵢ, Dⱼ)` (paper
+/// Def 5.1). `dist` provides each endpoint's topic distribution.
+pub fn edge_cost(edge: &Edge, dist: &HashMap<DocId, Vec<f64>>) -> f64 {
+    let empty = Vec::new();
+    let p = dist.get(&edge.from).unwrap_or(&empty);
+    let q = dist.get(&edge.to).unwrap_or(&empty);
+    type_cost_coefficient(edge.etype) * jeffreys_divergence(p, q)
+}
+
+/// The optimal navigation path `π* = argmin_π Σ α_τ·J(Dᵢ,Dⱼ)` (paper §2.4) — the
+/// minimum-cost weighted path via Dijkstra (a graph shortest path, not a
+/// geodesic). Edge costs are non-negative (`α_τ > 0`, `J ≥ 0`), so Dijkstra is
+/// exact. Returns `(path, total_cost)` or `None` if `to` is unreachable.
+pub fn shortest_cost_path(
+    corpus: &Corpus,
+    dist: &HashMap<DocId, Vec<f64>>,
+    from: DocId,
+    to: DocId,
+) -> Option<(Vec<DocId>, f64)> {
+    use std::cmp::Ordering;
+    use std::collections::BinaryHeap;
+
+    if !corpus.docs.contains_key(&from) || !corpus.docs.contains_key(&to) {
+        return None;
+    }
+
+    // Out-edge adjacency with precomputed costs.
+    let mut adj: HashMap<DocId, Vec<(DocId, f64)>> = HashMap::new();
+    for e in &corpus.edges {
+        adj.entry(e.from).or_default().push((e.to, edge_cost(e, dist)));
+    }
+
+    // Min-heap state ordered by ascending cost (Reverse via the Ord impl).
+    struct State {
+        cost: f64,
+        node: DocId,
+    }
+    impl PartialEq for State {
+        fn eq(&self, o: &Self) -> bool {
+            self.cost == o.cost && self.node == o.node
+        }
+    }
+    impl Eq for State {}
+    impl Ord for State {
+        fn cmp(&self, o: &Self) -> Ordering {
+            // Reverse on cost (min-heap); tie-break on node for determinism.
+            o.cost
+                .partial_cmp(&self.cost)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| o.node.cmp(&self.node))
+        }
+    }
+    impl PartialOrd for State {
+        fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+            Some(self.cmp(o))
+        }
+    }
+
+    let mut best: HashMap<DocId, f64> = HashMap::new();
+    let mut prev: HashMap<DocId, DocId> = HashMap::new();
+    let mut heap = BinaryHeap::new();
+    best.insert(from, 0.0);
+    heap.push(State { cost: 0.0, node: from });
+
+    while let Some(State { cost, node }) = heap.pop() {
+        if node == to {
+            // Reconstruct the path.
+            let mut path = vec![to];
+            let mut cur = to;
+            while let Some(&p) = prev.get(&cur) {
+                path.push(p);
+                cur = p;
+            }
+            path.reverse();
+            return Some((path, cost));
+        }
+        if cost > *best.get(&node).unwrap_or(&f64::INFINITY) {
+            continue; // a stale heap entry.
+        }
+        if let Some(neighbours) = adj.get(&node) {
+            for &(next, w) in neighbours {
+                let nc = cost + w;
+                if nc < *best.get(&next).unwrap_or(&f64::INFINITY) {
+                    best.insert(next, nc);
+                    prev.insert(next, node);
+                    heap.push(State { cost: nc, node: next });
+                }
+            }
+        }
+    }
+    None
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -754,5 +945,116 @@ mod tests {
         let g = CoverageGain { topics };
         let r = navigate_corpus(&c, "", 1, &NavBudget { max_docs: 5, epsilon: 0.5 }, &g);
         assert_eq!(r.selected, vec![1], "the uninformative neighbour is not visited");
+    }
+
+    // ── §62.B.3 — contradiction / balance + Jeffreys cost + shortest path ────
+
+    #[test]
+    fn contradictions_lists_the_contradict_edges() {
+        let docs = vec![doc(1, 0, 0.1), doc(2, 1, 0.1), doc(3, 1, 0.1)];
+        let edges = vec![
+            edge(1, 2, EdgeType::Cite, 0.9),
+            edge(2, 3, EdgeType::Contradict, 0.8),
+        ];
+        let c = Corpus::new(docs, edges).unwrap();
+        assert_eq!(contradictions(&c), vec![(2, 3)]);
+    }
+
+    #[test]
+    fn balance_theory_even_negatives_balanced_odd_unbalanced() {
+        let docs = vec![doc(1, 0, 0.1), doc(2, 1, 0.1), doc(3, 1, 0.1)];
+        // All-positive triangle: balanced (clean consensus).
+        let all_pos = Corpus::new(
+            docs.clone(),
+            vec![
+                edge(1, 2, EdgeType::Cite, 0.9),
+                edge(2, 3, EdgeType::Cite, 0.9),
+                edge(1, 3, EdgeType::Cite, 0.9),
+            ],
+        )
+        .unwrap();
+        assert!(is_balanced(&all_pos), "all-positive cycle is balanced");
+
+        // ONE negative edge (odd) → unbalanced (genuine controversy).
+        let one_neg = Corpus::new(
+            docs.clone(),
+            vec![
+                edge(1, 2, EdgeType::Cite, 0.9),
+                edge(2, 3, EdgeType::Cite, 0.9),
+                edge(1, 3, EdgeType::Contradict, 0.9),
+            ],
+        )
+        .unwrap();
+        assert!(!is_balanced(&one_neg), "one negative in the cycle ⇒ unbalanced");
+
+        // TWO negative edges (even) → balanced again.
+        let two_neg = Corpus::new(
+            docs,
+            vec![
+                edge(1, 2, EdgeType::Contradict, 0.9),
+                edge(2, 3, EdgeType::Contradict, 0.9),
+                edge(1, 3, EdgeType::Cite, 0.9),
+            ],
+        )
+        .unwrap();
+        assert!(is_balanced(&two_neg), "two negatives (even) ⇒ balanced");
+    }
+
+    #[test]
+    fn jeffreys_is_a_symmetric_nonnegative_pseudometric() {
+        let p = vec![0.7, 0.3];
+        let q = vec![0.3, 0.7];
+        assert!(jeffreys_divergence(&p, &p) < 1e-9, "J(p,p) = 0");
+        let jpq = jeffreys_divergence(&p, &q);
+        let jqp = jeffreys_divergence(&q, &p);
+        assert!((jpq - jqp).abs() < 1e-12, "J is symmetric");
+        assert!(jpq > 0.0, "J(p,q) > 0 for distinct distributions");
+    }
+
+    #[test]
+    fn type_cost_coefficients_rank_citations_cheap_contradictions_expensive() {
+        assert!(
+            type_cost_coefficient(EdgeType::Corroborate)
+                < type_cost_coefficient(EdgeType::Cite)
+        );
+        assert!(
+            type_cost_coefficient(EdgeType::Cite) < type_cost_coefficient(EdgeType::Supersede)
+        );
+        assert!(
+            type_cost_coefficient(EdgeType::Supersede)
+                < type_cost_coefficient(EdgeType::Contradict)
+        );
+        assert_eq!(type_cost_coefficient(EdgeType::Contradict), 3.0);
+    }
+
+    #[test]
+    fn shortest_path_prefers_cheap_citations_over_an_expensive_contradiction() {
+        // 1 →(contradict, α=3) 3   vs   1 →(cite) 2 →(cite) 3.
+        let docs = vec![doc(1, 0, 0.1), doc(2, 1, 0.1), doc(3, 2, 0.1)];
+        let edges = vec![
+            edge(1, 3, EdgeType::Contradict, 0.9),
+            edge(1, 2, EdgeType::Cite, 0.9),
+            edge(2, 3, EdgeType::Cite, 0.9),
+        ];
+        let c = Corpus::new(docs, edges).unwrap();
+        // All-positive distributions (finite J).
+        let dist = HashMap::from([
+            (1, vec![0.9, 0.1]),
+            (2, vec![0.85, 0.15]),
+            (3, vec![0.1, 0.9]),
+        ]);
+        let (path, cost) = shortest_cost_path(&c, &dist, 1, 3).unwrap();
+        assert_eq!(path, vec![1, 2, 3], "Dijkstra takes the cheap two-cite route");
+        // The direct contradiction edge costs strictly more.
+        let direct = 3.0 * jeffreys_divergence(&dist[&1], &dist[&3]);
+        assert!(cost < direct, "indirect cost {cost} < direct contradiction cost {direct}");
+    }
+
+    #[test]
+    fn shortest_path_none_when_unreachable() {
+        let docs = vec![doc(1, 0, 0.1), doc(2, 1, 0.1)];
+        let c = Corpus::new(docs, vec![]).unwrap(); // no edges
+        let dist = HashMap::from([(1, vec![1.0]), (2, vec![1.0])]);
+        assert!(shortest_cost_path(&c, &dist, 1, 2).is_none());
     }
 }
