@@ -732,11 +732,19 @@ pub struct CorpusDefinition {
     pub relations: Vec<CorpusRelation>,
     /// §Fase 63.C — `adaptive: true` enables the memory endofunctor: navigations
     /// over this corpus learn (semantic edge reinforcement + procedural bias),
-    /// and subsequent navigations use the memory-modified EPR. Requires
-    /// `relations:` (memory deforms the graph's geometry).
+    /// and subsequent navigations use the memory-modified EPR. Requires the
+    /// graph to carry edges (static `relations:` OR a store-sourced edge store).
     pub adaptive: bool,
     pub mcp_server: String,
     pub mcp_resource_uri: String,
+    /// §Fase 64.A — when `Some`, this is a DYNAMIC store-sourced MDN graph
+    /// (`corpus N from axonstore { documents: DocStore(id, title)  relations:
+    /// EdgeStore(from, to, etype, weight) }`): the documents and typed edges live
+    /// as ROWS in two declared `axonstore`s and the graph is built from the live
+    /// rows at navigate-time (per-tenant, growing). Mutually exclusive with the
+    /// static §63 form — the `documents`/`relations`/`mcp_*` fields stay empty.
+    /// `None` ⇒ the static compile-time corpus (back-compat byte-identical).
+    pub store_source: Option<CorpusStoreSource>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
@@ -745,6 +753,40 @@ pub struct CorpusDefinition {
     /// Fase 14.b — trailing comment trivia (same line as the
     /// declaration's last effective token). Empty by default.
     pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// §Fase 64.A — the dynamic, `axonstore`-sourced backing of an MDN corpus graph.
+/// The graph's documents and typed edges are ROWS in two declared `axonstore`s,
+/// so the graph grows at runtime (a new `persist` = a new node/edge) and is
+/// per-tenant by inheritance from the store's §40 column-proof / RLS scope. The
+/// runtime builds the `mdn::Corpus` from the live rows at navigate-time.
+///
+/// Surface:
+/// ```text
+/// corpus LtmGraph from axonstore {
+///     documents: LtmSummaries( id, summary )                 // (id-col, title-col)
+///     relations: LtmEdges( from_id, to_id, etype, weight )   // (from, to, etype, weight)
+///     adaptive: true
+/// }
+/// ```
+/// Documents and edges live in SEPARATE stores (an `axonstore` is one table with
+/// one column schema). The type-checker (`check_corpus`) validates that both
+/// stores are declared and — when they carry a §38 column schema — that the
+/// mapped columns exist with compatible types (id present; title text-like;
+/// from/to match the id type; etype text-like; weight numeric). The weight-range
+/// invariant `ω ∈ (0, 1]` (G4) becomes a RUNTIME check here, since weights are
+/// per-row dynamic (clamp on read + store CHECK), not a compile-time literal.
+#[derive(Debug, Clone)]
+pub struct CorpusStoreSource {
+    pub doc_store: String,
+    pub doc_id_col: String,
+    pub doc_title_col: String,
+    pub edge_store: String,
+    pub edge_from_col: String,
+    pub edge_to_col: String,
+    pub edge_type_col: String,
+    pub edge_weight_col: String,
+    pub loc: Loc,
 }
 
 // ── Dataspace ────────────────────────────────────────────────────────────────

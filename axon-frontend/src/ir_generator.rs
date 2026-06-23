@@ -1033,6 +1033,18 @@ impl IRGenerator {
             adaptive: n.adaptive,
             mcp_server: n.mcp_server.clone(),
             mcp_resource_uri: n.mcp_resource_uri.clone(),
+            // §Fase 64.A — lower the dynamic store-sourced backing (None for the
+            // static §63 corpus → serde-skipped → byte-identical IR).
+            store_source: n.store_source.as_ref().map(|s| IRCorpusStoreSource {
+                doc_store: s.doc_store.clone(),
+                doc_id: s.doc_id_col.clone(),
+                doc_title: s.doc_title_col.clone(),
+                edge_store: s.edge_store.clone(),
+                edge_from: s.edge_from_col.clone(),
+                edge_to: s.edge_to_col.clone(),
+                edge_type: s.edge_type_col.clone(),
+                edge_weight: s.edge_weight_col.clone(),
+            }),
         }
     }
 
