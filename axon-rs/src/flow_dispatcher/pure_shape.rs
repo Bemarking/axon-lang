@@ -399,6 +399,8 @@ async fn run_step_streaming_tool(
             tool_chunks_emitted: Some(summary.chunks_pushed),
             tool_output_hash_hex: Some(summary.output_hash_hex.clone()),
             tool_terminator_kind: Some(terminator_kind.to_string()),
+            // §Fase 65.C.3 — tool-stream path: no LLM output to anchor-check.
+            anchor_breaches: Vec::new(),
         };
         let mut guard = ctx.step_audit_records.lock().await;
         guard.push(record);
@@ -770,6 +772,26 @@ pub async fn run_pure_shape(
         conv.add_assistant(&accumulated);
     }
 
+    // §Fase 65.C.3 — enforce the flow's anchors on this step's output. The
+    // streaming path previously NEVER checked anchors (declared `require:`
+    // constraints were silently ignored on SSE); now a breach is surfaced in
+    // the step audit record. Each entry is `"<anchor> [<severity>]: <first
+    // violation>"`. The regenerate-on-breach RETRY is deferred to §65.D — this
+    // is the faithful tail of the runner (which, after exhausting retries, also
+    // just records the breach and continues with the response).
+    let anchor_breaches: Vec<String> = if ctx.anchors.is_empty() {
+        Vec::new()
+    } else {
+        crate::anchor_checker::check_all(&ctx.anchors, &accumulated)
+            .into_iter()
+            .filter(|r| !r.passed)
+            .map(|r| {
+                let first = r.violations.first().cloned().unwrap_or_default();
+                format!("{} [{}]: {}", r.anchor_name, r.severity, first)
+            })
+            .collect()
+    };
+
     // 11. Compute the output SHA-256 for the audit row + emit
     //     StepComplete.
     let output_hash_hex = sha256_hex(&accumulated);
@@ -807,6 +829,7 @@ pub async fn run_pure_shape(
             tool_chunks_emitted: None,
             tool_output_hash_hex: None,
             tool_terminator_kind: None,
+            anchor_breaches,
         };
         let mut guard = ctx.step_audit_records.lock().await;
         guard.push(record);
@@ -1201,6 +1224,72 @@ mod tests {
         // turn pair plus the just-appended one.
         let conv = ctx.conversation.lock().unwrap();
         assert!(conv.messages().len() <= 4, "budget bounds the history: {}", conv.messages().len());
+    }
+
+    fn step_named(name: &str, ask: &str) -> crate::ir_nodes::IRStep {
+        crate::ir_nodes::IRStep {
+            node_type: "step",
+            source_line: 0,
+            source_column: 0,
+            name: name.into(),
+            persona_ref: String::new(),
+            given: String::new(),
+            ask: ask.into(),
+            use_tool: None,
+            probe: None,
+            reason: None,
+            weave: None,
+            output_type: String::new(),
+            confidence_floor: None,
+            navigate_ref: String::new(),
+            apply_ref: String::new(),
+            body: Vec::new(),
+        }
+    }
+
+    fn anchor_named(name: &str) -> crate::ir_nodes::IRAnchor {
+        crate::ir_nodes::IRAnchor {
+            node_type: "anchor",
+            source_line: 0,
+            source_column: 0,
+            name: name.into(),
+            description: String::new(),
+            require: String::new(),
+            reject: Vec::new(),
+            enforce: String::new(),
+            confidence_floor: None,
+            unknown_response: String::new(),
+            on_violation: String::new(),
+            on_violation_target: String::new(),
+        }
+    }
+
+    /// §Fase 65.C.3 — a flow anchor the step output BREACHES is now surfaced in
+    /// the step audit (the streaming/SSE path previously ignored anchors
+    /// entirely). `RequiresCitation` breaches on the stub output `(stub)` (no
+    /// citation), deterministically.
+    #[tokio::test]
+    async fn anchor_breach_is_surfaced_in_step_audit() {
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.anchors = std::sync::Arc::new(vec![anchor_named("RequiresCitation")]);
+
+        run_step(&step_named("Generate", "say hi"), &mut ctx).await.expect("ok");
+
+        let audit = ctx.step_audit_records.lock().await;
+        let rec = audit.last().expect("one audit record");
+        assert_eq!(rec.anchor_breaches.len(), 1, "the breach is recorded: {:?}", rec.anchor_breaches);
+        assert!(rec.anchor_breaches[0].contains("RequiresCitation"));
+        assert!(rec.anchor_breaches[0].contains("[error]"));
+    }
+
+    /// §Fase 65.C.3 — back-compat: with no anchors declared the audit record's
+    /// `anchor_breaches` is empty (serde elides it → byte-identical wire).
+    #[tokio::test]
+    async fn no_anchors_means_no_breaches_recorded() {
+        let (mut ctx, _rx) = fresh_ctx();
+        run_step(&step_named("Generate", "say hi"), &mut ctx).await.expect("ok");
+        let audit = ctx.step_audit_records.lock().await;
+        assert!(audit.last().unwrap().anchor_breaches.is_empty());
     }
 
     #[tokio::test]

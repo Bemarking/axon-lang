@@ -228,6 +228,14 @@ pub struct DispatchCtx {
     /// dropped before each LLM call when exceeded (the runner's `ContextWindow`
     /// discipline). Default = `ContextWindow::new().max_chars`; 0 = unlimited.
     pub context_budget: usize,
+    /// §Fase 65.C.3 — the flow's resolved anchors, checked against each LLM
+    /// step's output. Before this the dispatcher's (streaming/SSE) path NEVER
+    /// enforced anchors — declared `require:` constraints were silently ignored
+    /// on SSE. Now a breach is surfaced in the step audit record. The
+    /// regenerate-on-breach RETRY stays on the non-streaming runner until §65.D
+    /// (retry-while-streaming is fraught — tokens already on the wire). Empty
+    /// (the `DispatchCtx::new` default) ⇒ no anchor checking, unchanged.
+    pub anchors: std::sync::Arc<Vec<crate::ir_nodes::IRAnchor>>,
     pub system_prompt: String,
     pub cancel: CancellationFlag,
     pub tx: mpsc::UnboundedSender<FlowExecutionEvent>,
@@ -401,6 +409,7 @@ impl DispatchCtx {
                 crate::conversation::ConversationHistory::new(),
             )),
             context_budget: crate::conversation::ContextWindow::new().max_chars,
+            anchors: std::sync::Arc::new(Vec::new()),
             system_prompt: system_prompt.into(),
             cancel,
             tx,
@@ -465,6 +474,14 @@ impl DispatchCtx {
     /// Returns `self` so builders chain.
     pub fn with_context_budget(mut self, max_chars: usize) -> Self {
         self.context_budget = max_chars;
+        self
+    }
+
+    /// §Fase 65.C.3 — Builder: install the flow's resolved anchors so each LLM
+    /// step's output is checked against them (breaches surfaced in the step
+    /// audit). Returns `self` so builders chain.
+    pub fn with_anchors(mut self, anchors: std::sync::Arc<Vec<crate::ir_nodes::IRAnchor>>) -> Self {
+        self.anchors = anchors;
         self
     }
 
