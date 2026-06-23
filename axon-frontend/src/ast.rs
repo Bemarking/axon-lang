@@ -710,10 +710,26 @@ pub struct PsycheDefinition {
 
 // ── Corpus ───────────────────────────────────────────────────────────────────
 
+/// §Fase 63.A — a typed, weighted edge of an MDN corpus graph: `etype(from, to,
+/// weight)`. `etype` is from the closed relation catalog (cite / elaborate /
+/// corroborate / depend / implement / exemplify / contradict / supersede);
+/// `from`/`to` name documents declared in the corpus; `weight ∈ (0, 1]`.
+#[derive(Debug, Clone)]
+pub struct CorpusRelation {
+    pub etype: String,
+    pub from: String,
+    pub to: String,
+    pub weight: f64,
+    pub loc: Loc,
+}
+
 #[derive(Debug)]
 pub struct CorpusDefinition {
     pub name: String,
     pub documents: Vec<String>, // simplified: list of pix refs
+    /// §Fase 63.A — the typed weighted edges that make this corpus an MDN graph
+    /// `C = (D, R, τ, ω, σ)`. Empty ⇒ the flat (edgeless) corpus.
+    pub relations: Vec<CorpusRelation>,
     pub mcp_server: String,
     pub mcp_resource_uri: String,
     pub loc: Loc,

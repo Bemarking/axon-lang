@@ -4485,6 +4485,7 @@ impl Parser {
         let mut node = CorpusDefinition {
             name,
             documents: Vec::new(),
+            relations: Vec::new(),
             mcp_server: String::new(),
             mcp_resource_uri: String::new(),
             loc: Loc {
@@ -4513,6 +4514,8 @@ impl Parser {
                 self.advance();
                 match field_name.as_str() {
                     "documents" => node.documents = self.parse_bracketed_identifiers()?,
+                    // §Fase 63.A — typed weighted edges → MDN corpus graph.
+                    "relations" => node.relations = self.parse_corpus_relations()?,
                     _ => self.skip_value(),
                 }
             } else if self.check(TokenType::LBrace) {
@@ -4521,6 +4524,40 @@ impl Parser {
         }
         self.consume(TokenType::RBrace)?;
         Ok(node)
+    }
+
+    /// §Fase 63.A — parse `relations: [ etype(from, to, weight) … ]`, the typed
+    /// weighted edges of an MDN corpus graph. Entries are whitespace/newline
+    /// separated; commas between them are optional. Edge-type validity (closed
+    /// catalog), document references, and the weight range are checked by the
+    /// type-checker (`check_corpus`), not here.
+    fn parse_corpus_relations(&mut self) -> Result<Vec<CorpusRelation>, ParseError> {
+        let mut out = Vec::new();
+        self.consume(TokenType::LBracket)?;
+        while !self.check(TokenType::RBracket) && !self.check(TokenType::Eof) {
+            if self.check(TokenType::Comma) {
+                self.advance();
+                continue;
+            }
+            let tok = self.current().clone();
+            let etype = self.consume_any_ident_or_kw()?.value.clone();
+            self.consume(TokenType::LParen)?;
+            let from = self.consume_any_ident_or_kw()?.value.clone();
+            self.consume(TokenType::Comma)?;
+            let to = self.consume_any_ident_or_kw()?.value.clone();
+            self.consume(TokenType::Comma)?;
+            let weight = self.consume_number()?;
+            self.consume(TokenType::RParen)?;
+            out.push(CorpusRelation {
+                etype,
+                from,
+                to,
+                weight,
+                loc: Loc { line: tok.line, column: tok.column },
+            });
+        }
+        self.consume(TokenType::RBracket)?;
+        Ok(out)
     }
 
     fn parse_dataspace(&mut self) -> Result<DataspaceDefinition, ParseError> {

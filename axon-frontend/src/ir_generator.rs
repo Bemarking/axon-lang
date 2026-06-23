@@ -1017,6 +1017,17 @@ impl IRGenerator {
             source_column: n.loc.column,
             name: n.name.clone(),
             documents: n.documents.clone(),
+            // §Fase 63.A — lower the typed weighted edges (the MDN graph).
+            relations: n
+                .relations
+                .iter()
+                .map(|r| IRCorpusRelation {
+                    etype: r.etype.clone(),
+                    from: r.from.clone(),
+                    to: r.to.clone(),
+                    weight: r.weight,
+                })
+                .collect(),
             mcp_server: n.mcp_server.clone(),
             mcp_resource_uri: n.mcp_resource_uri.clone(),
         }

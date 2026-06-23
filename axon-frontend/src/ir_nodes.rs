@@ -1325,8 +1325,21 @@ pub struct IRCorpus {
     pub source_column: u32,
     pub name: String,
     pub documents: Vec<String>,
+    /// §Fase 63.A — typed weighted edges. Non-empty ⇒ this corpus is an MDN
+    /// graph `C = (D, R, τ, ω, σ)`; the runtime builds an `mdn::Corpus` from it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<IRCorpusRelation>,
     pub mcp_server: String,
     pub mcp_resource_uri: String,
+}
+
+/// §Fase 63.A — a lowered MDN corpus-graph edge `(from, to, τ, ω)`.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRCorpusRelation {
+    pub etype: String,
+    pub from: String,
+    pub to: String,
+    pub weight: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -72,6 +72,22 @@ impl EdgeType {
             EdgeType::Depend | EdgeType::Implement | EdgeType::Exemplify => Polarity::Neutral,
         }
     }
+
+    /// §Fase 63.A — parse a relation-type slug (the closed catalog the frontend
+    /// `corpus` grammar uses) into an [`EdgeType`]. `None` for an unknown slug.
+    pub fn from_slug(s: &str) -> Option<EdgeType> {
+        Some(match s {
+            "cite" => EdgeType::Cite,
+            "elaborate" => EdgeType::Elaborate,
+            "corroborate" => EdgeType::Corroborate,
+            "depend" => EdgeType::Depend,
+            "implement" => EdgeType::Implement,
+            "exemplify" => EdgeType::Exemplify,
+            "contradict" => EdgeType::Contradict,
+            "supersede" => EdgeType::Supersede,
+            _ => return None,
+        })
+    }
 }
 
 /// A labeled, weighted directed edge `(Dᵢ, Dⱼ, τ)` with weight `ω ∈ (0, 1]`.
@@ -116,6 +132,11 @@ pub enum CorpusError {
     BadWeight(DocId, DocId),
     /// The corpus has no documents.
     Empty,
+    /// §Fase 63.A — a `relations:` entry named an unknown edge type (defensive;
+    /// the frontend type-checker already rejects these at compile time).
+    UnknownRelationType(String),
+    /// §Fase 63.A — a `relations:` entry referenced an undeclared document.
+    UnknownDocumentRef(String),
 }
 
 impl Corpus {
@@ -138,6 +159,51 @@ impl Corpus {
             }
         }
         Ok(Corpus { docs: map, edges })
+    }
+
+    /// §Fase 63.A — build an MDN corpus graph from a frontend `corpus`
+    /// declaration: the document names (mapped to ids by index) and the typed
+    /// weighted `relations:` edges `(etype_slug, from, to, weight)`. The relation
+    /// type slug resolves via [`EdgeType::from_slug`]; `from`/`to` resolve against
+    /// the declared documents. Returns `Err` on an unknown type or an undeclared
+    /// document reference (the frontend type-checker already rejects both at
+    /// compile time — this is the runtime mirror).
+    pub fn from_declaration(
+        documents: &[String],
+        relations: &[(String, String, String, f64)],
+    ) -> Result<Corpus, CorpusError> {
+        if documents.is_empty() {
+            return Err(CorpusError::Empty);
+        }
+        let index: HashMap<&str, DocId> = documents
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (d.as_str(), i as DocId))
+            .collect();
+        let docs: Vec<Document> = documents
+            .iter()
+            .enumerate()
+            .map(|(i, name)| Document {
+                id: i as DocId,
+                title: name.clone(),
+                depth: 0,
+                recency: 0.5,
+                epistemic: "believe".to_string(),
+            })
+            .collect();
+        let mut edges = Vec::with_capacity(relations.len());
+        for (etype, from, to, weight) in relations {
+            let et = EdgeType::from_slug(etype)
+                .ok_or_else(|| CorpusError::UnknownRelationType(etype.clone()))?;
+            let f = *index
+                .get(from.as_str())
+                .ok_or_else(|| CorpusError::UnknownDocumentRef(from.clone()))?;
+            let t = *index
+                .get(to.as_str())
+                .ok_or_else(|| CorpusError::UnknownDocumentRef(to.clone()))?;
+            edges.push(Edge { from: f, to: t, etype: et, weight: *weight });
+        }
+        Corpus::new(docs, edges)
     }
 
     /// `|D|`.
@@ -707,6 +773,47 @@ mod tests {
             CorpusError::BadWeight(1, 2)
         );
         assert_eq!(Corpus::new(vec![], vec![]).unwrap_err(), CorpusError::Empty);
+    }
+
+    // ── §63.A — build an MDN graph from a `corpus` declaration ───────────────
+
+    #[test]
+    fn edge_type_from_slug_roundtrips() {
+        assert_eq!(EdgeType::from_slug("cite"), Some(EdgeType::Cite));
+        assert_eq!(EdgeType::from_slug("supersede"), Some(EdgeType::Supersede));
+        assert_eq!(EdgeType::from_slug("corroborate"), Some(EdgeType::Corroborate));
+        assert!(EdgeType::from_slug("nope").is_none());
+    }
+
+    #[test]
+    fn from_declaration_builds_an_mdn_graph() {
+        let docs = vec!["sess_a".to_string(), "sess_b".to_string(), "sess_c".to_string()];
+        let rels = vec![
+            ("cite".to_string(), "sess_b".to_string(), "sess_a".to_string(), 0.9),
+            ("contradict".to_string(), "sess_c".to_string(), "sess_a".to_string(), 0.7),
+        ];
+        let c = Corpus::from_declaration(&docs, &rels).unwrap();
+        assert_eq!(c.len(), 3);
+        assert_eq!(c.edges().len(), 2);
+        // The built graph drives the signed EPR: the cited sess_a (id 0) outranks
+        // the uncited sess_c (id 2).
+        let r = epistemic_pagerank(&c, &EprParams::default());
+        assert!(r.epr_plus[&0] > r.epr_plus[&2]);
+    }
+
+    #[test]
+    fn from_declaration_rejects_unknown_type_and_doc() {
+        let docs = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            Corpus::from_declaration(&docs, &[("hug".into(), "a".into(), "b".into(), 0.5)])
+                .unwrap_err(),
+            CorpusError::UnknownRelationType("hug".into())
+        );
+        assert_eq!(
+            Corpus::from_declaration(&docs, &[("cite".into(), "a".into(), "z".into(), 0.5)])
+                .unwrap_err(),
+            CorpusError::UnknownDocumentRef("z".into())
+        );
     }
 
     // ── Signed EPR — the Perron–Frobenius guarantees ─────────────────────────
