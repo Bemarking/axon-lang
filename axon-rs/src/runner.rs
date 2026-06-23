@@ -146,6 +146,13 @@ struct CompiledStep {
     /// value is all-digits) without reaching back into the IR.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tool_param_types: Vec<(String, String)>,
+    /// §Fase 65.A — for a `navigate <corpus>` step: the IR node, carried so the
+    /// non-streaming server executor can dispatch the REAL MDN traversal
+    /// (`flow_dispatcher::cognitive::run_navigate`) instead of falling through to
+    /// the LLM — which fabricates hits (the Kivi gap report). Runtime-only:
+    /// `#[serde(skip)]` keeps the compiled-plan wire shape byte-identical.
+    #[serde(skip)]
+    navigate_payload: Option<crate::ir_nodes::IRNavigateStep>,
 }
 
 /// Fase 17.c — payload carried inside a CompiledStep for `let X = value`
@@ -394,6 +401,13 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             _ => None,
         };
 
+        // §Fase 65.A — carry the navigate IR node so the executor runs the
+        // structural MDN traversal instead of the LLM fallthrough.
+        let navigate_payload = match node {
+            IRFlowNode::Navigate(s) => Some(s.clone()),
+            _ => None,
+        };
+
         steps.push(CompiledStep {
             step_name,
             step_type,
@@ -406,6 +420,7 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             store_fields,
             tool_named_args,
             tool_param_types,
+            navigate_payload,
         });
     }
 
@@ -1209,6 +1224,117 @@ fn execute_sql_store_step(
 ///
 /// The sync variant `execute_real` retained as a thin wrapper for the
 /// CLI path + pre-async callers that don't have a tokio context.
+/// §Fase 65.A — the dispatcher-shared state a STRUCTURAL `navigate` needs: the
+/// axonstore registry (to read the corpus rows tenant-scoped) + the static MDN
+/// corpus graphs (§63 `corpus { relations: }`) + the dynamic store-sourced
+/// corpus specs (§64 `corpus … from axonstore`) + the adaptive set. Built once
+/// per server flow from the IR — mirroring `run_streaming_via_dispatcher` — so a
+/// NON-streaming `navigate` executes the SAME real MDN traversal as the SSE path
+/// instead of the LLM fallthrough. `None` on the CLI path (its executor unifies
+/// in a later sub-fase; navigate there keeps the legacy behavior for now).
+struct NavDispatch {
+    store_registry: std::sync::Arc<StoreRegistry>,
+    corpora: std::sync::Arc<std::collections::HashMap<String, crate::mdn::Corpus>>,
+    store_sources:
+        std::sync::Arc<std::collections::HashMap<String, crate::ir_nodes::IRCorpusStoreSource>>,
+    adaptive: std::sync::Arc<std::collections::HashSet<String>>,
+}
+
+/// §Fase 65.A — kill-switch for the structural-navigate bridge. ON by default:
+/// the legacy path (LLM fallthrough) is a CORRECTNESS BUG for a pure-effect
+/// `navigate` — it fabricates documents that do not exist. Set
+/// `AXON_UNIFIED_EXECUTOR` to `0`/`off`/`false`/`no` to revert to the legacy
+/// behavior (escape hatch only, until the §65.E cutover removes it).
+fn navigate_structural_enabled() -> bool {
+    match std::env::var("AXON_UNIFIED_EXECUTOR") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "off" | "false" | "no"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// §Fase 65.A — run a `navigate <corpus>` as the REAL MDN traversal by bridging
+/// into the flow dispatcher's [`crate::flow_dispatcher::cognitive::run_navigate`],
+/// sharing the flow's EXACT pinned, tenant-scoped Postgres connections (the §64.B
+/// isolation guarantee — NEVER a fresh pool acquire). The pins are LENT to a
+/// throwaway `DispatchCtx` for the duration of this single node, then reclaimed
+/// into the runner's map. The dispatcher events go to a dropped channel (the
+/// runner builds its own report). Returns the structural result (the REAL
+/// documents) or an honest empty/`Err` — never an LLM hallucination.
+///
+/// Tenant isolation note: `run_navigate`'s reads route through the SAME
+/// `read_all_store_rows` → `stream_retrieve` path the runner's own `retrieve`
+/// uses, on the SAME task (so the `current_tenant_id()` task-local + per-op
+/// `SET LOCAL axon.current_tenant` apply identically) and over the SAME physical
+/// pinned connection (lent here) — inheriting the exact isolation of a
+/// non-streaming `retrieve`. The concurrent two-tenant property test is the
+/// load-bearing safeguard (§65.A risk matrix).
+async fn dispatch_navigate_structural(
+    nav: &crate::ir_nodes::IRNavigateStep,
+    exec_ctx: &mut ExecContext,
+    flow_name: &str,
+    backend_name: &str,
+    system_prompt: &str,
+    pinned_conns: &mut std::collections::HashMap<
+        String,
+        sqlx::pool::PoolConnection<sqlx::Postgres>,
+    >,
+    nd: &NavDispatch,
+) -> Result<String, String> {
+    use std::sync::{Arc, Mutex};
+    // Lend the flow's pins to a shared Arc<Mutex> so the DispatchCtx operates on
+    // the SAME physical, tenant-scoped connections — the §64.B isolation. The
+    // runner is the unique borrower of `pinned_conns` here (sequential within the
+    // wave), so the take/restore is race-free.
+    let lent = std::mem::take(pinned_conns);
+    let pin_arc = Arc::new(Mutex::new(lent));
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut dctx = crate::flow_dispatcher::DispatchCtx::new(
+        flow_name,
+        backend_name,
+        system_prompt,
+        crate::cancel_token::CancellationFlag::new(),
+        tx,
+    )
+    .with_store_registry(nd.store_registry.clone())
+    .with_mdn_corpora(nd.corpora.clone())
+    .with_mdn_adaptive(nd.adaptive.clone())
+    .with_mdn_store_sources(nd.store_sources.clone())
+    .with_pinned_conns(pin_arc.clone());
+    // Seed the dispatcher's let-bindings from the runner's exec context so
+    // `${param}` in `query:` / `from:` interpolates identically to every other
+    // step in this flow.
+    dctx.let_bindings = exec_ctx.vars().clone();
+
+    let outcome = crate::flow_dispatcher::cognitive::run_navigate(nav, &mut dctx).await;
+
+    // Propagate the navigate output binding back into the runner's context so the
+    // subsequent `return <output>` (and any downstream step) reads the REAL hits.
+    if !nav.output_name.is_empty() {
+        if let Some(v) = dctx.let_bindings.get(&nav.output_name) {
+            exec_ctx.set(&nav.output_name, v);
+        }
+    }
+    // Reclaim the pins into the runner's map (run_navigate took/returned them
+    // within the shared Arc; drain it back so the flow's remaining store ops keep
+    // using the same pinned connections).
+    {
+        let mut reclaimed = pin_arc.lock().unwrap();
+        for (k, v) in reclaimed.drain() {
+            pinned_conns.insert(k, v);
+        }
+    }
+
+    match outcome {
+        Ok(crate::flow_dispatcher::NodeOutcome::Completed { output, .. }) => Ok(output),
+        // A cancelled / non-completing outcome binds empty rather than fabricating.
+        Ok(_) => Ok(String::new()),
+        Err(e) => Err(format!("{e:?}")),
+    }
+}
+
 async fn execute_real_async(
     units: &[ExecutionUnit],
     backend_name: &str,
@@ -1225,6 +1351,9 @@ async fn execute_real_async(
     // CLI / pre-37.x.j callers.
     pinned_conns: &mut std::collections::HashMap<String, sqlx::pool::PoolConnection<sqlx::Postgres>>,
     api_key_override: Option<&str>,
+    // §Fase 65.A — the dispatcher-shared corpus state for structural `navigate`.
+    // `Some` on the server path (built from the IR); `None` on the CLI path.
+    nav_dispatch: Option<&NavDispatch>,
 ) -> Result<(bool, Vec<TraceEvent>), backend::BackendError> {
     let api_key = match api_key_override {
         Some(key) => key.to_string(),
@@ -1818,6 +1947,71 @@ async fn execute_real_async(
                 continue; // Skip LLM call
             }
 
+            // ── §Fase 65.A — structural navigate (real MDN traversal) ──────
+            // A `navigate <corpus>` is a PURE EFFECT: it must run the
+            // dispatcher's MDN handler (signed-EPR / ε-informative over the
+            // LIVE store rows, tenant-scoped) — NOT the LLM fallthrough below,
+            // which fabricates hits (the Kivi gap report). The dispatcher
+            // shares this flow's exact pinned, RLS-scoped connections.
+            if step.step_type == "navigate" && navigate_structural_enabled() {
+                if let (Some(nav), Some(nd)) = (step.navigate_payload.as_ref(), nav_dispatch) {
+                    let (result_text, ok) = match dispatch_navigate_structural(
+                        nav,
+                        &mut ctx,
+                        &unit.flow_name,
+                        backend_name,
+                        &unit.system_prompt,
+                        pinned_conns,
+                        nd,
+                    )
+                    .await
+                    {
+                        Ok(out) => (out, true),
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "axon::navigate",
+                                corpus = %nav.pix_ref,
+                                error = %e,
+                                "structural navigate failed; binding empty \
+                                 (NOT hallucinating via the LLM)"
+                            );
+                            (String::new(), false)
+                        }
+                    };
+                    ctx.set_result(&step.step_name, &result_text);
+                    if !json {
+                        let color = if ok { "\x1b[34m" } else { "\x1b[31m" };
+                        let hits = result_text.lines().filter(|l| !l.is_empty()).count();
+                        println!(
+                            "  {} {} [navigate]",
+                            c(if ok { "🧭" } else { "✗" }, color, use_color),
+                            c(&format!("{} → {hits} hit(s)", nav.pix_ref), color, use_color),
+                        );
+                    }
+                    hooks.on_step_end(0, 0, 0, 0, false);
+                    report.record_step(StepReport {
+                        name: step.step_name.clone(),
+                        step_type: step.step_type.clone(),
+                        result: result_text,
+                        duration_ms: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        anchor_breaches: 0,
+                        chain_activations: 0,
+                        was_retried: false,
+                    });
+                    if trace {
+                        events.push(TraceEvent {
+                            event: "navigate_structural".to_string(),
+                            unit: unit.flow_name.clone(),
+                            step: step.step_name.clone(),
+                            detail: format!("corpus={}", nav.pix_ref),
+                        });
+                    }
+                    continue; // Skip the LLM call — navigate is a pure effect.
+                }
+            }
+
             // ── LLM call with variable interpolation + conversation history ──
             let full_system = format!("{}\n\n{}", unit.system_prompt, step.system_prompt);
             let interpolated_prompt = ctx.interpolate(&step.user_prompt);
@@ -2076,6 +2270,9 @@ fn execute_real(
         store_registry,
         pinned_conns,
         api_key_override,
+        // §Fase 65.A — the CLI path does not yet unify on the dispatcher;
+        // `navigate` there keeps the legacy behavior (no structural bridge).
+        None,
     ))
 }
 
@@ -2755,8 +2952,52 @@ pub fn execute_server_flow(
     // §Fase 35.e — build the axonstore registry from the program's
     // declarations. The D2 closed-catalog gate runs here: an unknown
     // backend fails fast, at deploy, with a named error.
-    let store_registry = StoreRegistry::build(&ir.axonstore_specs)
-        .map_err(|e| format!("axonstore registry: {e}"))?;
+    // §Fase 65.A — Arc the registry so it can be shared (by clone) into the
+    // structural-navigate `DispatchCtx` while still being borrowed (via Deref)
+    // by the eager-pin walk + `execute_real_async`'s own store path.
+    let store_registry = std::sync::Arc::new(
+        StoreRegistry::build(&ir.axonstore_specs)
+            .map_err(|e| format!("axonstore registry: {e}"))?,
+    );
+
+    // §Fase 65.A — build the dispatcher's corpus state from the IR exactly as
+    // `run_streaming_via_dispatcher` does, so a NON-streaming `navigate` runs the
+    // SAME structural MDN traversal as the SSE path (instead of hallucinating via
+    // the LLM). Static §63 graphs + dynamic §64 store-sourced corpora + the
+    // adaptive set are all wired.
+    let nav_dispatch = {
+        let mut corpora: std::collections::HashMap<String, crate::mdn::Corpus> =
+            std::collections::HashMap::new();
+        let mut store_sources: std::collections::HashMap<
+            String,
+            crate::ir_nodes::IRCorpusStoreSource,
+        > = std::collections::HashMap::new();
+        let mut adaptive: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for cspec in &ir.corpus_specs {
+            if !cspec.relations.is_empty() {
+                let rels: Vec<(String, String, String, f64)> = cspec
+                    .relations
+                    .iter()
+                    .map(|r| (r.etype.clone(), r.from.clone(), r.to.clone(), r.weight))
+                    .collect();
+                if let Ok(corpus) = crate::mdn::Corpus::from_declaration(&cspec.documents, &rels) {
+                    corpora.insert(cspec.name.clone(), corpus);
+                }
+            }
+            if let Some(src) = &cspec.store_source {
+                store_sources.insert(cspec.name.clone(), src.clone());
+            }
+            if cspec.adaptive && (!cspec.relations.is_empty() || cspec.store_source.is_some()) {
+                adaptive.insert(cspec.name.clone());
+            }
+        }
+        NavDispatch {
+            store_registry: store_registry.clone(),
+            corpora: std::sync::Arc::new(corpora),
+            store_sources: std::sync::Arc::new(store_sources),
+            adaptive: std::sync::Arc::new(adaptive),
+        }
+    };
 
     // §Fase 37.x.j (D1) — Eager acquire one PoolConnection per
     // postgresql-backed axonstore referenced in the flow body BEFORE
@@ -2924,6 +3165,8 @@ pub fn execute_server_flow(
                 &store_registry,
                 &mut pinned_conns,
                 api_key_override,
+                // §Fase 65.A — structural navigate on the server path.
+                Some(&nav_dispatch),
             ).await
             // — 3. `pinned_conns` drops here → every PoolConnection
             //   drops on THIS runtime → `after_release(DEALLOCATE ALL)`
@@ -3554,5 +3797,83 @@ mod fase35e_tests {
             &ctx,
         );
         assert!(matches!(result, Err(StoreError::PoolInit { .. })));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  §Fase 65.0 / 65.A — unified executor: structural navigate bridge
+// ─────────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod fase65_navigate_bridge {
+    use super::*;
+
+    /// §Fase 65.A — the bridge is ON by default (the legacy LLM fallthrough is a
+    /// correctness bug for a pure `navigate`); the `AXON_UNIFIED_EXECUTOR`
+    /// kill-switch reverts it. Serialized via a process-global env var, so this
+    /// test owns the var for its body.
+    #[test]
+    fn kill_switch_defaults_on_and_respects_env() {
+        std::env::remove_var("AXON_UNIFIED_EXECUTOR");
+        assert!(navigate_structural_enabled(), "default ON when unset");
+        for off in ["0", "off", "false", "no", "OFF"] {
+            std::env::set_var("AXON_UNIFIED_EXECUTOR", off);
+            assert!(!navigate_structural_enabled(), "kill-switch honors {off:?}");
+        }
+        std::env::set_var("AXON_UNIFIED_EXECUTOR", "1");
+        assert!(navigate_structural_enabled(), "anything else stays ON");
+        std::env::remove_var("AXON_UNIFIED_EXECUTOR");
+    }
+
+    /// §Fase 65.A — THE anti-hallucination guarantee (Kivi acceptance, unit
+    /// scope): a store-sourced `navigate` whose backing store is NOT Postgres
+    /// (here an empty registry) binds an EMPTY result — the §64.B honest degrade
+    /// — instead of fabricating documents. The full real-rows → real-hits E2E
+    /// runs in the Postgres CI lane (the §37.x.j precedent). Critically, this
+    /// path NEVER reaches the LLM: the bridge returns structural output directly.
+    #[tokio::test]
+    async fn store_sourced_navigate_without_postgres_binds_empty_not_hallucinated() {
+        let src = crate::ir_nodes::IRCorpusStoreSource {
+            doc_store: "LtmSummaries".into(),
+            doc_id: "id".into(),
+            doc_title: "summary".into(),
+            edge_store: "LtmEdges".into(),
+            edge_from: "from_id".into(),
+            edge_to: "to_id".into(),
+            edge_type: "etype".into(),
+            edge_weight: "weight".into(),
+        };
+        let mut store_sources = std::collections::HashMap::new();
+        store_sources.insert("LtmGraph".to_string(), src);
+        let nd = NavDispatch {
+            store_registry: std::sync::Arc::new(crate::store::registry::StoreRegistry::empty()),
+            corpora: std::sync::Arc::new(std::collections::HashMap::new()),
+            store_sources: std::sync::Arc::new(store_sources),
+            adaptive: std::sync::Arc::new(std::collections::HashSet::new()),
+        };
+        let nav = crate::ir_nodes::IRNavigateStep {
+            node_type: "navigate",
+            source_line: 0,
+            source_column: 0,
+            pix_ref: "LtmGraph".into(),
+            corpus_ref: "LtmGraph".into(),
+            query: "prueba de recall".into(),
+            trail_enabled: false,
+            output_name: "hits".into(),
+            seed: String::new(),
+            budget: Some(5),
+        };
+        let mut ctx = ExecContext::new("RecallLTM", "Default", 0);
+        let mut pins = std::collections::HashMap::new();
+        let out = dispatch_navigate_structural(
+            &nav, &mut ctx, "RecallLTM", "kimi", "", &mut pins, &nd,
+        )
+        .await
+        .expect("structural navigate returns Ok (honest empty), not an LLM call");
+        assert_eq!(out, "", "empty corpus must bind empty, never fabricate hits");
+        assert_eq!(
+            ctx.get("hits"),
+            Some(""),
+            "the empty output binding propagates back to the runner context"
+        );
     }
 }
