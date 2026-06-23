@@ -2303,8 +2303,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_corpus(&mut self, node: &CorpusDefinition) {
-        // Invariant G1: D ≠ ∅ — at least one document
-        if node.documents.is_empty() && node.mcp_server.is_empty() {
+        // Invariant G1: D ≠ ∅ — at least one document. A store-sourced corpus
+        // (§64.A) satisfies G1 via its documents store (rows = documents).
+        if node.documents.is_empty() && node.mcp_server.is_empty() && node.store_source.is_none() {
             self.emit(
                 format!(
                     "Corpus '{}' requires at least one document or an mcp_server (G1: D ≠ ∅)",
@@ -2312,6 +2313,12 @@ impl<'a> TypeChecker<'a> {
                 ),
                 &node.loc,
             );
+        }
+
+        // §Fase 64.A — dynamic, axonstore-sourced MDN graph
+        // (`corpus N from axonstore { documents: S(id,title)  relations: E(from,to,etype,weight) }`).
+        if let Some(src) = &node.store_source {
+            self.check_corpus_store_source(node, src);
         }
 
         // §Fase 63.A — MDN relations (typed weighted edges, paper Def 1-3).
@@ -2360,8 +2367,9 @@ impl<'a> TypeChecker<'a> {
         }
 
         // §Fase 63.C — the memory endofunctor deforms the graph's geometry, so
-        // `adaptive` is only meaningful on a corpus that HAS a graph.
-        if node.adaptive && node.relations.is_empty() {
+        // `adaptive` is only meaningful on a corpus that HAS a graph: static
+        // `relations:` OR (§64.A) a store-sourced edge store.
+        if node.adaptive && node.relations.is_empty() && node.store_source.is_none() {
             self.emit(
                 format!(
                     "Corpus '{}': `adaptive: true` requires `relations:` — memory deforms the graph, an edgeless corpus has nothing to learn",
@@ -2369,6 +2377,151 @@ impl<'a> TypeChecker<'a> {
                 ),
                 &node.loc,
             );
+        }
+    }
+
+    /// §Fase 64.A — validate a dynamic, `axonstore`-sourced MDN corpus graph.
+    /// Both backing stores must be declared `axonstore`s; when they carry a §38
+    /// inline column schema, the mapped columns are validated for existence and
+    /// type compatibility (id present; title text-like; edge from/to match the
+    /// id type; etype text-like; weight numeric). Stores with a ManifestRef /
+    /// EnvVar / no schema defer the column check to the runtime (consistent with
+    /// §38's optional-schema D5). The weight-range invariant `ω ∈ (0, 1]` (G4) is
+    /// a RUNTIME check here — weights are per-row dynamic, not compile-time.
+    fn check_corpus_store_source(&mut self, node: &CorpusDefinition, src: &CorpusStoreSource) {
+        use crate::store_schema::{StoreColumn, StoreColumnType};
+
+        let doc_store = self.find_store(&src.doc_store);
+        if doc_store.is_none() {
+            self.emit(
+                format!(
+                    "Corpus '{}': documents store '{}' is not a declared axonstore",
+                    node.name, src.doc_store
+                ),
+                &src.loc,
+            );
+        }
+        let edge_store = self.find_store(&src.edge_store);
+        if edge_store.is_none() {
+            self.emit(
+                format!(
+                    "Corpus '{}': relations store '{}' is not a declared axonstore",
+                    node.name, src.edge_store
+                ),
+                &src.loc,
+            );
+        }
+
+        // Column-level validation only when BOTH stores carry an inline schema.
+        let (Some(ds), Some(es)) = (doc_store, edge_store) else {
+            return;
+        };
+        let (Some(dcols), Some(ecols)) = (
+            ds.column_schema.as_ref().and_then(|s| s.inline_columns()),
+            es.column_schema.as_ref().and_then(|s| s.inline_columns()),
+        ) else {
+            return;
+        };
+
+        let col_ty = |cols: &[StoreColumn], n: &str| -> Option<StoreColumnType> {
+            cols.iter().find(|c| c.name == n).map(|c| c.col_type)
+        };
+        let is_text_like = |t: StoreColumnType| matches!(t, StoreColumnType::Text);
+        let is_numeric = |t: StoreColumnType| {
+            matches!(
+                t,
+                StoreColumnType::Float | StoreColumnType::Double | StoreColumnType::Numeric
+            )
+        };
+
+        // documents: id (any type — the node id) + title (text-like).
+        let id_ty = col_ty(dcols, &src.doc_id_col);
+        if id_ty.is_none() {
+            self.emit(
+                format!(
+                    "Corpus '{}': documents store '{}' has no column '{}' (the document id)",
+                    node.name, src.doc_store, src.doc_id_col
+                ),
+                &src.loc,
+            );
+        }
+        match col_ty(dcols, &src.doc_title_col) {
+            None => self.emit(
+                format!(
+                    "Corpus '{}': documents store '{}' has no column '{}' (the title)",
+                    node.name, src.doc_store, src.doc_title_col
+                ),
+                &src.loc,
+            ),
+            Some(t) if !is_text_like(t) => self.emit(
+                format!(
+                    "Corpus '{}': title column '{}' must be text-like (got {})",
+                    node.name, src.doc_title_col, t
+                ),
+                &src.loc,
+            ),
+            _ => {}
+        }
+
+        // relations: from/to (must match the document id type — G2) + etype
+        // (text-like) + weight (numeric; ω ∈ (0,1] enforced at runtime).
+        for (label, col) in [("from", &src.edge_from_col), ("to", &src.edge_to_col)] {
+            match col_ty(ecols, col) {
+                None => self.emit(
+                    format!(
+                        "Corpus '{}': relations store '{}' has no column '{}' (the {} endpoint)",
+                        node.name, src.edge_store, col, label
+                    ),
+                    &src.loc,
+                ),
+                Some(t) => {
+                    if let Some(idt) = id_ty {
+                        if t != idt {
+                            self.emit(
+                                format!(
+                                    "Corpus '{}': edge {} column '{}' type {} must match the document id column type {} (G2: edges connect corpus members)",
+                                    node.name, label, col, t, idt
+                                ),
+                                &src.loc,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        match col_ty(ecols, &src.edge_type_col) {
+            None => self.emit(
+                format!(
+                    "Corpus '{}': relations store '{}' has no column '{}' (the edge type)",
+                    node.name, src.edge_store, src.edge_type_col
+                ),
+                &src.loc,
+            ),
+            Some(t) if !is_text_like(t) => self.emit(
+                format!(
+                    "Corpus '{}': edge type column '{}' must be text-like (got {})",
+                    node.name, src.edge_type_col, t
+                ),
+                &src.loc,
+            ),
+            _ => {}
+        }
+        match col_ty(ecols, &src.edge_weight_col) {
+            None => self.emit(
+                format!(
+                    "Corpus '{}': relations store '{}' has no column '{}' (the weight)",
+                    node.name, src.edge_store, src.edge_weight_col
+                ),
+                &src.loc,
+            ),
+            Some(t) if !is_numeric(t) => self.emit(
+                format!(
+                    "Corpus '{}': edge weight column '{}' must be numeric (got {}); ω ∈ (0,1] is enforced at runtime",
+                    node.name, src.edge_weight_col, t
+                ),
+                &src.loc,
+            ),
+            _ => {}
         }
     }
 

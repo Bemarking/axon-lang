@@ -4494,6 +4494,7 @@ impl Parser {
             adaptive: false,
             mcp_server: String::new(),
             mcp_resource_uri: String::new(),
+            store_source: None,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -4501,26 +4502,66 @@ impl Parser {
             leading_trivia: Vec::new(),
             trailing_trivia: Vec::new(),
         };
-        // corpus Name from mcp("server", "uri") — short form
+        // corpus Name from mcp("server", "uri")  — static MCP-bound short form.
+        // corpus Name from axonstore { documents: S(id,title)  relations: … }  —
+        // §Fase 64.A dynamic store-sourced MDN graph (falls through to the body).
+        let mut dynamic = false;
         if self.check(TokenType::From) {
             self.advance();
-            self.consume(TokenType::Mcp)?;
-            self.consume(TokenType::LParen)?;
-            node.mcp_server = self.consume(TokenType::StringLit)?.value.clone();
-            self.consume(TokenType::Comma)?;
-            node.mcp_resource_uri = self.consume(TokenType::StringLit)?.value.clone();
-            self.consume(TokenType::RParen)?;
-            return Ok(node);
+            if self.check(TokenType::AxonStore) {
+                self.advance();
+                dynamic = true;
+            } else {
+                self.consume(TokenType::Mcp)?;
+                self.consume(TokenType::LParen)?;
+                node.mcp_server = self.consume(TokenType::StringLit)?.value.clone();
+                self.consume(TokenType::Comma)?;
+                node.mcp_resource_uri = self.consume(TokenType::StringLit)?.value.clone();
+                self.consume(TokenType::RParen)?;
+                return Ok(node);
+            }
         }
         self.consume(TokenType::LBrace)?;
+        // §Fase 64.A — accumulate the store-mapping pieces while the dynamic body
+        // is parsed; folded into `node.store_source` after the closing brace.
+        let mut src = CorpusStoreSource {
+            doc_store: String::new(),
+            doc_id_col: String::new(),
+            doc_title_col: String::new(),
+            edge_store: String::new(),
+            edge_from_col: String::new(),
+            edge_to_col: String::new(),
+            edge_type_col: String::new(),
+            edge_weight_col: String::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        };
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field_name = self.current().value.clone();
             self.advance();
             if self.check(TokenType::Colon) {
                 self.advance();
                 match field_name.as_str() {
+                    // §Fase 64.A — dynamic: `documents: <DocStore>(id_col, title_col)`.
+                    "documents" if dynamic => {
+                        let (store, cols) = self.parse_corpus_store_mapping(2)?;
+                        src.doc_store = store;
+                        src.doc_id_col = cols[0].clone();
+                        src.doc_title_col = cols[1].clone();
+                    }
                     "documents" => node.documents = self.parse_bracketed_identifiers()?,
-                    // §Fase 63.A — typed weighted edges → MDN corpus graph.
+                    // §Fase 64.A — dynamic: `relations: <EdgeStore>(from, to, etype, weight)`.
+                    "relations" if dynamic => {
+                        let (store, cols) = self.parse_corpus_store_mapping(4)?;
+                        src.edge_store = store;
+                        src.edge_from_col = cols[0].clone();
+                        src.edge_to_col = cols[1].clone();
+                        src.edge_type_col = cols[2].clone();
+                        src.edge_weight_col = cols[3].clone();
+                    }
+                    // §Fase 63.A — static typed weighted edges → MDN corpus graph.
                     "relations" => node.relations = self.parse_corpus_relations()?,
                     // §Fase 63.C — enable the memory endofunctor.
                     "adaptive" => node.adaptive = self.consume_any_ident_or_kw()?.value == "true",
@@ -4531,7 +4572,30 @@ impl Parser {
             }
         }
         self.consume(TokenType::RBrace)?;
+        if dynamic {
+            node.store_source = Some(src);
+        }
         Ok(node)
+    }
+
+    /// §Fase 64.A — parse a store-mapping `<StoreName>( col1, col2, … )` of exactly
+    /// `n` columns. Used by the dynamic store-sourced corpus's `documents:` (2
+    /// cols: id, title) and `relations:` (4 cols: from, to, etype, weight). The
+    /// store name is an identifier (a declared `axonstore`); the columns may be
+    /// keywords (a column could be named `from`/`type`), so they use the
+    /// keyword-tolerant consumer. The type-checker validates store + columns.
+    fn parse_corpus_store_mapping(&mut self, n: usize) -> Result<(String, Vec<String>), ParseError> {
+        let store = self.consume(TokenType::Identifier)?.value.clone();
+        self.consume(TokenType::LParen)?;
+        let mut cols = Vec::with_capacity(n);
+        for i in 0..n {
+            if i > 0 {
+                self.consume(TokenType::Comma)?;
+            }
+            cols.push(self.consume_any_ident_or_kw()?.value.clone());
+        }
+        self.consume(TokenType::RParen)?;
+        Ok((store, cols))
     }
 
     /// §Fase 63.A — parse `relations: [ etype(from, to, weight) … ]`, the typed

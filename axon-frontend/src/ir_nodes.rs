@@ -1341,6 +1341,12 @@ pub struct IRCorpus {
     pub adaptive: bool,
     pub mcp_server: String,
     pub mcp_resource_uri: String,
+    /// §Fase 64.A — when present, this is a DYNAMIC store-sourced MDN graph: the
+    /// documents and typed edges are rows in two declared `axonstore`s and the
+    /// runtime builds the `mdn::Corpus` from the live rows at navigate-time
+    /// (per-tenant, growing). Absent ⇒ the static §63 corpus (byte-identical IR).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_source: Option<IRCorpusStoreSource>,
 }
 
 /// §Fase 63.A — a lowered MDN corpus-graph edge `(from, to, τ, ω)`.
@@ -1350,6 +1356,23 @@ pub struct IRCorpusRelation {
     pub from: String,
     pub to: String,
     pub weight: f64,
+}
+
+/// §Fase 64.A — the lowered store-mapping of a dynamic, `axonstore`-sourced MDN
+/// corpus graph. `doc_store(doc_id, doc_title)` maps rows → nodes;
+/// `edge_store(edge_from, edge_to, edge_type, edge_weight)` maps rows → typed
+/// weighted edges. The runtime (§64.B) reads these stores tenant-scoped at
+/// navigate-time to build the `mdn::Corpus`.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRCorpusStoreSource {
+    pub doc_store: String,
+    pub doc_id: String,
+    pub doc_title: String,
+    pub edge_store: String,
+    pub edge_from: String,
+    pub edge_to: String,
+    pub edge_type: String,
+    pub edge_weight: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
