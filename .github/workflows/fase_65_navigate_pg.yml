@@ -1,0 +1,65 @@
+name: Fase 65 — navigate tenant isolation (real Postgres)
+
+# §Fase 65.A/B — the LOAD-BEARING safeguard for the structural `navigate`
+# bridge. The non-streaming server executor routes `navigate <corpus from
+# axonstore>` through the dispatcher's real MDN handler, which reads the backing
+# stores with an EMPTY `where` clause and relies ENTIRELY on RLS (the §40 GUC
+# `axon.current_tenant` on the flow's pinned connection) to scope the rows.
+#
+# This workflow spins a real `postgres:16` service container and runs the
+# integration suite end-to-end against real rows + real RLS policies:
+#
+#   * navigate returns the REAL documents (no fabrication);
+#   * navigate scoped to tenant A returns ONLY A's rows (RLS over a full scan);
+#   * two tenants navigating CONCURRENTLY never leak (the §65 risk-matrix
+#     severity-HIGH cross-tenant test).
+#
+# The fixture FORCES row-level security and reads under a NON-superuser,
+# NOBYPASSRLS role (the default postgres-image login role is a superuser, which
+# would silently bypass RLS) — so the isolation claim is genuinely exercised.
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  navigate-tenant-isolation:
+    name: Fase 65.A/B — navigate tenant isolation (D-load-bearing)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: axon
+          POSTGRES_PASSWORD: axon
+          POSTGRES_DB: axon_store_test
+        ports:
+          - 5432:5432
+        # Hold the job until Postgres is accepting connections.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      AXON_TEST_DATABASE_URL: postgres://axon:axon@localhost:5432/axon_store_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: axon-rs
+
+      - name: Fase 65.A/B — navigate real-rows + cross-tenant isolation vs a real database
+        working-directory: axon-rs
+        run: cargo test --test fase65_navigate_pg_integration -- --nocapture
