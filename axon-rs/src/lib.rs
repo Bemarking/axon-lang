@@ -163,6 +163,7 @@ pub mod logging;
 pub mod migrations;
 pub mod output;
 pub mod parallel;
+pub mod pix_navigator;
 pub mod plan_diff;
 pub mod plan_export;
 pub mod rate_limiter;
