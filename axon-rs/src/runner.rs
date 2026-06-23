@@ -146,13 +146,14 @@ struct CompiledStep {
     /// value is all-digits) without reaching back into the IR.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tool_param_types: Vec<(String, String)>,
-    /// §Fase 65.A — for a `navigate <corpus>` step: the IR node, carried so the
-    /// non-streaming server executor can dispatch the REAL MDN traversal
-    /// (`flow_dispatcher::cognitive::run_navigate`) instead of falling through to
-    /// the LLM — which fabricates hits (the Kivi gap report). Runtime-only:
-    /// `#[serde(skip)]` keeps the compiled-plan wire shape byte-identical.
+    /// §Fase 65.A/B — for a structural verb (navigate / drill / trail): the IR
+    /// node, carried so the non-streaming server executor dispatches its REAL
+    /// handler via `flow_dispatcher::dispatch_node` instead of falling through to
+    /// the LLM — which fabricates output (the Kivi gap report). `Some` only for
+    /// the verbs in [`routes_through_dispatcher`]. Runtime-only: `#[serde(skip)]`
+    /// keeps the compiled-plan wire shape byte-identical.
     #[serde(skip)]
-    navigate_payload: Option<crate::ir_nodes::IRNavigateStep>,
+    structural_node: Option<crate::ir_nodes::IRFlowNode>,
 }
 
 /// Fase 17.c — payload carried inside a CompiledStep for `let X = value`
@@ -401,11 +402,12 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             _ => None,
         };
 
-        // §Fase 65.A — carry the navigate IR node so the executor runs the
-        // structural MDN traversal instead of the LLM fallthrough.
-        let navigate_payload = match node {
-            IRFlowNode::Navigate(s) => Some(s.clone()),
-            _ => None,
+        // §Fase 65.A/B — carry the IR node for the structural verbs the executor
+        // routes through the dispatcher (real handler, not the LLM fallthrough).
+        let structural_node = if routes_through_dispatcher(node) {
+            Some(node.clone())
+        } else {
+            None
         };
 
         steps.push(CompiledStep {
@@ -420,7 +422,7 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             store_fields,
             tool_named_args,
             tool_param_types,
-            navigate_payload,
+            structural_node,
         });
     }
 
@@ -1240,12 +1242,12 @@ struct NavDispatch {
     adaptive: std::sync::Arc<std::collections::HashSet<String>>,
 }
 
-/// §Fase 65.A — kill-switch for the structural-navigate bridge. ON by default:
-/// the legacy path (LLM fallthrough) is a CORRECTNESS BUG for a pure-effect
-/// `navigate` — it fabricates documents that do not exist. Set
-/// `AXON_UNIFIED_EXECUTOR` to `0`/`off`/`false`/`no` to revert to the legacy
-/// behavior (escape hatch only, until the §65.E cutover removes it).
-fn navigate_structural_enabled() -> bool {
+/// §Fase 65.A — kill-switch for the structural-dispatch bridge. ON by default:
+/// the legacy path (LLM fallthrough) is a CORRECTNESS BUG for a pure-effect verb
+/// — it fabricates output that does not exist. Set `AXON_UNIFIED_EXECUTOR` to
+/// `0`/`off`/`false`/`no` to revert to the legacy behavior (escape hatch only,
+/// until the §65.E cutover removes it).
+fn structural_dispatch_enabled() -> bool {
     match std::env::var("AXON_UNIFIED_EXECUTOR") {
         Ok(v) => !matches!(
             v.trim().to_ascii_lowercase().as_str(),
@@ -1255,24 +1257,49 @@ fn navigate_structural_enabled() -> bool {
     }
 }
 
-/// §Fase 65.A — run a `navigate <corpus>` as the REAL MDN traversal by bridging
-/// into the flow dispatcher's [`crate::flow_dispatcher::cognitive::run_navigate`],
-/// sharing the flow's EXACT pinned, tenant-scoped Postgres connections (the §64.B
-/// isolation guarantee — NEVER a fresh pool acquire). The pins are LENT to a
-/// throwaway `DispatchCtx` for the duration of this single node, then reclaimed
-/// into the runner's map. The dispatcher events go to a dropped channel (the
-/// runner builds its own report). Returns the structural result (the REAL
-/// documents) or an honest empty/`Err` — never an LLM hallucination.
+/// §Fase 65.B — the structural verbs the non-streaming server executor routes
+/// through the flow dispatcher instead of the LLM fallthrough. These are the
+/// PURE-EFFECT verbs whose dispatcher handler runs a real, embeddings-free
+/// computation over the live corpus / PIX state with NO LLM call (so they need
+/// no per-tenant API key plumbing — that arrives with the cognitive verbs in
+/// §65.C). Today: the MDN/PIX navigation family. `navigate` (§65.A) over the
+/// live store-sourced graph; `drill` into a PIX subtree; `trail` the breadcrumb
+/// of a prior navigate. Cognitive-framing verbs (forge/focus/associate/aggregate/
+/// explore/ingest/corroborate) and the multi-agent verbs (deliberate/consensus)
+/// reuse `pure_shape` → they DO call the LLM, so they stay on the legacy path
+/// until §65.C threads the per-tenant key through `DispatchCtx`.
+fn routes_through_dispatcher(node: &crate::ir_nodes::IRFlowNode) -> bool {
+    use crate::ir_nodes::IRFlowNode as N;
+    matches!(node, N::Navigate(_) | N::Drill(_) | N::Trail(_))
+}
+
+/// §Fase 65.A/B — run a pure-effect structural verb (navigate / drill / trail)
+/// as its REAL computation by bridging into the flow dispatcher's
+/// [`crate::flow_dispatcher::dispatch_node`], sharing the flow's EXACT pinned,
+/// tenant-scoped Postgres connections (the §64.B isolation guarantee — NEVER a
+/// fresh pool acquire). The pins are LENT to a throwaway `DispatchCtx` for the
+/// duration of this single node, then reclaimed into the runner's map. The
+/// dispatcher events go to a dropped channel (the runner builds its own report).
+/// Returns the structural result (the REAL documents / subtree / trail) or an
+/// honest empty/`Err` — never an LLM hallucination.
 ///
-/// Tenant isolation note: `run_navigate`'s reads route through the SAME
+/// Cross-node state: the dispatcher writes its bindings into the throwaway
+/// `DispatchCtx`; we copy ALL of them back into the runner's `ExecContext` so a
+/// later `trail`/`drill` that consumes a prior `navigate`'s breadcrumb/subtree
+/// binding still sees it (each verb gets a fresh ctx, but the runner context is
+/// the persistent store re-seeded into every bridge call). The per-flow MDN
+/// interaction history is shared (`histories`) so adaptive reinforcement accrues
+/// with cross-navigation variance — parity with the SSE single-ctx path.
+///
+/// Tenant isolation note: the dispatcher reads route through the SAME
 /// `read_all_store_rows` → `stream_retrieve` path the runner's own `retrieve`
 /// uses, on the SAME task (so the `current_tenant_id()` task-local + per-op
 /// `SET LOCAL axon.current_tenant` apply identically) and over the SAME physical
 /// pinned connection (lent here) — inheriting the exact isolation of a
 /// non-streaming `retrieve`. The concurrent two-tenant property test is the
-/// load-bearing safeguard (§65.A risk matrix).
-async fn dispatch_navigate_structural(
-    nav: &crate::ir_nodes::IRNavigateStep,
+/// load-bearing safeguard (§65.A/B risk matrix).
+async fn dispatch_structural(
+    node: &crate::ir_nodes::IRFlowNode,
     exec_ctx: &mut ExecContext,
     flow_name: &str,
     backend_name: &str,
@@ -1282,6 +1309,9 @@ async fn dispatch_navigate_structural(
         sqlx::pool::PoolConnection<sqlx::Postgres>,
     >,
     nd: &NavDispatch,
+    histories: &std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<String, crate::mdn_memory::History>>,
+    >,
 ) -> Result<String, String> {
     use std::sync::{Arc, Mutex};
     // Lend the flow's pins to a shared Arc<Mutex> so the DispatchCtx operates on
@@ -1303,21 +1333,23 @@ async fn dispatch_navigate_structural(
     .with_mdn_adaptive(nd.adaptive.clone())
     .with_mdn_store_sources(nd.store_sources.clone())
     .with_pinned_conns(pin_arc.clone());
+    // Share the flow's MDN interaction history across all of its navigate nodes
+    // so adaptive ω reinforcement sees cross-navigation variance (SSE parity).
+    dctx.mdn_histories = histories.clone();
     // Seed the dispatcher's let-bindings from the runner's exec context so
-    // `${param}` in `query:` / `from:` interpolates identically to every other
-    // step in this flow.
+    // `${param}` in `query:` / `from:` (and any prior-step output) interpolates
+    // identically to every other step in this flow.
     dctx.let_bindings = exec_ctx.vars().clone();
 
-    let outcome = crate::flow_dispatcher::cognitive::run_navigate(nav, &mut dctx).await;
+    let outcome = crate::flow_dispatcher::dispatch_node(node, &mut dctx).await;
 
-    // Propagate the navigate output binding back into the runner's context so the
-    // subsequent `return <output>` (and any downstream step) reads the REAL hits.
-    if !nav.output_name.is_empty() {
-        if let Some(v) = dctx.let_bindings.get(&nav.output_name) {
-            exec_ctx.set(&nav.output_name, v);
-        }
+    // Copy ALL of the handler's bindings back into the runner's context so
+    // cross-node PIX/MDN state (e.g. a `navigate` trail later consumed by a
+    // `trail`/`drill`) survives the throwaway DispatchCtx.
+    for (k, v) in dctx.let_bindings.drain() {
+        exec_ctx.set(&k, &v);
     }
-    // Reclaim the pins into the runner's map (run_navigate took/returned them
+    // Reclaim the pins into the runner's map (the dispatcher took/returned them
     // within the shared Arc; drain it back so the flow's remaining store ops keep
     // using the same pinned connections).
     {
@@ -1406,6 +1438,12 @@ async fn execute_real_async(
         }
         let mut conversation = ConversationHistory::new();
         let mut context_window = ContextWindow::new();
+        // §Fase 65.B — shared MDN interaction history across this flow's
+        // structural navigate nodes (adaptive ω reinforcement needs
+        // cross-navigation variance; one Arc per flow ≡ the SSE single-ctx path).
+        let nav_histories: std::sync::Arc<
+            std::sync::Mutex<std::collections::HashMap<String, crate::mdn_memory::History>>,
+        > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         hooks.on_unit_start(&unit.flow_name, &unit.persona_name);
         report.begin_unit(&unit.flow_name, &unit.persona_name);
 
@@ -1947,32 +1985,35 @@ async fn execute_real_async(
                 continue; // Skip LLM call
             }
 
-            // ── §Fase 65.A — structural navigate (real MDN traversal) ──────
-            // A `navigate <corpus>` is a PURE EFFECT: it must run the
-            // dispatcher's MDN handler (signed-EPR / ε-informative over the
-            // LIVE store rows, tenant-scoped) — NOT the LLM fallthrough below,
-            // which fabricates hits (the Kivi gap report). The dispatcher
-            // shares this flow's exact pinned, RLS-scoped connections.
-            if step.step_type == "navigate" && navigate_structural_enabled() {
-                if let (Some(nav), Some(nd)) = (step.navigate_payload.as_ref(), nav_dispatch) {
-                    let (result_text, ok) = match dispatch_navigate_structural(
-                        nav,
+            // ── §Fase 65.A/B — structural verbs via the flow dispatcher ────
+            // navigate / drill / trail are PURE EFFECTS over the live corpus /
+            // PIX state: they must run the dispatcher's REAL handler (signed-EPR
+            // / ε-informative MDN nav, PIX subtree drill, breadcrumb trail) — NOT
+            // the LLM fallthrough below, which fabricates output (the Kivi gap
+            // report). The dispatcher shares this flow's exact pinned, RLS-scoped
+            // connections + its MDN interaction history.
+            if structural_dispatch_enabled() {
+                if let (Some(node), Some(nd)) = (step.structural_node.as_ref(), nav_dispatch) {
+                    let (result_text, ok) = match dispatch_structural(
+                        node,
                         &mut ctx,
                         &unit.flow_name,
                         backend_name,
                         &unit.system_prompt,
                         pinned_conns,
                         nd,
+                        &nav_histories,
                     )
                     .await
                     {
                         Ok(out) => (out, true),
                         Err(e) => {
                             tracing::warn!(
-                                target: "axon::navigate",
-                                corpus = %nav.pix_ref,
+                                target: "axon::dispatch",
+                                verb = %step.step_type,
+                                step = %step.step_name,
                                 error = %e,
-                                "structural navigate failed; binding empty \
+                                "structural dispatch failed; binding empty \
                                  (NOT hallucinating via the LLM)"
                             );
                             (String::new(), false)
@@ -1981,11 +2022,15 @@ async fn execute_real_async(
                     ctx.set_result(&step.step_name, &result_text);
                     if !json {
                         let color = if ok { "\x1b[34m" } else { "\x1b[31m" };
-                        let hits = result_text.lines().filter(|l| !l.is_empty()).count();
                         println!(
-                            "  {} {} [navigate]",
+                            "  {} {} [{}]",
                             c(if ok { "🧭" } else { "✗" }, color, use_color),
-                            c(&format!("{} → {hits} hit(s)", nav.pix_ref), color, use_color),
+                            c(
+                                &format!("{} → {} char(s)", step.step_name, result_text.len()),
+                                color,
+                                use_color,
+                            ),
+                            step.step_type,
                         );
                     }
                     hooks.on_step_end(0, 0, 0, 0, false);
@@ -2002,13 +2047,13 @@ async fn execute_real_async(
                     });
                     if trace {
                         events.push(TraceEvent {
-                            event: "navigate_structural".to_string(),
+                            event: format!("{}_structural", step.step_type),
                             unit: unit.flow_name.clone(),
                             step: step.step_name.clone(),
-                            detail: format!("corpus={}", nav.pix_ref),
+                            detail: format!("verb={}", step.step_type),
                         });
                     }
-                    continue; // Skip the LLM call — navigate is a pure effect.
+                    continue; // Skip the LLM call — a pure-effect verb.
                 }
             }
 
@@ -3814,14 +3859,54 @@ mod fase65_navigate_bridge {
     #[test]
     fn kill_switch_defaults_on_and_respects_env() {
         std::env::remove_var("AXON_UNIFIED_EXECUTOR");
-        assert!(navigate_structural_enabled(), "default ON when unset");
+        assert!(structural_dispatch_enabled(), "default ON when unset");
         for off in ["0", "off", "false", "no", "OFF"] {
             std::env::set_var("AXON_UNIFIED_EXECUTOR", off);
-            assert!(!navigate_structural_enabled(), "kill-switch honors {off:?}");
+            assert!(!structural_dispatch_enabled(), "kill-switch honors {off:?}");
         }
         std::env::set_var("AXON_UNIFIED_EXECUTOR", "1");
-        assert!(navigate_structural_enabled(), "anything else stays ON");
+        assert!(structural_dispatch_enabled(), "anything else stays ON");
         std::env::remove_var("AXON_UNIFIED_EXECUTOR");
+    }
+
+    /// §Fase 65.B — `routes_through_dispatcher` selects exactly the pure-effect
+    /// MDN/PIX verbs: navigate / drill / trail. Cognitive-framing + multi-agent
+    /// verbs (which call the LLM via `pure_shape`) and store/tool verbs stay on
+    /// their existing paths.
+    #[test]
+    fn routes_only_the_pure_structural_verbs() {
+        use crate::ir_nodes::*;
+        let nav = IRFlowNode::Navigate(IRNavigateStep {
+            node_type: "navigate",
+            source_line: 0,
+            source_column: 0,
+            pix_ref: "G".into(),
+            corpus_ref: "G".into(),
+            query: String::new(),
+            trail_enabled: false,
+            output_name: "o".into(),
+            seed: String::new(),
+            budget: None,
+        });
+        assert!(routes_through_dispatcher(&nav));
+        let drill = IRFlowNode::Drill(IRDrillStep {
+            node_type: "drill",
+            source_line: 0,
+            source_column: 0,
+            pix_ref: "G".into(),
+            subtree_path: "A.B".into(),
+            query: String::new(),
+            output_name: "o".into(),
+        });
+        assert!(routes_through_dispatcher(&drill));
+        // A cognitive-framing verb that reaches the LLM must NOT route here.
+        let focus = IRFlowNode::Focus(IRFocusStep {
+            node_type: "focus",
+            source_line: 0,
+            source_column: 0,
+            expression: "x".into(),
+        });
+        assert!(!routes_through_dispatcher(&focus));
     }
 
     /// §Fase 65.A — THE anti-hallucination guarantee (Kivi acceptance, unit
@@ -3844,13 +3929,8 @@ mod fase65_navigate_bridge {
         };
         let mut store_sources = std::collections::HashMap::new();
         store_sources.insert("LtmGraph".to_string(), src);
-        let nd = NavDispatch {
-            store_registry: std::sync::Arc::new(crate::store::registry::StoreRegistry::empty()),
-            corpora: std::sync::Arc::new(std::collections::HashMap::new()),
-            store_sources: std::sync::Arc::new(store_sources),
-            adaptive: std::sync::Arc::new(std::collections::HashSet::new()),
-        };
-        let nav = crate::ir_nodes::IRNavigateStep {
+        let nd = empty_nav_dispatch(store_sources);
+        let nav = crate::ir_nodes::IRFlowNode::Navigate(crate::ir_nodes::IRNavigateStep {
             node_type: "navigate",
             source_line: 0,
             source_column: 0,
@@ -3861,11 +3941,12 @@ mod fase65_navigate_bridge {
             output_name: "hits".into(),
             seed: String::new(),
             budget: Some(5),
-        };
+        });
         let mut ctx = ExecContext::new("RecallLTM", "Default", 0);
         let mut pins = std::collections::HashMap::new();
-        let out = dispatch_navigate_structural(
-            &nav, &mut ctx, "RecallLTM", "kimi", "", &mut pins, &nd,
+        let hist = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let out = dispatch_structural(
+            &nav, &mut ctx, "RecallLTM", "kimi", "", &mut pins, &nd, &hist,
         )
         .await
         .expect("structural navigate returns Ok (honest empty), not an LLM call");
@@ -3875,5 +3956,45 @@ mod fase65_navigate_bridge {
             Some(""),
             "the empty output binding propagates back to the runner context"
         );
+    }
+
+    /// §Fase 65.B — a `drill` with no indexable PIX source in scope degrades to
+    /// its structural placeholder (NOT an LLM call). Proves drill is routed to the
+    /// dispatcher's pure handler, and that the result binds back to the runner
+    /// context under the drill's `output:` name.
+    #[tokio::test]
+    async fn drill_without_source_degrades_structurally_not_via_llm() {
+        let nd = empty_nav_dispatch(std::collections::HashMap::new());
+        let drill = crate::ir_nodes::IRFlowNode::Drill(crate::ir_nodes::IRDrillStep {
+            node_type: "drill",
+            source_line: 0,
+            source_column: 0,
+            pix_ref: "Unknown".into(),
+            subtree_path: "A.B".into(),
+            query: "q".into(),
+            output_name: "section".into(),
+        });
+        let mut ctx = ExecContext::new("F", "Default", 0);
+        let mut pins = std::collections::HashMap::new();
+        let hist = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let out = dispatch_structural(
+            &drill, &mut ctx, "F", "kimi", "", &mut pins, &nd, &hist,
+        )
+        .await
+        .expect("structural drill returns Ok, never an LLM call");
+        // The placeholder is deterministic + bound back under `output:` — the
+        // point is it ran the dispatcher handler, not the LLM fallthrough.
+        assert_eq!(ctx.get("section").map(|s| s.to_string()), Some(out));
+    }
+
+    fn empty_nav_dispatch(
+        store_sources: std::collections::HashMap<String, crate::ir_nodes::IRCorpusStoreSource>,
+    ) -> NavDispatch {
+        NavDispatch {
+            store_registry: std::sync::Arc::new(crate::store::registry::StoreRegistry::empty()),
+            corpora: std::sync::Arc::new(std::collections::HashMap::new()),
+            store_sources: std::sync::Arc::new(store_sources),
+            adaptive: std::sync::Arc::new(std::collections::HashSet::new()),
+        }
     }
 }
