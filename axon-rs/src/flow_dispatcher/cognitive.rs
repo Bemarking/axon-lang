@@ -440,14 +440,110 @@ pub async fn run_ingest(
     run_pure_shape(shape, ctx).await
 }
 
-/// Navigate handler — paper §6 PIX navigation. In v1.25.0 the
-/// handler ships the cognitive-framing wire shape (production-real
-/// PIX traversal lands in a Fase 11.e follow-up; today the framing
-/// nudges the LLM to surface its navigation path).
+/// §Fase 62.A — resolve the source document a `navigate`/`drill` indexes, from
+/// the in-scope bindings (the established PIX convention — the document/corpus
+/// content lives under a binding seeded by a prior `ingest`/`let`, the same way
+/// `drill` reads `__pix_<ref>_<path>`). Tries the corpus binding, the explicit
+/// `__pix_<pix>_source` key, then the pix-named binding.
+fn resolve_pix_source(corpus_ref: &str, pix_ref: &str, ctx: &DispatchCtx) -> Option<String> {
+    let mut keys: Vec<String> = Vec::new();
+    if !corpus_ref.is_empty() {
+        keys.push(corpus_ref.to_string());
+    }
+    if !pix_ref.is_empty() {
+        keys.push(format!("__pix_{pix_ref}_source"));
+        keys.push(pix_ref.to_string());
+    }
+    for k in keys {
+        if let Some(v) = ctx.let_bindings.get(&k) {
+            if !v.trim().is_empty() {
+                return Some(v.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Navigate handler — the PIX retrieval navigator (paper
+/// `paper_pix_formal_research.md`).
+///
+/// §Fase 62.A.2: when the referenced document/corpus is in scope, this runs the
+/// REAL navigator (`crate::pix_navigator`): index the source into a tree, then a
+/// bounded BFS whose branch selection approximates `I(R; node | Q, path)` —
+/// embeddings-free, with a recorded reasoning path. It binds the retrieved leaf
+/// content under `output_name`, seeds `__navigate_<output>_trail` with the real
+/// path (so a later `trail` reads it), and seeds `__pix_<pix>_<title-path>` per
+/// leaf (so a later `drill` resolves it).
+///
+/// When NO indexable source is in scope, it falls back (D5 graceful) to the
+/// cognitive-framing shape so pre-§62 flows keep working unchanged.
 pub async fn run_navigate(
     node: &IRNavigateStep,
     ctx: &mut DispatchCtx,
 ) -> Result<NodeOutcome, DispatchError> {
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+
+    let query = crate::exec_context::interpolate_vars(&node.query, &ctx.let_bindings);
+
+    // ── Real navigation path ──────────────────────────────────────────────
+    if let Some(source) = resolve_pix_source(&node.corpus_ref, &node.pix_ref, ctx) {
+        if let Ok(tree) = crate::pix_navigator::index_markdown(&source) {
+            let step_index = ctx.step_counter;
+            ctx.step_counter += 1;
+            let out_name = if node.output_name.is_empty() {
+                "Navigate".to_string()
+            } else {
+                node.output_name.clone()
+            };
+            emit_step_start(ctx, &out_name, step_index, "navigate")?;
+
+            let cfg = crate::pix_navigator::NavConfig::default();
+            let scorer = crate::pix_navigator::LexicalScorer::default();
+            let result = crate::pix_navigator::pix_navigate(&tree, &query, &cfg, &scorer);
+
+            let content = result
+                .leaves
+                .iter()
+                .map(|l| l.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n");
+
+            if !node.output_name.is_empty() {
+                ctx.let_bindings.insert(node.output_name.clone(), content.clone());
+            }
+            // Seed the reasoning trail (paper Theorem 4 — explainability).
+            let trail = crate::pix_navigator::pix_trail(&tree, &result).join(" | ");
+            ctx.let_bindings
+                .insert(format!("__navigate_{out_name}_trail"), trail);
+            // Seed drill keys: each leaf is reachable by its dotted title path.
+            if !node.pix_ref.is_empty() {
+                for l in &result.leaves {
+                    let path_titles: Vec<String> = l
+                        .path
+                        .iter()
+                        .filter_map(|id| tree.node(*id))
+                        .filter(|n| n.title != "root")
+                        .map(|n| n.title.to_lowercase())
+                        .collect();
+                    ctx.let_bindings.insert(
+                        format!("__pix_{}_{}", node.pix_ref, path_titles.join(".")),
+                        l.content.clone(),
+                    );
+                }
+            }
+
+            emit_step_complete(ctx, &out_name, step_index, &content, 0)?;
+            return Ok(NodeOutcome::Completed {
+                output: content,
+                tokens_emitted: 0,
+                step_index,
+            });
+        }
+    }
+
+    // ── Fallback (D5) — no indexable source in scope ──────────────────────
     let trail_clause = if node.trail_enabled { " (with trail)" } else { "" };
     let shape = PureShapeStep {
         name: if node.output_name.is_empty() {
@@ -457,10 +553,10 @@ pub async fn run_navigate(
         },
         user_prompt: format!(
             "Navigate corpus `{}` via PIX `{}` for query: {}{}",
-            node.corpus_ref, node.pix_ref, node.query, trail_clause
+            node.corpus_ref, node.pix_ref, query, trail_clause
         ),
         framing_addendum: Some(
-            "You are navigating a PIX (paper §6 hidden state). Trace your reasoning path; surface the corpus regions you crossed.".into(),
+            "You are navigating a PIX retrieval index. Trace your reasoning path; surface the document regions you crossed.".into(),
         ),
         kind_slug: "navigate",
         tools: Vec::new(),
@@ -855,6 +951,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_navigate_emits_navigate_slug() {
+        // No indexable source in scope → falls back to the framing shape, which
+        // still emits the `navigate` wire slug (D5 graceful degradation).
         let (mut ctx, mut rx) = fresh_ctx();
         let node = IRNavigateStep {
             node_type: "navigate",
@@ -874,6 +972,43 @@ mod tests {
             }
             e => panic!("expected StepStart, got {e:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn run_navigate_real_indexes_and_retrieves_embeddings_free() {
+        // §Fase 62.A.2 — with the source document in scope, `navigate` runs the
+        // REAL navigator: index → bounded BFS → retrieve the answering section,
+        // bind it, and seed the reasoning trail. No LLM, no embeddings.
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert(
+            "ContractDoc".into(),
+            "# Liability\n## Limitation\nLiability is capped at the contract value.\n\
+             # Termination\n## Notice\nEither party may terminate with thirty days notice."
+                .into(),
+        );
+        let node = IRNavigateStep {
+            node_type: "navigate",
+            source_line: 0,
+            source_column: 0,
+            pix_ref: "ContractIndex".into(),
+            corpus_ref: "ContractDoc".into(),
+            query: "what is the liability limitation cap".into(),
+            trail_enabled: true,
+            output_name: "sections".into(),
+        };
+        let outcome = run_navigate(&node, &mut ctx).await.unwrap();
+        match outcome {
+            NodeOutcome::Completed { output, .. } => {
+                assert!(
+                    output.contains("capped at the contract value"),
+                    "expected the Limitation section, got: {output}"
+                );
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        // Output bound under the declared name + reasoning trail seeded.
+        assert!(ctx.let_bindings.get("sections").unwrap().contains("capped"));
+        assert!(ctx.let_bindings.contains_key("__navigate_sections_trail"));
     }
 
     #[tokio::test]
