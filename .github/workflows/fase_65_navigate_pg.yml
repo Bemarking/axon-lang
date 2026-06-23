@@ -62,4 +62,7 @@ jobs:
 
       - name: Fase 65.A/B — navigate real-rows + cross-tenant isolation vs a real database
         working-directory: axon-rs
-        run: cargo test --test fase65_navigate_pg_integration -- --nocapture
+        # `--test-threads=1`: the suite shares fixture tables + the RLS role by
+        # design (the tests model the SAME corpus seen by DIFFERENT tenants), so
+        # the DROP/CREATE fixtures must not race across parallel tests.
+        run: cargo test --test fase65_navigate_pg_integration -- --nocapture --test-threads=1

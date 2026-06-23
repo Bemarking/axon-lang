@@ -25,6 +25,11 @@
 //!
 //! # RLS fidelity
 //!
+//! NOTE: run single-threaded — `cargo test --test fase65_navigate_pg_integration
+//! -- --test-threads=1`. The suite shares fixture tables + the RLS role by design
+//! (it models the SAME corpus seen by DIFFERENT tenants), so parallel DROP/CREATE
+//! fixtures would race. The CI lane passes the flag.
+//!
 //! The fixture tables enable **and FORCE** row-level security (so the table
 //! OWNER — the role the tests run as — is ALSO subject to the policy; without
 //! FORCE, owners bypass RLS and the isolation claim would be untested). Rows are
