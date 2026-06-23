@@ -400,6 +400,51 @@ flow Recall(q: String) -> String {
 }
 
 #[test]
+fn corpus_canonical_store_sourced_compiles() {
+    // §Fase 64 — the DYNAMIC, store-sourced MDN graph (form d): documents +
+    // typed edges are rows in two axonstores; the graph is built from the live
+    // rows at navigate-time and `adaptive:` persists its reinforcement.
+    let src = r#"
+axonstore LtmSummaries {
+    backend: postgresql
+    connection: "postgres://x"
+    schema {
+        id:         Uuid primary_key
+        summary:    Text not_null
+        created_at: Timestamptz
+    }
+}
+axonstore LtmEdges {
+    backend: postgresql
+    connection: "postgres://x"
+    schema {
+        from_id: Uuid
+        to_id:   Uuid
+        etype:   Text
+        weight:  Float
+    }
+}
+
+corpus LtmGraph from axonstore {
+    documents: LtmSummaries( id, summary )
+    relations: LtmEdges( from_id, to_id, etype, weight )
+    adaptive: true
+}
+
+flow Recall(q: String) -> String {
+    navigate LtmGraph {
+        query: "${q}"
+        from: LtmSummaries
+        budget: 5
+        output: hits
+    }
+    return hits
+}
+"#;
+    must_compile("corpus/canonical-store-sourced", src);
+}
+
+#[test]
 fn corpus_canonical_from_mcp_shorthand_compiles() {
     let src = r#"
 corpus ClinicalGuidelines from mcp("clinical-mcp.internal", "kb://guidelines/2025")

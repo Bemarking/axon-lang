@@ -22,6 +22,13 @@ grammar: |
       ]
       adaptive: true                        # optional — enable the memory endofunctor
   }
+
+  # Form (d) — DYNAMIC store-sourced MDN graph (§Fase 64, a LIVING per-tenant graph):
+  corpus <Name> from axonstore {
+      documents: <DocStore>(<id_col>, <title_col>)              # rows → nodes
+      relations: <EdgeStore>(<from_col>, <to_col>, <etype_col>, <weight_col>)  # rows → edges
+      adaptive: true                        # optional — reinforcement persists to the store
+  }
 ---
 
 # `corpus`
@@ -97,6 +104,54 @@ runs the signed-Epistemic-PageRank / ε-informative submodular
 traversal — paper `multi_document.md`). A corpus **without**
 `relations:` is the flat form (a) above. The two are distinct
 retrieval paradigms under one declaration.
+
+### Form (d) — DYNAMIC store-sourced MDN graph (§Fase 64, a living graph)
+
+Form (c) is fixed at deploy (the documents and edges are literals in
+the `.axon`). A **living** knowledge graph — one that grows every time
+the agent learns something, per tenant — sources its nodes and edges
+from **two `axonstore`s** instead: the documents are rows in one store,
+the typed edges are rows in another. The graph is rebuilt from the
+**live rows at navigate-time**, so a new `persist` = a new node/edge,
+with no redeploy. It is per-tenant by inheritance from the store's
+column-proof / RLS scope.
+
+```axon
+axonstore LtmSummaries {
+    backend: postgresql   connection: "..."
+    schema { id: Uuid primary_key  summary: Text  created_at: Timestamptz }
+}
+axonstore LtmEdges {
+    backend: postgresql   connection: "..."
+    schema { from_id: Uuid  to_id: Uuid  etype: Text  weight: Float }
+}
+
+corpus LtmGraph from axonstore {
+    documents: LtmSummaries( id, summary )                 # rows → nodes
+    relations: LtmEdges( from_id, to_id, etype, weight )   # rows → typed edges
+    adaptive: true                                         # learning persists to the store
+}
+
+# Ingest = a normal persist (already per-tenant). No new verb.
+flow Remember(summary: String) {
+    persist LtmSummaries { summary: summary }
+    # … a step classifies the typed edges, then persists LtmEdges rows …
+}
+
+flow Recall(q: String) -> String {
+    navigate LtmGraph { query: "${q}", budget: 5, output: hits }
+    return hits
+}
+```
+
+Two stores because an `axonstore` is **one table**: documents and
+edges have different schemas. The edge endpoints (`from`/`to`) must
+match the document id column's type. Edges are **explicit** — the flow
+writes them (e.g. an LLM step classifies `cite`/`contradict`/`elaborate`
+for a new summary); the runtime never *infers* edges (embeddings-free).
+With `adaptive: true`, each navigation's edge-weight reinforcement is
+**persisted back** to the edge store via an atomic relative update, so
+the graph learns across sessions.
 
 ## Fields
 
