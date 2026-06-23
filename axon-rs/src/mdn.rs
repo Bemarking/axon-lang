@@ -328,6 +328,141 @@ pub fn epistemic_pagerank(corpus: &Corpus, params: &EprParams) -> EprResult {
     EprResult { epr, epr_plus, epr_minus, iterations: iters }
 }
 
+// ── §Fase 62.B.2 — ε-informative navigation + submodular greedy ──────────────
+
+/// The marginal information gain `I(A; d | Q, S)` of visiting candidate `d` given
+/// the query and the already-selected set `S` (paper §2.2, Cor 2.1). MUST be
+/// **monotone submodular** for the `(1 − 1/e)` greedy guarantee — adding `d`
+/// helps less as `S` grows (diminishing returns). An LLM estimates it in
+/// production; a deterministic coverage gain drives the property tests.
+pub trait MarginalGain {
+    fn gain(&self, query: &str, candidate: DocId, selected: &[DocId]) -> f64;
+}
+
+/// Greedy maximization of a monotone submodular set function under the
+/// cardinality constraint `|S| ≤ k` (Nemhauser–Wolsey–Fisher 1978): repeatedly
+/// add the unselected element of maximum marginal gain, stopping at `k` or when
+/// no positive-gain element remains.
+///
+/// Guarantee: `f(S_greedy) ≥ (1 − 1/e) · f(S_OPT) ≈ 0.632 · f(S_OPT)` — tight
+/// unless P = NP (paper §2.2 NOTE). Candidate order ties break by `DocId` for
+/// determinism. Returns the selected ids in selection order.
+pub fn greedy_submodular_select(
+    ground: &[DocId],
+    k: usize,
+    query: &str,
+    gain: &dyn MarginalGain,
+) -> Vec<DocId> {
+    let mut selected: Vec<DocId> = Vec::new();
+    while selected.len() < k {
+        let mut best: Option<(DocId, f64)> = None;
+        for &d in ground {
+            if selected.contains(&d) {
+                continue;
+            }
+            let g = gain.gain(query, d, &selected);
+            match best {
+                Some((_, bg)) if g <= bg => {}
+                _ => best = Some((d, g)),
+            }
+        }
+        match best {
+            Some((d, g)) if g > 0.0 => selected.push(d),
+            _ => break,
+        }
+    }
+    selected
+}
+
+/// Budget for bounded reachability navigation (paper Theorem 1).
+#[derive(Debug, Clone)]
+pub struct NavBudget {
+    /// Maximum documents to retrieve `|S| ≤ max_docs`.
+    pub max_docs: usize,
+    /// Minimum per-step information gain `ε > 0` — the ε-informative floor
+    /// (paper Def 3). Navigation stops rather than select an uninformative doc.
+    pub epsilon: f64,
+}
+
+impl Default for NavBudget {
+    fn default() -> Self {
+        NavBudget { max_docs: 5, epsilon: 1e-6 }
+    }
+}
+
+/// The result of a corpus navigation.
+#[derive(Debug, Clone)]
+pub struct MdnNavResult {
+    /// The selected documents, in selection order (the seed first).
+    pub selected: Vec<DocId>,
+    /// `(doc, marginal_gain)` per selection — the explainable reasoning trail.
+    pub trail: Vec<(DocId, f64)>,
+    /// `Σ` marginal gains — the total information `f(S) = I(A; S | Q)` acquired.
+    pub total_gain: f64,
+}
+
+/// ε-informative greedy navigation over the corpus graph (paper §2.2, Cor 2.1 +
+/// Def 3). From a seed document, repeatedly select the **reachable** (out-edge
+/// adjacent), unvisited document with maximum marginal information gain, while
+/// the gain stays `≥ ε` (ε-informative — never visit an uninformative doc) and
+/// the budget holds. The greedy step is `(1 − 1/e)`-optimal by submodularity;
+/// the per-step `≥ ε` floor gives the convergence bound `k ≤ ⌈H₀/ε⌉`
+/// (Theorem 2).
+pub fn navigate_corpus(
+    corpus: &Corpus,
+    query: &str,
+    seed: DocId,
+    budget: &NavBudget,
+    gain: &dyn MarginalGain,
+) -> MdnNavResult {
+    let mut selected: Vec<DocId> = Vec::new();
+    let mut trail: Vec<(DocId, f64)> = Vec::new();
+    let mut total_gain = 0.0;
+
+    if corpus.docs.contains_key(&seed) {
+        selected.push(seed);
+        trail.push((seed, 0.0));
+    }
+
+    while selected.len() < budget.max_docs {
+        // Reachable frontier: unvisited out-neighbours of any selected doc.
+        let mut frontier: Vec<DocId> = Vec::new();
+        for e in &corpus.edges {
+            if selected.contains(&e.from)
+                && !selected.contains(&e.to)
+                && !frontier.contains(&e.to)
+            {
+                frontier.push(e.to);
+            }
+        }
+        if frontier.is_empty() {
+            break;
+        }
+        frontier.sort_unstable(); // deterministic tie-break
+
+        // Greedy: the reachable doc of maximum marginal gain.
+        let mut best: Option<(DocId, f64)> = None;
+        for &d in &frontier {
+            let g = gain.gain(query, d, &selected);
+            match best {
+                Some((_, bg)) if g <= bg => {}
+                _ => best = Some((d, g)),
+            }
+        }
+        match best {
+            // ε-informative: only select if the gain clears the floor.
+            Some((d, g)) if g >= budget.epsilon => {
+                selected.push(d);
+                trail.push((d, g));
+                total_gain += g;
+            }
+            _ => break,
+        }
+    }
+
+    MdnNavResult { selected, trail, total_gain }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -480,5 +615,144 @@ mod tests {
         let c = Corpus::new(vec![doc(1, 0, 0.5)], vec![]).unwrap();
         let r = epistemic_pagerank(&c, &EprParams::default());
         assert!((r.epr_plus[&1] - 1.0).abs() < 1e-9, "the lone doc holds all trust mass");
+    }
+
+    // ── §62.B.2 — submodular greedy + ε-informative navigation ───────────────
+
+    use std::collections::HashSet;
+
+    /// A monotone submodular coverage gain: each doc "covers" a topic set; the
+    /// marginal gain of adding `d` is the number of NEW topics it covers given
+    /// the already-selected set. Classic submodular (diminishing returns).
+    struct CoverageGain {
+        topics: HashMap<DocId, Vec<u32>>,
+    }
+    impl MarginalGain for CoverageGain {
+        fn gain(&self, _q: &str, candidate: DocId, selected: &[DocId]) -> f64 {
+            let mut covered: HashSet<u32> = HashSet::new();
+            for d in selected {
+                if let Some(ts) = self.topics.get(d) {
+                    covered.extend(ts.iter().copied());
+                }
+            }
+            self.topics
+                .get(&candidate)
+                .map(|ts| ts.iter().filter(|t| !covered.contains(t)).count() as f64)
+                .unwrap_or(0.0)
+        }
+    }
+    fn coverage(topics: &HashMap<DocId, Vec<u32>>, set: &[DocId]) -> f64 {
+        let mut u: HashSet<u32> = HashSet::new();
+        for d in set {
+            if let Some(ts) = topics.get(d) {
+                u.extend(ts.iter().copied());
+            }
+        }
+        u.len() as f64
+    }
+    fn combinations(items: &[DocId], k: usize) -> Vec<Vec<DocId>> {
+        if k == 0 {
+            return vec![vec![]];
+        }
+        if items.len() < k {
+            return vec![];
+        }
+        let mut out = Vec::new();
+        for mut rest in combinations(&items[1..], k - 1) {
+            let mut v = vec![items[0]];
+            v.append(&mut rest);
+            out.push(v);
+        }
+        out.extend(combinations(&items[1..], k));
+        out
+    }
+
+    #[test]
+    fn greedy_submodular_achieves_the_one_minus_one_over_e_bound() {
+        let topics = HashMap::from([
+            (1, vec![1, 2, 3]),
+            (2, vec![3, 4]),
+            (3, vec![1, 2]),
+            (4, vec![5, 6, 7]),
+            (5, vec![7, 8]),
+        ]);
+        let g = CoverageGain { topics: topics.clone() };
+        let ground = vec![1, 2, 3, 4, 5];
+        let k = 2;
+        let greedy = greedy_submodular_select(&ground, k, "", &g);
+        let f_greedy = coverage(&topics, &greedy);
+        // Brute-force the optimal k-subset.
+        let opt = combinations(&ground, k)
+            .iter()
+            .map(|c| coverage(&topics, c))
+            .fold(0.0_f64, f64::max);
+        let bound = (1.0 - 1.0 / std::f64::consts::E) * opt;
+        assert!(
+            f_greedy >= bound - 1e-9,
+            "greedy f={f_greedy} must be ≥ (1-1/e)·OPT={bound} (OPT={opt})"
+        );
+    }
+
+    #[test]
+    fn greedy_marginal_gains_are_non_increasing() {
+        // Diminishing returns: under a monotone submodular f, the greedy marginal
+        // gain sequence is non-increasing (paper Cor 2.1(a)).
+        let topics = HashMap::from([
+            (1, vec![1, 2, 3, 4]),
+            (2, vec![3, 4, 5]),
+            (3, vec![5, 6]),
+            (4, vec![6, 7]),
+        ]);
+        let g = CoverageGain { topics };
+        let ground = vec![1, 2, 3, 4];
+        let sel = greedy_submodular_select(&ground, 4, "", &g);
+        let mut prev = f64::INFINITY;
+        let mut acc: Vec<DocId> = Vec::new();
+        for d in sel {
+            let m = g.gain("", d, &acc);
+            assert!(m <= prev + 1e-9, "marginal gains must be non-increasing (got {m} after {prev})");
+            prev = m;
+            acc.push(d);
+        }
+    }
+
+    #[test]
+    fn navigate_corpus_is_epsilon_informative_and_only_visits_reachable() {
+        // 1 → 2 → 3 (a citation chain); 4 is isolated/unreachable from the seed.
+        let docs = vec![doc(1, 0, 0.1), doc(2, 1, 0.1), doc(3, 2, 0.1), doc(4, 1, 0.1)];
+        let edges = vec![
+            edge(1, 2, EdgeType::Cite, 0.9),
+            edge(2, 3, EdgeType::Cite, 0.9),
+        ];
+        let c = Corpus::new(docs, edges).unwrap();
+        let topics = HashMap::from([(1, vec![1]), (2, vec![2]), (3, vec![3]), (4, vec![4])]);
+        let g = CoverageGain { topics };
+        let budget = NavBudget { max_docs: 5, epsilon: 0.5 };
+        let r = navigate_corpus(&c, "", 1, &budget, &g);
+
+        // Only reachable docs are visited — D4 is never reached from the seed.
+        assert!(!r.selected.contains(&4), "unreachable D4 must not be selected");
+        assert_eq!(r.selected, vec![1, 2, 3], "follows the citation chain");
+        // ε-informative: every non-seed selection cleared the ε floor.
+        for &(d, gain) in &r.trail {
+            if d != 1 {
+                assert!(gain >= budget.epsilon, "selected {d} below ε floor: {gain}");
+            }
+        }
+        // Bounded: at most max_docs.
+        assert!(r.selected.len() <= budget.max_docs);
+    }
+
+    #[test]
+    fn navigate_stops_when_no_neighbor_clears_epsilon() {
+        // The neighbour covers a topic already held by the seed ⇒ marginal gain 0
+        // < ε ⇒ navigation stops (ε-informative — no uninformative visit).
+        let docs = vec![doc(1, 0, 0.1), doc(2, 1, 0.1)];
+        let edges = vec![edge(1, 2, EdgeType::Cite, 0.9)];
+        let c = Corpus::new(docs, edges).unwrap();
+        let topics = HashMap::from([(1, vec![7]), (2, vec![7])]); // same topic
+        let g = CoverageGain { topics };
+        let r = navigate_corpus(&c, "", 1, &NavBudget { max_docs: 5, epsilon: 0.5 }, &g);
+        assert_eq!(r.selected, vec![1], "the uninformative neighbour is not visited");
     }
 }
