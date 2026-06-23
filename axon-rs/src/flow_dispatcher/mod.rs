@@ -276,6 +276,12 @@ pub struct DispatchCtx {
     /// the registry yet see no behavior change. Arc-shared for
     /// concurrent dispatch (Fase 33.y.e parity).
     pub tool_registry: Option<std::sync::Arc<crate::tool_registry::ToolRegistry>>,
+    /// §Fase 63.B — the MDN corpus graphs built from `corpus { relations: … }`
+    /// declarations (those that carry typed edges). When a `navigate <ref>`
+    /// names a key here, the handler runs real MDN graph navigation
+    /// (`mdn::navigate_corpus` / signed EPR) instead of PIX tree navigation.
+    /// `Arc`-shared so branch clones (Par) are cheap.
+    pub mdn_corpora: Option<std::sync::Arc<std::collections::HashMap<String, crate::mdn::Corpus>>>,
     /// §Fase 35.f (v1.30.0) — axonstore registry for SQL-vs-KV
     /// dispatch. When `Some(registry)`, `run_persist` / `run_retrieve`
     /// / `run_mutate` / `run_purge` resolve `store_name` against it: a
@@ -368,6 +374,7 @@ impl DispatchCtx {
             let_bindings: std::collections::HashMap::new(),
             pending_effect_policy: None,
             tool_registry: None,
+            mdn_corpora: None,
             store_registry: None,
             held_capabilities: None,
             audit_chain: std::sync::Arc::new(std::sync::Mutex::new(
@@ -430,6 +437,17 @@ impl DispatchCtx {
         registry: std::sync::Arc<crate::tool_registry::ToolRegistry>,
     ) -> Self {
         self.tool_registry = Some(registry);
+        self
+    }
+
+    /// §Fase 63.B — Builder: attach the MDN corpus graphs (built from the IR's
+    /// `corpus { relations: … }` declarations) so `navigate <corpus>` runs real
+    /// graph navigation. Returns `self` so builders chain.
+    pub fn with_mdn_corpora(
+        mut self,
+        corpora: std::sync::Arc<std::collections::HashMap<String, crate::mdn::Corpus>>,
+    ) -> Self {
+        self.mdn_corpora = Some(corpora);
         self
     }
 

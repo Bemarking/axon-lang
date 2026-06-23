@@ -4731,14 +4731,17 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 FlowStep::Navigate(n) => {
+                    // §Fase 63.B — the navigation target is a `pix` (PIX tree) OR a
+                    // `corpus` (MDN graph). Either is well-typed; anything else is
+                    // an error.
                     if !n.pix_name.is_empty() {
                         match self.symbols.lookup(&n.pix_name) {
                             None => self.emit(
-                                format!("Undefined pix '{}' in navigate step", n.pix_name),
+                                format!("Undefined pix or corpus '{}' in navigate step", n.pix_name),
                                 &n.loc,
                             ),
-                            Some(sym) if sym.kind != "pix" => self.emit(
-                                format!("'{}' is a {}, not a pix", n.pix_name, sym.kind),
+                            Some(sym) if sym.kind != "pix" && sym.kind != "corpus" => self.emit(
+                                format!("'{}' is a {}, not a pix or corpus", n.pix_name, sym.kind),
                                 &n.loc,
                             ),
                             _ => {}

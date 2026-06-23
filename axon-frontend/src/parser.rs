@@ -3773,6 +3773,8 @@ impl Parser {
             query_expr: String::new(),
             trail_enabled: false,
             output_name: String::new(),
+            seed: String::new(),
+            budget: None,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -3798,6 +3800,9 @@ impl Parser {
                         "output" | "as" => {
                             node.output_name = self.consume_any_ident_or_kw()?.value.clone()
                         }
+                        // §Fase 63.B — MDN corpus-graph navigation.
+                        "from" => node.seed = self.consume_any_ident_or_kw()?.value.clone(),
+                        "budget" => node.budget = self.parse_optional_int(),
                         _ => self.skip_value(),
                     }
                 }
