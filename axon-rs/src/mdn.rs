@@ -34,7 +34,7 @@
 //!
 //! Embeddings-free throughout (program invariant #1).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Stable identifier of a document within a [`Corpus`].
 pub type DocId = u32;
@@ -726,6 +726,53 @@ pub fn shortest_cost_path(
     None
 }
 
+// ── §Fase 63.B — deterministic reference MarginalGain over document titles ───
+
+fn title_tokens(s: &str) -> HashSet<String> {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 2)
+        .map(|w| w.to_lowercase())
+        .collect()
+}
+
+/// §Fase 63.B — a deterministic, embeddings-free reference [`MarginalGain`]:
+/// query-term **coverage** over document titles. The marginal gain of a
+/// candidate is the number of query terms its title covers that the
+/// already-selected set does not — monotone submodular (diminishing returns) by
+/// construction, so the navigation's `(1 − 1/e)` greedy guarantee holds. The
+/// production gain is LLM-estimated; this OSS reference keeps MDN navigation
+/// reproducible (the same role `LexicalScorer` plays for PIX).
+pub struct LexicalGain<'a> {
+    corpus: &'a Corpus,
+}
+
+impl<'a> LexicalGain<'a> {
+    pub fn new(corpus: &'a Corpus) -> Self {
+        LexicalGain { corpus }
+    }
+}
+
+impl MarginalGain for LexicalGain<'_> {
+    fn gain(&self, query: &str, candidate: DocId, selected: &[DocId]) -> f64 {
+        let q = title_tokens(query);
+        if q.is_empty() {
+            return 0.0;
+        }
+        let mut covered: HashSet<String> = HashSet::new();
+        for d in selected {
+            if let Some(doc) = self.corpus.document(*d) {
+                covered.extend(title_tokens(&doc.title));
+            }
+        }
+        let cand = self
+            .corpus
+            .document(candidate)
+            .map(|d| title_tokens(&d.title))
+            .unwrap_or_default();
+        q.iter().filter(|t| cand.contains(*t) && !covered.contains(*t)).count() as f64
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1169,5 +1216,41 @@ mod tests {
         let c = Corpus::new(docs, vec![]).unwrap(); // no edges
         let dist = HashMap::from([(1, vec![1.0]), (2, vec![1.0])]);
         assert!(shortest_cost_path(&c, &dist, 1, 2).is_none());
+    }
+
+    // ── §63.B — LexicalGain reference scorer drives MDN navigation ───────────
+
+    fn titled(id: DocId, title: &str) -> Document {
+        Document { id, title: title.into(), depth: 0, recency: 0.1, epistemic: "believe".into() }
+    }
+
+    #[test]
+    fn lexical_gain_navigates_to_the_query_relevant_document() {
+        // Seed cites a liability doc and a termination doc; the query about
+        // liability must steer the navigation to the liability doc, not the other.
+        let docs = vec![
+            titled(0, "intro overview"),
+            titled(1, "liability limitation cap"),
+            titled(2, "termination notice"),
+        ];
+        let edges = vec![
+            Edge { from: 0, to: 1, etype: EdgeType::Cite, weight: 0.9 },
+            Edge { from: 0, to: 2, etype: EdgeType::Cite, weight: 0.9 },
+        ];
+        let c = Corpus::new(docs, edges).unwrap();
+        let gain = LexicalGain::new(&c);
+        let r = navigate_corpus(&c, "liability cap", 0, &NavBudget { max_docs: 3, epsilon: 0.5 }, &gain);
+        assert!(r.selected.contains(&1), "navigated to the liability doc: {:?}", r.selected);
+        assert!(!r.selected.contains(&2), "the uninformative termination doc was not visited");
+    }
+
+    #[test]
+    fn lexical_gain_is_zero_for_irrelevant_titles() {
+        let c = Corpus::new(vec![titled(0, "alpha"), titled(1, "beta")], vec![]).unwrap();
+        let g = LexicalGain::new(&c);
+        assert_eq!(g.gain("zzz qqq", 1, &[]), 0.0);
+        assert_eq!(g.gain("beta", 1, &[]), 1.0);
+        // Already covered by a selected doc with the same title ⇒ no new gain.
+        assert_eq!(g.gain("beta", 1, &[1]), 0.0);
     }
 }

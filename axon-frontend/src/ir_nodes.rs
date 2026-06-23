@@ -1095,6 +1095,12 @@ pub struct IRNavigateStep {
     pub query: String,
     pub trail_enabled: bool,
     pub output_name: String,
+    /// §Fase 63.B — MDN corpus-graph navigation: the seed document (`from:`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub seed: String,
+    /// §Fase 63.B — MDN navigation budget (`budget:` = max documents).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

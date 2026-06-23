@@ -421,6 +421,28 @@ pub async fn run_streaming_via_dispatcher(
         std::sync::Arc::new(reg)
     };
 
+    // §Fase 63.B — build the MDN corpus graphs from `corpus { relations: … }`
+    // declarations (request-scoped, like the tool registry). A `navigate
+    // <corpus>` over one of these runs real graph navigation.
+    let mdn_corpora = {
+        let mut map: std::collections::HashMap<String, crate::mdn::Corpus> =
+            std::collections::HashMap::new();
+        for c in &ir.corpus_specs {
+            if c.relations.is_empty() {
+                continue;
+            }
+            let rels: Vec<(String, String, String, f64)> = c
+                .relations
+                .iter()
+                .map(|r| (r.etype.clone(), r.from.clone(), r.to.clone(), r.weight))
+                .collect();
+            if let Ok(corpus) = crate::mdn::Corpus::from_declaration(&c.documents, &rels) {
+                map.insert(c.name.clone(), corpus);
+            }
+        }
+        std::sync::Arc::new(map)
+    };
+
     // §5 — Construct DispatchCtx. The mpsc tx is the SAME channel
     // the SSE consumer reads from; the dispatcher's events flow
     // directly to the wire with no intermediate buffering.
@@ -440,6 +462,9 @@ pub async fn run_streaming_via_dispatcher(
     // §Fase 36.i (D4) — the tool registry, now LIVE on the production
     // SSE path. Activates the dispatcher's streaming-tool branch.
     .with_tool_registry(tool_registry)
+    // §Fase 63.B — the MDN corpus graphs, so `navigate <corpus>` runs real
+    // signed-EPR / ε-informative graph navigation.
+    .with_mdn_corpora(mdn_corpora)
     // §Fase 37.x.j (D2) — install the eager-acquired flow-scoped pin
     // map. The wire-integration store handlers (`run_persist`,
     // `run_retrieve`, `run_mutate`, `run_purge`) consult this map

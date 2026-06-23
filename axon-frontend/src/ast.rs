@@ -1648,6 +1648,11 @@ pub struct NavigateStep {
     pub query_expr: String,
     pub trail_enabled: bool,
     pub output_name: String,
+    /// §Fase 63.B — for MDN corpus-graph navigation: the seed document `from:`
+    /// to start the ε-informative traversal. Empty for PIX tree navigation.
+    pub seed: String,
+    /// §Fase 63.B — for MDN: the `budget:` (max documents). `None` = default.
+    pub budget: Option<i64>,
     pub loc: Loc,
 }
 #[derive(Debug)]

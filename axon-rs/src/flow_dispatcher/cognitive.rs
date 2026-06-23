@@ -487,7 +487,65 @@ pub async fn run_navigate(
 
     let query = crate::exec_context::interpolate_vars(&node.query, &ctx.let_bindings);
 
-    // ── Real navigation path ──────────────────────────────────────────────
+    // ── §Fase 63.B — MDN corpus-graph navigation ──────────────────────────
+    // When the navigate ref names a built MDN corpus graph (a `corpus` with
+    // `relations:`), navigate the GRAPH: ε-informative greedy over reachable
+    // documents, scored by the deterministic LexicalGain (signed EPR rides the
+    // same `mdn::Corpus`). Embeddings-free.
+    if let Some(corpora) = ctx.mdn_corpora.clone() {
+        if let Some(corpus) = corpora.get(&node.pix_ref) {
+            let step_index = ctx.step_counter;
+            ctx.step_counter += 1;
+            let out_name = if node.output_name.is_empty() {
+                "Navigate".to_string()
+            } else {
+                node.output_name.clone()
+            };
+            emit_step_start(ctx, &out_name, step_index, "navigate")?;
+
+            // Seed: the `from:` document by title, else the lowest doc id.
+            let seed = corpus
+                .documents()
+                .into_iter()
+                .find(|d| d.title == node.seed)
+                .map(|d| d.id)
+                .or_else(|| corpus.documents().into_iter().map(|d| d.id).min())
+                .unwrap_or(0);
+            let budget = crate::mdn::NavBudget {
+                max_docs: node.budget.map(|b| b.max(1) as usize).unwrap_or(5),
+                epsilon: 1e-6,
+            };
+            let gain = crate::mdn::LexicalGain::new(corpus);
+            let r = crate::mdn::navigate_corpus(corpus, &query, seed, &budget, &gain);
+
+            let content = r
+                .selected
+                .iter()
+                .filter_map(|id| corpus.document(*id))
+                .map(|d| d.title.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !node.output_name.is_empty() {
+                ctx.let_bindings.insert(node.output_name.clone(), content.clone());
+            }
+            let trail = r
+                .trail
+                .iter()
+                .filter_map(|(id, g)| corpus.document(*id).map(|d| format!("{} (Δ={:.2})", d.title, g)))
+                .collect::<Vec<_>>()
+                .join(" → ");
+            ctx.let_bindings.insert(format!("__navigate_{out_name}_trail"), trail);
+
+            emit_step_complete(ctx, &out_name, step_index, &content, 0)?;
+            return Ok(NodeOutcome::Completed {
+                output: content,
+                tokens_emitted: 0,
+                step_index,
+            });
+        }
+    }
+
+    // ── Real navigation path (PIX) ────────────────────────────────────────
     if let Some(source) = resolve_pix_source(&node.corpus_ref, &node.pix_ref, ctx) {
         if let Ok(tree) = crate::pix_navigator::index_markdown(&source) {
             let step_index = ctx.step_counter;
@@ -950,6 +1008,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_navigate_mdn_graph_when_ref_is_a_corpus() {
+        // §Fase 63.B — a `navigate <corpus>` over a built MDN graph runs real
+        // ε-informative graph navigation: from the seed, follow the edge to the
+        // query-relevant document, not the irrelevant one. No LLM, no embeddings.
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        let corpus = crate::mdn::Corpus::from_declaration(
+            &[
+                "intro overview".to_string(),
+                "liability limitation cap".to_string(),
+                "termination notice".to_string(),
+            ],
+            &[
+                ("cite".into(), "intro overview".into(), "liability limitation cap".into(), 0.9),
+                ("cite".into(), "intro overview".into(), "termination notice".into(), 0.9),
+            ],
+        )
+        .unwrap();
+        let mut map = HashMap::new();
+        map.insert("Sessions".to_string(), corpus);
+        let (ctx, _rx) = fresh_ctx();
+        let mut ctx = ctx.with_mdn_corpora(Arc::new(map));
+
+        let node = IRNavigateStep {
+            node_type: "navigate",
+            source_line: 0,
+            source_column: 0,
+            pix_ref: "Sessions".into(),
+            corpus_ref: String::new(),
+            query: "liability cap".into(),
+            trail_enabled: true,
+            output_name: "hits".into(),
+            seed: "intro overview".into(),
+            budget: Some(3),
+        };
+        let outcome = run_navigate(&node, &mut ctx).await.unwrap();
+        match outcome {
+            NodeOutcome::Completed { output, .. } => {
+                assert!(output.contains("liability limitation cap"), "got: {output}");
+                assert!(!output.contains("termination notice"), "uninformative doc not visited");
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        assert!(ctx.let_bindings.get("hits").unwrap().contains("liability"));
+        assert!(ctx.let_bindings.contains_key("__navigate_hits_trail"));
+    }
+
+    #[tokio::test]
     async fn run_navigate_emits_navigate_slug() {
         // No indexable source in scope → falls back to the framing shape, which
         // still emits the `navigate` wire slug (D5 graceful degradation).
@@ -963,6 +1069,8 @@ mod tests {
             query: "interpret_clause".into(),
             trail_enabled: true,
             output_name: "nav_result".into(),
+            seed: String::new(),
+            budget: None,
         };
         run_navigate(&node, &mut ctx).await.unwrap();
         let ev = rx.try_recv().unwrap();
@@ -995,6 +1103,8 @@ mod tests {
             query: "what is the liability limitation cap".into(),
             trail_enabled: true,
             output_name: "sections".into(),
+            seed: String::new(),
+            budget: None,
         };
         let outcome = run_navigate(&node, &mut ctx).await.unwrap();
         match outcome {
