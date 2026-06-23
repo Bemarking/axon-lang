@@ -435,3 +435,19 @@ ledger LedgerAudit {
 "#;
     must_compile("ledger/canonical", src);
 }
+
+#[test]
+fn deliberate_canonical_program_compiles() {
+    // §Fase 62 — `deliberate { … }` is the bounded reflective block (a
+    // first-class flow step). The pre-§62 validator did not surface it; the
+    // ℰMCP validator must accept it so an adopter can check it locally.
+    let src = r#"
+flow Decide(q: String) -> String {
+    deliberate {
+        let draft = "${q}"
+        return draft
+    }
+}
+"#;
+    must_compile("deliberate/canonical", src);
+}
