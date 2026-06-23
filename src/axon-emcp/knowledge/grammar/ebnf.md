@@ -93,7 +93,22 @@ flow_step         = step_node
                   | reason_step | probe_step | validate_step | refine_step
                   | weave_step | use_step | par_block | hibernate_step
                   | listen_step | retrieve_step | persist_step | mutate_step
+                  | deliberate_step | navigate_step | drill_step | trail_step
                   | (* …complete list in parser.rs::parse_flow_step *) ;
+
+deliberate_step   = "deliberate" , "{" , { flow_step } , "}" ;
+(* §Fase 62/63 — cognitive retrieval over a `pix` tree OR a `corpus`
+   graph (a corpus WITH `relations:` is an MDN graph). Dispatch is by
+   the referenced declaration, not by keyword. *)
+navigate_step     = "navigate" , identifier
+                  , "{" , { navigate_field } , "}" ;
+navigate_field    = "query"  , ":" , expression
+                  | "from"   , ":" , identifier        (* seed document *)
+                  | "budget" , ":" , number            (* max documents  *)
+                  | "trail"  , ":" , boolean
+                  | "output" , ":" , identifier ;
+drill_step        = "drill"  , identifier , "{" , { navigate_field } , "}" ;
+trail_step        = "trail"  , identifier , "{" , { navigate_field } , "}" ;
 
 step_node         = "step" , identifier , [ "use" , identifier ]
                   , "{" , step_field+ , "}" ;
