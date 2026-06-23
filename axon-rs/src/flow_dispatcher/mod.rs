@@ -291,6 +291,14 @@ pub struct DispatchCtx {
     /// records its own trajectory. `Arc<Mutex<…>>` so branch clones share it.
     pub mdn_histories:
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, crate::mdn_memory::History>>>,
+    /// §Fase 64.B — the DYNAMIC, store-sourced MDN corpora (`corpus N from
+    /// axonstore { … }`): a map from corpus name to its store-mapping spec. A
+    /// navigation over one of these does NOT use the pre-built `mdn_corpora`;
+    /// instead the runtime reads the mapped stores tenant-scoped and builds a
+    /// fresh `mdn::Corpus` from the LIVE rows (the graph grows as the stores
+    /// grow). `Arc`-shared so branch clones (Par) are cheap.
+    pub mdn_store_sources:
+        std::sync::Arc<std::collections::HashMap<String, crate::ir_nodes::IRCorpusStoreSource>>,
     /// §Fase 35.f (v1.30.0) — axonstore registry for SQL-vs-KV
     /// dispatch. When `Some(registry)`, `run_persist` / `run_retrieve`
     /// / `run_mutate` / `run_purge` resolve `store_name` against it: a
@@ -386,6 +394,7 @@ impl DispatchCtx {
             mdn_corpora: None,
             mdn_adaptive: std::sync::Arc::new(std::collections::HashSet::new()),
             mdn_histories: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            mdn_store_sources: std::sync::Arc::new(std::collections::HashMap::new()),
             store_registry: None,
             held_capabilities: None,
             audit_chain: std::sync::Arc::new(std::sync::Mutex::new(
@@ -468,6 +477,18 @@ impl DispatchCtx {
         adaptive: std::sync::Arc<std::collections::HashSet<String>>,
     ) -> Self {
         self.mdn_adaptive = adaptive;
+        self
+    }
+
+    /// §Fase 64.B — Builder: register the DYNAMIC, store-sourced MDN corpora
+    /// (`corpus N from axonstore { … }`) by name → store-mapping spec.
+    pub fn with_mdn_store_sources(
+        mut self,
+        sources: std::sync::Arc<
+            std::collections::HashMap<String, crate::ir_nodes::IRCorpusStoreSource>,
+        >,
+    ) -> Self {
+        self.mdn_store_sources = sources;
         self
     }
 

@@ -206,6 +206,62 @@ impl Corpus {
         Corpus::new(docs, edges)
     }
 
+    /// §Fase 64.B — build a DYNAMIC MDN corpus graph from LIVE store rows (the
+    /// §64.A `corpus from axonstore` form). `docs` are `(string_id, title)` rows
+    /// from the documents store; `edges` are `(from_id, to_id, etype_slug,
+    /// weight)` rows from the edge store. String ids map to internal `DocId`s by
+    /// first-seen order.
+    ///
+    /// Unlike the compile-time [`Corpus::from_declaration`], this path is
+    /// RESILIENT to live, growing data: an edge whose endpoint is not a known
+    /// document, or whose type is off-catalog, or whose weight is non-finite, is
+    /// SKIPPED — a dangling/garbage row (e.g. an edge to a since-deleted summary)
+    /// must never break a live navigation. The weight is CLAMPED to `(0, 1]`
+    /// (the §64.A G4 invariant is a RUNTIME clamp here, weights being per-row
+    /// dynamic, not compile-time literals). Returns `Err(Empty)` only when there
+    /// are no documents.
+    pub fn from_rows(
+        docs: &[(String, String)],
+        edges: &[(String, String, String, f64)],
+    ) -> Result<Corpus, CorpusError> {
+        if docs.is_empty() {
+            return Err(CorpusError::Empty);
+        }
+        let mut index: HashMap<&str, DocId> = HashMap::new();
+        let mut documents = Vec::with_capacity(docs.len());
+        for (i, (sid, title)) in docs.iter().enumerate() {
+            let id = i as DocId;
+            // First-seen wins on a duplicate id (a store should enforce a PK,
+            // but live data is live data).
+            index.entry(sid.as_str()).or_insert(id);
+            documents.push(Document {
+                id,
+                title: title.clone(),
+                depth: 0,
+                recency: 0.5,
+                epistemic: "believe".to_string(),
+            });
+        }
+        let mut built = Vec::new();
+        for (from, to, etype, weight) in edges {
+            let (Some(&f), Some(&t)) =
+                (index.get(from.as_str()), index.get(to.as_str()))
+            else {
+                continue; // dangling endpoint — skip (resilient to live data)
+            };
+            let Some(et) = EdgeType::from_slug(etype) else {
+                continue; // off-catalog type — skip
+            };
+            if !weight.is_finite() {
+                continue; // garbage weight — skip
+            }
+            // ω ∈ (0, 1] runtime clamp (§64.A G4 as a runtime invariant).
+            let w = weight.clamp(1e-9, 1.0);
+            built.push(Edge { from: f, to: t, etype: et, weight: w });
+        }
+        Corpus::new(documents, built)
+    }
+
     /// `|D|`.
     pub fn len(&self) -> usize {
         self.docs.len()
@@ -778,6 +834,62 @@ impl MarginalGain for LexicalGain<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── §Fase 64.B — Corpus::from_rows (dynamic, store-sourced graph) ──────
+
+    #[test]
+    fn from_rows_builds_the_live_graph() {
+        let docs = vec![
+            ("uuid-a".to_string(), "Session A summary".to_string()),
+            ("uuid-b".to_string(), "Session B summary".to_string()),
+            ("uuid-c".to_string(), "Session C summary".to_string()),
+        ];
+        let edges = vec![
+            ("uuid-b".to_string(), "uuid-a".to_string(), "cite".to_string(), 0.9),
+            ("uuid-c".to_string(), "uuid-a".to_string(), "contradict".to_string(), 0.7),
+        ];
+        let c = Corpus::from_rows(&docs, &edges).expect("builds");
+        assert_eq!(c.len(), 3, "all three rows became documents");
+        // titles preserved; ids interned by first-seen order.
+        let titles: Vec<_> = {
+            let mut t: Vec<_> = c.documents().iter().map(|d| d.title.clone()).collect();
+            t.sort();
+            t
+        };
+        assert_eq!(titles, vec!["Session A summary", "Session B summary", "Session C summary"]);
+    }
+
+    #[test]
+    fn from_rows_skips_dangling_edges_and_unknown_types() {
+        let docs = vec![("a".to_string(), "A".to_string()), ("b".to_string(), "B".to_string())];
+        let edges = vec![
+            ("b".to_string(), "a".to_string(), "cite".to_string(), 0.5), // good
+            ("b".to_string(), "ghost".to_string(), "cite".to_string(), 0.5), // dangling → skip
+            ("a".to_string(), "b".to_string(), "hugs".to_string(), 0.5), // off-catalog → skip
+        ];
+        let c = Corpus::from_rows(&docs, &edges).expect("builds");
+        // Only the one valid edge survives — a garbage row must not break the graph.
+        assert_eq!(c.edges().len(), 1, "dangling + off-catalog edges dropped");
+    }
+
+    #[test]
+    fn from_rows_clamps_weight_into_unit_interval() {
+        let docs = vec![("a".to_string(), "A".to_string()), ("b".to_string(), "B".to_string())];
+        let edges = vec![
+            ("b".to_string(), "a".to_string(), "cite".to_string(), 5.0),  // > 1 → 1.0
+            ("a".to_string(), "b".to_string(), "cite".to_string(), 0.0),  // ≤ 0 → tiny+
+            ("a".to_string(), "b".to_string(), "cite".to_string(), f64::NAN), // garbage → skip
+        ];
+        let c = Corpus::from_rows(&docs, &edges).expect("builds (G4 is a runtime clamp here)");
+        let ws: Vec<f64> = c.edges().iter().map(|e| e.weight).collect();
+        assert_eq!(ws.len(), 2, "the NaN-weight edge is skipped");
+        assert!(ws.iter().all(|&w| w > 0.0 && w <= 1.0), "every weight clamped into (0,1]: {ws:?}");
+    }
+
+    #[test]
+    fn from_rows_empty_documents_is_empty_error() {
+        assert!(matches!(Corpus::from_rows(&[], &[]), Err(CorpusError::Empty)));
+    }
 
     fn doc(id: DocId, depth: u32, recency: f64) -> Document {
         Document {
