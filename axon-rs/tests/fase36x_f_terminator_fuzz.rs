@@ -135,6 +135,7 @@ async fn run_shape(
         HashMap::new(),
         HashMap::new(),
         None, // §Fase 58.g — tool_base_url
+        None, // §Fase 65.C — api_key
     )
     .await;
     let mut events = Vec::new();

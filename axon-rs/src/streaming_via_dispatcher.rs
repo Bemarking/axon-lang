@@ -174,6 +174,12 @@ pub async fn run_streaming_via_dispatcher(
     // node (`{base}/{slug}`); absolute runtimes stay verbatim (D5).
     // `None` → no resolution (the pre-§58.g behavior).
     tool_base_url: Option<String>,
+    // §Fase 65.C — the per-tenant API key (resolved from the tenant secrets
+    // manager by the SSE handler). When `Some`, the dispatcher's LLM handlers
+    // use THIS tenant's key instead of the process env var — closing the gap
+    // where the streaming path could only ever use the env key. `None` ⇒
+    // env-key behavior, unchanged.
+    api_key: Option<String>,
 ) {
     // Cancel-safety helper — mirrors the legacy path's `emit` closure.
     // Returns `Err(())` when the producer should exit early (cancel
@@ -486,6 +492,8 @@ pub async fn run_streaming_via_dispatcher(
         runtime_warnings,
     )
     .with_store_registry(store_registry)
+    // §Fase 65.C — the per-tenant API key so LLM steps use this tenant's key.
+    .with_api_key(api_key)
     // §Fase 36.i (D4) — the tool registry, now LIVE on the production
     // SSE path. Activates the dispatcher's streaming-tool branch.
     .with_tool_registry(tool_registry)
@@ -744,6 +752,7 @@ mod tests {
             std::collections::HashMap::new(),
             std::collections::HashMap::new(),
             None, // §Fase 58.g — tool_base_url
+            None, // §Fase 65.C — api_key (tests use the env/stub key)
         )
         .await;
 
@@ -798,6 +807,7 @@ mod tests {
             std::collections::HashMap::new(),
             std::collections::HashMap::new(),
             None, // §Fase 58.g — tool_base_url
+            None, // §Fase 65.C — api_key (tests use the env/stub key)
         )
         .await;
 
@@ -860,6 +870,7 @@ mod tests {
             std::collections::HashMap::new(),
             std::collections::HashMap::new(),
             None, // §Fase 58.g — tool_base_url
+            None, // §Fase 65.C — api_key (tests use the env/stub key)
         )
         .await;
 
@@ -904,6 +915,7 @@ mod tests {
             std::collections::HashMap::new(),
             std::collections::HashMap::new(),
             None, // §Fase 58.g — tool_base_url
+            None, // §Fase 65.C — api_key (tests use the env/stub key)
         )
         .await;
 

@@ -18946,6 +18946,17 @@ pub fn server_execute_streaming(
     // construct DispatchCtx → spawn dispatcher producer. D1
     // invariant: zero `if/match` selecting between paths.
     //
+    // §Fase 65.C — resolve the per-tenant LLM API key (registry → tenant-secrets
+    // cache → env fallback) BEFORE `state` is dropped, and thread it into the
+    // dispatcher. Before this, the streaming/SSE path could only ever use the
+    // process env key — multi-tenant SSE either shared one key or broke. The
+    // resolution is the SAME `resolve_backend_key` the non-streaming paths use;
+    // `.ok()` degrades to `None` (env key) when no key is configured anywhere.
+    let resolved_api_key: Option<String> = {
+        let s = state.lock().unwrap();
+        resolve_backend_key(&s, &effective_backend).ok()
+    };
+
     // `state` is moved into the dispatcher spawn — the legacy
     // synchronous path (which needed `state` for `server_execute_full`)
     // is gone; only the runtime-warnings + step_audit + enforcement
@@ -18976,6 +18987,8 @@ pub fn server_execute_streaming(
             request_query,
             // §Fase 58.g (D7) — per-tenant tool base URL.
             tool_base_url,
+            // §Fase 65.C — per-tenant LLM API key.
+            resolved_api_key,
         )
         .await;
         exited_for_dispatcher.notify_waiters();
