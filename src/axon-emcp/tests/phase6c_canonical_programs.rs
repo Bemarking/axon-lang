@@ -368,6 +368,38 @@ corpus PolicyDocs {
 }
 
 #[test]
+fn corpus_canonical_mdn_graph_compiles() {
+    // §Fase 63 — the MDN corpus graph (form c): typed weighted edges + the
+    // `adaptive:` memory flag, navigated by `navigate <corpus>`.
+    let src = r#"
+type SessA { text: String }
+type SessB { text: String }
+type SessC { text: String }
+
+corpus SessionKnowledge {
+    documents: [SessA, SessB, SessC]
+    relations: [
+        cite(SessB, SessA, 0.9)
+        contradict(SessC, SessA, 0.7)
+        elaborate(SessC, SessB, 0.5)
+    ]
+    adaptive: true
+}
+
+flow Recall(q: String) -> String {
+    navigate SessionKnowledge {
+        query: "${q}"
+        from: SessA
+        budget: 5
+        output: hits
+    }
+    return hits
+}
+"#;
+    must_compile("corpus/canonical-mdn-graph", src);
+}
+
+#[test]
 fn corpus_canonical_from_mcp_shorthand_compiles() {
     let src = r#"
 corpus ClinicalGuidelines from mcp("clinical-mcp.internal", "kb://guidelines/2025")
