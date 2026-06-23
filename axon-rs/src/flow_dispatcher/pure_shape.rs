@@ -666,8 +666,14 @@ pub async fn run_pure_shape(
 
     // 5. Resolve backend through the streaming registry. Mirrors
     //    `run_streaming_async_path`'s resolution discipline.
-    let backend = crate::backends::resolve_streaming_backend(&ctx.backend_name)
-        .ok_or_else(|| DispatchError::BackendError {
+    // §Fase 65.C — pin the per-tenant API key (when the caller threaded one
+    // via `with_api_key`) so the LLM call uses THIS tenant's key, not the
+    // process env var. `None` ⇒ the prior env-key behavior, unchanged.
+    let backend = crate::backends::resolve_streaming_backend_with_key(
+        &ctx.backend_name,
+        ctx.api_key.as_deref(),
+    )
+    .ok_or_else(|| DispatchError::BackendError {
             name: ctx.backend_name.clone(),
             message: format!(
                 "not in streaming registry; supported: {}",

@@ -453,6 +453,35 @@ pub fn resolve_streaming_backend(name: &str) -> Option<Box<dyn Backend>> {
     }
 }
 
+/// §Fase 65.C — like [`resolve_streaming_backend`] but pins an EXPLICIT API key
+/// (the per-tenant key resolved from the tenant secrets manager) onto the
+/// backend via each provider's `with_api_key`, instead of reading the provider
+/// env var through `from_env()`. `None` ⇒ defer to `resolve_streaming_backend`
+/// (the pre-§65.C env behavior). This is what lets the dispatcher's LLM path
+/// honor per-tenant keys — before §65.C the streaming/SSE path could ONLY use
+/// the process env key, so multi-tenant SSE either shared one key or broke.
+pub fn resolve_streaming_backend_with_key(
+    name: &str,
+    api_key: Option<&str>,
+) -> Option<Box<dyn Backend>> {
+    let Some(key) = api_key else {
+        return resolve_streaming_backend(name);
+    };
+    let k = || Some(key.to_string());
+    match name {
+        "anthropic" => Some(Box::new(anthropic::AnthropicBackend::with_api_key(k()))),
+        "openai" => Some(Box::new(openai::OpenAIBackend::with_api_key(k()))),
+        "gemini" => Some(Box::new(gemini::GeminiBackend::with_api_key(k()))),
+        "kimi" => Some(Box::new(kimi::KimiBackend::with_api_key(k()))),
+        "glm" => Some(Box::new(glm::GLMBackend::with_api_key(k()))),
+        "ollama" => Some(Box::new(ollama::OllamaBackend::with_api_key(k()))),
+        "openrouter" => Some(Box::new(openrouter::OpenRouterBackend::with_api_key(k()))),
+        // The stub backend ignores keys.
+        "stub" => Some(Box::new(stub::StubBackend::new())),
+        _ => None,
+    }
+}
+
 /// Names recognised by [`resolve_streaming_backend`]. Sorted.
 /// Pinned by the drift test below.
 pub const STREAMING_BACKEND_NAMES: &[&str] = &[
@@ -572,6 +601,21 @@ mod resolver_tests {
                 .unwrap_or_else(|| panic!("resolver should return Some for {name:?}"));
             assert_eq!(backend.name(), *name);
         }
+    }
+
+    #[test]
+    fn resolve_with_key_pins_each_provider_and_falls_back_on_none() {
+        // §Fase 65.C — with an explicit key, every streaming provider resolves
+        // (the per-tenant key path), and the backend identity is unchanged.
+        for name in STREAMING_BACKEND_NAMES {
+            let b = resolve_streaming_backend_with_key(name, Some("sk-tenant-test"))
+                .unwrap_or_else(|| panic!("with-key resolver should return Some for {name:?}"));
+            assert_eq!(b.name(), *name, "identity preserved for {name:?}");
+        }
+        // `None` defers to the env path (same Some/None shape as the base fn).
+        assert!(resolve_streaming_backend_with_key("anthropic", None).is_some());
+        assert!(resolve_streaming_backend_with_key("does-not-exist", Some("k")).is_none());
+        assert!(resolve_streaming_backend_with_key("does-not-exist", None).is_none());
     }
 
     #[test]

@@ -209,6 +209,13 @@ pub mod unified_stream;
 pub struct DispatchCtx {
     pub flow_name: String,
     pub backend_name: String,
+    /// §Fase 65.C — the per-tenant API key resolved from the tenant secrets
+    /// manager (the same key the non-streaming runner receives as
+    /// `api_key_override`). When `Some`, the LLM handlers resolve the backend
+    /// via [`crate::backends::resolve_streaming_backend_with_key`] so the call
+    /// uses THIS tenant's key, not the process env var. `None` (the
+    /// `DispatchCtx::new` default) ⇒ env-key behavior, unchanged.
+    pub api_key: Option<String>,
     pub system_prompt: String,
     pub cancel: CancellationFlag,
     pub tx: mpsc::UnboundedSender<FlowExecutionEvent>,
@@ -377,6 +384,7 @@ impl DispatchCtx {
         Self {
             flow_name,
             backend_name: backend_name.into(),
+            api_key: None,
             system_prompt: system_prompt.into(),
             cancel,
             tx,
@@ -426,6 +434,14 @@ impl DispatchCtx {
         >,
     ) -> Self {
         self.pinned_conns = conns;
+        self
+    }
+
+    /// §Fase 65.C — Builder: pin the per-tenant API key the dispatcher's LLM
+    /// handlers use to resolve the backend (instead of the process env var).
+    /// Returns `self` so builders chain. `None` leaves env-key behavior.
+    pub fn with_api_key(mut self, api_key: Option<String>) -> Self {
+        self.api_key = api_key;
         self
     }
 
@@ -893,6 +909,20 @@ mod tests {
         assert!(ctx.branch_path.is_empty());
         assert_eq!(ctx.branch_path_string(), "");
         assert_eq!(ctx.step_counter, 0);
+    }
+
+    /// §Fase 65.C — `with_api_key` carries the per-tenant key into the ctx;
+    /// the default is `None` (env-key behavior).
+    #[test]
+    fn dispatch_ctx_with_api_key_carries_per_tenant_key() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let ctx = DispatchCtx::new("F", "kimi", "", CancellationFlag::new(), tx);
+        assert_eq!(ctx.api_key, None, "default is env-key (None)");
+
+        let (tx2, _rx2) = mpsc::unbounded_channel();
+        let ctx2 = DispatchCtx::new("F", "kimi", "", CancellationFlag::new(), tx2)
+            .with_api_key(Some("sk-tenant-42".to_string()));
+        assert_eq!(ctx2.api_key.as_deref(), Some("sk-tenant-42"));
     }
 
     /// 33.y.b branch_path: multi-segment join is wire-stable.

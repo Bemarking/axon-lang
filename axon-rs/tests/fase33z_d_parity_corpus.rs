@@ -149,6 +149,7 @@ async fn run_async(source: String, source_file: String, flow_name: String) -> As
         std::collections::HashMap::new(),
         std::collections::HashMap::new(),
         None, // §Fase 58.g — tool_base_url
+        None, // §Fase 65.C — api_key
     )
     .await;
 

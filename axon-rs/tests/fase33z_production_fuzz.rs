@@ -239,6 +239,7 @@ async fn drive_production_path(
         std::collections::HashMap::new(),
         std::collections::HashMap::new(),
         None, // §Fase 58.g — tool_base_url
+        None, // §Fase 65.C — api_key
     )
     .await;
 
@@ -898,6 +899,7 @@ async fn run_async_snapshot(
         std::collections::HashMap::new(),
         std::collections::HashMap::new(),
         None, // §Fase 58.g — tool_base_url
+        None, // §Fase 65.C — api_key
     )
     .await;
 
