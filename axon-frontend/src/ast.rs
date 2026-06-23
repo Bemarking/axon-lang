@@ -730,6 +730,11 @@ pub struct CorpusDefinition {
     /// §Fase 63.A — the typed weighted edges that make this corpus an MDN graph
     /// `C = (D, R, τ, ω, σ)`. Empty ⇒ the flat (edgeless) corpus.
     pub relations: Vec<CorpusRelation>,
+    /// §Fase 63.C — `adaptive: true` enables the memory endofunctor: navigations
+    /// over this corpus learn (semantic edge reinforcement + procedural bias),
+    /// and subsequent navigations use the memory-modified EPR. Requires
+    /// `relations:` (memory deforms the graph's geometry).
+    pub adaptive: bool,
     pub mcp_server: String,
     pub mcp_resource_uri: String,
     pub loc: Loc,

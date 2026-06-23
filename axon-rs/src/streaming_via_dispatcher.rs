@@ -443,6 +443,17 @@ pub async fn run_streaming_via_dispatcher(
         std::sync::Arc::new(map)
     };
 
+    // §Fase 63.C — the corpora declared `adaptive: true` (memory-enabled).
+    let mdn_adaptive = {
+        let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for c in &ir.corpus_specs {
+            if c.adaptive && !c.relations.is_empty() {
+                set.insert(c.name.clone());
+            }
+        }
+        std::sync::Arc::new(set)
+    };
+
     // §5 — Construct DispatchCtx. The mpsc tx is the SAME channel
     // the SSE consumer reads from; the dispatcher's events flow
     // directly to the wire with no intermediate buffering.
@@ -465,6 +476,9 @@ pub async fn run_streaming_via_dispatcher(
     // §Fase 63.B — the MDN corpus graphs, so `navigate <corpus>` runs real
     // signed-EPR / ε-informative graph navigation.
     .with_mdn_corpora(mdn_corpora)
+    // §Fase 63.C — mark the adaptive corpora so navigations apply the memory
+    // endofunctor + learn.
+    .with_mdn_adaptive(mdn_adaptive)
     // §Fase 37.x.j (D2) — install the eager-acquired flow-scoped pin
     // map. The wire-integration store handlers (`run_persist`,
     // `run_retrieve`, `run_mutate`, `run_purge`) consult this map

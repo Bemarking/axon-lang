@@ -1335,6 +1335,10 @@ pub struct IRCorpus {
     /// graph `C = (D, R, τ, ω, σ)`; the runtime builds an `mdn::Corpus` from it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<IRCorpusRelation>,
+    /// §Fase 63.C — `adaptive: true` enables the memory endofunctor on this
+    /// corpus's navigations.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adaptive: bool,
     pub mcp_server: String,
     pub mcp_resource_uri: String,
 }
