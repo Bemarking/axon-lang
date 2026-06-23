@@ -5,13 +5,23 @@ category: data_plane
 top_level: true
 since: Fase 36
 grammar: |
-  # Form (a) — explicit document list:
+  # Form (a) — explicit document list (flat corpus, RAG/vector retrieval):
   corpus <Name> {
       documents: [<Doc1>, <Doc2>, ...]      # required for inline corpora
   }
 
   # Form (b) — MCP-bound shorthand (corpus pulls from a foreign MCP server):
   corpus <Name> from mcp("<server>", "<resource-uri>")
+
+  # Form (c) — MDN corpus graph (§Fase 63, embeddings-free structural navigation):
+  corpus <Name> {
+      documents: [<Doc1>, <Doc2>, ...]
+      relations: [                          # typed weighted edges → MDN graph
+          cite(<from>, <to>, <weight>)      # closed catalog; weight ∈ (0,1]
+          contradict(<from>, <to>, <weight>)
+      ]
+      adaptive: true                        # optional — enable the memory endofunctor
+  }
 ---
 
 # `corpus`
@@ -53,6 +63,41 @@ single-line declaration — no body required. The runtime
 connects to the named MCP server at deploy time and treats
 its resource URI as the corpus root.
 
+### Form (c) — MDN corpus graph (§Fase 63, embeddings-free)
+
+Add `relations:` (typed weighted edges) and the corpus becomes a
+**Multi-Document Navigation (MDN) graph** `C = (D, R, τ, ω, σ)` —
+navigated by *relationship*, not by embedding similarity. This is
+the **opposite paradigm** from RAG: no vector store, no cosine.
+
+```axon
+corpus SessionKnowledge {
+    documents: [sess_a, sess_b, sess_c]
+    relations: [
+        cite(sess_b, sess_a, 0.9)         # sess_b cites sess_a (trust)
+        contradict(sess_c, sess_a, 0.7)   # sess_c disputes sess_a (distrust)
+        elaborate(sess_c, sess_b, 0.5)
+    ]
+    adaptive: true                        # navigations learn (memory endofunctor)
+}
+
+flow Recall(q: String) -> String {
+    navigate SessionKnowledge {
+        query: "${q}"
+        from:  sess_a       # seed document
+        budget: 5           # max documents
+        output: hits
+    }
+    return hits
+}
+```
+
+A corpus **with** `relations:` is an MDN graph (`navigate <corpus>`
+runs the signed-Epistemic-PageRank / ε-informative submodular
+traversal — paper `multi_document.md`). A corpus **without**
+`relations:` is the flat form (a) above. The two are distinct
+retrieval paradigms under one declaration.
+
 ## Fields
 
 ### `documents:` (required, form a)
@@ -71,6 +116,32 @@ Two **string literals** inside `mcp(…, …)`:
 The form is recognised by the lexer's `from` + `mcp` token
 sequence; the parser captures both literals and treats the
 corpus as MCP-bound (no body brace).
+
+### `relations:` (optional — §Fase 63, makes the corpus an MDN graph)
+
+A **bracketed list of typed weighted edges** `etype(from, to, weight)`.
+`etype` is from the **closed relation catalog** (the type-checker
+rejects anything else):
+
+| Polarity | Types | Propagates |
+|---|---|---|
+| Positive (trust) | `cite`, `elaborate`, `corroborate` | endorsement → `EPR⁺` |
+| Negative (distrust) | `contradict`, `supersede` | challenge → `EPR⁻` |
+| Neutral (structural) | `depend`, `implement`, `exemplify` | navigability only |
+
+`from`/`to` must be documents declared in `documents:` (invariant
+G2); `weight ∈ (0, 1]` (G4). The runtime builds an `mdn::Corpus`
+and runs the **signed Epistemic PageRank** + ε-informative
+submodular navigation over it. Embeddings-free.
+
+### `adaptive:` (optional — §Fase 63, enables memory)
+
+`adaptive: true` enables the **memory endofunctor**: each
+navigation over this corpus reinforces the edges it traversed
+(semantic memory) and accumulates a navigation bias (procedural
+memory), so later navigations use the memory-modified EPR. Requires
+`relations:` — memory deforms the graph's geometry; an edgeless
+corpus has nothing to learn (a compile error otherwise).
 
 ## Runtime behaviour
 
@@ -101,11 +172,16 @@ can be traced back to its source.
 - **Not an `axonstore`.** axonstore is for structured,
   mutable, audit-chained records; corpus is for typically
   read-only documents indexed for retrieval.
-- **Not a vector store implementation.** AXON does not run
-  the embedding pipeline — that lives in the runtime's
-  retrieval backend (chroma, pgvector, weaviate, qdrant).
-  The corpus surface is the *declaration*; the embeddings
-  are downstream.
+- **Not a vector store implementation (flat form).** For the
+  flat corpus (form a/b), AXON does not run the embedding
+  pipeline — that lives in the runtime's retrieval backend
+  (chroma, pgvector, weaviate, qdrant). The corpus surface is
+  the *declaration*; the embeddings are downstream.
+- **MDN form is the opposite — embeddings-free.** A corpus
+  WITH `relations:` (form c) is navigated structurally (signed
+  EPR / ε-informative traversal), with **no** vector store,
+  embeddings, or cosine anywhere. The two forms are distinct
+  paradigms (RAG vs. MDN), not variations of one.
 - **Not a `memory`.** memory holds agent-written state; corpus
   holds external-curated documents the agent reads from.
 - **Not a substitute for source citation.** The corpus
@@ -123,3 +199,9 @@ can be traced back to its source.
 - `axon://primitives/mcp` — outbound MCP server bindings.
 - `axon://primitives/flow` — `retrieve <Corpus>` is the
   flow-step verb that reads from a corpus.
+- `axon://primitives/pix` — single-document structural retrieval
+  navigator; `navigate`/`drill`/`trail` operate over a `pix` (tree)
+  or a `corpus` graph (MDN).
+- `docs/papers/paper_multi_document.md` — the MDN framework
+  (signed Epistemic PageRank, ε-informative navigation);
+  `paper_memory_augmented_mdn.md` — the `adaptive:` endofunctor.
