@@ -68,6 +68,7 @@ follows from one row.
 | `dataspace` | ✓ | — | Fase 36 |
 | `corpus`    | ✓ | — | Fase 36 |
 | `pix`       | ✓ | — | Fase 19 |
+| `ledger`    | ✓ | — | Fase 62 |
 | `type`      | ✓ | — | v0.1.0  |
 
 ## Session types & wire

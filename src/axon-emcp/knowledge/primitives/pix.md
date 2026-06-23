@@ -1,44 +1,69 @@
 ---
 name: pix
-summary: Provenance Index — an append-only, hash-linked chain of every state transition with tamper-evident verification.
+summary: PIX retrieval navigator — an embeddings-free structural index navigated by conditional-mutual-information descent (no vector store, no cosine similarity).
 category: data_plane
 top_level: true
 since: Fase 19
 grammar: |
   pix <Name> {
-      source: "<uri>"               # required — content source the PIX indexes
-      depth: <integer>              # optional — chain depth to retain (default unbounded)
-      branching: <integer>          # optional — branching factor (Merkle-style)
-      model: <ident>                # optional — hashing model slug (e.g. sha256 | blake3)
+      source: "<uri-or-name>"       # required — the document/corpus the PIX indexes
+      depth: <integer>              # optional — max navigation depth d_max (1..8)
+      branching: <integer>         # optional — max branching factor b_max (1..10)
+      model: <ident>               # optional — the navigation LLM slug (e.g. fast)
   }
 ---
 
 # `pix`
 
-`pix` (Provenance Index) declares **an append-only, hash-linked
-chain** that records every state transition a bound surface
-produces. Every mutation to an audited primitive — an
-`axonstore` write, a `flow` emission, an `agent` action — can
-be linked into a PIX chain whose head hash is **tamper-evident
-by construction**: any post-hoc modification to a historical
-row breaks the chain head, surfaced by `axon-emcp.audit verify`.
+`pix` (Progressive Index eXtraction) declares an **embeddings-free
+structural retrieval index**: a navigable tree over a document or
+corpus that an LLM traverses with *intention*, mirroring how a domain
+expert consults a complex document — skim titles, drill into promising
+sections, follow cross-references — instead of nearest-neighbour search
+over chunk embeddings.
 
-This is the foundation of AXON's audit-chain integrity story
-(§Fase 19 Production Hardening, §27.k FIPS-friendly hashing).
-Without PIX, the audit chain is append-only-by-convention;
-with PIX, it's append-only-by-cryptographic-construction.
+> **PIX replaces RAG's axiom, it does not implement it.**
+> RAG: `Relevant(chunk, q) ⟺ cos(φ(chunk), φ(q)) ≥ θ`.
+> PIX: `Relevant(section, q) ⟺ I(R; section | q, path) > ε`
+> — a section is relevant iff *visiting it reduces uncertainty about the
+> answer*, given the query and the navigational path already taken.
+
+There is **no embedding pipeline, no vector database, and no cosine
+similarity** anywhere in a PIX. The formal basis is
+`docs/papers/paper_pix_formal_research.md` (the Chunking Destruction
+Theorem; monotone conditional-entropy reduction; reasoning-path
+explainability).
+
+> **Note — naming (§Fase 62.0).** `pix` was briefly documented as a
+> "Provenance Index" (an audit chain). That role now lives in the
+> [`ledger`](axon://primitives/ledger) primitive. `pix` is, and always
+> was in the grammar (`navigate <pix>` takes a pix), the **retrieval
+> navigator** described here.
 
 ## Surface
 
-`pix` is a **top-level declaration**. It is *not* nested
-inside an axonstore or flow.
+`pix` is a **top-level declaration**. The navigation verbs `navigate`,
+`drill`, and `trail` operate over a declared `pix`.
 
 ```axon
-pix LedgerAudit {
-    source:    "axonstore://GeneralLedger"
-    depth:     unbounded
-    branching: 2
-    model:     sha256
+pix ContractIndex {
+    source:    "contracts/master_agreement.pdf"
+    depth:     4
+    branching: 3
+    model:     fast
+}
+
+flow AnalyzeClause(question: String) -> Analysis {
+    navigate ContractIndex {
+        query:  "${question}"
+        trail:  true          # record the reasoning path
+        output: sections
+    }
+    step Analyze {
+        given: sections
+        ask:   "${question}"
+        output: Analysis
+    }
 }
 ```
 
@@ -46,100 +71,61 @@ pix LedgerAudit {
 
 ### `source:` (required)
 
-A **string literal** containing the URI of the content surface
-the PIX indexes. Common URI schemes:
-
-| Scheme | Target |
-|---|---|
-| `axonstore://<Name>` | Every mutation to the named store. |
-| `flow://<Name>` | Every emission of the named flow. |
-| `agent://<Name>` | Every action of the named agent. |
-| `manifest://<Name>` | Every configuration change to the manifest. |
-| `dataspace://<Name>` | Every cross-store operation in the dataspace. |
-
-The runtime resolves the URI at deploy time and binds the PIX
-chain to the named surface.
+A **string literal** naming the document or corpus the PIX indexes — a
+file/URI to index into a tree, or the name of a declared `corpus`. The
+runtime builds (or loads) the document tree `D = (N, E, ρ, κ)`: each node
+carries a `⟨title, summary, location, children⟩` representation whose
+summary is an intentionally lossy compression (target ratio 5–15%),
+sufficient to decide *whether to explore deeper*, not to answer.
 
 ### `depth:` (optional)
 
-A **non-negative integer literal** OR the identifier
-`unbounded`. The chain depth to retain (older rows beyond this
-are not pruned — they're moved to cold-storage archives that
-keep the chain integrity).
-
-| Value | Retention semantic |
-|---|---|
-| `<integer>` | Hot window of the last N rows; older rows archived. |
-| `unbounded` | All rows stay hot (default for regulated systems). |
+A **non-negative integer** in `1..=8` — the maximum navigation depth
+`d_max`. Bounds the traversal (Theorem: navigation converges in at most
+`d_max` steps). Default: a small depth suited to the document's height.
 
 ### `branching:` (optional)
 
-A **non-negative integer literal**. Branching factor for the
-Merkle-style tree the PIX may organise rows under. `branching:
-2` (binary) is the Merkle-tree default; `branching: 0`
-(default) means a flat linear chain.
+A **non-negative integer** in `1..=10` — the maximum branching factor
+`b_max`, i.e. how many ε-informative children the navigator expands per
+level after pruning. The greedy expansion is `(1 − 1/e)`-optimal by
+submodularity of the information-value function.
 
 ### `model:` (optional)
 
-A **single identifier** naming the hashing model. Common
-values: `sha256` (default), `blake3`, `sha3`. The runtime
-picks a FIPS 140-3 validated implementation when available
-(see §Fase 27.k).
+A **single identifier** naming the navigation LLM (e.g. `fast`). The
+navigator uses a lightweight model to *score* `f_LLM(q, node.summary) ≈
+I(R; node | q, path)`; the final answer is generated separately by the
+flow's reasoning step. This tiered split (cheap navigation, powerful
+generation) is the cost model in the paper.
 
-## Runtime behaviour
+## Epistemic integration
 
-`pix` lowers to a `PixDefinition` IR node. At deploy time, the
-runtime resolves the `source:` URI and attaches the PIX
-recorder to the named surface. Every state transition emits a
-new chain row carrying:
+PIX output rides the epistemic lattice and is **never auto-trusted**:
 
 ```
-{
-    seq:      <monotonic counter>,
-    prev_hash: <hash of previous row>,
-    payload_hash: <hash of this row's content>,
-    timestamp: <UTC ISO 8601>,
-    actor:    <OIDC-verified subject>,
-    operation: <verb-tagged>,
-}
+node summary (intermediate)  →  speculate   (lossy, navigation-only)
+leaf content (terminal)      →  believe     (real content, external provenance)
+validated content            →  know        (only after anchor/shield validation)
 ```
 
-The **chain head** is the hash of the most recent row;
-verifying integrity at any point means recomputing the head by
-walking the chain. The `axon-emcp.audit verify` CLI does this
-verification on demand.
-
-For Fase 21+ enterprise deployments, the chain head is also
-signed with a deployment-managed key — providing
-**non-repudiation** in addition to tamper-evidence.
+Effect row: `⟨io, epistemic:believe⟩` — reads controlled, pre-indexed
+content; trusted but unverified until validated.
 
 ## What this primitive is NOT
 
-- **Not a store.** PIX records *the history of transitions* to
-  another surface. The source content lives in the bound
-  `axonstore` / `flow` / `agent`.
-- **Not optional for regulated deployments.** Production
-  HIPAA / GDPR / SOX / PCI deployments declare at least one
-  PIX over the regulated axonstore. The runtime emits
-  `axon-W013` for compliance-tagged stores without a bound
-  PIX.
-- **Not a backup.** PIX records every transition; restoring
-  to a point-in-time requires replaying the chain. For
-  efficient restore, run periodic full-backup snapshots
-  alongside the PIX chain.
-- **Not generic logging.** Standard `tracing` events go to
-  stderr / the observability layer. PIX is the
-  cryptographically-linked persistence chain — different
-  surface, different guarantees.
+- **Not a vector store.** No embeddings, no `pgvector`/`chroma`/`qdrant`.
+  Retrieval is guided tree traversal, not nearest-neighbour search. For
+  the embeddings-backed surface see [`corpus`](axon://primitives/corpus).
+- **Not an audit chain.** The append-only, hash-linked tamper-evident
+  record is [`ledger`](axon://primitives/ledger).
+- **Not per-corpus.** A single `pix` indexes one document/corpus tree.
+  Cross-document graph navigation (MDN) composes multiple sources.
 
 ## See also
 
-- `axon://primitives/axonstore` — the most common PIX source.
-- `axon://primitives/dataspace` — usually one PIX per
-  dataspace.
-- `axon://primitives/observe` — observe + PIX is the
-  read-side / write-side audit pair.
-- `axon://compliance/sox` — example of SOX §404 attestation
-  via PIX chain head.
-- [`docs/papers/paper_audit_chain.md`](https://github.com/Bemarking/axon-lang)
-  — the formal integrity story (when shipped).
+- `axon://primitives/corpus` — the multi-document corpus a PIX can index.
+- `axon://primitives/ledger` — the audit chain (former Provenance-Index
+  reading of `pix`).
+- `docs/papers/paper_pix_formal_research.md` — the formal framework.
+- `docs/papers/paper_multi_document.md` — MDN, cross-corpus navigation.

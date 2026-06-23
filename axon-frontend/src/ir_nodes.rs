@@ -27,6 +27,10 @@ pub struct IRProgram {
     pub daemons: Vec<IRDaemon>,
     pub ots_specs: Vec<IROts>,
     pub pix_specs: Vec<IRPix>,
+    /// §Fase 62.0 — audit-chain (`ledger`) declarations. Distinct from
+    /// `pix_specs` (the retrieval navigator); a ledger binds a hash-linked
+    /// recorder to an audited surface.
+    pub ledger_specs: Vec<IRLedger>,
     pub corpus_specs: Vec<IRCorpus>,
     pub psyche_specs: Vec<IRPsyche>,
     pub mandate_specs: Vec<IRMandate>,
@@ -123,6 +127,7 @@ impl IRProgram {
             daemons: Vec::new(),
             ots_specs: Vec::new(),
             pix_specs: Vec::new(),
+            ledger_specs: Vec::new(),
             corpus_specs: Vec::new(),
             psyche_specs: Vec::new(),
             mandate_specs: Vec::new(),
@@ -1272,6 +1277,23 @@ pub struct IRShield {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct IRPix {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub source: String,
+    pub depth: Option<i64>,
+    pub branching: Option<i64>,
+    pub model: String,
+}
+
+/// §Fase 62.0 — the audit-chain (`ledger`) IR node. Same shape as [`IRPix`]
+/// but a DISTINCT node (`node_type: "ledger"`): a ledger binds a hash-linked
+/// recorder to an audited surface (`source`), retaining `depth` rows under a
+/// `branching`-factor Merkle tree, hashed with `model`. Kept separate from
+/// `IRPix` so the navigator and the audit chain never alias on the wire.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRLedger {
     pub node_type: &'static str,
     pub source_line: u32,
     pub source_column: u32,

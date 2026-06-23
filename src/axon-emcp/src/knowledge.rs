@@ -1233,7 +1233,8 @@ Body prose.
         // logic, both lex-only with no parser production), 45
         // Documented, 0 Pending. **100% coverage achieved**. Any
         // future drop is a regression the gate catches.
-        assert_eq!(s.total, 45);
+        // §Fase 62.0: 45 → 46 with `ledger` (audit chain) split from `pix`.
+        assert_eq!(s.total, 46);
     }
 
     /// §Phase 5 — every MCP prompt shipped under

@@ -114,6 +114,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Ledger(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Psyche(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -445,6 +449,7 @@ const fn is_top_level_decl_kw_for_recovery(tt: &TokenType) -> bool {
             | TokenType::Agent
             | TokenType::Shield
             | TokenType::Pix
+            | TokenType::Ledger
             | TokenType::Psyche
             | TokenType::Corpus
             | TokenType::Dataspace
@@ -1960,6 +1965,7 @@ impl Parser {
             TokenType::Agent => self.parse_agent().map(Declaration::Agent),
             TokenType::Shield => self.parse_shield().map(Declaration::Shield),
             TokenType::Pix => self.parse_pix().map(Declaration::Pix),
+            TokenType::Ledger => self.parse_ledger().map(Declaration::Ledger),
             TokenType::Psyche => self.parse_psyche().map(Declaration::Psyche),
             TokenType::Corpus => self.parse_corpus().map(Declaration::Corpus),
             TokenType::Dataspace => self.parse_dataspace().map(Declaration::Dataspace),
@@ -4351,6 +4357,48 @@ impl Parser {
         let tok = self.consume(TokenType::Pix)?;
         let name = self.consume(TokenType::Identifier)?.value;
         let mut node = PixDefinition {
+            name,
+            source: String::new(),
+            depth: None,
+            branching: None,
+            model: String::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.current().value.clone();
+            self.advance();
+            if self.check(TokenType::Colon) {
+                self.advance();
+                match field_name.as_str() {
+                    "source" => node.source = self.consume(TokenType::StringLit)?.value.clone(),
+                    "depth" => node.depth = self.parse_optional_int(),
+                    "branching" => node.branching = self.parse_optional_int(),
+                    "model" => node.model = self.consume_any_ident_or_kw()?.value.clone(),
+                    _ => self.skip_value(),
+                }
+            } else if self.check(TokenType::LBrace) {
+                self.skip_braced_block()?;
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 62.0 — `ledger <Name> { source, depth, branching, model }`.
+    /// The append-only audit chain (formerly the Provenance-Index reading of
+    /// `pix`). Field grammar mirrors `pix` (same shape) but the SEMANTICS are
+    /// audit, not navigation: `depth` = chain retention, `branching` = Merkle
+    /// factor, `model` = hash slug (sha256 / blake3 / sha3).
+    fn parse_ledger(&mut self) -> Result<LedgerDefinition, ParseError> {
+        let tok = self.consume(TokenType::Ledger)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = LedgerDefinition {
             name,
             source: String::new(),
             depth: None,

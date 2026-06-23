@@ -26,9 +26,11 @@ type CompliancePosture {
 
 type PostureRequest { signal: ComplianceSignal }
 
-// ── PIX (provenance index) — tamper-evident audit chain ───────────
+// ── Ledger — tamper-evident, hash-linked audit chain ──────────────
+// (§Fase 62.0: this is the `ledger` audit chain; `pix` is now the
+//  embeddings-free retrieval navigator.)
 
-pix ComplianceAuditChain {
+ledger ComplianceAuditChain {
     source:    "compliance.internal"
     branching: 2
     model:     sha256

@@ -170,6 +170,7 @@ impl IRGenerator {
             Declaration::Agent(n) => ir.agents.push(self.visit_agent(n)),
             Declaration::Shield(n) => ir.shields.push(self.visit_shield(n)),
             Declaration::Pix(n) => ir.pix_specs.push(self.visit_pix(n)),
+            Declaration::Ledger(n) => ir.ledger_specs.push(self.visit_ledger(n)),
             Declaration::Psyche(n) => ir.psyche_specs.push(self.visit_psyche(n)),
             Declaration::Corpus(n) => ir.corpus_specs.push(self.visit_corpus(n)),
             Declaration::Dataspace(n) => ir.dataspace_specs.push(self.visit_dataspace(n)),
@@ -970,6 +971,20 @@ impl IRGenerator {
     fn visit_pix(&self, n: &PixDefinition) -> IRPix {
         IRPix {
             node_type: "pix",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            source: n.source.clone(),
+            depth: n.depth,
+            branching: n.branching,
+            model: n.model.clone(),
+        }
+    }
+
+    /// §Fase 62.0 — lower a `ledger` declaration to its audit-chain IR node.
+    fn visit_ledger(&self, n: &LedgerDefinition) -> IRLedger {
+        IRLedger {
+            node_type: "ledger",
             source_line: n.loc.line,
             source_column: n.loc.column,
             name: n.name.clone(),
