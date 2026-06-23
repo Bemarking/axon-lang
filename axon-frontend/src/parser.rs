@@ -4491,6 +4491,7 @@ impl Parser {
             name,
             documents: Vec::new(),
             relations: Vec::new(),
+            adaptive: false,
             mcp_server: String::new(),
             mcp_resource_uri: String::new(),
             loc: Loc {
@@ -4521,6 +4522,8 @@ impl Parser {
                     "documents" => node.documents = self.parse_bracketed_identifiers()?,
                     // §Fase 63.A — typed weighted edges → MDN corpus graph.
                     "relations" => node.relations = self.parse_corpus_relations()?,
+                    // §Fase 63.C — enable the memory endofunctor.
+                    "adaptive" => node.adaptive = self.consume_any_ident_or_kw()?.value == "true",
                     _ => self.skip_value(),
                 }
             } else if self.check(TokenType::LBrace) {

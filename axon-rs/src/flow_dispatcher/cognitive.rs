@@ -493,7 +493,7 @@ pub async fn run_navigate(
     // documents, scored by the deterministic LexicalGain (signed EPR rides the
     // same `mdn::Corpus`). Embeddings-free.
     if let Some(corpora) = ctx.mdn_corpora.clone() {
-        if let Some(corpus) = corpora.get(&node.pix_ref) {
+        if let Some(base) = corpora.get(&node.pix_ref) {
             let step_index = ctx.step_counter;
             ctx.step_counter += 1;
             let out_name = if node.output_name.is_empty() {
@@ -503,25 +503,37 @@ pub async fn run_navigate(
             };
             emit_step_start(ctx, &out_name, step_index, "navigate")?;
 
+            // §Fase 63.C — when the corpus is `adaptive`, deform it by the memory
+            // endofunctor over the accumulated history (semantic ω reinforcement
+            // + procedural bias) BEFORE navigating; otherwise navigate the base.
+            let adaptive = ctx.mdn_adaptive.contains(&node.pix_ref);
+            let effective: crate::mdn::Corpus = if adaptive {
+                let hist = ctx.mdn_histories.lock().unwrap();
+                let h = hist.get(&node.pix_ref).cloned().unwrap_or_default();
+                crate::mdn_memory::apply_memory(base, &h, &crate::mdn_memory::MemoryParams::default())
+            } else {
+                base.clone()
+            };
+
             // Seed: the `from:` document by title, else the lowest doc id.
-            let seed = corpus
+            let seed = effective
                 .documents()
                 .into_iter()
                 .find(|d| d.title == node.seed)
                 .map(|d| d.id)
-                .or_else(|| corpus.documents().into_iter().map(|d| d.id).min())
+                .or_else(|| effective.documents().into_iter().map(|d| d.id).min())
                 .unwrap_or(0);
             let budget = crate::mdn::NavBudget {
                 max_docs: node.budget.map(|b| b.max(1) as usize).unwrap_or(5),
                 epsilon: 1e-6,
             };
-            let gain = crate::mdn::LexicalGain::new(corpus);
-            let r = crate::mdn::navigate_corpus(corpus, &query, seed, &budget, &gain);
+            let gain = crate::mdn::LexicalGain::new(&effective);
+            let r = crate::mdn::navigate_corpus(&effective, &query, seed, &budget, &gain);
 
             let content = r
                 .selected
                 .iter()
-                .filter_map(|id| corpus.document(*id))
+                .filter_map(|id| effective.document(*id))
                 .map(|d| d.title.clone())
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -531,10 +543,27 @@ pub async fn run_navigate(
             let trail = r
                 .trail
                 .iter()
-                .filter_map(|(id, g)| corpus.document(*id).map(|d| format!("{} (Δ={:.2})", d.title, g)))
+                .filter_map(|(id, g)| effective.document(*id).map(|d| format!("{} (Δ={:.2})", d.title, g)))
                 .collect::<Vec<_>>()
                 .join(" → ");
             ctx.let_bindings.insert(format!("__navigate_{out_name}_trail"), trail);
+
+            // §Fase 63.C — record this navigation into the adaptive corpus's
+            // memory (episodic trajectory + an outcome scored by the information
+            // gained), so subsequent navigations learn from it.
+            if adaptive {
+                let denom = r.selected.len().max(1) as f64;
+                let score = (r.total_gain / denom).clamp(0.0, 1.0);
+                let mut hist = ctx.mdn_histories.lock().unwrap();
+                let h = hist.entry(node.pix_ref.clone()).or_default();
+                let t = h.outcomes.len() as u64;
+                h.record(crate::mdn_memory::Outcome {
+                    query: query.clone(),
+                    path: r.selected.clone(),
+                    score,
+                    timestamp: t,
+                });
+            }
 
             emit_step_complete(ctx, &out_name, step_index, &content, 0)?;
             return Ok(NodeOutcome::Completed {
@@ -1053,6 +1082,53 @@ mod tests {
         }
         assert!(ctx.let_bindings.get("hits").unwrap().contains("liability"));
         assert!(ctx.let_bindings.contains_key("__navigate_hits_trail"));
+        // A non-adaptive corpus records no memory.
+        assert!(ctx.mdn_histories.lock().unwrap().is_empty(), "non-adaptive records nothing");
+    }
+
+    #[tokio::test]
+    async fn run_navigate_adaptive_corpus_accumulates_memory() {
+        // §Fase 63.C — navigations over an `adaptive` corpus apply the memory
+        // endofunctor and record their trajectory, so the corpus learns.
+        use std::collections::{HashMap, HashSet};
+        use std::sync::Arc;
+        let corpus = crate::mdn::Corpus::from_declaration(
+            &["intro overview".to_string(), "liability cap".to_string()],
+            &[("cite".into(), "intro overview".into(), "liability cap".into(), 0.5)],
+        )
+        .unwrap();
+        let mut map = HashMap::new();
+        map.insert("Mem".to_string(), corpus);
+        let mut adaptive = HashSet::new();
+        adaptive.insert("Mem".to_string());
+        let (ctx, _rx) = fresh_ctx();
+        let mut ctx = ctx
+            .with_mdn_corpora(Arc::new(map))
+            .with_mdn_adaptive(Arc::new(adaptive));
+
+        let node = IRNavigateStep {
+            node_type: "navigate",
+            source_line: 0,
+            source_column: 0,
+            pix_ref: "Mem".into(),
+            corpus_ref: String::new(),
+            query: "liability".into(),
+            trail_enabled: false,
+            output_name: "hits".into(),
+            seed: "intro overview".into(),
+            budget: Some(3),
+        };
+        // Two navigations accumulate two episodic outcomes.
+        run_navigate(&node, &mut ctx).await.unwrap();
+        run_navigate(&node, &mut ctx).await.unwrap();
+        let hist = ctx.mdn_histories.lock().unwrap();
+        assert_eq!(
+            hist.get("Mem").map(|h| h.outcomes.len()),
+            Some(2),
+            "the adaptive corpus recorded both navigations"
+        );
+        // The recorded trajectory is the navigated path.
+        assert!(hist.get("Mem").unwrap().outcomes[0].path.contains(&0));
     }
 
     #[tokio::test]

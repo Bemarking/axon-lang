@@ -2358,6 +2358,18 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
+
+        // §Fase 63.C — the memory endofunctor deforms the graph's geometry, so
+        // `adaptive` is only meaningful on a corpus that HAS a graph.
+        if node.adaptive && node.relations.is_empty() {
+            self.emit(
+                format!(
+                    "Corpus '{}': `adaptive: true` requires `relations:` — memory deforms the graph, an edgeless corpus has nothing to learn",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
     }
 
     fn check_ots(&mut self, node: &OtsDefinition) {

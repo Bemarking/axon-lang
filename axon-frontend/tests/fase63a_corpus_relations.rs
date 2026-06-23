@@ -75,3 +75,21 @@ fn edgeless_corpus_still_type_checks() {
     let e = errors("corpus Flat { documents: [a, b] }");
     assert!(e.is_empty(), "an edgeless corpus is the pre-§63 flat corpus: {e:?}");
 }
+
+// ── §63.C — the `adaptive:` memory flag ──────────────────────────────────────
+
+#[test]
+fn adaptive_corpus_with_relations_type_checks() {
+    let src = "corpus M { documents: [a, b] relations: [ cite(a, b, 0.9) ] adaptive: true }";
+    assert!(errors(src).is_empty(), "an adaptive MDN graph must type-check");
+}
+
+#[test]
+fn adaptive_without_relations_is_rejected() {
+    // Memory deforms the graph — an edgeless corpus has nothing to learn.
+    let src = "corpus M { documents: [a, b] adaptive: true }";
+    assert!(
+        errors(src).iter().any(|m| m.contains("requires `relations:`")),
+        "`adaptive` without `relations` must error"
+    );
+}

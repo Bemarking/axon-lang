@@ -282,6 +282,15 @@ pub struct DispatchCtx {
     /// (`mdn::navigate_corpus` / signed EPR) instead of PIX tree navigation.
     /// `Arc`-shared so branch clones (Par) are cheap.
     pub mdn_corpora: Option<std::sync::Arc<std::collections::HashMap<String, crate::mdn::Corpus>>>,
+    /// §Fase 63.C — the names of corpora declared `adaptive: true` (the memory
+    /// endofunctor is enabled for navigations over them).
+    pub mdn_adaptive: std::sync::Arc<std::collections::HashSet<String>>,
+    /// §Fase 63.C — per-corpus interaction history (mutable, accumulates across a
+    /// flow's navigations). A navigation over an adaptive corpus applies the
+    /// memory endofunctor (`mdn_memory::apply_memory`) using this history, then
+    /// records its own trajectory. `Arc<Mutex<…>>` so branch clones share it.
+    pub mdn_histories:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, crate::mdn_memory::History>>>,
     /// §Fase 35.f (v1.30.0) — axonstore registry for SQL-vs-KV
     /// dispatch. When `Some(registry)`, `run_persist` / `run_retrieve`
     /// / `run_mutate` / `run_purge` resolve `store_name` against it: a
@@ -375,6 +384,8 @@ impl DispatchCtx {
             pending_effect_policy: None,
             tool_registry: None,
             mdn_corpora: None,
+            mdn_adaptive: std::sync::Arc::new(std::collections::HashSet::new()),
+            mdn_histories: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             store_registry: None,
             held_capabilities: None,
             audit_chain: std::sync::Arc::new(std::sync::Mutex::new(
@@ -448,6 +459,15 @@ impl DispatchCtx {
         corpora: std::sync::Arc<std::collections::HashMap<String, crate::mdn::Corpus>>,
     ) -> Self {
         self.mdn_corpora = Some(corpora);
+        self
+    }
+
+    /// §Fase 63.C — Builder: mark which corpora are `adaptive` (memory-enabled).
+    pub fn with_mdn_adaptive(
+        mut self,
+        adaptive: std::sync::Arc<std::collections::HashSet<String>>,
+    ) -> Self {
+        self.mdn_adaptive = adaptive;
         self
     }
 

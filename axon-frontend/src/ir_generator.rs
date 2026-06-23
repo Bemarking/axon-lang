@@ -1030,6 +1030,7 @@ impl IRGenerator {
                     weight: r.weight,
                 })
                 .collect(),
+            adaptive: n.adaptive,
             mcp_server: n.mcp_server.clone(),
             mcp_resource_uri: n.mcp_resource_uri.clone(),
         }
