@@ -443,6 +443,163 @@ pub fn pix_trail(tree: &PixTree, result: &NavResult) -> Vec<String> {
         .collect()
 }
 
+// ── §Fase 62.A.2 — indexing + the reference scorer ──────────────────────────
+
+/// Why an outline could not be indexed into a tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IndexError {
+    /// The source had no content.
+    Empty,
+    /// The source had no `#`-prefixed headings to form a hierarchy.
+    NoHeadings,
+}
+
+/// §Fase 62.A.2 — build a [`PixTree`] from a markdown-heading outline.
+///
+/// Deterministic and **embeddings-free**: each `#`-prefixed heading becomes a
+/// node; a deeper heading is a child of the nearest shallower one; the body text
+/// between a heading and the next becomes the node's `summary` (navigation
+/// salience) and, for leaves, its uncompressed `content` (the answer source). A
+/// synthetic root wraps the top-level headings, so a multi-section document is a
+/// single tree (paper T1 unique root).
+///
+/// This is the structural indexer — the OSS reference. An LLM-summarising indexer
+/// (paper §2.2, `CR ∈ [0.05,0.15]`) is the production enhancement; both yield a
+/// `PixTree` the navigator consumes identically.
+pub fn index_markdown(text: &str) -> Result<PixTree, IndexError> {
+    if text.trim().is_empty() {
+        return Err(IndexError::Empty);
+    }
+
+    // Collect (level, title, body) sections in document order.
+    struct Section {
+        level: usize,
+        title: String,
+        body: String,
+    }
+    let mut sections: Vec<Section> = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let hashes = trimmed.chars().take_while(|&c| c == '#').count();
+        if hashes > 0 && trimmed[hashes..].starts_with(' ') {
+            sections.push(Section {
+                level: hashes,
+                title: trimmed[hashes..].trim().to_string(),
+                body: String::new(),
+            });
+        } else if let Some(s) = sections.last_mut() {
+            if !line.trim().is_empty() {
+                if !s.body.is_empty() {
+                    s.body.push(' ');
+                }
+                s.body.push_str(line.trim());
+            }
+        }
+        // Preamble before the first heading is ignored (the synthetic root holds it).
+    }
+    if sections.is_empty() {
+        return Err(IndexError::NoHeadings);
+    }
+
+    // Synthetic root (id 0) + one node per section. Attach each section to the
+    // nearest preceding ancestor with a strictly smaller level (stack walk).
+    let mut nodes: Vec<PixNode> = vec![PixNode {
+        id: 0,
+        title: "root".to_string(),
+        summary: "document root".to_string(),
+        location: Location::default(),
+        children: vec![],
+        content: None,
+    }];
+    // stack of (level, node-index-in-`nodes`).
+    let mut stack: Vec<(usize, usize)> = vec![(0, 0)];
+
+    for (i, sec) in sections.iter().enumerate() {
+        let id = (i + 1) as NodeId;
+        while let Some(&(lvl, _)) = stack.last() {
+            if lvl >= sec.level && stack.len() > 1 {
+                stack.pop();
+            } else {
+                break;
+            }
+        }
+        let parent_idx = stack.last().map(|&(_, idx)| idx).unwrap_or(0);
+        nodes[parent_idx].children.push(id);
+
+        let snippet: String = sec.body.chars().take(160).collect();
+        nodes.push(PixNode {
+            id,
+            title: sec.title.clone(),
+            summary: if snippet.is_empty() {
+                sec.title.clone()
+            } else {
+                format!("{} — {}", sec.title, snippet)
+            },
+            location: Location::default(),
+            children: vec![],
+            // Provisional; internal nodes get `content: None` in the fix-up below.
+            content: Some(sec.body.clone()),
+        });
+        stack.push((sec.level, nodes.len() - 1));
+    }
+
+    // Fix-up: a node with children is internal (paper — leaves carry content,
+    // internal nodes carry only the navigational summary).
+    let child_bearers: HashSet<NodeId> = nodes
+        .iter()
+        .filter(|n| !n.children.is_empty())
+        .map(|n| n.id)
+        .collect();
+    for n in nodes.iter_mut() {
+        if child_bearers.contains(&n.id) {
+            n.content = None;
+        }
+    }
+
+    PixTree::new(nodes, 0).map_err(|_| IndexError::NoHeadings)
+}
+
+/// §Fase 62.A.2 — a deterministic, embeddings-free reference [`RelevanceScorer`]:
+/// the **lexical information scent** of a node for a query (paper §3.3 — the
+/// navigator follows the scent of summaries). The score is the fraction of query
+/// terms present in the node's `title + summary`, floored at `epsilon` so every
+/// branch stays navigable (mirrors the ε-floor of an LLM scorer).
+///
+/// This is *not* embedding similarity: it is exact lexical overlap over the
+/// compressed navigational summaries. The production scorer is LLM-backed (it
+/// reasons about whether a summary suggests it contains the answer); this OSS
+/// reference is fully deterministic so the navigation is reproducible.
+pub struct LexicalScorer {
+    pub epsilon: f64,
+}
+
+impl Default for LexicalScorer {
+    fn default() -> Self {
+        LexicalScorer { epsilon: 0.05 }
+    }
+}
+
+fn tokenize(s: &str) -> HashSet<String> {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 2)
+        .map(|w| w.to_lowercase())
+        .collect()
+}
+
+impl RelevanceScorer for LexicalScorer {
+    fn score(&self, query: &str, node: &PixNode, _path: &[NodeId]) -> f64 {
+        let q = tokenize(query);
+        if q.is_empty() {
+            return self.epsilon;
+        }
+        let mut text = tokenize(&node.title);
+        text.extend(tokenize(&node.summary));
+        let hits = q.iter().filter(|t| text.contains(*t)).count();
+        let coverage = hits as f64 / q.len() as f64;
+        coverage.max(self.epsilon).min(1.0)
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -698,5 +855,82 @@ mod tests {
         assert_eq!(r.leaves.len(), 1);
         assert_eq!(r.leaves[0].content, "the-answer");
         assert!(r.trail.is_empty());
+    }
+
+    // ── §62.A.2 indexing + lexical scorer ────────────────────────────────────
+
+    const DOC: &str = r#"
+# Liability
+General liability terms.
+## Indemnification
+The seller indemnifies the buyer against third-party claims.
+## Limitation
+Liability is capped at the contract value.
+# Termination
+## Notice
+Either party may terminate with thirty days written notice.
+"#;
+
+    #[test]
+    fn index_markdown_builds_a_valid_tree() {
+        let t = index_markdown(DOC).expect("indexable");
+        // root + Liability + Indemnification + Limitation + Termination + Notice = 6
+        assert_eq!(t.len(), 6);
+        // Liability (H1) hangs off root and has two H2 children.
+        let liability = t
+            .children_of(t.root().id)
+            .into_iter()
+            .find(|n| n.title == "Liability")
+            .expect("Liability under root");
+        assert_eq!(t.children_of(liability.id).len(), 2);
+        // Internal nodes carry no content; leaves do.
+        assert!(liability.content.is_none(), "internal node has no content");
+        let indemn = t
+            .children_of(liability.id)
+            .into_iter()
+            .find(|n| n.title == "Indemnification")
+            .unwrap();
+        assert!(indemn.content.as_deref().unwrap().contains("indemnifies"));
+    }
+
+    #[test]
+    fn index_rejects_empty_and_headingless() {
+        assert_eq!(index_markdown("   ").unwrap_err(), IndexError::Empty);
+        assert_eq!(
+            index_markdown("just prose, no headings").unwrap_err(),
+            IndexError::NoHeadings
+        );
+    }
+
+    #[test]
+    fn lexical_scorer_is_embeddings_free_and_floored() {
+        let s = LexicalScorer::default();
+        let n = leaf(1, "Indemnification", "the seller indemnifies the buyer");
+        // Query term present in title ⇒ high score.
+        assert!(s.score("indemnification clause", &n, &[]) > 0.4);
+        // No overlap ⇒ floored at epsilon, never zero (keeps the tree navigable).
+        assert!((s.score("quantum chromodynamics", &n, &[]) - s.epsilon).abs() < 1e-9);
+    }
+
+    #[test]
+    fn end_to_end_index_then_navigate_retrieves_the_right_section() {
+        // The whole point: a real document, indexed, navigated embeddings-free
+        // to the section that answers the query — with a reasoning path.
+        let tree = index_markdown(DOC).unwrap();
+        let r = pix_navigate(
+            &tree,
+            "what is the cap on liability limitation",
+            &NavConfig::default(),
+            &LexicalScorer::default(),
+        );
+        // The "Limitation" leaf (capped liability) must be among the results.
+        let got: Vec<&str> = r.leaves.iter().map(|l| l.content.as_str()).collect();
+        assert!(
+            got.iter().any(|c| c.contains("capped at the contract value")),
+            "expected the Limitation section, got {got:?}"
+        );
+        // And it came with an explainable trail.
+        let trail = pix_trail(&tree, &r);
+        assert!(trail.iter().any(|s| s.contains("Liability")));
     }
 }
