@@ -737,6 +737,103 @@ pub fn extract_corpus_rows(
     (docs, edges)
 }
 
+/// §Fase 64.C — plan the per-edge weight reinforcements to PERSIST after a
+/// navigation over an adaptive store-sourced corpus. The incremental semantic
+/// signal of the just-recorded outcome (score `s_o`) on each traversed edge is
+/// `Δ = η · (s_o − s̄)` (paper Def 6 for the latest outcome; `s̄` = mean over the
+/// history INCLUDING `s_o`; the decay is 1 in the default config). Returns
+/// `(from_id, to_id, etype_slug, Δ)` for every traversed edge with a NON-ZERO Δ.
+/// A single outcome has `s_o = s̄ ⇒ Δ = 0 ⇒` nothing to persist: the relative
+/// semantic signal needs variance across interactions (the paper's design).
+/// Pure — `docs[i]` is the document at internal `DocId` `i` (`from_rows` interns
+/// ids by first-seen order, so `DocId i ↔ docs[i]`).
+pub fn plan_edge_reinforcements(
+    corpus: &crate::mdn::Corpus,
+    selected: &[crate::mdn::DocId],
+    docs: &[(String, String)],
+    score: f64,
+    mean_score: f64,
+    eta: f64,
+) -> Vec<(String, String, String, f64)> {
+    let delta = eta * (score - mean_score);
+    if delta == 0.0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for pair in selected.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        for e in corpus.edges() {
+            if e.from == a && e.to == b {
+                if let (Some(fa), Some(tb)) = (docs.get(a as usize), docs.get(b as usize)) {
+                    out.push((fa.0.clone(), tb.0.clone(), e.etype.slug().to_string(), delta));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// §Fase 64.C — PERSIST a reinforcement plan to the edge store via the atomic,
+/// relative `UPDATE` ([`PostgresStoreBackend::reinforce`]), **tenant-scoped** by
+/// reusing the flow's connection-pinned, RLS-scoped store connection (never a
+/// fresh one). Best-effort: a single edge's failure (or a since-deleted edge)
+/// must not abort the rest or fail the navigation — learning is advisory. A
+/// non-Postgres backing is a no-op.
+pub async fn persist_reinforcements(
+    ctx: &mut DispatchCtx,
+    edge_store: &str,
+    weight_col: &str,
+    from_col: &str,
+    to_col: &str,
+    etype_col: &str,
+    plan: &[(String, String, String, f64)],
+    epsilon: f64,
+) -> Result<(), DispatchError> {
+    if plan.is_empty() {
+        return Ok(());
+    }
+    let Ok(Some((backend, _floor))) = resolve_pg_backend(ctx, edge_store) else {
+        return Ok(());
+    };
+    let mut pin: Option<sqlx::pool::PoolConnection<sqlx::Postgres>> =
+        { ctx.pinned_conns.lock().unwrap().remove(edge_store) };
+    if pin.is_none() {
+        if let Ok(p) = backend.acquire_pin().await {
+            pin = Some(p);
+        }
+    }
+    {
+        let mut store_conn = match &mut pin {
+            Some(p) => crate::store::store_conn::StoreConn::Pinned(p),
+            None => crate::store::store_conn::StoreConn::Pool(backend.pool()),
+        };
+        for (from_id, to_id, etype, delta) in plan {
+            let _ = backend
+                .reinforce(
+                    &mut store_conn,
+                    edge_store,
+                    weight_col,
+                    from_col,
+                    to_col,
+                    etype_col,
+                    &crate::store::filter::SqlValue::Text(from_id.clone()),
+                    &crate::store::filter::SqlValue::Text(to_id.clone()),
+                    &crate::store::filter::SqlValue::Text(etype.clone()),
+                    *delta,
+                    epsilon,
+                )
+                .await;
+        }
+    }
+    if let Some(p) = pin {
+        ctx.pinned_conns
+            .lock()
+            .unwrap()
+            .insert(edge_store.to_string(), p);
+    }
+    Ok(())
+}
+
 // ────────────────────────────────────────────────────────────────────
 //  Mutate
 // ────────────────────────────────────────────────────────────────────
@@ -1089,6 +1186,28 @@ mod tests {
         let (docs, edges) = extract_corpus_rows(&doc_rows, &edge_rows, &src);
         assert_eq!(docs, vec![("uuid-a".into(), "A".into()), ("uuid-b".into(), "B".into())]);
         assert_eq!(edges, vec![("uuid-b".into(), "uuid-a".into(), "cite".into(), 0.9)]);
+    }
+
+    #[test]
+    fn plan_edge_reinforcements_zero_for_one_outcome_nonzero_with_variance() {
+        // §Fase 64.C — Δ = η·(s_o − s̄). A 2-doc graph a→b (cite); from_rows
+        // interns a=0, b=1 ⇒ the edge is (0,1); the path [0,1] traverses it.
+        let docs = vec![("id-a".to_string(), "A".to_string()), ("id-b".to_string(), "B".to_string())];
+        let edges = vec![("id-a".to_string(), "id-b".to_string(), "cite".to_string(), 0.5)];
+        let corpus = crate::mdn::Corpus::from_rows(&docs, &edges).unwrap();
+        let selected = vec![0u32, 1u32];
+
+        // Single outcome: s_o == s̄ ⇒ Δ = 0 ⇒ nothing to persist.
+        let p0 = plan_edge_reinforcements(&corpus, &selected, &docs, 0.8, 0.8, 0.1);
+        assert!(p0.is_empty(), "a single outcome reinforces nothing (relative signal)");
+
+        // With variance: Δ = 0.1·(0.9 − 0.5) = 0.04 on the traversed edge.
+        let p1 = plan_edge_reinforcements(&corpus, &selected, &docs, 0.9, 0.5, 0.1);
+        assert_eq!(p1.len(), 1);
+        assert_eq!(p1[0].0, "id-a");
+        assert_eq!(p1[0].1, "id-b");
+        assert_eq!(p1[0].2, "cite");
+        assert!((p1[0].3 - 0.04).abs() < 1e-9, "Δ = η(s−s̄): got {}", p1[0].3);
     }
 
     #[test]

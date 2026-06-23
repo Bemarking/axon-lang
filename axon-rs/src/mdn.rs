@@ -73,6 +73,22 @@ impl EdgeType {
         }
     }
 
+    /// §Fase 64.C — the relation-type slug (the inverse of [`EdgeType::from_slug`]).
+    /// Used by the adaptive write-back to address the edge's row in the store by
+    /// its `etype` column value.
+    pub fn slug(self) -> &'static str {
+        match self {
+            EdgeType::Cite => "cite",
+            EdgeType::Elaborate => "elaborate",
+            EdgeType::Corroborate => "corroborate",
+            EdgeType::Depend => "depend",
+            EdgeType::Implement => "implement",
+            EdgeType::Exemplify => "exemplify",
+            EdgeType::Contradict => "contradict",
+            EdgeType::Supersede => "supersede",
+        }
+    }
+
     /// §Fase 63.A — parse a relation-type slug (the closed catalog the frontend
     /// `corpus` grammar uses) into an [`EdgeType`]. `None` for an unknown slug.
     pub fn from_slug(s: &str) -> Option<EdgeType> {
@@ -889,6 +905,18 @@ mod tests {
     #[test]
     fn from_rows_empty_documents_is_empty_error() {
         assert!(matches!(Corpus::from_rows(&[], &[]), Err(CorpusError::Empty)));
+    }
+
+    #[test]
+    fn edge_type_slug_round_trips() {
+        // §Fase 64.C — slug() is the inverse of from_slug(), used to address an
+        // edge's store row by its `etype` value in the write-back.
+        for s in [
+            "cite", "elaborate", "corroborate", "depend", "implement", "exemplify",
+            "contradict", "supersede",
+        ] {
+            assert_eq!(EdgeType::from_slug(s).unwrap().slug(), s);
+        }
     }
 
     fn doc(id: DocId, depth: u32, recency: f64) -> Document {
