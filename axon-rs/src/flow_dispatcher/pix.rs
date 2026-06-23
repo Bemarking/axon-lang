@@ -138,9 +138,14 @@ pub async fn run_hibernate(
 //  Drill (Fase 11.e PIX — drill into hidden-state subtree)
 // ────────────────────────────────────────────────────────────────────
 
-/// Drill handler. Wire shape: `step_type: "drill"`. Resolves the
-/// PIX subtree via [`drill_pix_subtree`] + binds result under
-/// `output_name` in let_bindings.
+/// Drill handler. Wire shape: `step_type: "drill"`.
+///
+/// §Fase 62.A.3: when the source document is in scope, this runs REAL subtree
+/// navigation — index the source, locate the named subtree by its dotted
+/// title-path (`subtree_path`), then navigate WITHIN that subtree
+/// ([`crate::pix_navigator::pix_drill`]), embeddings-free. Falls back to the
+/// pre-seeded `__pix_<ref>_<path>` lookup ([`drill_pix_subtree`]) when no
+/// indexable source is present (e.g. drilling keys a prior `navigate` seeded).
 pub async fn run_drill(
     node: &IRDrillStep,
     ctx: &mut DispatchCtx,
@@ -158,7 +163,30 @@ pub async fn run_drill(
     };
     emit_step_start(ctx, &step_name, step_index, "drill")?;
 
-    let result = drill_pix_subtree(&node.pix_ref, &node.subtree_path, &node.query, ctx);
+    let query = crate::exec_context::interpolate_vars(&node.query, &ctx.let_bindings);
+
+    // Real subtree navigation when an indexable source is in scope.
+    let real = crate::flow_dispatcher::cognitive::resolve_pix_source("", &node.pix_ref, ctx)
+        .and_then(|source| crate::pix_navigator::index_markdown(&source).ok())
+        .and_then(|tree| {
+            let titles: Vec<&str> = node.subtree_path.split('.').collect();
+            let subtree_root = crate::pix_navigator::find_by_title_path(&tree, &titles)?;
+            let cfg = crate::pix_navigator::NavConfig::default();
+            let scorer = crate::pix_navigator::LexicalScorer::default();
+            let r = crate::pix_navigator::pix_drill(&tree, subtree_root, &query, &cfg, &scorer)?;
+            Some(
+                r.leaves
+                    .iter()
+                    .map(|l| l.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n---\n\n"),
+            )
+        });
+
+    // Fallback (D5): the pre-seeded subtree binding (e.g. seeded by `navigate`).
+    let result =
+        real.unwrap_or_else(|| drill_pix_subtree(&node.pix_ref, &node.subtree_path, &query, ctx));
+
     if !node.output_name.is_empty() {
         ctx.let_bindings.insert(node.output_name.clone(), result.clone());
     }
@@ -382,6 +410,34 @@ mod tests {
             }
             e => panic!("expected StepStart, got {e:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn run_drill_real_navigates_subtree_when_source_in_scope() {
+        // §Fase 62.A.3 — with the source in scope, drill indexes it, locates the
+        // named subtree by title-path, and navigates within it (no LLM, no
+        // embeddings).
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert(
+            "__pix_ContractIndex_source".into(),
+            "# Liability\n## Limitation\nLiability is capped at the contract value.\n\
+             # Termination\n## Notice\nThirty days notice."
+                .into(),
+        );
+        let node = IRDrillStep {
+            node_type: "drill",
+            source_line: 0,
+            source_column: 0,
+            pix_ref: "ContractIndex".into(),
+            subtree_path: "liability.limitation".into(),
+            query: "cap on liability".into(),
+            output_name: "clause".into(),
+        };
+        run_drill(&node, &mut ctx).await.unwrap();
+        assert!(
+            ctx.let_bindings.get("clause").unwrap().contains("capped at the contract value"),
+            "drill should return the Limitation leaf content"
+        );
     }
 
     #[tokio::test]

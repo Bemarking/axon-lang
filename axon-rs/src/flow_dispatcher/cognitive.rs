@@ -445,7 +445,7 @@ pub async fn run_ingest(
 /// content lives under a binding seeded by a prior `ingest`/`let`, the same way
 /// `drill` reads `__pix_<ref>_<path>`). Tries the corpus binding, the explicit
 /// `__pix_<pix>_source` key, then the pix-named binding.
-fn resolve_pix_source(corpus_ref: &str, pix_ref: &str, ctx: &DispatchCtx) -> Option<String> {
+pub(crate) fn resolve_pix_source(corpus_ref: &str, pix_ref: &str, ctx: &DispatchCtx) -> Option<String> {
     let mut keys: Vec<String> = Vec::new();
     if !corpus_ref.is_empty() {
         keys.push(corpus_ref.to_string());
