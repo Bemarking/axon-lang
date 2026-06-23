@@ -254,6 +254,8 @@ pub async fn bridge_effect_stream_yield(
             tool_chunks_emitted: Some(yields.len() as u64),
             tool_output_hash_hex: Some(tool_output_hash_hex),
             tool_terminator_kind: Some("stop".to_string()),
+            // §Fase 65.C.3 — effect-stream path: no LLM output to anchor-check.
+            anchor_breaches: Vec::new(),
         };
         let mut guard = ctx.step_audit_records.lock().await;
         guard.push(record);
@@ -389,6 +391,8 @@ pub async fn bridge_effect_stream_yield_unified(
             tool_chunks_emitted: Some(summary.chunks_pushed),
             tool_output_hash_hex: Some(tool_hash),
             tool_terminator_kind: Some(terminator_kind.to_string()),
+            // §Fase 65.C.3 — effect-stream path: no LLM output to anchor-check.
+            anchor_breaches: Vec::new(),
         };
         let mut guard = ctx.step_audit_records.lock().await;
         guard.push(record);

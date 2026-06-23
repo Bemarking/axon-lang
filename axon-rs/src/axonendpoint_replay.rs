@@ -156,6 +156,19 @@ pub struct StepAuditRecord {
     /// failure modes across a flow without re-parsing the wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_terminator_kind: Option<String>,
+
+    /// §Fase 65.C.3 — the flow anchors this step's output BREACHED, each
+    /// `"<anchor> [<severity>]: <first violation>"`. Empty when the step
+    /// satisfied every anchor (or the flow declared none). Before §65.C.3 the
+    /// streaming/SSE path NEVER checked anchors — declared `require:`
+    /// constraints were silently ignored on SSE; now they are enforced (the
+    /// breach is surfaced per-step). The regenerate-on-breach RETRY stays on the
+    /// non-streaming runner until §65.D unifies the driver — surfacing here is
+    /// the faithful tail of the runner's behavior (after exhausting retries it
+    /// also just records the breach and continues). `Vec::is_empty` ⇒ serde
+    /// elides the field, so the no-breach wire shape is byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub anchor_breaches: Vec<String>,
 }
 
 /// One replay binding entry. Immutable once minted.

@@ -494,6 +494,9 @@ pub async fn run_streaming_via_dispatcher(
     .with_store_registry(store_registry)
     // §Fase 65.C — the per-tenant API key so LLM steps use this tenant's key.
     .with_api_key(api_key)
+    // §Fase 65.C.3 — the flow's anchors so each LLM step's output is checked
+    // (declared `require:` constraints were silently ignored on SSE before).
+    .with_anchors(std::sync::Arc::new(ir.anchors.clone()))
     // §Fase 36.i (D4) — the tool registry, now LIVE on the production
     // SSE path. Activates the dispatcher's streaming-tool branch.
     .with_tool_registry(tool_registry)
