@@ -511,6 +511,13 @@ pub async fn run_navigate(
             crate::flow_dispatcher::wire_integrations::read_all_store_rows(ctx, &src.edge_store)
                 .await?;
 
+        // §Fase 64.C — when this store-sourced corpus is `adaptive`, the memory
+        // endofunctor's ω reinforcement is PERSISTED back to the edge store after
+        // the navigation (the plan is computed in the arm below, then written via
+        // the atomic relative UPDATE once the read borrows are released).
+        let adaptive = ctx.mdn_adaptive.contains(&node.pix_ref);
+        let mut reinforcement: Vec<(String, String, String, f64)> = Vec::new();
+
         let content = match (doc_rows, edge_rows) {
             (Some(drows), Some(erows)) => {
                 let (docs, edges) =
@@ -543,6 +550,35 @@ pub async fn run_navigate(
                             .join(" → ");
                         ctx.let_bindings
                             .insert(format!("__navigate_{out_name}_trail"), trail);
+
+                        // §Fase 64.C — record this navigation's outcome into the
+                        // corpus's in-flow history and plan the per-edge ω
+                        // reinforcement to persist. `Δ = η·(s_o − s̄)` (relative,
+                        // paper Def 6): a single outcome ⇒ s_o = s̄ ⇒ Δ = 0 ⇒ no
+                        // write — reinforcement accrues once the corpus has seen
+                        // multiple, varied interactions.
+                        if adaptive {
+                            let denom = r.selected.len().max(1) as f64;
+                            let score = (r.total_gain / denom).clamp(0.0, 1.0);
+                            let params = crate::mdn_memory::MemoryParams::default();
+                            let s_bar = {
+                                let mut hist = ctx.mdn_histories.lock().unwrap();
+                                let h = hist.entry(node.pix_ref.clone()).or_default();
+                                let t = h.outcomes.len() as u64;
+                                h.record(crate::mdn_memory::Outcome {
+                                    query: query.clone(),
+                                    path: r.selected.clone(),
+                                    score,
+                                    timestamp: t,
+                                });
+                                h.mean_score()
+                            };
+                            reinforcement =
+                                crate::flow_dispatcher::wire_integrations::plan_edge_reinforcements(
+                                    &corpus, &r.selected, &docs, score, s_bar, params.eta,
+                                );
+                        }
+
                         r.selected
                             .iter()
                             .filter_map(|id| corpus.document(*id))
@@ -562,6 +598,24 @@ pub async fn run_navigate(
         if !node.output_name.is_empty() {
             ctx.let_bindings.insert(node.output_name.clone(), content.clone());
         }
+
+        // §Fase 64.C — persist the endofunctor's reinforcement to the edge store
+        // via the atomic, relative UPDATE (tenant-scoped, best-effort).
+        if !reinforcement.is_empty() {
+            let eps = crate::mdn_memory::MemoryParams::default().epsilon;
+            crate::flow_dispatcher::wire_integrations::persist_reinforcements(
+                ctx,
+                &src.edge_store,
+                &src.edge_weight,
+                &src.edge_from,
+                &src.edge_to,
+                &src.edge_type,
+                &reinforcement,
+                eps,
+            )
+            .await?;
+        }
+
         emit_step_complete(ctx, &out_name, step_index, &content, 0)?;
         return Ok(NodeOutcome::Completed {
             output: content,

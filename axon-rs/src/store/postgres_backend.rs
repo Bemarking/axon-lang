@@ -966,6 +966,52 @@ pub fn build_update_sql(
     Ok((sql, params))
 }
 
+/// §Fase 64.C — build the ATOMIC, RELATIVE edge-weight reinforcement `UPDATE`
+/// for the memory endofunctor's write-back over a store-sourced MDN corpus:
+///
+/// ```sql
+/// UPDATE "tbl" SET "w" = LEAST(GREATEST("w" + $1::float8, $2::float8), 1.0)
+/// WHERE "from" = $3<cast> AND "to" = $4<cast> AND "etype" = $5<cast>
+/// ```
+///
+/// The increment happens INSIDE the database (`"w" + $1`), so concurrent
+/// reinforcements of the same edge COMPOSE additively without a lost update —
+/// the row write is serialized by the engine. This is not merely a concurrency
+/// fix: the endofunctor's semantic reinforcement `ω += Δ` is **commutative**, so
+/// the atomic relative update is also semantically faithful (two sessions
+/// reinforcing the same edge ⇒ a stronger edge). `LEAST(GREATEST(…, ε), 1.0)`
+/// clamps `ω ∈ [ε, 1] ⊆ (0, 1]` (G4) atomically. `$1` = Δ, `$2` = ε; the three
+/// `WHERE` keys are cast to their introspected column types (`$N::<type>`), the
+/// same cure `build_update_sql` applies, so a text-bound id/etype writes against
+/// a `uuid`/enum column.
+pub fn build_reinforce_sql(
+    table: &str,
+    schema: Option<&str>,
+    weight_col: &str,
+    from_col: &str,
+    to_col: &str,
+    etype_col: &str,
+    column_types: &std::collections::HashMap<String, String>,
+) -> Result<String, StoreError> {
+    check_identifier(table, "table")?;
+    check_identifier(weight_col, "column")?;
+    check_identifier(from_col, "column")?;
+    check_identifier(to_col, "column")?;
+    check_identifier(etype_col, "column")?;
+    Ok(format!(
+        "UPDATE {rel} SET \"{w}\" = LEAST(GREATEST(\"{w}\" + $1::float8, $2::float8), 1.0) \
+         WHERE \"{f}\" = $3{fc} AND \"{t}\" = $4{tc} AND \"{e}\" = $5{ec}",
+        rel = qualified_relation(schema, table),
+        w = weight_col,
+        f = from_col,
+        fc = write_cast(column_types, from_col),
+        t = to_col,
+        tc = write_cast(column_types, to_col),
+        e = etype_col,
+        ec = write_cast(column_types, etype_col),
+    ))
+}
+
 // ════════════════════════════════════════════════════════════════════
 //  Column-type catalog (D12 honest scope) + row → JSON mapping
 // ════════════════════════════════════════════════════════════════════
@@ -1751,6 +1797,54 @@ impl PostgresStoreBackend {
         Ok(result.rows_affected())
     }
 
+    /// §Fase 64.C — execute ONE atomic, relative edge-weight reinforcement
+    /// ([`build_reinforce_sql`]) on the given **tenant-scoped** connection: the
+    /// memory endofunctor's `ω += Δ` write-back over a store-sourced MDN corpus.
+    /// Returns the rows affected (0 when the edge row no longer exists — a
+    /// since-deleted edge must not error a navigation). Uses the cached schema
+    /// for qualification + the `WHERE`-key type casts; if the schema is not yet
+    /// warmed (the navigate-time READ normally warms it for this same store) the
+    /// reinforcement is SKIPPED — learning is best-effort and never blocks or
+    /// fails the navigation that produced it.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn reinforce(
+        &self,
+        conn: &mut crate::store::store_conn::StoreConn<'_>,
+        table: &str,
+        weight_col: &str,
+        from_col: &str,
+        to_col: &str,
+        etype_col: &str,
+        from_val: &SqlValue,
+        to_val: &SqlValue,
+        etype_val: &SqlValue,
+        delta: f64,
+        epsilon: f64,
+    ) -> Result<u64, StoreError> {
+        let Some(resolved) = self.cached_schema(table) else {
+            return Ok(0); // schema not warmed — best-effort skip
+        };
+        let sql = build_reinforce_sql(
+            table,
+            Some(resolved.schema.as_str()),
+            weight_col,
+            from_col,
+            to_col,
+            etype_col,
+            &resolved.column_types,
+        )?;
+        let mut q = sqlx::query(&sql).persistent(false);
+        q = bind_value(q, &SqlValue::Float(delta));
+        q = bind_value(q, &SqlValue::Float(epsilon));
+        q = bind_value(q, from_val);
+        q = bind_value(q, to_val);
+        q = bind_value(q, etype_val);
+        match conn.execute(q).await {
+            Ok(r) => Ok(r.rows_affected()),
+            Err(e) => Err(classify_sql_error("reinforce", e)),
+        }
+    }
+
     /// `purge` — run `DELETE FROM "schema"."table" WHERE …`. Returns the
     /// number of rows deleted. §Fase 37.x.d (D3) — on a cache MISS the
     /// resolution + the `DELETE` execute in ONE transaction; a cache
@@ -2221,6 +2315,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sql, "UPDATE \"t\" SET \"a\" = $1 WHERE TRUE");
+    }
+
+    #[test]
+    fn reinforce_sql_is_atomic_relative_and_clamped() {
+        // §Fase 64.C — the write-back UPDATE: the weight increment is computed
+        // INSIDE the database (`"weight" + $1`), so it's race-free; the clamp
+        // keeps ω ∈ [ε, 1]; the WHERE keys carry their introspected casts.
+        let mut types = std::collections::HashMap::new();
+        types.insert("from_id".to_string(), "uuid".to_string());
+        types.insert("to_id".to_string(), "uuid".to_string());
+        let sql = build_reinforce_sql(
+            "ltm_edges",
+            Some("public"),
+            "weight",
+            "from_id",
+            "to_id",
+            "etype",
+            &types,
+        )
+        .unwrap();
+        assert_eq!(
+            sql,
+            "UPDATE \"public\".\"ltm_edges\" SET \"weight\" = \
+             LEAST(GREATEST(\"weight\" + $1::float8, $2::float8), 1.0) \
+             WHERE \"from_id\" = $3::uuid AND \"to_id\" = $4::uuid AND \"etype\" = $5"
+        );
     }
 
     #[test]
