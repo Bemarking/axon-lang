@@ -86,6 +86,7 @@ pub enum Declaration {
     Agent(AgentDefinition),
     Shield(ShieldDefinition),
     Pix(PixDefinition),
+    Ledger(LedgerDefinition),
     Psyche(PsycheDefinition),
     Corpus(CorpusDefinition),
     Dataspace(DataspaceDefinition),
@@ -663,6 +664,26 @@ pub struct PixDefinition {
     pub leading_trivia: Vec<crate::tokens::Trivia>,
     /// Fase 14.b — trailing comment trivia (same line as the
     /// declaration's last effective token). Empty by default.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+// ── Ledger ─────────────────────────────────────────────────────────────────
+// §Fase 62.0 — the append-only, hash-linked audit chain. Took over the
+// Provenance-Index role that `pix` historically (and only in the ℰMCP doc)
+// occupied, so `pix` is freed for its true meaning: the PIX retrieval
+// navigator (paper `paper_pix_formal_research.md`). A `ledger` binds a chain
+// recorder to an audited surface (`axonstore://X`, `flow://X`, …); `depth`
+// is chain retention, `branching` the Merkle factor, `model` the hash slug.
+
+#[derive(Debug)]
+pub struct LedgerDefinition {
+    pub name: String,
+    pub source: String,
+    pub depth: Option<i64>,
+    pub branching: Option<i64>,
+    pub model: String,
+    pub loc: Loc,
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
     pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 

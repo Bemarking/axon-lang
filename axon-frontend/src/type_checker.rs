@@ -671,6 +671,9 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Pix(n) => {
                     registrations.push((n.name.clone(), "pix".into(), n.loc.line, n.loc.clone()));
                 }
+                Declaration::Ledger(n) => {
+                    registrations.push((n.name.clone(), "ledger".into(), n.loc.line, n.loc.clone()));
+                }
                 Declaration::Psyche(n) => {
                     registrations.push((
                         n.name.clone(),
@@ -1084,6 +1087,7 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Agent(n) => self.check_agent(n),
                 Declaration::Shield(n) => self.check_shield(n),
                 Declaration::Pix(n) => self.check_pix(n),
+                Declaration::Ledger(n) => self.check_ledger(n),
                 Declaration::Psyche(n) => self.check_psyche(n),
                 Declaration::Corpus(n) => self.check_corpus(n),
                 Declaration::Dataspace(_) => {} // name-only, no field validation
@@ -2156,6 +2160,46 @@ impl<'a> TypeChecker<'a> {
                 self.emit(
                     format!(
                         "branching must be between 1 and 10, got {} in pix '{}'",
+                        v, node.name
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+    }
+
+    /// §Fase 62.0 — `ledger` (the audit chain). Distinct from `check_pix`: the
+    /// ranges encode AUDIT semantics, not navigation. `depth` is the chain
+    /// retention window (≥ 1 row); `branching` is the Merkle factor (0 = flat
+    /// linear chain, ≥ 2 = balanced Merkle tree — 1 is degenerate).
+    fn check_ledger(&mut self, node: &LedgerDefinition) {
+        // Source presence — a ledger must bind to an audited surface.
+        if node.source.is_empty() {
+            self.emit(
+                format!("Ledger '{}' requires a 'source' field", node.name),
+                &node.loc,
+            );
+        }
+
+        // Retention window: at least one row.
+        if let Some(v) = node.depth {
+            if v < 1 {
+                self.emit(
+                    format!(
+                        "depth (chain retention) must be ≥ 1, got {} in ledger '{}'",
+                        v, node.name
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+
+        // Merkle factor: 0 (flat chain) or ≥ 2 (balanced tree); 1 is degenerate.
+        if let Some(v) = node.branching {
+            if v == 1 || v < 0 {
+                self.emit(
+                    format!(
+                        "branching (Merkle factor) must be 0 (flat) or ≥ 2, got {} in ledger '{}'",
                         v, node.name
                     ),
                     &node.loc,

@@ -366,7 +366,15 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         category: "data_plane",
         top_level: true,
         since: "Fase 19",
-        summary: "Provenance Index — an append-only, hash-linked chain of every state transition with tamper-evident verification.",
+        summary: "PIX retrieval navigator — an embeddings-free structural index navigated by conditional-mutual-information descent (no vector store). Consumed by navigate/drill/trail.",
+        doc_status: DocStatus::Documented,
+    },
+    PrimitiveInfo {
+        name: "ledger",
+        category: "data_plane",
+        top_level: true,
+        since: "Fase 62",
+        summary: "Audit chain — an append-only, hash-linked record of every state transition over a bound surface, tamper-evident by construction (formerly the Provenance-Index reading of pix).",
         doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
@@ -592,9 +600,11 @@ mod tests {
         // "registry entries = parser productions" discipline meant
         // they could not stay. Future Fases that add or remove
         // primitives update this assertion in the same PR.
+        // §Fase 62.0 added `ledger` (the audit chain) as a distinct top-level
+        // primitive when `pix` was reassigned to the retrieval navigator (45→46).
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            45,
+            46,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -673,7 +683,7 @@ mod tests {
             // Tier 2
             "resource", "fabric", "manifest", "observe", "reconcile",
             "lease", "ensemble", "session", "axonstore", "dataspace",
-            "corpus", "pix",
+            "corpus", "pix", "ledger",
             // Tier 3
             "axonendpoint", "axpoint", "daemon", "mcp", "listen",
             "shield", "mandate", "compute", "lambda", "forge", "ots",
@@ -690,13 +700,14 @@ mod tests {
     #[test]
     fn coverage_summary_is_arithmetic() {
         let s = coverage_summary();
-        assert_eq!(s.total, 45);
+        // §Fase 62.0: 45 → 46 with `ledger` (audit chain) split out from `pix`.
+        assert_eq!(s.total, 46);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 45);
+        assert_eq!(s.documented, 46);
         assert_eq!(s.pending, 0);
     }
 

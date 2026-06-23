@@ -377,12 +377,29 @@ corpus ClinicalGuidelines from mcp("clinical-mcp.internal", "kb://guidelines/202
 
 #[test]
 fn pix_canonical_program_compiles() {
+    // §Fase 62.0 — `pix` is the embeddings-free retrieval navigator (the
+    // audit-chain example moved to `ledger_canonical_program_compiles`).
     let src = r#"
-pix LedgerAudit {
+pix ContractIndex {
+    source:    "contracts/master_agreement.pdf"
+    depth:     4
+    branching: 3
+    model:     fast
+}
+"#;
+    must_compile("pix/canonical", src);
+}
+
+#[test]
+fn ledger_canonical_program_compiles() {
+    // §Fase 62.0 — `ledger` is the append-only, hash-linked audit chain
+    // (the former Provenance-Index reading of `pix`).
+    let src = r#"
+ledger LedgerAudit {
     source:    "axonstore://GeneralLedger"
     branching: 2
     model:     sha256
 }
 "#;
-    must_compile("pix/canonical", src);
+    must_compile("ledger/canonical", src);
 }

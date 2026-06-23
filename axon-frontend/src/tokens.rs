@@ -83,6 +83,9 @@ pub enum TokenType {
     Navigate,
     Drill,
     Trail,
+    // §Fase 62.0 — Ledger (audit chain; took over `pix`'s former
+    // Provenance-Index role so `pix` is freed for the retrieval navigator).
+    Ledger,
     // Psyche
     Psyche,
     Dimensions,
@@ -391,6 +394,7 @@ pub fn keyword_type(word: &str) -> TokenType {
         "quarantine" => TokenType::Quarantine,
         "redact" => TokenType::Redact,
         "pix" => TokenType::Pix,
+        "ledger" => TokenType::Ledger,
         "navigate" => TokenType::Navigate,
         "drill" => TokenType::Drill,
         "trail" => TokenType::Trail,
@@ -513,6 +517,7 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             | TokenType::Agent
             | TokenType::Shield
             | TokenType::Pix
+            | TokenType::Ledger
             | TokenType::Psyche
             | TokenType::Corpus
             | TokenType::Dataspace
