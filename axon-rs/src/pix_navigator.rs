@@ -600,6 +600,30 @@ impl RelevanceScorer for LexicalScorer {
     }
 }
 
+/// §Fase 62.A.3 — resolve a node by a dotted path of (case-insensitive) titles
+/// from the root, e.g. `["liability", "limitation"]`. Used by `drill` to locate
+/// the named subtree. Returns the deepest node whose title chain matches; `None`
+/// if the first segment is not a child of the root.
+pub fn find_by_title_path(tree: &PixTree, titles: &[&str]) -> Option<NodeId> {
+    let mut current = tree.root().id;
+    for want in titles {
+        let want_lc = want.trim().to_lowercase();
+        if want_lc.is_empty() {
+            continue;
+        }
+        let next = tree
+            .children_of(current)
+            .into_iter()
+            .find(|n| n.title.to_lowercase() == want_lc)?;
+        current = next.id;
+    }
+    if current == tree.root().id {
+        None
+    } else {
+        Some(current)
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -932,5 +956,18 @@ Either party may terminate with thirty days written notice.
         // And it came with an explainable trail.
         let trail = pix_trail(&tree, &r);
         assert!(trail.iter().any(|s| s.contains("Liability")));
+    }
+
+    #[test]
+    fn find_by_title_path_locates_a_subtree() {
+        let tree = index_markdown(DOC).unwrap();
+        // "Liability" → "Limitation" resolves to the Limitation node.
+        let id = find_by_title_path(&tree, &["liability", "limitation"]).unwrap();
+        assert_eq!(tree.node(id).unwrap().title, "Limitation");
+        // A single segment resolves the H1.
+        let id2 = find_by_title_path(&tree, &["termination"]).unwrap();
+        assert_eq!(tree.node(id2).unwrap().title, "Termination");
+        // An unknown path is None.
+        assert!(find_by_title_path(&tree, &["nonexistent"]).is_none());
     }
 }
