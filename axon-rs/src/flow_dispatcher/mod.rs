@@ -216,6 +216,18 @@ pub struct DispatchCtx {
     /// uses THIS tenant's key, not the process env var. `None` (the
     /// `DispatchCtx::new` default) ⇒ env-key behavior, unchanged.
     pub api_key: Option<String>,
+    /// §Fase 65.C.2 — the flow's conversation history, accumulated across LLM
+    /// steps so each step sees the prior turns. Before this the dispatcher's
+    /// LLM path was STATELESS single-shot — every streaming/SSE step lost the
+    /// prior steps' Q&A, unlike the non-streaming runner (which threads its
+    /// `ConversationHistory` through `execute_step_with_retry`). `Arc<Mutex>`
+    /// so it persists across nodes and is shared by par-branches — one
+    /// conversation per flow, matching the runner's per-unit history.
+    pub conversation: std::sync::Arc<std::sync::Mutex<crate::conversation::ConversationHistory>>,
+    /// §Fase 65.C.2 — char budget for `conversation`; the oldest turn pairs are
+    /// dropped before each LLM call when exceeded (the runner's `ContextWindow`
+    /// discipline). Default = `ContextWindow::new().max_chars`; 0 = unlimited.
+    pub context_budget: usize,
     pub system_prompt: String,
     pub cancel: CancellationFlag,
     pub tx: mpsc::UnboundedSender<FlowExecutionEvent>,
@@ -385,6 +397,10 @@ impl DispatchCtx {
             flow_name,
             backend_name: backend_name.into(),
             api_key: None,
+            conversation: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::conversation::ConversationHistory::new(),
+            )),
+            context_budget: crate::conversation::ContextWindow::new().max_chars,
             system_prompt: system_prompt.into(),
             cancel,
             tx,
@@ -442,6 +458,13 @@ impl DispatchCtx {
     /// Returns `self` so builders chain. `None` leaves env-key behavior.
     pub fn with_api_key(mut self, api_key: Option<String>) -> Self {
         self.api_key = api_key;
+        self
+    }
+
+    /// §Fase 65.C.2 — Builder: set the conversation char budget (0 = unlimited).
+    /// Returns `self` so builders chain.
+    pub fn with_context_budget(mut self, max_chars: usize) -> Self {
+        self.context_budget = max_chars;
         self
     }
 

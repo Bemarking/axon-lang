@@ -689,6 +689,29 @@ pub async fn run_pure_shape(
         None => ctx.system_prompt.clone(),
     };
 
+    // §Fase 65.C.2 — read the flow's conversation history (enforcing the char
+    // budget) and prepend the prior turns so this step has multi-step
+    // coherence — the runner's `ConversationHistory` discipline, brought to the
+    // dispatcher's previously-stateless LLM path. The lock is held only to
+    // enforce + clone the turns; it is NEVER held across the stream `.await`.
+    // The two `Message` types differ (`conversation::Message{role:String}` vs
+    // the provider-neutral `backends::Message`), so we convert by role.
+    let mut messages: Vec<Message> = {
+        let mut conv = ctx.conversation.lock().unwrap();
+        conv.truncate_to_budget(ctx.context_budget);
+        conv.messages()
+            .iter()
+            .map(|m| {
+                if m.role == "assistant" {
+                    Message::assistant(m.content.clone())
+                } else {
+                    Message::user(m.content.clone())
+                }
+            })
+            .collect()
+    };
+    messages.push(Message::user(shape.user_prompt.clone()));
+
     // 7. Build ChatRequest. §Fase 33.y.k D8 — tools plumb-through.
     //    `shape.tools` is populated by `run_step` from `step.apply_ref`
     //    (canonical Step shape); empty for cognitive-framing handlers
@@ -696,7 +719,7 @@ pub async fn run_pure_shape(
     //    whose IR shapes don't carry tool references today.
     let request = ChatRequest {
         model: String::new(),
-        messages: vec![Message::user(shape.user_prompt.clone())],
+        messages,
         system: if system.is_empty() { None } else { Some(system) },
         max_tokens: None,
         temperature: None,
@@ -736,6 +759,16 @@ pub async fn run_pure_shape(
         .await?,
         None => drain_direct(chunk_stream, &shape, ctx, step_index).await?,
     };
+
+    // §Fase 65.C.2 — record this turn into the flow's conversation so the NEXT
+    // LLM step sees it (the runner's `add_user`/`add_assistant` discipline after
+    // a successful call). System framing stays out of the history — it is sent
+    // separately each call, exactly as in the runner.
+    {
+        let mut conv = ctx.conversation.lock().unwrap();
+        conv.add_user(&shape.user_prompt);
+        conv.add_assistant(&accumulated);
+    }
 
     // 11. Compute the output SHA-256 for the audit row + emit
     //     StepComplete.
@@ -1087,6 +1120,87 @@ mod tests {
         assert!(matches!(events[0], FlowExecutionEvent::StepStart { .. }));
         assert!(matches!(events[1], FlowExecutionEvent::StepToken { .. }));
         assert!(matches!(events[2], FlowExecutionEvent::StepComplete { .. }));
+    }
+
+    /// §Fase 65.C.2 — two LLM steps on ONE ctx accumulate conversation history
+    /// (user + assistant per turn), so the dispatcher's LLM path is no longer
+    /// stateless single-shot. The second step's request carries the first
+    /// turn's Q&A (coherence parity with the non-streaming runner).
+    #[tokio::test]
+    async fn conversation_history_accumulates_across_steps() {
+        use crate::ir_nodes::IRStep;
+
+        let mk = |ask: &str| IRStep {
+            node_type: "step",
+            source_line: 0,
+            source_column: 0,
+            name: "Generate".into(),
+            persona_ref: String::new(),
+            given: String::new(),
+            ask: ask.into(),
+            use_tool: None,
+            probe: None,
+            reason: None,
+            weave: None,
+            output_type: String::new(),
+            confidence_floor: None,
+            navigate_ref: String::new(),
+            apply_ref: String::new(),
+            body: Vec::new(),
+        };
+        let (mut ctx, _rx) = fresh_ctx();
+
+        run_step(&mk("first question"), &mut ctx).await.expect("step 1");
+        run_step(&mk("second question"), &mut ctx).await.expect("step 2");
+
+        let conv = ctx.conversation.lock().unwrap();
+        let msgs = conv.messages();
+        assert_eq!(msgs.len(), 4, "two turns recorded (user+assistant ×2)");
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[1].role, "assistant");
+        assert_eq!(msgs[1].content, "(stub)");
+        assert_eq!(msgs[2].role, "user");
+        assert_eq!(msgs[3].role, "assistant");
+        // The user turns carry the asks (proves the step prompt landed in history).
+        assert!(msgs[0].content.contains("first question"));
+        assert!(msgs[2].content.contains("second question"));
+    }
+
+    /// §Fase 65.C.2 — the char budget drops the oldest turn pairs before a call,
+    /// keeping at least the most recent turn (the runner's `ContextWindow`).
+    #[tokio::test]
+    async fn conversation_history_respects_char_budget() {
+        use crate::ir_nodes::IRStep;
+        let mk = |ask: &str| IRStep {
+            node_type: "step",
+            source_line: 0,
+            source_column: 0,
+            name: "G".into(),
+            persona_ref: String::new(),
+            given: String::new(),
+            ask: ask.into(),
+            use_tool: None,
+            probe: None,
+            reason: None,
+            weave: None,
+            output_type: String::new(),
+            confidence_floor: None,
+            navigate_ref: String::new(),
+            apply_ref: String::new(),
+            body: Vec::new(),
+        };
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.context_budget = 1; // force truncation to the most recent turn
+
+        run_step(&mk("turn one is quite long"), &mut ctx).await.expect("s1");
+        run_step(&mk("turn two"), &mut ctx).await.expect("s2");
+        run_step(&mk("turn three"), &mut ctx).await.expect("s3");
+
+        // After each call truncates oldest pairs to budget then appends its own
+        // turn, the history never grows unbounded — it holds the most recent
+        // turn pair plus the just-appended one.
+        let conv = ctx.conversation.lock().unwrap();
+        assert!(conv.messages().len() <= 4, "budget bounds the history: {}", conv.messages().len());
     }
 
     #[tokio::test]
