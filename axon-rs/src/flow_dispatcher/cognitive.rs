@@ -487,6 +487,89 @@ pub async fn run_navigate(
 
     let query = crate::exec_context::interpolate_vars(&node.query, &ctx.let_bindings);
 
+    // ── §Fase 64.B — DYNAMIC store-sourced MDN corpus-graph navigation ─────
+    // When the navigate ref names a `corpus … from axonstore { … }`, build the
+    // MDN graph from the LIVE store rows (tenant-scoped) at navigate-time and
+    // navigate it. The graph grows as the stores grow — no redeploy. Tenant
+    // isolation is INHERITED: the reads reuse the flow's connection-pinned,
+    // RLS-scoped store connection (`read_all_store_rows`), never a fresh one.
+    if let Some(src) = ctx.mdn_store_sources.get(&node.pix_ref).cloned() {
+        let step_index = ctx.step_counter;
+        ctx.step_counter += 1;
+        let out_name = if node.output_name.is_empty() {
+            "Navigate".to_string()
+        } else {
+            node.output_name.clone()
+        };
+        emit_step_start(ctx, &out_name, step_index, "navigate")?;
+
+        // Read both backing stores tenant-scoped (RLS scopes to this tenant).
+        let doc_rows =
+            crate::flow_dispatcher::wire_integrations::read_all_store_rows(ctx, &src.doc_store)
+                .await?;
+        let edge_rows =
+            crate::flow_dispatcher::wire_integrations::read_all_store_rows(ctx, &src.edge_store)
+                .await?;
+
+        let content = match (doc_rows, edge_rows) {
+            (Some(drows), Some(erows)) => {
+                let (docs, edges) =
+                    crate::flow_dispatcher::wire_integrations::extract_corpus_rows(
+                        &drows, &erows, &src,
+                    );
+                match crate::mdn::Corpus::from_rows(&docs, &edges) {
+                    Ok(corpus) => {
+                        // Seed: the `from:` document by title, else the lowest id.
+                        let seed = corpus
+                            .documents()
+                            .into_iter()
+                            .find(|d| d.title == node.seed)
+                            .map(|d| d.id)
+                            .or_else(|| corpus.documents().into_iter().map(|d| d.id).min())
+                            .unwrap_or(0);
+                        let budget = crate::mdn::NavBudget {
+                            max_docs: node.budget.map(|b| b.max(1) as usize).unwrap_or(5),
+                            epsilon: 1e-6,
+                        };
+                        let gain = crate::mdn::LexicalGain::new(&corpus);
+                        let r = crate::mdn::navigate_corpus(&corpus, &query, seed, &budget, &gain);
+                        let trail = r
+                            .trail
+                            .iter()
+                            .filter_map(|(id, g)| {
+                                corpus.document(*id).map(|d| format!("{} (Δ={:.2})", d.title, g))
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" → ");
+                        ctx.let_bindings
+                            .insert(format!("__navigate_{out_name}_trail"), trail);
+                        r.selected
+                            .iter()
+                            .filter_map(|id| corpus.document(*id))
+                            .map(|d| d.title.clone())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }
+                    // Empty graph (no documents persisted yet) — an empty result,
+                    // not an error (a living corpus starts empty).
+                    Err(_) => String::new(),
+                }
+            }
+            // A non-Postgres-backed store can't hold typed rows — nothing to
+            // navigate. Honest degrade to an empty result.
+            _ => String::new(),
+        };
+        if !node.output_name.is_empty() {
+            ctx.let_bindings.insert(node.output_name.clone(), content.clone());
+        }
+        emit_step_complete(ctx, &out_name, step_index, &content, 0)?;
+        return Ok(NodeOutcome::Completed {
+            output: content,
+            tokens_emitted: 0,
+            step_index,
+        });
+    }
+
     // ── §Fase 63.B — MDN corpus-graph navigation ──────────────────────────
     // When the navigate ref names a built MDN corpus graph (a `corpus` with
     // `relations:`), navigate the GRAPH: ε-informative greedy over reachable
@@ -1084,6 +1167,56 @@ mod tests {
         assert!(ctx.let_bindings.contains_key("__navigate_hits_trail"));
         // A non-adaptive corpus records no memory.
         assert!(ctx.mdn_histories.lock().unwrap().is_empty(), "non-adaptive records nothing");
+    }
+
+    #[tokio::test]
+    async fn run_navigate_store_sourced_degrades_gracefully_without_postgres() {
+        // §Fase 64.B — a `corpus … from axonstore` registered in
+        // `mdn_store_sources`, navigated WITHOUT a Postgres backend, must
+        // degrade to an empty result (no rows to read) rather than panic, and
+        // still bind its output + complete the step. The full live-graph path is
+        // exercised by the Postgres CI lane (no in-process DB here).
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        let mut sources = HashMap::new();
+        sources.insert(
+            "LtmGraph".to_string(),
+            crate::ir_nodes::IRCorpusStoreSource {
+                doc_store: "LtmSummaries".into(),
+                doc_id: "id".into(),
+                doc_title: "summary".into(),
+                edge_store: "LtmEdges".into(),
+                edge_from: "from_id".into(),
+                edge_to: "to_id".into(),
+                edge_type: "etype".into(),
+                edge_weight: "weight".into(),
+            },
+        );
+        let (ctx, _rx) = fresh_ctx();
+        let mut ctx = ctx.with_mdn_store_sources(Arc::new(sources));
+
+        let node = IRNavigateStep {
+            node_type: "navigate",
+            source_line: 0,
+            source_column: 0,
+            pix_ref: "LtmGraph".into(),
+            corpus_ref: String::new(),
+            query: "anything".into(),
+            trail_enabled: true,
+            output_name: "hits".into(),
+            seed: String::new(),
+            budget: Some(5),
+        };
+        let outcome = run_navigate(&node, &mut ctx).await.unwrap();
+        match outcome {
+            NodeOutcome::Completed { output, .. } => {
+                assert_eq!(output, "", "no Postgres backend → empty live graph");
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        // The store-sourced branch took priority over the PIX/framing fallback
+        // and bound the (empty) output.
+        assert_eq!(ctx.let_bindings.get("hits").map(String::as_str), Some(""));
     }
 
     #[tokio::test]

@@ -444,14 +444,30 @@ pub async fn run_streaming_via_dispatcher(
     };
 
     // §Fase 63.C — the corpora declared `adaptive: true` (memory-enabled).
+    // §Fase 64.B — a store-sourced corpus ALSO counts as a graph (its edges
+    // live as rows), so adaptive over it is meaningful (the §64.C write-back).
     let mdn_adaptive = {
         let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
         for c in &ir.corpus_specs {
-            if c.adaptive && !c.relations.is_empty() {
+            if c.adaptive && (!c.relations.is_empty() || c.store_source.is_some()) {
                 set.insert(c.name.clone());
             }
         }
         std::sync::Arc::new(set)
+    };
+
+    // §Fase 64.B — the DYNAMIC, store-sourced MDN corpora (`corpus N from
+    // axonstore { … }`): a navigation over one of these builds a fresh
+    // `mdn::Corpus` from the LIVE store rows at navigate-time (tenant-scoped).
+    let mdn_store_sources = {
+        let mut map: std::collections::HashMap<String, crate::ir_nodes::IRCorpusStoreSource> =
+            std::collections::HashMap::new();
+        for c in &ir.corpus_specs {
+            if let Some(src) = &c.store_source {
+                map.insert(c.name.clone(), src.clone());
+            }
+        }
+        std::sync::Arc::new(map)
     };
 
     // §5 — Construct DispatchCtx. The mpsc tx is the SAME channel
@@ -479,6 +495,9 @@ pub async fn run_streaming_via_dispatcher(
     // §Fase 63.C — mark the adaptive corpora so navigations apply the memory
     // endofunctor + learn.
     .with_mdn_adaptive(mdn_adaptive)
+    // §Fase 64.B — register the dynamic store-sourced corpora so `navigate`
+    // builds the graph from live store rows at request-time (tenant-scoped).
+    .with_mdn_store_sources(mdn_store_sources)
     // §Fase 37.x.j (D2) — install the eager-acquired flow-scoped pin
     // map. The wire-integration store handlers (`run_persist`,
     // `run_retrieve`, `run_mutate`, `run_purge`) consult this map

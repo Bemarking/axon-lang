@@ -632,6 +632,112 @@ pub async fn run_retrieve(
 }
 
 // ────────────────────────────────────────────────────────────────────
+//  §Fase 64.B — read a store's rows tenant-scoped (for the dynamic,
+//  store-sourced MDN corpus graph: `corpus N from axonstore { … }`).
+// ────────────────────────────────────────────────────────────────────
+
+/// §Fase 64.B — read ALL rows of a store, **tenant-scoped**, reusing the flow's
+/// connection-pinned Postgres backend (the §37.x.j pinned-conn path + the §40
+/// RLS GUC `axon.current_tenant`). An empty `where` returns every row visible to
+/// the CURRENT tenant — RLS scopes the result, so this is the §64.B
+/// tenant-isolation guarantee, INHERITED by reusing the flow's pinned connection
+/// rather than acquiring a fresh one (the cross-tenant leak the risk matrix
+/// flagged). Returns `Ok(None)` when the store is not Postgres-backed: the
+/// dynamic MDN corpus needs a real tabular backend (the KV path holds single
+/// values, not typed rows).
+pub async fn read_all_store_rows(
+    ctx: &mut DispatchCtx,
+    store_name: &str,
+) -> Result<Option<Vec<crate::store::postgres_backend::StoreRow>>, DispatchError> {
+    match resolve_pg_backend(ctx, store_name) {
+        Ok(Some((backend, _floor))) => {
+            // §37.x.j (D2/D6.a) — take the pin out of the shared map; lazily
+            // acquire on a miss so this read shares the flow's single physical
+            // tenant-scoped connection, then restore it.
+            let mut pin: Option<sqlx::pool::PoolConnection<sqlx::Postgres>> =
+                { ctx.pinned_conns.lock().unwrap().remove(store_name) };
+            if pin.is_none() {
+                if let Ok(p) = backend.acquire_pin().await {
+                    pin = Some(p);
+                }
+            }
+            let outcome = {
+                let mut store_conn = match &mut pin {
+                    Some(p) => crate::store::store_conn::StoreConn::Pinned(p),
+                    None => crate::store::store_conn::StoreConn::Pool(backend.pool()),
+                };
+                row_stream::stream_retrieve(
+                    &backend,
+                    &mut store_conn,
+                    store_name,
+                    "", // empty filter → all rows visible to the tenant (RLS-scoped)
+                    row_stream::DEFAULT_RETRIEVE_POLICY,
+                    row_stream::DEFAULT_MAX_ROWS,
+                    &ctx.cancel,
+                    &ctx.let_bindings,
+                )
+                .await
+            };
+            if let Some(p) = pin {
+                ctx.pinned_conns
+                    .lock()
+                    .unwrap()
+                    .insert(store_name.to_string(), p);
+            }
+            let outcome = outcome.map_err(sql_dispatch_error)?;
+            Ok(Some(outcome.rows))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(sql_dispatch_error(e)),
+    }
+}
+
+/// §Fase 64.B — project the mapped columns out of the raw store rows into the
+/// [`crate::mdn::Corpus::from_rows`] tuples: `(id, title)` from the documents
+/// store, `(from, to, etype, weight)` from the edge store. Pure: takes already-
+/// fetched rows (so it is unit-testable without a database). A row missing a
+/// mapped column is dropped (resilient to live, evolving schemas).
+pub fn extract_corpus_rows(
+    doc_rows: &[crate::store::postgres_backend::StoreRow],
+    edge_rows: &[crate::store::postgres_backend::StoreRow],
+    src: &crate::ir_nodes::IRCorpusStoreSource,
+) -> (Vec<(String, String)>, Vec<(String, String, String, f64)>) {
+    let col = |row: &crate::store::postgres_backend::StoreRow, name: &str| {
+        row.columns
+            .iter()
+            .find(|(c, _)| c == name)
+            .map(|(_, v)| v.clone())
+    };
+    // JSON → plain string (a Postgres uuid/text both arrive as JSON String;
+    // numbers/bools fall back to their compact JSON form, un-quoted).
+    let as_str = |v: &serde_json::Value| -> String {
+        match v {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        }
+    };
+    let docs = doc_rows
+        .iter()
+        .filter_map(|r| {
+            let id = col(r, &src.doc_id)?;
+            let title = col(r, &src.doc_title)?;
+            Some((as_str(&id), as_str(&title)))
+        })
+        .collect();
+    let edges = edge_rows
+        .iter()
+        .filter_map(|r| {
+            let from = as_str(&col(r, &src.edge_from)?);
+            let to = as_str(&col(r, &src.edge_to)?);
+            let etype = as_str(&col(r, &src.edge_type)?);
+            let weight = col(r, &src.edge_weight)?.as_f64().unwrap_or(0.0);
+            Some((from, to, etype, weight))
+        })
+        .collect();
+    (docs, edges)
+}
+
+// ────────────────────────────────────────────────────────────────────
 //  Mutate
 // ────────────────────────────────────────────────────────────────────
 
@@ -948,6 +1054,65 @@ mod tests {
     use crate::cancel_token::CancellationFlag;
     use crate::ir_nodes::*;
     use tokio::sync::mpsc;
+
+    // ── §Fase 64.B — extract_corpus_rows (store rows → from_rows tuples) ────
+
+    fn mk_store_row(pairs: &[(&str, serde_json::Value)]) -> crate::store::postgres_backend::StoreRow {
+        crate::store::postgres_backend::StoreRow {
+            columns: pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+        }
+    }
+
+    #[test]
+    fn extract_corpus_rows_projects_the_mapped_columns() {
+        use serde_json::json;
+        let src = IRCorpusStoreSource {
+            doc_store: "LtmSummaries".into(),
+            doc_id: "id".into(),
+            doc_title: "summary".into(),
+            edge_store: "LtmEdges".into(),
+            edge_from: "from_id".into(),
+            edge_to: "to_id".into(),
+            edge_type: "etype".into(),
+            edge_weight: "weight".into(),
+        };
+        let doc_rows = vec![
+            mk_store_row(&[("id", json!("uuid-a")), ("summary", json!("A")), ("noise", json!(1))]),
+            mk_store_row(&[("id", json!("uuid-b")), ("summary", json!("B"))]),
+        ];
+        let edge_rows = vec![mk_store_row(&[
+            ("from_id", json!("uuid-b")),
+            ("to_id", json!("uuid-a")),
+            ("etype", json!("cite")),
+            ("weight", json!(0.9)),
+        ])];
+        let (docs, edges) = extract_corpus_rows(&doc_rows, &edge_rows, &src);
+        assert_eq!(docs, vec![("uuid-a".into(), "A".into()), ("uuid-b".into(), "B".into())]);
+        assert_eq!(edges, vec![("uuid-b".into(), "uuid-a".into(), "cite".into(), 0.9)]);
+    }
+
+    #[test]
+    fn extract_corpus_rows_drops_rows_missing_a_mapped_column() {
+        use serde_json::json;
+        let src = IRCorpusStoreSource {
+            doc_store: "S".into(),
+            doc_id: "id".into(),
+            doc_title: "summary".into(),
+            edge_store: "E".into(),
+            edge_from: "f".into(),
+            edge_to: "t".into(),
+            edge_type: "ty".into(),
+            edge_weight: "w".into(),
+        };
+        // second doc row lacks `summary` → dropped (resilient to schema drift).
+        let doc_rows = vec![
+            mk_store_row(&[("id", json!("a")), ("summary", json!("A"))]),
+            mk_store_row(&[("id", json!("b"))]),
+        ];
+        let (docs, _edges) = extract_corpus_rows(&doc_rows, &[], &src);
+        assert_eq!(docs.len(), 1, "a row missing a mapped column is dropped");
+        assert_eq!(docs[0].0, "a");
+    }
 
     fn fresh_ctx() -> (
         DispatchCtx,
