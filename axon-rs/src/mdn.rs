@@ -40,7 +40,7 @@ use std::collections::HashMap;
 pub type DocId = u32;
 
 /// The relationship a directed edge encodes (paper Def 2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EdgeType {
     Cite,
     Elaborate,

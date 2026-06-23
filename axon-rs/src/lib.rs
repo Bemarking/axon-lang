@@ -166,6 +166,7 @@ pub mod mdn;
 pub mod mdn_memory;
 pub mod mdn_provenance;
 pub mod parallel;
+pub mod pix_mdn_pcc;
 pub mod pix_navigator;
 pub mod plan_diff;
 pub mod plan_export;
