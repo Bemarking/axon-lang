@@ -44,6 +44,21 @@ const VALID_VIOLATION_ACTIONS: &[&str] = &["escalate", "fallback", "log", "raise
 
 const VALID_RETRIEVAL_STRATEGIES: &[&str] = &["exact", "hybrid", "semantic"];
 
+/// §Fase 63.A — the closed catalog of MDN corpus-graph relation types (paper
+/// `multi_document.md` Def 2). Positive (trust): cite/elaborate/corroborate;
+/// negative (distrust): contradict/supersede; neutral structural: depend/
+/// implement/exemplify. Any other relation type is a compile error.
+const VALID_CORPUS_RELATIONS: &[&str] = &[
+    "cite",
+    "corroborate",
+    "contradict",
+    "depend",
+    "elaborate",
+    "exemplify",
+    "implement",
+    "supersede",
+];
+
 // Fase 15.d — reserved primitive / built-in type names that a
 // `lambda apply ... -> OutputType` MUST NOT shadow. Mirror of
 // axon.compiler.type_checker._RESERVED_OUTPUT_TYPE_NAMES.
@@ -2297,6 +2312,51 @@ impl<'a> TypeChecker<'a> {
                 ),
                 &node.loc,
             );
+        }
+
+        // §Fase 63.A — MDN relations (typed weighted edges, paper Def 1-3).
+        for r in &node.relations {
+            // τ total on a CLOSED catalog (G3).
+            if !is_valid(&r.etype, VALID_CORPUS_RELATIONS) {
+                self.emit(
+                    format!(
+                        "Corpus '{}': unknown relation type '{}' (closed catalog: {})",
+                        node.name,
+                        r.etype,
+                        VALID_CORPUS_RELATIONS.join(", ")
+                    ),
+                    &r.loc,
+                );
+            }
+            // G2: edges connect corpus members (declared documents).
+            if !node.documents.contains(&r.from) {
+                self.emit(
+                    format!(
+                        "Corpus '{}': relation references undeclared document '{}' (G2: edges connect corpus members)",
+                        node.name, r.from
+                    ),
+                    &r.loc,
+                );
+            }
+            if !node.documents.contains(&r.to) {
+                self.emit(
+                    format!(
+                        "Corpus '{}': relation references undeclared document '{}' (G2: edges connect corpus members)",
+                        node.name, r.to
+                    ),
+                    &r.loc,
+                );
+            }
+            // G4: ω ∈ (0, 1].
+            if !(r.weight > 0.0 && r.weight <= 1.0) {
+                self.emit(
+                    format!(
+                        "Corpus '{}': relation weight {} must be in (0, 1] (G4)",
+                        node.name, r.weight
+                    ),
+                    &r.loc,
+                );
+            }
         }
     }
 
