@@ -153,6 +153,12 @@ impl Corpus {
         self.docs.get(&id)
     }
 
+    /// All documents (for the §62.D memory endofunctor, which rebuilds the corpus
+    /// with updated edge weights — geometry, not topology).
+    pub fn documents(&self) -> Vec<&Document> {
+        self.docs.values().collect()
+    }
+
     pub fn edges(&self) -> &[Edge] {
         &self.edges
     }
