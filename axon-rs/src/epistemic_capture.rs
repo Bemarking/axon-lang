@@ -157,9 +157,30 @@ pub fn collect_for_flow(
                     tool.output_type.as_deref(),
                 )
             }
+            // §Fase 62.A.3 — PIX retrieval reads controlled, pre-indexed
+            // content: its intrinsic effect row is ⟨io, epistemic:believe⟩
+            // (paper §5.2). Retrieved leaf content is `believe` — trusted but
+            // unverified, so it is degraded to the believe ceiling (0.95) and
+            // never reaches `know` without anchor/shield validation (paper §5.1,
+            // program invariant #4). `navigate`/`drill` carry this base
+            // intrinsically (not a user-declared effect), so we capture it here.
+            IRFlowNode::Navigate(n) => {
+                let label = if n.output_name.is_empty() { "Navigate" } else { &n.output_name };
+                capture(&pix_believe_row(), &format!("navigate:{label}"), input_confidence, None)
+            }
+            IRFlowNode::Drill(d) => {
+                let label = if d.output_name.is_empty() { "Drill" } else { &d.output_name };
+                capture(&pix_believe_row(), &format!("drill:{label}"), input_confidence, None)
+            }
             _ => None,
         })
         .collect()
+}
+
+/// §Fase 62.A.3 — the intrinsic effect row of a PIX retrieval step:
+/// `io` (reads pre-indexed content) + `epistemic:believe` (trusted, unverified).
+pub fn pix_believe_row() -> Vec<String> {
+    vec!["io".to_string(), "epistemic:believe".to_string()]
 }
 
 #[cfg(test)]
@@ -178,6 +199,21 @@ mod tests {
             );
             prev = c;
         }
+    }
+
+    #[test]
+    fn pix_retrieval_carries_a_believe_envelope() {
+        // §62.A.3 — navigate/drill surface ⟨io, believe⟩ at the believe ceiling
+        // (paper §5.2); leaf content is trusted-but-unverified, never `know`.
+        let row = pix_believe_row();
+        assert_eq!(epistemic_level_of(&row), Some("believe"));
+        let env = capture(&row, "navigate:sections", 1.0, None).unwrap();
+        assert_eq!(env.base, "believe");
+        assert_eq!(env.scope, "navigate:sections");
+        assert_eq!(
+            env.confidence, 0.95,
+            "degraded to the believe ceiling — retrieval never reaches know without validation"
+        );
     }
 
     #[test]
