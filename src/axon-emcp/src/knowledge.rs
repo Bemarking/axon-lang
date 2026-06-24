@@ -1337,6 +1337,9 @@ Body prose.
             (ReferenceKind::Logic, "session_duality"),
             // §Fase 59 — the use/apply law (dispatch vs cognitive delegation).
             (ReferenceKind::Logic, "dispatch_vs_cognition"),
+            // §Fase 65 — effects execute structurally, independent of the
+            // output mode (`navigate` is not LLM-conditioned).
+            (ReferenceKind::Logic, "effect_execution_is_mode_invariant"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1380,7 +1383,7 @@ Body prose.
         );
         assert_eq!(
             cat.reference_count_of(ReferenceKind::Logic),
-            3,
+            4,
             "logic family count drift"
         );
         assert_eq!(
