@@ -2899,18 +2899,22 @@ pub fn derive_epistemic_envelopes_for_flow(
         .unwrap_or_default()
 }
 
-/// §Fase 65.E — flag for the REVERSIBLE non-streaming-via-dispatcher collapse.
-/// OFF by default (the legacy `execute_real_async` / `execute_stub` stay the
-/// engine). `AXON_UNIFIED_DRIVER=1`/`on`/`true`/`yes` routes the non-streaming
-/// server path through the SAME dispatcher the streaming path uses — the
-/// BufferSink half of "one engine, two sinks". The IRREVERSIBLE cutover
-/// (default-ON + retiring the two legacy executors) is a separate founder
-/// go/no-go (the two paths are functionally equivalent per the parity corpus,
-/// but the collapse sacrifices the wave-scheduler + needs the dispatcher to gain
-/// provenance/blame emission).
+/// §Fase 65.E.2 — the CUTOVER. The dispatcher is now the DEFAULT non-streaming
+/// server engine ("one engine, two sinks"): `execute_server_flow` runs the SAME
+/// dispatcher the SSE path uses, via the BufferSink collector. The legacy
+/// `execute_real_async` / `execute_stub` are NOT deleted — they stay one flag
+/// away behind `AXON_LEGACY_EXECUTOR` as a one-release KILL-SWITCH (fix-forward
+/// per [[feedback-versioning-discipline]]) before retirement. Verified: the
+/// 50-flow parity corpus + the `execute_server_flow` integration suite stay
+/// green with the dispatcher as the engine. HONEST, documented regressions
+/// (kill-switch available; follow-up to close): the non-streaming envelope's
+/// `provenance_events`/`blame_attribution` are empty (the dispatcher doesn't
+/// emit them yet — SSE never had them either, so both paths are now consistent),
+/// and the auto-parallel wave-scheduler is gone (linear walk; `par` gives
+/// explicit concurrency).
 fn unified_driver_enabled() -> bool {
-    matches!(
-        std::env::var("AXON_UNIFIED_DRIVER").ok().as_deref(),
+    !matches!(
+        std::env::var("AXON_LEGACY_EXECUTOR").ok().as_deref(),
         Some("1") | Some("on") | Some("true") | Some("yes")
     )
 }
@@ -2946,6 +2950,14 @@ async fn collect_via_dispatcher(
     nav_dispatch: &NavDispatch,
     registry: std::sync::Arc<ToolRegistry>,
     param_bindings: &[(String, String)],
+    // §Fase 65.E — the eager-acquired flow-scoped pins (one per postgresql
+    // axonstore), shared with the dispatcher's store handlers for pooler
+    // coherence (§37.x.j) — the same discipline the streaming path applies.
+    pinned: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, sqlx::pool::PoolConnection<sqlx::Postgres>>,
+        >,
+    >,
 ) -> CollectedRun {
     use crate::flow_dispatcher::{dispatch_node, DispatchCtx, NodeOutcome};
     use crate::flow_execution_event::FlowExecutionEvent;
@@ -2964,7 +2976,8 @@ async fn collect_via_dispatcher(
     .with_mdn_store_sources(nav_dispatch.store_sources.clone())
     .with_api_key(api_key.map(|s| s.to_string()))
     .with_anchors(anchors)
-    .with_tool_registry(registry);
+    .with_tool_registry(registry)
+    .with_pinned_conns(pinned);
     // §Fase 37.b — seed the request-bound flow params so `${param}` resolves.
     for (k, v) in param_bindings {
         ctx.let_bindings.insert(k.clone(), v.clone());
@@ -3309,16 +3322,43 @@ pub fn execute_server_flow(
                 .unwrap_or_default();
             let anchors = std::sync::Arc::new(ir.anchors.clone());
             let registry_arc = std::sync::Arc::new(registry);
-            let collected = block_on_store(collect_via_dispatcher(
-                flow,
-                backend,
-                &system_prompt,
-                api_key_override,
-                anchors,
-                &nav_dispatch,
-                registry_arc,
-                &param_bindings,
-            ));
+            let collected = block_on_store(async {
+                // §Fase 65.E — eager pin acquisition ON THIS runtime (the §37.x.j
+                // discipline): one PoolConnection per postgresql axonstore, held
+                // for the flow + shared with the dispatcher's store handlers so
+                // every store op routes through the same physical backend
+                // (transaction-mode-pooler safe). Acquire failure is non-fatal
+                // (falls back to lazy per-op pool acquisition).
+                let pinned: std::sync::Arc<
+                    std::sync::Mutex<
+                        std::collections::HashMap<
+                            String,
+                            sqlx::pool::PoolConnection<sqlx::Postgres>,
+                        >,
+                    >,
+                > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+                for store_name in &needed_pg_stores {
+                    if let Ok(crate::store::registry::StoreHandle::Postgres(backend_pool)) =
+                        store_registry.resolve(store_name)
+                    {
+                        if let Ok(conn) = backend_pool.acquire_pin().await {
+                            pinned.lock().unwrap().insert(store_name.clone(), conn);
+                        }
+                    }
+                }
+                collect_via_dispatcher(
+                    flow,
+                    backend,
+                    &system_prompt,
+                    api_key_override,
+                    anchors,
+                    &nav_dispatch,
+                    registry_arc,
+                    &param_bindings,
+                    pinned,
+                )
+                .await
+            });
             let per_step_chunks: Vec<Vec<String>> = collected
                 .step_results
                 .iter()
@@ -4352,6 +4392,7 @@ flow Recall(q: Text) -> Text {
             &nd,
             std::sync::Arc::new(ToolRegistry::new()),
             &pb,
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         )
         .await;
 
