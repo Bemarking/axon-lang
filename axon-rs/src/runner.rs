@@ -2899,6 +2899,149 @@ pub fn derive_epistemic_envelopes_for_flow(
         .unwrap_or_default()
 }
 
+/// §Fase 65.E — flag for the REVERSIBLE non-streaming-via-dispatcher collapse.
+/// OFF by default (the legacy `execute_real_async` / `execute_stub` stay the
+/// engine). `AXON_UNIFIED_DRIVER=1`/`on`/`true`/`yes` routes the non-streaming
+/// server path through the SAME dispatcher the streaming path uses — the
+/// BufferSink half of "one engine, two sinks". The IRREVERSIBLE cutover
+/// (default-ON + retiring the two legacy executors) is a separate founder
+/// go/no-go (the two paths are functionally equivalent per the parity corpus,
+/// but the collapse sacrifices the wave-scheduler + needs the dispatcher to gain
+/// provenance/blame emission).
+fn unified_driver_enabled() -> bool {
+    matches!(
+        std::env::var("AXON_UNIFIED_DRIVER").ok().as_deref(),
+        Some("1") | Some("on") | Some("true") | Some("yes")
+    )
+}
+
+/// §Fase 65.E — the collected result of running a flow through the dispatcher.
+struct CollectedRun {
+    success: bool,
+    steps_executed: usize,
+    tokens_output: u64,
+    step_names: Vec<String>,
+    step_results: Vec<String>,
+}
+
+/// §Fase 65.E — run a flow through the DISPATCHER with a BUFFER sink and collect
+/// the result (the non-streaming half of the unified driver). This is the SAME
+/// engine the SSE path uses (`dispatch_node` over the flow's IR nodes), so the
+/// step results are equivalent — gated by the 50-flow parity corpus. The buffer
+/// channel queues every wire event; after the walk we project them into
+/// `step_names` + `step_results` (the §65.D projection captures structural-verb
+/// outputs from `StepComplete.full_output`, not just per-token `StepToken`).
+///
+/// HONEST GAPS (deferred to the irreversible cutover, NOT this reversible step):
+/// no eager connection-pinning (store ops lazily acquire here — the pre-37.x.j
+/// path; correct but without pooler-pinning) + no provenance/blame emission (the
+/// dispatcher doesn't produce them yet). Epistemic envelopes are IR-derived by
+/// the caller, so those stay byte-identical.
+async fn collect_via_dispatcher(
+    flow: &crate::ir_nodes::IRFlow,
+    backend: &str,
+    system_prompt: &str,
+    api_key: Option<&str>,
+    anchors: std::sync::Arc<Vec<crate::ir_nodes::IRAnchor>>,
+    nav_dispatch: &NavDispatch,
+    registry: std::sync::Arc<ToolRegistry>,
+    param_bindings: &[(String, String)],
+) -> CollectedRun {
+    use crate::flow_dispatcher::{dispatch_node, DispatchCtx, NodeOutcome};
+    use crate::flow_execution_event::FlowExecutionEvent;
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut ctx = DispatchCtx::new(
+        flow.name.clone(),
+        backend.to_string(),
+        system_prompt.to_string(),
+        crate::cancel_token::CancellationFlag::new(),
+        tx,
+    )
+    .with_store_registry(nav_dispatch.store_registry.clone())
+    .with_mdn_corpora(nav_dispatch.corpora.clone())
+    .with_mdn_adaptive(nav_dispatch.adaptive.clone())
+    .with_mdn_store_sources(nav_dispatch.store_sources.clone())
+    .with_api_key(api_key.map(|s| s.to_string()))
+    .with_anchors(anchors)
+    .with_tool_registry(registry);
+    // §Fase 37.b — seed the request-bound flow params so `${param}` resolves.
+    for (k, v) in param_bindings {
+        ctx.let_bindings.insert(k.clone(), v.clone());
+    }
+
+    let mut success = true;
+    let mut tokens_output: u64 = 0;
+    let mut flow_return: Option<String> = None;
+    for node in &flow.steps {
+        match dispatch_node(node, &mut ctx).await {
+            Ok(NodeOutcome::Completed { tokens_emitted, .. }) => tokens_output += tokens_emitted,
+            // `run_return` is a flow-terminating SENTINEL that emits no wire
+            // step — capture its value as the flow's output (below).
+            Ok(NodeOutcome::Return { value }) => {
+                flow_return = Some(value);
+                break;
+            }
+            Ok(_) => {} // stray Break/LoopContinue → no-op
+            Err(crate::flow_dispatcher::DispatchError::UpstreamCancelled) => break,
+            Err(_) => {
+                success = false;
+                break;
+            }
+        }
+    }
+    drop(ctx); // close `tx` so the drain below terminates
+
+    let mut step_names: Vec<String> = Vec::new();
+    let mut step_results: Vec<String> = Vec::new();
+    let mut cur: Option<usize> = None;
+    while let Ok(ev) = rx.try_recv() {
+        match ev {
+            FlowExecutionEvent::StepStart { step_name, .. } => {
+                step_names.push(step_name);
+                step_results.push(String::new());
+                cur = Some(step_results.len() - 1);
+            }
+            FlowExecutionEvent::StepToken { content, .. } => {
+                if let Some(i) = cur {
+                    if let Some(a) = step_results.get_mut(i) {
+                        a.push_str(&content);
+                    }
+                }
+            }
+            FlowExecutionEvent::StepComplete { full_output, .. } => {
+                if let Some(i) = cur {
+                    if let Some(a) = step_results.get_mut(i) {
+                        if a.is_empty() {
+                            *a = full_output;
+                        }
+                    }
+                }
+                cur = None;
+            }
+            _ => {}
+        }
+    }
+
+    // §Fase 65.E — surface the `return` value as the flow's final result. The
+    // dispatcher's `run_return` emits no wire step, so we append it here as a
+    // `return` step carrying the resolved binding — matching the non-streaming
+    // runner's return-step (§65.D) so the adopter's FlowEnvelope output is the
+    // returned value, not the prior step's output.
+    if let Some(value) = flow_return {
+        step_names.push("return".to_string());
+        step_results.push(value);
+    }
+
+    CollectedRun {
+        success,
+        steps_executed: step_names.len(),
+        tokens_output,
+        step_names,
+        step_results,
+    }
+}
+
 pub fn execute_server_flow(
     ir: &crate::ir_nodes::IRProgram,
     flow_name: &str,
@@ -3147,6 +3290,57 @@ pub fn execute_server_flow(
         }
         needed
     };
+
+    // §Fase 65.E — REVERSIBLE unified driver. When `AXON_UNIFIED_DRIVER` is set,
+    // run the NON-streaming path through the SAME dispatcher the SSE path uses
+    // (one engine, two sinks) + assemble the envelope from the collected events
+    // and the IR-derived epistemics. OFF by default → the legacy executors below
+    // stay the engine. The irreversible cutover (default-ON + retiring them) is a
+    // separate founder go/no-go.
+    if unified_driver_enabled() {
+        if let Some(flow) = ir.flows.iter().find(|f| f.name == flow_name) {
+            let system_prompt = execution_units
+                .first()
+                .map(|u| u.system_prompt.clone())
+                .unwrap_or_default();
+            let param_bindings = execution_units
+                .first()
+                .map(|u| u.param_bindings.clone())
+                .unwrap_or_default();
+            let anchors = std::sync::Arc::new(ir.anchors.clone());
+            let registry_arc = std::sync::Arc::new(registry);
+            let collected = block_on_store(collect_via_dispatcher(
+                flow,
+                backend,
+                &system_prompt,
+                api_key_override,
+                anchors,
+                &nav_dispatch,
+                registry_arc,
+                &param_bindings,
+            ));
+            let per_step_chunks: Vec<Vec<String>> = collected
+                .step_results
+                .iter()
+                .map(|r| if r.is_empty() { Vec::new() } else { vec![r.clone()] })
+                .collect();
+            return Ok(ServerRunnerMetrics {
+                success: collected.success,
+                steps_executed: collected.steps_executed,
+                tokens_input: 0,
+                tokens_output: collected.tokens_output,
+                anchor_breaches: 0,
+                step_names: collected.step_names,
+                step_results: collected.step_results,
+                per_step_chunks,
+                // HONEST GAP — the dispatcher doesn't emit these yet (cutover work).
+                provenance_events: Vec::new(),
+                blame_attribution: None,
+                // IR-derived → byte-identical with the legacy + SSE paths.
+                epistemic_envelopes: derive_epistemic_envelopes_for_flow(ir, flow_name),
+            });
+        }
+    }
 
     let (success, _events) = if backend == "stub" {
         let result = execute_stub(&execution_units, false, false);
@@ -4107,6 +4301,67 @@ flow Recall(q: Text) -> Text {
             "the returned value IS the navigate step's output (hits propagated, \
              not re-fabricated by the LLM)"
         );
+    }
+
+    /// §Fase 65.E — the REVERSIBLE unified driver: `collect_via_dispatcher` runs
+    /// the Kivi flow (navigate → return) through the SAME dispatcher the SSE path
+    /// uses, with a buffer sink, and produces the real result. The `return`
+    /// carries the navigate output (not "(stub)"); navigate is structural + return
+    /// is control flow, so no LLM is called.
+    #[tokio::test]
+    async fn unified_collector_runs_kivi_flow_via_dispatcher() {
+        let source = r#"
+type DocA { content: Text }
+type DocB { content: Text }
+corpus G { documents: [DocA, DocB] relations: [ elaborate(DocA, DocB, 0.9) ] }
+flow Recall(q: Text) -> Text {
+    navigate G { query: "${q}", budget: 5, output: hits }
+    return hits
+}
+"#;
+        let (_p, ir) =
+            crate::flow_plan::compile_source_to_ir(source, "k.axon").expect("compile");
+        let flow = ir.flows.iter().find(|f| f.name == "Recall").expect("flow");
+
+        let mut corpora = std::collections::HashMap::new();
+        for c in &ir.corpus_specs {
+            if !c.relations.is_empty() {
+                let rels: Vec<(String, String, String, f64)> = c
+                    .relations
+                    .iter()
+                    .map(|r| (r.etype.clone(), r.from.clone(), r.to.clone(), r.weight))
+                    .collect();
+                if let Ok(corpus) = crate::mdn::Corpus::from_declaration(&c.documents, &rels) {
+                    corpora.insert(c.name.clone(), corpus);
+                }
+            }
+        }
+        let nd = NavDispatch {
+            store_registry: std::sync::Arc::new(crate::store::registry::StoreRegistry::empty()),
+            corpora: std::sync::Arc::new(corpora),
+            store_sources: std::sync::Arc::new(std::collections::HashMap::new()),
+            adaptive: std::sync::Arc::new(std::collections::HashSet::new()),
+        };
+        let pb = vec![("q".to_string(), "DocA".to_string())];
+        let collected = collect_via_dispatcher(
+            flow,
+            "stub",
+            "",
+            None,
+            std::sync::Arc::new(Vec::new()),
+            &nd,
+            std::sync::Arc::new(ToolRegistry::new()),
+            &pb,
+        )
+        .await;
+
+        assert!(collected.success, "the flow runs through the dispatcher");
+        // navigate (1) + the appended `return` (1).
+        assert_eq!(collected.step_names.last().map(String::as_str), Some("return"));
+        let ret = collected.step_results.last().expect("a return result");
+        assert_ne!(ret, "(stub)", "`return hits` resolves the binding, not the LLM");
+        // `return hits` == the navigate step's output (hits propagated).
+        assert_eq!(collected.step_results.first(), collected.step_results.last());
     }
 
     fn empty_nav_dispatch(
