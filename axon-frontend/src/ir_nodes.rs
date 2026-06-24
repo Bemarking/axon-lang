@@ -1108,6 +1108,14 @@ pub struct IRNavigateStep {
     /// §Fase 63.B — MDN navigation budget (`budget:` = max documents).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<i64>,
+    /// §Fase 66 (Q2) — column-scope filter for a `corpus from axonstore`. A raw
+    /// filter expr threaded to `read_all_store_rows` → `stream_retrieve` for
+    /// BOTH the documents and edges stores, so the sourced MDN graph is scoped
+    /// to a sub-tenant column (`where: "tenant_id == '${tenant_id}'"`). The
+    /// §37.d filter compiler resolves `${name}` → `$N` bind params (injection-
+    /// safe). Empty = no column filter (axon-tenant RLS scope only).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub where_expr: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

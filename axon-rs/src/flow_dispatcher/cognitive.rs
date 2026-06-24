@@ -503,13 +503,23 @@ pub async fn run_navigate(
         };
         emit_step_start(ctx, &out_name, step_index, "navigate")?;
 
-        // Read both backing stores tenant-scoped (RLS scopes to this tenant).
-        let doc_rows =
-            crate::flow_dispatcher::wire_integrations::read_all_store_rows(ctx, &src.doc_store)
-                .await?;
-        let edge_rows =
-            crate::flow_dispatcher::wire_integrations::read_all_store_rows(ctx, &src.edge_store)
-                .await?;
+        // Read both backing stores tenant-scoped (RLS scopes to the axon-tenant).
+        // §Fase 66 (Q2) — the SAME `where:` column-scope filter is applied to
+        // BOTH the documents and edges stores, so the sourced MDN graph (docs +
+        // edges) is scoped to one sub-tenant column. Empty `where_expr` keeps the
+        // §64 behavior byte-identical (RLS scope only).
+        let doc_rows = crate::flow_dispatcher::wire_integrations::read_all_store_rows(
+            ctx,
+            &src.doc_store,
+            &node.where_expr,
+        )
+        .await?;
+        let edge_rows = crate::flow_dispatcher::wire_integrations::read_all_store_rows(
+            ctx,
+            &src.edge_store,
+            &node.where_expr,
+        )
+        .await?;
 
         // §Fase 64.C — when this store-sourced corpus is `adaptive`, the memory
         // endofunctor's ω reinforcement is PERSISTED back to the edge store after
@@ -1210,6 +1220,7 @@ mod tests {
             output_name: "hits".into(),
             seed: "intro overview".into(),
             budget: Some(3),
+            where_expr: String::new(),
         };
         let outcome = run_navigate(&node, &mut ctx).await.unwrap();
         match outcome {
@@ -1262,6 +1273,7 @@ mod tests {
             output_name: "hits".into(),
             seed: String::new(),
             budget: Some(5),
+            where_expr: String::new(),
         };
         let outcome = run_navigate(&node, &mut ctx).await.unwrap();
         match outcome {
@@ -1306,6 +1318,7 @@ mod tests {
             output_name: "hits".into(),
             seed: "intro overview".into(),
             budget: Some(3),
+            where_expr: String::new(),
         };
         // Two navigations accumulate two episodic outcomes.
         run_navigate(&node, &mut ctx).await.unwrap();
@@ -1336,6 +1349,7 @@ mod tests {
             output_name: "nav_result".into(),
             seed: String::new(),
             budget: None,
+            where_expr: String::new(),
         };
         run_navigate(&node, &mut ctx).await.unwrap();
         let ev = rx.try_recv().unwrap();
@@ -1370,6 +1384,7 @@ mod tests {
             output_name: "sections".into(),
             seed: String::new(),
             budget: None,
+            where_expr: String::new(),
         };
         let outcome = run_navigate(&node, &mut ctx).await.unwrap();
         match outcome {

@@ -125,6 +125,38 @@ impl ExecContext {
 /// (`DispatchCtx.let_bindings`) — interpolate `persist` field values
 /// with byte-identical semantics (D5: the two paths never diverge).
 /// Unknown variables are left literal.
+/// §Fase 66 (Q1) — resolve a `${...}` variable reference, supporting dotted
+/// FIELD-ACCESS on a binding whose value is a JSON object (`${e.to_id}` where
+/// `e` is a `for e in List<Record>` loop element).
+///
+/// Resolution order (back-compatible — the dotted path only fires on a miss):
+/// 1. EXACT key lookup (`vars.get("e.to_id")`) — preserves any literal dotted
+///    key a flow might have bound, and is the only path for plain `${name}`.
+/// 2. If the key contains `.` and the BASE segment (before the first `.`)
+///    resolves to a JSON object, walk the remaining `.field` path into it and
+///    render the leaf (a JSON string yields its inner text; any other JSON
+///    value yields its compact form). A non-JSON base, a missing field, or a
+///    non-object intermediate falls through to `None` (the caller keeps the
+///    `${…}` literal, exactly as for an unknown plain variable).
+fn resolve_dotted_var(vars: &HashMap<String, String>, key: &str) -> Option<String> {
+    if let Some(val) = vars.get(key) {
+        return Some(val.clone());
+    }
+    let (base, rest) = key.split_once('.')?;
+    let base_val = vars.get(base)?;
+    let mut cur: serde_json::Value = serde_json::from_str(base_val).ok()?;
+    for field in rest.split('.') {
+        cur = match cur {
+            serde_json::Value::Object(mut m) => m.remove(field)?,
+            _ => return None,
+        };
+    }
+    Some(match cur {
+        serde_json::Value::String(s) => s,
+        other => other.to_string(),
+    })
+}
+
 pub fn interpolate_vars(text: &str, vars: &HashMap<String, String>) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
@@ -133,11 +165,11 @@ pub fn interpolate_vars(text: &str, vars: &HashMap<String, String>) -> String {
     while i < bytes.len() {
         if bytes[i] == b'$' && i + 1 < bytes.len() {
             if bytes[i + 1] == b'{' {
-                // ${name} form
+                // ${name} form — incl. §66 dotted field-access (${e.field}).
                 if let Some(close) = text[i + 2..].find('}') {
                     let var_name = &text[i + 2..i + 2 + close];
-                    if let Some(val) = vars.get(var_name) {
-                        out.push_str(val);
+                    if let Some(val) = resolve_dotted_var(vars, var_name) {
+                        out.push_str(&val);
                     } else {
                         // Unknown variable — keep literal
                         out.push_str(&text[i..i + 3 + close]);
@@ -380,5 +412,52 @@ mod tests {
     fn user_bindings_empty_for_fresh_context() {
         let ctx = ExecContext::new("F", "P", 0);
         assert!(ctx.user_bindings().is_empty());
+    }
+
+    // ── §Fase 66 (Q1) — dotted field-access interpolation ───────────────
+
+    #[test]
+    fn interpolate_resolves_dotted_field_of_a_json_object_binding() {
+        // The `for e in List<Record>` element: `e` binds to a JSON object;
+        // `${e.to_id}` must resolve to the field's inner string value (not the
+        // literal `${e.to_id}`, the pre-§66 behavior the kivi brief #27 hit).
+        let mut vars = HashMap::new();
+        vars.insert(
+            "e".to_string(),
+            r#"{"to_id":"abc-123","etype":"cite","weight":0.9}"#.to_string(),
+        );
+        assert_eq!(
+            interpolate_vars("${e.to_id}", &vars),
+            "abc-123",
+            "dotted field-access must resolve the JSON object's field"
+        );
+        assert_eq!(interpolate_vars("${e.etype}", &vars), "cite");
+        // A numeric leaf renders as its compact JSON form.
+        assert_eq!(interpolate_vars("${e.weight}", &vars), "0.9");
+        // Mixed with a literal + a plain var.
+        vars.insert("tid".to_string(), "T1".to_string());
+        assert_eq!(
+            interpolate_vars("row ${tid}/${e.to_id}", &vars),
+            "row T1/abc-123"
+        );
+    }
+
+    #[test]
+    fn interpolate_dotted_misses_stay_literal_and_exact_keys_win() {
+        let mut vars = HashMap::new();
+        // Base is not JSON → keep the literal (never panics, never half-resolves).
+        vars.insert("e".to_string(), "not json".to_string());
+        assert_eq!(interpolate_vars("${e.to_id}", &vars), "${e.to_id}");
+        // Unknown base → literal.
+        assert_eq!(interpolate_vars("${missing.x}", &vars), "${missing.x}");
+        // Missing field on a valid object → literal.
+        vars.insert("o".to_string(), r#"{"a":"1"}"#.to_string());
+        assert_eq!(interpolate_vars("${o.b}", &vars), "${o.b}");
+        // Back-compat: an EXACT dotted key (a literal binding) still wins over
+        // the JSON walk.
+        vars.insert("o.b".to_string(), "exact".to_string());
+        assert_eq!(interpolate_vars("${o.b}", &vars), "exact");
+        // A plain (non-dotted) var is unchanged.
+        assert_eq!(interpolate_vars("${o}", &vars), r#"{"a":"1"}"#);
     }
 }

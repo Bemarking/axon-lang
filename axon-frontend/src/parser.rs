@@ -3801,6 +3801,7 @@ impl Parser {
             output_name: String::new(),
             seed: String::new(),
             budget: None,
+            where_expr: String::new(),
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -3829,6 +3830,16 @@ impl Parser {
                         // §Fase 63.B — MDN corpus-graph navigation.
                         "from" => node.seed = self.consume_any_ident_or_kw()?.value.clone(),
                         "budget" => node.budget = self.parse_optional_int(),
+                        // §Fase 66 (Q2) — column-scoped navigation: a raw filter
+                        // expr (mirrors `retrieve … where`) pushed to the SELECT
+                        // that sources the corpus `documents:`/`relations:` rows,
+                        // so a `corpus from axonstore` is scoped to a sub-tenant
+                        // COLUMN (`where: "tenant_id == '${tenant_id}'"`), not just
+                        // the axon-tenant RLS scope. Resolved by the §37.d filter
+                        // compiler at runtime (`${name}` → `$N` bind params).
+                        "where" => {
+                            node.where_expr = self.consume(TokenType::StringLit)?.value.clone()
+                        }
                         _ => self.skip_value(),
                     }
                 }

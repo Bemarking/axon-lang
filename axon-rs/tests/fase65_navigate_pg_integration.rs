@@ -225,6 +225,7 @@ fn navigate_node() -> IRNavigateStep {
         output_name: "hits".to_string(),
         seed: String::new(),
         budget: Some(5),
+        where_expr: String::new(),
     }
 }
 

@@ -335,6 +335,24 @@ fn resolve_iterable(iterable: &str, ctx: &DispatchCtx) -> Vec<String> {
     if raw.trim().is_empty() {
         return Vec::new();
     }
+    // §Fase 66 (Q1) — a `for e in List<Record>` binds each loop var `e` to a
+    // STRUCTURED element so `${e.field}` field-access can resolve it (see
+    // `exec_context::resolve_dotted_var`). When the iterable's value parses as a
+    // JSON ARRAY, iterate its elements: an object/array element is re-serialised
+    // to its compact JSON (so the dotted resolver can parse it back), a string
+    // element yields its inner text, and a scalar its compact form. Anything
+    // that is NOT a JSON array (a plain string, a comma list) falls back to the
+    // pre-§66 comma-split — byte-identical for every existing `for x in <list>`.
+    if let Ok(serde_json::Value::Array(elems)) = serde_json::from_str::<serde_json::Value>(&raw) {
+        return elems
+            .into_iter()
+            .map(|v| match v {
+                serde_json::Value::String(s) => s,
+                serde_json::Value::Object(_) | serde_json::Value::Array(_) => v.to_string(),
+                other => other.to_string(),
+            })
+            .collect();
+    }
     raw.split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -953,5 +971,44 @@ mod tests {
             NodeOutcome::Return { value } => assert_eq!(value, "early"),
             other => panic!("expected Return propagation, got {other:?}"),
         }
+    }
+
+    // ── §Fase 66 (Q1) — structured iteration of a List<Record> ──────────
+
+    #[test]
+    fn resolve_iterable_iterates_json_array_elements_as_structured_records() {
+        // `for e in ClassifyEdges.output` where the output is a List<Record>
+        // JSON array: each element must bind to its OWN compact JSON object (so
+        // `${e.field}` resolves it), NOT a comma-split fragment of the array.
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert(
+            "edges".to_string(),
+            r#"[{"to_id":"a","etype":"cite"},{"to_id":"b","etype":"elaborate"}]"#.to_string(),
+        );
+        let items = resolve_iterable("edges", &ctx);
+        assert_eq!(items.len(), 2, "two array elements, not comma-split shards");
+        // Each item is a parseable JSON object carrying the whole record.
+        let first: serde_json::Value = serde_json::from_str(&items[0]).expect("element is JSON");
+        assert_eq!(first["to_id"], "a");
+        assert_eq!(first["etype"], "cite");
+        // And it composes with the §66 dotted interpolation: bind `e` = element.
+        ctx.let_bindings.insert("e".to_string(), items[1].clone());
+        assert_eq!(
+            crate::exec_context::interpolate_vars("${e.to_id}", &ctx.let_bindings),
+            "b"
+        );
+    }
+
+    #[test]
+    fn resolve_iterable_non_json_falls_back_to_comma_split() {
+        // Back-compat: a plain comma list iterates byte-identically to pre-§66.
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings
+            .insert("xs".to_string(), "a, b, c".to_string());
+        assert_eq!(resolve_iterable("xs", &ctx), vec!["a", "b", "c"]);
+        // A JSON array of plain strings yields each string (not quoted).
+        ctx.let_bindings
+            .insert("ys".to_string(), r#"["x","y"]"#.to_string());
+        assert_eq!(resolve_iterable("ys", &ctx), vec!["x", "y"]);
     }
 }

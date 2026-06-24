@@ -351,6 +351,7 @@ fn navigate_node() -> IRFlowNode {
         output_name: String::new(),
             seed: String::new(),
             budget: None,
+            where_expr: String::new(),
     })
 }
 

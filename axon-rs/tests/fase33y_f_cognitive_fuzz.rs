@@ -318,6 +318,7 @@ async fn fuzz_navigate_never_panics_random_input() {
             // §Fase 63.B fields — fuzz them too (random seed + optional budget).
             seed: lcg.ascii_with_random_len(8),
             budget: if lcg.boolean() { Some(5) } else { None },
+            where_expr: String::new(),
         });
         let outcome = dispatch_node(&node, &mut ctx).await;
         assert_no_panic(&format!("navigate iter={iter}"), &outcome);
@@ -474,6 +475,7 @@ async fn fuzz_cognitive_nested_in_orchestration_never_panics() {
                 // §Fase 63.B fields.
                 seed: "s".into(),
                 budget: None,
+                where_expr: String::new(),
             }),
             _ => IRFlowNode::Corroborate(IRCorroborateStep {
                 node_type: "corroborate",

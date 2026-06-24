@@ -75,3 +75,12 @@ jobs:
         # distinct from the navigate fixtures), so it is safe to run here against
         # the same service container.
         run: cargo test --test fase65_f_nonstreaming_persist_pg_integration -- --nocapture
+
+      - name: Fase 66 (Q2) — navigate where-scope isolates a sub-tenant column
+        working-directory: axon-rs
+        # The data-leak guard for kivi brief #27 §C: a `navigate { where:
+        # "tenant_id == '${tenant_id}'" }` over a `corpus from axonstore` must
+        # source ONLY the bound sub-tenant's rows (and the no-where control must
+        # leak both, proving the filter). Owns its own tables (`fase66_*`),
+        # distinct from the other lanes' fixtures.
+        run: cargo test --test fase66_navigate_where_pg_integration -- --nocapture
