@@ -448,16 +448,14 @@ fn catalog_variant_count_locked_at_six() {
         step_name: String::new(),
         step_index: 0,
         step_type: String::new(),
-            branch_path: String::new(),
-            branch_path: String::new(),
+        branch_path: String::new(),
         timestamp_ms: 0,
     };
     let _ = StepToken {
         step_name: String::new(),
         content: String::new(),
         token_index: 0,
-            branch_path: String::new(),
-            branch_path: String::new(),
+        branch_path: String::new(),
         timestamp_ms: 0,
     };
     let _ = StepComplete {
@@ -467,8 +465,7 @@ fn catalog_variant_count_locked_at_six() {
         full_output: String::new(),
         tokens_input: 0,
         tokens_output: 0,
-            branch_path: String::new(),
-            branch_path: String::new(),
+        branch_path: String::new(),
         timestamp_ms: 0,
     };
     let _ = FlowComplete {
@@ -501,8 +498,7 @@ fn flow_execution_event_runtime_surface_is_importable() {
         step_name: "S".to_string(),
         content: "x".to_string(),
         token_index: 1,
-            branch_path: String::new(),
-            branch_path: String::new(),
+        branch_path: String::new(),
         timestamp_ms: 1,
     };
     assert_eq!(ev.kind(), "step_token");

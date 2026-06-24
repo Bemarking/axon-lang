@@ -367,6 +367,7 @@ async fn s3_legacy_llm_side_record_serializes_byte_identical_to_pre_34_i() {
         tool_chunks_emitted: None,
         tool_output_hash_hex: None,
         tool_terminator_kind: None,
+        anchor_breaches: Vec::new(),
     };
     let json = serde_json::to_value(&row).unwrap();
     let obj = json.as_object().expect("object");
@@ -416,6 +417,7 @@ async fn s3_streaming_tool_record_includes_all_four_tool_fields_in_json() {
         tool_chunks_emitted: Some(4),
         tool_output_hash_hex: Some("abcdef".repeat(10) + "1234"),
         tool_terminator_kind: Some("stop".into()),
+        anchor_breaches: Vec::new(),
     };
     let json = serde_json::to_value(&row).unwrap();
     let obj = json.as_object().expect("object");
@@ -466,6 +468,7 @@ async fn s3_round_trip_streaming_tool_record_preserves_all_four_fields() {
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
         ),
         tool_terminator_kind: Some("error".into()),
+        anchor_breaches: Vec::new(),
     };
     let json = serde_json::to_string(&original).unwrap();
     let back: StepAuditRecord = serde_json::from_str(&json).unwrap();
