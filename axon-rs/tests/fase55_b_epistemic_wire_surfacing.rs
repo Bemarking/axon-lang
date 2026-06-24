@@ -91,6 +91,7 @@ fn exec_result(epistemic: Vec<EpistemicEnvelope>) -> ServerExecutionResult {
         provenance_events: Vec::new(),
         blame_attribution: None,
         epistemic_envelopes: epistemic,
+        error: None,
     }
 }
 

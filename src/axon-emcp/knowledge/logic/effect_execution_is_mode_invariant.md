@@ -1,7 +1,7 @@
 ---
 name: effect_execution_is_mode_invariant
 title: "Effects execute structurally — independent of the output mode (`navigate` is not LLM-conditioned)"
-summary: "The law that a structural effect verb (`navigate`, `persist`, `mutate`, `retrieve`, `apply: <effect>`, `par`, …) executes its handler the SAME way whether the endpoint streams (SSE) or returns a single JSON response. The output mode is a transport choice; it never changes WHAT runs. A pure-effect flow with no cognitive step never calls the model — and an empty corpus yields an empty result, never a fabricated one."
+summary: "The law that a structural effect verb (`navigate`, `persist`, `mutate`, `retrieve`, `apply: <effect>`, `par`, …) executes its handler the SAME way whether the endpoint streams (SSE) or returns a single JSON response. The output mode is a transport choice; it never changes WHAT runs. A pure-effect flow with no cognitive step never calls the model — and an empty corpus yields an empty result, never a fabricated one. The law extends to FAILURE: when an effect aborts the flow, the failing node is named, logged, and surfaced to the caller identically across modes — never a silent non-success."
 ---
 
 # Effects execute structurally, independent of the output mode
@@ -72,6 +72,22 @@ a transport-conditioned executor, and it violates two pillars at once:
    a flow emits (`provenance_events`, `blame_attribution`, the epistemic
    envelope) is derived from the program + the run, not from the framing —
    so it is the same whether the client streamed or polled.
+
+4. **Failure is reported mode-invariantly too.** When a node's effect
+   *aborts* the flow — a `persist`/`mutate`/`purge` that fails a pre-write
+   gate (an epistemic `confidence_floor`, a store resolve/connection error),
+   a backend error — the runtime **names the failing node, logs it, and
+   surfaces the cause to the caller**, identically across modes. A streaming
+   endpoint emits a `FlowError` naming `persist into '<store>': <cause>`; a
+   non-streaming endpoint carries the SAME named detail on its envelope (the
+   `error` slot). The forbidden failure mode is the dual of the fabrication
+   one: a non-streaming endpoint that presents a node abort as a **silent**
+   `success:false` with an empty result and no diagnostic — the caller cannot
+   tell a clean empty answer from a swallowed write failure. Epistemic
+   honesty cuts both ways: the runtime neither invents evidence it lacks nor
+   hides a failure it hit. (A *soft* degradation reported ON the success path
+   — an anchor breach the flow chose to proceed past — is a different surface,
+   `blame_attribution`; a *hard* abort gets its own `error` slot.)
 
 ## How to think about it
 

@@ -2877,6 +2877,18 @@ pub struct ServerRunnerMetrics {
     /// the streaming path calls, so both transports surface byte-identical
     /// envelopes (§55.c parity). Empty for flows with no epistemic tool.
     pub epistemic_envelopes: Vec<crate::epistemic_capture::EpistemicEnvelope>,
+    /// §Fase 65.F — the HONEST hard-failure detail when a node's
+    /// `DispatchError` aborted the flow (a failing `persist`/`mutate`/`purge`
+    /// store write, a backend error, etc.). `Some(detail)` names the FAILING
+    /// NODE + the underlying cause — byte-parity with the streaming
+    /// dispatcher's `FlowError.error` (§37.e/D6 honest-failure doctrine).
+    /// `None` on the clean path. The §65.E.2 cutover regressed this: the
+    /// non-streaming driver swallowed the error (`success:false`, empty result,
+    /// no log, no wire detail), so a pre-insert store failure presented as a
+    /// silent 0-SQL abort. This field restores parity — a `BlameContext` is
+    /// the WRONG surface (it is soft-degradation-on-success only, per
+    /// `wire_envelope::BlameContext` docs); a hard fail needs its own slot.
+    pub error: Option<String>,
 }
 
 /// §Fase 55.b/c — derive a flow's epistemic envelopes from the IR. This is
@@ -2937,6 +2949,12 @@ struct CollectedRun {
     // the count is a faithful superset, not a byte-equal mirror, of the legacy.
     anchor_breaches: usize,
     blame_attribution: Option<crate::wire_envelope::BlameContext>,
+    /// §Fase 65.F — `Some(detail)` when a node's `DispatchError` aborted the
+    /// walk: the failing NODE named + the cause, mirroring the streaming
+    /// dispatcher's `FlowError.error`. Pre-§65.F this error was swallowed
+    /// (the `Err(_) => { success = false; break; }` arm), so a failed store
+    /// write presented as a silent abort with no diagnostic.
+    flow_error: Option<String>,
 }
 
 /// §Fase 65.E — run a flow through the DISPATCHER with a BUFFER sink and collect
@@ -3002,6 +3020,16 @@ async fn collect_via_dispatcher(
     let mut success = true;
     let mut tokens_output: u64 = 0;
     let mut flow_return: Option<String> = None;
+    // §Fase 65.F — the HONEST hard-failure detail. Pre-§65.F a node's
+    // `DispatchError` hit `Err(_) => { success = false; break; }` — swallowed
+    // with no log + no wire surface, so a failing `persist` (most often a
+    // pre-insert gate: §35.g confidence-floor, registry resolve, or a
+    // connection error — all BEFORE any SQL reaches the DB) presented to the
+    // adopter as a silent abort: `success:false`, empty step result, zero
+    // diagnostic. The streaming dispatcher never had this gap — it emits a
+    // `FlowError` naming the failing node + the cause (§37.e/D6). This restores
+    // that parity on the non-streaming path.
+    let mut flow_error: Option<String> = None;
     for node in &flow.steps {
         match dispatch_node(node, &mut ctx).await {
             Ok(NodeOutcome::Completed { tokens_emitted, .. }) => tokens_output += tokens_emitted,
@@ -3013,8 +3041,34 @@ async fn collect_via_dispatcher(
             }
             Ok(_) => {} // stray Break/LoopContinue → no-op
             Err(crate::flow_dispatcher::DispatchError::UpstreamCancelled) => break,
-            Err(_) => {
+            Err(e) => {
                 success = false;
+                // §Fase 65.F — name the FAILING NODE (the four store ops + a
+                // `step` carry a meaningful name; any other variant is named by
+                // its flow position) so the diagnostic pinpoints WHERE + WHY,
+                // byte-for-byte with `streaming_via_dispatcher`'s §37.e/D6
+                // `node_label`. The detail reaches BOTH the structured server
+                // log (parity with the streaming `tracing::error!`) AND the
+                // wire envelope (the new `ServerRunnerMetrics.error` slot).
+                use crate::ir_nodes::IRFlowNode;
+                let node_label = match node {
+                    IRFlowNode::Step(s) if !s.name.is_empty() => {
+                        format!("step '{}'", s.name)
+                    }
+                    IRFlowNode::Retrieve(r) => format!("retrieve from '{}'", r.store_name),
+                    IRFlowNode::Persist(p) => format!("persist into '{}'", p.store_name),
+                    IRFlowNode::Mutate(m) => format!("mutate '{}'", m.store_name),
+                    IRFlowNode::Purge(p) => format!("purge '{}'", p.store_name),
+                    _ => "node".to_string(),
+                };
+                let detail = format!("flow '{}' failed at {node_label}: {e:?}", flow.name);
+                tracing::error!(
+                    flow = %flow.name,
+                    node = %node_label,
+                    detail = %detail,
+                    "axon non-streaming flow failed — node dispatch error"
+                );
+                flow_error = Some(detail);
                 break;
             }
         }
@@ -3100,6 +3154,7 @@ async fn collect_via_dispatcher(
         step_results,
         anchor_breaches,
         blame_attribution,
+        flow_error,
     }
 }
 
@@ -3448,6 +3503,10 @@ pub fn execute_server_flow(
                 blame_attribution: collected.blame_attribution,
                 // IR-derived → byte-identical with the legacy + SSE paths.
                 epistemic_envelopes: derive_epistemic_envelopes_for_flow(ir, flow_name),
+                // §Fase 65.F — the honest hard-failure detail (named node +
+                // cause), or `None` on the clean path. Closes the §65.E.2
+                // silent-abort regression for store writes + every other node.
+                error: collected.flow_error,
             });
         }
     }
@@ -3669,6 +3728,13 @@ pub fn execute_server_flow(
         provenance_events,
         blame_attribution,
         epistemic_envelopes,
+        // §Fase 65.F — the LEGACY executor (kill-switch `AXON_LEGACY_EXECUTOR`,
+        // slated for deletion in §65.E.3) surfaces store-op failures INLINE in
+        // the step result text (`"<store> → store error: …"`) and CONTINUES
+        // rather than aborting, so it has no single hard-failure detail to
+        // hoist here. `None` keeps the legacy wire byte-identical; the honest
+        // hard-fail slot is a property of the unified (default) engine above.
+        error: None,
     })
 }
 

@@ -30,6 +30,7 @@ fn envelope(
         blame_attribution: None,
         execution_metrics: Default::default(),
         trace_id: "t".into(),
+        error: None,
     }
 }
 
