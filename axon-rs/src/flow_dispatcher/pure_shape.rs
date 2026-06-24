@@ -282,6 +282,7 @@ async fn run_step_streaming_tool(
             step_name: step_name.clone(),
             step_index,
             step_type: "step".to_string(),
+                branch_path: ctx.branch_path_string(),
             timestamp_ms: now_ms(),
         })
         .map_err(|_| DispatchError::ChannelClosed)?;
@@ -364,6 +365,7 @@ async fn run_step_streaming_tool(
             full_output: summary.accumulated.clone(),
             tokens_input: 0,
             tokens_output: summary.tokens_emitted,
+                branch_path: ctx.branch_path_string(),
             timestamp_ms: now_ms(),
         })
         .map_err(|_| DispatchError::ChannelClosed)?;
@@ -662,6 +664,7 @@ pub async fn run_pure_shape(
             step_name: shape.name.clone(),
             step_index,
             step_type: shape.kind_slug.to_string(),
+                branch_path: ctx.branch_path_string(),
             timestamp_ms: now_ms(),
         })
         .map_err(|_| DispatchError::ChannelClosed)?;
@@ -853,6 +856,7 @@ pub async fn run_pure_shape(
             full_output: accumulated.clone(),
             tokens_input: 0,
             tokens_output: tokens_emitted,
+                branch_path: ctx.branch_path_string(),
             timestamp_ms: now_ms(),
         })
         .map_err(|_| DispatchError::ChannelClosed)?;
@@ -953,6 +957,7 @@ async fn drain_direct(
                             step_name: shape.name.clone(),
                             content: chunk.delta,
                             token_index: tokens_emitted,
+                branch_path: ctx.branch_path_string(),
                             timestamp_ms: now_ms(),
                         })
                         .map_err(|_| DispatchError::ChannelClosed)?;
@@ -1044,6 +1049,7 @@ async fn emit_buffered(
                     step_name: shape.name.clone(),
                     content: delta,
                     token_index: tokens_emitted,
+                branch_path: ctx.branch_path_string(),
                     timestamp_ms: now_ms(),
                 })
                 .map_err(|_| DispatchError::ChannelClosed)?;
@@ -1128,6 +1134,7 @@ async fn drain_through_enforcer(
                     step_name: shape.name.clone(),
                     content: chunk.delta,
                     token_index: tokens_emitted,
+                branch_path: ctx.branch_path_string(),
                     timestamp_ms: now_ms(),
                 })
                 .map_err(|_| DispatchError::ChannelClosed)?;

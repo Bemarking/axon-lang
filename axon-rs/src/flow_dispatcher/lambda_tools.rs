@@ -295,6 +295,7 @@ fn emit_step_start(
             step_name: step_name.to_string(),
             step_index,
             step_type: step_type.to_string(),
+                branch_path: ctx.branch_path_string(),
             timestamp_ms: now_ms(),
         })
         .map_err(|_| DispatchError::ChannelClosed)
@@ -316,6 +317,7 @@ fn emit_step_complete(
             full_output: full_output.to_string(),
             tokens_input: 0,
             tokens_output,
+                branch_path: ctx.branch_path_string(),
             timestamp_ms: now_ms(),
         })
         .map_err(|_| DispatchError::ChannelClosed)

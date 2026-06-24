@@ -136,6 +136,7 @@ pub async fn run_par(
             step_name: step_name.clone(),
             step_index,
             step_type: "par".to_string(),
+                branch_path: ctx.branch_path_string(),
             timestamp_ms: now_ms(),
         })
         .map_err(|_| DispatchError::ChannelClosed)?;
@@ -170,6 +171,7 @@ pub async fn run_par(
             full_output: full_output.clone(),
             tokens_input: 0,
             tokens_output,
+                branch_path: ctx.branch_path_string(),
             timestamp_ms: now_ms(),
         })
         .map_err(|_| DispatchError::ChannelClosed)?;
@@ -515,6 +517,64 @@ mod tests {
                 FlowExecutionEvent::StepComplete { full_output, .. } if full_output.contains("A-value")
             )),
             "StepComplete carries the merged branch output"
+        );
+    }
+
+    /// §Fase 65 (Multiplexed SSE) — the concurrent `par` branches emit their
+    /// step events INTERLEAVED on the one stream, each carrying its `branch_path`
+    /// (`"par[0]"` / `"par[1]"`) so the SSE consumer DEMUXES the concurrent
+    /// streams instead of guessing by arrival order. This is the honest
+    /// out-of-order emission (the founder ruling) made usable.
+    #[tokio::test]
+    async fn par_branch_events_carry_the_multiplex_key() {
+        use crate::ir_nodes::IRStep;
+        let mk_step = |name: &str| {
+            vec![IRFlowNode::Step(IRStep {
+                node_type: "step",
+                source_line: 0,
+                source_column: 0,
+                name: name.into(),
+                persona_ref: String::new(),
+                given: String::new(),
+                ask: "hi".into(),
+                use_tool: None,
+                probe: None,
+                reason: None,
+                weave: None,
+                output_type: String::new(),
+                confidence_floor: None,
+                navigate_ref: String::new(),
+                apply_ref: String::new(),
+                body: Vec::new(),
+            })]
+        };
+        let (mut ctx, mut rx) = fresh_ctx();
+        let par = IRParallelBlock {
+            node_type: "par",
+            source_line: 0,
+            source_column: 0,
+            branches: vec![mk_step("A"), mk_step("B")],
+        };
+        run_par(&par, &mut ctx).await.unwrap();
+
+        let mut keys = std::collections::HashSet::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let FlowExecutionEvent::StepStart { branch_path, .. } = ev {
+                if !branch_path.is_empty() {
+                    keys.insert(branch_path);
+                }
+            }
+        }
+        // Each branch's events are keyed by its `par[<idx>]` path (the nested
+        // `.step[0]` segment is the position WITHIN the branch body). The
+        // `par[0]` vs `par[1]` prefix is what the consumer demuxes on.
+        assert!(
+            keys.iter().any(|k| k.starts_with("par[0]")),
+            "branch 0 carries its demux key: {keys:?}"
+        );
+        assert!(
+            keys.iter().any(|k| k.starts_with("par[1]")),
+            "branch 1 carries its demux key: {keys:?}"
         );
     }
 

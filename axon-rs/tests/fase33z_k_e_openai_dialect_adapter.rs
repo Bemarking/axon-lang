@@ -98,12 +98,14 @@ fn canonical_stub_event_sequence() -> Vec<FlowExecutionEvent> {
             step_name: "Generate".into(),
             step_index: 0,
             step_type: "step".into(),
+            branch_path: String::new(),
             timestamp_ms: 1715648400001,
         },
         FlowExecutionEvent::StepToken {
             step_name: "Generate".into(),
             content: "Hola".into(),
             token_index: 1,
+            branch_path: String::new(),
             timestamp_ms: 1715648400002,
         },
         FlowExecutionEvent::StepComplete {
@@ -113,6 +115,7 @@ fn canonical_stub_event_sequence() -> Vec<FlowExecutionEvent> {
             full_output: "Hola".into(),
             tokens_input: 0,
             tokens_output: 1,
+            branch_path: String::new(),
             timestamp_ms: 1715648400003,
         },
         FlowExecutionEvent::FlowComplete {
@@ -183,6 +186,7 @@ fn s3_step_token_emits_content_delta_chunk() {
         step_name: "Generate".into(),
         content: "Hola".into(),
         token_index: 1,
+            branch_path: String::new(),
         timestamp_ms: 2,
     });
     assert_eq!(events.len(), 1);
@@ -203,6 +207,7 @@ fn s4_step_start_silently_consumed_in_openai_dialect() {
         step_name: "S".into(),
         step_index: 0,
         step_type: "step".into(),
+            branch_path: String::new(),
         timestamp_ms: 1,
     });
     assert_eq!(
@@ -223,6 +228,7 @@ fn s4_step_complete_silently_consumed_in_openai_dialect() {
         full_output: String::new(),
         tokens_input: 0,
         tokens_output: 1,
+            branch_path: String::new(),
         timestamp_ms: 1,
     });
     assert_eq!(events.len(), 0);

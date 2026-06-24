@@ -312,6 +312,7 @@ fn drive_canonical_stream(adapter: &mut Box<dyn WireFormatAdapter>) -> String {
             step_name: "S".into(),
             content: "Hi".into(),
             token_index: 1,
+            branch_path: String::new(),
             timestamp_ms: 2,
         },
         FlowExecutionEvent::ToolCall {
@@ -327,6 +328,7 @@ fn drive_canonical_stream(adapter: &mut Box<dyn WireFormatAdapter>) -> String {
             full_output: "Hi".into(),
             tokens_input: 0,
             tokens_output: 1,
+            branch_path: String::new(),
             timestamp_ms: 4,
         },
         FlowExecutionEvent::FlowComplete {

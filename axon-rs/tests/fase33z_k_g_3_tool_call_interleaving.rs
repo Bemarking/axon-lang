@@ -183,12 +183,14 @@ fn canonical_interleaved_stream() -> Vec<FlowExecutionEvent> {
             step_name: "Generate".into(),
             step_index: 0,
             step_type: "step".into(),
+            branch_path: String::new(),
             timestamp_ms: 1715648400001,
         },
         FlowExecutionEvent::StepToken {
             step_name: "Generate".into(),
             content: "Pensando...".into(),
             token_index: 1,
+            branch_path: String::new(),
             timestamp_ms: 1715648400002,
         },
         FlowExecutionEvent::ToolCall {
@@ -201,12 +203,14 @@ fn canonical_interleaved_stream() -> Vec<FlowExecutionEvent> {
             step_name: "Generate".into(),
             content: "Encontré ".into(),
             token_index: 2,
+            branch_path: String::new(),
             timestamp_ms: 1715648400004,
         },
         FlowExecutionEvent::StepToken {
             step_name: "Generate".into(),
             content: "resultados.".into(),
             token_index: 3,
+            branch_path: String::new(),
             timestamp_ms: 1715648400005,
         },
         FlowExecutionEvent::StepComplete {
@@ -216,6 +220,7 @@ fn canonical_interleaved_stream() -> Vec<FlowExecutionEvent> {
             full_output: "Pensando...Encontré resultados.".into(),
             tokens_input: 0,
             tokens_output: 3,
+            branch_path: String::new(),
             timestamp_ms: 1715648400006,
         },
         FlowExecutionEvent::FlowComplete {

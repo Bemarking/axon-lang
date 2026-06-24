@@ -183,6 +183,7 @@ fn gen_random_event_stream(lcg: &mut Lcg) -> Vec<FlowExecutionEvent> {
                         step_name: lcg.ident(),
                         step_index: step_idx,
                         step_type: "step".into(),
+            branch_path: String::new(),
                         timestamp_ms: 1_000_000 + i as u64,
                     });
                     current_step_open = true;
@@ -193,6 +194,7 @@ fn gen_random_event_stream(lcg: &mut Lcg) -> Vec<FlowExecutionEvent> {
                     step_name: lcg.ident(),
                     content: lcg.ascii(),
                     token_index: i as u64,
+            branch_path: String::new(),
                     timestamp_ms: 1_000_000 + i as u64,
                 });
             }
@@ -213,6 +215,7 @@ fn gen_random_event_stream(lcg: &mut Lcg) -> Vec<FlowExecutionEvent> {
                         full_output: lcg.ascii(),
                         tokens_input: lcg.range(100) as u64,
                         tokens_output: lcg.range(100) as u64,
+            branch_path: String::new(),
                         timestamp_ms: 1_000_000 + i as u64,
                     });
                     current_step_open = false;
@@ -288,6 +291,7 @@ fn gen_interleaved_t_x_sequence(lcg: &mut Lcg) -> (Vec<FlowExecutionEvent>, Vec<
                 step_name: "S".into(),
                 content: lcg.ascii(),
                 token_index: i as u64,
+            branch_path: String::new(),
                 timestamp_ms: 100 + i as u64,
             });
             signature.push("T");
@@ -1130,6 +1134,7 @@ fn s9_anthropic_flush_terminator_defensively_closes_orphan_text_block() {
         step_name: "S".into(),
         content: "open".into(),
         token_index: 1,
+            branch_path: String::new(),
         timestamp_ms: 2,
     });
     let terminator = adapter.flush_terminator();
@@ -1170,6 +1175,7 @@ fn s9_anthropic_flush_terminator_well_formed_input_emits_two_frames() {
         step_name: "S".into(),
         content: "x".into(),
         token_index: 1,
+            branch_path: String::new(),
         timestamp_ms: 2,
     });
     let _ = adapter.translate(&FlowExecutionEvent::FlowComplete {

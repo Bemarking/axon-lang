@@ -64,6 +64,7 @@ fn s2_step_start_translates_to_zero_events_d6() {
         step_name: "S".into(),
         step_index: 0,
         step_type: "step".into(),
+            branch_path: String::new(),
         timestamp_ms: 100,
     });
     assert_eq!(events.len(), 0);
@@ -76,6 +77,7 @@ fn s2_step_token_translates_to_one_axon_token_event() {
         step_name: "Generate".into(),
         content: "Hola".into(),
         token_index: 0,
+            branch_path: String::new(),
         timestamp_ms: 100,
     });
     assert_eq!(events.len(), 1);
@@ -91,6 +93,7 @@ fn s2_step_complete_translates_to_zero_events_d6() {
         full_output: String::new(),
         tokens_input: 0,
         tokens_output: 1,
+            branch_path: String::new(),
         timestamp_ms: 100,
     });
     assert_eq!(events.len(), 0);
@@ -161,6 +164,7 @@ fn s4_event_ids_monotonic_across_translate_calls() {
             step_name: "S".into(),
             content: format!("t{i}"),
             token_index: i as u64,
+            branch_path: String::new(),
             timestamp_ms: 100,
         });
         total_events += events.len();
