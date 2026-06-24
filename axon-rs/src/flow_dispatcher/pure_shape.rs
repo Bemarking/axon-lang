@@ -698,7 +698,7 @@ pub async fn run_pure_shape(
     // enforce + clone the turns; it is NEVER held across the stream `.await`.
     // The two `Message` types differ (`conversation::Message{role:String}` vs
     // the provider-neutral `backends::Message`), so we convert by role.
-    let mut messages: Vec<Message> = {
+    let history_msgs: Vec<Message> = {
         let mut conv = ctx.conversation.lock().unwrap();
         conv.truncate_to_budget(ctx.context_budget);
         conv.messages()
@@ -712,54 +712,118 @@ pub async fn run_pure_shape(
             })
             .collect()
     };
-    messages.push(Message::user(shape.user_prompt.clone()));
 
-    // 7. Build ChatRequest. §Fase 33.y.k D8 — tools plumb-through.
-    //    `shape.tools` is populated by `run_step` from `step.apply_ref`
-    //    (canonical Step shape); empty for cognitive-framing handlers
-    //    (Probe/Reason/Validate/Refine/Weave/Focus/Associate/etc.)
-    //    whose IR shapes don't carry tool references today.
-    let request = ChatRequest {
-        model: String::new(),
-        messages,
-        system: if system.is_empty() { None } else { Some(system) },
-        max_tokens: None,
-        temperature: None,
-        top_p: None,
-        tools: shape.tools.clone(),
-        stream: true,
-        trace_id: None,
-        cancel: ctx.cancel.clone(),
+    // 7. Build the per-attempt ChatRequest (history + the current user turn).
+    //    §Fase 33.y.k D8 — `shape.tools` plumbs through; empty for cognitive-
+    //    framing handlers whose IR shapes carry no tool reference today.
+    let make_request = |user_prompt: &str, cancel: &crate::cancel_token::CancellationFlag| {
+        let mut messages = history_msgs.clone();
+        messages.push(Message::user(user_prompt.to_string()));
+        ChatRequest {
+            model: String::new(),
+            messages,
+            system: if system.is_empty() { None } else { Some(system.clone()) },
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            tools: shape.tools.clone(),
+            stream: true,
+            trace_id: None,
+            cancel: cancel.clone(),
+        }
     };
 
-    // 8. Cancel check before issuing the upstream request — the
-    //    HTTP call itself is the most expensive `.await` boundary
-    //    we're about to cross.
+    // 8. Cancel check before issuing the upstream request — the HTTP call
+    //    itself is the most expensive `.await` boundary we're about to cross.
     if ctx.cancel.is_cancelled() {
         return Err(DispatchError::UpstreamCancelled);
     }
 
-    // 9. Open the per-step backend stream.
-    let chunk_stream = backend
-        .stream(request)
-        .await
-        .map_err(|e| DispatchError::BackendError {
-            name: ctx.backend_name.clone(),
-            message: format!("{e}"),
-        })?;
-
-    // 10. Drain — either through the StreamPolicyEnforcer (when an
-    //     effect was declared) or directly.
-    let (accumulated, tokens_emitted, drop_count, degrade_count) = match effect_policy {
-        Some(policy) => drain_through_enforcer(
-            chunk_stream,
-            &shape,
-            ctx,
-            policy,
-            step_index,
-        )
-        .await?,
-        None => drain_direct(chunk_stream, &shape, ctx, step_index).await?,
+    // 9/10. §Fase 65.C.4 — dispatch with anchor-aware retry.
+    //
+    // NO anchors → stream live exactly as before (the common path; zero change).
+    // WITH anchors → we cannot both stream live AND regenerate-on-breach (SSE
+    // tokens can't be un-sent), so BUFFER the response, check the anchors, and
+    // regenerate up to MAX_ANCHOR_RETRIES with violation feedback (the runner's
+    // `execute_step_with_retry` discipline + prompt wording), then REPLAY the
+    // accepted response's chunks to the wire — wire-identical to a live drain,
+    // just deferred past the anchor gate. This brings the runner's anchor-retry
+    // to the streaming dispatcher (the last LLM-parity gap before the §65.E
+    // driver collapse).
+    let (accumulated, tokens_emitted, drop_count, degrade_count, anchor_breaches): (
+        String,
+        u64,
+        u64,
+        u64,
+        Vec<String>,
+    ) = if ctx.anchors.is_empty() {
+        let cancel = ctx.cancel.clone();
+        let chunk_stream = backend
+            .stream(make_request(&shape.user_prompt, &cancel))
+            .await
+            .map_err(|e| DispatchError::BackendError {
+                name: ctx.backend_name.clone(),
+                message: format!("{e}"),
+            })?;
+        let (acc, toks, dc, dg) = match effect_policy {
+            Some(policy) => {
+                drain_through_enforcer(chunk_stream, &shape, ctx, policy, step_index).await?
+            }
+            None => drain_direct(chunk_stream, &shape, ctx, step_index).await?,
+        };
+        (acc, toks, dc, dg, Vec::new())
+    } else {
+        let mut user_prompt = shape.user_prompt.clone();
+        let mut attempt: u32 = 0;
+        loop {
+            let cancel = ctx.cancel.clone();
+            let chunk_stream = backend
+                .stream(make_request(&user_prompt, &cancel))
+                .await
+                .map_err(|e| DispatchError::BackendError {
+                    name: ctx.backend_name.clone(),
+                    message: format!("{e}"),
+                })?;
+            let (acc, buffered) = drain_to_buffer(chunk_stream, ctx).await?;
+            let results = crate::anchor_checker::check_all(&ctx.anchors, &acc);
+            let error_breaches: Vec<&crate::anchor_checker::AnchorResult> = results
+                .iter()
+                .filter(|r| !r.passed && r.severity == "error")
+                .collect();
+            if error_breaches.is_empty() || attempt >= MAX_ANCHOR_RETRIES {
+                // Accept (clean OR retries exhausted — the runner also continues
+                // with the last response after MAX_ANCHOR_RETRIES). Record EVERY
+                // remaining breach, then replay the buffered chunks to the wire.
+                let breaches: Vec<String> = results
+                    .iter()
+                    .filter(|r| !r.passed)
+                    .map(|r| {
+                        let first = r.violations.first().cloned().unwrap_or_default();
+                        format!("{} [{}]: {}", r.anchor_name, r.severity, first)
+                    })
+                    .collect();
+                let toks = emit_buffered(buffered, &shape, ctx).await?;
+                break (acc, toks, 0, 0, breaches);
+            }
+            // Regenerate with violation feedback (runner-identical wording so
+            // both paths converge on the same correction).
+            attempt += 1;
+            let feedback = error_breaches
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    let v = r.violations.first().cloned().unwrap_or_else(|| r.anchor_name.clone());
+                    format!("{}. {}", i + 1, v)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            user_prompt = format!(
+                "{}\n\nIMPORTANT: Your previous response violated the following \
+                 constraints:\n{}\n\nPlease regenerate your response, strictly \
+                 avoiding the violations listed above.",
+                shape.user_prompt, feedback
+            );
+        }
     };
 
     // §Fase 65.C.2 — record this turn into the flow's conversation so the NEXT
@@ -772,25 +836,10 @@ pub async fn run_pure_shape(
         conv.add_assistant(&accumulated);
     }
 
-    // §Fase 65.C.3 — enforce the flow's anchors on this step's output. The
-    // streaming path previously NEVER checked anchors (declared `require:`
-    // constraints were silently ignored on SSE); now a breach is surfaced in
-    // the step audit record. Each entry is `"<anchor> [<severity>]: <first
-    // violation>"`. The regenerate-on-breach RETRY is deferred to §65.D — this
-    // is the faithful tail of the runner (which, after exhausting retries, also
-    // just records the breach and continues with the response).
-    let anchor_breaches: Vec<String> = if ctx.anchors.is_empty() {
-        Vec::new()
-    } else {
-        crate::anchor_checker::check_all(&ctx.anchors, &accumulated)
-            .into_iter()
-            .filter(|r| !r.passed)
-            .map(|r| {
-                let first = r.violations.first().cloned().unwrap_or_default();
-                format!("{} [{}]: {}", r.anchor_name, r.severity, first)
-            })
-            .collect()
-    };
+    // §Fase 65.C.3/C.4 — `anchor_breaches` was computed by the dispatch above
+    // (the anchored branch checks + retries; the non-anchored branch returns
+    // empty). It carries the breaches that REMAIN after the retry budget, which
+    // the audit record surfaces per-step.
 
     // 11. Compute the output SHA-256 for the audit row + emit
     //     StepComplete.
@@ -918,6 +967,89 @@ async fn drain_direct(
         }
     }
     Ok((accumulated, tokens_emitted, 0, 0))
+}
+
+/// §Fase 65.C.4 — max regenerate attempts on an error-severity anchor breach.
+/// Mirrors the non-streaming runner's `MAX_ANCHOR_RETRIES` so both server paths
+/// converge after the same number of corrections.
+const MAX_ANCHOR_RETRIES: u32 = 2;
+
+/// §Fase 65.C.4 — drain the chunk stream into a BUFFER without emitting to the
+/// wire. The anchor-retry path must see the FULL output before deciding whether
+/// to accept or regenerate, and SSE tokens can't be un-sent. Returns the
+/// accumulated text + the buffered `(delta, is_tool_use)` chunks to replay on
+/// acceptance — [`emit_buffered`] reproduces `drain_direct`'s emission exactly.
+async fn drain_to_buffer(
+    chunk_stream: crate::backends::ChatStream,
+    ctx: &DispatchCtx,
+) -> Result<(String, Vec<(String, bool)>), DispatchError> {
+    use crate::backends::FinishReason;
+    let mut accumulated = String::new();
+    let mut buffered: Vec<(String, bool)> = Vec::new();
+    let mut stream = chunk_stream;
+    while let Some(chunk_result) = stream.next().await {
+        if ctx.cancel.is_cancelled() {
+            return Err(DispatchError::UpstreamCancelled);
+        }
+        match chunk_result {
+            Ok(chunk) => {
+                let is_tool = matches!(chunk.finish_reason, Some(FinishReason::ToolUse));
+                if is_tool || !chunk.delta.is_empty() {
+                    if !chunk.delta.is_empty() {
+                        accumulated.push_str(&chunk.delta);
+                    }
+                    buffered.push((chunk.delta, is_tool));
+                }
+            }
+            Err(e) => {
+                return Err(DispatchError::BackendError {
+                    name: ctx.backend_name.clone(),
+                    message: format!("chunk error: {e}"),
+                });
+            }
+        }
+    }
+    Ok((accumulated, buffered))
+}
+
+/// §Fase 65.C.4 — replay buffered chunks to the wire, reproducing `drain_direct`'s
+/// ToolCall + StepToken emission EXACTLY so the wire shape is identical to a live
+/// drain (only deferred past the anchor gate). Returns `tokens_emitted`.
+async fn emit_buffered(
+    buffered: Vec<(String, bool)>,
+    shape: &PureShapeStep,
+    ctx: &mut DispatchCtx,
+) -> Result<u64, DispatchError> {
+    let mut tokens_emitted: u64 = 0;
+    for (delta, is_tool) in buffered {
+        if is_tool {
+            let tool_name = shape
+                .tools
+                .first()
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            ctx.tx
+                .send(FlowExecutionEvent::ToolCall {
+                    step_name: shape.name.clone(),
+                    tool_name,
+                    content: delta.clone(),
+                    timestamp_ms: now_ms(),
+                })
+                .map_err(|_| DispatchError::ChannelClosed)?;
+        }
+        if !delta.is_empty() {
+            tokens_emitted += 1;
+            ctx.tx
+                .send(FlowExecutionEvent::StepToken {
+                    step_name: shape.name.clone(),
+                    content: delta,
+                    token_index: tokens_emitted,
+                    timestamp_ms: now_ms(),
+                })
+                .map_err(|_| DispatchError::ChannelClosed)?;
+        }
+    }
+    Ok(tokens_emitted)
 }
 
 async fn drain_through_enforcer(
@@ -1290,6 +1422,48 @@ mod tests {
         run_step(&step_named("Generate", "say hi"), &mut ctx).await.expect("ok");
         let audit = ctx.step_audit_records.lock().await;
         assert!(audit.last().unwrap().anchor_breaches.is_empty());
+    }
+
+    /// §Fase 65.C.4 — an ANCHORED step goes through the buffer-then-retry path
+    /// (it can't stream live AND regenerate). After the retries resolve, the
+    /// accepted response's chunks are REPLAYED to the wire — so the StepToken
+    /// event still arrives (wire-identical to a live drain, just deferred). The
+    /// stub output `(stub)` keeps breaching `RequiresCitation`, so the loop
+    /// exhausts MAX_ANCHOR_RETRIES and accepts, recording the breach.
+    #[tokio::test]
+    async fn anchored_step_buffers_retries_then_replays_tokens_to_wire() {
+        let (mut ctx, mut rx) = fresh_ctx();
+        ctx.anchors = std::sync::Arc::new(vec![anchor_named("RequiresCitation")]);
+
+        let outcome = run_step(&step_named("Generate", "say hi"), &mut ctx)
+            .await
+            .expect("ok");
+        match outcome {
+            NodeOutcome::Completed { output, tokens_emitted, .. } => {
+                assert_eq!(output, "(stub)", "accepted output after retries");
+                assert_eq!(tokens_emitted, 1, "the buffered chunk is replayed to the wire");
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+
+        let mut events = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+        // Wire fidelity preserved: StepStart + StepToken("(stub)") + StepComplete.
+        assert!(matches!(events[0], FlowExecutionEvent::StepStart { .. }));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                FlowExecutionEvent::StepToken { content, .. } if content == "(stub)"
+            )),
+            "the accepted response's token is replayed to the wire: {events:?}"
+        );
+        assert!(events.iter().any(|e| matches!(e, FlowExecutionEvent::StepComplete { .. })));
+
+        let audit = ctx.step_audit_records.lock().await;
+        let breaches = &audit.last().unwrap().anchor_breaches;
+        assert_eq!(breaches.len(), 1, "the unresolved breach is recorded: {breaches:?}");
     }
 
     #[tokio::test]
