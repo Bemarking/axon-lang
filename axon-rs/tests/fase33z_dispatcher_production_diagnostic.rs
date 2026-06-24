@@ -893,6 +893,7 @@ fn d1_catalog_totality_pin_45_variants() {
             node_type: "par",
             source_line: 0,
             source_column: 0,
+            branches: Vec::new(),
         }),
         IRFlowNode::Hibernate(IRHibernateStep {
             node_type: "hibernate",
@@ -974,6 +975,8 @@ fn d1_catalog_totality_pin_45_variants() {
             query: String::new(),
             trail_enabled: false,
             output_name: String::new(),
+            seed: String::new(),
+            budget: None,
         }),
         IRFlowNode::Drill(IRDrillStep {
             node_type: "drill",

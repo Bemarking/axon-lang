@@ -637,6 +637,13 @@ impl IRGenerator {
                 node_type: "parallel_block",
                 source_line: s.loc.line,
                 source_column: s.loc.column,
+                // §Fase 65 — lower each AST branch (a Vec<FlowStep>) into a
+                // flow-IR body so the dispatcher runs them concurrently.
+                branches: s
+                    .branches
+                    .iter()
+                    .map(|branch| branch.iter().map(|stmt| self.visit_flow_step(stmt)).collect())
+                    .collect(),
             }),
             FlowStep::Hibernate(s) => IRFlowNode::Hibernate(IRHibernateStep {
                 node_type: "hibernate",

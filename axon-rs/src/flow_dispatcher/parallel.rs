@@ -119,7 +119,7 @@ use crate::ir_nodes::{IRFlowNode, IRParallelBlock};
 /// (no LLM dispatch). `step_index` is the reserved index from
 /// `ctx.step_counter` (advances by 1).
 pub async fn run_par(
-    _node: &IRParallelBlock,
+    node: &IRParallelBlock,
     ctx: &mut DispatchCtx,
 ) -> Result<NodeOutcome, DispatchError> {
     if ctx.cancel.is_cancelled() {
@@ -140,27 +140,50 @@ pub async fn run_par(
         })
         .map_err(|_| DispatchError::ChannelClosed)?;
 
-    // No body to dispatch — IRParallelBlock is payload-free in
-    // v1.25.0. Future IR extensions extract branches + call
-    // `run_branches_concurrently` here.
+    // §Fase 65 — REAL concurrency. The IR now carries the `par` branches
+    // (pre-§65 `IRParallelBlock` was payload-free → this ran as a stub). Fan the
+    // branches out concurrently via the established machine; each branch gets a
+    // cloned DispatchCtx (sharing the api_key / conversation / anchors / corpora
+    // Arcs, with isolated `pinned_conns` so branches don't serialize on one pin).
+    // A `par {}` with no branches stays a clean no-op (back-compat).
+    let outcome = if node.branches.is_empty() {
+        NodeOutcome::Completed {
+            output: String::new(),
+            tokens_emitted: 0,
+            step_index,
+        }
+    } else {
+        run_branches_concurrently(&node.branches, ctx).await?
+    };
+
+    let (full_output, tokens_output) = match &outcome {
+        NodeOutcome::Completed { output, tokens_emitted, .. } => (output.clone(), *tokens_emitted),
+        NodeOutcome::Return { value } => (value.clone(), 0),
+        _ => (String::new(), 0),
+    };
 
     ctx.tx
         .send(FlowExecutionEvent::StepComplete {
             step_name,
             step_index,
             success: true,
-            full_output: String::new(),
+            full_output: full_output.clone(),
             tokens_input: 0,
-            tokens_output: 0,
+            tokens_output,
             timestamp_ms: now_ms(),
         })
         .map_err(|_| DispatchError::ChannelClosed)?;
 
-    Ok(NodeOutcome::Completed {
-        output: String::new(),
-        tokens_emitted: 0,
-        step_index,
-    })
+    // Propagate a branch's `Return` sentinel (flow-terminating); otherwise the
+    // merged completion.
+    match outcome {
+        NodeOutcome::Return { value } => Ok(NodeOutcome::Return { value }),
+        _ => Ok(NodeOutcome::Completed {
+            output: full_output,
+            tokens_emitted: tokens_output,
+            step_index,
+        }),
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -400,6 +423,7 @@ mod tests {
             node_type: "par",
             source_line: 0,
             source_column: 0,
+            branches: Vec::new(),
         };
         let outcome = run_par(&par, &mut ctx).await.unwrap();
         match outcome {
@@ -444,11 +468,54 @@ mod tests {
             node_type: "par",
             source_line: 0,
             source_column: 0,
+            branches: Vec::new(),
         };
         assert!(matches!(
             run_par(&par, &mut ctx).await,
             Err(DispatchError::UpstreamCancelled)
         ));
+    }
+
+    /// §Fase 65 — `run_par` now runs the IR's branches CONCURRENTLY (real
+    /// effect), not a stub. Two branches → both execute, their outputs merge,
+    /// and the `par` wrapper stays on the wire (StepComplete carries the merge).
+    #[tokio::test]
+    async fn run_par_with_branches_runs_them_concurrently() {
+        let (mut ctx, mut rx) = fresh_ctx();
+        let par = IRParallelBlock {
+            node_type: "par",
+            source_line: 0,
+            source_column: 0,
+            branches: vec![let_branch("a", "A-value"), let_branch("b", "B-value")],
+        };
+        let outcome = run_par(&par, &mut ctx).await.unwrap();
+        match outcome {
+            NodeOutcome::Completed { output, .. } => {
+                assert!(
+                    output.contains("A-value") && output.contains("B-value"),
+                    "both branches ran + merged: {output:?}"
+                );
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        let mut events = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                FlowExecutionEvent::StepStart { step_type, .. } if step_type == "par"
+            )),
+            "the `par` wrapper stays on the wire"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                FlowExecutionEvent::StepComplete { full_output, .. } if full_output.contains("A-value")
+            )),
+            "StepComplete carries the merged branch output"
+        );
     }
 
     // ── run_branches_concurrently ─────────────────────────────────────

@@ -231,6 +231,7 @@ fn par_node() -> IRFlowNode {
         node_type: "par",
         source_line: 0,
         source_column: 0,
+            branches: Vec::new(),
     })
 }
 
@@ -348,6 +349,8 @@ fn navigate_node() -> IRFlowNode {
         query: String::new(),
         trail_enabled: false,
         output_name: String::new(),
+            seed: String::new(),
+            budget: None,
     })
 }
 

@@ -301,6 +301,7 @@ fn random_par(_lcg: &mut Lcg) -> IRFlowNode {
         node_type: "par",
         source_line: 0,
         source_column: 0,
+            branches: Vec::new(),
     })
 }
 
@@ -418,6 +419,8 @@ fn random_navigate(lcg: &mut Lcg) -> IRFlowNode {
         query: lcg.ascii_with_random_len(16),
         trail_enabled: lcg.bool(),
         output_name: lcg.ascii_with_random_len(8),
+            seed: String::new(),
+            budget: None,
     })
 }
 

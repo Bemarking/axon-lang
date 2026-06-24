@@ -1626,6 +1626,12 @@ pub struct RecallStep {
 }
 #[derive(Debug)]
 pub struct ParBlock {
+    /// §Fase 65 — the concurrent branches. Each top-level statement inside
+    /// `par { … }` is one branch (a single-statement body); they execute
+    /// concurrently at runtime. Empty for a `par {}` with no statements
+    /// (degenerate no-op). Before §65 this was payload-free (the branches were
+    /// skipped at parse time), so `par` ran as a stub.
+    pub branches: Vec<Vec<FlowStep>>,
     pub loc: Loc,
 }
 #[derive(Debug)]
