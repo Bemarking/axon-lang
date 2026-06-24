@@ -154,6 +154,15 @@ struct CompiledStep {
     /// keeps the compiled-plan wire shape byte-identical.
     #[serde(skip)]
     structural_node: Option<crate::ir_nodes::IRFlowNode>,
+    /// §Fase 65.D — for a `return <expr>` step: the value expression, so the
+    /// non-streaming executor RESOLVES it (binding lookup → literal fallback,
+    /// mirroring the dispatcher's `run_return`) instead of dispatching it to the
+    /// LLM. Before this, `return hits` in a non-streaming flow fell through to
+    /// the LLM and re-HALLUCINATED the flow's final output — the second half of
+    /// the Kivi gap report (its envelope showed `step_names: ["LtmGraph",
+    /// "return"]`, BOTH LLM-fabricated). `#[serde(skip)]` — runtime-only.
+    #[serde(skip)]
+    return_value_expr: Option<String>,
 }
 
 /// Fase 17.c — payload carried inside a CompiledStep for `let X = value`
@@ -410,6 +419,13 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             None
         };
 
+        // §Fase 65.D — carry the return value expression so the executor
+        // resolves it instead of LLM-dispatching the `return` step.
+        let return_value_expr = match node {
+            IRFlowNode::Return(s) => Some(s.value_expr.clone()),
+            _ => None,
+        };
+
         steps.push(CompiledStep {
             step_name,
             step_type,
@@ -423,6 +439,7 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             tool_named_args,
             tool_param_types,
             structural_node,
+            return_value_expr,
         });
     }
 
@@ -2055,6 +2072,50 @@ async fn execute_real_async(
                     }
                     continue; // Skip the LLM call — a pure-effect verb.
                 }
+            }
+
+            // ── §Fase 65.D — `return <expr>` is control flow, NOT cognition ──
+            // Resolve the return value from the flow's bindings (binding lookup
+            // → literal fallback, mirroring the dispatcher's `run_return`)
+            // instead of dispatching the `return` step to the LLM. Before this,
+            // `return hits` re-HALLUCINATED the flow's final output via the LLM
+            // fallthrough — the second half of the Kivi gap (§65.A fixed the
+            // `navigate` step; this fixes the `return hits` that followed it).
+            if let Some(value_expr) = &step.return_value_expr {
+                let resolved = ctx
+                    .get(value_expr)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| value_expr.clone());
+                ctx.set("__return_value__", &resolved);
+                ctx.set_result(&step.step_name, &resolved);
+                if !json {
+                    println!(
+                        "  {} {}",
+                        c("⏎", "\x1b[36m", use_color),
+                        c(&format!("return {value_expr} → {resolved}"), "\x1b[36m", use_color),
+                    );
+                }
+                hooks.on_step_end(0, 0, 0, 0, false);
+                report.record_step(StepReport {
+                    name: step.step_name.clone(),
+                    step_type: step.step_type.clone(),
+                    result: resolved,
+                    duration_ms: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    anchor_breaches: 0,
+                    chain_activations: 0,
+                    was_retried: false,
+                });
+                if trace {
+                    events.push(TraceEvent {
+                        event: "return".to_string(),
+                        unit: unit.flow_name.clone(),
+                        step: step.step_name.clone(),
+                        detail: value_expr.clone(),
+                    });
+                }
+                continue; // Skip the LLM call — return is control flow.
             }
 
             // ── LLM call with variable interpolation + conversation history ──
@@ -3985,6 +4046,67 @@ mod fase65_navigate_bridge {
         // The placeholder is deterministic + bound back under `output:` — the
         // point is it ran the dispatcher handler, not the LLM fallthrough.
         assert_eq!(ctx.get("section").map(|s| s.to_string()), Some(out));
+    }
+
+    /// §Fase 65.D — the FULL Kivi flow shape (navigate → `return hits`) through
+    /// the PRODUCTION non-streaming executor (`execute_server_flow` →
+    /// `execute_real_async`, backend ≠ "stub"). §65.A fixed the `navigate` step;
+    /// this asserts the `return hits` that FOLLOWS resolves to the REAL navigate
+    /// output instead of re-HALLUCINATING via the LLM — the second half of the
+    /// Kivi gap (its envelope showed `step_names: ["LtmGraph","return"]`, BOTH
+    /// LLM-fabricated). A static §63 corpus keeps it DB-free; neither navigate
+    /// (structural) nor return (control flow) calls the LLM, so a DUMMY key
+    /// suffices — and if `return` regressed to an LLM step, the dummy key would
+    /// surface a backend error instead of the resolved value.
+    #[test]
+    fn kivi_flow_navigate_then_return_yields_real_hits_not_hallucination() {
+        let source = r#"
+type DocA { content: Text }
+type DocB { content: Text }
+corpus G {
+    documents: [DocA, DocB]
+    relations: [ elaborate(DocA, DocB, 0.9) ]
+}
+flow Recall(q: Text) -> Text {
+    navigate G { query: "${q}", budget: 5, output: hits }
+    return hits
+}
+"#;
+        let (_program, ir) =
+            crate::flow_plan::compile_source_to_ir(source, "kivi.axon").expect("compile");
+        // Bind `q` to a document title so the lexical navigation selects it
+        // (deterministic, embeddings-free) — a non-empty REAL result to compare.
+        let body = serde_json::json!({ "q": "DocA" });
+        let metrics = execute_server_flow(
+            &ir,
+            "Recall",
+            "anthropic", // a real backend name (NOT "stub" → execute_real_async)
+            "kivi.axon",
+            Some("dummy-key"), // no step actually calls the LLM
+            Some(&body),
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            None,
+        )
+        .expect("flow runs");
+
+        assert!(metrics.success, "the flow succeeds with zero LLM calls");
+        assert_eq!(metrics.step_results.len(), 2, "navigate + return");
+        let ret = metrics.step_results.last().expect("a return result");
+        // THE load-bearing assertions: `return hits` resolves to the navigate
+        // step's output (binding lookup) — NOT the LLM "(stub)" hallucination it
+        // produced before §65.D (the Kivi envelope's fabricated second step).
+        // `step_results[0] == ret` is the proof: it holds iff `return` carried
+        // the navigate output, and FAILS if `return` hit the LLM (then the
+        // return result would be "(stub)" while the navigate output is its own
+        // value). The navigate producing REAL content from real rows is covered
+        // separately by the Postgres lane (`fase65_navigate_pg_integration::t1`).
+        assert_ne!(ret, "(stub)", "`return` must NOT be dispatched to the LLM");
+        assert_eq!(
+            metrics.step_results[0], *ret,
+            "the returned value IS the navigate step's output (hits propagated, \
+             not re-fabricated by the LLM)"
+        );
     }
 
     fn empty_nav_dispatch(
