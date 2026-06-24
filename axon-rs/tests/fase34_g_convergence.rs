@@ -210,7 +210,7 @@ async fn s1_direct_drain_no_policy_emits_chunks_in_order() {
     let source = unified_stream_from_chunks(chunks);
     let (tx, mut rx) = mpsc::unbounded_channel();
     let cancel = CancellationFlag::new();
-    let summary = unified_stream_handler(source, None, &cancel, &tx, "Direct")
+    let summary = unified_stream_handler(source, None, &cancel, &tx, "Direct", "")
         .await
         .expect("ok");
 
@@ -241,7 +241,7 @@ async fn s1_direct_drain_skips_empty_deltas_at_wire() {
     let source = unified_stream_from_chunks(chunks);
     let (tx, mut rx) = mpsc::unbounded_channel();
     let cancel = CancellationFlag::new();
-    let summary = unified_stream_handler(source, None, &cancel, &tx, "Empty")
+    let summary = unified_stream_handler(source, None, &cancel, &tx, "Empty", "")
         .await
         .expect("ok");
     assert_eq!(summary.tokens_emitted, 2, "empty deltas don't tick the counter");
@@ -261,7 +261,7 @@ async fn s1_direct_drain_terminator_with_delta_emits_token_then_stops() {
     let source = unified_stream_from_chunks(chunks);
     let (tx, mut rx) = mpsc::unbounded_channel();
     let cancel = CancellationFlag::new();
-    let summary = unified_stream_handler(source, None, &cancel, &tx, "TermDelta")
+    let summary = unified_stream_handler(source, None, &cancel, &tx, "TermDelta", "")
         .await
         .expect("ok");
     assert_eq!(summary.tokens_emitted, 2);
@@ -284,7 +284,7 @@ async fn s1_direct_drain_error_terminator_populates_terminator_message() {
     let source = unified_stream_from_chunks(chunks);
     let (tx, _rx) = mpsc::unbounded_channel();
     let cancel = CancellationFlag::new();
-    let summary = unified_stream_handler(source, None, &cancel, &tx, "Err")
+    let summary = unified_stream_handler(source, None, &cancel, &tx, "Err", "")
         .await
         .expect("ok");
     assert!(!summary.success);
@@ -300,7 +300,7 @@ async fn s1_direct_drain_cancelled_terminator_marks_summary_cancelled() {
     let source = unified_stream_from_chunks(chunks);
     let (tx, _rx) = mpsc::unbounded_channel();
     let cancel = CancellationFlag::new();
-    let summary = unified_stream_handler(source, None, &cancel, &tx, "Canc")
+    let summary = unified_stream_handler(source, None, &cancel, &tx, "Canc", "")
         .await
         .expect("ok");
     assert!(summary.cancelled);
@@ -325,7 +325,7 @@ async fn run_with_policy_burst(
     let source = unified_stream_from_chunks(chunks);
     let (tx, _rx) = mpsc::unbounded_channel();
     let cancel = CancellationFlag::new();
-    unified_stream_handler(source, Some(policy), &cancel, &tx, "PolicyBurst")
+    unified_stream_handler(source, Some(policy), &cancel, &tx, "PolicyBurst", "")
         .await
         .expect("ok")
 }
@@ -392,7 +392,7 @@ async fn s2_fail_policy_under_starved_consumer_marks_failure() {
     drop(rx); // Consumer never reads → backpressure fires fast.
     let cancel = CancellationFlag::new();
     let result =
-        unified_stream_handler(source, Some(BackpressurePolicy::Fail), &cancel, &tx, "F")
+        unified_stream_handler(source, Some(BackpressurePolicy::Fail), &cancel, &tx, "F", "")
             .await;
     match result {
         Ok(s) => {
@@ -576,7 +576,7 @@ async fn s4_pre_cancel_unified_handler_short_circuits_with_summary_cancelled() {
     let cancel = CancellationFlag::new();
     cancel.cancel();
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let summary = unified_stream_handler(source, None, &cancel, &tx, "PreCancel")
+    let summary = unified_stream_handler(source, None, &cancel, &tx, "PreCancel", "")
         .await
         .expect("ok");
     assert!(summary.cancelled);
@@ -633,7 +633,7 @@ async fn s4_mid_stream_cancel_observed_via_summary_when_chunks_already_emitted()
         }),
     ));
     let (tx, _rx) = mpsc::unbounded_channel();
-    let summary = unified_stream_handler(source, None, &cancel, &tx, "Mid").await
+    let summary = unified_stream_handler(source, None, &cancel, &tx, "Mid", "").await
         .expect("ok");
     assert!(summary.cancelled);
     assert!(!summary.success);

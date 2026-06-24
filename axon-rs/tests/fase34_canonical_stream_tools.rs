@@ -629,7 +629,7 @@ async fn s2_progressive_refinement_through_unified_handler_emits_wire_tokens() {
     let ctx = ToolContext::new(cancel.clone(), 0);
     let source = ProgressiveRefinement.stream("axon".to_string(), ctx).await;
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let summary = unified_stream_handler(source, None, &cancel, &tx, "Refine")
+    let summary = unified_stream_handler(source, None, &cancel, &tx, "Refine", "")
         .await
         .expect("ok");
 
@@ -651,7 +651,7 @@ async fn s2_multi_stage_pipeline_through_unified_handler_hash_is_deterministic()
         let ctx = ToolContext::new(cancel.clone(), 0);
         let source = MultiStagePipeline.stream("payload".to_string(), ctx).await;
         let (tx, _rx) = mpsc::unbounded_channel();
-        unified_stream_handler(source, None, &cancel, &tx, "Pipe")
+        unified_stream_handler(source, None, &cancel, &tx, "Pipe", "")
             .await
             .expect("ok")
     };
@@ -667,7 +667,7 @@ async fn s2_early_error_tool_through_unified_handler_surfaces_terminator_message
     let ctx = ToolContext::new(cancel.clone(), 0);
     let source = EarlyErrorTool.stream("job".to_string(), ctx).await;
     let (tx, _rx) = mpsc::unbounded_channel();
-    let summary = unified_stream_handler(source, None, &cancel, &tx, "Err")
+    let summary = unified_stream_handler(source, None, &cancel, &tx, "Err", "")
         .await
         .expect("ok");
     assert!(!summary.success);
@@ -686,7 +686,7 @@ async fn s2_progress_reporter_through_unified_handler_accumulates_full_output() 
     let ctx = ToolContext::new(cancel.clone(), 0);
     let source = ProgressReporter.stream("done".to_string(), ctx).await;
     let (tx, _rx) = mpsc::unbounded_channel();
-    let summary = unified_stream_handler(source, None, &cancel, &tx, "Prog")
+    let summary = unified_stream_handler(source, None, &cancel, &tx, "Prog", "")
         .await
         .expect("ok");
     assert_eq!(summary.tokens_emitted, 5);
@@ -708,7 +708,7 @@ async fn burst_through_policy(
     let ctx = ToolContext::new(cancel.clone(), 0);
     let source = BurstProducer.stream(burst.to_string(), ctx).await;
     let (tx, _rx) = mpsc::unbounded_channel();
-    unified_stream_handler(source, Some(policy), &cancel, &tx, "Burst")
+    unified_stream_handler(source, Some(policy), &cancel, &tx, "Burst", "")
         .await
         .expect("ok")
 }
@@ -804,13 +804,13 @@ async fn s4_two_patterns_share_one_unified_handler_step_sequence() {
     let s1 = PaginatedSource
         .stream("2".to_string(), ToolContext::new(cancel.clone(), 0))
         .await;
-    let sum1 = unified_stream_handler(s1, None, &cancel, &tx, "First")
+    let sum1 = unified_stream_handler(s1, None, &cancel, &tx, "First", "")
         .await
         .expect("ok");
     let s2 = ProgressiveRefinement
         .stream("z".to_string(), ToolContext::new(cancel.clone(), 0))
         .await;
-    let sum2 = unified_stream_handler(s2, None, &cancel, &tx, "Second")
+    let sum2 = unified_stream_handler(s2, None, &cancel, &tx, "Second", "")
         .await
         .expect("ok");
 

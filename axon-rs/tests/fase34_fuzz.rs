@@ -508,7 +508,7 @@ async fn fuzz_unified_handler_convergence_total_over_random_sequences() {
         let (tx, _rx) = mpsc::unbounded_channel();
 
         let result =
-            unified_stream_handler(source, policy, &cancel, &tx, "FuzzStep").await;
+            unified_stream_handler(source, policy, &cancel, &tx, "FuzzStep", "").await;
         // The handler never errors when the receiver is alive.
         let summary = result
             .unwrap_or_else(|e| panic!("seed={seed}: handler errored: {e:?}"));
@@ -565,7 +565,7 @@ async fn fuzz_unified_handler_hash_deterministic_per_sequence() {
             let source = unified_stream_from_chunks(cs);
             let cancel = CancellationFlag::new();
             let (tx, _rx) = mpsc::unbounded_channel();
-            unified_stream_handler(source, None, &cancel, &tx, "Det")
+            unified_stream_handler(source, None, &cancel, &tx, "Det", "")
                 .await
                 .expect("ok")
         };
@@ -597,7 +597,7 @@ async fn fuzz_policy_enforcement_under_random_burst() {
         let cancel = CancellationFlag::new();
         let (tx, _rx) = mpsc::unbounded_channel();
         let result =
-            unified_stream_handler(source, Some(policy), &cancel, &tx, "Burst")
+            unified_stream_handler(source, Some(policy), &cancel, &tx, "Burst", "")
                 .await;
         let summary = result
             .unwrap_or_else(|e| panic!("seed={seed}: policy {policy:?} errored: {e:?}"));
@@ -704,7 +704,7 @@ async fn fuzz_unified_handler_pre_cancel_always_marks_cancelled() {
         cancel.cancel(); // pre-cancel
         let (tx, _rx) = mpsc::unbounded_channel();
         let result =
-            unified_stream_handler(source, policy, &cancel, &tx, "PreCancel")
+            unified_stream_handler(source, policy, &cancel, &tx, "PreCancel", "")
                 .await;
         let summary = result
             .unwrap_or_else(|e| panic!("seed={seed}: handler errored: {e:?}"));
@@ -739,7 +739,7 @@ async fn fuzz_unified_handler_terminator_kind_classification_total() {
         let source = unified_stream_from_chunks(chunks);
         let cancel = CancellationFlag::new();
         let (tx, _rx) = mpsc::unbounded_channel();
-        let summary = unified_stream_handler(source, None, &cancel, &tx, "Term")
+        let summary = unified_stream_handler(source, None, &cancel, &tx, "Term", "")
             .await
             .expect("ok");
 
