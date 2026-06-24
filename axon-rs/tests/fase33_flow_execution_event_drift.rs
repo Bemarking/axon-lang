@@ -131,12 +131,14 @@ fn every_variant_constructible_and_serializable() {
             step_name: "S".to_string(),
             step_index: 0,
             step_type: "step".to_string(),
+            branch_path: String::new(),
             timestamp_ms: 2,
         },
         FlowExecutionEvent::StepToken {
             step_name: "S".to_string(),
             content: "x".to_string(),
             token_index: 1,
+            branch_path: String::new(),
             timestamp_ms: 3,
         },
         FlowExecutionEvent::StepComplete {
@@ -146,6 +148,7 @@ fn every_variant_constructible_and_serializable() {
             full_output: "x".to_string(),
             tokens_input: 0,
             tokens_output: 1,
+            branch_path: String::new(),
             timestamp_ms: 4,
         },
         FlowExecutionEvent::FlowComplete {
@@ -185,12 +188,14 @@ fn terminator_predicate_partitions_variants_total() {
             step_name: "S".to_string(),
             step_index: 0,
             step_type: "step".to_string(),
+            branch_path: String::new(),
             timestamp_ms: 0,
         },
         FlowExecutionEvent::StepToken {
             step_name: "S".to_string(),
             content: "x".to_string(),
             token_index: 1,
+            branch_path: String::new(),
             timestamp_ms: 0,
         },
         FlowExecutionEvent::StepComplete {
@@ -200,6 +205,7 @@ fn terminator_predicate_partitions_variants_total() {
             full_output: "x".to_string(),
             tokens_input: 0,
             tokens_output: 1,
+            branch_path: String::new(),
             timestamp_ms: 0,
         },
         FlowExecutionEvent::FlowComplete {
@@ -237,12 +243,14 @@ fn step_scoped_predicate_partitions_variants_total() {
             step_name: "S".to_string(),
             step_index: 0,
             step_type: "step".to_string(),
+            branch_path: String::new(),
             timestamp_ms: 0,
         },
         FlowExecutionEvent::StepToken {
             step_name: "S".to_string(),
             content: "x".to_string(),
             token_index: 1,
+            branch_path: String::new(),
             timestamp_ms: 0,
         },
         FlowExecutionEvent::StepComplete {
@@ -252,6 +260,7 @@ fn step_scoped_predicate_partitions_variants_total() {
             full_output: "x".to_string(),
             tokens_input: 0,
             tokens_output: 1,
+            branch_path: String::new(),
             timestamp_ms: 0,
         },
         FlowExecutionEvent::FlowComplete {

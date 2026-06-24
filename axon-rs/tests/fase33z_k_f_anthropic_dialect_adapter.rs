@@ -127,6 +127,7 @@ fn s3_step_start_silently_consumed_lazy_text_block() {
         step_name: "S".into(),
         step_index: 0,
         step_type: "step".into(),
+            branch_path: String::new(),
         timestamp_ms: 2,
     });
     assert_eq!(
@@ -152,6 +153,7 @@ fn s4_first_step_token_opens_text_block_then_delta() {
         step_name: "Generate".into(),
         content: "Hola".into(),
         token_index: 1,
+            branch_path: String::new(),
         timestamp_ms: 2,
     });
     assert_eq!(
@@ -207,12 +209,14 @@ fn s5_subsequent_step_token_reuses_open_text_block() {
         step_name: "S".into(),
         content: "Hola".into(),
         token_index: 1,
+            branch_path: String::new(),
         timestamp_ms: 2,
     });
     let events = adapter.translate(&FlowExecutionEvent::StepToken {
         step_name: "S".into(),
         content: ", ¿".into(),
         token_index: 2,
+            branch_path: String::new(),
         timestamp_ms: 3,
     });
     assert_eq!(
@@ -239,6 +243,7 @@ fn s6_step_complete_closes_open_text_block() {
         step_name: "S".into(),
         content: "Hola".into(),
         token_index: 1,
+            branch_path: String::new(),
         timestamp_ms: 2,
     });
     let events = adapter.translate(&FlowExecutionEvent::StepComplete {
@@ -248,6 +253,7 @@ fn s6_step_complete_closes_open_text_block() {
         full_output: "Hola".into(),
         tokens_input: 0,
         tokens_output: 1,
+            branch_path: String::new(),
         timestamp_ms: 3,
     });
     assert_eq!(events.len(), 1, "StepComplete → 1 content_block_stop frame");
@@ -325,6 +331,7 @@ fn s8_tool_call_mid_step_closes_text_block_first() {
         step_name: "S".into(),
         content: "Pensando".into(),
         token_index: 1,
+            branch_path: String::new(),
         timestamp_ms: 2,
     });
     // Now a ToolCall arrives — adapter must close the text block first.
@@ -424,6 +431,7 @@ fn s11_block_indices_advance_monotonically() {
         step_name: "S1".into(),
         content: "A".into(),
         token_index: 1,
+            branch_path: String::new(),
         timestamp_ms: 2,
     });
     let s1_start_data = event_data(&s1_events[0]);
@@ -436,12 +444,14 @@ fn s11_block_indices_advance_monotonically() {
         full_output: "A".into(),
         tokens_input: 0,
         tokens_output: 1,
+            branch_path: String::new(),
         timestamp_ms: 3,
     });
     let s2_events = adapter.translate(&FlowExecutionEvent::StepToken {
         step_name: "S2".into(),
         content: "B".into(),
         token_index: 1,
+            branch_path: String::new(),
         timestamp_ms: 4,
     });
     let s2_start_data = event_data(&s2_events[0]);

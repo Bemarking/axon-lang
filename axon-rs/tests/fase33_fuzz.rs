@@ -474,12 +474,14 @@ fn fuzz_flow_execution_event_serde_round_trip() {
                 step_name: format!("S{}", rng.next_in(0, 9999)),
                 step_index: rng.next_in(0, 9999) as usize,
                 step_type: format!("t{}", rng.next_in(0, 99)),
+                branch_path: String::new(),
                 timestamp_ms: rng.next_in(0, 1_000_000_000),
             },
             2 => FlowExecutionEvent::StepToken {
                 step_name: format!("S{}", rng.next_in(0, 9999)),
                 content: format!("c{}", rng.next_in(0, 9999)),
                 token_index: rng.next_in(0, 9999),
+                branch_path: String::new(),
                 timestamp_ms: rng.next_in(0, 1_000_000_000),
             },
             3 => FlowExecutionEvent::StepComplete {
@@ -489,6 +491,7 @@ fn fuzz_flow_execution_event_serde_round_trip() {
                 full_output: format!("o{}", rng.next_in(0, 9999)),
                 tokens_input: rng.next_in(0, 9999),
                 tokens_output: rng.next_in(0, 9999),
+                branch_path: String::new(),
                 timestamp_ms: rng.next_in(0, 1_000_000_000),
             },
             4 => FlowExecutionEvent::FlowComplete {

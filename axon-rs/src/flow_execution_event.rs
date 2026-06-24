@@ -69,6 +69,16 @@ pub enum FlowExecutionEvent {
         step_name: String,
         step_index: usize,
         step_type: String,
+        /// §Fase 65 (D-letter amendment) — the MULTIPLEXING KEY for honest
+        /// out-of-order SSE. A `par`-block's branches execute concurrently and
+        /// emit their events INTERLEAVED on the one stream (reactive, wall-clock
+        /// arrival — NOT serialized). This carries the emitting node's
+        /// `branch_path` (`"par[0]"`, `"par[1].step[2]"`, …) so the SSE consumer
+        /// DEMUXES the concurrent branch streams instead of guessing by arrival.
+        /// Empty (`skip_serializing_if`) for a sequential top-level step →
+        /// byte-identical to the pre-§65 wire shape (drift gate stays green).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        branch_path: String,
         timestamp_ms: u64,
     },
     /// Emitted per token / chunk produced by the step's underlying
@@ -85,6 +95,11 @@ pub enum FlowExecutionEvent {
         /// FlowStart. Adopter clients use this to correlate
         /// `Last-Event-ID` resumes (W3C SSE spec).
         token_index: u64,
+        /// §Fase 65 — multiplexing key (see `StepStart::branch_path`): routes a
+        /// concurrent `par`-branch's tokens to the right logical stream. Empty
+        /// for sequential steps.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        branch_path: String,
         timestamp_ms: u64,
     },
     /// Emitted exactly once per step at its end boundary.
@@ -95,6 +110,10 @@ pub enum FlowExecutionEvent {
         full_output: String,
         tokens_input: u64,
         tokens_output: u64,
+        /// §Fase 65 — multiplexing key (see `StepStart::branch_path`): marks the
+        /// end of a concurrent `par`-branch's step. Empty for sequential steps.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        branch_path: String,
         timestamp_ms: u64,
     },
     /// §Fase 33.y.k — Tool invocation chunk. Emitted by per-step
@@ -197,6 +216,7 @@ mod tests {
             step_name: "S".to_string(),
             content: "hello".to_string(),
             token_index: 1,
+            branch_path: String::new(),
             timestamp_ms: 1_000_001,
         }
     }
@@ -250,6 +270,7 @@ mod tests {
                 step_name: "S".to_string(),
                 step_index: 0,
                 step_type: "step".to_string(),
+            branch_path: String::new(),
                 timestamp_ms: 1,
             },
             ev_step_token(),
@@ -260,6 +281,7 @@ mod tests {
                 full_output: "hello world".to_string(),
                 tokens_input: 0,
                 tokens_output: 2,
+            branch_path: String::new(),
                 timestamp_ms: 2,
             },
             ev_flow_complete(),
@@ -284,6 +306,7 @@ mod tests {
             step_name: "S".to_string(),
             step_index: 0,
             step_type: "step".to_string(),
+            branch_path: String::new(),
             timestamp_ms: 0,
         }
         .is_terminator());
@@ -294,6 +317,7 @@ mod tests {
             full_output: "".to_string(),
             tokens_input: 0,
             tokens_output: 0,
+            branch_path: String::new(),
             timestamp_ms: 0,
         }
         .is_terminator());
@@ -314,6 +338,7 @@ mod tests {
             step_name: "S".to_string(),
             step_index: 0,
             step_type: "step".to_string(),
+            branch_path: String::new(),
             timestamp_ms: 0,
         }
         .is_step_scoped());
@@ -324,6 +349,7 @@ mod tests {
             full_output: "".to_string(),
             tokens_input: 0,
             tokens_output: 0,
+            branch_path: String::new(),
             timestamp_ms: 0,
         }
         .is_step_scoped());
@@ -346,6 +372,7 @@ mod tests {
                 step_name: "S".to_string(),
                 step_index: 0,
                 step_type: "".to_string(),
+            branch_path: String::new(),
                 timestamp_ms: 0,
             }
             .kind(),
@@ -359,6 +386,7 @@ mod tests {
                 full_output: "".to_string(),
                 tokens_input: 0,
                 tokens_output: 0,
+            branch_path: String::new(),
                 timestamp_ms: 0,
             }
             .kind(),

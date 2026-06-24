@@ -254,6 +254,7 @@ fn s1_openai_envelope_event_populates_axon_metadata_frame_fully() {
         step_name: "Generate".into(),
         content: "Hi".into(),
         token_index: 1,
+            branch_path: String::new(),
         timestamp_ms: 2,
     });
     let envelope = full_envelope_fixture();
@@ -348,6 +349,7 @@ fn s2_anthropic_envelope_event_populates_axon_metadata_frame_fully() {
         step_name: "Generate".into(),
         content: "Hi".into(),
         token_index: 1,
+            branch_path: String::new(),
         timestamp_ms: 2,
     });
     let envelope = full_envelope_fixture();

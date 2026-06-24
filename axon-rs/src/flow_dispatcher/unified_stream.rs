@@ -341,6 +341,11 @@ async fn unified_drain_direct(
                 step_name: step_name.to_string(),
                 content: chunk.delta.clone(),
                 token_index: summary.tokens_emitted,
+                // §Fase 65 — this unified tool-stream drainer takes `tx`/`step_name`
+                // directly (no DispatchCtx), so a tool-stream inside a `par`
+                // branch loses the demux key here; threading branch_path through
+                // the drainer is a follow-up.
+                branch_path: String::new(),
                 timestamp_ms: crate::flow_execution_event::now_ms(),
             })
             .map_err(|_| DispatchError::ChannelClosed)?;
@@ -424,6 +429,11 @@ async fn unified_drain_with_policy(
                 step_name: step_name.to_string(),
                 content: chunk.delta.clone(),
                 token_index: summary.tokens_emitted,
+                // §Fase 65 — this unified tool-stream drainer takes `tx`/`step_name`
+                // directly (no DispatchCtx), so a tool-stream inside a `par`
+                // branch loses the demux key here; threading branch_path through
+                // the drainer is a follow-up.
+                branch_path: String::new(),
                 timestamp_ms: crate::flow_execution_event::now_ms(),
             })
             .map_err(|_| DispatchError::ChannelClosed)?;

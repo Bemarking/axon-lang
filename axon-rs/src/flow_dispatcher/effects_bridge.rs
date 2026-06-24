@@ -94,6 +94,7 @@ pub async fn run_stream(
             step_name: step_name.clone(),
             step_index,
             step_type: "stream".to_string(),
+                branch_path: ctx.branch_path_string(),
             timestamp_ms: now_ms(),
         })
         .map_err(|_| DispatchError::ChannelClosed)?;
@@ -110,6 +111,7 @@ pub async fn run_stream(
             full_output: String::new(),
             tokens_input: 0,
             tokens_output: 0,
+                branch_path: ctx.branch_path_string(),
             timestamp_ms: now_ms(),
         })
         .map_err(|_| DispatchError::ChannelClosed)?;
@@ -210,6 +212,7 @@ pub async fn bridge_effect_stream_yield(
                 step_name: step_name.to_string(),
                 content: wire_content,
                 token_index: (token_index as u64) + 1,
+                branch_path: ctx.branch_path_string(),
                 timestamp_ms: now_ms(),
             })
             .map_err(|_| DispatchError::ChannelClosed)?;
