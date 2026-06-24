@@ -2906,12 +2906,13 @@ pub fn derive_epistemic_envelopes_for_flow(
 /// away behind `AXON_LEGACY_EXECUTOR` as a one-release KILL-SWITCH (fix-forward
 /// per [[feedback-versioning-discipline]]) before retirement. Verified: the
 /// 50-flow parity corpus + the `execute_server_flow` integration suite stay
-/// green with the dispatcher as the engine. HONEST, documented regressions
-/// (kill-switch available; follow-up to close): the non-streaming envelope's
-/// `provenance_events`/`blame_attribution` are empty (the dispatcher doesn't
-/// emit them yet — SSE never had them either, so both paths are now consistent),
-/// and the auto-parallel wave-scheduler is gone (linear walk; `par` gives
-/// explicit concurrency).
+/// green with the dispatcher as the engine. §Fase 65.E.3 closed the documented
+/// observability regression: the non-streaming envelope's `provenance_events`
+/// (IR-derived), `blame_attribution` + `anchor_breaches` (projected from the
+/// dispatcher's per-step audit records) are now at parity with the legacy
+/// executor. The one remaining behavioral difference is intentional: the
+/// auto-parallel wave-scheduler is gone (linear walk; `par` gives explicit
+/// concurrency).
 fn unified_driver_enabled() -> bool {
     !matches!(
         std::env::var("AXON_LEGACY_EXECUTOR").ok().as_deref(),
@@ -2926,6 +2927,16 @@ struct CollectedRun {
     tokens_output: u64,
     step_names: Vec<String>,
     step_results: Vec<String>,
+    // §Fase 65.E.3 — observability parity with the legacy executor. The
+    // dispatcher records per-step anchor breaches in `ctx.step_audit_records`
+    // (`StepAuditRecord.anchor_breaches: Vec<String>`); the collector sums them
+    // and derives the same AnchorBreach `blame_attribution` shape the legacy path
+    // produced from its `ExecutionReport`, closing the documented §65.E.2 gap.
+    // Note: the unified engine evaluates anchors on EVERY backend (§65.C.3),
+    // including stub — where the legacy executor under-reported (0 breaches) — so
+    // the count is a faithful superset, not a byte-equal mirror, of the legacy.
+    anchor_breaches: usize,
+    blame_attribution: Option<crate::wire_envelope::BlameContext>,
 }
 
 /// §Fase 65.E — run a flow through the DISPATCHER with a BUFFER sink and collect
@@ -2936,11 +2947,11 @@ struct CollectedRun {
 /// `step_names` + `step_results` (the §65.D projection captures structural-verb
 /// outputs from `StepComplete.full_output`, not just per-token `StepToken`).
 ///
-/// HONEST GAPS (deferred to the irreversible cutover, NOT this reversible step):
-/// no eager connection-pinning (store ops lazily acquire here — the pre-37.x.j
-/// path; correct but without pooler-pinning) + no provenance/blame emission (the
-/// dispatcher doesn't produce them yet). Epistemic envelopes are IR-derived by
-/// the caller, so those stay byte-identical.
+/// §Fase 65.E.3 — anchor breaches + blame attribution are now projected from the
+/// dispatcher's per-step audit records (`ctx.step_audit_records`), at parity with
+/// the legacy executor. Provenance events are IR-derived by the caller (pure walk)
+/// and epistemic envelopes likewise, so both stay byte-identical. Eager
+/// connection-pinning is handled by the caller (the §37.x.j discipline).
 async fn collect_via_dispatcher(
     flow: &crate::ir_nodes::IRFlow,
     backend: &str,
@@ -2982,6 +2993,11 @@ async fn collect_via_dispatcher(
     for (k, v) in param_bindings {
         ctx.let_bindings.insert(k.clone(), v.clone());
     }
+
+    // §Fase 65.E.3 — share the audit-record sink so we can read the per-step
+    // anchor breaches AFTER the walk (the `drop(ctx)` below releases the ctx's
+    // own handle; this Arc clone keeps the records alive for the projection).
+    let audit_records = ctx.step_audit_records.clone();
 
     let mut success = true;
     let mut tokens_output: u64 = 0;
@@ -3046,12 +3062,44 @@ async fn collect_via_dispatcher(
         step_results.push(value);
     }
 
+    // §Fase 65.E.3 — project anchor breaches + blame from the per-step audit
+    // records, closing the §65.E.2 cutover gap. `anchor_breaches` is the count;
+    // `blame_attribution` mirrors the legacy `derive_blame_from_report`
+    // AnchorBreach attribution (location `step:<name>`, structural message,
+    // AnchorBreach kind), coalesced by `merge_blame`'s first-emitted-wins
+    // discipline — so for a given breach the two engines emit the SAME blame
+    // shape. (The dispatcher evaluates anchors on every backend per §65.C.3, so
+    // on stub it faithfully surfaces breaches the legacy executor dropped.)
+    let mut anchor_breaches = 0usize;
+    let mut blame_attribution: Option<crate::wire_envelope::BlameContext> = None;
+    for rec in audit_records.lock().await.iter() {
+        if rec.anchor_breaches.is_empty() {
+            continue;
+        }
+        anchor_breaches += rec.anchor_breaches.len();
+        let blame = crate::wire_envelope::BlameContext {
+            kind: crate::wire_envelope::BlameKind::AnchorBreach,
+            location: format!("step:{}", rec.step_name),
+            message: format!(
+                "{} anchor breach(es) on step '{}' — flow \
+                 proceeded on degraded posture",
+                rec.anchor_breaches.len(),
+                rec.step_name
+            ),
+            d_letter: Some("39.c.z".to_string()),
+        };
+        blame_attribution =
+            crate::wire_envelope_producers::merge_blame(blame_attribution, Some(blame));
+    }
+
     CollectedRun {
         success,
         steps_executed: step_names.len(),
         tokens_output,
         step_names,
         step_results,
+        anchor_breaches,
+        blame_attribution,
     }
 }
 
@@ -3364,18 +3412,40 @@ pub fn execute_server_flow(
                 .iter()
                 .map(|r| if r.is_empty() { Vec::new() } else { vec![r.clone()] })
                 .collect();
+            // §Fase 65.E.3 — `provenance_events` is a PURE IR walk in the legacy
+            // path (`execution_units` → `(step_type, step_name)` → closed-catalog
+            // slugs), zero execution dependency — so deriving it here from the
+            // same `execution_units` is byte-identical with the legacy + SSE
+            // paths, closing the §65.E.2 provenance regression.
+            let provenance_walk: Vec<(String, String)> = execution_units
+                .iter()
+                .flat_map(|u| {
+                    u.steps
+                        .iter()
+                        .map(|s| (s.step_type.clone(), s.step_name.clone()))
+                })
+                .collect();
+            let provenance_events =
+                crate::wire_envelope_producers::collect_provenance_events_from(
+                    &provenance_walk,
+                );
             return Ok(ServerRunnerMetrics {
                 success: collected.success,
                 steps_executed: collected.steps_executed,
                 tokens_input: 0,
                 tokens_output: collected.tokens_output,
-                anchor_breaches: 0,
+                // §Fase 65.E.3 — projected from the dispatcher's per-step audit
+                // records (count parity with the legacy walk).
+                anchor_breaches: collected.anchor_breaches,
                 step_names: collected.step_names,
                 step_results: collected.step_results,
                 per_step_chunks,
-                // HONEST GAP — the dispatcher doesn't emit these yet (cutover work).
-                provenance_events: Vec::new(),
-                blame_attribution: None,
+                // §Fase 65.E.3 — IR-derived (provenance) + audit-derived (blame),
+                // both at parity with the legacy executor. The §65.E.2 regression
+                // is closed: the dispatcher envelope now carries the same epistemic
+                // lineage the legacy path did.
+                provenance_events,
+                blame_attribution: collected.blame_attribution,
                 // IR-derived → byte-identical with the legacy + SSE paths.
                 epistemic_envelopes: derive_epistemic_envelopes_for_flow(ir, flow_name),
             });
