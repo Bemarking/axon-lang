@@ -168,6 +168,7 @@ fn fase39b_s5_sealed_envelope_carries_full_psi_vector() {
         epistemic_envelopes: Vec::new(),
         execution_metrics: ExecutionMetrics::default(),
         trace_id: "test-trace".to_string(),
+        error: None,
     }
     .seal();
     let json = serde_json::to_value(&env).expect("serialize");
@@ -214,6 +215,7 @@ fn fase39b_s5_theorem_5_1_bounds_derived_certainty() {
         epistemic_envelopes: Vec::new(),
         execution_metrics: ExecutionMetrics::default(),
         trace_id: "x".to_string(),
+        error: None,
     };
     env.certainty = 0.999_999; // attempt to escape the bound
     let sealed = env.seal();
@@ -288,6 +290,7 @@ fn fase39b_s6_audit_chain_hash_deterministic_on_identical_input() {
         epistemic_envelopes: Vec::new(),
         execution_metrics: ExecutionMetrics::default(),
         trace_id: "t".to_string(),
+        error: None,
     }
     .seal();
     let env_b_inputs = FlowEnvelope {
@@ -311,6 +314,7 @@ fn fase39b_s6_audit_chain_hash_deterministic_on_identical_input() {
         epistemic_envelopes: Vec::new(),
         execution_metrics: ExecutionMetrics::default(),
         trace_id: "t".to_string(),
+        error: None,
     }
     .seal();
     assert_eq!(
@@ -338,6 +342,7 @@ fn fase39b_s6_audit_chain_hash_changes_on_provenance_tamper() {
         epistemic_envelopes: Vec::new(),
         execution_metrics: ExecutionMetrics::default(),
         trace_id: "t".to_string(),
+        error: None,
     };
     let clean = base().seal();
     let mut tampered_input = base();
@@ -429,6 +434,7 @@ fn fase39b_s8_from_execution_result_e2e() {
         provenance_events: Vec::new(),
         blame_attribution: None,
         epistemic_envelopes: Vec::new(),
+        error: None,
     };
     let env = FlowEnvelope::from_execution_result(
         exec,

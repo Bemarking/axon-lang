@@ -106,6 +106,7 @@ fn sync_wire_array(envs: Vec<EpistemicEnvelope>) -> serde_json::Value {
         blame_attribution: None,
         execution_metrics: Default::default(),
         trace_id: "t".into(),
+        error: None,
     }
     .seal();
     serde_json::to_value(&env).expect("serialize FlowEnvelope")["epistemic_envelopes"].clone()

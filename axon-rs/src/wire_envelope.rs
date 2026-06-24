@@ -139,6 +139,20 @@ pub struct FlowEnvelope {
     /// String form for cross-stack compat (the v1.x `trace_id: u64`
     /// is reborn here as Uuid v4 hex string).
     pub trace_id: String,
+
+    /// §Fase 65.F — the HONEST hard-failure detail when the flow aborted on
+    /// a node's `DispatchError` (a failing `persist`/`mutate`/`purge` store
+    /// write, a backend error, etc.). `Some("flow 'F' failed at persist into
+    /// 'S': <cause>")` names the failing node + the underlying cause. This is
+    /// distinct from `blame_attribution`, which is reserved for SOFT
+    /// degradation reported ON the success path — a hard fail needs its own
+    /// slot. Mirrors the streaming dispatcher's `FlowError.error` so a
+    /// non-streaming endpoint surfaces store-write failures with the SAME
+    /// honesty the SSE path always had (closing the §65.E.2 silent-abort
+    /// regression). `None` — and elided from the JSON — on the clean path, so
+    /// every pre-§65.F happy-path wire stays byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// §Fase 39 (D5) — per-step audit surface. Structured replacement
@@ -364,6 +378,9 @@ impl FlowEnvelope {
                 source_file: exec_result.source_file,
             },
             trace_id,
+            // §Fase 65.F — the honest hard-failure detail (named node + cause),
+            // verbatim from the runtime walk. `None` on the clean path.
+            error: exec_result.error,
         }
     }
 }
@@ -522,6 +539,7 @@ mod tests {
             provenance_events: Vec::new(),
             blame_attribution: None,
             epistemic_envelopes: Vec::new(),
+            error: None,
         }
     }
 
@@ -680,6 +698,7 @@ mod tests {
             blame_attribution: None,
             execution_metrics: ExecutionMetrics::default(),
             trace_id: "x".to_string(),
+            error: None,
         };
         env.certainty = 1.0;
         let sealed = env.seal();
@@ -716,6 +735,7 @@ mod tests {
             blame_attribution: None,
             execution_metrics: ExecutionMetrics::default(),
             trace_id: "x".to_string(),
+            error: None,
         };
         let sealed = degenerate.seal();
         assert_eq!(sealed.certainty, 1.0);

@@ -2131,6 +2131,20 @@ pub struct ServerExecutionResult {
     /// wire) for flows that dispatch no epistemic-annotated tool.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub epistemic_envelopes: Vec<crate::epistemic_capture::EpistemicEnvelope>,
+
+    /// §Fase 65.F — the HONEST hard-failure detail when a node's
+    /// `DispatchError` aborted the non-streaming flow (a failing
+    /// `persist`/`mutate`/`purge` store write, a backend error, etc.):
+    /// `Some("flow 'F' failed at persist into 'S': <cause>")`, naming the
+    /// failing node + the underlying cause. Byte-parity with the streaming
+    /// dispatcher's `FlowError.error` (§37.e/D6). `None` on the clean path;
+    /// the converter writes this slot into `FlowEnvelope.error` verbatim and
+    /// counts it as one `errors` so the wire envelope's certainty bounds to
+    /// the derived ceiling. Closes the §65.E.2 silent-abort regression (a
+    /// pre-insert store failure used to present as `success:false` + empty
+    /// result + zero diagnostic). Elided from the wire when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// §Fase 33.x.d — Wire-serializable mirror of
@@ -2253,7 +2267,12 @@ fn server_execute(
         tokens_output: run_res.tokens_output,
         anchor_checks: anchor_count,
         anchor_breaches: run_res.anchor_breaches,
-        errors: type_errors.len(),
+        // §Fase 65.F — a hard node failure (the runner's `error` slot) counts
+        // as one runtime error ON TOP of any compile-time type errors, so the
+        // `FlowEnvelope`'s `derived_status`/certainty bound reflects the abort
+        // (Theorem 5.1: `errors > 0 ⇒ certainty ≤ 0.99`) instead of a clean
+        // `success:false` that read as a happy-path non-success.
+        errors: type_errors.len() + usize::from(run_res.error.is_some()),
         step_names: run_res.step_names,
         step_results: run_res.step_results,
         trace_id: 0, // set after recording
@@ -2265,6 +2284,9 @@ fn server_execute(
         blame_attribution: run_res.blame_attribution,
         // §Fase 55.b — propagate the IR-derived epistemic envelopes.
         epistemic_envelopes: run_res.epistemic_envelopes,
+        // §Fase 65.F — the honest hard-failure detail (named node + cause),
+        // or `None` on the clean path.
+        error: run_res.error,
     })
 }
 
