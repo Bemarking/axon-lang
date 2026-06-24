@@ -203,7 +203,25 @@ fn project_events(events: &[FlowExecutionEvent]) -> AsyncMetrics {
                     }
                 }
             }
-            FlowExecutionEvent::StepComplete { .. } => {
+            FlowExecutionEvent::StepComplete { full_output, .. } => {
+                // §Fase 65.D — capture the step's FULL output. `StepComplete`
+                // carries the complete accumulated text for EVERY step type,
+                // including STRUCTURAL verbs (navigate / drill / trail) that emit
+                // their result via `StepComplete.full_output` with NO per-token
+                // `StepToken` events. Before this, those verbs' async
+                // `step_result` projected EMPTY, so a divergence between the two
+                // paths' structural output went UNCOMPARED — exactly the hole
+                // that let the §65.A `navigate`-hallucination bug slip past this
+                // gate. For LLM steps `full_output` equals the StepToken
+                // accumulation already in `acc`, so we only fill when empty
+                // (structural verbs) — LLM-step parity is unchanged.
+                if let Some(idx) = current_step_idx {
+                    if let Some(acc) = step_results.get_mut(idx) {
+                        if acc.is_empty() {
+                            *acc = full_output.clone();
+                        }
+                    }
+                }
                 current_step_idx = None;
             }
             FlowExecutionEvent::FlowComplete {
