@@ -87,7 +87,7 @@ jobs:
         # T801 unknown-column-in-where, T802 type mismatch, T803 persist
         # NOT-NULL omission, T804 unknown-field-in-block. Hot path = the
         # type-checker; zero new crate deps.
-        run: cargo test --lib store_column_proof::
+        run: "cargo test --lib store_column_proof::"
 
       - name: Frontend — Fase 38.a inverted diagnostic anchors
         working-directory: axon-frontend
@@ -104,7 +104,7 @@ jobs:
         # tests in the module; this catches any silent contract
         # regression on the reverse pg_type → StoreColumnType matrix
         # + the OmittedColumn / ColumnDelta / ManifestDiff surfaces.
-        run: cargo test --lib store_introspect::
+        run: "cargo test --lib store_introspect::"
 
   # ── 2. Manifest round-trip — parse → canonical → SHA-256 → verify ──
   manifest-roundtrip:
@@ -130,7 +130,7 @@ jobs:
         # FIPS 180-4 SHA-256 → verify_content_hash byte-for-byte. Plus
         # the discovery walker (file naming convention) + merge logic
         # (DuplicateStore across files). Zero new crate deps.
-        run: cargo test --lib store_schema_manifest::
+        run: "cargo test --lib store_schema_manifest::"
 
       - name: Frontend — Fase 38.i curated-manifest integration pack
         working-directory: axon-frontend
@@ -180,7 +180,7 @@ jobs:
         # module ships `application_name_for_with_namespace` (Gap-3) +
         # `connect_named_with_namespace`. Both surfaces are pure; the
         # runtime DSN is mocked through the constructor.
-        run: cargo test --lib store::registry:: store::postgres_backend::
+        run: "cargo test --lib store::registry:: store::postgres_backend::"
 
       - name: Backend — StoreError T806 / T807 message contracts
         working-directory: axon-rs
@@ -188,7 +188,7 @@ jobs:
         # explicit Display impls with cross-stack-stable language. This
         # lane is the contract gate for the operator-visible diagnostic
         # text; a phrasing drift here is a regression.
-        run: cargo test --lib store::registry::tests
+        run: "cargo test --lib store::registry::tests"
         # NOTE: store::registry::tests covers the report-shape +
         # T807 drift + T806 missing-env surfaces in the same module-
         # internal tests block.

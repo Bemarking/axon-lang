@@ -71,7 +71,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-fase36x-frontend-
 
-      - name: Fase 36.x.b — `backend: in_memory` type-checks (catalog + connection-optional)
+      - name: "Fase 36.x.b — `backend: in_memory` type-checks (catalog + connection-optional)"
         working-directory: axon-frontend
         run: cargo test --test fase36x_b_in_memory_store -- --nocapture
 
