@@ -268,6 +268,8 @@ async fn cognitive_framing_variants_unchanged_no_tool_call() {
             query: "q".into(),
             trail_enabled: false,
             output_name: "o".into(),
+            seed: String::new(),
+            budget: None,
         }),
         IRFlowNode::Corroborate(IRCorroborateStep {
             node_type: "corroborate",

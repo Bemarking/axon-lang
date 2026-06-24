@@ -2734,7 +2734,7 @@ impl Parser {
             TokenType::Use => self.parse_use_step(),
             TokenType::Remember => self.parse_remember_step(),
             TokenType::Recall => self.parse_recall_step(),
-            TokenType::Par => self.parse_block_step("par").map(|l| FlowStep::Par(ParBlock { loc: l })),
+            TokenType::Par => self.parse_par_block().map(FlowStep::Par),
             TokenType::Hibernate => self.parse_hibernate_step(),
             TokenType::Deliberate => self.parse_block_step("deliberate").map(|l| FlowStep::Deliberate(DeliberateBlock { loc: l })),
             TokenType::Consensus => self.parse_block_step("consensus").map(|l| FlowStep::Consensus(ConsensusBlock { loc: l })),
@@ -3435,6 +3435,32 @@ impl Parser {
         Ok(Loc {
             line: tok.line,
             column: tok.column,
+        })
+    }
+
+    /// §Fase 65 — Parse `par { stmt1  stmt2  … }` into CONCURRENT branches.
+    /// Each top-level flow statement inside the block is one branch (a
+    /// single-statement body); they execute concurrently at runtime
+    /// (`flow_dispatcher::parallel::run_branches_concurrently`). Before §65 the
+    /// `par` body was skipped (`parse_block_step`), so the branches were lost
+    /// and the handler ran as a stub. Multi-statement branches (grouping
+    /// several steps into one sequential branch) are a future grammar
+    /// extension; today the natural `par { step A  step B }` fans A and B out.
+    fn parse_par_block(&mut self) -> Result<ParBlock, ParseError> {
+        let tok = self.current().clone();
+        self.advance(); // consume `par`
+        self.consume(TokenType::LBrace)?;
+        let mut branches: Vec<Vec<FlowStep>> = Vec::new();
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            branches.push(vec![self.parse_flow_step()?]);
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(ParBlock {
+            branches,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
         })
     }
 

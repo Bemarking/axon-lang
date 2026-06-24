@@ -127,6 +127,8 @@ fn navigate(pix_ref: &str, corpus_ref: &str, query: &str, output_name: &str) -> 
         query: query.into(),
         trail_enabled: true,
         output_name: output_name.into(),
+            seed: String::new(),
+            budget: None,
     })
 }
 

@@ -990,6 +990,13 @@ pub struct IRParallelBlock {
     pub node_type: &'static str,
     pub source_line: u32,
     pub source_column: u32,
+    /// §Fase 65 — the concurrent branches lowered from the AST `par { … }`.
+    /// Each branch is a flow-IR body run concurrently by the dispatcher's
+    /// `run_branches_concurrently`. `skip_serializing_if = "Vec::is_empty"` so a
+    /// payload-free / empty `par` serializes byte-identically to the pre-§65
+    /// shape (D5 back-compat); a `par` with real branches carries them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<Vec<IRFlowNode>>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -304,6 +304,8 @@ async fn trail_after_navigate_chain() {
         query: "search".into(),
         trail_enabled: true,
         output_name: "nav_session".into(),
+            seed: String::new(),
+            budget: None,
     });
     dispatch_node(&nav, &mut ctx).await.unwrap();
 

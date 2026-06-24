@@ -142,6 +142,7 @@ async fn fuzz_par_handler_never_panics() {
             node_type: "par",
             source_line: 0,
             source_column: 0,
+            branches: Vec::new(),
         };
         let outcome = run_par(&par, &mut ctx).await;
         assert_no_panic_outcome(&format!("par iter={iter}"), &outcome);
@@ -325,6 +326,7 @@ async fn fuzz_par_stream_nested_inside_orchestration() {
                 node_type: "par",
                 source_line: 0,
                 source_column: 0,
+            branches: Vec::new(),
             })
         } else {
             IRFlowNode::Stream(IRStreamBlock {

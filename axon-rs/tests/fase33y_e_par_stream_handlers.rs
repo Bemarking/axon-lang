@@ -54,6 +54,7 @@ fn par_node() -> IRFlowNode {
         node_type: "par",
         source_line: 0,
         source_column: 0,
+            branches: Vec::new(),
     })
 }
 
