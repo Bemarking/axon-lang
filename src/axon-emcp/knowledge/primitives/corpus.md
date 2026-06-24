@@ -144,6 +144,59 @@ flow Recall(q: String) -> String {
 }
 ```
 
+#### Sub-tenant column scope — `navigate … where:` (§Fase 66)
+
+The graph is per-tenant by inheritance from the store's RLS scope (by
+**axon-tenant**). When you multiplex many end-clients inside ONE axon-tenant
+and distinguish them with a **column** (e.g. a `tenant_id` UUID per row), add a
+`where:` filter so the graph is sourced from ONLY that sub-tenant's rows — the
+SAME filter is pushed to the SELECT behind both `documents:` and `relations:`:
+
+```axon
+flow Recall(q: String, tenant_id: String) -> String {
+    navigate LtmGraph {
+        query: "${q}"  budget: 5
+        where: "tenant_id == '${tenant_id}'"   # column scope; ${…} → bind param
+        output: hits
+    }
+    return hits
+}
+```
+
+`where:` is the same flat filter grammar as `retrieve … where` (§37.d): the
+column identifiers are SQL structure, the `${name}` references resolve to `$N`
+bind parameters (injection-safe). Omit `where:` for the RLS-only default. Without
+it, a navigate over a column-multiplexed store would source EVERY sub-tenant's
+rows — a cross-client leak. (Reading scope, not writing: a `persist` is already
+column-honest via the row's own `tenant_id` value.)
+
+#### Populating typed edges — `for e in <List<Record>>` + `${e.field}` (§Fase 66)
+
+The edges are explicit: a step classifies them, then a loop persists one row per
+edge. Field-access on the loop element resolves via `${e.field}` (the element is
+a record):
+
+```axon
+step ClassifyEdges {                       # output: List<EdgeDecision>
+    given: prior
+    ask: "Classify cite/contradict/elaborate edges of the new summary vs priors…"
+    output: List<EdgeDecision>             # type EdgeDecision { to_id: Uuid  etype: Text  weight: Float }
+}
+for e in ClassifyEdges.output {
+    persist LtmEdges {
+        tenant_id: "${tenant_id}"          # flow param
+        from_id:   "${summary_id}"         # flow param
+        to_id:     "${e.to_id}"            # §66 — field-access of the loop element
+        etype:     "${e.etype}"
+        weight:    "${e.weight}"
+    }
+}
+```
+
+`${e.field}` is the canonical form: the loop binds `e` to each `List<Record>`
+element (a JSON object), and the `${…}` engine walks the dotted path into it. A
+bare `e.field` is NOT a value reference; always wrap field-access in `"${…}"`.
+
 Two stores because an `axonstore` is **one table**: documents and
 edges have different schemas. The edge endpoints (`from`/`to`) must
 match the document id column's type. Edges are **explicit** — the flow

@@ -270,6 +270,7 @@ async fn cognitive_framing_variants_unchanged_no_tool_call() {
             output_name: "o".into(),
             seed: String::new(),
             budget: None,
+            where_expr: String::new(),
         }),
         IRFlowNode::Corroborate(IRCorroborateStep {
             node_type: "corroborate",

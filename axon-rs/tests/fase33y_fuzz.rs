@@ -421,6 +421,7 @@ fn random_navigate(lcg: &mut Lcg) -> IRFlowNode {
         output_name: lcg.ascii_with_random_len(8),
             seed: String::new(),
             budget: None,
+            where_expr: String::new(),
     })
 }
 

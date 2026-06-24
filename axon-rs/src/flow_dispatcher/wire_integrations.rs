@@ -648,6 +648,15 @@ pub async fn run_retrieve(
 pub async fn read_all_store_rows(
     ctx: &mut DispatchCtx,
     store_name: &str,
+    // §Fase 66 (Q2) — optional column-scope filter (the navigate `where:`),
+    // pushed to the SELECT that sources the corpus rows. Empty string = no
+    // column filter (the §64 default: all rows visible to the axon-tenant via
+    // RLS). A non-empty expr is compiled by the §37.d filter compiler (in
+    // `stream_retrieve`), which resolves `${name}` → `$N` bind params against
+    // `ctx.let_bindings` — injection-safe — so an adopter multiplexing
+    // sub-tenants in one axon-tenant via a column scopes the MDN graph to a
+    // single sub-tenant (`where: "tenant_id == '${tenant_id}'"`).
+    where_expr: &str,
 ) -> Result<Option<Vec<crate::store::postgres_backend::StoreRow>>, DispatchError> {
     match resolve_pg_backend(ctx, store_name) {
         Ok(Some((backend, _floor))) => {
@@ -670,7 +679,11 @@ pub async fn read_all_store_rows(
                     &backend,
                     &mut store_conn,
                     store_name,
-                    "", // empty filter → all rows visible to the tenant (RLS-scoped)
+                    // §Fase 66 (Q2) — the navigate `where:` column-scope filter
+                    // (empty → all rows visible to the axon-tenant, RLS-scoped,
+                    // the §64 default). `${name}` resolves to `$N` bind params
+                    // against `let_bindings` (§37.d) — injection-safe.
+                    where_expr,
                     row_stream::DEFAULT_RETRIEVE_POLICY,
                     row_stream::DEFAULT_MAX_ROWS,
                     &ctx.cancel,

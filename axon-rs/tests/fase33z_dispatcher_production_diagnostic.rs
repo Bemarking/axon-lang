@@ -977,6 +977,7 @@ fn d1_catalog_totality_pin_45_variants() {
             output_name: String::new(),
             seed: String::new(),
             budget: None,
+            where_expr: String::new(),
         }),
         IRFlowNode::Drill(IRDrillStep {
             node_type: "drill",

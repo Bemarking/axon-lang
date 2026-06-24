@@ -4318,6 +4318,7 @@ mod fase65_navigate_bridge {
             output_name: "o".into(),
             seed: String::new(),
             budget: None,
+            where_expr: String::new(),
         });
         assert!(routes_through_dispatcher(&nav));
         let drill = IRFlowNode::Drill(IRDrillStep {
@@ -4372,6 +4373,7 @@ mod fase65_navigate_bridge {
             output_name: "hits".into(),
             seed: String::new(),
             budget: Some(5),
+            where_expr: String::new(),
         });
         let mut ctx = ExecContext::new("RecallLTM", "Default", 0);
         let mut pins = std::collections::HashMap::new();

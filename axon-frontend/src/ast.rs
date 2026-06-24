@@ -1706,6 +1706,12 @@ pub struct NavigateStep {
     pub seed: String,
     /// §Fase 63.B — for MDN: the `budget:` (max documents). `None` = default.
     pub budget: Option<i64>,
+    /// §Fase 66 (Q2) — optional column-scope filter (`where:`) for a
+    /// `corpus from axonstore`. A raw filter expr (same shape as `retrieve …
+    /// where`) pushed to the SELECT sourcing the corpus rows, so an adopter
+    /// multiplexing sub-tenants in one axon-tenant via a column can scope the
+    /// MDN graph to a single sub-tenant. Empty = no column filter (RLS-only).
+    pub where_expr: String,
     pub loc: Loc,
 }
 #[derive(Debug)]

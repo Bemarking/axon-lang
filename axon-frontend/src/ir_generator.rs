@@ -727,6 +727,7 @@ impl IRGenerator {
                 output_name: s.output_name.clone(),
                 seed: s.seed.clone(),
                 budget: s.budget,
+                where_expr: s.where_expr.clone(),
             }),
             FlowStep::Drill(s) => IRFlowNode::Drill(IRDrillStep {
                 node_type: "drill",
