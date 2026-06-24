@@ -66,3 +66,12 @@ jobs:
         # design (the tests model the SAME corpus seen by DIFFERENT tenants), so
         # the DROP/CREATE fixtures must not race across parallel tests.
         run: cargo test --test fase65_navigate_pg_integration -- --nocapture --test-threads=1
+
+      - name: Fase 65.F — non-streaming persist COMMITS the row (data-plane write parity)
+        working-directory: axon-rs
+        # The authoritative §49 write signal for the kivi 2026-06-24 gap report:
+        # a NON-streaming `persist` actually writes to Postgres (count 0→1), not
+        # just emits provenance. Owns its own table (`fase65f_ltm_summaries`,
+        # distinct from the navigate fixtures), so it is safe to run here against
+        # the same service container.
+        run: cargo test --test fase65_f_nonstreaming_persist_pg_integration -- --nocapture
