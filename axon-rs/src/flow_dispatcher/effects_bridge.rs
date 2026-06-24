@@ -347,6 +347,7 @@ pub async fn bridge_effect_stream_yield_unified(
         &ctx.cancel,
         &ctx.tx,
         step_name,
+        &ctx.branch_path_string(),
     )
     .await?;
 

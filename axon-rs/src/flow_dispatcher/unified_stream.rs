@@ -288,6 +288,11 @@ pub async fn unified_stream_handler(
     cancel: &CancellationFlag,
     tx: &mpsc::UnboundedSender<FlowExecutionEvent>,
     step_name: &str,
+    // §Fase 65.D.2 — the multiplex demux key for the event stream. Empty
+    // at the top level (elided on the wire via skip-if-empty); `"par[i].…"`
+    // inside a `par` branch so an SSE consumer demuxes a tool-stream nested
+    // in a concurrent branch by the same key as every other handler event.
+    branch_path: &str,
 ) -> Result<ToolStreamSummary, DispatchError> {
     // Pre-flight cancel check. An already-cancelled flag MUST
     // short-circuit with a `cancelled` summary even when the source
@@ -306,9 +311,9 @@ pub async fn unified_stream_handler(
         });
     }
     if let Some(p) = policy {
-        unified_drain_with_policy(source, p, cancel, tx, step_name).await
+        unified_drain_with_policy(source, p, cancel, tx, step_name, branch_path).await
     } else {
-        unified_drain_direct(source, cancel, tx, step_name).await
+        unified_drain_direct(source, cancel, tx, step_name, branch_path).await
     }
 }
 
@@ -321,6 +326,7 @@ async fn unified_drain_direct(
     cancel: &CancellationFlag,
     tx: &mpsc::UnboundedSender<FlowExecutionEvent>,
     step_name: &str,
+    branch_path: &str,
 ) -> Result<ToolStreamSummary, DispatchError> {
     let mut summary = ToolStreamSummary {
         success: true,
@@ -341,11 +347,11 @@ async fn unified_drain_direct(
                 step_name: step_name.to_string(),
                 content: chunk.delta.clone(),
                 token_index: summary.tokens_emitted,
-                // §Fase 65 — this unified tool-stream drainer takes `tx`/`step_name`
-                // directly (no DispatchCtx), so a tool-stream inside a `par`
-                // branch loses the demux key here; threading branch_path through
-                // the drainer is a follow-up.
-                branch_path: String::new(),
+                // §Fase 65.D.2 — carry the multiplex key threaded from the
+                // caller's DispatchCtx so a tool-stream nested in a `par`
+                // branch demuxes by the same `par[i].…` key as every other
+                // handler event (empty at the top level → elided on the wire).
+                branch_path: branch_path.to_string(),
                 timestamp_ms: crate::flow_execution_event::now_ms(),
             })
             .map_err(|_| DispatchError::ChannelClosed)?;
@@ -368,6 +374,7 @@ async fn unified_drain_with_policy(
     cancel: &CancellationFlag,
     tx: &mpsc::UnboundedSender<FlowExecutionEvent>,
     step_name: &str,
+    branch_path: &str,
 ) -> Result<ToolStreamSummary, DispatchError> {
     use crate::stream_effect::BackpressureAnnotation;
     use crate::stream_effect_dispatcher::DEFAULT_STREAM_BUFFER_CAPACITY;
@@ -429,11 +436,11 @@ async fn unified_drain_with_policy(
                 step_name: step_name.to_string(),
                 content: chunk.delta.clone(),
                 token_index: summary.tokens_emitted,
-                // §Fase 65 — this unified tool-stream drainer takes `tx`/`step_name`
-                // directly (no DispatchCtx), so a tool-stream inside a `par`
-                // branch loses the demux key here; threading branch_path through
-                // the drainer is a follow-up.
-                branch_path: String::new(),
+                // §Fase 65.D.2 — carry the multiplex key threaded from the
+                // caller's DispatchCtx so a tool-stream nested in a `par`
+                // branch demuxes by the same `par[i].…` key as every other
+                // handler event (empty at the top level → elided on the wire).
+                branch_path: branch_path.to_string(),
                 timestamp_ms: crate::flow_execution_event::now_ms(),
             })
             .map_err(|_| DispatchError::ChannelClosed)?;
@@ -682,7 +689,7 @@ mod tests {
         let source = unified_stream_from_chunks(chunks);
         let cancel = CancellationFlag::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let summary = unified_stream_handler(source, None, &cancel, &tx, "TestStep")
+        let summary = unified_stream_handler(source, None, &cancel, &tx, "TestStep", "")
             .await
             .expect("ok");
         assert!(summary.success);
@@ -728,6 +735,7 @@ mod tests {
             &cancel,
             &tx,
             "DropTest",
+            "",
         )
         .await
         .expect("ok");
@@ -765,6 +773,7 @@ mod tests {
             &cancel,
             &tx,
             "FailTest",
+            "",
         )
         .await;
         // Either ChannelClosed (consumer dropped) or summary marked
@@ -794,7 +803,7 @@ mod tests {
         let cancel = CancellationFlag::new();
         cancel.cancel();
         let (tx, _rx) = mpsc::unbounded_channel();
-        let summary = unified_stream_handler(source, None, &cancel, &tx, "PreCancel")
+        let summary = unified_stream_handler(source, None, &cancel, &tx, "PreCancel", "")
             .await
             .expect("ok");
         assert!(summary.cancelled);
@@ -815,7 +824,7 @@ mod tests {
         let source = unified_stream_from_chunks(chunks);
         let cancel = CancellationFlag::new();
         let (tx, _rx) = mpsc::unbounded_channel();
-        let summary = unified_stream_handler(source, None, &cancel, &tx, "ErrTerm")
+        let summary = unified_stream_handler(source, None, &cancel, &tx, "ErrTerm", "")
             .await
             .expect("ok");
         assert!(!summary.success);
@@ -833,11 +842,65 @@ mod tests {
         let source = unified_stream_from_chunks(chunks);
         let cancel = CancellationFlag::new();
         let (tx, _rx) = mpsc::unbounded_channel();
-        let summary = unified_stream_handler(source, None, &cancel, &tx, "CancTerm")
+        let summary = unified_stream_handler(source, None, &cancel, &tx, "CancTerm", "")
             .await
             .expect("ok");
         assert!(summary.cancelled);
         assert!(!summary.success);
+    }
+
+    // §Fase 65.D.2 — a tool-stream nested in a `par` branch must carry the
+    // multiplex key so an SSE consumer demuxes its tokens by the SAME
+    // `par[i].…` key as every other handler event in that branch.
+    #[tokio::test]
+    async fn tool_stream_tokens_carry_the_threaded_branch_path() {
+        let chunks = vec![
+            ToolChunk::intermediate("alpha"),
+            ToolChunk::intermediate("beta"),
+            ToolChunk::terminator("", ToolFinishReason::Stop),
+        ];
+        let source = unified_stream_from_chunks(chunks);
+        let cancel = CancellationFlag::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let summary =
+            unified_stream_handler(source, None, &cancel, &tx, "Drain", "par[1].step[0]")
+                .await
+                .expect("ok");
+        assert!(summary.success);
+
+        let mut keys = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let FlowExecutionEvent::StepToken { branch_path, .. } = ev {
+                keys.push(branch_path);
+            }
+        }
+        assert_eq!(keys.len(), 2, "two non-empty deltas → two StepToken events");
+        assert!(
+            keys.iter().all(|k| k == "par[1].step[0]"),
+            "every nested tool-stream token must carry the threaded demux key, \
+             got {keys:?}"
+        );
+    }
+
+    // Top-level (no `par`) tool-stream tokens carry an EMPTY key so they
+    // elide on the wire via skip-if-empty → non-`par` flows stay byte-compat.
+    #[tokio::test]
+    async fn top_level_tool_stream_tokens_carry_empty_branch_path() {
+        let chunks = vec![
+            ToolChunk::intermediate("solo"),
+            ToolChunk::terminator("", ToolFinishReason::Stop),
+        ];
+        let source = unified_stream_from_chunks(chunks);
+        let cancel = CancellationFlag::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        unified_stream_handler(source, None, &cancel, &tx, "Drain", "")
+            .await
+            .expect("ok");
+        while let Ok(ev) = rx.try_recv() {
+            if let FlowExecutionEvent::StepToken { branch_path, .. } = ev {
+                assert!(branch_path.is_empty(), "top-level key must stay empty");
+            }
+        }
     }
 
     #[test]

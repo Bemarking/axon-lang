@@ -318,6 +318,7 @@ async fn run_step_streaming_tool(
         &ctx.cancel,
         &ctx.tx,
         &step_name,
+        &ctx.branch_path_string(),
     )
     .await?;
 
