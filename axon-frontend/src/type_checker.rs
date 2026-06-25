@@ -5052,9 +5052,98 @@ impl<'a> TypeChecker<'a> {
                 // rejected with `axon-E0782`. Integer indices, the closed enum
                 // of bases/observables, and continuous carrier references are
                 // admitted. The walk recurses through the quant body.
-                FlowStep::Quant(q) => self.check_continuous_type_invariant(&q.body, flow_name),
+                FlowStep::Quant(q) => {
+                    // §Fase 51.c — header semantic validation (encoding scheme,
+                    // backend effect, register/depth/bandwidth bounds + the D2
+                    // depth-trade-off note) …
+                    self.check_quant_header(q, flow_name);
+                    // … then the §51.b Continuous Type Invariant over the body.
+                    self.check_continuous_type_invariant(&q.body, flow_name);
+                }
                 // All other steps: no cross-reference checks needed
                 _ => {}
+            }
+        }
+    }
+
+    /// §Fase 51.c — semantic validation of the `quant` block **header**: the
+    /// encoding-scheme attribute typing + closed-set checks (D1/D2/D9), plus
+    /// the D2 depth-trade-off compiler note. The Pauli-sum `observable:`
+    /// *declaration* + its resolution, and the typed continuous-carrier grammar
+    /// (`SymbolicPtr[Tensor[Float32]]` / `DensityMatrix[D]` + typed `let` + the
+    /// norm invariant ‖x‖₂ = 1 at the typed encoder boundary) land in §51.c.2 /
+    /// §51.c.3.
+    fn check_quant_header(&mut self, q: &QuantBlock, flow_name: &str) {
+        // encoding ∈ { amplitude, angle } — the closed scheme set (D2).
+        if let Some(enc) = &q.encoding {
+            if enc != "amplitude" && enc != "angle" {
+                self.emit(
+                    format!(
+                        "axon-E0784 quant block in flow '{flow_name}': unknown encoding scheme \
+                         '{enc}' — the closed set is 'amplitude' (O(log d) qubits, O(d) \
+                         state-preparation depth) or 'angle' (O(1) depth, d=n features)."
+                    ),
+                    &q.loc,
+                );
+            } else {
+                // D2 — surface the encoding's depth trade-off as a compiler note
+                // (not hidden): exponential space compression is paid in load-time
+                // depth, and vice-versa.
+                let note = if enc == "amplitude" {
+                    "axon-W005 quant encoding 'amplitude' compresses d features into O(log d) \
+                     qubits but costs O(d) state-preparation depth (D2); for low-depth \
+                     robustness to scale noise, 'angle' encoding trades to O(1) depth with d=n \
+                     features."
+                } else {
+                    "axon-W005 quant encoding 'angle' has O(1) state-preparation depth but \
+                     represents only d=n features (one per qubit, D2); for exponential feature \
+                     compression use 'amplitude'."
+                };
+                self.warn(note.to_string(), &q.loc);
+            }
+        }
+        // backend effect ∈ { quant_sim, qpu_native } (D1/D9 closed set).
+        if q.effect != "quant_sim" && q.effect != "qpu_native" {
+            self.emit(
+                format!(
+                    "axon-E0784 quant block in flow '{flow_name}': unknown backend '{}' — \
+                     expected 'quant_sim' (CPU/GPU simulation) or 'qpu_native' (physical QPU).",
+                    q.effect
+                ),
+                &q.loc,
+            );
+        }
+        // Register width / circuit depth ≥ 1; projected-kernel bandwidth > 0.
+        if let Some(n) = q.qubits {
+            if n < 1 {
+                self.emit(
+                    format!(
+                        "axon-E0784 quant block in flow '{flow_name}': qubits must be >= 1, got {n}."
+                    ),
+                    &q.loc,
+                );
+            }
+        }
+        if let Some(d) = q.depth {
+            if d < 1 {
+                self.emit(
+                    format!(
+                        "axon-E0784 quant block in flow '{flow_name}': circuit depth must be >= 1, \
+                         got {d}."
+                    ),
+                    &q.loc,
+                );
+            }
+        }
+        if let Some(b) = q.bandwidth {
+            if b <= 0.0 {
+                self.emit(
+                    format!(
+                        "axon-E0784 quant block in flow '{flow_name}': projected-kernel bandwidth \
+                         must be > 0, got {b}."
+                    ),
+                    &q.loc,
+                );
             }
         }
     }
