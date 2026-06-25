@@ -127,6 +127,9 @@ pub enum Declaration {
     /// §Fase 41.b — typed WebSocket transport binding a `session` protocol
     /// (paper_websocket_cognitive_primitive.md).
     Socket(SocketDefinition),
+    /// §Fase 51.c.2 — a Pauli-sum observable `M = Σ cₖ Pₖ` that a `quant`
+    /// block measures against (paper §3.2; plan D5).
+    Observable(ObservableDefinition),
     /// Tier 3+ declarations parsed structurally (balanced braces, no detailed AST).
     Generic(GenericDeclaration),
 }
@@ -1858,6 +1861,39 @@ pub struct QuantBlock {
     /// empty `quant {}`.
     pub body: Vec<FlowStep>,
     pub loc: Loc,
+}
+
+/// §Fase 51.c.2 — one term `cₖ · Pₖ` of a Pauli-sum observable.
+///
+/// `coefficient` is a real scalar (parsed as `f64`); `pauli` is a Pauli string
+/// over the closed alphabet `{I, X, Y, Z}` (one char per qubit), e.g. `"ZZ"` or
+/// `"XI"`. A real linear combination of Pauli strings is **Hermitian by
+/// construction** (each Pauli string is Hermitian; real-weighted sums preserve
+/// Hermiticity), which is why the observable needs no separate Hermiticity check.
+#[derive(Debug, Default, Clone)]
+pub struct PauliTerm {
+    pub coefficient: f64,
+    pub pauli: String,
+    pub loc: Loc,
+}
+
+/// §Fase 51.c.2 — the `observable <Name> { qubits, term: cₖ·Pₖ … }` declaration
+/// (paper §3.2; plan D5). A typed Pauli-sum `M = Σ cₖ Pₖ` that a `quant` block
+/// measures the evolved state against. The type-checker validates the closed
+/// `{I,X,Y,Z}` alphabet + equal term lengths + non-empty sum; Hermiticity is
+/// guaranteed by construction (real coefficients).
+#[derive(Debug, Default)]
+pub struct ObservableDefinition {
+    pub name: String,
+    /// `qubits: n` — the register width every Pauli string must span. `None`
+    /// = inferred from the (equal) term lengths.
+    pub qubits: Option<i64>,
+    pub terms: Vec<PauliTerm>,
+    pub loc: Loc,
+    /// Fase 14.b — leading comment trivia.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 // ── §λ-L-E Fase 13 — Mobile Typed Channels ──────────────────────────────────

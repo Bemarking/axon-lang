@@ -89,6 +89,15 @@ pub struct IRProgram {
     /// referenced `session` protocol + the credit-window backpressure so
     /// axon-rs can realise the typed endpoint over a `tokio` WebSocket.
     pub sockets: Vec<IRSocket>,
+    /// §Fase 51.c.2 — Pauli-sum observable declarations (compiled). Each carries
+    /// its real-coefficient × Pauli-string terms so axon-rs can build the
+    /// Hermitian measurement operator `M = Σ cₖ Pₖ` a `quant` block measures
+    /// against. `#[serde(skip)]` (like `extensions` / `dataspace_specs`) so the
+    /// static IR-JSON drift fixtures stay green; the in-memory field feeds the
+    /// §51.c.2 checker + the §51.d/e runtime. The checker resolves
+    /// `quant(observable: …)` against the AST symbol table, not this field.
+    #[serde(skip)]
+    pub observables: Vec<IRObservable>,
     /// §Fase 23 — algebraic effect declarations (compiled).
     /// Each declared effect persists into IR so axon-rs can build the
     /// per-effect operation table at startup. The CPS state graph for
@@ -154,9 +163,29 @@ impl IRProgram {
             views: Vec::new(),
             channels: Vec::new(),
             sockets: Vec::new(),
+            observables: Vec::new(),
             effects: Vec::new(),
         }
     }
+}
+
+/// §Fase 51.c.2 — one term `cₖ · Pₖ` of a Pauli-sum observable (compiled).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRPauliTerm {
+    pub coefficient: f64,
+    pub pauli: String,
+}
+
+/// §Fase 51.c.2 — IR for a Pauli-sum observable `M = Σ cₖ Pₖ`.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRObservable {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qubits: Option<i64>,
+    pub terms: Vec<IRPauliTerm>,
 }
 
 // ── §Fase 23 — Algebraic effect declarations ─────────────────────────────────
