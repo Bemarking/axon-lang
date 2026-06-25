@@ -45,7 +45,7 @@ use crate::flow_dispatcher::{DispatchCtx, DispatchError, NodeOutcome};
 use crate::flow_execution_event::{now_ms, FlowExecutionEvent};
 use crate::ir_nodes::{
     IRConsensusBlock, IRDeliberateBlock, IRDiscover, IREmit, IRMutateStep,
-    IRPersistStep, IRPublish, IRPurgeStep, IRQuant, IRRetrieveStep, IRTransactBlock,
+    IRPersistStep, IRPublish, IRPurgeStep, IRQuant, IRRetrieveStep, IRTransactBlock, IRYield,
 };
 use crate::store::audit_chain::StoreMutationKind;
 use crate::store::capability;
@@ -1158,6 +1158,44 @@ pub async fn run_quant(
     ctx.let_bindings
         .insert("__quant_backend".to_string(), node.effect.clone());
     emit_step_complete(ctx, "Quant", step_index, "", 0)?;
+
+    Ok(NodeOutcome::Completed {
+        output: String::new(),
+        tokens_emitted: 0,
+        step_index,
+    })
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  Yield (§Fase 51.d.2 — quant measurement point, surface only)
+// ────────────────────────────────────────────────────────────────────
+
+/// §Fase 51.d.2 — the `yield <expr>` measurement point. Wire shape:
+/// `step_type: "yield"`.
+///
+/// SURFACE ONLY: the OSS dispatcher emits the canonical start/complete wire
+/// shape but does NOT collapse amplitudes — the measurement + its one-shot
+/// delimited continuation (suspend the classical thread, resolve via the
+/// `quant_sim`/`qpu_native` handler, resume at the suspension point) is the
+/// §51.e reference simulator / enterprise QuIDD-QPU backend. Mirrors the
+/// payload-free completion of `run_quant`.
+pub async fn run_yield(
+    node: &IRYield,
+    ctx: &mut DispatchCtx,
+) -> Result<NodeOutcome, DispatchError> {
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+    let step_index = ctx.step_counter;
+    ctx.step_counter += 1;
+
+    emit_step_start(ctx, "Yield", step_index, "yield")?;
+    emit_step_complete(ctx, "Yield", step_index, "", 0)?;
+
+    // Record the measured expression so a downstream observer sees what the
+    // quant block yields; no Hilbert collapse happens here in §51.d.2.
+    ctx.let_bindings
+        .insert("__quant_yield".to_string(), node.value_expr.clone());
 
     Ok(NodeOutcome::Completed {
         output: String::new(),

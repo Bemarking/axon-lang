@@ -155,6 +155,8 @@ fn classify_node(node: &IRFlowNode) -> StepKind {
         // §Fase 51.a — the `quant` Hilbert-space projection block is cognitive
         // computation (variational / kernel-feature evaluation).
         IRFlowNode::Quant(_) => StepKind::Cognitive,
+        // §Fase 51.d.2 — `yield` is the amplitude-collapse measurement point.
+        IRFlowNode::Yield(_) => StepKind::Cognitive,
     }
 }
 

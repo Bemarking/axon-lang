@@ -185,6 +185,8 @@ pub fn ir_flow_node_kind(node: &IRFlowNode) -> &'static str {
         // §Fase 51.a — the `quant` cognitive block. Same step_type string as
         // `runner::extract_step_info` below (drift-gated).
         IRFlowNode::Quant(_) => "quant",
+        // §Fase 51.d.2 — the `yield` measurement point.
+        IRFlowNode::Yield(_) => "yield",
     }
 }
 

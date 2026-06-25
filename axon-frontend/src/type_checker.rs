@@ -5071,6 +5071,18 @@ impl<'a> TypeChecker<'a> {
                     // … then the §51.b Continuous Type Invariant over the body.
                     self.check_continuous_type_invariant(&q.body, flow_name);
                 }
+                // §Fase 51.d.2 — a `yield` reached HERE is outside any `quant`
+                // block (the quant body is walked by `check_continuous_type_
+                // invariant`, not this method). `yield` is the amplitude-collapse
+                // measurement point — meaningless outside the Hilbert-space scope.
+                FlowStep::Yield(y) => self.emit(
+                    format!(
+                        "axon-E0787 `yield` in flow '{flow_name}' is only valid inside a `quant` \
+                         block — it collapses evolved Hilbert-space amplitudes back to classical \
+                         silicon. Move it into the enclosing `quant {{ … }}`."
+                    ),
+                    &y.loc,
+                ),
                 // All other steps: no cross-reference checks needed
                 _ => {}
             }

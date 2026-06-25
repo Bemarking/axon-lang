@@ -169,6 +169,16 @@ impl IRProgram {
     }
 }
 
+/// §Fase 51.d.2 — IR for the `yield <expr>` measurement point.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRYield {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub value_expr: String,
+    pub value_kind: String,
+}
+
 /// §Fase 51.c.2 — one term `cₖ · Pₖ` of a Pauli-sum observable (compiled).
 #[derive(Debug, Clone, Serialize)]
 pub struct IRPauliTerm {
@@ -871,6 +881,8 @@ pub enum IRFlowNode {
     Transact(IRTransactBlock),
     /// §Fase 51.a — the `quant` cognitive block (Hilbert-space projection).
     Quant(IRQuant),
+    /// §Fase 51.d.2 — the `yield` measurement point inside a `quant` block.
+    Yield(IRYield),
 }
 
 #[derive(Debug, Clone, Serialize)]

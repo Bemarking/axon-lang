@@ -428,6 +428,8 @@ fn collect_store_accesses(steps: &[crate::ir_nodes::IRFlowNode], out: &mut Vec<S
             // §Fase 51.a — `quant` carries a nested flow body; descend so any
             // store op reachable inside it is still soundness-checked.
             N::Quant(q) => collect_store_accesses(&q.body, out),
+            // §Fase 51.d.2 — `yield` is a leaf (measurement value, no store op).
+            N::Yield(_) => {}
             // ── leaves — no axonstore ref, no nested body. Listed
             // EXPLICITLY (no `_` wildcard) so a future variant forces a
             // deliberate classification at compile time (§51.x.3). ──
@@ -630,6 +632,8 @@ fn collect_named_use_tool_calls<'a>(
             // §Fase 51.a — `quant` carries a nested flow body; descend so a
             // structured `use` inside it cannot escape soundness checking.
             N::Quant(q) => collect_named_use_tool_calls(&q.body, out),
+            // §Fase 51.d.2 — `yield` is a leaf (no nested body, no `use`).
+            N::Yield(_) => {}
             // ── leaves — no nested body. Listed EXPLICITLY (no `_`
             // wildcard) so a future nesting variant forces a deliberate
             // classification at compile time. ──

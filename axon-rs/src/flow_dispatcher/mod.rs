@@ -913,6 +913,11 @@ pub async fn dispatch_node(
         // simulator (§51.e) and the effect injection + `yield` measurement
         // (§51.d), and is hardware-accelerated only in the enterprise backend.
         IRFlowNode::Quant(node) => wire_integrations::run_quant(node, ctx).await,
+        // §Fase 51.d.2 — the `yield` measurement point. SURFACE only: emits the
+        // canonical `step_type: "yield"` wire shape. The actual amplitude
+        // collapse + one-shot delimited continuation is the §51.e reference
+        // simulator / enterprise QuIDD-QPU backend.
+        IRFlowNode::Yield(node) => wire_integrations::run_yield(node, ctx).await,
     }
 }
 

@@ -1364,6 +1364,11 @@ pub enum FlowStep {
     /// (so §51.b's Continuous Type Invariant can scan it). Lives inside a flow
     /// body like `par`; NOT a top-level declaration.
     Quant(QuantBlock),
+    /// §Fase 51.d.2 — `yield <expr>` measurement point inside a `quant` block.
+    /// Collapses the evolved amplitudes back to classical silicon; the effect
+    /// operation whose resolution is a one-shot delimited continuation. Only
+    /// well-formed inside a `quant` block (the checker rejects it elsewhere).
+    Yield(YieldStatement),
     /// Flow-level statements we recognize but parse structurally.
     GenericStep(GenericFlowStep),
 }
@@ -1499,6 +1504,18 @@ pub struct LetStatement {
 #[derive(Debug)]
 pub struct ReturnStatement {
     pub value_expr: String,
+    pub loc: Loc,
+}
+
+/// §Fase 51.d.2 — `yield <expr>` measurement point inside a `quant` block.
+#[derive(Debug)]
+pub struct YieldStatement {
+    /// The measured expression (the structural hypothesis / density-matrix
+    /// surrogate collapsed out of the Hilbert-space scope).
+    pub value_expr: String,
+    /// Tokenization intent (`literal` / `reference` / `expression`), mirroring
+    /// `LetStatement.value_kind` so the runtime resolves the yielded value.
+    pub value_kind: String,
     pub loc: Loc,
 }
 
