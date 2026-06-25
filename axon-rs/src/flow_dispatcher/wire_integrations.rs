@@ -255,6 +255,64 @@ fn store_row(fields: &[(String, String)], ctx: &DispatchCtx) -> Vec<(String, Sql
         .collect()
 }
 
+/// §Fase 66.1 (Q1.c) — detect an UNRESOLVED `${reference}` left in a
+/// `persist`/`mutate` value AFTER interpolation. An identifier-shaped `${name}`
+/// (or `${e.field}`) that survived interpolation means the reference did not
+/// resolve — a missing binding, or a loop-var field-access that missed. Sending
+/// it verbatim to the database is SILENT CORRUPTION (kivi brief #28: `${e.to_id}`
+/// arrived at Postgres as the literal text → `invalid input syntax for type
+/// uuid`). The runtime fails honestly instead (the §59 doctrine). Only
+/// identifier-shaped references are flagged, so a literal like `${100}` or a `$`
+/// in free text is never a false positive.
+fn unresolved_reference(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'$' && bytes[i + 1] == b'{' {
+            let start = i + 2;
+            if bytes[start].is_ascii_alphabetic() || bytes[start] == b'_' {
+                if let Some(close) = value[start..].find('}') {
+                    let inner = &value[start..start + close];
+                    if inner
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+                    {
+                        return Some(inner.to_string());
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// §Fase 66.1 (Q1.c) — fail a `persist`/`mutate` whose row carries an unresolved
+/// `${reference}` rather than writing the literal to the database.
+fn reject_unresolved_row(
+    store_name: &str,
+    op: &str,
+    row: &[(String, SqlValue)],
+) -> Result<(), DispatchError> {
+    for (col, val) in row {
+        if let SqlValue::Text(s) = val {
+            if let Some(reference) = unresolved_reference(s) {
+                return Err(DispatchError::BackendError {
+                    name: "axonstore".to_string(),
+                    message: format!(
+                        "{op} into `{store_name}`: column `{col}` carries an \
+                         UNRESOLVED reference `${{{reference}}}` after \
+                         interpolation — it did not resolve to a binding (check \
+                         the loop variable / step output). Refusing to write the \
+                         literal `${{{reference}}}` to the database."
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Map a [`StoreError`] to a [`DispatchError`] so a failed SQL store
 /// op surfaces as a structured `axon.error` event — never a panic,
 /// never a silent empty result.
@@ -450,6 +508,10 @@ pub async fn run_persist(
             // §35.o — scope the row to the declared `{ col: value }`
             // block when present; else the v1.31.0 user-bindings form.
             let row = store_row(&node.fields, ctx);
+            // §Fase 66.1 (Q1.c) — refuse to write an UNRESOLVED `${reference}`
+            // (a missed loop-var field-access / step output) to the database;
+            // fail honestly instead of silently corrupting the column.
+            reject_unresolved_row(&node.store_name, "persist", &row)?;
             // §35.g Pillar I — a sub-floor or un-elevated write into a
             // confidence-floored store is a typed error.
             epistemic::enforce_persist_floor(&row, floor, &node.store_name)
@@ -877,6 +939,8 @@ pub async fn run_mutate(
             // `{ col: value }` block when present; else the v1.31.0
             // user-bindings form.
             let row = store_row(&node.fields, ctx);
+            // §Fase 66.1 (Q1.c) — same honest-failure guard as persist.
+            reject_unresolved_row(&node.store_name, "mutate", &row)?;
             // §Fase 37.x.j (D2, D6.a) — take-pin / lazy-acquire-on-miss
             // / dispatch / return-pin; see `run_persist` and
             // `run_retrieve` sites for the full rationale.
@@ -1166,6 +1230,36 @@ mod tests {
     use crate::cancel_token::CancellationFlag;
     use crate::ir_nodes::*;
     use tokio::sync::mpsc;
+
+    // ── §Fase 66.1 (Q1.c) — unresolved-reference guard ──────────────────
+
+    #[test]
+    fn unresolved_reference_flags_a_surviving_dollar_brace_identifier() {
+        // The kivi #28 corruption: `${e.to_id}` survived interpolation.
+        assert_eq!(unresolved_reference("${e.to_id}").as_deref(), Some("e.to_id"));
+        assert_eq!(unresolved_reference("${missing}").as_deref(), Some("missing"));
+        // Resolved values + genuine literals are NOT flagged (no false positives).
+        assert_eq!(unresolved_reference("11111111-1111-1111-1111-111111111111"), None);
+        assert_eq!(unresolved_reference("plain text"), None);
+        assert_eq!(unresolved_reference("cost ${100}"), None); // numeric → not a ref
+        assert_eq!(unresolved_reference(""), None);
+    }
+
+    #[test]
+    fn reject_unresolved_row_errors_instead_of_writing_the_literal() {
+        let ok = vec![("id".to_string(), SqlValue::Text("abc".to_string()))];
+        assert!(reject_unresolved_row("s", "persist", &ok).is_ok());
+        let bad = vec![("to_id".to_string(), SqlValue::Text("${e.to_id}".to_string()))];
+        let err = reject_unresolved_row("ltm_edges", "persist", &bad).unwrap_err();
+        match err {
+            DispatchError::BackendError { message, .. } => {
+                assert!(message.contains("UNRESOLVED"), "names the failure: {message}");
+                assert!(message.contains("e.to_id"), "quotes the reference: {message}");
+                assert!(message.contains("ltm_edges"), "names the store: {message}");
+            }
+            other => panic!("expected BackendError, got {other:?}"),
+        }
+    }
 
     // ── §Fase 64.B — extract_corpus_rows (store rows → from_rows tuples) ────
 

@@ -327,11 +327,15 @@ pub async fn run_for_in(
 }
 
 fn resolve_iterable(iterable: &str, ctx: &DispatchCtx) -> Vec<String> {
-    let raw = ctx
-        .let_bindings
-        .get(iterable)
-        .cloned()
-        .unwrap_or_else(|| iterable.to_string());
+    // §Fase 66.1 — resolve the iterable REFERENCE like every other value
+    // position: `for e in ClassifyEdges.output` is the canonical form, and a
+    // step binds its output under its bare NAME — so the `.output` suffix must
+    // map to the step-name key. Pre-§66.1 this was a bare exact-key lookup, so
+    // `ClassifyEdges.output` missed → fell back to the literal string
+    // `"ClassifyEdges.output"`, which then comma-split into one bogus item and
+    // made every `${e.field}` miss (the kivi brief #28 repro: `${e.to_id}`
+    // reached Postgres verbatim).
+    let raw = crate::exec_context::resolve_value_reference(iterable, &ctx.let_bindings);
     if raw.trim().is_empty() {
         return Vec::new();
     }
@@ -387,9 +391,15 @@ pub async fn run_continue(
 
 /// Emit the Return sentinel with the resolved value.
 ///
-/// `value_expr` is resolved through `ctx.let_bindings` first (so
-/// `return foo` looks up `foo`'s bound value); falls back to the
-/// literal string otherwise (so `return "literal"` works).
+/// `value_expr` is resolved like every other value position (§66.1): `${X}` /
+/// `${Step}` interpolation, a `Step.output` reference (the `.output` maps to the
+/// step-name key), a bare `let`/param/step name, else the literal string.
+///
+/// §Fase 66.1 — pre-fix this did a bare exact-key lookup, so `return "${Summarize}"`
+/// returned the LITERAL `${Summarize}` and `return Summarize.output` returned the
+/// literal `Summarize.output` (the kivi brief #28 §C bug — interpolation worked in
+/// a `persist` value via `store_row` but NOT in `return`). Now both resolve, so a
+/// non-streaming flow returns the actual step output, matching the persist path.
 pub async fn run_return(
     node: &IRReturnStep,
     ctx: &mut DispatchCtx,
@@ -397,11 +407,7 @@ pub async fn run_return(
     if ctx.cancel.is_cancelled() {
         return Err(DispatchError::UpstreamCancelled);
     }
-    let value = ctx
-        .let_bindings
-        .get(&node.value_expr)
-        .cloned()
-        .unwrap_or_else(|| node.value_expr.clone());
+    let value = crate::exec_context::resolve_value_reference(&node.value_expr, &ctx.let_bindings);
     Ok(NodeOutcome::Return { value })
 }
 
@@ -1010,5 +1016,52 @@ mod tests {
         ctx.let_bindings
             .insert("ys".to_string(), r#"["x","y"]"#.to_string());
         assert_eq!(resolve_iterable("ys", &ctx), vec!["x", "y"]);
+    }
+
+    // ── §Fase 66.1 — the canonical `for e in Step.output` repro (kivi #28) ─
+
+    #[test]
+    fn resolve_iterable_resolves_a_step_output_reference_to_its_array() {
+        // The CANONICAL form: `for e in ClassifyEdges.output`. The step binds its
+        // output under the BARE NAME `ClassifyEdges`; pre-§66.1 `resolve_iterable`
+        // did exact `get("ClassifyEdges.output")` → miss → literal → 1 bogus item.
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert(
+            "ClassifyEdges".to_string(),
+            r#"[{"to_id":"11111111-1111-1111-1111-111111111111","etype":"supersede"}]"#.to_string(),
+        );
+        let items = resolve_iterable("ClassifyEdges.output", &ctx);
+        assert_eq!(items.len(), 1, "the step-output array iterates as ONE record");
+        // And `${e.to_id}` resolves on the bound element (the #28 failure).
+        ctx.let_bindings.insert("e".to_string(), items[0].clone());
+        assert_eq!(
+            crate::exec_context::interpolate_vars("${e.to_id}", &ctx.let_bindings),
+            "11111111-1111-1111-1111-111111111111"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_return_resolves_interpolation_and_step_output() {
+        // kivi #28 §C: `return "${Summarize}"` and `return Summarize.output` must
+        // return the step's OUTPUT, not the literal (interpolation worked in a
+        // persist value but not in return pre-§66.1).
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings
+            .insert("Summarize".to_string(), "the real summary".to_string());
+
+        for expr in ["${Summarize}", "Summarize.output", "Summarize"] {
+            let node = IRReturnStep {
+                node_type: "return",
+                source_line: 0,
+                source_column: 0,
+                value_expr: expr.to_string(),
+            };
+            match run_return(&node, &mut ctx).await.unwrap() {
+                NodeOutcome::Return { value } => {
+                    assert_eq!(value, "the real summary", "`return {expr}` must resolve")
+                }
+                other => panic!("expected Return, got {other:?}"),
+            }
+        }
     }
 }

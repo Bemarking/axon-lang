@@ -84,3 +84,10 @@ jobs:
         # leak both, proving the filter). Owns its own tables (`fase66_*`),
         # distinct from the other lanes' fixtures.
         run: cargo test --test fase66_navigate_where_pg_integration -- --nocapture
+
+      - name: Fase 66.1 (Q1) — for e in Step.output persists RESOLVED field values
+        working-directory: axon-rs
+        # The kivi brief #28 repro end-to-end: a `for e in ClassifyEdges.output {
+        # persist into edges { to_id: "${e.to_id}" } }` writes the real uuid, not
+        # the literal `${e.to_id}`. Owns its own table (`fase66_1_edges`).
+        run: cargo test --test fase66_1_loop_persist_pg_integration -- --nocapture
