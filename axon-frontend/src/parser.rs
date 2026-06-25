@@ -222,6 +222,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Observable(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Generic(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -1994,6 +1998,9 @@ impl Parser {
 
             // ── §Fase 41.b — typed WebSocket transport ─────────
             TokenType::Socket => self.parse_socket().map(Declaration::Socket),
+
+            // ── §Fase 51.c.2 — Pauli-sum observable ────────────
+            TokenType::Observable => self.parse_observable().map(Declaration::Observable),
 
             // ── §λ-L-E Fase 5 — Cognitive immune system ─────────
             TokenType::Immune => self.parse_immune().map(Declaration::Immune),
@@ -5804,6 +5811,69 @@ impl Parser {
                     column: role_tok.column,
                 },
             });
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 51.c.2 — Parse a Pauli-sum observable declaration:
+    /// ```text
+    /// observable EnergyHamiltonian {
+    ///     qubits: 2
+    ///     term: 0.5 * "ZZ"
+    ///     term: -1.2 * "XI"
+    /// }
+    /// ```
+    /// `term:` is a repeatable key (one `cₖ · Pₖ` per line). The coefficient is
+    /// a real scalar (optional leading `+`/`-`), then `*`, then a quoted Pauli
+    /// string. The type-checker (§51.c.2) validates the closed `{I,X,Y,Z}`
+    /// alphabet + equal lengths; real coefficients ⇒ Hermitian by construction.
+    fn parse_observable(&mut self) -> Result<ObservableDefinition, ParseError> {
+        let tok = self.consume(TokenType::Observable)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = ObservableDefinition {
+            name,
+            qubits: None,
+            terms: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key_tok = self.consume_any_ident_or_kw()?;
+            self.consume(TokenType::Colon)?;
+            match key_tok.value.as_str() {
+                "qubits" => node.qubits = Some(self.consume_number()? as i64),
+                "term" => {
+                    let term_loc = Loc {
+                        line: key_tok.line,
+                        column: key_tok.column,
+                    };
+                    // Optional sign, then magnitude.
+                    let mut negative = false;
+                    if self.check(TokenType::Minus) {
+                        self.advance();
+                        negative = true;
+                    } else if self.check(TokenType::Plus) {
+                        self.advance();
+                    }
+                    let mag = self.consume_number()?;
+                    let coefficient = if negative { -mag } else { mag };
+                    // `*` separator between coefficient and Pauli string.
+                    self.consume(TokenType::Star)?;
+                    let pauli = self.consume(TokenType::StringLit)?.value;
+                    node.terms.push(PauliTerm {
+                        coefficient,
+                        pauli,
+                        loc: term_loc,
+                    });
+                }
+                _ => self.skip_value(),
+            }
         }
         self.consume(TokenType::RBrace)?;
         Ok(node)

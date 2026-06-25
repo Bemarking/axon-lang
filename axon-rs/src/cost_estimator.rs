@@ -539,6 +539,7 @@ mod tests {
             views: vec![],
             channels: vec![],
             sockets: vec![],
+            observables: vec![],
             effects: vec![],
         };
 
@@ -607,6 +608,7 @@ mod tests {
             views: vec![],
             channels: vec![],
             sockets: vec![],
+            observables: vec![],
             effects: vec![],
         };
 
@@ -677,6 +679,7 @@ mod tests {
             views: vec![],
             channels: vec![],
             sockets: vec![],
+            observables: vec![],
             effects: vec![],
         };
 

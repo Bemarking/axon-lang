@@ -174,6 +174,10 @@ pub enum TokenType {
     // under a variational / kernel-feature map, and collapses back to classical
     // silicon. NOT a top-level declaration (lives inside a flow body, like `par`).
     Quant,
+    // `observable` (§Fase 51.c.2) — a top-level Pauli-sum declaration
+    // `M = Σ cₖ Pₖ` (real coeffs × Pauli strings ⇒ Hermitian by construction)
+    // that a `quant` block measures against.
+    Observable,
     Emit,
     Publish,
     Discover,
@@ -477,6 +481,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "socket" => TokenType::Socket,
         // `quant` as a cognitive primitive (§Fase 51.a) — flow-body block.
         "quant" => TokenType::Quant,
+        // `observable` (§Fase 51.c.2) — top-level Pauli-sum declaration.
+        "observable" => TokenType::Observable,
         "emit" => TokenType::Emit,
         "publish" => TokenType::Publish,
         "discover" => TokenType::Discover,
@@ -558,6 +564,8 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             | TokenType::Channel
             // §Fase 41.b — typed WebSocket transport
             | TokenType::Socket
+            // §Fase 51.c.2 — Pauli-sum observable declaration
+            | TokenType::Observable
     )
 }
 

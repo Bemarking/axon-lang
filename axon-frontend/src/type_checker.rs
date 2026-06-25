@@ -949,6 +949,16 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Socket(n) => {
                     registrations.push((n.name.clone(), "socket".into(), n.loc.line, n.loc.clone()));
                 }
+                // §Fase 51.c.2 — register the Pauli-sum observable so a
+                // `quant(observable: <Name>)` reference resolves to it.
+                Declaration::Observable(n) => {
+                    registrations.push((
+                        n.name.clone(),
+                        "observable".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
+                }
                 Declaration::Generic(n) => {
                     if !n.name.is_empty() {
                         registrations.push((
@@ -1122,6 +1132,7 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Session(n) => self.check_session(n),
                 Declaration::Topology(n) => self.check_topology(n),
                 Declaration::Socket(n) => self.check_socket(n),
+                Declaration::Observable(n) => self.check_observable(n),
                 Declaration::Immune(n) => self.check_immune(n),
                 Declaration::Reflex(n) => self.check_reflex(n),
                 Declaration::Heal(n) => self.check_heal(n),
@@ -5066,6 +5077,76 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// §Fase 51.c.2 — validate a Pauli-sum observable `M = Σ cₖ Pₖ`
+    /// (`axon-E0785`). Hermiticity is guaranteed *by construction* (real
+    /// coefficients × Pauli strings), so the checker only enforces the
+    /// structural well-formedness the construction depends on:
+    ///   - a non-empty sum (an empty observable measures nothing);
+    ///   - every Pauli string drawn from the closed alphabet `{I, X, Y, Z}`;
+    ///   - every term the same length n (a single coherent register width);
+    ///   - that width matching a declared `qubits: n`, if present.
+    fn check_observable(&mut self, n: &ObservableDefinition) {
+        if n.terms.is_empty() {
+            self.emit(
+                format!(
+                    "axon-E0785 observable '{}' has no terms — a Pauli-sum M = Σ cₖ Pₖ needs at \
+                     least one term.",
+                    n.name
+                ),
+                &n.loc,
+            );
+            return;
+        }
+        let mut width: Option<usize> = None;
+        for term in &n.terms {
+            // Closed alphabet {I, X, Y, Z}.
+            if term.pauli.is_empty() {
+                self.emit(
+                    format!("axon-E0785 observable '{}' has an empty Pauli string.", n.name),
+                    &term.loc,
+                );
+                continue;
+            }
+            if let Some(bad) = term.pauli.chars().find(|c| !matches!(c, 'I' | 'X' | 'Y' | 'Z')) {
+                self.emit(
+                    format!(
+                        "axon-E0785 observable '{}': Pauli string '{}' contains '{}' — the closed \
+                         alphabet is {{I, X, Y, Z}} (one Pauli per qubit).",
+                        n.name, term.pauli, bad
+                    ),
+                    &term.loc,
+                );
+            }
+            // Equal length across all terms.
+            let len = term.pauli.chars().count();
+            match width {
+                None => width = Some(len),
+                Some(w) if w != len => self.emit(
+                    format!(
+                        "axon-E0785 observable '{}': Pauli string '{}' has length {} but an \
+                         earlier term has length {} — every term must span the same register.",
+                        n.name, term.pauli, len, w
+                    ),
+                    &term.loc,
+                ),
+                _ => {}
+            }
+        }
+        // Declared qubit width must match the (uniform) term length.
+        if let (Some(q), Some(w)) = (n.qubits, width) {
+            if q as usize != w {
+                self.emit(
+                    format!(
+                        "axon-E0785 observable '{}' declares qubits: {} but its Pauli strings span \
+                         {} qubit(s).",
+                        n.name, q, w
+                    ),
+                    &n.loc,
+                );
+            }
+        }
+    }
+
     /// §Fase 51.c — semantic validation of the `quant` block **header**: the
     /// encoding-scheme attribute typing + closed-set checks (D1/D2/D9), plus
     /// the D2 depth-trade-off compiler note. The Pauli-sum `observable:`
@@ -5100,6 +5181,28 @@ impl<'a> TypeChecker<'a> {
                      compression use 'amplitude'."
                 };
                 self.warn(note.to_string(), &q.loc);
+            }
+        }
+        // §Fase 51.c.2 — `observable: <Name>` must resolve to a declared
+        // `observable` (the Pauli-sum the quant block measures against).
+        if let Some(obs) = &q.observable {
+            match self.symbols.lookup(obs) {
+                None => self.emit(
+                    format!(
+                        "axon-E0784 quant block in flow '{flow_name}': undefined observable \
+                         '{obs}' — declare it with `observable {obs} {{ … }}`."
+                    ),
+                    &q.loc,
+                ),
+                Some(sym) if sym.kind != "observable" => self.emit(
+                    format!(
+                        "axon-E0784 quant block in flow '{flow_name}': '{obs}' is a {}, not an \
+                         observable.",
+                        sym.kind
+                    ),
+                    &q.loc,
+                ),
+                _ => {}
             }
         }
         // backend effect ∈ { quant_sim, qpu_native } (D1/D9 closed set).
