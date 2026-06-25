@@ -232,6 +232,40 @@ pub fn resolve_named_arg_value(
     }
 }
 
+/// §Fase 66.1 — resolve a VALUE-POSITION expression (a `for … in <expr>`
+/// iterable, a `return <expr>`) against the runtime bindings. These positions
+/// carry no frontend `value_kind` classification (unlike a §60 kwarg), so this
+/// resolves the three reference forms a flow author writes, in order:
+///
+///   1. `"${X}"` / `"${e.field}"` / `$name` — string interpolation (incl. the
+///      §66 dotted field-access). Detected by a `$` anywhere in the expr.
+///   2. `Step.output` — a step's output. Steps bind their output under their
+///      BARE NAME (`pure_shape` / the §36.x.e contract), so a trailing
+///      `.output` maps to the step-name key. This is the canonical form an
+///      author writes for `for e in ClassifyEdges.output` / `return Step.output`
+///      (the same `.output` sugar `resolve_named_arg_value` handles for kwargs).
+///   3. `name` — a bare `let` / flow-param / step binding.
+///
+/// Falls back to the verbatim expr when nothing resolves (a genuine literal).
+/// Mirrors the persist field-value resolution (`store_row` → `interpolate_vars`)
+/// so a reference resolves identically in EVERY value position (the §66.1 fix:
+/// a `for`-iterable + a `return` previously did a bare exact-key lookup, so
+/// `ClassifyEdges.output` / `${Summarize}` reached the runtime as the literal).
+pub fn resolve_value_reference(expr: &str, vars: &HashMap<String, String>) -> String {
+    if expr.contains('$') {
+        return interpolate_vars(expr, vars);
+    }
+    if let Some(v) = vars.get(expr) {
+        return v.clone();
+    }
+    if let Some(step) = expr.strip_suffix(".output") {
+        if let Some(v) = vars.get(step) {
+            return v.clone();
+        }
+    }
+    expr.to_string()
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -459,5 +493,34 @@ mod tests {
         assert_eq!(interpolate_vars("${o.b}", &vars), "exact");
         // A plain (non-dotted) var is unchanged.
         assert_eq!(interpolate_vars("${o}", &vars), r#"{"a":"1"}"#);
+    }
+
+    // ── §Fase 66.1 — value-position reference resolution ────────────────
+
+    #[test]
+    fn resolve_value_reference_handles_step_output_and_interpolation() {
+        let mut vars = HashMap::new();
+        // Steps bind their output under the BARE NAME.
+        vars.insert("ClassifyEdges".to_string(), r#"[{"to_id":"x"}]"#.to_string());
+        vars.insert("Summarize".to_string(), "the summary".to_string());
+        vars.insert("q".to_string(), "hi".to_string());
+
+        // `Step.output` → the step's output (the `.output` maps to the name key)
+        // — the kivi #28 `for e in ClassifyEdges.output` + `return Step.output`.
+        assert_eq!(
+            resolve_value_reference("ClassifyEdges.output", &vars),
+            r#"[{"to_id":"x"}]"#
+        );
+        // `${Step}` interpolation — the `return "${Summarize}"` case (#28 §C).
+        assert_eq!(
+            resolve_value_reference("${Summarize}", &vars),
+            "the summary"
+        );
+        // A bare binding name.
+        assert_eq!(resolve_value_reference("q", &vars), "hi");
+        // A genuine literal stays verbatim.
+        assert_eq!(resolve_value_reference("plain literal", &vars), "plain literal");
+        // An unknown `Step.output` falls back to the literal (not a half-resolve).
+        assert_eq!(resolve_value_reference("Missing.output", &vars), "Missing.output");
     }
 }
