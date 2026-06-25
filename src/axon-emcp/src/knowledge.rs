@@ -1234,7 +1234,8 @@ Body prose.
         // Documented, 0 Pending. **100% coverage achieved**. Any
         // future drop is a regression the gate catches.
         // §Fase 62.0: 45 → 46 with `ledger` (audit chain) split from `pix`.
-        assert_eq!(s.total, 46);
+        // §Fase 51 (v2.19.0): 46 → 48 with `observable` + `quant`.
+        assert_eq!(s.total, 48);
     }
 
     /// §Phase 5 — every MCP prompt shipped under
