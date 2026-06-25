@@ -2790,6 +2790,8 @@ impl Parser {
             TokenType::Transact => self.parse_block_step("transact").map(|l| FlowStep::Transact(TransactBlock { loc: l })),
             // §Fase 51.a — the `quant` cognitive block (Hilbert-space projection).
             TokenType::Quant => self.parse_quant().map(FlowStep::Quant),
+            // §Fase 51.d.2 — the `yield` measurement point.
+            TokenType::Yield => self.parse_yield().map(FlowStep::Yield),
 
             _ => {
                 // §Fase 28.e — append "Did you mean X?" hint when the
@@ -3576,6 +3578,21 @@ impl Parser {
         self.consume(TokenType::RBrace)?;
 
         Ok(block)
+    }
+
+    /// §Fase 51.d.2 — Parse the `yield <expr>` measurement point. Reuses the
+    /// `let`-value expression grammar (reference / literal / arithmetic) so the
+    /// yielded value's tokenization intent is preserved in `value_kind`.
+    fn parse_yield(&mut self) -> Result<YieldStatement, ParseError> {
+        let tok = self.consume(TokenType::Yield)?;
+        let loc = self.loc_of(&tok);
+        self.last_let_value_kind = "literal".to_string();
+        let value_expr = self.parse_let_value_expr()?;
+        Ok(YieldStatement {
+            value_expr,
+            value_kind: self.last_let_value_kind.clone(),
+            loc,
+        })
     }
 
     /// Parse: keyword Name on target -> output_type (apply pattern).

@@ -174,7 +174,7 @@ pub const FLOW_BODY_KEYWORD_NAMES: &[&str] = &[
     "mutate", "navigate", "ots", "par", "perform", "persist", "probe",
     "purge", "quant", "reason", "recall", "refine", "remember", "resume",
     "retrieve", "return", "shield", "step", "stream", "trail", "transact",
-    "use", "validate", "weave",
+    "use", "validate", "weave", "yield",
 ];
 
 // ── Tests ────────────────────────────────────────────────────────

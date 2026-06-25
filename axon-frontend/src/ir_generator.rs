@@ -862,6 +862,14 @@ impl IRGenerator {
                 effect: s.effect.clone(),
                 body: s.body.iter().map(|stmt| self.visit_flow_step(stmt)).collect(),
             }),
+            // §Fase 51.d.2 — the `yield` measurement point.
+            FlowStep::Yield(s) => IRFlowNode::Yield(crate::ir_nodes::IRYield {
+                node_type: "yield",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                value_expr: s.value_expr.clone(),
+                value_kind: s.value_kind.clone(),
+            }),
             FlowStep::GenericStep(_) => {
                 // Should not occur — all flow steps have dedicated handlers
                 IRFlowNode::Step(IRStep {

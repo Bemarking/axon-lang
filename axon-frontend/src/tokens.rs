@@ -178,6 +178,10 @@ pub enum TokenType {
     // `M = Σ cₖ Pₖ` (real coeffs × Pauli strings ⇒ Hermitian by construction)
     // that a `quant` block measures against.
     Observable,
+    // `yield` (§Fase 51.d.2) — the measurement point inside a `quant` block:
+    // collapses the evolved amplitudes back to classical silicon. The effect
+    // operation whose resolution is a one-shot delimited continuation.
+    Yield,
     Emit,
     Publish,
     Discover,
@@ -483,6 +487,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "quant" => TokenType::Quant,
         // `observable` (§Fase 51.c.2) — top-level Pauli-sum declaration.
         "observable" => TokenType::Observable,
+        // `yield` (§Fase 51.d.2) — quant measurement point.
+        "yield" => TokenType::Yield,
         "emit" => TokenType::Emit,
         "publish" => TokenType::Publish,
         "discover" => TokenType::Discover,
