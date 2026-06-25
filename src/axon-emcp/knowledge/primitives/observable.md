@@ -5,12 +5,16 @@ category: operators
 top_level: true
 since: Fase 51 (v2.19.0)
 grammar: |
-  # Top-level declaration:
-  observable <Name> = <coeff> * <PauliString> [ + <coeff> * <PauliString> ]*
+  # Top-level declaration — a BLOCK of `key: value` fields:
+  observable <Name> {
+      qubits: <n>                 # optional — the declared register width
+      term: <coeff> * "<Pauli>"   # repeatable — one cₖ · Pₖ per line
+      term: <coeff> * "<Pauli>"
+  }
 
-  # <PauliString> is one Pauli letter per qubit, MSB-first:
-  #   I (identity) | X | Y | Z      e.g. "Z", "ZZ", "XI"
-  # <coeff> is a real scalar (the Hermitian weight cₖ).
+  # <coeff> is a real scalar (optional leading +/-), then `*`, then the
+  # Pauli string as a STRING LITERAL: one letter per qubit, MSB-first,
+  # from { I (identity), X, Y, Z }.  e.g. "Z", "ZZ", "XI".
 ---
 
 # `observable`
@@ -28,22 +32,43 @@ valid quantum-mechanical measurement. The compiler proves this
 
 ## Surface
 
-`observable` is a **top-level declaration**, like `type` or `anchor`.
-It is referenced by name from a `quant` block's `observable:` field.
+`observable` is a **top-level declaration**, like `type` or `anchor` — a
+brace block of `key: value` fields. It is referenced by name from a
+`quant` block's `observable:` attribute. The two recognised fields are
+`qubits:` (the register width) and `term:` (repeatable — one weighted
+Pauli term per line).
 
 ```axon
 # A single-qubit energy observable: ⟨Z⟩.
-observable Energy = 1.0 * Z
+observable Energy {
+    qubits: 1
+    term: 1.0 * "Z"
+}
 
 # A two-qubit correlation observable: ½⟨ZZ⟩ − 1.2⟨XI⟩.
-observable Correlation = 0.5 * ZZ + -1.2 * XI
+observable Correlation {
+    qubits: 2
+    term:  0.5 * "ZZ"
+    term: -1.2 * "XI"
+}
 ```
+
+> **Nota de gramática:** los coeficientes y los Pauli van como campos
+> `term: <coeff> * "<Pauli>"` dentro del bloque — NO como una expresión
+> `observable Name = coeff * Pauli`. La cadena de Pauli es un **string
+> literal** (entre comillas). Esta es la forma exacta que pasa `axon check`.
 
 ## Anatomy
 
+### `term:` — one weighted Pauli per line (repeatable)
+
+`term: <coeff> * "<PauliString>"`. The coefficient is a real scalar
+(optional leading `+`/`-`), then `*`, then the Pauli string **as a
+quoted string literal**. Repeat the `term:` key once per `cₖ · Pₖ`.
+
 ### Pauli strings
 
-Each term names one Pauli factor **per qubit**, most-significant qubit
+Each Pauli string names one factor **per qubit**, most-significant qubit
 first:
 
 | Letter | Matrix | Meaning |
@@ -53,14 +78,15 @@ first:
 | `Y` | `[[0,−i],[i,0]]` | |
 | `Z` | `[[1,0],[0,−1]]` | computational basis |
 
-The string length fixes the qubit count `n` the observable acts on; a
-`quant` block measuring it must encode a state of the same width.
+All `term:` strings must share one length = the qubit count `n`; a
+`quant` block measuring the observable encodes a state of that width.
 
-### Coefficients
+### `qubits:` + coefficients
 
-Real scalars. They set each term's Hermitian weight; the operator norm
-of the sum bounds the achievable expectation (a single Pauli string has
-`‖P‖ = 1`, so `⟨P⟩ ∈ [−1, 1]`).
+`qubits:` declares the register width (optional; defaults from the term
+widths). The coefficients set each term's Hermitian weight; the operator
+norm of the sum bounds the achievable expectation (a single Pauli string
+has `‖P‖ = 1`, so `⟨P⟩ ∈ [−1, 1]`).
 
 ## Runtime behaviour
 

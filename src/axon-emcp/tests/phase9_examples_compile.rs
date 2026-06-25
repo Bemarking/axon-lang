@@ -31,6 +31,8 @@ const EXPECTED: &[(&str, ExampleTopic)] = &[
     // §Fase 58.h — the structured `use <Tool>(k = v, …)` dispatch form.
     ("tool_structured_args", ExampleTopic::Composition),
     ("weave_braid", ExampleTopic::Composition),
+    // §Fase 51 (v2.19.0) — the quant cognitive primitive feature map.
+    ("quant_feature_map", ExampleTopic::Composition),
     // Session types (2)
     ("session_chat_duality", ExampleTopic::SessionTypes),
     ("socket_websocket_chat", ExampleTopic::SessionTypes),
@@ -143,6 +145,10 @@ fn canonical_primitives_are_reachable_via_examples_using() {
         // §Phase 9 also surfaces session/socket/agent/axonendpoint —
         // the primitives that anchor the four large topic axes.
         "session", "socket", "agent", "axonendpoint",
+        // §Fase 51 (v2.19.0) — the quant cognitive primitive + its observable.
+        // An adopter asking "how do I write a quant block?" MUST hit an example
+        // (the brief-#29 failure mode: 0 examples → adopter guesses the grammar).
+        "quant", "observable",
     ];
     for prim in must_cover {
         let count = cat.examples_using(prim).count();
