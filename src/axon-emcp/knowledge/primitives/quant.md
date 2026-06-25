@@ -5,12 +5,18 @@ category: operators
 top_level: false
 since: Fase 51 (v2.19.0)
 grammar: |
-  # Flow-body block (canonical):
-  quant {
-      encode: amplitude | angle        # how the carrier maps to amplitudes
-      observable: <ObservableName>     # the Hermitian operator to measure
-      yield <expr>                     # the measured expectation, back to classical
+  # Flow-body block. The attribute header is OPTIONAL and goes in PARENS;
+  # the braces hold real flow steps (let / for / yield), like `par`.
+  quant(encoding: amplitude,        # `amplitude` (default) | `angle`
+        observable: <ObservableName>, # the Hermitian operator to measure
+        qubits: <n>, depth: <d>,    # all optional
+        bandwidth: <γ>, backend: quant_sim) {
+      let surrogate = <continuous-carrier>   # bind the carrier (a Tensor)
+      yield surrogate                        # collapse → the ⟨observable⟩ expectation
   }
+
+  # Bare form (every attribute defaulted: encoding=amplitude, backend=quant_sim):
+  quant { let s = carrier  yield s }
 ---
 
 # `quant`
@@ -42,40 +48,64 @@ scale is the paid privilege.
 ## Surface
 
 `quant` is a **flow-body block** (nested, like `transact` or `forge`).
+The optional attribute header is in **parentheses**; the braces hold real
+flow steps. This exact program passes `axon check` (0 errors):
 
 ```axon
-observable Energy = 1.0 * Z
+observable Energy {
+    qubits: 1
+    term: 1.0 * "Z"
+}
 
-flow Classify(embedding: Tensor) -> Float {
-    quant {
-        encode: amplitude
-        observable: Energy
-        yield ⟨Energy⟩          # the expectation ⟨ψ| Energy |ψ⟩, as a Float
+flow Classify(embedding: Tensor) -> String {
+    quant(encoding: amplitude, observable: Energy, qubits: 1) {
+        let surrogate = embedding   // bind the continuous carrier
+        yield surrogate             // collapse → ⟨ψ(embedding)| Energy |ψ⟩
     }
+    return "done"
 }
 ```
 
+> **Nota de gramática (la forma que compila):** los atributos van en
+> `quant( … )` (paréntesis), la clave es `encoding` (no `encode`), y las
+> llaves `{ }` contienen pasos de flow (`let` / `for` / `yield`). El
+> `yield` toma una **referencia** (un `let` o un parámetro) — NO usa los
+> brackets unicode `⟨⟩` (no lexean). El carrier debe ser un tipo continuo
+> (`Tensor`), si no salta `axon-E0782`.
+
 ## Anatomy
 
-### `encode:` — the lift
+### `encoding:` — the lift (header attribute, in `( )`)
 
-- **`amplitude`** — the carrier becomes the state's amplitude vector
-  (must be unit-norm; the runtime asserts `‖x‖₂ = 1`). `n = ⌈log₂ d⌉`
-  qubits for a length-`d` carrier.
+- **`amplitude`** (default) — the carrier becomes the state's amplitude
+  vector (must be unit-norm; the runtime asserts `‖x‖₂ = 1`).
+  `n = ⌈log₂ d⌉` qubits for a length-`d` carrier.
 - **`angle`** — each carrier component drives a rotation angle (one
   qubit per component). Resists the amplitude form's normalization
   constraint.
 
-### `observable:` — the measurement
+The other header attributes (all optional, order-free, in the parens):
+`observable:`, `qubits:`, `depth:`, `bandwidth:`, `backend:`.
+
+### `observable:` — the measurement (header attribute)
 
 Resolves (closed-catalogue, `axon-E0784`) to a declared `observable`
 Pauli-sum. Its width fixes the qubit count `n`.
 
-### `yield` — the collapse
+### `yield <reference>` — the collapse (a step in the body)
 
-`yield <expr>` is **only legal inside a `quant` block** (`axon-E0787`
-otherwise). It emits the measured expectation back into the classical
-flow as the block's value.
+`yield <reference>` is a step **inside the `quant` braces**, only legal
+there (`axon-E0787` otherwise). The reference is a `let`-bound name or a
+flow parameter (the carrier being measured) — it reuses the `let`-value
+grammar, so there are **no `⟨⟩` brackets**. It emits the measured
+expectation `⟨ψ|M|ψ⟩` back into the classical flow.
+
+**Una expectativa = un `Float` (feature map).** Cada bloque `quant`
+produce UNA expectativa escalar de UN observable. Para un *projected /
+seed kernel* se ensambla clásico: declarás k observables, hacés `yield`
+de cada uno → `φ(x) = [⟨M₁⟩, …, ⟨Mₖ⟩]`, y `k(x,y) = sim(φ(x), φ(y))`. La
+navegación estructural (p.ej. `signed-EPR`) no se toca; `quant` solo
+puntúa el seed.
 
 ## Runtime behaviour
 
