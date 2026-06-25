@@ -109,17 +109,17 @@ impl DocStatus {
     }
 }
 
-/// The closed catalogue — **47 primitives**, ordered by category
+/// The closed catalogue — **48 primitives**, ordered by category
 /// for readability. Consumers must not depend on declaration order;
 /// they iterate and filter.
 ///
 /// Section breakdown:
 /// - Cognition (15) — what an LLM does.
 /// - Cognitive I/O (10) — resources + reconciliation + self-defence.
-/// - Data plane (6) — typed persistence + provenance.
+/// - Data plane (7) — typed persistence + provenance.
 /// - Session types (2) — §Fase 41 algebra.
 /// - Wire (6) — actor + transport surfaces.
-/// - Operators (8) — specialised cognitive transforms.
+/// - Operators (10) — specialised cognitive transforms (incl. §51 quant/observable).
 ///
 /// Tier 0 — Documented as of §Fase 5 (7): `persona`, `flow`, `step`,
 /// `anchor`, `tool`, `reason`, `socket`.
@@ -509,6 +509,22 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         summary: "Declares the psychological model a persona enacts — beliefs, desires, traits, behavioural disposition.",
         doc_status: DocStatus::Documented,
     },
+    PrimitiveInfo {
+        name: "observable",
+        category: "operators",
+        top_level: true,
+        since: "Fase 51 (v2.19.0)",
+        summary: "Declares a Hermitian observable — a Pauli-sum M = Σ cₖ Pₖ — measured by a quant block to collapse a Hilbert-space state back to a classical expectation.",
+        doc_status: DocStatus::Documented,
+    },
+    PrimitiveInfo {
+        name: "quant",
+        category: "operators",
+        top_level: false,
+        since: "Fase 51 (v2.19.0)",
+        summary: "A flow-body block that lifts a continuous carrier tensor into a finite Hilbert space, evolves it, and yields the expectation of a declared observable (the cognitive↔quantum bridge; OSS simulator capped at n≤10).",
+        doc_status: DocStatus::Documented,
+    },
     // §Fase 6.d — `logic` was registered in 6.a as an operators
     // primitive but has NO parser production (the lexer recognises
     // the `logic` keyword token; no `parse_logic` exists; the
@@ -602,9 +618,11 @@ mod tests {
         // primitives update this assertion in the same PR.
         // §Fase 62.0 added `ledger` (the audit chain) as a distinct top-level
         // primitive when `pix` was reassigned to the retrieval navigator (45→46).
+        // §Fase 51 (v2.19.0) added `observable` + `quant` (the Hilbert-space
+        // cognitive primitive + its Hermitian-observable companion) → 46→48.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            46,
+            48,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -688,12 +706,14 @@ mod tests {
             "axonendpoint", "axpoint", "daemon", "mcp", "listen",
             "shield", "mandate", "compute", "lambda", "forge", "ots",
             "psyche", "immune", "reflex", "heal", "transact",
+            // §Fase 51 (v2.19.0)
+            "observable", "quant",
         ]
         .into_iter()
         .collect();
         assert_eq!(
             documented, expected,
-            "Documented set drift — Fase 6.d baseline is 45 specific primitives (full coverage)"
+            "Documented set drift — Fase 6.d baseline + §51 quant/observable (full coverage)"
         );
     }
 
@@ -701,13 +721,14 @@ mod tests {
     fn coverage_summary_is_arithmetic() {
         let s = coverage_summary();
         // §Fase 62.0: 45 → 46 with `ledger` (audit chain) split out from `pix`.
-        assert_eq!(s.total, 46);
+        // §Fase 51 (v2.19.0): 46 → 48 with `observable` + `quant`.
+        assert_eq!(s.total, 48);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 46);
+        assert_eq!(s.documented, 48);
         assert_eq!(s.pending, 0);
     }
 
@@ -733,7 +754,7 @@ mod tests {
         // checks against `axon://grammar/top_level` which is the
         // human-readable mirror of this same polarity.
         for nested in ["step", "reason", "probe", "validate", "refine", "weave",
-                       "listen", "forge", "transact"] {
+                       "listen", "forge", "transact", "quant"] {
             let info = find(nested).expect("must be in registry");
             assert!(
                 !info.top_level,
