@@ -5205,13 +5205,18 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
         }
-        // backend effect ∈ { quant_sim, qpu_native } (D1/D9 closed set).
-        if q.effect != "quant_sim" && q.effect != "qpu_native" {
+        // backend effect ∈ QUANT_BACKEND_CATALOG (D1/D9 closed set). §Fase 51.d:
+        // catalogue-driven (single source of truth) — the canonical algebraic
+        // effect this block performs is `ots:backend:<effect>`
+        // (`crate::ots_catalog::quant_effect_slug`).
+        if !is_valid(&q.effect, crate::ots_catalog::QUANT_BACKEND_CATALOG) {
             self.emit(
                 format!(
                     "axon-E0784 quant block in flow '{flow_name}': unknown backend '{}' — \
-                     expected 'quant_sim' (CPU/GPU simulation) or 'qpu_native' (physical QPU).",
-                    q.effect
+                     expected one of {} (the algebraic effect performed is \
+                     'ots:backend:<backend>').",
+                    q.effect,
+                    valid_list(crate::ots_catalog::QUANT_BACKEND_CATALOG)
                 ),
                 &q.loc,
             );
@@ -6340,6 +6345,45 @@ fn flow_has_stream_output(flow: &FlowDefinition) -> bool {
 /// name is `tool_name` for the Rust AST (mirrors Python's `UseToolNode`).
 fn use_tool_step_name(u: &UseToolStep) -> &str {
     &u.tool_name
+}
+
+/// §Fase 51.d — the algebraic effects a flow performs via its `quant` blocks:
+/// the deduplicated, source-ordered set of `ots:backend:<backend>` slugs,
+/// recursing through nested control blocks (`if` / `for` / `par`) and nested
+/// `quant` blocks. This is the flow-level **effect-row projection** for the
+/// quant primitive — a flow containing a `quant` "carries the effect in its
+/// signature". Consumed downstream by PCC EffectSoundness + the runtime backend
+/// dispatcher (§51.d.2 / §51.e). Pure + total.
+pub fn flow_quant_effects(flow: &FlowDefinition) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    collect_quant_effects(&flow.body, &mut out);
+    out
+}
+
+fn collect_quant_effects(steps: &[FlowStep], out: &mut Vec<String>) {
+    for step in steps {
+        match step {
+            FlowStep::Quant(q) => {
+                let slug = crate::ots_catalog::quant_effect_slug(&q.effect);
+                if !out.contains(&slug) {
+                    out.push(slug);
+                }
+                // A nested `quant` inside the body contributes its effect too.
+                collect_quant_effects(&q.body, out);
+            }
+            FlowStep::If(c) => {
+                collect_quant_effects(&c.then_body, out);
+                collect_quant_effects(&c.else_body, out);
+            }
+            FlowStep::ForIn(f) => collect_quant_effects(&f.body, out),
+            FlowStep::Par(p) => {
+                for branch in &p.branches {
+                    collect_quant_effects(branch, out);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Disjunct (b): does the flow reach a tool with `effects:
