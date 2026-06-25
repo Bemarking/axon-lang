@@ -5045,10 +5045,127 @@ impl<'a> TypeChecker<'a> {
                 // cognitive delegation; the honest-compiler `axon-W004` points
                 // the adopter to the deterministic `use <Tool>(k=v)` form.
                 FlowStep::Step(s) => self.check_apply_tool(s),
+                // §Fase 51.b — the Continuous Type Invariant (D8). Inside a
+                // `quant` block, conversational / unstructured discrete types
+                // (String literals, `.to_string` textual conversions, free-text
+                // `ask:` prompts) are the semantic-collapse path and are
+                // rejected with `axon-E0782`. Integer indices, the closed enum
+                // of bases/observables, and continuous carrier references are
+                // admitted. The walk recurses through the quant body.
+                FlowStep::Quant(q) => self.check_continuous_type_invariant(&q.body, flow_name),
                 // All other steps: no cross-reference checks needed
                 _ => {}
             }
         }
+    }
+
+    /// §Fase 51.b — enforce the **Continuous Type Invariant** over a `quant`
+    /// block body (paper §4.2, refined per D8). The Hilbert-space scope admits
+    /// only continuous carriers + discrete *classical control* (integer indices
+    /// `n`/`L`/`D`, a closed enum of measurement bases). It rejects
+    /// *conversational / unstructured discrete* values, which collapse the
+    /// continuous gradient:
+    ///
+    ///   - a `let` bound to a **String literal** (the paper's E0782 example);
+    ///   - a `let` value carrying an implicit **`.to_string`** textual
+    ///     conversion;
+    ///   - a **`step`** with a free-text `ask:` prompt (a conversational LLM
+    ///     call inside the quantum scope).
+    ///
+    /// Numeric / bool / list literals, references to prior continuous bindings,
+    /// and the rest of the flow-step vocabulary are admitted. The walk recurses
+    /// into nested control blocks and nested `quant` blocks so a leak cannot
+    /// hide one level down.
+    ///
+    /// NOTE (scope): the amplitude-encoding norm invariant ‖x‖₂ = 1 (D2) is a
+    /// property of a *typed* continuous carrier (`SymbolicPtr[Tensor[Float32]]`
+    /// with a normalized marker), which the typed continuous grammar introduces
+    /// in §51.c — it is not statically derivable from an untyped
+    /// `let x = extract_embeddings(audio)`, so its enforcement lands there, at
+    /// the typed encoder boundary, not here.
+    fn check_continuous_type_invariant(&mut self, body: &[FlowStep], flow_name: &str) {
+        for step in body {
+            match step {
+                FlowStep::Let(n) => {
+                    if Self::quant_value_is_string_literal(&n.value_kind, &n.value_expr) {
+                        self.emit(
+                            format!(
+                                "axon-E0782 Continuous Type Invariant violation in flow \
+                                 '{flow_name}': let binding '{}' inside a `quant` block holds a \
+                                 non-continuous 'String' (string literal). Discrete/conversational \
+                                 types are prohibited in the Hilbert-space scope — keep the original \
+                                 tensor via the continuous type 'SymbolicPtr[Tensor[Float32]]'.",
+                                n.identifier
+                            ),
+                            &n.loc,
+                        );
+                    } else if n.value_expr.contains(".to_string") {
+                        self.emit(
+                            format!(
+                                "axon-E0782 Continuous Type Invariant violation in flow \
+                                 '{flow_name}': let binding '{}' inside a `quant` block performs an \
+                                 implicit textual conversion ('.to_string'). Textual leaks collapse \
+                                 the continuous gradient — operate on the tensor / density-matrix \
+                                 carrier instead.",
+                                n.identifier
+                            ),
+                            &n.loc,
+                        );
+                    }
+                }
+                FlowStep::Step(s) if !s.ask.is_empty() => {
+                    self.emit(
+                        format!(
+                            "axon-E0782 Continuous Type Invariant violation in flow '{flow_name}': \
+                             a `step` with a free-text `ask:` prompt is not permitted inside a \
+                             `quant` block. A conversational LLM call reintroduces unstructured \
+                             text into the Hilbert-space scope; perform cognition outside the \
+                             `quant` block and pass only the continuous tensor in."
+                        ),
+                        &s.loc,
+                    );
+                }
+                // Recurse so a leak cannot hide one nesting level down.
+                FlowStep::If(n) => {
+                    self.check_continuous_type_invariant(&n.then_body, flow_name);
+                    self.check_continuous_type_invariant(&n.else_body, flow_name);
+                }
+                FlowStep::ForIn(n) => self.check_continuous_type_invariant(&n.body, flow_name),
+                FlowStep::Par(n) => {
+                    for branch in &n.branches {
+                        self.check_continuous_type_invariant(branch, flow_name);
+                    }
+                }
+                FlowStep::Quant(q) => self.check_continuous_type_invariant(&q.body, flow_name),
+                _ => {}
+            }
+        }
+    }
+
+    /// §Fase 51.b — heuristic: is a `let` value a **String literal**?
+    ///
+    /// The lexer strips the surrounding quotes, so a string literal and a bare
+    /// reference both surface as a plain `value_expr`. They are distinguished
+    /// by `value_kind`: a string literal is `"literal"` (so is a number / bool
+    /// / list). We therefore classify a `"literal"` value as a String iff it is
+    /// NOT numeric, NOT a bool, and NOT a list literal. (A numeric-looking
+    /// string like `"123"` is a rare accepted false-negative; §51.c's typed
+    /// grammar closes that with real declared types.)
+    fn quant_value_is_string_literal(value_kind: &str, value_expr: &str) -> bool {
+        if value_kind != "literal" {
+            return false;
+        }
+        let v = value_expr.trim();
+        if v.parse::<f64>().is_ok() {
+            return false; // numeric index (admitted classical control)
+        }
+        if v == "true" || v == "false" {
+            return false; // bool
+        }
+        if v.starts_with('[') {
+            return false; // list literal
+        }
+        true // quotes stripped at lex time ⇒ a String literal
     }
 
     /// §Fase 58.d — validate a `use Tool(k = v, …)` call against the tool's
