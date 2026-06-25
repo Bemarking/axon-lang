@@ -81,6 +81,11 @@ pub mod runtime;
 /// RFC 6455 WebSocket carrier (`ws::drive`) that runs a session type
 /// against a peer. Carrier-agnostic core; the WS layer is one binding.
 pub mod session_runtime;
+/// §Fase 51.e — the `quant` cognitive primitive's RUNTIME: the
+/// [`quant::QuantBackend`] port + a usable dense-statevector reference
+/// simulator capped at n ≤ 10 (the OSS half; enterprise mounts the QuIDD /
+/// VRAM / QPU engine behind the same trait in §51.f–i).
+pub mod quant;
 /// §Fase 23.f — Algebraic effects runtime. FSM dispatch loop +
 /// handler stack + Free-Monad interpretation of CPS-lowered IR
 /// (consumes the JSON IR emitted by the Python frontend in 23.b/c/d).
