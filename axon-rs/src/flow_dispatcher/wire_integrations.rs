@@ -45,7 +45,7 @@ use crate::flow_dispatcher::{DispatchCtx, DispatchError, NodeOutcome};
 use crate::flow_execution_event::{now_ms, FlowExecutionEvent};
 use crate::ir_nodes::{
     IRConsensusBlock, IRDeliberateBlock, IRDiscover, IREmit, IRMutateStep,
-    IRPersistStep, IRPublish, IRPurgeStep, IRRetrieveStep, IRTransactBlock,
+    IRPersistStep, IRPublish, IRPurgeStep, IRQuant, IRRetrieveStep, IRTransactBlock,
 };
 use crate::store::audit_chain::StoreMutationKind;
 use crate::store::capability;
@@ -1118,6 +1118,46 @@ pub async fn run_transact(
         .insert("__txn_active".to_string(), "true".to_string());
 
     emit_step_complete(ctx, "Transact", step_index, "", 0)?;
+
+    Ok(NodeOutcome::Completed {
+        output: String::new(),
+        tokens_emitted: 0,
+        step_index,
+    })
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  Quant (§Fase 51.a — Hilbert-space projection block, surface only)
+// ────────────────────────────────────────────────────────────────────
+
+/// §Fase 51.a — the `quant` cognitive block. Wire shape: `step_type: "quant"`.
+///
+/// SURFACE ONLY: the OSS dispatcher recognizes the block and emits its
+/// canonical start/complete wire shape but does **not** execute the
+/// Hilbert-space body. Real evaluation is wired by:
+///   - §51.d — the `ots:backend:quant_sim` / `qpu_native` effect injection +
+///     the `yield` measurement point (one-shot continuation), and
+///   - §51.e — the `QuantBackend` port + the capped (n ≤ 10) CPU reference
+///     simulator,
+/// with hardware acceleration (QuIDD / VRAM / QPU) only in the enterprise
+/// backend (§51.f–i). Mirrors the payload-free completion of `run_transact`.
+pub async fn run_quant(
+    node: &IRQuant,
+    ctx: &mut DispatchCtx,
+) -> Result<NodeOutcome, DispatchError> {
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+    let step_index = ctx.step_counter;
+    ctx.step_counter += 1;
+
+    emit_step_start(ctx, "Quant", step_index, "quant")?;
+    // Record the selected backend tag so a downstream observer can see which
+    // effect the block declared (`quant_sim` default / `qpu_native`). No
+    // Hilbert execution happens here in §51.a.
+    ctx.let_bindings
+        .insert("__quant_backend".to_string(), node.effect.clone());
+    emit_step_complete(ctx, "Quant", step_index, "", 0)?;
 
     Ok(NodeOutcome::Completed {
         output: String::new(),

@@ -152,6 +152,9 @@ fn classify_node(node: &IRFlowNode) -> StepKind {
         // §λ-L-E Fase 13 — Mobile typed channel reductions are π-calc
         // prefixes, classified as Cognitive alongside Listen/DaemonStep.
         IRFlowNode::Emit(_) | IRFlowNode::Publish(_) | IRFlowNode::Discover(_) => StepKind::Cognitive,
+        // §Fase 51.a — the `quant` Hilbert-space projection block is cognitive
+        // computation (variational / kernel-feature evaluation).
+        IRFlowNode::Quant(_) => StepKind::Cognitive,
     }
 }
 

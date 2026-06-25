@@ -520,6 +520,22 @@ fn transact_node() -> IRFlowNode {
     })
 }
 
+// §Fase 51.a — the `quant` cognitive block (Hilbert-space projection).
+fn quant_node() -> IRFlowNode {
+    IRFlowNode::Quant(IRQuant {
+        node_type: "quant",
+        source_line: 0,
+        source_column: 0,
+        encoding: None,
+        observable: None,
+        qubits: None,
+        depth: None,
+        bandwidth: None,
+        effect: "quant_sim".to_string(),
+        body: Vec::new(),
+    })
+}
+
 /// The full IRFlowNode catalog the 33.y.b drift gate exercises
 /// end-to-end through `dispatch_node`. Each entry: a factory
 /// producing a synthetic IR variant + the wire-stable slug
@@ -532,7 +548,7 @@ fn transact_node() -> IRFlowNode {
 /// 33.y.j reached 45/45 graduation, ShimReason became dead weight; the
 /// kind slug (single source of truth via `ir_flow_node_kind`) is all
 /// the drift gate needs.
-fn all_45_pairs() -> Vec<(IRFlowNode, &'static str)> {
+fn all_46_pairs() -> Vec<(IRFlowNode, &'static str)> {
     vec![
         (step_node(), "step"),
         (probe_node(), "probe"),
@@ -579,6 +595,8 @@ fn all_45_pairs() -> Vec<(IRFlowNode, &'static str)> {
         (mutate_node(), "mutate"),
         (purge_node(), "purge"),
         (transact_node(), "transact"),
+        // §Fase 51.a — the 46th variant.
+        (quant_node(), "quant"),
     ]
 }
 
@@ -602,14 +620,14 @@ fn fresh_ctx() -> (DispatchCtx, mpsc::UnboundedReceiver<axon::flow_execution_eve
 // ────────────────────────────────────────────────────────────────────
 
 #[test]
-fn cartesian_product_has_exactly_45_entries() {
+fn cartesian_product_has_exactly_46_entries() {
     assert_eq!(
-        all_45_pairs().len(),
-        45,
-        "33.y.b drift gate: the IRFlowNode catalog must cover all 45 \
-         variants. Adding a 46th IRFlowNode variant fails the \
-         dispatch_node compile (forcing a new arm) AND requires \
-         updating this drift gate factory + pair list."
+        all_46_pairs().len(),
+        46,
+        "33.y.b drift gate: the IRFlowNode catalog must cover all 46 \
+         variants (§Fase 51.a added `quant`). Adding a 47th IRFlowNode \
+         variant fails the dispatch_node compile (forcing a new arm) AND \
+         requires updating this drift gate factory + pair list."
     );
 }
 
@@ -644,8 +662,10 @@ const GRADUATED_VARIANTS: &[&str] = &[
     "purge", "transact", "deliberate", "consensus",
     // 33.y.i — PIX variants (3)
     "hibernate", "drill", "trail",
-    // 33.y.j — Lambda + UseTool (FINAL 2 — 45/45 graduated)
+    // 33.y.j — Lambda + UseTool (45/45 at the close of §33.y)
     "lambda_data_apply", "use_tool",
+    // §Fase 51.a — the `quant` cognitive block (46th).
+    "quant",
 ];
 
 /// Pure-shape graduated variants (33.y.c) — strict "(stub)" + 1 token.
@@ -714,9 +734,16 @@ const PIX_GRADUATED: &[&str] = &["hibernate", "drill", "trail"];
 /// variant-specific key. Tokens=0.
 const LAMBDA_TOOLS_GRADUATED: &[&str] = &["lambda_data_apply", "use_tool"];
 
+/// §Fase 51.a — the `quant` cognitive block. SURFACE only: `run_quant`
+/// emits the canonical `step_type: "quant"` wire shape and returns
+/// `Completed { output: "", tokens_emitted: 0 }` (no Hilbert execution
+/// in the OSS runtime). Routed via the `algebraic_handler` bucket (it IS
+/// an algebraic-effect block, D9) which asserts only `tokens_emitted == 0`.
+const QUANT_GRADUATED: &[&str] = &["quant"];
+
 #[tokio::test]
 async fn every_ir_flow_node_routes_to_its_labeled_handler() {
-    let pairs = all_45_pairs();
+    let pairs = all_46_pairs();
     for (node, expected_kind) in pairs {
         // The kind slug from `ir_flow_node_kind` is the single source
         // of truth (eliminates the ShimReason::slug duplication that
@@ -740,7 +767,9 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
         let algebraic_handler = ALGEBRAIC_HANDLERS_GRADUATED.contains(&expected_kind)
             || WIRE_INTEGRATIONS_GRADUATED.contains(&expected_kind)
             || PIX_GRADUATED.contains(&expected_kind)
-            || LAMBDA_TOOLS_GRADUATED.contains(&expected_kind);
+            || LAMBDA_TOOLS_GRADUATED.contains(&expected_kind)
+            // §Fase 51.a — quant routes here (Completed, 0 tokens).
+            || QUANT_GRADUATED.contains(&expected_kind);
 
         // Cognitive-framing handlers behave like pure-shape (1 token).
         let pure_shape_like = pure_shape || cognitive_framing;
@@ -842,17 +871,17 @@ async fn every_ir_flow_node_routes_to_its_labeled_handler() {
 /// `dispatch_node` compile (exhaustive match) AND requires growing
 /// this set + a new entry in one of the sub-catalogs below.
 #[test]
-fn graduated_variants_set_size_pinned_45_of_45() {
+fn graduated_variants_set_size_pinned_46_of_46() {
     assert_eq!(
         GRADUATED_VARIANTS.len(),
-        45,
-        "🎉 45 / 45 graduated. All IRFlowNode variants have a NAMED \
+        46,
+        "46 / 46 graduated. All IRFlowNode variants have a NAMED \
          async handler in dispatch_node; `legacy_shim` retired in \
          33.y.l. Composition: 6 pure-shape (33.y.c) + 6 orchestration \
          (33.y.d) + 2 parallel/algebraic (33.y.e) + 10 cognitive \
          (33.y.f) + 6 algebraic handlers (33.y.g) + 10 wire \
          integrations (33.y.h) + 3 PIX (33.y.i) + 2 Lambda+UseTool \
-         (33.y.j) = 45 variants total."
+         (33.y.j) + 1 quant (§51.a) = 46 variants total."
     );
     assert_eq!(PURE_SHAPE_GRADUATED.len(), 6);
     assert_eq!(ORCHESTRATION_GRADUATED.len(), 6);
@@ -863,6 +892,7 @@ fn graduated_variants_set_size_pinned_45_of_45() {
     assert_eq!(WIRE_INTEGRATIONS_GRADUATED.len(), 10);
     assert_eq!(PIX_GRADUATED.len(), 3);
     assert_eq!(LAMBDA_TOOLS_GRADUATED.len(), 2);
+    assert_eq!(QUANT_GRADUATED.len(), 1);
 
     // Sum check — the partition is exhaustive (no variant in
     // multiple groups; no variant missing).
@@ -874,10 +904,11 @@ fn graduated_variants_set_size_pinned_45_of_45() {
         + ALGEBRAIC_HANDLERS_GRADUATED.len()
         + WIRE_INTEGRATIONS_GRADUATED.len()
         + PIX_GRADUATED.len()
-        + LAMBDA_TOOLS_GRADUATED.len();
+        + LAMBDA_TOOLS_GRADUATED.len()
+        + QUANT_GRADUATED.len();
     assert_eq!(
-        total, 45,
-        "partition sum check: all 9 sub-catalogs must cover exactly 45 variants"
+        total, 46,
+        "partition sum check: all 10 sub-catalogs must cover exactly 46 variants"
     );
 }
 
@@ -887,7 +918,7 @@ fn graduated_variants_set_size_pinned_45_of_45() {
 
 #[tokio::test]
 async fn dispatch_node_honors_cancel_flag_at_entry() {
-    let pairs = all_45_pairs();
+    let pairs = all_46_pairs();
     for (node, kind) in pairs {
         let (tx, _rx) = mpsc::unbounded_channel();
         let cancel = CancellationFlag::new();
@@ -917,7 +948,7 @@ async fn dispatch_node_honors_cancel_flag_at_entry() {
 
 #[test]
 fn flow_plan_kind_returns_non_empty_slug_for_all_45_variants() {
-    let pairs = all_45_pairs();
+    let pairs = all_46_pairs();
     let mut seen = std::collections::HashSet::new();
     for (node, expected_kind) in pairs {
         let kind = ir_flow_node_kind(&node);
@@ -936,7 +967,7 @@ fn flow_plan_kind_returns_non_empty_slug_for_all_45_variants() {
              be 1-to-1 with IRFlowNode variants",
         );
     }
-    assert_eq!(seen.len(), 45, "slugs cover all 45 variants exactly once");
+    assert_eq!(seen.len(), 46, "slugs cover all 46 variants exactly once");
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -992,7 +1023,7 @@ fn dispatch_error_variants_constructible_from_public_surface() {
 
 #[tokio::test]
 async fn dispatch_node_does_not_panic_for_any_variant() {
-    let pairs = all_45_pairs();
+    let pairs = all_46_pairs();
     for (node, kind) in pairs {
         let (mut ctx, _rx) = fresh_ctx();
         // If this `await` panics for any variant we've shipped a

@@ -906,6 +906,13 @@ pub async fn dispatch_node(
         IRFlowNode::Mutate(node) => wire_integrations::run_mutate(node, ctx).await,
         IRFlowNode::Purge(node) => wire_integrations::run_purge(node, ctx).await,
         IRFlowNode::Transact(node) => wire_integrations::run_transact(node, ctx).await,
+        // §Fase 51.a — the `quant` cognitive block. SURFACE only in this
+        // sub-fase: the OSS dispatcher recognizes it and emits the canonical
+        // `step_type: "quant"` wire shape but does NOT execute the Hilbert-space
+        // body — real evaluation requires the `QuantBackend` port + reference
+        // simulator (§51.e) and the effect injection + `yield` measurement
+        // (§51.d), and is hardware-accelerated only in the enterprise backend.
+        IRFlowNode::Quant(node) => wire_integrations::run_quant(node, ctx).await,
     }
 }
 

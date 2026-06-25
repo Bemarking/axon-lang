@@ -536,6 +536,9 @@ fn extract_step_info(node: &IRFlowNode) -> (String, String, String) {
         IRFlowNode::Mutate(s) => (s.store_name.clone(), "mutate".to_string(), format!("Mutate: {}", s.store_name)),
         IRFlowNode::Purge(s) => (s.store_name.clone(), "purge".to_string(), format!("Purge: {}", s.store_name)),
         IRFlowNode::Transact(_) => ("transact".to_string(), "transact".to_string(), "Transact block".to_string()),
+        // §Fase 51.a — `quant` cognitive block. step_type "quant" matches
+        // `flow_plan::ir_flow_node_kind` (drift-gated).
+        IRFlowNode::Quant(_) => ("quant".to_string(), "quant".to_string(), "Quant block".to_string()),
         IRFlowNode::LambdaDataApply(s) => (s.lambda_data_name.clone(), "lambda_data_apply".to_string(), format!("Apply ΛD: {}", s.lambda_data_name)),
         // §λ-L-E Fase 13 — Mobile typed channel reductions.
         IRFlowNode::Emit(s) => (s.channel_ref.clone(), "emit".to_string(), format!("Emit on {}: {}", s.channel_ref, s.value_ref)),

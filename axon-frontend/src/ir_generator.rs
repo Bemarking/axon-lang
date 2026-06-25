@@ -847,6 +847,20 @@ impl IRGenerator {
                 source_line: s.loc.line,
                 source_column: s.loc.column,
             }),
+            // §Fase 51.a — lower the `quant` block; the body lowers recursively
+            // (like `par` branches) so the nested flow-IR is preserved.
+            FlowStep::Quant(s) => IRFlowNode::Quant(crate::ir_nodes::IRQuant {
+                node_type: "quant",
+                source_line: s.loc.line,
+                source_column: s.loc.column,
+                encoding: s.encoding.clone(),
+                observable: s.observable.clone(),
+                qubits: s.qubits,
+                depth: s.depth,
+                bandwidth: s.bandwidth,
+                effect: s.effect.clone(),
+                body: s.body.iter().map(|stmt| self.visit_flow_step(stmt)).collect(),
+            }),
             FlowStep::GenericStep(_) => {
                 // Should not occur — all flow steps have dedicated handlers
                 IRFlowNode::Step(IRStep {
