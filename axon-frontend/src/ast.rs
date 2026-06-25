@@ -1480,6 +1480,12 @@ pub struct LetStatement {
     /// "expression". Defaults to "literal" so any pre-Fase-17 caller
     /// that constructs a LetStatement directly behaves as a literal.
     pub value_kind: String,
+    /// §Fase 51.c.3 — optional type annotation `let x: <TypeExpr> = …`.
+    /// `None` for the bare `let x = …` form (all pre-51.c.3 lets). Inside a
+    /// `quant` block the Continuous Type Invariant inspects this to enforce the
+    /// continuous-carrier discipline (`DensityMatrix[D]` D=2ⁿ; reject discrete
+    /// conversational types). Carries the typed encoder-boundary contract.
+    pub type_annotation: Option<TypeExpr>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

@@ -2600,6 +2600,23 @@ impl Parser {
             };
             self.consume(TokenType::Gt)?;
         }
+        // §Fase 51.c.3 — bracket type parameters for the continuous-carrier
+        // grammar: `SymbolicPtr[Tensor[Float32]]`, `DensityMatrix[1024]`. The
+        // param is either a nested type expression OR a numeric dimension.
+        if self.check(TokenType::LBracket) {
+            self.advance();
+            if matches!(self.current().ttype, TokenType::Integer | TokenType::Float) {
+                generic_param = self.advance().value.clone();
+            } else {
+                let inner = self.parse_type_expr()?;
+                generic_param = if inner.generic_param.is_empty() {
+                    inner.name
+                } else {
+                    format!("{}[{}]", inner.name, inner.generic_param)
+                };
+            }
+            self.consume(TokenType::RBracket)?;
+        }
         if self.check(TokenType::Question) {
             self.advance();
             optional = true;
@@ -3284,6 +3301,13 @@ impl Parser {
 
         // Name can be an identifier or a keyword used as binding name
         let name = self.consume_any_ident_or_kw()?.value;
+        // §Fase 51.c.3 — optional type annotation `let x: <TypeExpr> = …`.
+        let type_annotation = if self.check(TokenType::Colon) {
+            self.advance();
+            Some(self.parse_type_expr()?)
+        } else {
+            None
+        };
         self.consume(TokenType::Assign)?;
         // Fase 17.a — reset side-channel before parsing value; the
         // atom / expr helpers tag the kind as they descend.
@@ -3294,6 +3318,7 @@ impl Parser {
             identifier: name,
             value_expr: value,
             value_kind: self.last_let_value_kind.clone(),
+            type_annotation,
             loc,
             leading_trivia: Vec::new(),
             trailing_trivia: Vec::new(),
