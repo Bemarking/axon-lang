@@ -5304,6 +5304,26 @@ impl<'a> TypeChecker<'a> {
                             &n.loc,
                         );
                     }
+                    // §Fase 51.c.3 — typed encoder-boundary discipline. A typed
+                    // `let x: <T> = …` inside quant must carry a continuous (or
+                    // classical-control) type, and a `DensityMatrix[D]` must have
+                    // D = 2ⁿ (the Hilbert-space dimension for n qubits).
+                    if let Some(ty) = &n.type_annotation {
+                        self.check_density_matrix_dim(ty, flow_name, &n.loc);
+                        if matches!(ty.name.as_str(), "String" | "Text") {
+                            self.emit(
+                                format!(
+                                    "axon-E0782 Continuous Type Invariant violation in flow \
+                                     '{flow_name}': let binding '{}' is typed '{}' inside a `quant` \
+                                     block. Discrete/conversational types collapse the continuous \
+                                     gradient — use a continuous carrier \
+                                     ('SymbolicPtr[Tensor[Float32]]', 'DensityMatrix[D]').",
+                                    n.identifier, ty.name
+                                ),
+                                &n.loc,
+                            );
+                        }
+                    }
                 }
                 FlowStep::Step(s) if !s.ask.is_empty() => {
                     self.emit(
@@ -5343,6 +5363,29 @@ impl<'a> TypeChecker<'a> {
     /// NOT numeric, NOT a bool, and NOT a list literal. (A numeric-looking
     /// string like `"123"` is a rare accepted false-negative; §51.c's typed
     /// grammar closes that with real declared types.)
+    /// §Fase 51.c.3 — a `DensityMatrix[D]` must have **D = 2ⁿ** (the dimension
+    /// of the Hilbert space of n qubits, paper §3.1/§3.3); `axon-E0786`. When
+    /// the dimension is symbolic (non-numeric `generic_param`) the check is
+    /// skipped — only a concrete literal can be proven a power of two.
+    fn check_density_matrix_dim(&mut self, ty: &TypeExpr, flow_name: &str, loc: &Loc) {
+        if ty.name != "DensityMatrix" {
+            return;
+        }
+        if let Ok(d) = ty.generic_param.trim().parse::<u64>() {
+            // power of two ⇔ d > 0 ∧ (d & (d-1)) == 0
+            if d == 0 || (d & (d - 1)) != 0 {
+                self.emit(
+                    format!(
+                        "axon-E0786 quant block in flow '{flow_name}': DensityMatrix dimension {d} \
+                         is not a power of two — D must equal 2ⁿ (the Hilbert-space dimension for \
+                         n qubits, e.g. 2, 4, …, 1024)."
+                    ),
+                    loc,
+                );
+            }
+        }
+    }
+
     fn quant_value_is_string_literal(value_kind: &str, value_expr: &str) -> bool {
         if value_kind != "literal" {
             return false;
