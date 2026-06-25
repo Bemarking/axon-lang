@@ -2764,6 +2764,8 @@ impl Parser {
             TokenType::Mutate => self.parse_mutate_step(),
             TokenType::Purge => self.parse_store_where_step().map(|(loc, store_name, where_expr)| FlowStep::Purge(PurgeStep { store_name, where_expr, loc })),
             TokenType::Transact => self.parse_block_step("transact").map(|l| FlowStep::Transact(TransactBlock { loc: l })),
+            // §Fase 51.a — the `quant` cognitive block (Hilbert-space projection).
+            TokenType::Quant => self.parse_quant().map(FlowStep::Quant),
 
             _ => {
                 // §Fase 28.e — append "Did you mean X?" hint when the
@@ -3462,6 +3464,86 @@ impl Parser {
                 column: tok.column,
             },
         })
+    }
+
+    /// §Fase 51.a — Parse the `quant` cognitive block surface.
+    ///
+    /// Grammar (the attribute header is OPTIONAL):
+    /// ```text
+    /// quant { <flow steps> }
+    /// quant(encoding: amplitude, observable: M, qubits: 10,
+    ///       depth: 4, bandwidth: 0.5, backend: quant_sim) { <flow steps> }
+    /// ```
+    /// The bare form (the paper's example) leaves every attribute defaulted
+    /// (`encoding = amplitude`, `effect = quant_sim`). The body is parsed into
+    /// real nested `FlowStep`s — like `par` branches — so §51.b's Continuous
+    /// Type Invariant scans actual AST rather than skipped tokens.
+    fn parse_quant(&mut self) -> Result<QuantBlock, ParseError> {
+        let tok = self.current().clone();
+        self.advance(); // consume `quant`
+
+        let mut block = QuantBlock {
+            encoding: None,
+            observable: None,
+            qubits: None,
+            depth: None,
+            bandwidth: None,
+            // D1/D9 default backend: the CPU simulator effect. `qpu_native` is
+            // opt-in via `backend: qpu_native`.
+            effect: "quant_sim".to_string(),
+            body: Vec::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        };
+
+        // ── Optional attribute header: `(key: value, …)` ──
+        if self.check(TokenType::LParen) {
+            self.advance();
+            while !self.check(TokenType::RParen) && !self.check(TokenType::Eof) {
+                let key = self.consume_any_ident_or_kw()?.value;
+                self.consume(TokenType::Colon)?;
+                match key.as_str() {
+                    "encoding" => {
+                        block.encoding = Some(self.consume_any_ident_or_kw()?.value)
+                    }
+                    "observable" => {
+                        block.observable = Some(self.parse_dotted_identifier()?)
+                    }
+                    "qubits" => block.qubits = Some(self.consume_number()? as i64),
+                    "depth" => block.depth = Some(self.consume_number()? as i64),
+                    "bandwidth" => block.bandwidth = Some(self.consume_number()?),
+                    // `backend:` selects the algebraic-effect tag (D1/D9).
+                    "backend" => block.effect = self.consume_any_ident_or_kw()?.value,
+                    other => {
+                        return Err(ParseError {
+                            message: format!(
+                                "Unknown `quant` attribute `{other}` — expected one of \
+                                 encoding, observable, qubits, depth, bandwidth, backend"
+                            ),
+                            line: self.current().line,
+                            column: self.current().column,
+                            ..Default::default()
+                        });
+                    }
+                }
+                // Optional comma between attributes (order-free, trailing-comma ok).
+                if self.check(TokenType::Comma) {
+                    self.advance();
+                }
+            }
+            self.consume(TokenType::RParen)?;
+        }
+
+        // ── Body: real nested flow steps (like `par`) ──
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            block.body.push(self.parse_flow_step()?);
+        }
+        self.consume(TokenType::RBrace)?;
+
+        Ok(block)
     }
 
     /// Parse: keyword Name on target -> output_type (apply pattern).

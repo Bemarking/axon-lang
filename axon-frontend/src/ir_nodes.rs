@@ -840,6 +840,8 @@ pub enum IRFlowNode {
     Mutate(IRMutateStep),
     Purge(IRPurgeStep),
     Transact(IRTransactBlock),
+    /// §Fase 51.a — the `quant` cognitive block (Hilbert-space projection).
+    Quant(IRQuant),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1245,6 +1247,37 @@ pub struct IRTransactBlock {
     pub node_type: &'static str,
     pub source_line: u32,
     pub source_column: u32,
+}
+
+/// §Fase 51.a — IR for the `quant` cognitive block (Hilbert-space projection).
+/// Mirrors `ast::QuantBlock`. Optional attributes serialize only when present
+/// (`skip_serializing_if`) so a bare `quant {}` lowers to a minimal node and
+/// the JSON stays diff-stable. The body lowers recursively, like `par` branches.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRQuant {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    /// Encoding scheme surface spelling (`amplitude` | `angle`); `None` = default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+    /// Referenced `Observable` (Pauli-sum) name; `None` if unspecified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observable: Option<String>,
+    /// Register width n; `None` = inferred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qubits: Option<i64>,
+    /// Variational circuit depth L; `None` = backend default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<i64>,
+    /// Projected-kernel bandwidth γ (D7); `None` = backend default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bandwidth: Option<f64>,
+    /// Algebraic-effect backend tag (`quant_sim` | `qpu_native`).
+    pub effect: String,
+    /// Nested flow-body IR (recursively lowered).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body: Vec<IRFlowNode>,
 }
 
 // ── Tier 2 IR nodes ─────────────────────────────────────────────────────────

@@ -172,7 +172,7 @@ pub const FLOW_BODY_KEYWORD_NAMES: &[&str] = &[
     "daemon", "drill", "explore", "focus", "forward", "handle",
     "hibernate", "if", "ingest", "lambda", "let", "listen", "mandate",
     "mutate", "navigate", "ots", "par", "perform", "persist", "probe",
-    "purge", "reason", "recall", "refine", "remember", "resume",
+    "purge", "quant", "reason", "recall", "refine", "remember", "resume",
     "retrieve", "return", "shield", "step", "stream", "trail", "transact",
     "use", "validate", "weave",
 ];

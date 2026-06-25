@@ -1356,6 +1356,11 @@ pub enum FlowStep {
     Mutate(MutateStep),
     Purge(PurgeStep),
     Transact(TransactBlock),
+    /// §Fase 51.a — `quant { … }` cognitive block (Hilbert-space projection).
+    /// Carries an optional attribute header + a real nested body of flow steps
+    /// (so §51.b's Continuous Type Invariant can scan it). Lives inside a flow
+    /// body like `par`; NOT a top-level declaration.
+    Quant(QuantBlock),
     /// Flow-level statements we recognize but parse structurally.
     GenericStep(GenericFlowStep),
 }
@@ -1807,6 +1812,51 @@ pub struct PurgeStep {
 }
 #[derive(Debug)]
 pub struct TransactBlock {
+    pub loc: Loc,
+}
+
+/// §Fase 51.a — the `quant` cognitive primitive block surface
+/// (`docs/papers/paper_primitiva_quant.md`; enterprise §Fase 51).
+///
+/// `quant` projects an MEK semantic tensor into a complex Hilbert space,
+/// evolves it under a variational / kernel-feature map, and collapses back to
+/// classical silicon. The attribute header is OPTIONAL — the bare `quant { … }`
+/// form (the paper's example) leaves every attribute defaulted. The richer form
+/// `quant(encoding: amplitude, observable: M, qubits: 10, depth: 4,
+/// bandwidth: 0.5, backend: quant_sim) { … }` pins the encoding scheme (D2),
+/// the Pauli-sum observable (D5), the register width / circuit depth, the
+/// projected-kernel bandwidth γ (D7), and the algebraic-effect backend (D1/D9).
+///
+/// §51.a ships the SURFACE only. The Continuous Type Invariant over `body`
+/// (§51.b), the typed continuous grammar incl. typed `let` + `Observable`
+/// (§51.c), and the `quant_sim`/`qpu_native` effect injection + `yield`
+/// measurement point (§51.d) land in subsequent sub-fases.
+#[derive(Debug, Default)]
+pub struct QuantBlock {
+    /// `encoding:` — `amplitude` (default) or `angle` (shallow). `None` = the
+    /// compiler default (amplitude). Carried as the surface spelling; §51.c
+    /// validates against the closed scheme set.
+    pub encoding: Option<String>,
+    /// `observable:` — the name of a declared `Observable` (Pauli-sum, D5).
+    /// `None` if unspecified (§51.c resolves + Hermiticity-checks it).
+    pub observable: Option<String>,
+    /// `qubits:` — the register width n (D = 2ⁿ). `None` = inferred from the
+    /// encoded tensor dimensionality. The OSS reference backend caps n ≤ 10
+    /// (D1); that bound is enforced at §51.e, not here.
+    pub qubits: Option<i64>,
+    /// `depth:` — the variational circuit depth L. `None` = backend default.
+    pub depth: Option<i64>,
+    /// `bandwidth:` — the projected-quantum-kernel bandwidth γ (D7). `None` =
+    /// backend default.
+    pub bandwidth: Option<f64>,
+    /// The algebraic-effect backend tag: `quant_sim` (default) or `qpu_native`
+    /// (D1/D9). Stored as the bare backend name; §51.d injects the full
+    /// `ots:backend:<tag>` effect into the enclosing flow's effect row.
+    pub effect: String,
+    /// The nested flow-body statements (parsed like `par` branches, so §51.b
+    /// can apply the Continuous Type Invariant to real AST). Empty for an
+    /// empty `quant {}`.
+    pub body: Vec<FlowStep>,
     pub loc: Loc,
 }
 

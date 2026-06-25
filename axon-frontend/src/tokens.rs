@@ -169,6 +169,11 @@ pub enum TokenType {
     // WebSocket as a cognitive primitive (§Fase 41.b) — the typed-WS
     // transport binding around a `session` protocol.
     Socket,
+    // `quant` as a cognitive primitive (§Fase 51.a) — a flow-body block that
+    // projects an MEK semantic tensor into a complex Hilbert space, evolves it
+    // under a variational / kernel-feature map, and collapses back to classical
+    // silicon. NOT a top-level declaration (lives inside a flow body, like `par`).
+    Quant,
     Emit,
     Publish,
     Discover,
@@ -470,6 +475,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "channel" => TokenType::Channel,
         // WebSocket as a cognitive primitive (§Fase 41.b)
         "socket" => TokenType::Socket,
+        // `quant` as a cognitive primitive (§Fase 51.a) — flow-body block.
+        "quant" => TokenType::Quant,
         "emit" => TokenType::Emit,
         "publish" => TokenType::Publish,
         "discover" => TokenType::Discover,
