@@ -490,6 +490,12 @@ pub async fn run_streaming_via_dispatcher(
         enforcement_summaries,
         step_audit_records,
         runtime_warnings,
+        // §Fase 67.c — the SSE path does not surface aggregate row counts on
+        // the wire (per-step counts already ride the result envelopes), so a
+        // throwaway counter satisfies the shared-channel contract.
+        std::sync::Arc::new(std::sync::Mutex::new(
+            crate::flow_dispatcher::StoreRowCounts::default(),
+        )),
     )
     .with_store_registry(store_registry)
     // §Fase 65.C — the per-tenant API key so LLM steps use this tenant's key.

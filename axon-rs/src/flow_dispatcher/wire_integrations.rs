@@ -550,10 +550,16 @@ pub async fn run_persist(
                     .unwrap()
                     .insert(node.store_name.clone(), p);
             }
+            // §Fase 67.c — observable per-run row count.
+            ctx.record_store_rows(crate::flow_dispatcher::StoreRowKind::Persisted, n as u64);
             format!("persisted {n} row(s) to `{}`", node.store_name)
         }
         Ok(None) => {
             let count = persist_to_store(&node.store_name, ctx);
+            ctx.record_store_rows(
+                crate::flow_dispatcher::StoreRowKind::Persisted,
+                count as u64,
+            );
             format!("persisted {count} entries to `{}`", node.store_name)
         }
         Err(e) => return Err(sql_dispatch_error(e)),
@@ -647,9 +653,11 @@ pub async fn run_retrieve(
                     &mut store_conn,
                     &node.store_name,
                     &node.where_expr,
-                    // §Fase 67.b — corpus ingest has no adopter ORDER BY/LIMIT.
-                    "",
-                    "",
+                    // §Fase 67.b — the adopter `order_by:` / `limit:` clauses
+                    // (this IS the `retrieve` step handler on the production
+                    // dispatcher path — the daemon runs through here).
+                    &node.order_by,
+                    &node.limit_expr,
                     row_stream::DEFAULT_RETRIEVE_POLICY,
                     row_stream::DEFAULT_MAX_ROWS,
                     &ctx.cancel,
@@ -668,6 +676,14 @@ pub async fn run_retrieve(
             }
             let stream_outcome = stream_outcome_result
             .map_err(sql_dispatch_error)?;
+            // §Fase 67.c — observable per-run row count: the rows the
+            // `where:` (+ §67.b LIMIT) actually matched, captured BEFORE
+            // the epistemic floor consumes the vec. This is the number
+            // brief #34 Q3 wanted — "did the sweep find work?".
+            ctx.record_store_rows(
+                crate::flow_dispatcher::StoreRowKind::Retrieved,
+                stream_outcome.rows.len() as u64,
+            );
             let metadata = row_stream::stream_metadata(
                 row_stream::DEFAULT_RETRIEVE_POLICY,
                 &stream_outcome,
@@ -991,10 +1007,16 @@ pub async fn run_mutate(
                     .unwrap()
                     .insert(node.store_name.clone(), p);
             }
+            // §Fase 67.c — observable per-run row count.
+            ctx.record_store_rows(crate::flow_dispatcher::StoreRowKind::Mutated, n as u64);
             format!("mutated {n} row(s) in `{}`", node.store_name)
         }
         Ok(None) => {
             let count = mutate_store(&node.store_name, &node.where_expr, ctx);
+            ctx.record_store_rows(
+                crate::flow_dispatcher::StoreRowKind::Mutated,
+                count as u64,
+            );
             format!("mutated {count} entries in `{}`", node.store_name)
         }
         Err(e) => return Err(sql_dispatch_error(e)),
@@ -1080,10 +1102,16 @@ pub async fn run_purge(
                     .unwrap()
                     .insert(node.store_name.clone(), p);
             }
+            // §Fase 67.c — observable per-run row count.
+            ctx.record_store_rows(crate::flow_dispatcher::StoreRowKind::Purged, n as u64);
             format!("purged {n} row(s) from `{}`", node.store_name)
         }
         Ok(None) => {
             let count = purge_from_store(&node.store_name, &node.where_expr, ctx);
+            ctx.record_store_rows(
+                crate::flow_dispatcher::StoreRowKind::Purged,
+                count as u64,
+            );
             format!("purged {count} entries from `{}`", node.store_name)
         }
         Err(e) => return Err(sql_dispatch_error(e)),
@@ -1631,6 +1659,39 @@ mod tests {
         };
         run_retrieve(&retrieve, &mut ctx).await.unwrap();
         assert_eq!(ctx.let_bindings.get("retrieved_id").unwrap(), "42");
+    }
+
+    /// §Fase 67.c — each store op folds its row count into the shared
+    /// per-run counter on the ctx; the counts ACCUMULATE (not overwrite)
+    /// and are read by `collect_via_dispatcher` after the walk. Exercised
+    /// here on the in-memory path (the postgres path needs a live DB; the
+    /// wiring — handler → `ctx.record_store_rows` → counter — is identical).
+    #[tokio::test]
+    async fn store_ops_fold_observable_row_counts_into_the_ctx() {
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert("id".into(), "1".into());
+        let persist = IRPersistStep {
+            node_type: "persist",
+            fields: Vec::new(),
+            source_line: 0,
+            source_column: 0,
+            store_name: "entities".into(),
+        };
+        // Zero before any op.
+        assert_eq!(
+            *ctx.store_row_counts.lock().unwrap(),
+            crate::flow_dispatcher::StoreRowCounts::default()
+        );
+        run_persist(&persist, &mut ctx).await.unwrap();
+        let after_one = ctx.store_row_counts.lock().unwrap().persisted;
+        assert!(after_one >= 1, "a persist must count >=1 row, got {after_one}");
+        // A second persist ACCUMULATES (proves `+=`, not overwrite).
+        run_persist(&persist, &mut ctx).await.unwrap();
+        let after_two = ctx.store_row_counts.lock().unwrap().persisted;
+        assert_eq!(after_two, after_one * 2, "counts accumulate across ops");
+        // The other buckets stay zero (no retrieve/mutate/purge ran).
+        let c = *ctx.store_row_counts.lock().unwrap();
+        assert_eq!((c.retrieved, c.mutated, c.purged), (0, 0, 0));
     }
 
     /// §Fase 35.o — `store_row` with a declared `{ col: value }`

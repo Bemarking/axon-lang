@@ -205,6 +205,28 @@ pub mod unified_stream;
 /// Monotonic per-flow counter. Each Step (or pure-shape variant
 /// promoted to Step) increments. Surface fed into `step_audit` so
 /// the row index is correct under nested orchestration.
+/// §Fase 67.c — per-run store row counts, observable on
+/// `ServerRunnerMetrics`. Surfaces "how much work did this run touch"
+/// (closing brief #34 Q3: a daemon run reporting `completed, duration 0`
+/// stops being indistinguishable from "found no rows"). Each store op
+/// handler folds its `n` into the shared (par-branch-merged) counter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StoreRowCounts {
+    pub retrieved: u64,
+    pub persisted: u64,
+    pub mutated: u64,
+    pub purged: u64,
+}
+
+/// §Fase 67.c — which counter a store op increments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreRowKind {
+    Retrieved,
+    Persisted,
+    Mutated,
+    Purged,
+}
+
 #[derive(Clone)]
 pub struct DispatchCtx {
     pub flow_name: String,
@@ -248,6 +270,14 @@ pub struct DispatchCtx {
     pub runtime_warnings: Arc<
         Mutex<Vec<crate::runtime_warnings::RuntimeWarning>>,
     >,
+    /// §Fase 67.c — shared (par-branch-merged) per-run store row counts.
+    /// A plain `std::sync::Mutex` (the update is instant — lock, add,
+    /// drop — never held across an `.await`). Like the audit side-
+    /// channels, the collector injects its own Arc via
+    /// [`DispatchCtx::with_external_side_channels`] and reads it after
+    /// the walk; par-branches share it (the Arc survives `ctx.clone()`,
+    /// unlike `pinned_conns` which is replaced per branch).
+    pub store_row_counts: std::sync::Arc<std::sync::Mutex<StoreRowCounts>>,
     pub branch_path: Vec<String>,
     pub step_counter: usize,
     /// §Fase 33.y.f — Optional PEM async surface for cognitive
@@ -416,6 +446,9 @@ impl DispatchCtx {
             enforcement_summaries: Arc::new(Mutex::new(HashMap::new())),
             step_audit_records: Arc::new(Mutex::new(Vec::new())),
             runtime_warnings: Arc::new(Mutex::new(Vec::new())),
+            store_row_counts: std::sync::Arc::new(std::sync::Mutex::new(
+                StoreRowCounts::default(),
+            )),
             branch_path: Vec::new(),
             step_counter: 0,
             pem_backend: None,
@@ -612,11 +645,29 @@ impl DispatchCtx {
         runtime_warnings: std::sync::Arc<
             tokio::sync::Mutex<Vec<crate::runtime_warnings::RuntimeWarning>>,
         >,
+        // §Fase 67.c — the collector injects its own row-count Arc so it
+        // can read the totals after the dispatcher walk completes.
+        store_row_counts: std::sync::Arc<std::sync::Mutex<StoreRowCounts>>,
     ) -> Self {
         self.enforcement_summaries = enforcement_summaries;
         self.step_audit_records = step_audit_records;
         self.runtime_warnings = runtime_warnings;
+        self.store_row_counts = store_row_counts;
         self
+    }
+
+    /// §Fase 67.c — fold a store op's row count into the shared per-run
+    /// totals. The guard is dropped at the end of the statement (never
+    /// held across an `.await`), so the `std::sync::Mutex` is safe inside
+    /// the async store handlers.
+    pub fn record_store_rows(&self, kind: StoreRowKind, n: u64) {
+        let mut c = self.store_row_counts.lock().unwrap();
+        match kind {
+            StoreRowKind::Retrieved => c.retrieved += n,
+            StoreRowKind::Persisted => c.persisted += n,
+            StoreRowKind::Mutated => c.mutated += n,
+            StoreRowKind::Purged => c.purged += n,
+        }
     }
 
     /// Read + clear the pending effect policy. Returns `None` when no
