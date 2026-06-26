@@ -4987,6 +4987,7 @@ impl Parser {
             max_time: String::new(),
             max_cost: None,
             listeners: Vec::new(),
+            requires_capabilities: Vec::new(),
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -5015,6 +5016,32 @@ impl Parser {
                     "max_tokens" => node.max_tokens = self.parse_optional_int(),
                     "max_time" => node.max_time = self.consume_any_ident_or_kw()?.value.clone(),
                     "max_cost" => node.max_cost = self.parse_optional_float(),
+                    // §Fase 52.d — `requires: [cap, …]` capability scope (same
+                    // closed slug grammar as `axonendpoint requires:`). The
+                    // enterprise supervisor mints a per-run principal scoped to
+                    // exactly these (least privilege).
+                    "requires" => {
+                        let bracket_tok = self.current().clone();
+                        let items = self.parse_bracketed_dot_identifiers()?;
+                        for slug in &items {
+                            if !is_valid_capability_slug(slug) {
+                                return Err(ParseError {
+                                    message: format!(
+                                        "Invalid capability slug '{slug}' in daemon '{}' \
+                                         `requires:`. Capability slugs must match \
+                                         ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$ — dot-separated \
+                                         lowercase identifiers. Examples: `daemon.run`, \
+                                         `memory.write`, `flow.execute`.",
+                                        node.name
+                                    ),
+                                    line: bracket_tok.line,
+                                    column: bracket_tok.column,
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                        node.requires_capabilities = items;
+                    }
                     _ => self.skip_value(),
                 }
             } else if field.ttype == TokenType::Listen {

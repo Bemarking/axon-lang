@@ -5861,6 +5861,27 @@ impl<'a> TypeChecker<'a> {
         for listener in &node.listeners {
             self.check_listen(listener, &node.name);
         }
+        // §Fase 52.d — a cron-SCHEDULED daemon is a standing autonomous
+        // privilege: it fires + invokes flows on its own, with no request
+        // principal behind it. It MUST declare its capability scope so the
+        // enterprise supervisor can mint a least-privilege per-run principal
+        // (§52.d). Event-only daemons are exempt (pre-§52 Fase-16 surface).
+        let has_cron = node
+            .listeners
+            .iter()
+            .any(|l| crate::cron::cron_expr(&l.channel).is_some());
+        if has_cron && node.requires_capabilities.is_empty() {
+            self.emit(
+                format!(
+                    "axon-E0791 daemon '{}' has a cron-scheduled listener but declares no \
+                     `requires:` capability scope — a standing scheduled privilege must be \
+                     explicit. Add `requires: [<cap>, …]` (e.g. `requires: [flow.execute]`) so \
+                     each run executes under a least-privilege principal.",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
     }
 
     /// Validate a listen block (Fase 13 D4 dual-mode).
