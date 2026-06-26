@@ -64,6 +64,7 @@ pub mod config_persistence;
 pub mod conversation;
 pub mod cors;
 pub mod cost_estimator;
+pub mod daemon;
 pub mod db_pool;
 pub mod deployer;
 pub mod emcp;
