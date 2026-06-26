@@ -383,6 +383,13 @@ pub enum FilterError {
     BadTimeValue { detail: String },
     /// §Fase 67.a — `LIKE` applied to a `now()` time value (nonsensical).
     LikeWithTime,
+    /// §Fase 67.b — a malformed `order_by:` term: an empty term, a column
+    /// that fails the identifier discipline, or a direction that is not
+    /// `asc`/`desc`.
+    BadOrderBy { detail: String },
+    /// §Fase 67.b — a malformed `limit:`: not a non-negative integer that
+    /// fits `u32` (after `${binding}` resolution).
+    BadLimit { detail: String },
 }
 
 impl fmt::Display for FilterError {
@@ -472,6 +479,18 @@ impl fmt::Display for FilterError {
                 f,
                 "`LIKE` cannot be applied to a `now()` time value — use an \
                  ordering operator (`<`, `>`, `<=`, `>=`) or `=`/`!=`"
+            ),
+            FilterError::BadOrderBy { detail } => write!(
+                f,
+                "malformed `order_by:` — {detail}. The form is a \
+                 comma-separated list of `column [asc|desc]` (e.g. \
+                 `order_by: \"last_activity_at asc, id desc\"`)"
+            ),
+            FilterError::BadLimit { detail } => write!(
+                f,
+                "malformed `limit:` — {detail}. The form is a non-negative \
+                 integer literal (`limit: 100`) or a `${{binding}}` that \
+                 resolves to one (`limit: \"${{max}}\"`)"
             ),
         }
     }
@@ -1013,6 +1032,147 @@ pub fn build_pg_where(
     }
 
     Ok((clause, params))
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  §Fase 67.b — bounded + ordered retrieve (`ORDER BY … LIMIT …`)
+// ════════════════════════════════════════════════════════════════════
+
+/// A sort direction. The whitelist IS the catalog — an un-listed
+/// direction cannot reach the rendered SQL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderDir {
+    Asc,
+    Desc,
+}
+
+impl OrderDir {
+    fn as_sql(self) -> &'static str {
+        match self {
+            OrderDir::Asc => "ASC",
+            OrderDir::Desc => "DESC",
+        }
+    }
+}
+
+/// One `column [asc|desc]` sort key. The column is validated against the
+/// §35.b identifier discipline ([`is_safe_identifier`]) and rendered
+/// double-quoted — so, exactly as on the `where:` column surface, no
+/// untrusted identifier ever reaches SQL text (D4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderKey {
+    pub column: String,
+    pub dir: OrderDir,
+}
+
+/// Parse a closed `order_by:` expression — a comma-separated list of
+/// `column [asc|desc]` — into typed [`OrderKey`]s. Total: every input
+/// yields the key list or a typed [`FilterError::BadOrderBy`]. An empty
+/// (or whitespace-only) expression yields an empty list.
+///
+/// D4 — the only adopter-varying parts are a validated identifier (the
+/// column) + a closed direction keyword; both are re-emitted
+/// structurally by [`OrderKey`]'s renderer. No adopter string reaches
+/// SQL text.
+pub fn parse_order_by(expr: &str) -> Result<Vec<OrderKey>, FilterError> {
+    let mut keys = Vec::new();
+    if expr.trim().is_empty() {
+        return Ok(keys);
+    }
+    for term in expr.split(',') {
+        let mut parts = term.split_whitespace();
+        let column = match parts.next() {
+            Some(c) => c.to_string(),
+            None => {
+                return Err(FilterError::BadOrderBy {
+                    detail: "an empty sort term (a stray comma?)".to_string(),
+                })
+            }
+        };
+        if !is_safe_identifier(&column) {
+            return Err(FilterError::BadOrderBy {
+                detail: format!(
+                    "`{column}` is not a valid column identifier \
+                     ([A-Za-z_][A-Za-z0-9_]*, ≤ {MAX_COLUMN_LEN} bytes)"
+                ),
+            });
+        }
+        let dir = match parts.next() {
+            None => OrderDir::Asc,
+            Some(d) if d.eq_ignore_ascii_case("asc") => OrderDir::Asc,
+            Some(d) if d.eq_ignore_ascii_case("desc") => OrderDir::Desc,
+            Some(other) => {
+                return Err(FilterError::BadOrderBy {
+                    detail: format!(
+                        "direction `{other}` on column `{column}` is not \
+                         `asc` or `desc`"
+                    ),
+                })
+            }
+        };
+        if let Some(extra) = parts.next() {
+            return Err(FilterError::BadOrderBy {
+                detail: format!(
+                    "unexpected `{extra}` after `{column} {}` — a sort term \
+                     is `column [asc|desc]`",
+                    dir.as_sql().to_ascii_lowercase()
+                ),
+            });
+        }
+        keys.push(OrderKey { column, dir });
+    }
+    Ok(keys)
+}
+
+/// Resolve a `limit:` expression to an optional `u32`. An empty (or
+/// whitespace-only) expression is `None` (no limit). A `${binding}` /
+/// `$binding` is interpolated first; the resolved text must then parse
+/// as a `u32` (a non-negative integer in range) — otherwise a typed
+/// [`FilterError::BadLimit`].
+pub fn parse_limit(
+    expr: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Result<Option<u32>, FilterError> {
+    let raw = crate::exec_context::interpolate_vars(expr, bindings);
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    match raw.parse::<u32>() {
+        Ok(n) => Ok(Some(n)),
+        Err(_) => Err(FilterError::BadLimit {
+            detail: format!("`{raw}` is not a non-negative integer in `u32` range"),
+        }),
+    }
+}
+
+/// §Fase 67.b — render the structural `ORDER BY … LIMIT …` suffix that a
+/// bounded/ordered `retrieve` appends after its `WHERE` clause. Returns
+/// the suffix WITH a single leading space (e.g.
+/// `" ORDER BY \"t\" ASC LIMIT 100"`), or the empty string when neither
+/// clause is present. Injection-free by construction: order columns are
+/// validated identifiers + a closed direction keyword; the limit is a
+/// re-rendered `u32`. No adopter string is interpolated into SQL text.
+pub fn render_bounds(
+    order_by: &str,
+    limit_expr: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Result<String, FilterError> {
+    let mut suffix = String::new();
+    let keys = parse_order_by(order_by)?;
+    if !keys.is_empty() {
+        suffix.push_str(" ORDER BY ");
+        for (i, k) in keys.iter().enumerate() {
+            if i > 0 {
+                suffix.push_str(", ");
+            }
+            suffix.push_str(&format!("\"{}\" {}", k.column, k.dir.as_sql()));
+        }
+    }
+    if let Some(n) = parse_limit(limit_expr, bindings)? {
+        suffix.push_str(&format!(" LIMIT {n}"));
+    }
+    Ok(suffix)
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1721,5 +1881,103 @@ mod tests {
         for e in samples {
             assert!(!e.to_string().is_empty());
         }
+    }
+
+    // ─── §Fase 67.b — bounded + ordered retrieve (`ORDER BY … LIMIT …`) ──
+
+    #[test]
+    fn order_by_single_column_defaults_to_asc() {
+        let keys = parse_order_by("last_activity_at").unwrap();
+        assert_eq!(
+            keys,
+            vec![OrderKey {
+                column: "last_activity_at".to_string(),
+                dir: OrderDir::Asc,
+            }]
+        );
+    }
+
+    #[test]
+    fn order_by_multi_column_with_directions() {
+        let keys = parse_order_by("last_activity_at desc, id ASC").unwrap();
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].dir, OrderDir::Desc);
+        assert_eq!(keys[1].column, "id");
+        assert_eq!(keys[1].dir, OrderDir::Asc);
+    }
+
+    #[test]
+    fn order_by_empty_is_no_keys() {
+        assert!(parse_order_by("").unwrap().is_empty());
+        assert!(parse_order_by("   ").unwrap().is_empty());
+    }
+
+    #[test]
+    fn order_by_rejects_bad_direction_and_unsafe_identifier() {
+        assert!(matches!(
+            parse_order_by("id sideways"),
+            Err(FilterError::BadOrderBy { .. })
+        ));
+        assert!(matches!(
+            parse_order_by("id; DROP TABLE x"),
+            Err(FilterError::BadOrderBy { .. })
+        ));
+        assert!(matches!(
+            parse_order_by("a asc b"), // extra token
+            Err(FilterError::BadOrderBy { .. })
+        ));
+        assert!(matches!(
+            parse_order_by("a,,b"), // empty term
+            Err(FilterError::BadOrderBy { .. })
+        ));
+    }
+
+    #[test]
+    fn limit_literal_and_binding_resolve_to_u32() {
+        assert_eq!(parse_limit("100", &nb()).unwrap(), Some(100));
+        assert_eq!(parse_limit("", &nb()).unwrap(), None);
+        let b = std::collections::HashMap::from([("max".to_string(), "50".to_string())]);
+        assert_eq!(parse_limit("${max}", &b).unwrap(), Some(50));
+    }
+
+    #[test]
+    fn limit_rejects_non_u32() {
+        for bad in ["-5", "abc", "3.5", "99999999999999999999"] {
+            assert!(
+                matches!(parse_limit(bad, &nb()), Err(FilterError::BadLimit { .. })),
+                "`{bad}` should be BadLimit"
+            );
+        }
+    }
+
+    #[test]
+    fn render_bounds_emits_structural_order_and_limit() {
+        let suffix = render_bounds(
+            "last_activity_at asc, id desc",
+            "100",
+            &nb(),
+        )
+        .unwrap();
+        assert_eq!(
+            suffix,
+            " ORDER BY \"last_activity_at\" ASC, \"id\" DESC LIMIT 100"
+        );
+        // order_by only.
+        assert_eq!(
+            render_bounds("id desc", "", &nb()).unwrap(),
+            " ORDER BY \"id\" DESC"
+        );
+        // limit only.
+        assert_eq!(render_bounds("", "25", &nb()).unwrap(), " LIMIT 25");
+        // neither.
+        assert_eq!(render_bounds("", "", &nb()).unwrap(), "");
+    }
+
+    #[test]
+    fn render_bounds_is_injection_free() {
+        // An order column carrying SQL is rejected (not spliced).
+        assert!(render_bounds("id; DROP TABLE x", "", &nb()).is_err());
+        // A limit carrying SQL is rejected at the u32 parse.
+        assert!(render_bounds("", "1; DROP TABLE x", &nb()).is_err());
     }
 }

@@ -184,6 +184,14 @@ pub async fn stream_retrieve(
     conn: &mut crate::store::store_conn::StoreConn<'_>,
     table: &str,
     where_expr: &str,
+    // §Fase 67.b — bounded + ordered retrieve. `order_by` is a closed
+    // `column [asc|desc], …` list; `limit_expr` is a `u32` literal or a
+    // `${binding}`. Both render to a STRUCTURAL `ORDER BY … LIMIT …`
+    // suffix ([`filter::render_bounds`]) appended after the `WHERE`
+    // clause — injection-free (validated identifiers + a re-rendered
+    // `u32`). Empty strings = no ordering / no limit (the pre-67.b form).
+    order_by: &str,
+    limit_expr: &str,
     policy: BackpressurePolicy,
     max_rows: usize,
     cancel: &CancellationFlag,
@@ -191,17 +199,24 @@ pub async fn stream_retrieve(
     // bind parameters (the Request Binding Contract on the filter path).
     bindings: &std::collections::HashMap<String, String>,
 ) -> Result<RowStreamOutcome, StoreError> {
+    // §Fase 67.b — the structural `ORDER BY … LIMIT …` suffix (or empty),
+    // computed once + appended to the SELECT on both the cache-HIT and
+    // cache-MISS paths. A malformed clause is a typed `FilterError`
+    // surfaced as a `StoreError` here (and caught earlier at `axon check`
+    // by the §38.d proof — axon-T807/T808).
+    let bounds = crate::store::filter::render_bounds(order_by, limit_expr, bindings)?;
     // §Fase 37.x.d (D3) — a cache HIT: the cursor drains on the conn,
     // no transaction (the cached resolution is correct and the SELECT
     // is schema-qualified, so it resolves on any session).
     if let Some(resolved) = backend.cached_schema(table) {
-        let (sql, params): (String, Vec<SqlValue>) = build_select_sql(
+        let (mut sql, params): (String, Vec<SqlValue>) = build_select_sql(
             table,
             Some(resolved.schema.as_str()),
             where_expr,
             bindings,
             &resolved.column_types,
         )?;
+        sql.push_str(&bounds); // §Fase 67.b — ORDER BY … LIMIT …
         // §Fase 38.x.a (D1) — see `postgres_backend::introspect_conn` for
         // the full rationale on `.persistent(false)`. The unnamed PARSE
         // protocol is structurally collision-free behind transaction-mode
@@ -287,7 +302,7 @@ pub async fn stream_retrieve(
             return Err(introspect_err);
         }
     };
-    let (sql, params): (String, Vec<SqlValue>) =
+    let (mut sql, params): (String, Vec<SqlValue>) =
         build_select_sql(
             table,
             Some(resolved.schema.as_str()),
@@ -295,6 +310,7 @@ pub async fn stream_retrieve(
             bindings,
             &resolved.column_types,
         )?;
+    sql.push_str(&bounds); // §Fase 67.b — ORDER BY … LIMIT …
     // §Fase 38.x.a (D1) — mandatory inside the `pool.begin()` tx.
     let mut query = sqlx::query(&sql).persistent(false);
     for value in &params {

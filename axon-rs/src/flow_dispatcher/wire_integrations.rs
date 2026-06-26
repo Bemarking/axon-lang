@@ -647,6 +647,9 @@ pub async fn run_retrieve(
                     &mut store_conn,
                     &node.store_name,
                     &node.where_expr,
+                    // §Fase 67.b — corpus ingest has no adopter ORDER BY/LIMIT.
+                    "",
+                    "",
                     row_stream::DEFAULT_RETRIEVE_POLICY,
                     row_stream::DEFAULT_MAX_ROWS,
                     &ctx.cancel,
@@ -746,6 +749,9 @@ pub async fn read_all_store_rows(
                     // the §64 default). `${name}` resolves to `$N` bind params
                     // against `let_bindings` (§37.d) — injection-safe.
                     where_expr,
+                    // §Fase 67.b — navigate corpus scan has no adopter ORDER BY/LIMIT.
+                    "",
+                    "",
                     row_stream::DEFAULT_RETRIEVE_POLICY,
                     row_stream::DEFAULT_MAX_ROWS,
                     &ctx.cancel,
@@ -1620,6 +1626,8 @@ mod tests {
             store_name: "entities".into(),
             where_expr: "id".into(),
             alias: "retrieved_id".into(),
+            order_by: String::new(),
+            limit_expr: String::new(),
         };
         run_retrieve(&retrieve, &mut ctx).await.unwrap();
         assert_eq!(ctx.let_bindings.get("retrieved_id").unwrap(), "42");
@@ -1904,6 +1912,8 @@ mod tests {
             store_name: "s".into(),
             where_expr: "w".into(),
             alias: "a".into(),
+            order_by: String::new(),
+            limit_expr: String::new(),
         };
         assert!(matches!(run_retrieve(&retrieve, &mut ctx).await, Err(DispatchError::UpstreamCancelled)));
 
@@ -2024,6 +2034,8 @@ mod tests {
             store_name: "tenants".into(),
             where_expr: "id = 1".into(),
             alias: "found".into(),
+            order_by: String::new(),
+            limit_expr: String::new(),
         };
         assert!(matches!(
             run_retrieve(&node, &mut ctx).await,
@@ -2124,6 +2136,8 @@ mod tests {
             store_name: store.to_string(),
             where_expr: "k".to_string(),
             alias: "v".to_string(),
+            order_by: String::new(),
+            limit_expr: String::new(),
         }
     }
 

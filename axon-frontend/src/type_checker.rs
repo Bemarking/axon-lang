@@ -4992,6 +4992,14 @@ impl<'a> TypeChecker<'a> {
                 FlowStep::Retrieve(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
                     self.run_38d_where_proof(&n.store_name, &n.where_expr, &n.loc);
+                    // §Fase 67.b — prove the `order_by:` / `limit:` clauses
+                    // (axon-T807 / axon-T808).
+                    self.run_67b_bounds_proof(
+                        &n.store_name,
+                        &n.order_by,
+                        &n.limit_expr,
+                        &n.loc,
+                    );
                 }
                 FlowStep::Mutate(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
@@ -5674,6 +5682,39 @@ impl<'a> TypeChecker<'a> {
         let errors = crate::store_column_proof::check_filter(
             where_expr,
             &cs,
+            &self.current_flow_params,
+            (loc.line, loc.column),
+        );
+        for err in errors {
+            self.emit(err.message, loc);
+        }
+    }
+
+    /// §Fase 67.b — run the bounded/ordered `retrieve` proof: the
+    /// `order_by:` clause (axon-T807 — sort-term shape, direction, and
+    /// column existence) + the `limit:` clause (axon-T808 — `u32` literal
+    /// or integer-`${param}`). The compile-time mirror of the runtime
+    /// `filter::render_bounds`. The structural checks (term shape /
+    /// direction / limit literal) run for ANY store form; order_by
+    /// COLUMN existence is proven only when an inline schema is declared
+    /// (the same scope rule as `run_38d_where_proof`).
+    fn run_67b_bounds_proof(
+        &mut self,
+        store_name: &str,
+        order_by: &str,
+        limit_expr: &str,
+        loc: &Loc,
+    ) {
+        if store_name.is_empty()
+            || (order_by.trim().is_empty() && limit_expr.trim().is_empty())
+        {
+            return;
+        }
+        let cs = self.store_inline_column_sets.get(store_name).cloned();
+        let errors = crate::store_column_proof::check_bounds(
+            order_by,
+            limit_expr,
+            cs.as_ref(),
             &self.current_flow_params,
             (loc.line, loc.column),
         );

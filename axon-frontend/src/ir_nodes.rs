@@ -1267,6 +1267,15 @@ pub struct IRRetrieveStep {
     pub store_name: String,
     pub where_expr: String,
     pub alias: String,
+    /// §Fase 67.b — `order_by:` clause (raw `"col [asc|desc], …"`).
+    /// `skip_serializing_if` empty so a store that doesn't order never
+    /// perturbs the serialized IR bytes (the §52 brief-#33 /
+    /// [[feedback-boot-hydrate-self-heal]] no-drift discipline).
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub order_by: String,
+    /// §Fase 67.b — `limit:` clause (raw `"100"` or `"${max}"`).
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub limit_expr: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
