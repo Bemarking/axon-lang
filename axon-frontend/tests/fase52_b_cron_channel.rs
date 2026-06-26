@@ -25,8 +25,12 @@ fn has(v: &[String], needle: &str) -> bool {
     v.iter().any(|s| s.contains(needle))
 }
 
+// NOTE: a cron-scheduled daemon MUST declare `requires:` (§52.d.1 `axon-E0791`
+// — a standing scheduled privilege must be explicit). This fixture carries it so
+// the cron-channel checks below isolate the cron grammar, not the scope gate.
 const CRON_DAEMON: &str = "daemon SessionCleaner {\n\
      goal: \"hibernate idle sessions\"\n\
+     requires: [flow.execute]\n\
      listen \"cron:*/5 * * * *\" as tick {\n\
         step Hibernate { ask: \"hibernate idle sessions\" output: Unit }\n\
      }\n\
