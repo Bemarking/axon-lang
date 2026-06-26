@@ -208,8 +208,106 @@ impl fmt::Display for Connector {
 }
 
 // ════════════════════════════════════════════════════════════════════
+//  Time-relative value (§Fase 67.a — closed, structural)
+// ════════════════════════════════════════════════════════════════════
+
+/// A closed catalog of interval units. The whitelist IS the catalog — an
+/// un-listed unit cannot reach the rendered SQL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeUnit {
+    Second,
+    Minute,
+    Hour,
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+impl TimeUnit {
+    /// Resolve a unit word (singular or plural, case-insensitive) to a unit.
+    fn from_word(w: &str) -> Option<TimeUnit> {
+        Some(match w.to_ascii_lowercase().as_str() {
+            "second" | "seconds" => TimeUnit::Second,
+            "minute" | "minutes" => TimeUnit::Minute,
+            "hour" | "hours" => TimeUnit::Hour,
+            "day" | "days" => TimeUnit::Day,
+            "week" | "weeks" => TimeUnit::Week,
+            "month" | "months" => TimeUnit::Month,
+            "year" | "years" => TimeUnit::Year,
+            _ => return None,
+        })
+    }
+
+    /// The canonical singular SQL unit word (Postgres `interval` accepts it).
+    fn as_sql(self) -> &'static str {
+        match self {
+            TimeUnit::Second => "second",
+            TimeUnit::Minute => "minute",
+            TimeUnit::Hour => "hour",
+            TimeUnit::Day => "day",
+            TimeUnit::Week => "week",
+            TimeUnit::Month => "month",
+            TimeUnit::Year => "year",
+        }
+    }
+}
+
+/// `+` or `-` in `now() ± interval '…'`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeSign {
+    Plus,
+    Minus,
+}
+
+/// A structural time-relative value: `now()`, optionally offset by
+/// `± interval '<amount> <unit>'`. §Fase 67.a.
+///
+/// **D4 preserved.** This renders DIRECTLY to SQL — but `now()` and `interval`
+/// are KEYWORDS, not adopter values, and the only adopter-varying parts are a
+/// validated `u32` amount + a closed-catalog [`TimeUnit`], both re-emitted
+/// structurally. No adopter string is ever interpolated into SQL text, so the
+/// §35.b "no user value reaches SQL" invariant holds. The grammar admits
+/// EXACTLY this one function-shaped value (not arbitrary SQL functions) — that
+/// is the line that keeps the compiler total + injection-proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeValue {
+    /// `None` = bare `now()`. `Some((sign, amount, unit))` = `now() ± interval`.
+    pub offset: Option<(TimeSign, u32, TimeUnit)>,
+}
+
+impl TimeValue {
+    /// Render to a structural SQL expression: `now()` or
+    /// `now() - interval '30 minute'`. Injection-free by construction (the
+    /// amount is a re-rendered `u32`; the unit is a whitelisted keyword).
+    fn to_sql(self) -> String {
+        match self.offset {
+            None => "now()".to_string(),
+            Some((sign, amount, unit)) => {
+                let s = match sign {
+                    TimeSign::Plus => "+",
+                    TimeSign::Minus => "-",
+                };
+                format!("now() {s} interval '{amount} {}'", unit.as_sql())
+            }
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
 //  Filter AST
 // ════════════════════════════════════════════════════════════════════
+
+/// The right-hand side of a condition: either a bound literal value (rendered
+/// as a `$N` placeholder — the §35.b D4 path) or a structural time-relative
+/// value (rendered inline; §Fase 67.a).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Rhs {
+    /// A literal value — renders as a `$N` bind.
+    Value(SqlValue),
+    /// `now()` / `now() ± interval '<n> <unit>'` — renders inline as SQL.
+    Time(TimeValue),
+}
 
 /// A single `column op value` predicate.
 #[derive(Debug, Clone, PartialEq)]
@@ -218,8 +316,8 @@ pub struct FilterCondition {
     pub column: String,
     /// The comparison operator.
     pub op: Operator,
-    /// The typed right-hand value.
-    pub value: SqlValue,
+    /// The right-hand side: a bound literal or a §67.a time value.
+    pub value: Rhs,
 }
 
 /// A parsed `where` expression: a flat list of conditions joined by
@@ -280,6 +378,11 @@ pub enum FilterError {
     LikeRequiresText { column: String, found: &'static str },
     /// More than [`MAX_CONDITIONS`] conditions in one expression.
     TooManyConditions { limit: usize },
+    /// §Fase 67.a — a malformed `now() ± interval '<n> <unit>'` time value:
+    /// a bad `now()` shape, a non-`u32` amount, or an unknown unit.
+    BadTimeValue { detail: String },
+    /// §Fase 67.a — `LIKE` applied to a `now()` time value (nonsensical).
+    LikeWithTime,
 }
 
 impl fmt::Display for FilterError {
@@ -357,6 +460,18 @@ impl fmt::Display for FilterError {
             FilterError::TooManyConditions { limit } => write!(
                 f,
                 "where expression exceeds the {limit}-condition limit"
+            ),
+            FilterError::BadTimeValue { detail } => write!(
+                f,
+                "malformed time value: {detail} — the supported forms are \
+                 `now()` and `now() ± interval '<n> <unit>'` where <unit> is \
+                 second/minute/hour/day/week/month/year (e.g. \
+                 `last_activity_at < now() - interval '30 minutes'`)"
+            ),
+            FilterError::LikeWithTime => write!(
+                f,
+                "`LIKE` cannot be applied to a `now()` time value — use an \
+                 ordering operator (`<`, `>`, `<=`, `>=`) or `=`/`!=`"
             ),
         }
     }
@@ -484,6 +599,17 @@ fn tokenize(expr: &str) -> Result<Vec<Token>, FilterError> {
             continue;
         }
 
+        // — §Fase 67.a: parens + interval sign for the `now() ± interval '…'`
+        //   time-value form. `(` `)` `+` and a standalone `-` (a `-` followed
+        //   by a digit was already consumed as a negative number above) become
+        //   bare symbols the parser interprets ONLY inside the time-value form;
+        //   anywhere else they surface as a typed error (totality preserved).
+        if c == '(' || c == ')' || c == '+' || c == '-' {
+            tokens.push(Token::Symbol(c.to_string()));
+            i += 1;
+            continue;
+        }
+
         // — identifier / keyword word —
         if c.is_ascii_alphabetic() || c == '_' {
             let start = i;
@@ -530,6 +656,105 @@ fn parse_value(tok: &Token) -> Result<SqlValue, FilterError> {
         },
         Token::Symbol(s) => Err(FilterError::ExpectedValue { found: s.clone() }),
     }
+}
+
+/// §Fase 67.a — parse the right-hand side starting at `tokens[0]`: either a
+/// structural `now() ± interval '<n> <unit>'` time value (which spans several
+/// tokens) or a single bound literal. Returns the [`Rhs`] + the number of
+/// tokens consumed. The caller guarantees `tokens` is non-empty.
+fn parse_rhs(tokens: &[Token], column: &str, op: Operator) -> Result<(Rhs, usize), FilterError> {
+    // A `now`-led value is the time form (§67.a). `now` is not a valid bare
+    // literal otherwise (it would be an `UnquotedValue`), so routing it here
+    // does not shadow any pre-67.a behaviour.
+    if let Some(Token::Word(w)) = tokens.first() {
+        if w.eq_ignore_ascii_case("now") {
+            let (tv, consumed) = parse_time_value(tokens, op)?;
+            return Ok((Rhs::Time(tv), consumed));
+        }
+    }
+
+    // — bound literal (the pre-67.a path + its semantic checks) —
+    let value = parse_value(&tokens[0])?;
+    if matches!(value, SqlValue::Null) && !op.accepts_null() {
+        return Err(FilterError::NullWithNonEqualityOp {
+            column: column.to_string(),
+            op,
+        });
+    }
+    if op == Operator::Like && !matches!(value, SqlValue::Text(_)) {
+        return Err(FilterError::LikeRequiresText {
+            column: column.to_string(),
+            found: value.type_name(),
+        });
+    }
+    Ok((Rhs::Value(value), 1))
+}
+
+/// §Fase 67.a — parse `now` `(` `)` `[ (+|-) interval '<n> <unit>' ]`.
+/// `tokens[0]` is the `now` word (verified by [`parse_rhs`]).
+fn parse_time_value(tokens: &[Token], op: Operator) -> Result<(TimeValue, usize), FilterError> {
+    // `LIKE` against a time value is nonsensical (it is a timestamp, not text).
+    if op == Operator::Like {
+        return Err(FilterError::LikeWithTime);
+    }
+    let is_sym = |idx: usize, want: &str| {
+        matches!(tokens.get(idx), Some(Token::Symbol(s)) if s == want)
+    };
+    // `now` `(` `)`
+    if !is_sym(1, "(") || !is_sym(2, ")") {
+        return Err(FilterError::BadTimeValue {
+            detail: "expected `now()`".to_string(),
+        });
+    }
+    // optional `± interval '<n> <unit>'`
+    let sign = match tokens.get(3) {
+        Some(Token::Symbol(s)) if s == "+" => TimeSign::Plus,
+        Some(Token::Symbol(s)) if s == "-" => TimeSign::Minus,
+        // bare `now()` — no offset.
+        _ => return Ok((TimeValue { offset: None }, 3)),
+    };
+    match tokens.get(4) {
+        Some(Token::Word(w)) if w.eq_ignore_ascii_case("interval") => {}
+        _ => {
+            return Err(FilterError::BadTimeValue {
+                detail: "expected `interval` after the `now()` sign".to_string(),
+            })
+        }
+    }
+    let raw = match tokens.get(5) {
+        Some(Token::Str(s)) => s,
+        _ => {
+            return Err(FilterError::BadTimeValue {
+                detail: "expected a quoted interval like '30 minutes'".to_string(),
+            })
+        }
+    };
+    let (amount, unit) = parse_interval(raw)?;
+    Ok((TimeValue { offset: Some((sign, amount, unit)) }, 6))
+}
+
+/// §Fase 67.a — parse + validate the `'<n> <unit>'` interval body into a typed
+/// `(u32, TimeUnit)`. Both parts are validated (a `u32` amount, a closed-catalog
+/// unit) so the renderer re-emits them structurally — no adopter string reaches
+/// SQL text (D4).
+fn parse_interval(raw: &str) -> Result<(u32, TimeUnit), FilterError> {
+    let mut parts = raw.split_whitespace();
+    let (num, unit, extra) = (parts.next(), parts.next(), parts.next());
+    let (num, unit) = match (num, unit, extra) {
+        (Some(num), Some(unit), None) => (num, unit),
+        _ => {
+            return Err(FilterError::BadTimeValue {
+                detail: format!("interval '{raw}' must be '<number> <unit>'"),
+            })
+        }
+    };
+    let amount = num.parse::<u32>().map_err(|_| FilterError::BadTimeValue {
+        detail: format!("interval amount '{num}' is not a non-negative integer"),
+    })?;
+    let unit = TimeUnit::from_word(unit).ok_or_else(|| FilterError::BadTimeValue {
+        detail: format!("unknown interval unit '{unit}'"),
+    })?;
+    Ok((amount, unit))
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -611,23 +836,13 @@ pub fn parse_filter(
         };
         i += 1;
 
-        // — value —
+        // — value (a bound literal OR a §67.a `now() ± interval` time form,
+        //   which spans multiple tokens) —
         if i >= n {
             return Err(FilterError::MissingValue { column });
         }
-        let value = parse_value(&tokens[i])?;
-        i += 1;
-
-        // — semantic checks —
-        if matches!(value, SqlValue::Null) && !op.accepts_null() {
-            return Err(FilterError::NullWithNonEqualityOp { column, op });
-        }
-        if op == Operator::Like && !matches!(value, SqlValue::Text(_)) {
-            return Err(FilterError::LikeRequiresText {
-                column,
-                found: value.type_name(),
-            });
-        }
+        let (value, consumed) = parse_rhs(&tokens[i..], &column, op)?;
+        i += consumed;
 
         filter.conditions.push(FilterCondition { column, op, value });
         if filter.conditions.len() > MAX_CONDITIONS {
@@ -725,7 +940,7 @@ pub fn build_pg_where(
             clause.push(' ');
         }
         match &cond.value {
-            SqlValue::Null => {
+            Rhs::Value(SqlValue::Null) => {
                 // The parser guarantees `op ∈ {Eq, Ne}` for a `NULL`
                 // value; the `_` arm is defensive totality only.
                 let tail = match cond.op {
@@ -734,7 +949,21 @@ pub fn build_pg_where(
                 };
                 clause.push_str(&format!("\"{}\" {tail}", cond.column));
             }
-            bound => {
+            // §Fase 67.a — a `now()` / `now() ± interval '…'` time value renders
+            // INLINE (now()/interval are keywords) with NO `$N` bind and NO
+            // `::text` cast: the column compares against the timestamp
+            // expression with its native operator (temporal ordering, not
+            // lexicographic). D4 holds — `TimeValue::to_sql` emits only a
+            // validated `u32` + a whitelisted unit, never an adopter string.
+            Rhs::Time(tv) => {
+                clause.push_str(&format!(
+                    "\"{}\" {} {}",
+                    cond.column,
+                    cond.op.as_sql(),
+                    tv.to_sql()
+                ));
+            }
+            Rhs::Value(bound) => {
                 // The column's introspected Postgres type, if known
                 // and a safe identifier — drives the cast.
                 let known_udt: Option<&str> =
@@ -1141,11 +1370,16 @@ mod tests {
 
     #[test]
     fn injection_via_comment_marker_is_rejected() {
-        // `--` lexes as two `-` — and a `-` not before a digit is
-        // outside the alphabet.
+        // §Fase 67.a — a standalone `-` now lexes as a Symbol (it is the
+        // interval sign in the `now() ± interval` time form). So `a = 1 --
+        // comment` no longer fails at tokenize with `UnexpectedChar`; instead
+        // the `-` after a COMPLETE condition is an unexpected connector. STILL
+        // rejected — the `--comment` never reaches SQL — only the error variant
+        // changed. (A `-` is meaningful ONLY inside the time-value form; in any
+        // other position it is a typed error, so no injection vector opens.)
         assert!(matches!(
             err("a = 1 -- comment"),
-            FilterError::UnexpectedChar { ch: '-', .. }
+            FilterError::ExpectedConnector { .. }
         ));
     }
 
@@ -1336,14 +1570,90 @@ mod tests {
             FilterCondition {
                 column: "id".to_string(),
                 op: Operator::Eq,
-                value: SqlValue::Integer(1),
+                value: Rhs::Value(SqlValue::Integer(1)),
             }
         );
         assert_eq!(filter.conditions[1].op, Operator::Like);
         assert_eq!(
             filter.conditions[1].value,
-            SqlValue::Text("A%".to_string())
+            Rhs::Value(SqlValue::Text("A%".to_string()))
         );
+    }
+
+    // ─── §Fase 67.a — time-relative `where:` values ──────────────────────
+
+    #[test]
+    fn time_bare_now_renders_inline_with_no_bind() {
+        let (clause, params) = ok("last_activity_at < now()");
+        assert_eq!(clause, "\"last_activity_at\" < now()");
+        assert!(params.is_empty(), "now() is structural — no $N bind");
+    }
+
+    #[test]
+    fn time_now_minus_interval_renders_structurally() {
+        let (clause, params) = ok("last_activity_at < now() - interval '30 minutes'");
+        assert_eq!(clause, "\"last_activity_at\" < now() - interval '30 minute'");
+        assert!(params.is_empty(), "the time value adds no bind param");
+    }
+
+    #[test]
+    fn time_value_covers_signs_and_units() {
+        assert_eq!(ok("t > now() + interval '7 days'").0, "\"t\" > now() + interval '7 day'");
+        assert_eq!(ok("t <= now() - interval '1 hour'").0, "\"t\" <= now() - interval '1 hour'");
+        assert_eq!(ok("t >= now() - interval '2 weeks'").0, "\"t\" >= now() - interval '2 week'");
+        assert_eq!(ok("t != now()").0, "\"t\" != now()");
+        // singular + plural both accepted; rendered to the canonical singular.
+        assert_eq!(ok("t < now() - interval '1 minute'").0, "\"t\" < now() - interval '1 minute'");
+        assert_eq!(ok("t < now() - interval '90 seconds'").0, "\"t\" < now() - interval '90 second'");
+    }
+
+    #[test]
+    fn session_sweep_clause_binds_only_the_status_literal() {
+        // The canonical autonomous-sweep predicate ("active rows that went
+        // stale"), which used to fail at tokenization (`UnexpectedChar '('`).
+        // Now it compiles: only the status literal is a `$N` bind; the time
+        // value is structural.
+        let (clause, params) =
+            ok("status == 'ACTIVE' AND last_activity_at < now() - interval '30 minutes'");
+        assert_eq!(
+            clause,
+            "\"status\"::text = $1 AND \"last_activity_at\" < now() - interval '30 minute'"
+        );
+        assert_eq!(params, vec![SqlValue::Text("ACTIVE".to_string())]);
+    }
+
+    #[test]
+    fn time_value_rejects_malformed_forms_loudly() {
+        // Every malformed time form is a typed error — never silent 0 rows.
+        for bad in [
+            "t < now( - interval '5 minutes'",        // missing `)`
+            "t < now() - interval '30'",              // no unit
+            "t < now() - interval '30 fortnights'",   // unknown unit
+            "t < now() - interval 'abc minutes'",     // non-integer amount
+            "t < now() - interval '-5 minutes'",      // negative amount
+            "t < now() - 'interval string'",          // no `interval` keyword
+        ] {
+            assert!(
+                matches!(err(bad), FilterError::BadTimeValue { .. }),
+                "expected BadTimeValue for {bad:?}, got {:?}",
+                err(bad)
+            );
+        }
+    }
+
+    #[test]
+    fn like_against_a_time_value_is_rejected() {
+        assert!(matches!(err("t LIKE now()"), FilterError::LikeWithTime));
+    }
+
+    #[test]
+    fn time_value_is_injection_free() {
+        // The amount is a re-rendered u32 + a whitelisted unit; an attempt to
+        // smuggle SQL through the interval body is a typed error, never SQL text.
+        assert!(matches!(
+            err("t < now() - interval '5 minutes); DROP TABLE x;--'"),
+            FilterError::BadTimeValue { .. }
+        ));
     }
 
     #[test]
