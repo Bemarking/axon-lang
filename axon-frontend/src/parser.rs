@@ -4065,18 +4065,36 @@ impl Parser {
                 alias = self.consume_any_ident_or_kw()?.value.clone();
             }
         }
-        if self.check(TokenType::LBrace) {
-            self.skip_braced_block()?;
-        }
+        // §Fase 52.a — parse the handler body into real flow-steps (was
+        // `skip_braced_block`'d, leaving the listener inert). The body runs on
+        // each event / scheduled tick.
+        let body = self.parse_listener_body()?;
         Ok(FlowStep::Listen(ListenStep {
             channel,
             channel_is_ref,
             event_alias: alias,
+            body,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
             },
         }))
+    }
+
+    /// §Fase 52.a — parse a `listen … { <flow steps> }` handler body. The body
+    /// is OPTIONAL (a bodyless `listen channel` returns an empty Vec); when
+    /// present, each statement is a real [`FlowStep`] (the same grammar as a
+    /// flow / `quant` / `par` body), executed per trigger by the §52.c runtime.
+    fn parse_listener_body(&mut self) -> Result<Vec<FlowStep>, ParseError> {
+        let mut body = Vec::new();
+        if self.check(TokenType::LBrace) {
+            self.advance(); // consume `{`
+            while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+                body.push(self.parse_flow_step()?);
+            }
+            self.consume(TokenType::RBrace)?;
+        }
+        Ok(body)
     }
 
     fn parse_retrieve_step(&mut self) -> Result<FlowStep, ParseError> {
@@ -5021,13 +5039,15 @@ impl Parser {
                     line: field.line,
                     column: field.column,
                 };
-                if self.check(TokenType::LBrace) {
-                    self.skip_braced_block()?;
-                }
+                // §Fase 52.a — parse the handler body (was skipped). This is
+                // what makes a `daemon` operational: the body runs per event /
+                // scheduled tick (e.g. a `listen "cron:…" as tick { run … }`).
+                let body = self.parse_listener_body()?;
                 node.listeners.push(ListenStep {
                     channel,
                     channel_is_ref,
                     event_alias: alias,
+                    body,
                     loc: listen_loc,
                 });
             } else if self.check(TokenType::LBrace) {

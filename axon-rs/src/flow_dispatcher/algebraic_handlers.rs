@@ -817,6 +817,7 @@ mod tests {
             channel: "user_events".into(),
             channel_is_ref: true,
             event_alias: "evt".into(),
+            body: Vec::new(),
         };
         run_listen(&node, &mut ctx).await.unwrap();
         assert_eq!(
@@ -939,6 +940,7 @@ mod tests {
                     channel: "x".into(),
                     channel_is_ref: false,
                     event_alias: "y".into(),
+                    body: Vec::new(),
                 },
                 &mut ctx,
             )

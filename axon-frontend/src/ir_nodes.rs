@@ -1229,6 +1229,11 @@ pub struct IRListenStep {
     /// `IRChannel` ref; false ⇒ legacy string topic.
     pub channel_is_ref: bool,
     pub event_alias: String,
+    /// §Fase 52.a — the handler body's lowered flow-steps, executed per event /
+    /// scheduled tick by the §52.c runtime. `skip_serializing_if` keeps a
+    /// bodyless `listen`'s JSON byte-identical to the pre-§52.a shape (D8).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body: Vec<IRFlowNode>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1522,6 +1527,13 @@ pub struct IRDaemon {
     pub max_tokens: Option<i64>,
     pub max_time: String,
     pub max_cost: Option<f64>,
+    /// §Fase 52.a — the daemon's `listen` listeners (channel + alias + handler
+    /// body). Pre-§52.a these were DROPPED at lowering (the IR daemon carried no
+    /// listeners at all); now they survive so the §52.c runtime can mount + run
+    /// them and the §52.d enterprise supervisor can extract them per-tenant.
+    /// `skip_serializing_if` keeps a listenerless daemon's JSON unchanged (D8).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub listeners: Vec<IRListenStep>,
 }
 
 // ── §Fase 53 — Closed-catalog extension mechanism ────────────────────────────

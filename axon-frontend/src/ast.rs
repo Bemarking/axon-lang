@@ -1795,6 +1795,11 @@ pub struct ListenStep {
     pub channel: String,
     pub channel_is_ref: bool,
     pub event_alias: String,
+    /// §Fase 52.a — the handler body: real flow-steps executed on each event /
+    /// scheduled tick. Pre-§52.a the `{ … }` block was `skip_braced_block`'d
+    /// (the listener was inert); now it is parsed so a `daemon` can run logic
+    /// (e.g. `run <Flow>(…)`) per trigger. Empty for a bodyless `listen`.
+    pub body: Vec<FlowStep>,
     pub loc: Loc,
 }
 #[derive(Debug)]
