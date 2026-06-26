@@ -30,11 +30,14 @@ fn errors_of(src: &str) -> Vec<String> {
         .collect()
 }
 
+// The cron daemon declares `requires:` (§52.d.1 `axon-E0791` — a scheduled
+// privilege must be explicit); these checks isolate the `run`-in-handler path.
 const CLEANER: &str = "flow HibernateSession() -> Unit {\n\
      step Hibernate { ask: \"hibernate idle sessions\" output: Unit }\n\
    }\n\
    daemon SessionCleaner {\n\
      goal: \"hibernate idle sessions\"\n\
+     requires: [flow.execute]\n\
      listen \"cron:*/5 * * * *\" as tick {\n\
         run HibernateSession()\n\
      }\n\
