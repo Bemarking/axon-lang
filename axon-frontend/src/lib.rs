@@ -26,6 +26,7 @@
 
 pub mod ast;
 pub mod checker;
+pub mod cron;
 pub mod epistemic;
 pub mod ir_generator;
 pub mod ir_nodes;

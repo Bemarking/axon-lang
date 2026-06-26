@@ -5872,6 +5872,38 @@ impl<'a> TypeChecker<'a> {
                 ),
                 _ => {}
             }
+        } else if let Some(expr) = crate::cron::cron_expr(&node.channel) {
+            // §Fase 52.b — a time-based `listen "cron:<expr>"`. A cron channel is
+            // a first-class scheduled trigger, NOT a legacy string topic, so it
+            // does NOT get the D4 deprecation warning. Validate the 5-field
+            // expression so a schedule that type-checks is one the §52.c
+            // TimerSource can actually fire.
+            match crate::cron::CronSchedule::parse(expr) {
+                Err(e) => self.emit(
+                    format!(
+                        "axon-E0789 daemon '{}' has a malformed cron schedule \
+                         '{}': {}",
+                        daemon_name, node.channel, e
+                    ),
+                    &node.loc,
+                ),
+                Ok(_) => {
+                    // A scheduled trigger with no handler is a no-op — almost
+                    // always a mistake. The body is what runs each tick.
+                    if node.body.is_empty() {
+                        self.emit(
+                            format!(
+                                "axon-E0790 daemon '{}' cron listener '{}' has no \
+                                 handler body — a scheduled trigger with no work \
+                                 is a no-op; add a `{{ … }}` body with the steps \
+                                 to run on each tick",
+                                daemon_name, node.channel
+                            ),
+                            &node.loc,
+                        );
+                    }
+                }
+            }
         } else {
             // Legacy string topic — D4 deprecation warning.
             self.warn(
