@@ -2933,6 +2933,16 @@ pub struct ServerRunnerMetrics {
     /// the WRONG surface (it is soft-degradation-on-success only, per
     /// `wire_envelope::BlameContext` docs); a hard fail needs its own slot.
     pub error: Option<String>,
+    /// §Fase 67.c — observable per-run store row counts (closing brief
+    /// #34 Q3: a daemon run `completed, duration 0` is no longer
+    /// indistinguishable from "found no work"). Aggregated over every
+    /// store op in the run (par-branch counts merged). The enterprise
+    /// daemon run report / `daemon_runs` ledger / status API + audit
+    /// surface these per the §52.d.3 / §52.e contract.
+    pub rows_retrieved: u64,
+    pub rows_persisted: u64,
+    pub rows_mutated: u64,
+    pub rows_purged: u64,
 }
 
 /// §Fase 55.b/c — derive a flow's epistemic envelopes from the IR. This is
@@ -2999,6 +3009,9 @@ struct CollectedRun {
     /// (the `Err(_) => { success = false; break; }` arm), so a failed store
     /// write presented as a silent abort with no diagnostic.
     flow_error: Option<String>,
+    /// §Fase 67.c — per-run store row counts, read from the dispatcher
+    /// ctx's shared (par-branch-merged) counter after the walk.
+    store_row_counts: crate::flow_dispatcher::StoreRowCounts,
 }
 
 /// §Fase 65.E — run a flow through the DISPATCHER with a BUFFER sink and collect
@@ -3060,6 +3073,11 @@ async fn collect_via_dispatcher(
     // anchor breaches AFTER the walk (the `drop(ctx)` below releases the ctx's
     // own handle; this Arc clone keeps the records alive for the projection).
     let audit_records = ctx.step_audit_records.clone();
+    // §Fase 67.c — clone the shared row-count Arc up front (like
+    // `audit_records`); the store handlers increment the SAME Mutex
+    // during the walk, so reading it after the walk (via this clone)
+    // yields the final per-run totals even once `ctx` has been consumed.
+    let row_counts = ctx.store_row_counts.clone();
 
     let mut success = true;
     let mut tokens_output: u64 = 0;
@@ -3190,6 +3208,12 @@ async fn collect_via_dispatcher(
             crate::wire_envelope_producers::merge_blame(blame_attribution, Some(blame));
     }
 
+    // §Fase 67.c — read the shared per-run row totals the store handlers
+    // folded in (par-branch counts merged via the shared Arc). Bound to a
+    // local so the transient `MutexGuard` doesn't outlive the struct
+    // construction's tail expression.
+    let store_row_counts = *row_counts.lock().unwrap();
+
     CollectedRun {
         success,
         steps_executed: step_names.len(),
@@ -3199,6 +3223,7 @@ async fn collect_via_dispatcher(
         anchor_breaches,
         blame_attribution,
         flow_error,
+        store_row_counts,
     }
 }
 
@@ -3551,6 +3576,12 @@ pub fn execute_server_flow(
                 // cause), or `None` on the clean path. Closes the §65.E.2
                 // silent-abort regression for store writes + every other node.
                 error: collected.flow_error,
+                // §Fase 67.c — the dispatcher (default engine) per-run row
+                // counts the store handlers folded in.
+                rows_retrieved: collected.store_row_counts.retrieved,
+                rows_persisted: collected.store_row_counts.persisted,
+                rows_mutated: collected.store_row_counts.mutated,
+                rows_purged: collected.store_row_counts.purged,
             });
         }
     }
@@ -3779,6 +3810,15 @@ pub fn execute_server_flow(
         // hoist here. `None` keeps the legacy wire byte-identical; the honest
         // hard-fail slot is a property of the unified (default) engine above.
         error: None,
+        // §Fase 67.c — the legacy executor surfaces row counts ONLY inline
+        // in the step result text (`"N row(s) persisted"`), not structurally
+        // (same rationale as `error: None` above — the structured slot is a
+        // property of the unified/default engine). The daemon + every
+        // production path runs the dispatcher, which DOES populate these.
+        rows_retrieved: 0,
+        rows_persisted: 0,
+        rows_mutated: 0,
+        rows_purged: 0,
     })
 }
 
