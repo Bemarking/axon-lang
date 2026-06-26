@@ -1537,6 +1537,12 @@ pub struct IRDaemon {
     /// `skip_serializing_if` keeps a listenerless daemon's JSON unchanged (D8).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub listeners: Vec<IRListenStep>,
+    /// §Fase 52.d — the capability scope the daemon's runs are confined to
+    /// (`requires: [cap, …]`). The enterprise supervisor mints a per-run
+    /// principal scoped to exactly these. `skip_serializing_if` keeps a
+    /// requires-less daemon's JSON byte-identical (D8).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires_capabilities: Vec<String>,
 }
 
 // ── §Fase 53 — Closed-catalog extension mechanism ────────────────────────────

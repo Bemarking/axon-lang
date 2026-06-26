@@ -1153,6 +1153,8 @@ impl IRGenerator {
             max_cost: n.max_cost,
             // §Fase 52.a — listeners-with-bodies now survive lowering (were dropped).
             listeners: n.listeners.iter().map(|l| self.lower_listen(l)).collect(),
+            // §Fase 52.d — the daemon's declared capability scope.
+            requires_capabilities: n.requires_capabilities.clone(),
         }
     }
 

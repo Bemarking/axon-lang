@@ -883,6 +883,13 @@ pub struct DaemonDefinition {
     /// retain them so 13.b/13.f can validate emit/publish/discover
     /// inside listener bodies and surface D4 string-topic warnings.
     pub listeners: Vec<ListenStep>,
+    /// §Fase 52.d — the capability scope a daemon's runs are confined to
+    /// (`requires: [cap, …]`, the same closed slug grammar as `axonendpoint
+    /// requires:`). A scheduled (cron) daemon MUST declare this (it is a
+    /// standing autonomous privilege); the enterprise supervisor mints a
+    /// per-run principal scoped to EXACTLY these capabilities (least privilege,
+    /// §52.d). Empty for event-only daemons / pre-§52 daemons.
+    pub requires_capabilities: Vec<String>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
