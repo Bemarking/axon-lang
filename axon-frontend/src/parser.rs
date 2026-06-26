@@ -4107,6 +4107,8 @@ impl Parser {
         let store = self.consume_any_ident_or_kw()?.value.clone();
         let mut where_expr = String::new();
         let mut alias = String::new();
+        let mut order_by = String::new();
+        let mut limit_expr = String::new();
         if self.check(TokenType::LBrace) {
             self.advance();
             while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -4117,6 +4119,25 @@ impl Parser {
                     match f.as_str() {
                         "where" => where_expr = self.consume(TokenType::StringLit)?.value.clone(),
                         "as" | "alias" => alias = self.consume_any_ident_or_kw()?.value.clone(),
+                        // §Fase 67.b — `order_by:` is a string literal
+                        // (`"col asc, col2 desc"`), same surface as `where:`.
+                        "order_by" => {
+                            order_by = self.consume(TokenType::StringLit)?.value.clone()
+                        }
+                        // §Fase 67.b — `limit:` is a bare integer literal
+                        // (`limit: 100`) OR a string carrying a binding
+                        // (`limit: "${max}"`). Captured raw; the runtime
+                        // resolves + validates it as a `u32`.
+                        "limit" => {
+                            let t = self.current().clone();
+                            match t.ttype {
+                                TokenType::Integer | TokenType::StringLit => {
+                                    limit_expr = t.value.clone();
+                                    self.advance();
+                                }
+                                _ => self.skip_value(),
+                            }
+                        }
                         _ => self.skip_value(),
                     }
                 }
@@ -4129,6 +4150,8 @@ impl Parser {
             store_name: store,
             where_expr,
             alias,
+            order_by,
+            limit_expr,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,

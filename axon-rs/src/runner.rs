@@ -131,6 +131,14 @@ struct CompiledStep {
     /// falls back to the flow's user bindings (v1.31.0).
     #[serde(skip_serializing_if = "Option::is_none")]
     store_fields: Option<Vec<(String, String)>>,
+    /// §Fase 67.b — for a `retrieve` step: the raw `order_by:` /
+    /// `limit:` clauses. `None` = the clause was absent (the pre-67.b
+    /// unordered / unbounded form). Carried so the executor builds the
+    /// `ORDER BY … LIMIT …` suffix without reaching back into the IR.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retrieve_order_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retrieve_limit: Option<String>,
     /// §Fase 58.e — for a `use Tool(k = v, …)` dispatch: the bound keyword
     /// args `(name, raw value)`. Non-empty ⇒ the runtime assembles a STRUCTURED
     /// JSON request body (`{"query":"…","max_results":5}`) instead of the flat
@@ -411,6 +419,17 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             _ => None,
         };
 
+        // §Fase 67.b — carry a `retrieve` step's `order_by:` / `limit:`
+        // clauses so the executor renders the `ORDER BY … LIMIT …` suffix.
+        // Empty source strings stay `None` (no clause written).
+        let (retrieve_order_by, retrieve_limit) = match node {
+            IRFlowNode::Retrieve(s) => (
+                Some(s.order_by.clone()).filter(|v| !v.is_empty()),
+                Some(s.limit_expr.clone()).filter(|v| !v.is_empty()),
+            ),
+            _ => (None, None),
+        };
+
         // §Fase 65.A/B — carry the IR node for the structural verbs the executor
         // routes through the dispatcher (real handler, not the LLM fallthrough).
         let structural_node = if routes_through_dispatcher(node) {
@@ -436,6 +455,8 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             lambda_apply_payload,
             let_payload,
             store_fields,
+            retrieve_order_by,
+            retrieve_limit,
             tool_named_args,
             tool_param_types,
             structural_node,
@@ -999,6 +1020,11 @@ async fn execute_sql_store_step_async(
     store_name: &str,
     memory_expr: &str,
     store_fields: Option<&[(String, String)]>,
+    // §Fase 67.b — a `retrieve` step's `order_by:` / `limit:` clauses
+    // (empty when absent). Rendered to the structural `ORDER BY … LIMIT
+    // …` suffix by `stream_retrieve`. Ignored by persist/mutate/purge.
+    order_by: &str,
+    limit_expr: &str,
     ctx: &ExecContext,
 ) -> Result<String, StoreError> {
     // The connection + confidence_floor live on the `IRAxonStore` the
@@ -1124,6 +1150,9 @@ async fn execute_sql_store_step_async(
                     &mut store_conn,
                     &store_name,
                     &where_expr,
+                    // §Fase 67.b — the ORDER BY / LIMIT clauses.
+                    order_by,
+                    limit_expr,
                     row_stream::DEFAULT_RETRIEVE_POLICY,
                     row_stream::DEFAULT_MAX_ROWS,
                     &cancel,
@@ -1231,6 +1260,10 @@ fn execute_sql_store_step(
         store_name,
         memory_expr,
         store_fields,
+        // §Fase 67.b — the sync wrapper (CLI tests / pre-async callers)
+        // does not carry retrieve bounds; default to none.
+        "",
+        "",
         ctx,
     ))
 }
@@ -1888,6 +1921,9 @@ async fn execute_real_async(
                         &step.step_name,
                         raw_expr,
                         step.store_fields.as_deref(),
+                        // §Fase 67.b — the retrieve `order_by:` / `limit:`.
+                        step.retrieve_order_by.as_deref().unwrap_or(""),
+                        step.retrieve_limit.as_deref().unwrap_or(""),
                         &ctx,
                     ).await {
                         Ok(summary) => (summary, true),

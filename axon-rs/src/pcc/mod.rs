@@ -1100,6 +1100,8 @@ mod tests {
             store_name: store_name.to_string(),
             where_expr: String::new(),
             alias: String::new(),
+            order_by: String::new(),
+            limit_expr: String::new(),
         })
     }
 

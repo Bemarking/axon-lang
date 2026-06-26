@@ -1835,6 +1835,17 @@ pub struct RetrieveStep {
     pub store_name: String,
     pub where_expr: String,
     pub alias: String,
+    /// §Fase 67.b — optional `order_by:` clause: a closed
+    /// comma-separated list of `column [asc|desc]` (same identifier
+    /// discipline as `where:` columns — no injection). Empty = no
+    /// ordering. Raw string, parsed + validated by the runtime
+    /// (`filter::render_bounds`) and at `axon check` (§38.d `axon-T807`).
+    pub order_by: String,
+    /// §Fase 67.b — optional `limit:` clause: a `u32` literal OR a
+    /// `${binding}` resolved to a `u32` at runtime. Empty = no limit.
+    /// Raw string (`"100"` or `"${max}"`), validated at `axon check`
+    /// (§38.d `axon-T808`).
+    pub limit_expr: String,
     pub loc: Loc,
 }
 #[derive(Debug)]

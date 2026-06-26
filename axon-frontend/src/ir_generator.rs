@@ -820,6 +820,8 @@ impl IRGenerator {
                 store_name: s.store_name.clone(),
                 where_expr: s.where_expr.clone(),
                 alias: s.alias.clone(),
+                order_by: s.order_by.clone(),
+                limit_expr: s.limit_expr.clone(),
             }),
             FlowStep::Mutate(s) => IRFlowNode::Mutate(IRMutateStep {
                 node_type: "mutate",

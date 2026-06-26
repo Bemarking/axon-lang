@@ -98,6 +98,16 @@ pub enum ProofErrorCode {
     /// The runtime `parse_filter` rejects the SAME shape (§Fase 67.a);
     /// 67.a.2 moves that failure from the daemon run to `axon check`.
     T806BadTimeValue,
+    /// `axon-T807` — §Fase 67.b — a malformed `order_by:` clause: an
+    /// empty sort term, a direction that is not `asc`/`desc`, or a
+    /// column that does not exist in the declared schema. Mirror of the
+    /// runtime `FilterError::BadOrderBy`.
+    T807BadOrderBy,
+    /// `axon-T808` — §Fase 67.b — a malformed `limit:` clause: a literal
+    /// that is not a non-negative `u32`, or a `${param}` whose declared
+    /// flow-parameter type is not integer-compatible. Mirror of the
+    /// runtime `FilterError::BadLimit`.
+    T808BadLimit,
 }
 
 impl ProofErrorCode {
@@ -111,6 +121,8 @@ impl ProofErrorCode {
             Self::T804UnknownField => "axon-T804",
             Self::T805ManifestHashMismatch => "axon-T805",
             Self::T806BadTimeValue => "axon-T806",
+            Self::T807BadOrderBy => "axon-T807",
+            Self::T808BadLimit => "axon-T808",
         }
     }
 }
@@ -1319,6 +1331,205 @@ fn check_predicate(
 }
 
 // ════════════════════════════════════════════════════════════════════
+//  §Fase 67.b — bounded + ordered retrieve proof (`order_by:` / `limit:`)
+// ════════════════════════════════════════════════════════════════════
+
+/// §Fase 67.b — validate a bounded/ordered `retrieve`'s `order_by:` +
+/// `limit:` clauses at `axon check`, the compile-time mirror of the
+/// runtime `filter::{parse_order_by, parse_limit}` (the cross-crate
+/// parity test pins them in lockstep).
+///
+/// `columns` is `Some` only when the store declares an inline schema —
+/// `order_by` column EXISTENCE is then proven (`axon-T807`). The
+/// structural checks (sort-term shape + direction, the `limit:` literal
+/// `u32` / `${param}` type) run regardless of schema form.
+pub fn check_bounds(
+    order_by: &str,
+    limit_expr: &str,
+    columns: Option<&ColumnSet>,
+    flow_params: &FlowParamTypes,
+    loc: (u32, u32),
+) -> Vec<ProofError> {
+    let mut out: Vec<ProofError> = Vec::new();
+    check_order_by(order_by, columns, loc, &mut out);
+    check_limit(limit_expr, flow_params, loc, &mut out);
+    out
+}
+
+fn check_order_by(
+    order_by: &str,
+    columns: Option<&ColumnSet>,
+    loc: (u32, u32),
+    out: &mut Vec<ProofError>,
+) {
+    if order_by.trim().is_empty() {
+        return;
+    }
+    for term in order_by.split(',') {
+        let mut parts = term.split_whitespace();
+        let column = match parts.next() {
+            Some(c) => c,
+            None => {
+                out.push(ProofError::new(
+                    ProofErrorCode::T807BadOrderBy,
+                    loc.0,
+                    loc.1,
+                    "axon-T807 empty sort term in `order_by:` (a stray comma?) \
+                     — a term is `column [asc|desc]`"
+                        .to_string(),
+                ));
+                continue;
+            }
+        };
+        // — identifier discipline (always — the runtime `parse_order_by`
+        //   rejects an unsafe column via `is_safe_identifier`; mirror it
+        //   here so a schema-less store still catches e.g. `1id`). —
+        if !is_safe_sql_identifier(column) {
+            out.push(ProofError::new(
+                ProofErrorCode::T807BadOrderBy,
+                loc.0,
+                loc.1,
+                format!(
+                    "axon-T807 `order_by:` column `{column}` is not a valid \
+                     identifier ([A-Za-z_][A-Za-z0-9_]*, ≤ 63 bytes)."
+                ),
+            ));
+            continue;
+        }
+        // — direction —
+        match parts.next() {
+            None => {}
+            Some(d) if d.eq_ignore_ascii_case("asc") || d.eq_ignore_ascii_case("desc") => {}
+            Some(other) => {
+                out.push(ProofError::new(
+                    ProofErrorCode::T807BadOrderBy,
+                    loc.0,
+                    loc.1,
+                    format!(
+                        "axon-T807 `order_by:` direction `{other}` on column \
+                         `{column}` is not `asc` or `desc`."
+                    ),
+                ));
+            }
+        }
+        if let Some(extra) = parts.next() {
+            out.push(ProofError::new(
+                ProofErrorCode::T807BadOrderBy,
+                loc.0,
+                loc.1,
+                format!(
+                    "axon-T807 unexpected `{extra}` after `order_by:` term \
+                     `{column}` — a term is `column [asc|desc]`."
+                ),
+            ));
+        }
+        // — column existence (only with an inline schema) —
+        if let Some(cols) = columns {
+            if cols.get(column).is_none() {
+                let suggestion = suggest_columns_composite(column, cols);
+                let suggest_suffix = if suggestion.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {suggestion}")
+                };
+                out.push(ProofError::new(
+                    ProofErrorCode::T807BadOrderBy,
+                    loc.0,
+                    loc.1,
+                    format!(
+                        "axon-T807 unknown column `{column}` in `order_by:`. \
+                         The declared schema has columns: {{{}}}.{suggest_suffix}",
+                        format_column_list(cols),
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn check_limit(
+    limit_expr: &str,
+    flow_params: &FlowParamTypes,
+    loc: (u32, u32),
+    out: &mut Vec<ProofError>,
+) {
+    let raw = limit_expr.trim();
+    if raw.is_empty() {
+        return;
+    }
+    // — a `${param}` / `$param` reference — prove its declared type is
+    //   integer-compatible (an undeclared param is the §37 D2 binding-
+    //   totality concern; silently ignored here, mirroring 38.d). —
+    if let Some(name) = bound_param_name(raw) {
+        if let Some(axon_type) = flow_params.get(name) {
+            if !param_is_integer(axon_type) {
+                out.push(ProofError::new(
+                    ProofErrorCode::T808BadLimit,
+                    loc.0,
+                    loc.1,
+                    format!(
+                        "axon-T808 `limit:` parameter `${{{name}}}` of type \
+                         `{axon_type}` is not integer-compatible — `limit:` \
+                         requires a non-negative integer (Int/Integer/BigInt)."
+                    ),
+                ));
+            }
+        }
+        return;
+    }
+    // — a literal — must be a non-negative `u32`. —
+    if raw.parse::<u32>().is_err() {
+        out.push(ProofError::new(
+            ProofErrorCode::T808BadLimit,
+            loc.0,
+            loc.1,
+            format!(
+                "axon-T808 `limit: {raw}` is not a non-negative integer in \
+                 `u32` range. Use a literal (`limit: 100`) or a `${{binding}}` \
+                 that resolves to one."
+            ),
+        ));
+    }
+}
+
+/// `true` iff `name` is a safe SQL identifier — ASCII
+/// `[A-Za-z_][A-Za-z0-9_]*`, 1..=63 bytes. The compile-time mirror of
+/// the runtime `filter::is_safe_identifier`, so the `order_by:` proof
+/// rejects exactly the columns the runtime renderer would.
+fn is_safe_sql_identifier(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 63
+        && name.bytes().enumerate().all(|(i, b)| {
+            b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit())
+        })
+}
+
+/// Extract the parameter name from a `${name}` / `$name` reference, or
+/// `None` if `raw` is not a bound-parameter reference.
+fn bound_param_name(raw: &str) -> Option<&str> {
+    if let Some(rest) = raw.strip_prefix("${") {
+        return rest.strip_suffix('}').filter(|n| !n.is_empty());
+    }
+    if let Some(rest) = raw.strip_prefix('$') {
+        if !rest.is_empty()
+            && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            return Some(rest);
+        }
+    }
+    None
+}
+
+/// `true` iff an axon flow-parameter type is integer-compatible (a valid
+/// `limit:` binding type). Ignores `Optional<T>` wrapping.
+fn param_is_integer(axon_type: &str) -> bool {
+    matches!(
+        strip_optional_wrap(axon_type),
+        "Int" | "Integer" | "BigInt" | "Number"
+    )
+}
+
+// ════════════════════════════════════════════════════════════════════
 //  §Fase 38.e (D2 — second half) — field-block proof for
 //  `persist into <store> { col: value … }` and
 //  `mutate <store> { where: … col: value … }` SET assignments
@@ -2212,13 +2423,15 @@ mod tests {
     // ── Error code slugs (LSP / JSON output) ─────────────────────────
 
     #[test]
-    fn error_code_slugs_match_the_axon_t801_through_t806_namespace() {
+    fn error_code_slugs_match_the_axon_t801_through_t808_namespace() {
         assert_eq!(ProofErrorCode::T801UnknownColumn.slug(), "axon-T801");
         assert_eq!(ProofErrorCode::T802TypeMismatch.slug(), "axon-T802");
         assert_eq!(ProofErrorCode::T803NotNullOmitted.slug(), "axon-T803");
         assert_eq!(ProofErrorCode::T804UnknownField.slug(), "axon-T804");
         assert_eq!(ProofErrorCode::T805ManifestHashMismatch.slug(), "axon-T805");
         assert_eq!(ProofErrorCode::T806BadTimeValue.slug(), "axon-T806");
+        assert_eq!(ProofErrorCode::T807BadOrderBy.slug(), "axon-T807");
+        assert_eq!(ProofErrorCode::T808BadLimit.slug(), "axon-T808");
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -3150,5 +3363,93 @@ mod tests {
         // bare now()
         let p = scan_where("t >= now()").unwrap();
         assert_eq!(p[0].value, WhereValue::TimeNow { offset: None });
+    }
+
+    // ─── §Fase 67.b — bounded + ordered retrieve (`order_by:` / `limit:`) ──
+    //
+    // `check_bounds` is the compile-time mirror of the runtime
+    // `filter::render_bounds`. A valid clause proves clean; a malformed
+    // one is a hard `axon-T807` (order_by) / `axon-T808` (limit). Pinned
+    // to the runtime by `axon-rs/tests/fase67_b_bounds_parity.rs`.
+
+    fn no_params() -> FlowParamTypes {
+        params(&[])
+    }
+
+    #[test]
+    fn valid_order_by_and_limit_prove_clean() {
+        let cs = columns_for(&[
+            ("last_activity_at", StoreColumnType::Timestamptz, false),
+            ("id", StoreColumnType::Uuid, true),
+        ]);
+        for (ob, lim) in [
+            ("last_activity_at asc", "100"),
+            ("last_activity_at desc, id asc", "1"),
+            ("id", ""),     // direction defaults to asc; no limit
+            ("", "250"),    // limit only
+            ("id DESC", "0"), // case-insensitive direction; zero limit ok
+        ] {
+            let errs = check_bounds(ob, lim, Some(&cs), &no_params(), (1, 1));
+            assert!(errs.is_empty(), "`{ob}` / `{lim}` should be clean, got {errs:?}");
+        }
+    }
+
+    #[test]
+    fn order_by_unknown_column_is_t807() {
+        let cs = columns_for(&[("last_activity_at", StoreColumnType::Timestamptz, false)]);
+        let errs = check_bounds("last_activty_at asc", "", Some(&cs), &no_params(), (1, 1));
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].code, ProofErrorCode::T807BadOrderBy);
+        assert!(errs[0].message.contains("unknown column"));
+    }
+
+    #[test]
+    fn order_by_bad_direction_is_t807() {
+        let cs = columns_for(&[("id", StoreColumnType::Uuid, true)]);
+        let errs = check_bounds("id ascending", "", Some(&cs), &no_params(), (1, 1));
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].code, ProofErrorCode::T807BadOrderBy);
+        assert!(errs[0].message.contains("asc"));
+    }
+
+    #[test]
+    fn order_by_structural_checks_run_without_a_schema() {
+        // No ColumnSet (manifest/none store): existence isn't proven, but
+        // the direction shape still is.
+        let errs = check_bounds("id sideways", "", None, &no_params(), (1, 1));
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].code, ProofErrorCode::T807BadOrderBy);
+    }
+
+    #[test]
+    fn limit_non_integer_literal_is_t808() {
+        for bad in ["abc", "-5", "3.5", "99999999999999999999"] {
+            let errs = check_bounds("", bad, None, &no_params(), (1, 1));
+            assert_eq!(errs.len(), 1, "`{bad}` should be one T808, got {errs:?}");
+            assert_eq!(errs[0].code, ProofErrorCode::T808BadLimit, "`{bad}`");
+        }
+    }
+
+    #[test]
+    fn limit_integer_param_proves_clean_but_non_integer_param_is_t808() {
+        let fp = params(&[("max", "Int"), ("label", "String")]);
+        // Int param — clean.
+        assert!(check_bounds("", "${max}", None, &fp, (1, 1)).is_empty());
+        // String param — T808.
+        let errs = check_bounds("", "${label}", None, &fp, (1, 1));
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].code, ProofErrorCode::T808BadLimit);
+        // Undeclared param — silent (the §37 D2 binding-totality concern).
+        assert!(check_bounds("", "${unknown}", None, &fp, (1, 1)).is_empty());
+    }
+
+    #[test]
+    fn order_by_and_limit_errors_are_independent() {
+        let cs = columns_for(&[("id", StoreColumnType::Uuid, true)]);
+        let errs = check_bounds("missing desc", "nope", Some(&cs), &no_params(), (1, 1));
+        // one T807 (unknown column) + one T808 (bad literal).
+        assert_eq!(errs.len(), 2);
+        assert!(errs.iter().any(|e| e.code == ProofErrorCode::T807BadOrderBy));
+        assert!(errs.iter().any(|e| e.code == ProofErrorCode::T808BadLimit));
     }
 }
