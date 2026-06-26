@@ -542,6 +542,8 @@ fn extract_step_info(node: &IRFlowNode) -> (String, String, String) {
         // §Fase 51.d.2 — `yield` measurement point. step_type "yield" matches
         // `flow_plan::ir_flow_node_kind` (drift-gated).
         IRFlowNode::Yield(s) => (s.value_expr.clone(), "yield".to_string(), format!("Yield: {}", s.value_expr)),
+        // §Fase 52.c — `run <Flow>(args)` flow-step (invoke a flow from a body).
+        IRFlowNode::Run(s) => (s.flow_name.clone(), "run".to_string(), format!("Run flow: {}", s.flow_name)),
         IRFlowNode::LambdaDataApply(s) => (s.lambda_data_name.clone(), "lambda_data_apply".to_string(), format!("Apply ΛD: {}", s.lambda_data_name)),
         // §λ-L-E Fase 13 — Mobile typed channel reductions.
         IRFlowNode::Emit(s) => (s.channel_ref.clone(), "emit".to_string(), format!("Emit on {}: {}", s.channel_ref, s.value_ref)),

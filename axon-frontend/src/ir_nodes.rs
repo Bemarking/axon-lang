@@ -771,7 +771,7 @@ pub struct IRFlow {
 
 // ── Run ──────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IRRun {
     pub node_type: &'static str,
     pub source_line: u32,
@@ -883,6 +883,9 @@ pub enum IRFlowNode {
     Quant(IRQuant),
     /// §Fase 51.d.2 — the `yield` measurement point inside a `quant` block.
     Yield(IRYield),
+    /// §Fase 52.c — `run <Flow>(args)` flow-step: invoke a declared flow from a
+    /// body (a daemon listen handler). Reuses [`IRRun`] (the top-level run IR).
+    Run(IRRun),
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -412,6 +412,40 @@ pub async fn run_listen(
     })
 }
 
+/// §Fase 52.c — `run <Flow>(args)` flow-step: invoke a declared flow from a
+/// body (a daemon `listen` handler — the brief #32 Q3). The LANGUAGE surface
+/// (parse / type-check / IR / this dispatcher arm) lands here; the REAL
+/// recursive flow dispatch — looking up `flow_name` in the program and
+/// executing its steps under the daemon's identity — is wired by the §52.c
+/// daemon executor (it needs the flow registry + the recursion guard, which
+/// this leaf dispatcher does not own). Until then this binds the invocation
+/// outcome under `output_to` (if any) so downstream steps resolve, mirroring
+/// the surface-handler pattern §51 used for `quant`/`yield`.
+pub async fn run_run(
+    node: &axon_frontend::ir_nodes::IRRun,
+    ctx: &mut DispatchCtx,
+) -> Result<NodeOutcome, DispatchError> {
+    if ctx.cancel.is_cancelled() {
+        return Err(DispatchError::UpstreamCancelled);
+    }
+    let step_index = ctx.step_counter;
+    ctx.step_counter += 1;
+
+    emit_step_start(ctx, &node.flow_name, step_index, "run")?;
+    let outcome = format!("(invoking flow {})", node.flow_name);
+    if !node.output_to.is_empty() {
+        ctx.let_bindings
+            .insert(node.output_to.clone(), outcome.clone());
+    }
+    emit_step_complete(ctx, &node.flow_name, step_index, &outcome, 0)?;
+
+    Ok(NodeOutcome::Completed {
+        output: outcome,
+        tokens_emitted: 0,
+        step_index,
+    })
+}
+
 // ────────────────────────────────────────────────────────────────────
 //  DaemonStep
 // ────────────────────────────────────────────────────────────────────

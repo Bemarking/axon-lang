@@ -5083,6 +5083,17 @@ impl<'a> TypeChecker<'a> {
                     ),
                     &y.loc,
                 ),
+                // §Fase 52.c — `run <Flow>(args)` as a flow-step (a daemon listen
+                // handler invoking a flow, Q3). Reuse the top-level run check:
+                // the flow must be declared, args resolve, etc.
+                FlowStep::Run(n) => self.check_run(n),
+                // §Fase 52.a/c — a `listen … { … }` handler body's steps are
+                // checked like any body, so a `run`/`persist`/… inside a flow-
+                // body listener is validated (daemon listeners go via
+                // `check_daemon` → `check_listen`).
+                FlowStep::Listen(l) if !l.body.is_empty() => {
+                    self.check_flow_steps(&l.body, flow_name);
+                }
                 // All other steps: no cross-reference checks needed
                 _ => {}
             }

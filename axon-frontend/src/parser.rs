@@ -2792,6 +2792,10 @@ impl Parser {
             TokenType::Quant => self.parse_quant().map(FlowStep::Quant),
             // §Fase 51.d.2 — the `yield` measurement point.
             TokenType::Yield => self.parse_yield().map(FlowStep::Yield),
+            // §Fase 52.c — `run <Flow>(args)` as a flow-step: invoke a declared
+            // flow from inside a body (a `daemon` listen handler, Q3). Reuses
+            // the top-level run parser.
+            TokenType::Run => self.parse_run().map(FlowStep::Run),
 
             _ => {
                 // §Fase 28.e — append "Did you mean X?" hint when the

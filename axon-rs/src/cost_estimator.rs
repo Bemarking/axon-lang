@@ -157,6 +157,9 @@ fn classify_node(node: &IRFlowNode) -> StepKind {
         IRFlowNode::Quant(_) => StepKind::Cognitive,
         // §Fase 51.d.2 — `yield` is the amplitude-collapse measurement point.
         IRFlowNode::Yield(_) => StepKind::Cognitive,
+        // §Fase 52.c — `run <Flow>` is orchestration: it dispatches a declared
+        // flow whose own cost is attributed to that flow, not to this step.
+        IRFlowNode::Run(_) => StepKind::Control,
     }
 }
 
