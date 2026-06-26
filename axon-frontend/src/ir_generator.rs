@@ -863,6 +863,8 @@ impl IRGenerator {
                 value_expr: s.value_expr.clone(),
                 value_kind: s.value_kind.clone(),
             }),
+            // §Fase 52.c — `run <Flow>(args)` flow-step → reuse the run IR.
+            FlowStep::Run(s) => IRFlowNode::Run(self.visit_run(s)),
             FlowStep::GenericStep(_) => {
                 // Should not occur — all flow steps have dedicated handlers
                 IRFlowNode::Step(IRStep {

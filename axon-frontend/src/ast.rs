@@ -1369,6 +1369,12 @@ pub enum FlowStep {
     /// operation whose resolution is a one-shot delimited continuation. Only
     /// well-formed inside a `quant` block (the checker rejects it elsewhere).
     Yield(YieldStatement),
+    /// §Fase 52.c — `run <Flow>(args)` as a flow-step: invoke a declared flow
+    /// from inside a body (notably a `daemon`'s `listen` handler — the Q3 ask).
+    /// Reuses the top-level [`RunStatement`] shape (flow name + args + optional
+    /// persona/context/anchors). Distinct from `Declaration::Run` only by
+    /// position (a step inside a body vs. a program-root run).
+    Run(RunStatement),
     /// Flow-level statements we recognize but parse structurally.
     GenericStep(GenericFlowStep),
 }

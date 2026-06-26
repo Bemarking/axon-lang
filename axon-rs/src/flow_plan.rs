@@ -187,6 +187,8 @@ pub fn ir_flow_node_kind(node: &IRFlowNode) -> &'static str {
         IRFlowNode::Quant(_) => "quant",
         // §Fase 51.d.2 — the `yield` measurement point.
         IRFlowNode::Yield(_) => "yield",
+        // §Fase 52.c — `run <Flow>(args)` flow-step.
+        IRFlowNode::Run(_) => "run",
     }
 }
 

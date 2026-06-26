@@ -918,6 +918,10 @@ pub async fn dispatch_node(
         // collapse + one-shot delimited continuation is the §51.e reference
         // simulator / enterprise QuIDD-QPU backend.
         IRFlowNode::Yield(node) => wire_integrations::run_yield(node, ctx).await,
+        // §Fase 52.c — `run <Flow>(args)` flow-step. SURFACE here (binds the
+        // invocation outcome); the real recursive flow dispatch under the
+        // daemon's identity is the §52.c daemon executor.
+        IRFlowNode::Run(node) => algebraic_handlers::run_run(node, ctx).await,
     }
 }
 
