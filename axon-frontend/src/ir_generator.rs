@@ -776,14 +776,7 @@ impl IRGenerator {
                 arguments: s.arguments.clone(),
                 output_name: s.output_name.clone(),
             }),
-            FlowStep::Listen(s) => IRFlowNode::Listen(IRListenStep {
-                node_type: "listen",
-                source_line: s.loc.line,
-                source_column: s.loc.column,
-                channel: s.channel.clone(),
-                channel_is_ref: s.channel_is_ref,
-                event_alias: s.event_alias.clone(),
-            }),
+            FlowStep::Listen(s) => IRFlowNode::Listen(self.lower_listen(s)),
             // §λ-L-E Fase 13 — Mobile typed channel reductions.
             FlowStep::Emit(s) => IRFlowNode::Emit(IREmit {
                 node_type: "emit",
@@ -1126,6 +1119,21 @@ impl IRGenerator {
         }
     }
 
+    /// §Fase 52.a — lower one `listen` listener (channel + alias + handler
+    /// body) to its IR. Shared by the flow-step `FlowStep::Listen` arm and the
+    /// daemon listener list so both carry the (now-executing) body.
+    fn lower_listen(&self, s: &ListenStep) -> IRListenStep {
+        IRListenStep {
+            node_type: "listen",
+            source_line: s.loc.line,
+            source_column: s.loc.column,
+            channel: s.channel.clone(),
+            channel_is_ref: s.channel_is_ref,
+            event_alias: s.event_alias.clone(),
+            body: s.body.iter().map(|st| self.visit_flow_step(st)).collect(),
+        }
+    }
+
     fn visit_daemon(&self, n: &DaemonDefinition) -> IRDaemon {
         IRDaemon {
             node_type: "daemon",
@@ -1141,6 +1149,8 @@ impl IRGenerator {
             max_tokens: n.max_tokens,
             max_time: n.max_time.clone(),
             max_cost: n.max_cost,
+            // §Fase 52.a — listeners-with-bodies now survive lowering (were dropped).
+            listeners: n.listeners.iter().map(|l| self.lower_listen(l)).collect(),
         }
     }
 

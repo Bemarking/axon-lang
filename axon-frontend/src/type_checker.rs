@@ -5884,6 +5884,13 @@ impl<'a> TypeChecker<'a> {
                 &node.loc,
             );
         }
+        // §Fase 52.a — validate the (now-executing) handler body. Its steps get
+        // the same checks as a flow body (e.g. a `run <Flow>` resolves, a
+        // `persist` targets a declared store), so a malformed listener body is
+        // caught at compile time rather than failing silently at the first tick.
+        if !node.body.is_empty() {
+            self.check_flow_steps(&node.body, daemon_name);
+        }
     }
 
     /// Validate an emit step (Chan-Output / Chan-Mobility, paper §3.1, §3.2).

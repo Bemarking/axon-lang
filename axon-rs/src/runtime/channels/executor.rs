@@ -632,6 +632,7 @@ mod tests {
             channel: "Orders".to_string(),
             channel_is_ref: true,
             event_alias: "ev".to_string(),
+            body: Vec::new(),
         };
         let v = block_on(dispatch_listen(&ir, &ctx)).unwrap();
         assert!(matches!(v, RunValue::Json(_)));
@@ -647,6 +648,7 @@ mod tests {
             channel: "orders".to_string(),
             channel_is_ref: false,
             event_alias: "ev".to_string(),
+            body: Vec::new(),
         };
         let err = block_on(dispatch_listen(&ir, &ctx)).unwrap_err();
         let msg = err.to_string();
