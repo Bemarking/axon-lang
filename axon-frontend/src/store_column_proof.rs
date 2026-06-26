@@ -91,6 +91,13 @@ pub enum ProofErrorCode {
     /// `axon-T805` — propagated from the manifest layer when its
     /// `content_hash` mismatches the canonical content.
     T805ManifestHashMismatch,
+    /// `axon-T806` — §Fase 67.a.2 — a malformed `now() ± interval
+    /// '<n> <unit>'` time value in a `where:` clause (a bad `now()`
+    /// shape, a non-`u32` amount, an unknown unit, or `LIKE` against a
+    /// time value), OR a time comparison against a non-temporal column.
+    /// The runtime `parse_filter` rejects the SAME shape (§Fase 67.a);
+    /// 67.a.2 moves that failure from the daemon run to `axon check`.
+    T806BadTimeValue,
 }
 
 impl ProofErrorCode {
@@ -103,6 +110,7 @@ impl ProofErrorCode {
             Self::T803NotNullOmitted => "axon-T803",
             Self::T804UnknownField => "axon-T804",
             Self::T805ManifestHashMismatch => "axon-T805",
+            Self::T806BadTimeValue => "axon-T806",
         }
     }
 }
@@ -330,6 +338,58 @@ pub enum WhereValue {
     },
     /// `NULL` keyword (only valid with `IS [NOT] NULL`).
     NullKeyword,
+    /// §Fase 67.a.2 — a structural time-relative value: `now()`,
+    /// optionally offset by `± interval '<n> <unit>'`. The PROOF mirror
+    /// of the runtime `filter::TimeValue` (`axon-rs/src/store/filter.rs`,
+    /// §Fase 67.a). `None` = bare `now()`; the offset's amount is a
+    /// validated `u32` + a closed-catalog [`TimeUnit`] — exactly the
+    /// shape the runtime renders inline. The proof checks the COLUMN is
+    /// a temporal type (a time comparison against e.g. a `Text` column
+    /// is the §T806 error); the value itself carries no adopter string,
+    /// so there is no T802 literal-compatibility concern here.
+    TimeNow {
+        offset: Option<(TimeSign, u32, TimeUnit)>,
+    },
+}
+
+/// §Fase 67.a.2 — `+` / `-` in `now() ± interval '…'`. Proof mirror of
+/// the runtime `filter::TimeSign`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeSign {
+    Plus,
+    Minus,
+}
+
+/// §Fase 67.a.2 — the closed catalog of interval units. Proof mirror of
+/// the runtime `filter::TimeUnit`; the cross-crate parity test
+/// (`axon-rs/tests/fase67_a2_where_time_parity.rs`) pins the two in
+/// lockstep so the dual scanner cannot silently drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeUnit {
+    Second,
+    Minute,
+    Hour,
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+impl TimeUnit {
+    /// Resolve a unit word (singular or plural, case-insensitive). The
+    /// whitelist IS the catalog — an un-listed unit is a §T806 error.
+    fn from_word(w: &str) -> Option<TimeUnit> {
+        Some(match w.to_ascii_lowercase().as_str() {
+            "second" | "seconds" => TimeUnit::Second,
+            "minute" | "minutes" => TimeUnit::Minute,
+            "hour" | "hours" => TimeUnit::Hour,
+            "day" | "days" => TimeUnit::Day,
+            "week" | "weeks" => TimeUnit::Week,
+            "month" | "months" => TimeUnit::Month,
+            "year" | "years" => TimeUnit::Year,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,7 +416,19 @@ pub enum ScanError {
     /// The expression has a syntactic shape the scanner can't decode.
     /// 38.d documents this as "the runtime parser will surface the
     /// canonical error; 38.d only proves the well-formed subset".
+    /// [`check_filter`] swallows this silently (the runtime parser owns
+    /// the canonical syntactic diagnostic).
     Malformed { detail: String },
+    /// §Fase 67.a.2 — a malformed `now() ± interval '<n> <unit>'` time
+    /// value. UNLIKE [`ScanError::Malformed`], this is surfaced as a
+    /// HARD `axon-T806` compile error by [`check_filter`]: once a value
+    /// position opens with `now`, the form is UNAMBIGUOUSLY a time value
+    /// (no other grammar production starts with `now`), so a malformed
+    /// continuation is a definite adopter error worth catching at
+    /// `axon check` rather than deferring to the daemon run (the §Fase
+    /// 67 / brief #34 failure mode). Backward-compatible: a non-`now`
+    /// malformed `where:` still yields [`ScanError::Malformed`].
+    BadTimeValue { detail: String },
 }
 
 /// Scan a `where:` string into a flat list of predicates. The scan
@@ -540,6 +612,18 @@ fn tokenize(src: &str) -> Result<Vec<ScanToken>, ScanError> {
             i += 1;
             continue;
         }
+        // §Fase 67.a.2 — parens + interval sign for the `now() ± interval
+        // '…'` time-value form (mirror of the §67.a filter tokenizer). A
+        // `-` followed by a digit was already consumed as a negative
+        // number above; a standalone `( ) + -` becomes a bare symbol the
+        // predicate parser interprets ONLY inside the time-value form —
+        // anywhere else it falls through to `ScanError::Malformed`, so no
+        // new well-formed surface opens outside the time grammar.
+        if matches!(b, b'(' | b')' | b'+' | b'-') {
+            out.push(ScanToken::Symbol((b as char).to_string()));
+            i += 1;
+            continue;
+        }
         return Err(ScanError::Malformed {
             detail: format!("unexpected character {:?} at position {i}", b as char),
         });
@@ -645,6 +729,21 @@ fn parse_predicate(
     let value_token = tokens.get(*cursor).ok_or_else(|| ScanError::Malformed {
         detail: format!("missing value after `{column} {op:?}`"),
     })?;
+    // §Fase 67.a.2 — a `now`-led value is the structural time form
+    // (`now()` / `now() ± interval '<n> <unit>'`). `now` is not a valid
+    // bare literal otherwise (it would fall through to the catch-all
+    // below), so routing it here does not shadow any pre-67.a value. The
+    // helper consumes the multi-token form and advances `cursor`.
+    if let ScanToken::Word(w) = value_token {
+        if w.eq_ignore_ascii_case("now") {
+            let offset = parse_scan_time_value(tokens, cursor, op)?;
+            return Ok(ScannedPredicate {
+                column,
+                op,
+                value: WhereValue::TimeNow { offset },
+            });
+        }
+    }
     let value = match value_token {
         ScanToken::Str(s) => WhereValue::Literal {
             kind: LiteralKind::Text,
@@ -678,6 +777,95 @@ fn parse_predicate(
         op,
         value,
     })
+}
+
+/// §Fase 67.a.2 — parse `now` `(` `)` `[ (+|-) interval '<n> <unit>' ]`
+/// at `*cursor` (the caller verified `tokens[*cursor]` is the `now`
+/// word). Advances `*cursor` past every consumed token and returns the
+/// offset (`None` = bare `now()`).
+///
+/// This is the PROOF mirror of the runtime `filter::parse_time_value` +
+/// `parse_interval` (`axon-rs/src/store/filter.rs`, §Fase 67.a) — it
+/// accepts EXACTLY the same shapes and rejects EXACTLY the same
+/// malformed forms, with [`ScanError::BadTimeValue`] standing in for the
+/// runtime's `FilterError::{BadTimeValue,LikeWithTime}`. The cross-crate
+/// parity test pins the two parsers in lockstep.
+fn parse_scan_time_value(
+    tokens: &[ScanToken],
+    cursor: &mut usize,
+    op: WhereOp,
+) -> Result<Option<(TimeSign, u32, TimeUnit)>, ScanError> {
+    // `LIKE` against a time value is nonsensical (it is a timestamp, not
+    // text) — the runtime rejects it with `FilterError::LikeWithTime`.
+    if op == WhereOp::Like {
+        return Err(ScanError::BadTimeValue {
+            detail: "`LIKE` cannot be applied to a `now()` time value — use \
+                     an ordering operator (`<`, `>`, `<=`, `>=`) or `=`/`!=`"
+                .to_string(),
+        });
+    }
+    let is_sym = |idx: usize, want: &str| {
+        matches!(tokens.get(idx), Some(ScanToken::Symbol(s)) if s == want)
+    };
+    let base = *cursor; // `tokens[base]` is `now`
+    // `now` `(` `)`
+    if !is_sym(base + 1, "(") || !is_sym(base + 2, ")") {
+        return Err(ScanError::BadTimeValue {
+            detail: "expected `now()`".to_string(),
+        });
+    }
+    // optional `± interval '<n> <unit>'`
+    let sign = match tokens.get(base + 3) {
+        Some(ScanToken::Symbol(s)) if s == "+" => TimeSign::Plus,
+        Some(ScanToken::Symbol(s)) if s == "-" => TimeSign::Minus,
+        // bare `now()` — no offset.
+        _ => {
+            *cursor = base + 3;
+            return Ok(None);
+        }
+    };
+    match tokens.get(base + 4) {
+        Some(ScanToken::Word(w)) if w.eq_ignore_ascii_case("interval") => {}
+        _ => {
+            return Err(ScanError::BadTimeValue {
+                detail: "expected `interval` after the `now()` sign".to_string(),
+            })
+        }
+    }
+    let raw = match tokens.get(base + 5) {
+        Some(ScanToken::Str(s)) => s,
+        _ => {
+            return Err(ScanError::BadTimeValue {
+                detail: "expected a quoted interval like '30 minutes'".to_string(),
+            })
+        }
+    };
+    let (amount, unit) = parse_scan_interval(raw)?;
+    *cursor = base + 6;
+    Ok(Some((sign, amount, unit)))
+}
+
+/// §Fase 67.a.2 — parse + validate the `'<n> <unit>'` interval body into
+/// a typed `(u32, TimeUnit)`. Proof mirror of the runtime
+/// `filter::parse_interval`.
+fn parse_scan_interval(raw: &str) -> Result<(u32, TimeUnit), ScanError> {
+    let mut parts = raw.split_whitespace();
+    let (num, unit, extra) = (parts.next(), parts.next(), parts.next());
+    let (num, unit) = match (num, unit, extra) {
+        (Some(num), Some(unit), None) => (num, unit),
+        _ => {
+            return Err(ScanError::BadTimeValue {
+                detail: format!("interval '{raw}' must be '<number> <unit>'"),
+            })
+        }
+    };
+    let amount = num.parse::<u32>().map_err(|_| ScanError::BadTimeValue {
+        detail: format!("interval amount '{num}' is not a non-negative integer"),
+    })?;
+    let unit = TimeUnit::from_word(unit).ok_or_else(|| ScanError::BadTimeValue {
+        detail: format!("unknown interval unit '{unit}'"),
+    })?;
+    Ok((amount, unit))
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -940,7 +1128,26 @@ pub fn check_filter(
 ) -> Vec<ProofError> {
     let predicates = match scan_where(where_expr) {
         Ok(ps) => ps,
-        Err(_) => return Vec::new(),
+        // §Fase 67.a.2 — a malformed time value is a HARD compile error
+        // (the runtime `parse_filter` rejects the same shape; 67.a.2
+        // moves that failure to `axon check`).
+        Err(ScanError::BadTimeValue { detail }) => {
+            return vec![ProofError::new(
+                ProofErrorCode::T806BadTimeValue,
+                where_loc.0,
+                where_loc.1,
+                format!(
+                    "axon-T806 malformed time value: {detail} — the supported \
+                     forms are `now()` and `now() ± interval '<n> <unit>'` \
+                     where <unit> is \
+                     second/minute/hour/day/week/month/year (e.g. \
+                     `last_activity_at < now() - interval '30 minutes'`)"
+                ),
+            )];
+        }
+        // A non-time syntactic miss stays silent — the runtime parser
+        // owns the canonical diagnostic (the pre-67.a.2 38.d contract).
+        Err(ScanError::Malformed { .. }) => return Vec::new(),
     };
     let mut out: Vec<ProofError> = Vec::new();
     for pred in predicates {
@@ -1076,6 +1283,37 @@ fn check_predicate(
             // rejects it). The scanner shouldn't surface NullKeyword
             // except in `IS [NOT] NULL` context; if it does, it's a
             // proof-irrelevant syntactic anomaly.
+        }
+        WhereValue::TimeNow { .. } => {
+            // §Fase 67.a.2 — a `now()` time value renders inline against
+            // a timestamp expression. The column MUST be a temporal type
+            // (the runtime emits `"col" {op} now() …`, which Postgres
+            // rejects against a non-temporal column). Catching it here
+            // turns that runtime `operator does not exist` failure into a
+            // clear compile error. The value itself carries no adopter
+            // string, so there is no literal/param compatibility branch.
+            if !matches!(
+                col.col_type,
+                StoreColumnType::Timestamptz
+                    | StoreColumnType::Timestamp
+                    | StoreColumnType::Date
+                    | StoreColumnType::Time
+            ) {
+                out.push(ProofError::new(
+                    ProofErrorCode::T806BadTimeValue,
+                    where_loc.0,
+                    where_loc.1,
+                    format!(
+                        "axon-T806 `now()` time value compared against column \
+                         `{}` declared as `{}` — a time/`interval` comparison \
+                         requires a temporal column (Timestamptz/Timestamp/\
+                         Date/Time). Compare a timestamp column instead (e.g. \
+                         `last_activity_at < now() - interval '30 minutes'`).",
+                        pred.column,
+                        col.col_type.canonical_name()
+                    ),
+                ));
+            }
         }
     }
 }
@@ -1363,6 +1601,11 @@ fn check_field_block_columns(
                     ));
                 }
             }
+            // §Fase 67.a.2 — the `now()` time form is a `where:`-only
+            // surface; `classify_field_value` never produces `TimeNow`,
+            // so this arm is unreachable (a persist/mutate SET-block
+            // `now()` is out of §67.a scope). Present for exhaustiveness.
+            WhereValue::TimeNow { .. } => {}
         }
     }
 }
@@ -1969,12 +2212,13 @@ mod tests {
     // ── Error code slugs (LSP / JSON output) ─────────────────────────
 
     #[test]
-    fn error_code_slugs_match_the_axon_t801_through_t805_namespace() {
+    fn error_code_slugs_match_the_axon_t801_through_t806_namespace() {
         assert_eq!(ProofErrorCode::T801UnknownColumn.slug(), "axon-T801");
         assert_eq!(ProofErrorCode::T802TypeMismatch.slug(), "axon-T802");
         assert_eq!(ProofErrorCode::T803NotNullOmitted.slug(), "axon-T803");
         assert_eq!(ProofErrorCode::T804UnknownField.slug(), "axon-T804");
         assert_eq!(ProofErrorCode::T805ManifestHashMismatch.slug(), "axon-T805");
+        assert_eq!(ProofErrorCode::T806BadTimeValue.slug(), "axon-T806");
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -2769,5 +3013,142 @@ mod tests {
         // The LIKE branch goes through a separate code path that
         // doesn't apply the compatible-columns helper — that's
         // intentional (LIKE wants a Text column, not a String value).
+    }
+
+    // ─── §Fase 67.a.2 — compile-time `now() ± interval` validation ───────
+    //
+    // The proof scanner mirrors the §67.a runtime time grammar. A VALID
+    // time form against a temporal column proves clean; a MALFORMED time
+    // form is the hard `axon-T806` compile error that moves the brief #34
+    // failure (daemon `retrieve` silently 0 rows) from the run to
+    // `axon check`. The cross-crate parity test
+    // (`axon-rs/tests/fase67_a2_where_time_parity.rs`) pins this scanner
+    // to the runtime `parse_filter` so the two cannot drift.
+
+    #[test]
+    fn time_bare_now_against_a_timestamp_column_proves_clean() {
+        let cs = columns_for(&[("last_activity_at", StoreColumnType::Timestamptz, false)]);
+        let errs = check_filter("last_activity_at < now()", &cs, &params(&[]), (1, 1));
+        assert!(errs.is_empty(), "bare now() must prove clean, got {errs:?}");
+    }
+
+    #[test]
+    fn time_now_minus_interval_against_a_timestamp_column_proves_clean() {
+        for col in [
+            StoreColumnType::Timestamptz,
+            StoreColumnType::Timestamp,
+            StoreColumnType::Date,
+            StoreColumnType::Time,
+        ] {
+            let cs = columns_for(&[("t", col, false)]);
+            let errs = check_filter("t < now() - interval '30 minutes'", &cs, &params(&[]), (1, 1));
+            assert!(errs.is_empty(), "{col:?}: {errs:?}");
+        }
+    }
+
+    #[test]
+    fn time_value_covers_every_sign_and_unit() {
+        let cs = columns_for(&[("t", StoreColumnType::Timestamptz, false)]);
+        for expr in [
+            "t > now() + interval '7 days'",
+            "t <= now() - interval '1 hour'",
+            "t >= now() - interval '2 weeks'",
+            "t != now()",
+            "t < now() - interval '90 seconds'",
+            "t < now() - interval '1 month'",
+            "t < now() - interval '3 years'",
+        ] {
+            let errs = check_filter(expr, &cs, &params(&[]), (1, 1));
+            assert!(errs.is_empty(), "`{expr}` should prove clean, got {errs:?}");
+        }
+    }
+
+    #[test]
+    fn the_canonical_sweep_predicate_proves_clean() {
+        // brief #34's autonomous-sweep predicate: a status literal (a $N
+        // bind at runtime) AND a structural time comparison.
+        let cs = columns_for(&[
+            ("status", StoreColumnType::Text, false),
+            ("last_activity_at", StoreColumnType::Timestamptz, false),
+        ]);
+        let errs = check_filter(
+            "status == 'ACTIVE' AND last_activity_at < now() - interval '30 minutes'",
+            &cs,
+            &params(&[]),
+            (1, 1),
+        );
+        assert!(errs.is_empty(), "the canonical sweep must prove clean, got {errs:?}");
+    }
+
+    #[test]
+    fn malformed_time_forms_are_hard_t806_errors() {
+        // Every malformed time form is now a compile error — not a silent
+        // pass that fails at the daemon run. Mirrors the runtime
+        // `parse_filter` rejection corpus (§67.a).
+        let cs = columns_for(&[("t", StoreColumnType::Timestamptz, false)]);
+        for bad in [
+            "t < now( - interval '5 minutes'",      // missing `)`
+            "t < now() - interval '30'",            // no unit
+            "t < now() - interval '30 fortnights'", // unknown unit
+            "t < now() - interval 'abc minutes'",   // non-integer amount
+            "t < now() - interval '-5 minutes'",    // negative amount
+            "t < now() - 'interval string'",        // no `interval` keyword
+        ] {
+            let errs = check_filter(bad, &cs, &params(&[]), (1, 1));
+            assert_eq!(errs.len(), 1, "`{bad}` should be one T806, got {errs:?}");
+            assert_eq!(errs[0].code, ProofErrorCode::T806BadTimeValue, "`{bad}`");
+        }
+    }
+
+    #[test]
+    fn like_against_a_time_value_is_a_t806() {
+        let cs = columns_for(&[("t", StoreColumnType::Timestamptz, false)]);
+        let errs = check_filter("t LIKE now()", &cs, &params(&[]), (1, 1));
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].code, ProofErrorCode::T806BadTimeValue);
+        assert!(errs[0].message.contains("LIKE"));
+    }
+
+    #[test]
+    fn time_value_against_a_non_temporal_column_is_a_t806() {
+        // `now()` against a Text column would fail at runtime with a
+        // Postgres `operator does not exist` — caught at compile now.
+        let cs = columns_for(&[("name", StoreColumnType::Text, false)]);
+        let errs = check_filter("name < now()", &cs, &params(&[]), (1, 1));
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].code, ProofErrorCode::T806BadTimeValue);
+        assert!(
+            errs[0].message.contains("temporal"),
+            "message should name the temporal requirement: {}",
+            errs[0].message
+        );
+    }
+
+    #[test]
+    fn time_value_against_an_unknown_column_still_reports_t801() {
+        // The time form does not shadow column-existence: a typo'd time
+        // column surfaces the usual T801 (the proof recognised the value
+        // as a time form, so the column check still runs).
+        let cs = columns_for(&[("last_activity_at", StoreColumnType::Timestamptz, false)]);
+        let errs = check_filter("last_activty_at < now()", &cs, &params(&[]), (1, 1));
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].code, ProofErrorCode::T801UnknownColumn);
+    }
+
+    #[test]
+    fn scan_where_recognises_the_time_form_structurally() {
+        let p = scan_where("t < now() - interval '30 minutes'").unwrap();
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].column, "t");
+        assert_eq!(p[0].op, WhereOp::Lt);
+        assert_eq!(
+            p[0].value,
+            WhereValue::TimeNow {
+                offset: Some((TimeSign::Minus, 30, TimeUnit::Minute))
+            }
+        );
+        // bare now()
+        let p = scan_where("t >= now()").unwrap();
+        assert_eq!(p[0].value, WhereValue::TimeNow { offset: None });
     }
 }
