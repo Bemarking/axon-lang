@@ -116,6 +116,9 @@ pub mod advantage_witness;
 /// fidelity ≡ cosine theorem made executable + the `QuantKernelWitness` that
 /// fails closed (no advantage over the classical baseline).
 pub mod quant_witness;
+/// §Fase 69.d — the SECOND Advantage-Witness instance (transversality proof):
+/// retrieval / navigate via the `ranking_lift` metric over flat cosine retrieval.
+pub mod retrieval_witness;
 /// §ESK Fase 6 — Epistemic Security Kernel. Port of `axon/runtime/esk/`.
 pub mod esk;
 /// §Fase 51 — Proof-Carrying Code. apx/axonendpoint carry a portable,
