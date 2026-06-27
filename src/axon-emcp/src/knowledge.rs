@@ -1341,6 +1341,8 @@ Body prose.
             // §Fase 65 — effects execute structurally, independent of the
             // output mode (`navigate` is not LLM-conditioned).
             (ReferenceKind::Logic, "effect_execution_is_mode_invariant"),
+            // §Fase 69.a — the Advantage Witness transversal law.
+            (ReferenceKind::Logic, "no_unwitnessed_advantage"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1384,7 +1386,7 @@ Body prose.
         );
         assert_eq!(
             cat.reference_count_of(ReferenceKind::Logic),
-            4,
+            5,
             "logic family count drift"
         );
         assert_eq!(

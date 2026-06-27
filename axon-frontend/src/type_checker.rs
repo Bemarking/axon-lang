@@ -6122,9 +6122,12 @@ impl<'a> TypeChecker<'a> {
                     // A scheduled trigger with no handler is a no-op — almost
                     // always a mistake. The body is what runs each tick.
                     if node.body.is_empty() {
+                        // §Fase 52.b code; renumbered E0790 → E0792 to resolve the
+                        // collision with §69.a's witness well-formedness `axon-E0790`
+                        // (one code, one meaning).
                         self.emit(
                             format!(
-                                "axon-E0790 daemon '{}' cron listener '{}' has no \
+                                "axon-E0792 daemon '{}' cron listener '{}' has no \
                                  handler body — a scheduled trigger with no work \
                                  is a no-op; add a `{{ … }}` body with the steps \
                                  to run on each tick",

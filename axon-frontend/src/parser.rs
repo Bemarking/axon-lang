@@ -3547,7 +3547,7 @@ impl Parser {
     /// ```text
     /// quant { <flow steps> }
     /// quant(encoding: amplitude, observable: M, qubits: 10,
-    ///       depth: 4, bandwidth: 0.5, backend: quant_sim) { <flow steps> }
+    ///       depth: 4, bandwidth: 0.5, reupload: 3, backend: quant_sim) { <flow steps> }
     /// ```
     /// The bare form (the paper's example) leaves every attribute defaulted
     /// (`encoding = amplitude`, `effect = quant_sim`). The body is parsed into
@@ -3598,7 +3598,7 @@ impl Parser {
                         return Err(ParseError {
                             message: format!(
                                 "Unknown `quant` attribute `{other}` — expected one of \
-                                 encoding, observable, qubits, depth, bandwidth, backend"
+                                 encoding, observable, qubits, depth, bandwidth, reupload, backend"
                             ),
                             line: self.current().line,
                             column: self.current().column,

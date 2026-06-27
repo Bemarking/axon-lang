@@ -140,6 +140,14 @@ fn unknown_quant_attribute_is_rejected() {
         err.contains("Unknown `quant` attribute") && err.contains("spin"),
         "error should name the offending attribute, got: {err}"
     );
+    // The "expected one of …" help text must enumerate EVERY attribute the
+    // parser actually accepts — including `reupload` (§Fase 69.c). A drift here
+    // is exactly the brief #29 failure mode: a parser that accepts an attribute
+    // its own diagnostic denies exists.
+    assert!(
+        err.contains("reupload"),
+        "the unknown-attribute help must list `reupload` (parser accepts it), got: {err}"
+    );
 }
 
 /// A bare `quant {}` serializes with the optional attributes serde-elided

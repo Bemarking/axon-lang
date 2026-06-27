@@ -170,6 +170,37 @@ Every mutation flows through:
    declared `pix` chain (if one is bound).
 5. **Audit row** — `axonstore:<name>:<op>` with full context.
 
+## Reading the store — `retrieve` (operations)
+
+A declared store is **read** with a flow-body `retrieve` block. Beyond
+the `where:` filter and the `as:` result binding, two §Fase 67.b clauses
+bound and order the result, and the §67.a time-aware `where:` admits
+`now() ± interval`:
+
+```axon
+flow StaleSessions() -> Unit {
+    retrieve Sessions {
+        where:    "last_activity_at < now() - interval '30 minutes'"
+        order_by: "last_activity_at desc"
+        limit:    100
+        as:       stale
+    }
+}
+```
+
+| Clause | Form | Meaning | Bad-input error |
+|---|---|---|---|
+| `where:` | string | row filter; time-aware forms are `now()` and `now() ± interval '<n> <unit>'` (§67.a) | **`axon-T806`** — malformed `now() ± interval` or a non-temporal column |
+| `order_by:` | string `"col [asc\|desc], …"` | sort terms; column existence proven when the store has an inline schema | **`axon-T807`** — empty term, bad identifier, bad direction, or unknown column |
+| `limit:` | `<u32>` or `${param}` | row cap | **`axon-T808`** — not a non-negative integer (or a non-integer parameter) |
+| `as:` | identifier | binds the result rows | — |
+
+These compile-time proofs (`axon check`) mirror the runtime
+`filter::{parse_order_by, parse_limit}` in lockstep (cross-crate parity
+test), so a bounded/ordered `retrieve` that type-checks is one the
+runtime executes identically. Iterate the rows with
+`for s in <retrieve> { … }` and project columns as `${s.<col>}` (§67.g).
+
 ## What this primitive is NOT
 
 - **Not a generic ORM.** AXON does not generate models from

@@ -10,7 +10,8 @@ grammar: |
   quant(encoding: amplitude,        # `amplitude` (default) | `angle`
         observable: <ObservableName>, # the Hermitian operator to measure
         qubits: <n>, depth: <d>,    # all optional
-        bandwidth: <γ>, backend: quant_sim) {
+        bandwidth: <γ>, reupload: <L>, # `reupload: L≥2` interleaves the
+        backend: quant_sim) {         #   data encoding L times (§Fase 69.c)
       let surrogate = <continuous-carrier>   # bind the carrier (a Tensor)
       yield surrogate                        # collapse → the ⟨observable⟩ expectation
   }
@@ -85,7 +86,27 @@ flow Classify(embedding: Tensor) -> String {
   constraint.
 
 The other header attributes (all optional, order-free, in the parens):
-`observable:`, `qubits:`, `depth:`, `bandwidth:`, `backend:`.
+`observable:`, `qubits:`, `depth:`, `bandwidth:`, `reupload:`, `backend:`.
+
+### `reupload:` — data re-uploading layers (header attribute, §Fase 69.c)
+
+`reupload: L` interleaves the carrier encoding **L times** through the
+circuit instead of once. `L = 1` (the default when omitted) is plain
+single-shot encoding; `L ≥ 2` is the **only provable escape from the
+amplitude+Pauli quadratic kernel bound** — each re-upload lets the
+learned feature map reach frequencies a single encoding cannot. `L < 1`
+is `axon-E0784`. This is the lever an adopter pulls when the
+single-encoding feature map is too low-frequency to separate their data:
+
+```axon
+flow Reupload(embedding: Tensor) -> String {
+    quant(encoding: angle, reupload: 3, qubits: 2) {
+        let surrogate = embedding
+        yield surrogate
+    }
+    return "done"
+}
+```
 
 ### `observable:` — the measurement (header attribute)
 
@@ -128,8 +149,9 @@ shielded, and VRAM-quota'd per tenant.
   continuous tensor (a discrete value is rejected).
 - **`axon-E0783`** — capacity: `n > 10` on the OSS simulator is a
   compile error (enterprise lifts it).
-- **`axon-E0784`** — the `observable:` must resolve to a declared
-  observable.
+- **`axon-E0784`** — header validity: the `observable:` must resolve to a
+  declared observable, and `qubits`/`depth`/`bandwidth`/`reupload` must be
+  in range (`reupload >= 1`, §Fase 69.c).
 - **`axon-E0787`** — `yield` outside a `quant` block is rejected.
 - **`axon-W005`** — a circuit-depth advisory (soft barren-plateau note).
 

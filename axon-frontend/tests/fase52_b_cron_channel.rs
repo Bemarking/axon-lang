@@ -4,7 +4,7 @@
 //! (not a legacy string topic). The type-checker validates the 5-field cron
 //! expression (so a schedule that type-checks is one the §52.c TimerSource can
 //! fire), rejects a malformed schedule (`axon-E0789`), and rejects a scheduled
-//! trigger with no handler body (`axon-E0790`). It must NOT emit the Fase-13
+//! trigger with no handler body (`axon-E0792`). It must NOT emit the Fase-13
 //! string-topic deprecation warning for a cron channel.
 
 use axon_frontend::lexer::Lexer;
@@ -63,16 +63,21 @@ fn cron_with_wrong_field_count_raises_e0789() {
 }
 
 #[test]
-fn cron_listener_without_a_body_raises_e0790() {
-    // A scheduled trigger with no handler is a no-op.
+fn cron_listener_without_a_body_raises_e0792() {
+    // A scheduled trigger with no handler is a no-op. (E0792 since the §69.a
+    // witness well-formedness check now owns E0790 — one code, one meaning.)
     let src = "daemon SessionCleaner {\n\
                  goal: \"x\"\n\
                  listen \"cron:*/5 * * * *\" as tick\n\
                }";
     let (errs, _) = check(src);
     assert!(
-        has(&errs, "axon-E0790"),
-        "a cron listener with no body must raise E0790: {errs:?}"
+        has(&errs, "axon-E0792"),
+        "a cron listener with no body must raise E0792: {errs:?}"
+    );
+    assert!(
+        !has(&errs, "axon-E0790"),
+        "must NOT collide with witness E0790: {errs:?}"
     );
 }
 
