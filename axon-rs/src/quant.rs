@@ -250,6 +250,46 @@ impl ReferenceSimulator {
         }
     }
 
+    /// §Fase 69.c — **data re-uploading**: interleave an angle-encoding of `x`
+    /// with a fixed entangling layer, `layers` times. For `layers ≥ 2` the data
+    /// `x` re-enters the circuit, so `⟨ψ(x)|ψ(y)⟩` is NO LONGER a quadratic form in
+    /// `x` (it becomes a Fourier series in the data — Schuld 2021,
+    /// `arXiv:2008.08605`). This is the ONLY provable escape from the amplitude+Pauli
+    /// quadratic bound (§69.b / the Havlíček route). `layers = 1` reduces to a
+    /// single angle layer (no re-uploading). HONEST: escaping the bound does NOT
+    /// guarantee advantage on classical text — the §69.a/b Advantage Witness still
+    /// gates it.
+    pub fn reupload_encode(&self, x: &[f64], layers: usize) -> Result<StateVector, QuantError> {
+        let n = x.len();
+        if n == 0 {
+            return Err(QuantError::DimensionMismatch {
+                detail: "empty input vector".to_string(),
+            });
+        }
+        if n > self.cap {
+            return Err(QuantError::CapacityExceeded { requested: n, cap: self.cap });
+        }
+        // Start in |0…0⟩.
+        let mut amps = vec![C::ZERO; 1usize << n];
+        amps[0] = C::real(1.0);
+        for _ in 0..layers.max(1) {
+            // Data re-upload layer: Ry(xⱼ) on each qubit (the data enters here).
+            for (q, &angle) in x.iter().enumerate() {
+                let ry = [
+                    [C::real((angle / 2.0).cos()), C::real(-(angle / 2.0).sin())],
+                    [C::real((angle / 2.0).sin()), C::real((angle / 2.0).cos())],
+                ];
+                Self::apply_1q(&mut amps, q, ry);
+            }
+            // Fixed entangling layer (the data-independent "trainable" block; the
+            // reference uses a deterministic CNOT chain so the kernel is reproducible).
+            for q in 0..n.saturating_sub(1) {
+                Self::apply_cnot(&mut amps, q, q + 1);
+            }
+        }
+        Ok(StateVector { n, amps })
+    }
+
     /// Apply CNOT(control `c`, target `t`).
     fn apply_cnot(amps: &mut [C], c: usize, t: usize) {
         let cb = 1usize << c;
@@ -537,6 +577,36 @@ mod tests {
         let e0 = sim.encode(&[1.0, 0.0], EncodingScheme::Amplitude).unwrap();
         let e1 = sim.encode(&[0.0, 1.0], EncodingScheme::Amplitude).unwrap();
         assert!(approx(sim.kernel(&e0, &e1).unwrap(), 0.0));
+    }
+
+    #[test]
+    fn reupload_changes_the_feature_map_and_stays_a_valid_kernel() {
+        // §Fase 69.c — data re-uploading escapes the single-layer (quadratic)
+        // feature map: L=2 produces a DIFFERENT, higher-frequency kernel than L=1
+        // (the Fourier-feature gain). Both remain valid fidelity kernels.
+        let sim = ReferenceSimulator::new();
+        let x = [0.5, 1.2, 0.3];
+        let y = [1.0, 0.2, 0.9];
+        let k1 = sim
+            .kernel(
+                &sim.reupload_encode(&x, 1).unwrap(),
+                &sim.reupload_encode(&y, 1).unwrap(),
+            )
+            .unwrap();
+        let k2 = sim
+            .kernel(
+                &sim.reupload_encode(&x, 2).unwrap(),
+                &sim.reupload_encode(&y, 2).unwrap(),
+            )
+            .unwrap();
+        assert!(
+            (k1 - k2).abs() > 1e-3,
+            "re-uploading must change the kernel (escape the single-layer bound): k1={k1}, k2={k2}"
+        );
+        // Valid fidelity kernel: self-overlap = 1, range [0, 1].
+        let sx = sim.reupload_encode(&x, 2).unwrap();
+        assert!(approx(sim.kernel(&sx, &sx).unwrap(), 1.0));
+        assert!(k2 >= -1e-9 && k2 <= 1.0 + 1e-9);
     }
 
     #[test]

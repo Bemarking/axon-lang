@@ -1361,6 +1361,10 @@ pub struct IRQuant {
     /// Projected-kernel bandwidth γ (D7); `None` = backend default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bandwidth: Option<f64>,
+    /// §Fase 69.c — data re-uploading layers L (`None`/`1` = no re-uploading).
+    /// `skip_serializing_if` keeps a non-re-uploading block's IR byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reupload: Option<i64>,
     /// Algebraic-effect backend tag (`quant_sim` | `qpu_native`).
     pub effect: String,
     /// Nested flow-body IR (recursively lowered).
