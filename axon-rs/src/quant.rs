@@ -459,6 +459,24 @@ impl QuantBackend for ReferenceSimulator {
     }
 }
 
+impl ReferenceSimulator {
+    /// §Fase 69.d — multi-copy **polynomial kernel** `(xᵀy)^d`. Loading `d` copies
+    /// of the state gives `⟨ψ(x)|ψ(y)⟩^d = (xᵀy)^d` for amplitude encoding (Schuld
+    /// & Killoran). It reaches *beyond* cosine (degree 1) — but it is still a
+    /// CLASSICAL polynomial kernel (no quantum advantage), so like every fixed
+    /// amplitude map it is gated by the §69.a/b Advantage Witness. `degree = 0` is
+    /// the constant kernel `1`; `degree = 1` is the linear/cosine kernel `xᵀy`.
+    pub fn polynomial_kernel(a: &StateVector, b: &StateVector, degree: u32) -> Result<f64, QuantError> {
+        if a.n != b.n {
+            return Err(QuantError::DimensionMismatch {
+                detail: format!("kernel operands span {} vs {} qubits", a.n, b.n),
+            });
+        }
+        // Real amplitudes ⇒ the inner product is real (= xᵀy); raise to the degree.
+        Ok(Self::inner(&a.amps, &b.amps).re.powi(degree as i32))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -607,6 +625,18 @@ mod tests {
         let sx = sim.reupload_encode(&x, 2).unwrap();
         assert!(approx(sim.kernel(&sx, &sx).unwrap(), 1.0));
         assert!(k2 >= -1e-9 && k2 <= 1.0 + 1e-9);
+    }
+
+    #[test]
+    fn polynomial_kernel_is_dot_to_the_degree() {
+        // §Fase 69.d — `(xᵀy)^d`. x=[0.6,0.8], y=[1,0] ⇒ xᵀy = 0.6.
+        let sim = ReferenceSimulator::new();
+        let a = sim.encode(&[0.6, 0.8], EncodingScheme::Amplitude).unwrap();
+        let b = sim.encode(&[1.0, 0.0], EncodingScheme::Amplitude).unwrap();
+        assert!(approx(ReferenceSimulator::polynomial_kernel(&a, &b, 0).unwrap(), 1.0));
+        assert!(approx(ReferenceSimulator::polynomial_kernel(&a, &b, 1).unwrap(), 0.6));
+        assert!(approx(ReferenceSimulator::polynomial_kernel(&a, &b, 2).unwrap(), 0.36));
+        assert!(approx(ReferenceSimulator::polynomial_kernel(&a, &b, 3).unwrap(), 0.216));
     }
 
     #[test]
