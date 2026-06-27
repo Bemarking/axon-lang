@@ -181,7 +181,7 @@ async fn fuzz_listen_never_panics() {
             channel: lcg.ascii_with_random_len(15),
             channel_is_ref: lcg.boolean(),
             event_alias: lcg.ascii_with_random_len(10),
-        });
+            body: Vec::new(),        });
         let outcome = dispatch_node(&node, &mut ctx).await;
         assert_no_panic(&format!("listen iter={iter}"), &outcome);
     }
@@ -255,7 +255,7 @@ async fn fuzz_cancel_propagation_across_algebraic_handlers() {
                 channel: "c".into(),
                 channel_is_ref: false,
                 event_alias: "e".into(),
-            }),
+                body: Vec::new(),            }),
             _ => IRFlowNode::DaemonStep(IRDaemonStepNode {
                 node_type: "daemon_step",
                 source_line: 0,
@@ -324,7 +324,7 @@ async fn fuzz_algebraic_nested_inside_orchestration() {
                 channel: "ch".into(),
                 channel_is_ref: false,
                 event_alias: format!("alias_{iter}"),
-            }),
+                body: Vec::new(),            }),
             _ => IRFlowNode::DaemonStep(IRDaemonStepNode {
                 node_type: "daemon_step",
                 source_line: 0,
