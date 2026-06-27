@@ -91,3 +91,12 @@ jobs:
         # persist into edges { to_id: "${e.to_id}" } }` writes the real uuid, not
         # the literal `${e.to_id}`. Owns its own table (`fase66_1_edges`).
         run: cargo test --test fase66_1_loop_persist_pg_integration -- --nocapture
+
+      - name: Fase 67.g — for s in <retrieve result> persists RESOLVED row columns
+        working-directory: axon-rs
+        # The kivi brief #35 repro end-to-end: a `retrieve … as: to_hibernate`
+        # then `for s in to_hibernate { persist into ltm { tenant_id:
+        # "${s.tenant_id}" } }` writes the real uuid, not the literal — proving
+        # the loop unwraps a retrieve ENVELOPE's rows, not just a step array.
+        # Owns its own tables (`fase67g_*`).
+        run: cargo test --test fase67_g_retrieve_loop_persist_pg_integration -- --nocapture

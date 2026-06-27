@@ -347,19 +347,53 @@ fn resolve_iterable(iterable: &str, ctx: &DispatchCtx) -> Vec<String> {
     // element yields its inner text, and a scalar its compact form. Anything
     // that is NOT a JSON array (a plain string, a comma list) falls back to the
     // pre-§66 comma-split — byte-identical for every existing `for x in <list>`.
-    if let Ok(serde_json::Value::Array(elems)) = serde_json::from_str::<serde_json::Value>(&raw) {
-        return elems
-            .into_iter()
-            .map(|v| match v {
-                serde_json::Value::String(s) => s,
-                serde_json::Value::Object(_) | serde_json::Value::Array(_) => v.to_string(),
-                other => other.to_string(),
-            })
-            .collect();
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(serde_json::Value::Array(elems)) => iterable_elements(elems),
+        // §Fase 67.g (kivi brief #35) — `for s in <retrieve … as: X>` iterates
+        // the ROWS of a retrieve. Unlike a step's `List<T>` output (a bare JSON
+        // array), `retrieve` binds an EPISTEMIC ENVELOPE object — `{ "taint":
+        // …, "confidence_floor": …, "rows": [ {col:val,…}, … ] }` (see
+        // `store::epistemic::retrieve_envelope`). Pre-fix this object failed the
+        // array check above, fell through to the comma-split, and shredded the
+        // envelope JSON into garbage fragments — so every `${s.col}` missed and
+        // reached `persist`/`where:` verbatim (the brief #35 repro: `${s.tenant_id}`
+        // an UNRESOLVED ref the uuid column rejected). We unwrap the envelope's
+        // `rows` and iterate them EXACTLY like a step's array output, so `${s.col}`
+        // resolves identically in every position (persist value, `where:`, mutate)
+        // — the §27/§28 fix, now for store rows whose shape comes from the
+        // axonstore schema, not a declared `type`. The signature is precise (a
+        // `taint` string + a `rows` array — the retrieve-envelope contract), so an
+        // ordinary object output is NOT mistaken for an envelope.
+        Ok(serde_json::Value::Object(map))
+            if map.get("taint").map(|t| t.is_string()).unwrap_or(false) =>
+        {
+            match map.get("rows") {
+                Some(serde_json::Value::Array(rows)) => iterable_elements(rows.clone()),
+                _ => Vec::new(),
+            }
+        }
+        _ => raw
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
     }
-    raw.split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+}
+
+/// Re-serialise each JSON element of an iterable into the per-loop-var string
+/// binding: an object/array element to its compact JSON (so the §66 dotted
+/// resolver can parse it back for `${var.field}`), a string element to its
+/// inner text, a scalar to its compact form. Shared by the bare-array (step
+/// `List<T>` output) and the retrieve-envelope `rows` (§67.g) paths so both
+/// bind loop vars identically.
+fn iterable_elements(elems: Vec<serde_json::Value>) -> Vec<String> {
+    elems
+        .into_iter()
+        .map(|v| match v {
+            serde_json::Value::String(s) => s,
+            serde_json::Value::Object(_) | serde_json::Value::Array(_) => v.to_string(),
+            other => other.to_string(),
+        })
         .collect()
 }
 
@@ -1003,6 +1037,54 @@ mod tests {
             crate::exec_context::interpolate_vars("${e.to_id}", &ctx.let_bindings),
             "b"
         );
+    }
+
+    #[test]
+    fn resolve_iterable_unwraps_a_retrieve_envelope_into_its_rows() {
+        // §Fase 67.g (kivi brief #35): `for s in to_hibernate` where
+        // `to_hibernate` is a `retrieve … as: to_hibernate` binding. A retrieve
+        // binds an EPISTEMIC ENVELOPE object (not a bare array), so pre-fix the
+        // object failed the array check, fell to the comma-split, and shredded
+        // the JSON → every `${s.col}` reached `persist`/`where:` verbatim. Now we
+        // unwrap `rows` and iterate row objects exactly like a step's array
+        // output, so `${s.<col>}` resolves identically (the #27/#28 fix, for
+        // store rows whose shape comes from the axonstore schema, not a `type`).
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert(
+            "to_hibernate".to_string(),
+            r#"{"taint":"untrusted","confidence_floor":null,"trusted_rows":2,"below_floor_filtered":0,"rows":[{"tenant_id":"t-1","session_id_generic":"s-1","conversation_id":"c-1"},{"tenant_id":"t-2","session_id_generic":"s-2","conversation_id":"c-2"}]}"#.to_string(),
+        );
+        let items = resolve_iterable("to_hibernate", &ctx);
+        assert_eq!(items.len(), 2, "two rows, not envelope comma-shards");
+        // Each item is the row object — `${s.<col>}` resolves in EVERY position
+        // (persist value, `where:`, mutate all route through interpolate_vars).
+        ctx.let_bindings.insert("s".to_string(), items[0].clone());
+        assert_eq!(
+            crate::exec_context::interpolate_vars("${s.tenant_id}", &ctx.let_bindings),
+            "t-1",
+            "the brief #35 repro: `${{s.tenant_id}}` must resolve, not stay literal"
+        );
+        assert_eq!(
+            crate::exec_context::interpolate_vars(
+                "session_id == '${s.session_id_generic}'",
+                &ctx.let_bindings
+            ),
+            "session_id == 's-1'",
+            "and inside a sub-`where:` clause string too"
+        );
+    }
+
+    #[test]
+    fn resolve_iterable_empty_retrieve_envelope_yields_zero_iterations() {
+        // A retrieve that matched 0 rows binds an envelope with an empty `rows`
+        // array — the `for` must run ZERO times (not one comma-shard iteration
+        // over the envelope scaffolding). The §C/Q3 honest-empty contract.
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert(
+            "empty".to_string(),
+            r#"{"taint":"untrusted","confidence_floor":null,"trusted_rows":0,"below_floor_filtered":0,"rows":[]}"#.to_string(),
+        );
+        assert!(resolve_iterable("empty", &ctx).is_empty());
     }
 
     #[test]
