@@ -103,6 +103,10 @@ pub mod backends;
 /// backend (request → axonendpoint `backend:` → server default →
 /// environment-available `auto` → honest failure).
 pub mod backend_resolution;
+/// §Fase 68.c — pure capability-aware model resolution: a step's
+/// `requires_context:` + a backend's §68.a model catalog → the smallest model
+/// that fits, or honest fail-closed (never a too-small model).
+pub mod model_resolution;
 /// §ESK Fase 6 — Epistemic Security Kernel. Port of `axon/runtime/esk/`.
 pub mod esk;
 /// §Fase 51 — Proof-Carrying Code. apx/axonendpoint carry a portable,
