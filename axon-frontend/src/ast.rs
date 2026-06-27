@@ -130,6 +130,10 @@ pub enum Declaration {
     /// §Fase 51.c.2 — a Pauli-sum observable `M = Σ cₖ Pₖ` that a `quant`
     /// block measures against (paper §3.2; plan D5).
     Observable(ObservableDefinition),
+    /// §Fase 69.a — an Advantage Witness: a machine-checkable proof obligation
+    /// that a primitive's `claim` beats a cheaper `baseline` by a `metric` above
+    /// a `threshold` on real `data` (doctrine `axon://logic/no_unwitnessed_advantage`).
+    Witness(WitnessDefinition),
     /// Tier 3+ declarations parsed structurally (balanced braces, no detailed AST).
     Generic(GenericDeclaration),
 }
@@ -1951,6 +1955,33 @@ pub struct ObservableDefinition {
     /// Fase 14.b — leading comment trivia.
     pub leading_trivia: Vec<crate::tokens::Trivia>,
     /// Fase 14.b — trailing comment trivia.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// §Fase 69.a — `witness <Name> { claim: <ref>  against: <baseline>
+/// metric: <metric>  threshold: <ε>  data: <source> }`. The Advantage-Witness
+/// proof obligation. The compiler proves it WELL-FORMED (§69.a, `axon-E0790`);
+/// the advantage VALUE is computed on real `data` at deploy/runtime and carried
+/// as a verdict (§69.b+). Fields are order-free `key: value` pairs.
+#[derive(Debug)]
+pub struct WitnessDefinition {
+    pub name: String,
+    /// The primitive instance whose advantage is claimed (e.g. an `observable` /
+    /// `corpus` name, or a quant kernel reference).
+    pub claim: String,
+    /// The cheaper alternative the claim must beat (a closed-catalog baseline
+    /// like `cosine` / `flat_retrieval` / `single_shot`, or a reference).
+    pub baseline: String,
+    /// How advantage is measured — a closed-catalog metric (`geometric_difference`,
+    /// `kernel_target_alignment`, `ranking_lift`, `outcome_lift`).
+    pub metric: String,
+    /// The minimum advantage that justifies the cost (ε ≥ 0).
+    pub threshold: f64,
+    /// The real-data source the witness is evaluated on (a ref to an axonstore /
+    /// corpus / labelled set). Required — advantage cannot be claimed in the abstract.
+    pub data: String,
+    pub loc: Loc,
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
     pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 

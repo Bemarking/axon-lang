@@ -545,6 +545,7 @@ mod tests {
             channels: vec![],
             sockets: vec![],
             observables: vec![],
+            witnesses: vec![],
             effects: vec![],
         };
 
@@ -614,6 +615,7 @@ mod tests {
             channels: vec![],
             sockets: vec![],
             observables: vec![],
+            witnesses: vec![],
             effects: vec![],
         };
 
@@ -685,6 +687,7 @@ mod tests {
             channels: vec![],
             sockets: vec![],
             observables: vec![],
+            witnesses: vec![],
             effects: vec![],
         };
 

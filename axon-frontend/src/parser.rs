@@ -226,6 +226,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Witness(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Generic(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -2001,6 +2005,9 @@ impl Parser {
 
             // ── §Fase 51.c.2 — Pauli-sum observable ────────────
             TokenType::Observable => self.parse_observable().map(Declaration::Observable),
+
+            // ── §Fase 69.a — Advantage Witness ──────────────────
+            TokenType::Witness => self.parse_witness().map(Declaration::Witness),
 
             // ── §λ-L-E Fase 5 — Cognitive immune system ─────────
             TokenType::Immune => self.parse_immune().map(Declaration::Immune),
@@ -6018,6 +6025,49 @@ impl Parser {
                         loc: term_loc,
                     });
                 }
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 69.a — Parse:
+    /// `witness Name { claim: <ref>  against: <baseline>  metric: <metric>
+    ///                 threshold: <ε>  data: <source> }`.
+    /// Order-free `key: value` pairs. `claim`/`against`/`metric`/`data` are bare
+    /// identifiers (a ref or a closed-catalog keyword); `threshold` is a number.
+    /// Well-formedness (known metric, threshold range, required fields) is the
+    /// type-checker's job (`axon-E0790`).
+    fn parse_witness(&mut self) -> Result<WitnessDefinition, ParseError> {
+        let tok = self.consume(TokenType::Witness)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = WitnessDefinition {
+            name,
+            claim: String::new(),
+            baseline: String::new(),
+            metric: String::new(),
+            threshold: 0.0,
+            data: String::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key_tok = self.consume_any_ident_or_kw()?;
+            self.consume(TokenType::Colon)?;
+            match key_tok.value.as_str() {
+                "claim" => node.claim = self.consume_any_ident_or_kw()?.value,
+                // `against` is the baseline; `against` is not a reserved keyword,
+                // so it lexes as an identifier key here.
+                "against" => node.baseline = self.consume_any_ident_or_kw()?.value,
+                "metric" => node.metric = self.consume_any_ident_or_kw()?.value,
+                "threshold" => node.threshold = self.consume_number()?,
+                "data" => node.data = self.consume_any_ident_or_kw()?.value,
                 _ => self.skip_value(),
             }
         }

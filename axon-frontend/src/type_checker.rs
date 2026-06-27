@@ -959,6 +959,15 @@ impl<'a> TypeChecker<'a> {
                         n.loc.clone(),
                     ));
                 }
+                // §Fase 69.a — register the Advantage Witness by name.
+                Declaration::Witness(n) => {
+                    registrations.push((
+                        n.name.clone(),
+                        "witness".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
+                }
                 Declaration::Generic(n) => {
                     if !n.name.is_empty() {
                         registrations.push((
@@ -1133,6 +1142,7 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Topology(n) => self.check_topology(n),
                 Declaration::Socket(n) => self.check_socket(n),
                 Declaration::Observable(n) => self.check_observable(n),
+                Declaration::Witness(n) => self.check_witness(n),
                 Declaration::Immune(n) => self.check_immune(n),
                 Declaration::Reflex(n) => self.check_reflex(n),
                 Declaration::Heal(n) => self.check_heal(n),
@@ -5186,6 +5196,75 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// §Fase 69.a — `axon-E0790`: well-formedness of an Advantage Witness. The
+    /// compiler proves the obligation is STATED correctly (a known metric, a valid
+    /// threshold, the required references present); the advantage VALUE is computed
+    /// on real `data` at deploy/runtime (§69.b+) — you cannot claim advantage in
+    /// the abstract, so `data:` is required here. The metric catalog is closed
+    /// ([`WITNESS_METRICS`], mirrored in `axon::advantage_witness`, parity-pinned).
+    fn check_witness(&mut self, n: &WitnessDefinition) {
+        if n.claim.is_empty() {
+            self.emit(
+                format!(
+                    "axon-E0790 witness '{}' has no `claim:` — name the primitive whose \
+                     advantage you are witnessing.",
+                    n.name
+                ),
+                &n.loc,
+            );
+        }
+        if n.baseline.is_empty() {
+            self.emit(
+                format!(
+                    "axon-E0790 witness '{}' has no `against:` baseline — advantage is always \
+                     relative to a cheaper alternative (e.g. `cosine`).",
+                    n.name
+                ),
+                &n.loc,
+            );
+        }
+        if n.metric.is_empty() {
+            self.emit(
+                format!(
+                    "axon-E0790 witness '{}' has no `metric:` — choose one of {{{}}}.",
+                    n.name,
+                    WITNESS_METRICS.join(", ")
+                ),
+                &n.loc,
+            );
+        } else if !WITNESS_METRICS.contains(&n.metric.as_str()) {
+            self.emit(
+                format!(
+                    "axon-E0790 witness '{}': metric '{}' is not in the closed catalog {{{}}}.",
+                    n.name,
+                    n.metric,
+                    WITNESS_METRICS.join(", ")
+                ),
+                &n.loc,
+            );
+        }
+        if !(n.threshold.is_finite() && n.threshold >= 0.0) {
+            self.emit(
+                format!(
+                    "axon-E0790 witness '{}': threshold must be a finite value ≥ 0 (the minimum \
+                     advantage that justifies the cost), got {}.",
+                    n.name, n.threshold
+                ),
+                &n.loc,
+            );
+        }
+        if n.data.is_empty() {
+            self.emit(
+                format!(
+                    "axon-E0790 witness '{}' has no `data:` — advantage cannot be claimed in the \
+                     abstract; it is witnessed on a real-data source.",
+                    n.name
+                ),
+                &n.loc,
+            );
+        }
+    }
+
     /// §Fase 51.c — semantic validation of the `quant` block **header**: the
     /// encoding-scheme attribute typing + closed-set checks (D1/D2/D9), plus
     /// the D2 depth-trade-off compiler note. The Pauli-sum `observable:`
@@ -6805,6 +6884,24 @@ fn build_w004_message(tool_name: &str, params: &[(String, String, bool)]) -> Str
 /// §Fase 68.e — warning code for `apply: <Compute>`, a model-selection no-op.
 /// W005 is held by the quant-encoding advisory (§51.b); this is the next slot.
 pub const W006_CODE: &str = "axon-W006";
+
+/// §Fase 69.a — the CLOSED catalog of Advantage-Witness metrics. A `witness`'s
+/// `metric:` must be one of these (`axon-E0790`); each names how advantage over a
+/// baseline is measured for some primitive domain. Mirrored in
+/// `axon::advantage_witness::WITNESS_METRICS` (the runtime evaluator), parity-pinned
+/// by `axon-rs/tests/fase69_a_witness_metric_parity.rs` (the §67.a.2 two-
+/// representation discipline). Extending the catalog is a deliberate PR (the §53
+/// closed-catalog extension discipline), never an open set.
+pub const WITNESS_METRICS: &[&str] = &[
+    // quant kernels (§69.b): geometric difference g(K_classical ‖ K_quantum).
+    "geometric_difference",
+    // quant kernels (§69.b): centered kernel-target alignment vs the baseline.
+    "kernel_target_alignment",
+    // retrieval / navigate (§69.d): ranking lift over flat cosine retrieval.
+    "ranking_lift",
+    // deliberation primitives: outcome lift over a single-shot baseline.
+    "outcome_lift",
+];
 
 /// §Fase 68.f — the largest context window any canonical model offers (tokens).
 /// A `requires_context:` above this can never be satisfied → `axon-T809`. This is

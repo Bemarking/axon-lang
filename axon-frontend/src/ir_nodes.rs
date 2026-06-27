@@ -98,6 +98,12 @@ pub struct IRProgram {
     /// `quant(observable: …)` against the AST symbol table, not this field.
     #[serde(skip)]
     pub observables: Vec<IRObservable>,
+    /// §Fase 69.a — Advantage-Witness declarations. `skip_serializing_if = empty`
+    /// keeps a witness-less program's IR JSON byte-identical (zero IR-SHA drift,
+    /// the §52/§67 pattern); when present it rides the IR to the enterprise
+    /// deploy/runtime evaluator (§69.b+).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub witnesses: Vec<IRWitness>,
     /// §Fase 23 — algebraic effect declarations (compiled).
     /// Each declared effect persists into IR so axon-rs can build the
     /// per-effect operation table at startup. The CPS state graph for
@@ -164,6 +170,7 @@ impl IRProgram {
             channels: Vec::new(),
             sockets: Vec::new(),
             observables: Vec::new(),
+            witnesses: Vec::new(),
             effects: Vec::new(),
         }
     }
@@ -196,6 +203,23 @@ pub struct IRObservable {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub qubits: Option<i64>,
     pub terms: Vec<IRPauliTerm>,
+}
+
+/// §Fase 69.a — IR for an Advantage Witness. The deploy/runtime evaluator reads
+/// `metric` + `threshold` + `baseline`, computes the metric over `data`, and
+/// emits the verdict; a `holds == false` verdict is the honest fail-closed
+/// signal (`axon-W007`/`W008`). `claim`/`data` are references resolved per domain.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRWitness {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub claim: String,
+    pub baseline: String,
+    pub metric: String,
+    pub threshold: f64,
+    pub data: String,
 }
 
 // ── §Fase 23 — Algebraic effect declarations ─────────────────────────────────

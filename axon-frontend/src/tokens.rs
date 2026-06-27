@@ -178,6 +178,10 @@ pub enum TokenType {
     // `M = Σ cₖ Pₖ` (real coeffs × Pauli strings ⇒ Hermitian by construction)
     // that a `quant` block measures against.
     Observable,
+    // `witness` (§Fase 69.a) — top-level Advantage-Witness declaration: a proof
+    // obligation that a primitive's `claim` beats a cheaper `baseline` by a
+    // `metric` above a `threshold` on real `data` (axon://logic/no_unwitnessed_advantage).
+    Witness,
     // `yield` (§Fase 51.d.2) — the measurement point inside a `quant` block:
     // collapses the evolved amplitudes back to classical silicon. The effect
     // operation whose resolution is a one-shot delimited continuation.
@@ -487,6 +491,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "quant" => TokenType::Quant,
         // `observable` (§Fase 51.c.2) — top-level Pauli-sum declaration.
         "observable" => TokenType::Observable,
+        // `witness` (§Fase 69.a) — Advantage-Witness declaration.
+        "witness" => TokenType::Witness,
         // `yield` (§Fase 51.d.2) — quant measurement point.
         "yield" => TokenType::Yield,
         "emit" => TokenType::Emit,
@@ -572,6 +578,8 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             | TokenType::Socket
             // §Fase 51.c.2 — Pauli-sum observable declaration
             | TokenType::Observable
+            // §Fase 69.a — Advantage-Witness declaration
+            | TokenType::Witness
     )
 }
 
