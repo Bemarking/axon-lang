@@ -3563,6 +3563,7 @@ impl Parser {
             qubits: None,
             depth: None,
             bandwidth: None,
+            reupload: None,
             // D1/D9 default backend: the CPU simulator effect. `qpu_native` is
             // opt-in via `backend: qpu_native`.
             effect: "quant_sim".to_string(),
@@ -3589,6 +3590,8 @@ impl Parser {
                     "qubits" => block.qubits = Some(self.consume_number()? as i64),
                     "depth" => block.depth = Some(self.consume_number()? as i64),
                     "bandwidth" => block.bandwidth = Some(self.consume_number()?),
+                    // §Fase 69.c — data re-uploading layers.
+                    "reupload" => block.reupload = Some(self.consume_number()? as i64),
                     // `backend:` selects the algebraic-effect tag (D1/D9).
                     "backend" => block.effect = self.consume_any_ident_or_kw()?.value,
                     other => {

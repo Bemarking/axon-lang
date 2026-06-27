@@ -5372,6 +5372,18 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
+        // §Fase 69.c — re-uploading layers must be ≥ 1 (1 = no re-uploading).
+        if let Some(r) = q.reupload {
+            if r < 1 {
+                self.emit(
+                    format!(
+                        "axon-E0784 quant block in flow '{flow_name}': reupload must be >= 1 \
+                         (1 = no re-uploading; >= 2 interleaves the data encoding L times), got {r}."
+                    ),
+                    &q.loc,
+                );
+            }
+        }
     }
 
     /// §Fase 51.b — enforce the **Continuous Type Invariant** over a `quant`

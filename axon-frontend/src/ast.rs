@@ -1914,6 +1914,14 @@ pub struct QuantBlock {
     /// `bandwidth:` — the projected-quantum-kernel bandwidth γ (D7). `None` =
     /// backend default.
     pub bandwidth: Option<f64>,
+    /// §Fase 69.c — `reupload:` L, the number of DATA RE-UPLOADING layers. `None`
+    /// or `1` = no re-uploading (the data enters once → a quadratic form, provably
+    /// classical for amplitude+Pauli, §69.b). `L ≥ 2` interleaves the data
+    /// encoding with entangling layers L times — the ONLY provable escape from the
+    /// quadratic bound (Havlíček-style; canonical with `encoding: angle`). The
+    /// resulting kernel must still pass an Advantage Witness to be deployed
+    /// claiming advantage (§69.a/b).
+    pub reupload: Option<i64>,
     /// The algebraic-effect backend tag: `quant_sim` (default) or `qpu_native`
     /// (D1/D9). Stored as the bare backend name; §51.d injects the full
     /// `ots:backend:<tag>` effect into the enclosing flow's effect row.

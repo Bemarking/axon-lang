@@ -856,6 +856,7 @@ impl IRGenerator {
                 qubits: s.qubits,
                 depth: s.depth,
                 bandwidth: s.bandwidth,
+                reupload: s.reupload,
                 effect: s.effect.clone(),
                 body: s.body.iter().map(|stmt| self.visit_flow_step(stmt)).collect(),
             }),

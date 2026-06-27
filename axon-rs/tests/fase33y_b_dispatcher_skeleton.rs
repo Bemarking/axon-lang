@@ -533,6 +533,7 @@ fn quant_node() -> IRFlowNode {
         qubits: None,
         depth: None,
         bandwidth: None,
+        reupload: None,
         effect: "quant_sim".to_string(),
         body: Vec::new(),
     })
