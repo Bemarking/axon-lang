@@ -61,6 +61,7 @@ pub mod gemini;
 pub mod glm;
 pub mod kimi;
 pub mod locked_model;
+pub mod model_catalog;
 pub mod observability;
 pub mod ollama;
 pub mod openai;
