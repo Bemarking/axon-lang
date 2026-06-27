@@ -5063,7 +5063,12 @@ impl<'a> TypeChecker<'a> {
                 // §Fase 59 (D2) — `apply: <Tool>` on a schema-bearing tool is
                 // cognitive delegation; the honest-compiler `axon-W004` points
                 // the adopter to the deterministic `use <Tool>(k=v)` form.
-                FlowStep::Step(s) => self.check_apply_tool(s),
+                FlowStep::Step(s) => {
+                    self.check_apply_tool(s);
+                    // §Fase 68.e — `apply: <Compute>` is a model-selection no-op;
+                    // `axon-W006` points the adopter to `requires_context:`.
+                    self.check_apply_compute(s);
+                }
                 // §Fase 51.b — the Continuous Type Invariant (D8). Inside a
                 // `quant` block, conversational / unstructured discrete types
                 // (String literals, `.to_string` textual conversions, free-text
@@ -5644,6 +5649,28 @@ impl<'a> TypeChecker<'a> {
             return; // schema-less tool → cognitive apply is legitimate (D7).
         }
         self.warn(build_w004_message(&step.apply_ref, &params), &step.loc);
+    }
+
+    /// §Fase 68.e — `axon-W006`: a step's `apply: <Compute>` is a model-selection
+    /// NO-OP. A `compute { model: … }` block's `model:` is dropped at lowering
+    /// (the parser keeps only `shield:`), and `apply:` does not pick an LLM model
+    /// — so the brief-#36 adopter who wrote `apply: BigSummary` to pin a larger
+    /// model got silently ignored. Turn that silent no-op into guidance toward the
+    /// faithful surface: declare `requires_context:` on the step (the §68.c
+    /// resolver picks a satisfying model), or set the deployment model. The §59
+    /// honest-compiler doctrine — the compiler tells the truth + indicates the path.
+    ///
+    /// Fires ONLY when `apply_ref` resolves to a declared `compute`. An
+    /// `apply: <Tool>` is §59's `axon-W004`; an `apply: <Flow>` is composition.
+    fn check_apply_compute(&mut self, step: &StepNode) {
+        if step.apply_ref.is_empty() {
+            return;
+        }
+        if let Some(sym) = self.symbols.lookup(&step.apply_ref) {
+            if sym.kind == "compute" {
+                self.warn(build_w006_message(&step.apply_ref, &step.name), &step.loc);
+            }
+        }
     }
 
     fn check_store_ref(&mut self, store_name: &str, flow_name: &str, loc: &Loc) {
@@ -6732,6 +6759,29 @@ fn build_w004_message(tool_name: &str, params: &[(String, String, bool)]) -> Str
          `parameters:` schema, so for a deterministic, schema-validated, real dispatch \
          use the flow-level form `use {tool}({call})` (with `provider: http`/`mcp` + a \
          wired endpoint). See axon://logic/dispatch_vs_cognition."
+    )
+}
+
+/// §Fase 68.e — warning code for `apply: <Compute>`, a model-selection no-op.
+/// W005 is held by the quant-encoding advisory (§51.b); this is the next slot.
+pub const W006_CODE: &str = "axon-W006";
+
+/// §Fase 68.e — build the canonical `axon-W006` message. `apply: <Compute>` does
+/// not select an LLM model — a `compute { model: … }` field is dropped at lowering
+/// (the parser keeps only `shield:`), so the brief-#36 adopter's `apply: BigSummary`
+/// to pin a larger model was silently ignored. Point them at the faithful surface:
+/// declare the step's capability need with `requires_context:` (the §68.c resolver
+/// picks a satisfying model), or set the deployment model. The §59 honest-compiler
+/// doctrine — a silent no-op becomes guidance.
+fn build_w006_message(compute_ref: &str, step_name: &str) -> String {
+    format!(
+        "warning[{W006_CODE}]: step '{step_name}' applies compute '{compute_ref}' — \
+         `compute` / `apply:` does NOT select an LLM model (a `compute {{ model: … }}` \
+         field is dropped at lowering and has no runtime effect). To choose the model \
+         for this step, declare its capability need with `requires_context: <tokens>` \
+         (the resolver picks the smallest model whose context window fits, or fails \
+         closed at deploy), or set the deployment model (e.g. `AXON_DAEMON_MODEL`). \
+         See §Fase 68 capability-aware model resolution."
     )
 }
 
