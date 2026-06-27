@@ -116,6 +116,12 @@ pub struct PureShapeStep {
     /// Empty `Vec` (default) → backend gets no tools → wire shape
     /// stays D4 byte-compat with pre-33.y.k.
     pub tools: Vec<crate::backends::ToolSpec>,
+    /// §Fase 68.d — the step's declared model-capability requirement (context
+    /// window in tokens), threaded from `IRStep.requires_context`. The §68.c
+    /// resolver maps it (against the resolved backend's §68.a catalog) to the
+    /// `ChatRequest.model` for this step. `None` (every non-`step` shape +
+    /// requirement-less steps) → empty model → backend default (back-compat).
+    pub requires_context: Option<u32>,
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -184,6 +190,7 @@ pub async fn run_step(
         framing_addendum: None,
         kind_slug: "step",
         tools,
+        requires_context: step.requires_context,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -469,6 +476,7 @@ pub async fn run_probe(
         ),
         kind_slug: "probe",
         tools: Vec::new(),
+        requires_context: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -496,6 +504,7 @@ pub async fn run_reason(
         ),
         kind_slug: "reason",
         tools: Vec::new(),
+        requires_context: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -524,6 +533,7 @@ pub async fn run_validate(
         ),
         kind_slug: "validate",
         tools: Vec::new(),
+        requires_context: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -552,6 +562,7 @@ pub async fn run_refine(
         ),
         kind_slug: "refine",
         tools: Vec::new(),
+        requires_context: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -598,6 +609,7 @@ pub async fn run_weave(
         ),
         kind_slug: "weave",
         tools: Vec::new(),
+        requires_context: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -717,6 +729,23 @@ pub async fn run_pure_shape(
             .collect()
     };
 
+    // §Fase 68.d — resolve the model from the step's declared capability
+    // requirement (`requires_context:`) against the RESOLVED backend's §68.a
+    // catalog. A `None` requirement → empty model string → the backend's
+    // `default_model()` (byte-identical to every pre-§68 flow). An UNSATISFIABLE
+    // requirement fails CLOSED here (D68.3) — a loud error BEFORE the upstream
+    // request, never a too-small model that 400s mid-stream (the brief-#36
+    // failure mode). This is the one production engine (dispatcher), so daemon
+    // + axonendpoint flows both honor it.
+    let resolved_model = crate::model_resolution::resolve_model(
+        crate::backends::model_catalog::models_for(&ctx.backend_name),
+        shape.requires_context,
+    )
+    .map_err(|e| DispatchError::BackendError {
+        name: ctx.backend_name.clone(),
+        message: format!("model capability unsatisfied: {e}"),
+    })?;
+
     // 7. Build the per-attempt ChatRequest (history + the current user turn).
     //    §Fase 33.y.k D8 — `shape.tools` plumbs through; empty for cognitive-
     //    framing handlers whose IR shapes carry no tool reference today.
@@ -724,7 +753,7 @@ pub async fn run_pure_shape(
         let mut messages = history_msgs.clone();
         messages.push(Message::user(user_prompt.to_string()));
         ChatRequest {
-            model: String::new(),
+            model: resolved_model.model.clone(),
             messages,
             system: if system.is_empty() { None } else { Some(system.clone()) },
             max_tokens: None,
@@ -1283,6 +1312,73 @@ mod tests {
         assert!(matches!(events[0], FlowExecutionEvent::StepStart { .. }));
         assert!(matches!(events[1], FlowExecutionEvent::StepToken { .. }));
         assert!(matches!(events[2], FlowExecutionEvent::StepComplete { .. }));
+    }
+
+    /// §Fase 68.d — a step with NO `requires_context:` runs exactly as before
+    /// (empty model → backend default). Back-compat (D68.4): the resolver is
+    /// invoked but yields the empty-model sentinel, so the stub path is untouched.
+    #[tokio::test]
+    async fn step_without_requires_context_runs_unchanged() {
+        use crate::ir_nodes::IRStep;
+        let step = IRStep {
+            node_type: "step",
+            source_line: 0,
+            source_column: 0,
+            name: "Generate".into(),
+            persona_ref: String::new(),
+            given: String::new(),
+            ask: "hi".into(),
+            use_tool: None,
+            probe: None,
+            reason: None,
+            weave: None,
+            output_type: String::new(),
+            confidence_floor: None,
+            navigate_ref: String::new(),
+            apply_ref: String::new(),
+            requires_context: None,
+            body: Vec::new(),
+        };
+        let (mut ctx, _rx) = fresh_ctx();
+        let outcome = run_step(&step, &mut ctx).await.expect("run_step ok");
+        assert!(matches!(outcome, NodeOutcome::Completed { .. }));
+    }
+
+    /// §Fase 68.d — a step whose `requires_context:` the resolved backend cannot
+    /// satisfy FAILS CLOSED (D68.3) BEFORE the upstream request — a loud
+    /// `BackendError`, never a too-small model that 400s mid-stream (the brief-#36
+    /// failure mode). `fresh_ctx` uses the `stub` backend (empty §68.a catalog),
+    /// so ANY positive requirement is unsatisfiable → the resolver gates the call.
+    #[tokio::test]
+    async fn step_with_unsatisfiable_requires_context_fails_closed() {
+        use crate::ir_nodes::IRStep;
+        let step = IRStep {
+            node_type: "step",
+            source_line: 0,
+            source_column: 0,
+            name: "BigSummary".into(),
+            persona_ref: String::new(),
+            given: String::new(),
+            ask: "summarize a long conversation".into(),
+            use_tool: None,
+            probe: None,
+            reason: None,
+            weave: None,
+            output_type: String::new(),
+            confidence_floor: None,
+            navigate_ref: String::new(),
+            apply_ref: String::new(),
+            requires_context: Some(16_000),
+            body: Vec::new(),
+        };
+        let (mut ctx, _rx) = fresh_ctx();
+        match run_step(&step, &mut ctx).await {
+            Err(DispatchError::BackendError { message, .. }) => assert!(
+                message.contains("model capability unsatisfied"),
+                "fail-closed must name the capability gap, got: {message}"
+            ),
+            other => panic!("expected fail-closed BackendError, got {other:?}"),
+        }
     }
 
     /// §Fase 65.C.2 — two LLM steps on ONE ctx accumulate conversation history

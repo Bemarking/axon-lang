@@ -324,6 +324,7 @@ pub async fn run_focus(
         ),
         kind_slug: "focus",
         tools: Vec::new(),
+        requires_context: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -353,6 +354,7 @@ pub async fn run_associate(
         ),
         kind_slug: "associate",
         tools: Vec::new(),
+        requires_context: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -388,6 +390,7 @@ pub async fn run_aggregate(
         ),
         kind_slug: "aggregate",
         tools: Vec::new(),
+        requires_context: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -414,6 +417,7 @@ pub async fn run_explore(
         ),
         kind_slug: "explore",
         tools: Vec::new(),
+        requires_context: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -436,6 +440,7 @@ pub async fn run_ingest(
         ),
         kind_slug: "ingest",
         tools: Vec::new(),
+        requires_context: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -794,6 +799,7 @@ pub async fn run_navigate(
         ),
         kind_slug: "navigate",
         tools: Vec::new(),
+        requires_context: None,
     };
     run_pure_shape(shape, ctx).await
 }
@@ -816,6 +822,7 @@ pub async fn run_corroborate(
         ),
         kind_slug: "corroborate",
         tools: Vec::new(),
+        requires_context: None,
     };
     run_pure_shape(shape, ctx).await
 }
