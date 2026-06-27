@@ -208,6 +208,7 @@ impl IRGenerator {
             Declaration::Topology(n) => ir.topologies.push(self.visit_topology(n)),
             Declaration::Socket(n) => ir.sockets.push(self.visit_socket(n)),
             Declaration::Observable(n) => ir.observables.push(self.visit_observable(n)),
+            Declaration::Witness(n) => ir.witnesses.push(self.visit_witness(n)),
             Declaration::Immune(n) => ir.immunes.push(self.visit_immune(n)),
             Declaration::Reflex(n) => ir.reflexes.push(self.visit_reflex(n)),
             Declaration::Heal(n) => ir.heals.push(self.visit_heal(n)),
@@ -1646,6 +1647,22 @@ impl IRGenerator {
                     pauli: t.pauli.clone(),
                 })
                 .collect(),
+        }
+    }
+
+    /// §Fase 69.a — lower a `witness` declaration into IR (verbatim refs +
+    /// metric/threshold/baseline; the deploy/runtime evaluator computes the verdict).
+    fn visit_witness(&self, n: &crate::ast::WitnessDefinition) -> crate::ir_nodes::IRWitness {
+        crate::ir_nodes::IRWitness {
+            node_type: "witness",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            claim: n.claim.clone(),
+            baseline: n.baseline.clone(),
+            metric: n.metric.clone(),
+            threshold: n.threshold,
+            data: n.data.clone(),
         }
     }
 }

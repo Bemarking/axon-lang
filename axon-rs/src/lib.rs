@@ -107,6 +107,11 @@ pub mod backend_resolution;
 /// `requires_context:` + a backend's §68.a model catalog → the smallest model
 /// that fits, or honest fail-closed (never a too-small model).
 pub mod model_resolution;
+/// §Fase 69.a — the Advantage Witness: a transversal law
+/// (`axon://logic/no_unwitnessed_advantage`). A primitive may not claim an
+/// advantage over a cheaper baseline without a machine-checkable witness on real
+/// data; the `AdvantageWitness` trait + closed metric catalog + verdict.
+pub mod advantage_witness;
 /// §ESK Fase 6 — Epistemic Security Kernel. Port of `axon/runtime/esk/`.
 pub mod esk;
 /// §Fase 51 — Proof-Carrying Code. apx/axonendpoint carry a portable,
