@@ -479,6 +479,9 @@ fn ir_flow_node_catalog_pin_45_variants() {
             IRFlowNode::Mutate(_) => "mutate",
             IRFlowNode::Purge(_) => "purge",
             IRFlowNode::Transact(_) => "transact",
+            IRFlowNode::Quant(_) => "quant",
+            IRFlowNode::Yield(_) => "yield",
+            IRFlowNode::Run(_) => "run",
         }
     }
 
@@ -530,14 +533,17 @@ fn ir_flow_node_catalog_pin_45_variants() {
         "mutate",
         "purge",
         "transact",
+        "quant",
+        "yield",
+        "run",
     ];
 
     assert_eq!(
         CATALOG.len(),
-        45,
+        48,
         "33.y D1 totality invariant: the IRFlowNode closed catalog \
-         has exactly 45 variants. The dispatcher's exhaustive match \
-         must cover all 45 — adding a 46th requires updating both \
+         has exactly 48 variants. The dispatcher's exhaustive match \
+         must cover all 48 — adding a 49th requires updating both \
          the dispatcher AND this anchor in lockstep."
     );
 

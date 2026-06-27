@@ -244,6 +244,8 @@ async fn s3_run_handlers_route_to_kv_ir_steps_have_no_backend_handle() {
         store_name: "entities".into(),
         where_expr: "id".into(),
         alias: "found_id".into(),
+        order_by: String::new(),
+        limit_expr: String::new(),
     };
     run_retrieve(&retrieve, &mut ctx).await.expect("retrieve ok");
 

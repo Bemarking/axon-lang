@@ -427,7 +427,7 @@ fn listen_node() -> IRFlowNode {
         channel: String::new(),
         channel_is_ref: false,
         event_alias: String::new(),
-    })
+        body: Vec::new(),    })
 }
 
 fn daemon_step_node() -> IRFlowNode {
@@ -488,6 +488,8 @@ fn retrieve_node() -> IRFlowNode {
         store_name: String::new(),
         where_expr: String::new(),
         alias: String::new(),
+        order_by: String::new(),
+        limit_expr: String::new(),
     })
 }
 

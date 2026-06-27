@@ -96,7 +96,7 @@ fn listen(channel: &str, event_alias: &str) -> IRFlowNode {
         channel: channel.into(),
         channel_is_ref: true,
         event_alias: event_alias.into(),
-    })
+        body: Vec::new(),    })
 }
 
 fn daemon_step(daemon_ref: &str) -> IRFlowNode {
