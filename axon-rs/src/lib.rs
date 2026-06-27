@@ -112,6 +112,10 @@ pub mod model_resolution;
 /// advantage over a cheaper baseline without a machine-checkable witness on real
 /// data; the `AdvantageWitness` trait + closed metric catalog + verdict.
 pub mod advantage_witness;
+/// §Fase 69.b — quant as the first Advantage-Witness instance: the amplitude-
+/// fidelity ≡ cosine theorem made executable + the `QuantKernelWitness` that
+/// fails closed (no advantage over the classical baseline).
+pub mod quant_witness;
 /// §ESK Fase 6 — Epistemic Security Kernel. Port of `axon/runtime/esk/`.
 pub mod esk;
 /// §Fase 51 — Proof-Carrying Code. apx/axonendpoint carry a portable,
