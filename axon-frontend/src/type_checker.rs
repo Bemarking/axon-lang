@@ -5068,6 +5068,9 @@ impl<'a> TypeChecker<'a> {
                     // §Fase 68.e — `apply: <Compute>` is a model-selection no-op;
                     // `axon-W006` points the adopter to `requires_context:`.
                     self.check_apply_compute(s);
+                    // §Fase 68.f — a `requires_context:` that no model could ever
+                    // satisfy is `axon-T809` at compile time.
+                    self.check_requires_context(s);
                 }
                 // §Fase 51.b — the Continuous Type Invariant (D8). Inside a
                 // `quant` block, conversational / unstructured discrete types
@@ -5670,6 +5673,43 @@ impl<'a> TypeChecker<'a> {
             if sym.kind == "compute" {
                 self.warn(build_w006_message(&step.apply_ref, &step.name), &step.loc);
             }
+        }
+    }
+
+    /// §Fase 68.f — `axon-T809`: validate a step's `requires_context:` at compile
+    /// time. Two impossibilities are caught before deploy:
+    ///   - `0` (or absent → skipped) — a zero context requirement is meaningless;
+    ///   - a value larger than [`MAX_KNOWN_CONTEXT_WINDOW`] (the largest window any
+    ///     canonical model offers, §68.a) — NO model could ever satisfy it, so it
+    ///     is a hard error here rather than a deploy-time / runtime surprise.
+    ///
+    /// The per-DEPLOYMENT satisfiability ("does THIS tenant's configured backend
+    /// have a `>= N` model") is the enterprise §68.h deploy gate; this OSS check is
+    /// the catalog-level floor that holds for any backend.
+    fn check_requires_context(&mut self, step: &StepNode) {
+        let Some(n) = step.requires_context else {
+            return;
+        };
+        if n == 0 {
+            self.emit(
+                format!(
+                    "axon-T809 step '{}' declares `requires_context: 0` — a context \
+                     requirement must be a positive token count (or omit it to use the \
+                     backend default).",
+                    step.name
+                ),
+                &step.loc,
+            );
+        } else if n > MAX_KNOWN_CONTEXT_WINDOW {
+            self.emit(
+                format!(
+                    "axon-T809 step '{}' declares `requires_context: {n}`, which exceeds \
+                     the largest known model context window ({MAX_KNOWN_CONTEXT_WINDOW} \
+                     tokens) — no model could satisfy it. Lower the requirement.",
+                    step.name
+                ),
+                &step.loc,
+            );
         }
     }
 
@@ -6765,6 +6805,15 @@ fn build_w004_message(tool_name: &str, params: &[(String, String, bool)]) -> Str
 /// §Fase 68.e — warning code for `apply: <Compute>`, a model-selection no-op.
 /// W005 is held by the quant-encoding advisory (§51.b); this is the next slot.
 pub const W006_CODE: &str = "axon-W006";
+
+/// §Fase 68.f — the largest context window any canonical model offers (tokens).
+/// A `requires_context:` above this can never be satisfied → `axon-T809`. This is
+/// a frontend mirror of `axon::backends::model_catalog::max_canonical_context_window()`
+/// (the runtime catalog lives in axon-rs, which depends on this crate — not the
+/// reverse — so the value is mirrored here and PINNED by the cross-crate parity
+/// test `axon-rs/tests/fase68_f_context_ceiling_parity.rs`: a drift fails CI, the
+/// §67.a.2 two-representation discipline). Currently gemini-2.5-flash = 1,048,576.
+pub const MAX_KNOWN_CONTEXT_WINDOW: u32 = 1_048_576;
 
 /// §Fase 68.e — build the canonical `axon-W006` message. `apply: <Compute>` does
 /// not select an LLM model — a `compute { model: … }` field is dropped at lowering
