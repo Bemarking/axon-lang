@@ -1405,6 +1405,12 @@ pub struct StepNode {
     pub confidence_floor: Option<f64>,
     pub navigate_ref: String,
     pub apply_ref: String,
+    /// §Fase 68.b — the step's declared MODEL CAPABILITY requirement: the
+    /// context window (in tokens) the cognitive act needs. The §68.c resolver
+    /// maps it to the smallest concrete model that satisfies it (per the
+    /// resolved backend's §68.a catalog); `None` → the backend default
+    /// (back-compat). Declare the NEED, not the vendor SKU (D68.1).
+    pub requires_context: Option<u32>,
     pub loc: Loc,
 }
 

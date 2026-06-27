@@ -776,7 +776,7 @@ fn d1_catalog_totality_pin_45_variants() {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            body: Vec::new(),
+            requires_context: None,            body: Vec::new(),
         }),
         IRFlowNode::Probe(IRProbe {
             node_type: "probe",
@@ -1032,6 +1032,7 @@ fn d1_catalog_totality_pin_45_variants() {
             channel: String::new(),
             channel_is_ref: false,
             event_alias: String::new(),
+            body: Vec::new(),
         }),
         IRFlowNode::DaemonStep(IRDaemonStepNode {
             node_type: "daemon_step",
@@ -1075,6 +1076,8 @@ fn d1_catalog_totality_pin_45_variants() {
             store_name: String::new(),
             where_expr: String::new(),
             alias: String::new(),
+            order_by: String::new(),
+            limit_expr: String::new(),
         }),
         IRFlowNode::Mutate(IRMutateStep {
             node_type: "mutate",

@@ -751,6 +751,12 @@ pub struct IRStep {
     pub confidence_floor: Option<f64>,
     pub navigate_ref: String,
     pub apply_ref: String,
+    /// §Fase 68.b — the step's model-capability requirement (context window in
+    /// tokens). `skip_serializing_if = Option::is_none` keeps every pre-§68 step's
+    /// IR JSON byte-identical (no IR-SHA drift, D68.4); a legacy IR deserialises
+    /// to `None` → the §68.c resolver picks the backend default exactly as today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_context: Option<u32>,
     pub body: Vec<serde_json::Value>,
 }
 
