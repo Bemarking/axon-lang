@@ -34,6 +34,11 @@ inside a flow. A flow references a compute binding through
 the `apply: <ComputeName>` flow-step pattern or through a
 deployment-level `compute:` field on the bound `run`.
 
+> **`axon-W006`** — a step's `apply: <Compute>` for model selection is
+> a no-op the compiler warns on; declare the capability need on the
+> step with `requires_context:` (§Fase 68) and let the resolver pick
+> the model. See `axon://primitives/step`.
+
 ```axon
 shield FinancialShield {
     scan:       [pii_leak, prompt_injection]

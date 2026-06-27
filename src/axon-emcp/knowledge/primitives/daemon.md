@@ -15,7 +15,8 @@ grammar: |
       max_tokens: <integer>                                # optional
       max_time: <duration>                                 # optional
       max_cost: <number>                                   # optional
-      listen <channel-ref|"<topic>"> [as <alias>] [{...}] # optional, repeatable — event listeners
+      requires: [<cap.slug>, ...]                          # optional (§52.d) — capability scope for scheduled work
+      listen <channel-ref|"<topic>"|"cron:<expr>"> [as <alias>] [{ <steps> }]  # optional, repeatable
   }
 ---
 
@@ -90,11 +91,50 @@ incoming event source. Two forms:
    channels): `listen TicketChannel as event`.
 2. **String topic** (legacy, pre-Fase 13): `listen
    "tickets.inbound" as msg`.
+3. **Cron schedule** (§Fase 52.b — a first-class TIME trigger,
+   not a topic): `listen "cron:*/5 * * * *" as tick { … }`.
 
 Multiple `listen` lines stack — the daemon multiplexes across
 all bound sources. The optional `as <alias>` binds the event
-payload to a named variable visible inside the (today
-structurally-skipped) listener body.
+payload to a named variable visible inside the listener body.
+The **body `{ … }` is real flow steps** (§52.a) that the
+supervisor executes on each arrival — it is *not* skipped.
+
+### `listen "cron:<expr>"` — scheduled execution (§Fase 52.b)
+
+A listener whose channel is `"cron:<expr>"` fires on a wall-clock
+schedule. `<expr>` is a **5-field POSIX cron** string
+(`min hour dom mon dow`; supports `*`, ranges `a-b`, lists `a,b`,
+steps `*/n`):
+
+```axon
+flow HibernateSession() -> Unit {
+    step S { ask: "hibernate idle sessions" output: Unit }
+}
+
+daemon SessionCleaner {
+    goal:     "Hibernate idle sessions every five minutes."
+    requires: [flow.execute]
+    listen "cron:*/5 * * * *" as tick {
+        run HibernateSession()
+    }
+}
+```
+
+- A **malformed cron expression** is `axon-E0789` (bad field,
+  wrong field count, out-of-range value).
+- An **empty handler body** is `axon-E0792` (a scheduled trigger
+  with no work is a no-op). The `as <alias>` is optional; the
+  body is required for cron listeners.
+
+### `requires: [<cap.slug>, ...]` (optional, §Fase 52.d)
+
+The **capability scope** a scheduled (cron) listener runs under.
+Because a cron tick has no inbound principal, a daemon with a
+cron listener MUST declare the capabilities its scheduled work
+needs — otherwise it is **`axon-E0791`** (a cron-scheduled daemon
+with no `requires:` scope). Each slug follows the dotted-slug
+grammar (`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`).
 
 ## Runtime behaviour
 

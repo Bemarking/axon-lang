@@ -78,10 +78,14 @@ referenceable via positional defaults (the runtime exposes
 
 ### Body `{ ... }` (optional)
 
-A braced block. **In flows**, the body is the handler — the
-flow steps that run for each arrival. **In daemons**, the
-body is currently skipped structurally (the daemon's
-top-level fields take over).
+A braced block of **real flow steps** that run for each arrival.
+**In flows**, the body is the handler that runs per event.
+**In daemons** (§Fase 52), the body is *also* parsed and executed:
+for a cron listener (`listen "cron:…"`) it is the work that runs on
+each tick, and an **empty body is `axon-E0792`** — a scheduled
+trigger with no work is a no-op, almost always a mistake. (The
+body is no longer "skipped structurally"; §52.a lowers it to real
+`FlowStep`s the supervisor executes.)
 
 ## Runtime behaviour
 

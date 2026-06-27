@@ -10,6 +10,7 @@ grammar: |
       ask: "<prompt>"                 # required for cognitive steps — natural-language instruction
       output: <Type>                  # required for cognitive steps — output type
       confidence_floor: <0.0..1.0>    # optional — minimum confidence to accept
+      requires_context: <tokens>      # optional (§68) — min context window; resolver picks the smallest model that fits
       navigate: <Graph.Path>          # optional — route through a knowledge graph
       apply: <FlowName>               # optional — invoke a declared flow
 
@@ -120,6 +121,29 @@ A **numeric literal in `[0.0, 1.0]`**. Overrides the persona's
 in a flow is markedly higher-stakes than the others (e.g. a
 medical-diagnosis step inside an otherwise informational flow).
 
+### `requires_context:` (optional, §Fase 68)
+
+A **positive integer** — the minimum context-window size (in tokens)
+this step needs. The §68 capability-aware resolver picks the **smallest
+model whose context window is ≥ this value**, and **fails closed**:
+
+```axon
+step Big {
+    given: history
+    ask: "summarize ${history}"
+    requires_context: 16000
+    output: String
+}
+```
+
+The point is to declare a *capability requirement*, never a vendor SKU —
+the resolver, not the author, maps the requirement to a concrete model.
+A step without `requires_context:` lowers to `None` (back-compat: the
+flow-level model binding applies). Validation is **`axon-T809`**: the
+value must be `> 0` and not exceed the largest context window in the
+capability catalog (a requirement no model can satisfy is a compile
+error, not a silent fallback).
+
 ### `navigate:` (optional)
 
 A **dotted identifier** referencing a path in a declared
@@ -163,8 +187,9 @@ intended contract).
 > any dispatch). See `axon://primitives/tool`. The step-level
 > `apply: <Tool> given: <struct>` splat (auto-mapping a struct's
 > fields onto the tool schema) is a planned refinement and is not
-> yet compile-validated; until then prefer `use <Tool>(k = v, …)`
-> at flow level for typed tool calls.
+> yet compile-validated; the compiler emits **`axon-W004`** redirecting
+> `apply: <Tool>` to the typed `use <Tool>(k = v, …)` flow-level form
+> (§Fase 59) — prefer that for typed tool calls.
 
 ## Sub-constructs (one per step)
 
