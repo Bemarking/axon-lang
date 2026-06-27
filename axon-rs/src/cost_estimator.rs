@@ -424,7 +424,7 @@ mod tests {
             use_tool: None, probe: None, reason: None, weave: None,
             output_type: "".into(), confidence_floor: None,
             navigate_ref: "".into(), apply_ref: "".into(),
-            body: vec![],
+            requires_context: None,            body: vec![],
         });
         assert_eq!(classify_node(&step), StepKind::Ask);
 
@@ -456,7 +456,7 @@ mod tests {
                 use_tool: None, probe: None, reason: None, weave: None,
                 output_type: "".into(), confidence_floor: None,
                 navigate_ref: "".into(), apply_ref: "".into(),
-                body: vec![],
+                requires_context: None,                body: vec![],
             }),
             IRFlowNode::Step(IRStep {
                 node_type: "Step", source_line: 2, source_column: 1,
@@ -465,7 +465,7 @@ mod tests {
                 use_tool: None, probe: None, reason: None, weave: None,
                 output_type: "".into(), confidence_floor: None,
                 navigate_ref: "".into(), apply_ref: "".into(),
-                body: vec![],
+                requires_context: None,                body: vec![],
             }),
             IRFlowNode::UseTool(IRUseToolStep {
                 node_type: "UseTool", source_line: 3, source_column: 1,
@@ -492,7 +492,7 @@ mod tests {
             use_tool: None, probe: None, reason: None, weave: None,
             output_type: "".into(), confidence_floor: None,
             navigate_ref: "".into(), apply_ref: "".into(),
-            body: vec![],
+            requires_context: None,            body: vec![],
         });
 
         let cond = IRFlowNode::Conditional(IRConditional {
@@ -572,7 +572,7 @@ mod tests {
                     use_tool: None, probe: None, reason: None, weave: None,
                     output_type: "".into(), confidence_floor: None,
                     navigate_ref: "".into(), apply_ref: "".into(),
-                    body: vec![],
+                    requires_context: None,                    body: vec![],
                 }),
                 IRFlowNode::Reason(IRReasonStep {
                     node_type: "Reason", source_line: 3, source_column: 1,
@@ -648,7 +648,7 @@ mod tests {
                     use_tool: None, probe: None, reason: None, weave: None,
                     output_type: "".into(), confidence_floor: None,
                     navigate_ref: "".into(), apply_ref: "".into(),
-                    body: vec![],
+                    requires_context: None,                    body: vec![],
                 }),
             ],
             edges: vec![],

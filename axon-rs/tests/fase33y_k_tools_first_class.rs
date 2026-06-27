@@ -74,7 +74,7 @@ fn step_with_apply(name: &str, ask: &str, apply: &str) -> IRFlowNode {
         confidence_floor: None,
         navigate_ref: String::new(),
         apply_ref: apply.into(),
-        body: Vec::new(),
+        requires_context: None,        body: Vec::new(),
     })
 }
 

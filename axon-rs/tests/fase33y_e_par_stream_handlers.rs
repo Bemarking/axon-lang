@@ -94,7 +94,7 @@ fn step_branch(name: &str) -> Vec<IRFlowNode> {
         confidence_floor: None,
         navigate_ref: String::new(),
         apply_ref: String::new(),
-        body: Vec::new(),
+        requires_context: None,        body: Vec::new(),
     })]
 }
 

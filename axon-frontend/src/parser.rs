@@ -2848,6 +2848,7 @@ impl Parser {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
+            requires_context: None,
             loc,
         };
 
@@ -2894,6 +2895,34 @@ impl Parser {
                     self.consume(TokenType::Colon)?;
                     node.apply_ref = self.consume_any_ident_or_kw()?.value;
                 }
+                // §Fase 68.b — `requires_context: <tokens>`: the step's declared
+                // model-capability requirement (the context window the cognition
+                // needs). A bare positive integer literal; the §68.c resolver maps
+                // it to a concrete model. Range/ceiling is the type-checker's job
+                // (§68.b positive-int + §68.f catalog ceiling) — the parser only
+                // requires an integer token here (a float / non-number is a parse
+                // error, surfaced at the exact column).
+                TokenType::Identifier if inner.value == "requires_context" => {
+                    self.advance();
+                    self.consume(TokenType::Colon)?;
+                    let num = self.current().clone();
+                    let bad = |tok: &crate::tokens::Token| ParseError {
+                        message: format!(
+                            "`requires_context:` must be a positive integer token count \
+                             (got '{}')",
+                            tok.value
+                        ),
+                        line: tok.line,
+                        column: tok.column,
+                        ..Default::default()
+                    };
+                    if num.ttype != TokenType::Integer {
+                        return Err(bad(&num));
+                    }
+                    let value = num.value.parse::<u32>().map_err(|_| bad(&num))?;
+                    self.advance();
+                    node.requires_context = Some(value);
+                }
                 // §Fase 54.a — a `use` nested inside a `step { }` body used
                 // to be skipped structurally (grouped with the sub-constructs
                 // below), silently degrading the tool dispatch to an
@@ -2934,7 +2963,8 @@ impl Parser {
                     return Err(ParseError {
                         message: format!(
                             "Unexpected token in step body: '{}' — expected given, ask, \
-                             probe, reason, weave, stream, output, confidence_floor, navigate, apply",
+                             probe, reason, weave, stream, output, confidence_floor, navigate, \
+                             apply, requires_context",
                             inner.value
                         ),
                         line: inner.line,

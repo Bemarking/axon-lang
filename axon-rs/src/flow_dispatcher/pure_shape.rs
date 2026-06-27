@@ -1259,7 +1259,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            body: Vec::new(),
+            requires_context: None,            body: Vec::new(),
         };
         let (mut ctx, mut rx) = fresh_ctx();
 
@@ -1309,7 +1309,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            body: Vec::new(),
+            requires_context: None,            body: Vec::new(),
         };
         let (mut ctx, _rx) = fresh_ctx();
 
@@ -1350,7 +1350,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            body: Vec::new(),
+            requires_context: None,            body: Vec::new(),
         };
         let (mut ctx, _rx) = fresh_ctx();
         ctx.context_budget = 1; // force truncation to the most recent turn
@@ -1383,7 +1383,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            body: Vec::new(),
+            requires_context: None,            body: Vec::new(),
         }
     }
 
@@ -1494,7 +1494,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            body: Vec::new(),
+            requires_context: None,            body: Vec::new(),
         };
         let cancel = CancellationFlag::new();
         cancel.cancel();
@@ -1525,7 +1525,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            body: Vec::new(),
+            requires_context: None,            body: Vec::new(),
         };
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut ctx = DispatchCtx::new(
@@ -1566,7 +1566,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            body: Vec::new(),
+            requires_context: None,            body: Vec::new(),
         };
         let (mut ctx, _rx) = fresh_ctx();
         ctx.pending_effect_policy = Some(BackpressurePolicy::DropOldest);
@@ -1603,7 +1603,7 @@ mod tests {
             confidence_floor: None,
             navigate_ref: String::new(),
             apply_ref: String::new(),
-            body: Vec::new(),
+            requires_context: None,            body: Vec::new(),
         };
         let (mut ctx, _rx) = fresh_ctx();
         let _ = run_step(&step, &mut ctx).await.expect("ok");

@@ -492,6 +492,7 @@ impl IRGenerator {
                 confidence_floor: s.confidence_floor,
                 navigate_ref: s.navigate_ref.clone(),
                 apply_ref: s.apply_ref.clone(),
+                requires_context: s.requires_context,
                 body: Vec::new(),
             }),
             FlowStep::Probe(s) => IRFlowNode::Probe(IRProbe {
@@ -885,6 +886,7 @@ impl IRGenerator {
                     confidence_floor: None,
                     navigate_ref: String::new(),
                     apply_ref: String::new(),
+                    requires_context: None,
                     body: Vec::new(),
                 })
             }

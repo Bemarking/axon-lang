@@ -111,7 +111,7 @@ fn make_step(name: &str) -> IRFlowNode {
         confidence_floor: None,
         navigate_ref: String::new(),
         apply_ref: String::new(),
-        body: Vec::new(),
+        requires_context: None,        body: Vec::new(),
     })
 }
 

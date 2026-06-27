@@ -136,6 +136,7 @@ fn random_step(lcg: &mut Lcg) -> IRFlowNode {
         } else {
             String::new()
         },
+        requires_context: None,
         body: Vec::new(),
     })
 }
@@ -497,6 +498,7 @@ fn random_listen(lcg: &mut Lcg) -> IRFlowNode {
         channel: lcg.ascii_with_random_len(12),
         channel_is_ref: lcg.bool(),
         event_alias: lcg.ascii_with_random_len(8),
+        body: Vec::new(),
     })
 }
 
@@ -558,6 +560,8 @@ fn random_retrieve(lcg: &mut Lcg) -> IRFlowNode {
         store_name: lcg.ascii_with_random_len(8),
         where_expr: lcg.ascii_with_random_len(12),
         alias: lcg.ascii_with_random_len(8),
+        order_by: String::new(),
+        limit_expr: String::new(),
     })
 }
 
@@ -949,6 +953,7 @@ async fn fase33y_n_tool_call_interleaving_d8_d3() {
             } else {
                 String::new() // empty → no tool plumb
             },
+            requires_context: None,
             body: Vec::new(),
         });
 
