@@ -3032,6 +3032,9 @@ async fn collect_via_dispatcher(
     backend: &str,
     system_prompt: &str,
     api_key: Option<&str>,
+    // §Fase 24.g.2 (Kivi brief #37) — per-tenant LLM endpoint override.
+    llm_base_url: Option<&str>,
+    llm_chat_path: Option<&str>,
     anchors: std::sync::Arc<Vec<crate::ir_nodes::IRAnchor>>,
     nav_dispatch: &NavDispatch,
     registry: std::sync::Arc<ToolRegistry>,
@@ -3061,6 +3064,10 @@ async fn collect_via_dispatcher(
     .with_mdn_adaptive(nav_dispatch.adaptive.clone())
     .with_mdn_store_sources(nav_dispatch.store_sources.clone())
     .with_api_key(api_key.map(|s| s.to_string()))
+    .with_llm_endpoint(
+        llm_base_url.map(|s| s.to_string()),
+        llm_chat_path.map(|s| s.to_string()),
+    )
     .with_anchors(anchors)
     .with_tool_registry(registry)
     .with_pinned_conns(pinned);
@@ -3254,6 +3261,13 @@ pub fn execute_server_flow(
     // wires their tool-server via config without touching the program;
     // absolute runtimes stay verbatim (D5). `None` → no resolution.
     tool_base_url: Option<&str>,
+    // §Fase 24.g.2 (Kivi brief #37) — optional per-tenant LLM endpoint
+    // override: the base URL + chat-completions path the resolved backend
+    // hits, threaded into the dispatcher's backend factory. `None` (D5
+    // back-compat) → the provider's env/default endpoint. Mirrors the
+    // per-tenant `tool_base_url` shape, applied to the LLM call.
+    llm_base_url: Option<&str>,
+    llm_chat_path: Option<&str>,
 ) -> Result<ServerRunnerMetrics, String> {
     let mut target_run = None;
     for run in &ir.runs {
@@ -3523,6 +3537,8 @@ pub fn execute_server_flow(
                     backend,
                     &system_prompt,
                     api_key_override,
+                    llm_base_url,
+                    llm_chat_path,
                     anchors,
                     &nav_dispatch,
                     registry_arc,
@@ -4543,6 +4559,8 @@ flow Recall(q: Text) -> Text {
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
             None,
+            None,
+            None,
         )
         .expect("flow runs");
 
@@ -4609,6 +4627,8 @@ flow Recall(q: Text) -> Text {
             flow,
             "stub",
             "",
+            None,
+            None,
             None,
             std::sync::Arc::new(Vec::new()),
             &nd,

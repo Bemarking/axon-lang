@@ -238,6 +238,17 @@ pub struct DispatchCtx {
     /// uses THIS tenant's key, not the process env var. `None` (the
     /// `DispatchCtx::new` default) ⇒ env-key behavior, unchanged.
     pub api_key: Option<String>,
+    /// §Fase 24.g.2 (Kivi brief #37) — optional per-tenant LLM endpoint
+    /// override (base URL + chat path) threaded from the enterprise
+    /// `llm.<backend>.base_url` / `.chat_path` secret. When `Some`, the LLM
+    /// handlers resolve the backend via
+    /// [`crate::backends::resolve_streaming_backend_with_key_and_endpoint`] so
+    /// the call hits THIS tenant's endpoint (e.g. z.ai's `/api/paas/v4`)
+    /// instead of the provider default. `None` ⇒ env/default, unchanged.
+    pub llm_base_url: Option<String>,
+    /// §Fase 24.g.2 — companion to `llm_base_url`: the chat-completions path
+    /// (e.g. `/api/paas/v4/chat/completions` for z.ai, vs the `/v1/...` default).
+    pub llm_chat_path: Option<String>,
     /// §Fase 65.C.2 — the flow's conversation history, accumulated across LLM
     /// steps so each step sees the prior turns. Before this the dispatcher's
     /// LLM path was STATELESS single-shot — every streaming/SSE step lost the
@@ -435,6 +446,8 @@ impl DispatchCtx {
             flow_name,
             backend_name: backend_name.into(),
             api_key: None,
+            llm_base_url: None,
+            llm_chat_path: None,
             conversation: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::conversation::ConversationHistory::new(),
             )),
@@ -500,6 +513,19 @@ impl DispatchCtx {
     /// Returns `self` so builders chain. `None` leaves env-key behavior.
     pub fn with_api_key(mut self, api_key: Option<String>) -> Self {
         self.api_key = api_key;
+        self
+    }
+
+    /// §Fase 24.g.2 (Kivi brief #37) — Builder: pin a per-tenant LLM endpoint
+    /// override (base URL + chat path) the dispatcher threads into the backend
+    /// factory. Either may be `None` (then env/default applies for that part).
+    pub fn with_llm_endpoint(
+        mut self,
+        base_url: Option<String>,
+        chat_path: Option<String>,
+    ) -> Self {
+        self.llm_base_url = base_url;
+        self.llm_chat_path = chat_path;
         self
     }
 

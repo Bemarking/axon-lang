@@ -104,14 +104,32 @@ const DEFAULT_MAX_TOKENS: u32 = 4096;
 pub struct OpenAICompatConfig {
     /// Short provider name used as the registry key.
     pub provider_name: &'static str,
-    /// Base URL — the request URL is `<base>/v1/chat/completions`.
+    /// Base URL — the request URL is `<base><chat_completions_path>`.
     pub base_url: String,
+    /// The path appended to `base_url` to form the chat-completions
+    /// endpoint. Default `/v1/chat/completions` (the OpenAI convention,
+    /// shared by Kimi / OpenRouter / Ollama). Configurable because some
+    /// OpenAI-compatible gateways serve a non-`/v1` native path — e.g.
+    /// Zhipu/z.ai's `/api/paas/v4/chat/completions` (Fase 24.g.2, Kivi
+    /// brief #37).
+    pub chat_completions_path: String,
     /// Default model when a request omits one.
     pub default_model: String,
     /// Environment variable that holds the API key. Used in error
     /// messages so adopters can wire credentials correctly.
     pub api_key_env: Option<&'static str>,
+    /// Environment variable that overrides `base_url` when set (Fase
+    /// 24.g.2). E.g. `GLM_BASE_URL` to point the GLM backend at a
+    /// regional / z.ai endpoint instead of the bigmodel.cn default.
+    pub base_url_env: Option<&'static str>,
+    /// Environment variable that overrides `chat_completions_path` when
+    /// set (Fase 24.g.2). E.g. `GLM_CHAT_PATH=/api/paas/v4/chat/completions`.
+    pub chat_path_env: Option<&'static str>,
 }
+
+/// The OpenAI-convention chat-completions path, shared by every preset
+/// as the default (`base_url` + this = the endpoint).
+const DEFAULT_CHAT_PATH: &str = "/v1/chat/completions";
 
 impl OpenAICompatConfig {
     /// Provider-canonical `OpenAI` configuration.
@@ -119,8 +137,11 @@ impl OpenAICompatConfig {
         Self {
             provider_name: "openai",
             base_url: "https://api.openai.com".into(),
+            chat_completions_path: DEFAULT_CHAT_PATH.into(),
             default_model: "gpt-4o-mini".into(),
             api_key_env: Some("OPENAI_API_KEY"),
+            base_url_env: Some("OPENAI_BASE_URL"),
+            chat_path_env: Some("OPENAI_CHAT_PATH"),
         }
     }
 
@@ -129,18 +150,26 @@ impl OpenAICompatConfig {
         Self {
             provider_name: "kimi",
             base_url: "https://api.moonshot.ai".into(),
+            chat_completions_path: DEFAULT_CHAT_PATH.into(),
             default_model: "moonshot-v1-8k".into(),
             api_key_env: Some("KIMI_API_KEY"),
+            base_url_env: Some("KIMI_BASE_URL"),
+            chat_path_env: Some("KIMI_CHAT_PATH"),
         }
     }
 
-    /// Provider-canonical `GLM` (Zhipu) configuration.
+    /// Provider-canonical `GLM` (Zhipu) configuration. The bigmodel.cn
+    /// default serves `/api/paas/v1/...`; adopters on z.ai override via
+    /// `GLM_BASE_URL` + `GLM_CHAT_PATH` (Fase 24.g.2, Kivi brief #37).
     pub fn glm() -> Self {
         Self {
             provider_name: "glm",
             base_url: "https://open.bigmodel.cn/api/paas".into(),
+            chat_completions_path: DEFAULT_CHAT_PATH.into(),
             default_model: "glm-4-plus".into(),
             api_key_env: Some("GLM_API_KEY"),
+            base_url_env: Some("GLM_BASE_URL"),
+            chat_path_env: Some("GLM_CHAT_PATH"),
         }
     }
 
@@ -150,8 +179,13 @@ impl OpenAICompatConfig {
         Self {
             provider_name: "ollama",
             base_url: "http://localhost:11434".into(),
+            chat_completions_path: DEFAULT_CHAT_PATH.into(),
             default_model: "llama3.1:8b".into(),
             api_key_env: None,
+            // Ollama has its own `OLLAMA_HOST` base override (handled in
+            // `ollama::from_env`), so no generic `*_BASE_URL` env here.
+            base_url_env: None,
+            chat_path_env: None,
         }
     }
 
@@ -162,9 +196,71 @@ impl OpenAICompatConfig {
         Self {
             provider_name: "openrouter",
             base_url: "https://openrouter.ai/api".into(),
+            chat_completions_path: DEFAULT_CHAT_PATH.into(),
             default_model: "openai/gpt-4o-mini".into(),
             api_key_env: Some("OPENROUTER_API_KEY"),
+            base_url_env: Some("OPENROUTER_BASE_URL"),
+            chat_path_env: Some("OPENROUTER_CHAT_PATH"),
         }
+    }
+
+    /// §Fase 24.g.2 — apply the per-provider `*_BASE_URL` / `*_CHAT_PATH`
+    /// environment overrides onto this config (when the vars are set and
+    /// non-empty). Called by each provider's `from_env()` — the
+    /// deployment path — so the process environment can redirect a
+    /// backend at a regional / OpenAI-compatible endpoint without a code
+    /// change. The base is trailing-`/`-trimmed and the path is forced to
+    /// a leading `/` so `<base><path>` always joins cleanly.
+    pub fn apply_env_overrides(&mut self) {
+        if let Some(var) = self.base_url_env {
+            if let Ok(v) = env::var(var) {
+                if !v.trim().is_empty() {
+                    self.base_url = normalize_base_url(&v);
+                }
+            }
+        }
+        if let Some(var) = self.chat_path_env {
+            if let Ok(v) = env::var(var) {
+                if !v.trim().is_empty() {
+                    self.chat_completions_path = normalize_chat_path(&v);
+                }
+            }
+        }
+    }
+
+    /// §Fase 24.g.2 — apply EXPLICIT base-URL / chat-path overrides (each
+    /// applied only when `Some` + non-empty). These are the highest-
+    /// precedence tier — a per-tenant `llm.<backend>.base_url` /
+    /// `.chat_path` secret the enterprise layer threads through the flow
+    /// runner. Precedence: **explicit (per-tenant) > env > preset default.**
+    pub fn apply_explicit_overrides(&mut self, base_url: Option<&str>, chat_path: Option<&str>) {
+        if let Some(b) = base_url {
+            if !b.trim().is_empty() {
+                self.base_url = normalize_base_url(b);
+            }
+        }
+        if let Some(p) = chat_path {
+            if !p.trim().is_empty() {
+                self.chat_completions_path = normalize_chat_path(p);
+            }
+        }
+    }
+}
+
+/// Trim trailing slashes off a base URL so joining with a leading-`/`
+/// path never produces a double slash.
+fn normalize_base_url(raw: &str) -> String {
+    raw.trim().trim_end_matches('/').to_string()
+}
+
+/// Force a chat path to a single leading `/` (no trailing slash) so
+/// `<base><path>` is well-formed regardless of how the adopter wrote it.
+fn normalize_chat_path(raw: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if let Some(stripped) = trimmed.strip_prefix('/') {
+        format!("/{}", stripped.trim_start_matches('/'))
+    } else {
+        format!("/{trimmed}")
     }
 }
 
@@ -204,9 +300,18 @@ impl OpenAICompatibleBackend {
     }
 
     /// Override the base URL (test fixtures, mock servers, regional
-    /// endpoints, self-hosted Ollama on a non-default port).
+    /// endpoints, self-hosted Ollama on a non-default port). The value is
+    /// trailing-`/`-trimmed so it joins cleanly with the chat path.
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.config.base_url = base_url.into();
+        self.config.base_url = normalize_base_url(&base_url.into());
+        self
+    }
+
+    /// Override the chat-completions path appended to the base URL
+    /// (§Fase 24.g.2). Default `/v1/chat/completions`; z.ai/Zhipu native
+    /// is `/api/paas/v4/chat/completions`.
+    pub fn with_chat_path(mut self, path: impl Into<String>) -> Self {
+        self.config.chat_completions_path = normalize_chat_path(&path.into());
         self
     }
 
@@ -322,7 +427,10 @@ impl Backend for OpenAICompatibleBackend {
             // Step 2 — build headers.
             let headers = self.build_headers()?;
 
-            let url = format!("{}/v1/chat/completions", self.config.base_url);
+            let url = format!(
+                "{}{}",
+                self.config.base_url, self.config.chat_completions_path
+            );
 
             // Step 3 — call with shared retry loop.
             let (raw_response, retry_count) = transport::call_with_retry(
@@ -410,7 +518,10 @@ impl Backend for OpenAICompatibleBackend {
         // loop because retrying mid-stream is semantically wrong (an
         // adopter already saw partial tokens; a retry would replay
         // them). Streaming MUST fail-fast on any non-200 status.
-        let url = format!("{}/v1/chat/completions", self.config.base_url);
+        let url = format!(
+            "{}{}",
+            self.config.base_url, self.config.chat_completions_path
+        );
         let response = self
             .http_client
             .post(&url)
@@ -859,6 +970,120 @@ mod tests {
         let b = OpenAICompatibleBackend::new(OpenAICompatConfig::openai(), Some("k".into()))
             .with_base_url("http://127.0.0.1:9999");
         assert!(b.config.base_url.starts_with("http://127.0.0.1"));
+    }
+
+    // ── §Fase 24.g.2 — configurable base-URL + chat path (Kivi #37) ──
+
+    #[test]
+    fn every_preset_defaults_to_the_v1_chat_completions_path() {
+        // No behavior change for the existing providers: the default
+        // path stays `/v1/chat/completions`.
+        for c in [
+            OpenAICompatConfig::openai(),
+            OpenAICompatConfig::kimi(),
+            OpenAICompatConfig::glm(),
+            OpenAICompatConfig::ollama(),
+            OpenAICompatConfig::openrouter(),
+        ] {
+            assert_eq!(c.chat_completions_path, "/v1/chat/completions");
+        }
+    }
+
+    #[test]
+    fn glm_default_endpoint_is_bigmodel_v1() {
+        // The unconfigured GLM backend joins to the bigmodel.cn default
+        // (this is the URL that produced Kivi's Spring 404 on a z.ai key).
+        let c = OpenAICompatConfig::glm();
+        assert_eq!(
+            format!("{}{}", c.base_url, c.chat_completions_path),
+            "https://open.bigmodel.cn/api/paas/v1/chat/completions"
+        );
+        assert_eq!(c.base_url_env, Some("GLM_BASE_URL"));
+        assert_eq!(c.chat_path_env, Some("GLM_CHAT_PATH"));
+    }
+
+    #[test]
+    fn with_base_url_trims_trailing_slash() {
+        let b = OpenAICompatibleBackend::new(OpenAICompatConfig::glm(), Some("k".into()))
+            .with_base_url("https://api.z.ai/api/paas/v4/");
+        assert_eq!(b.config.base_url, "https://api.z.ai/api/paas/v4");
+    }
+
+    #[test]
+    fn with_chat_path_forces_leading_slash_and_trims_trailing() {
+        let b = OpenAICompatibleBackend::new(OpenAICompatConfig::glm(), Some("k".into()))
+            .with_chat_path("chat/completions/");
+        assert_eq!(b.config.chat_completions_path, "/chat/completions");
+    }
+
+    #[test]
+    fn zai_scenario_joins_to_the_native_paas_v4_endpoint() {
+        // Kivi brief #37: z.ai serves `/api/paas/v4/chat/completions`
+        // (no `/v1`). With base + chat-path overrides the backend hits
+        // exactly the endpoint their key answered on.
+        let b = OpenAICompatibleBackend::new(OpenAICompatConfig::glm(), Some("k".into()))
+            .with_base_url("https://api.z.ai/api/paas/v4")
+            .with_chat_path("/chat/completions");
+        assert_eq!(
+            format!("{}{}", b.config.base_url, b.config.chat_completions_path),
+            "https://api.z.ai/api/paas/v4/chat/completions"
+        );
+    }
+
+    #[test]
+    fn apply_env_overrides_redirects_base_and_path() {
+        // GLM_BASE_URL / GLM_CHAT_PATH are unique to this test in the
+        // suite, so the process-wide env mutation does not race a reader.
+        std::env::set_var("GLM_BASE_URL", "https://api.z.ai/api/paas/v4/");
+        std::env::set_var("GLM_CHAT_PATH", "chat/completions");
+        let mut c = OpenAICompatConfig::glm();
+        c.apply_env_overrides();
+        std::env::remove_var("GLM_BASE_URL");
+        std::env::remove_var("GLM_CHAT_PATH");
+        assert_eq!(
+            format!("{}{}", c.base_url, c.chat_completions_path),
+            "https://api.z.ai/api/paas/v4/chat/completions"
+        );
+    }
+
+    #[test]
+    fn explicit_override_wins_over_env_and_default() {
+        // Precedence: explicit (per-tenant) > env > preset default.
+        std::env::set_var("GLM_BASE_URL", "https://env.example/api");
+        let mut c = OpenAICompatConfig::glm();
+        c.apply_env_overrides(); // base now the env value
+        assert_eq!(c.base_url, "https://env.example/api");
+        c.apply_explicit_overrides(Some("https://api.z.ai/api/paas/v4"), Some("/chat/completions"));
+        std::env::remove_var("GLM_BASE_URL");
+        // explicit base wins; chat path set from explicit (env left it default).
+        assert_eq!(
+            format!("{}{}", c.base_url, c.chat_completions_path),
+            "https://api.z.ai/api/paas/v4/chat/completions"
+        );
+    }
+
+    #[test]
+    fn apply_explicit_overrides_ignores_none_and_empty() {
+        let mut c = OpenAICompatConfig::glm();
+        c.apply_explicit_overrides(None, None);
+        c.apply_explicit_overrides(Some("   "), Some(""));
+        // Untouched — still the bigmodel.cn default.
+        assert_eq!(
+            format!("{}{}", c.base_url, c.chat_completions_path),
+            "https://open.bigmodel.cn/api/paas/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn apply_env_overrides_is_a_noop_when_unset() {
+        // Defensive: the override is only applied when the var is set +
+        // non-empty, so the default endpoint survives an unset env.
+        std::env::remove_var("OPENROUTER_BASE_URL");
+        std::env::remove_var("OPENROUTER_CHAT_PATH");
+        let mut c = OpenAICompatConfig::openrouter();
+        c.apply_env_overrides();
+        assert_eq!(c.base_url, "https://openrouter.ai/api");
+        assert_eq!(c.chat_completions_path, "/v1/chat/completions");
     }
 
     // ── Headers ─────────────────────────────────────────────────────
