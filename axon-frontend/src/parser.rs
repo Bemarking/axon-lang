@@ -110,6 +110,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Window(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Pix(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -1972,6 +1976,8 @@ impl Parser {
             // ── Tier 2 declarations (full AST) ──────────────────
             TokenType::Agent => self.parse_agent().map(Declaration::Agent),
             TokenType::Shield => self.parse_shield().map(Declaration::Shield),
+            // §Fase 71.a — temporal execution-window guard.
+            TokenType::Window => self.parse_window().map(Declaration::Window),
             TokenType::Pix => self.parse_pix().map(Declaration::Pix),
             TokenType::Ledger => self.parse_ledger().map(Declaration::Ledger),
             TokenType::Psyche => self.parse_psyche().map(Declaration::Psyche),
@@ -4827,6 +4833,95 @@ impl Parser {
         }
         self.consume(TokenType::RBracket)?;
         Ok(members)
+    }
+
+    /// §Fase 71.a — `window <Name> { timezone: "…"  allow: [ {days hours} ]
+    /// exclude: <ref>  on_outside: skip|defer|warn }`.
+    fn parse_window(&mut self) -> Result<WindowDefinition, ParseError> {
+        let tok = self.consume(TokenType::Window)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = WindowDefinition {
+            name,
+            timezone: String::new(),
+            allow: Vec::new(),
+            exclude: None,
+            on_outside: String::new(),
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+            leading_trivia: Vec::new(),
+            trailing_trivia: Vec::new(),
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field_name = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match field_name.as_str() {
+                "timezone" => node.timezone = self.consume(TokenType::StringLit)?.value,
+                "allow" => node.allow = self.parse_window_allow()?,
+                "exclude" => node.exclude = Some(self.parse_dotted_identifier()?),
+                "on_outside" => node.on_outside = self.consume_any_ident_or_kw()?.value,
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 71.a — the `allow: [ { … }, { … } ]` span list.
+    fn parse_window_allow(&mut self) -> Result<Vec<WindowSpan>, ParseError> {
+        self.consume(TokenType::LBracket)?;
+        let mut spans = Vec::new();
+        if !self.check(TokenType::RBracket) {
+            spans.push(self.parse_window_span()?);
+            while self.check(TokenType::Comma) {
+                self.advance();
+                if self.check(TokenType::RBracket) {
+                    break; // trailing comma
+                }
+                spans.push(self.parse_window_span()?);
+            }
+        }
+        self.consume(TokenType::RBracket)?;
+        Ok(spans)
+    }
+
+    /// §Fase 71.a — one span `{ days: Mon..Fri  hours: 9..18 }`.
+    fn parse_window_span(&mut self) -> Result<WindowSpan, ParseError> {
+        let tok = self.consume(TokenType::LBrace)?;
+        let mut span = WindowSpan {
+            day_start: String::new(),
+            day_end: String::new(),
+            hour_start: 0,
+            hour_end: 0,
+            loc: Loc {
+                line: tok.line,
+                column: tok.column,
+            },
+        };
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match field.as_str() {
+                "days" => {
+                    span.day_start = self.consume_any_ident_or_kw()?.value;
+                    self.consume(TokenType::DotDot)?;
+                    span.day_end = self.consume_any_ident_or_kw()?.value;
+                }
+                "hours" => {
+                    span.hour_start = self.consume_number()? as i64;
+                    self.consume(TokenType::DotDot)?;
+                    span.hour_end = self.consume_number()? as i64;
+                }
+                _ => self.skip_value(),
+            }
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(span)
     }
 
     fn parse_shield(&mut self) -> Result<ShieldDefinition, ParseError> {

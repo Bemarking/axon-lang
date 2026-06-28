@@ -128,6 +128,13 @@ const VALID_ON_BREACH_POLICIES: &[&str] = &[
     "sanitize_and_retry",
 ];
 
+/// §Fase 71.a — the closed `window.on_outside` catalog: what to do with a tick
+/// that falls outside every allowed span.
+const VALID_ON_OUTSIDE: &[&str] = &["skip", "defer", "warn"];
+
+/// §Fase 71.a — the closed weekday-name catalog for `window` day ranges.
+const VALID_WEEKDAYS: &[&str] = &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
 const VALID_SEVERITY_LEVELS: &[&str] = &["critical", "high", "low", "medium"];
 
 const VALID_OTS_HOMOTOPY: &[&str] = &["deep", "shallow", "speculative"];
@@ -868,6 +875,14 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Agent(n) => {
                     registrations.push((n.name.clone(), "agent".into(), n.loc.line, n.loc.clone()));
                 }
+                Declaration::Window(n) => {
+                    registrations.push((
+                        n.name.clone(),
+                        "window".into(),
+                        n.loc.line,
+                        n.loc.clone(),
+                    ));
+                }
                 Declaration::Shield(n) => {
                     registrations.push((
                         n.name.clone(),
@@ -1313,6 +1328,7 @@ impl<'a> TypeChecker<'a> {
                 Declaration::LambdaData(n) => self.check_lambda_data(n),
                 Declaration::Agent(n) => self.check_agent(n),
                 Declaration::Shield(n) => self.check_shield(n),
+                Declaration::Window(n) => self.check_window(n),
                 Declaration::Pix(n) => self.check_pix(n),
                 Declaration::Ledger(n) => self.check_ledger(n),
                 Declaration::Psyche(n) => self.check_psyche(n),
@@ -2522,6 +2538,72 @@ impl<'a> TypeChecker<'a> {
                     &node.loc,
                 );
             }
+        }
+    }
+
+    /// §Fase 71.a — validate a temporal execution-window guard. Timezone is
+    /// format-checked here (the frontend is zero-dependency); full IANA
+    /// membership is the runtime's job (§71.b, chrono-tz).
+    fn check_window(&mut self, node: &WindowDefinition) {
+        let tz = node.timezone.trim();
+        let tz_ok =
+            tz == "UTC" || (tz.contains('/') && !tz.starts_with('/') && !tz.ends_with('/'));
+        if !tz_ok {
+            self.emit(
+                format!(
+                    "axon-T820 window '{}' has an invalid timezone '{}' — expected an IANA \
+                     name like \"America/Bogota\" or \"UTC\"",
+                    node.name, node.timezone
+                ),
+                &node.loc,
+            );
+        }
+        if node.allow.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T821 window '{}' has an empty `allow:` — declare at least one \
+                     {{ days hours }} span",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+        for span in &node.allow {
+            if !is_valid(&span.day_start, VALID_WEEKDAYS)
+                || !is_valid(&span.day_end, VALID_WEEKDAYS)
+            {
+                self.emit(
+                    format!(
+                        "axon-T822 window '{}' has an invalid day in `days: {}..{}` — valid: {}",
+                        node.name,
+                        span.day_start,
+                        span.day_end,
+                        valid_list(VALID_WEEKDAYS)
+                    ),
+                    &span.loc,
+                );
+            }
+            if !(0..=23).contains(&span.hour_start) || !(0..=23).contains(&span.hour_end) {
+                self.emit(
+                    format!(
+                        "axon-T823 window '{}' has an out-of-range hour in `hours: {}..{}` — \
+                         hours are 0..23",
+                        node.name, span.hour_start, span.hour_end
+                    ),
+                    &span.loc,
+                );
+            }
+        }
+        if !node.on_outside.is_empty() && !is_valid(&node.on_outside, VALID_ON_OUTSIDE) {
+            self.emit(
+                format!(
+                    "axon-T824 window '{}' has an unknown on_outside policy '{}' — valid: {}",
+                    node.name,
+                    node.on_outside,
+                    valid_list(VALID_ON_OUTSIDE)
+                ),
+                &node.loc,
+            );
         }
     }
 

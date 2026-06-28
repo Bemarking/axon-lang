@@ -85,6 +85,8 @@ pub enum Declaration {
     // ── Tier 2 declarations (full AST) ──
     Agent(AgentDefinition),
     Shield(ShieldDefinition),
+    /// §Fase 71.a — a temporal execution-window guard.
+    Window(WindowDefinition),
     Pix(PixDefinition),
     Ledger(LedgerDefinition),
     Psyche(PsycheDefinition),
@@ -625,6 +627,41 @@ pub struct ExtensionDefinition {
 }
 
 // ── Shield ───────────────────────────────────────────────────────────────────
+
+/// §Fase 71.a — a temporal execution-window guard. Where `shield` guards the
+/// CONTENT of an emission and `anchor` guards its TRUTH, `window` guards its
+/// TIMING: whether a scheduled (cron) tick runs, by timezone-aware day/hour
+/// windows. The runtime decision (`is_in_window`) lands in §71.b; the daemon
+/// binding + the defer ledger in §71.c/d.
+#[derive(Debug)]
+pub struct WindowDefinition {
+    pub name: String,
+    /// IANA timezone (`"America/Bogota"`). Format-checked at compile time
+    /// (§71.a); full IANA membership validated by the runtime (§71.b, chrono-tz).
+    pub timezone: String,
+    /// The allowed day/hour spans (at least one). A tick inside ANY span runs.
+    pub allow: Vec<WindowSpan>,
+    /// Optional reference to an excluded-dates set (holidays, §71.e). A bare
+    /// identifier for now.
+    pub exclude: Option<String>,
+    /// What to do when a tick falls OUTSIDE every allowed span:
+    /// `skip` | `defer` | `warn` (closed catalog).
+    pub on_outside: String,
+    pub loc: Loc,
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// §Fase 71.a — one allowed day/hour span, `{ days: Mon..Fri, hours: 9..18 }`.
+/// `days` are inclusive weekday-name bounds; `hours` are inclusive 0–23 bounds.
+#[derive(Debug)]
+pub struct WindowSpan {
+    pub day_start: String,
+    pub day_end: String,
+    pub hour_start: i64,
+    pub hour_end: i64,
+    pub loc: Loc,
+}
 
 #[derive(Debug)]
 pub struct ShieldDefinition {
