@@ -1498,6 +1498,13 @@ pub enum Expr {
     /// E.g. `recent.length` → `Call(Length, [Ref("recent")])`,
     /// `name.starts_with("Dr")` → `Call(StartsWith, [Ref("name"), Lit(Str)])`.
     Call(Builtin, Vec<Expr>),
+    /// §Fase 70.d — field access on a non-reference base (`items[0].name`,
+    /// `(expr).field`). A plain dotted path stays a `Ref` (`a.b.c`) for
+    /// back-compat; this node is the structured form the JSONB SQL lowering
+    /// (deferred §73) consumes. The `String` is the field name.
+    Field(Box<Expr>, String),
+    /// §Fase 70.d — index access `base[index]` (array element / string char).
+    Index(Box<Expr>, Box<Expr>),
 }
 
 /// The closed catalog of pure builtins (§Fase 70.c). All are total + pure.

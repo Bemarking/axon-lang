@@ -1022,6 +1022,16 @@ pub enum IRExpr {
         builtin: String,
         args: Vec<IRExpr>,
     },
+    /// §Fase 70.d — field access on a non-reference base (the JSONB seam).
+    Field {
+        base: Box<IRExpr>,
+        field: String,
+    },
+    /// §Fase 70.d — index access `base[index]`.
+    Index {
+        base: Box<IRExpr>,
+        index: Box<IRExpr>,
+    },
 }
 
 /// §Fase 70.a — a literal inside an [`IRExpr`].

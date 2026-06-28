@@ -3237,40 +3237,42 @@ impl Parser {
     /// reserved for §70.d.
     fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.parse_expr_atom()?;
-        while self.check(TokenType::Dot) {
-            self.advance();
-            let name_tok = self.consume_any_ident_or_kw()?;
-            let name = name_tok.value;
-            if let Some(builtin) = Builtin::from_name(&name) {
-                let mut args = vec![expr];
-                if self.check(TokenType::LParen) {
-                    self.advance();
-                    while !self.check(TokenType::RParen) && !self.check(TokenType::Eof) {
-                        args.push(self.parse_expr_bp(0)?);
-                        if self.check(TokenType::Comma) {
-                            self.advance();
-                        } else {
-                            break;
+        loop {
+            if self.check(TokenType::Dot) {
+                self.advance();
+                let name = self.consume_any_ident_or_kw()?.value;
+                if let Some(builtin) = Builtin::from_name(&name) {
+                    let mut args = vec![expr];
+                    if self.check(TokenType::LParen) {
+                        self.advance();
+                        while !self.check(TokenType::RParen) && !self.check(TokenType::Eof) {
+                            args.push(self.parse_expr_bp(0)?);
+                            if self.check(TokenType::Comma) {
+                                self.advance();
+                            } else {
+                                break;
+                            }
                         }
+                        self.consume(TokenType::RParen)?;
                     }
-                    self.consume(TokenType::RParen)?;
+                    expr = Expr::Call(builtin, args);
+                } else {
+                    // §Fase 70.d — a plain dotted path on a Ref extends the Ref
+                    // (back-compat: `a.b.c` → `Ref("a.b.c")`); on any other base
+                    // it is a structured field access (the JSONB seam).
+                    expr = match expr {
+                        Expr::Ref(p) => Expr::Ref(format!("{p}.{name}")),
+                        other => Expr::Field(Box::new(other), name),
+                    };
                 }
-                expr = Expr::Call(builtin, args);
+            } else if self.check(TokenType::LBracket) {
+                // §Fase 70.d — index access `base[index]`.
+                self.advance();
+                let index = self.parse_expr_bp(0)?;
+                self.consume(TokenType::RBracket)?;
+                expr = Expr::Index(Box::new(expr), Box::new(index));
             } else {
-                match expr {
-                    Expr::Ref(p) => expr = Expr::Ref(format!("{p}.{name}")),
-                    _ => {
-                        return Err(ParseError {
-                            message: format!(
-                                "field access `.{name}` on a non-reference is not yet \
-                                 supported (§Fase 70.d)"
-                            ),
-                            line: name_tok.line,
-                            column: name_tok.column,
-                            ..Default::default()
-                        });
-                    }
-                }
+                break;
             }
         }
         Ok(expr)

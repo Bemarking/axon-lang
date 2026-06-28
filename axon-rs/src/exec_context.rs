@@ -138,7 +138,7 @@ impl ExecContext {
 ///    value yields its compact form). A non-JSON base, a missing field, or a
 ///    non-object intermediate falls through to `None` (the caller keeps the
 ///    `${…}` literal, exactly as for an unknown plain variable).
-fn resolve_dotted_var(vars: &HashMap<String, String>, key: &str) -> Option<String> {
+pub(crate) fn resolve_dotted_var(vars: &HashMap<String, String>, key: &str) -> Option<String> {
     if let Some(val) = vars.get(key) {
         return Some(val.clone());
     }

@@ -520,6 +520,14 @@ impl IRGenerator {
                 builtin: builtin.surface().to_string(),
                 args: args.iter().map(Self::lower_expr).collect(),
             },
+            Expr::Field(base, field) => IRExpr::Field {
+                base: Box::new(Self::lower_expr(base)),
+                field: field.clone(),
+            },
+            Expr::Index(base, index) => IRExpr::Index {
+                base: Box::new(Self::lower_expr(base)),
+                index: Box::new(Self::lower_expr(index)),
+            },
         }
     }
 
