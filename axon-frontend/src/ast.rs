@@ -1650,6 +1650,13 @@ pub struct LetStatement {
     /// continuous-carrier discipline (`DensityMatrix[D]` D=2ⁿ; reject discrete
     /// conversational types). Carries the typed encoder-boundary contract.
     pub type_annotation: Option<TypeExpr>,
+    /// §Fase 70.f — the parsed expression form of the value, present only when
+    /// `value_kind == "expression"` (`let total = price * qty + tax`). The
+    /// runtime evaluates it via the pure expression evaluator instead of the
+    /// pre-§70 behaviour (which treated an expression as an opaque literal
+    /// string). `None` for literal / reference / list values (byte-identical to
+    /// pre-§70.f).
+    pub value_ast: Option<Expr>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the

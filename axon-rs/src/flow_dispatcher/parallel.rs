@@ -415,6 +415,7 @@ mod tests {
             target: target.into(),
             value: value.into(),
             value_kind: "literal".into(),
+            value_ast: None,
         })]
     }
 

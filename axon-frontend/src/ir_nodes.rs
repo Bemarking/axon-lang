@@ -1083,6 +1083,12 @@ pub struct IRLetBinding {
     /// Fase 17.a — preserves parser tokenization intent.
     /// One of "literal" | "reference" | "expression".
     pub value_kind: String,
+    /// §Fase 70.f — the lowered expression form of the value, present only for
+    /// `value_kind == "expression"`. The runtime evaluates it instead of
+    /// treating the value string as an opaque literal. `skip_serializing_if`
+    /// keeps the IR byte-identical for every literal / reference let.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_ast: Option<IRExpr>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -98,17 +98,25 @@ pub async fn run_let(
         return Err(DispatchError::UpstreamCancelled);
     }
 
-    let resolved = match binding.value_kind.as_str() {
-        "reference" => ctx
-            .let_bindings
-            .get(&binding.value)
-            .cloned()
-            .unwrap_or_default(),
-        // "literal", "expression", and any future value_kind fall
-        // through to the literal path. value_kind is a closed
-        // catalog in axon-frontend; a 4th variant would require
-        // updating this match + the test surface in lockstep.
-        _ => binding.value.clone(),
+    let resolved = if let Some(expr) = &binding.value_ast {
+        // §Fase 70.f — a `value_kind == "expression"` value now carries a
+        // lowered expression; evaluate it for real (`let total = price * qty`)
+        // instead of the pre-§70.f behaviour that bound the opaque value string.
+        // Fail-closed (a type/domain error) binds the empty string.
+        eval_expr(expr, ctx)
+            .map(|v| eval_to_str(&v))
+            .unwrap_or_default()
+    } else {
+        match binding.value_kind.as_str() {
+            "reference" => ctx
+                .let_bindings
+                .get(&binding.value)
+                .cloned()
+                .unwrap_or_default(),
+            // "literal" (and a legacy "expression" with no `value_ast`) fall
+            // through to the literal path — byte-identical to pre-§70.f.
+            _ => binding.value.clone(),
+        }
     };
 
     ctx.let_bindings.insert(binding.target.clone(), resolved.clone());
@@ -214,6 +222,12 @@ fn evaluate_condition(cond: &IRConditional, ctx: &DispatchCtx) -> bool {
     }
 }
 
+/// §Fase 70.f — FROZEN legacy-compatibility path. `eval_expr` is the canonical
+/// expression evaluator (rich conditions + `let` values); this string-triple
+/// evaluator is retained ONLY for legacy-shaped conditions (`cond = None`) to
+/// keep them byte-identical to pre-§70 — full unification onto `eval_expr` would
+/// change `if a == b` (binding RHS) semantics, which the zero-drift contract
+/// forbids. Do not extend; new evaluation goes through `eval_expr`.
 fn eval_triple(lhs_raw: &str, op: &str, rhs: &str, ctx: &DispatchCtx) -> bool {
     let lhs = resolve_lhs(lhs_raw, ctx);
     match op {
@@ -835,6 +849,7 @@ mod tests {
             target: "region".into(),
             value: "us-east-1".into(),
             value_kind: "literal".into(),
+            value_ast: None,
         };
         let outcome = run_let(&binding, &mut ctx).await.unwrap();
         match outcome {
@@ -863,6 +878,7 @@ mod tests {
             target: "downstream".into(),
             value: "upstream".into(),
             value_kind: "reference".into(),
+            value_ast: None,
         };
         let outcome = run_let(&binding, &mut ctx).await.unwrap();
         match outcome {
@@ -884,6 +900,7 @@ mod tests {
             target: "x".into(),
             value: "nonexistent".into(),
             value_kind: "reference".into(),
+            value_ast: None,
         };
         let outcome = run_let(&binding, &mut ctx).await.unwrap();
         match outcome {
@@ -904,6 +921,7 @@ mod tests {
             target: "k".into(),
             value: "v".into(),
             value_kind: "literal".into(),
+            value_ast: None,
         };
         run_let(&binding, &mut ctx).await.unwrap();
         assert_eq!(
@@ -1189,6 +1207,83 @@ mod tests {
         assert!(matches!(eval_expr(&e, &ctx), Some(EVal::Int(3))));
     }
 
+    // ── §Fase 70.f — let-value expression evaluation ─────────────────
+
+    #[tokio::test]
+    async fn run_let_evaluates_an_expression_value() {
+        // `let total = price * qty` over bound Ints → "12" (not the literal
+        // string "price * qty", the pre-§70.f bug).
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx.let_bindings.insert("price".into(), "4".into());
+        ctx.let_bindings.insert("qty".into(), "3".into());
+        let binding = IRLetBinding {
+            node_type: "let",
+            source_line: 0,
+            source_column: 0,
+            target: "total".into(),
+            value: "(price * qty)".into(), // vestigial render
+            value_kind: "expression".into(),
+            value_ast: Some(bin("mul", eref("price"), eref("qty"))),
+        };
+        let _ = run_let(&binding, &mut ctx).await.unwrap();
+        assert_eq!(ctx.let_bindings.get("total").unwrap(), "12");
+    }
+
+    // ── §Fase 70.f — the expression-evaluator parity corpus ──────────
+    //
+    // A golden table over the operator + builtin + access surface. Pins
+    // `eval_expr`'s semantics (the same the frontend const-folder mirrors).
+
+    #[test]
+    fn expr_parity_corpus() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("xs".into(), "[1,2,3,4]".into());
+        ctx.let_bindings.insert("name".into(), "Dr. House".into());
+        ctx.let_bindings
+            .insert("rec".into(), r#"{"tier":"gold","n":7}"#.into());
+
+        // (expression, expected truthiness) — covers precedence, numeric vs
+        // string compare, boolean short-circuit, unary, builtins, field/index.
+        let cases: Vec<(IRExpr, bool)> = vec![
+            // arithmetic precedence: 2 + 3 * 4 == 14
+            (bin("eq", Box::new(bin("add", lit_int(2), Box::new(bin("mul", lit_int(3), lit_int(4))))), lit_int(14)), true),
+            // integer division + modulo
+            (bin("eq", Box::new(bin("div", lit_int(17), lit_int(5))), lit_int(3)), true),
+            (bin("eq", Box::new(bin("mod", lit_int(17), lit_int(5))), lit_int(2)), true),
+            // numeric comparison across int/float
+            (bin("ge", lit_int(5), lit_int(5)), true),
+            (bin("lt", lit_int(3), lit_int(5)), true),
+            // string equality + ordering
+            (bin("eq", estr("a"), estr("a")), true),
+            (bin("lt", estr("a"), estr("b")), true),
+            // boolean
+            (bin("and", Box::new(bin("gt", lit_int(2), lit_int(1))), Box::new(bin("lt", lit_int(1), lit_int(2)))), true),
+            (bin("or", Box::new(bin("gt", lit_int(1), lit_int(2))), estr("x")), true),
+            // unary
+            (IRExpr::Unary { op: "not".into(), operand: Box::new(bin("eq", lit_int(1), lit_int(2))) }, true),
+            (bin("eq", Box::new(IRExpr::Unary { op: "neg".into(), operand: lit_int(5) }), lit_int(-5)), true),
+            // builtins over bindings
+            (bin("eq", Box::new(call("length", vec![eref("xs")])), lit_int(4)), true),
+            (call("contains", vec![eref("name"), estr("House")]), true),
+            (call("starts_with", vec![eref("name"), estr("Dr")]), true),
+            // field + index
+            (bin("eq", Box::new(IRExpr::Field { base: eref("rec"), field: "n".into() }), lit_int(7)), true),
+            (bin("eq", Box::new(IRExpr::Index { base: eref("xs"), index: lit_int(0) }), lit_int(1)), true),
+        ];
+
+        for (i, (e, expected)) in cases.iter().enumerate() {
+            let got = eval_expr(e, &ctx).map(|v| eval_truthy(&v));
+            assert_eq!(
+                got,
+                Some(*expected),
+                "parity corpus case {i} mismatch (expr {e:?})"
+            );
+        }
+
+        // Domain errors fail closed (None), not panic.
+        assert!(eval_expr(&bin("div", lit_int(1), lit_int(0)), &ctx).is_none());
+    }
+
     fn fresh_ctx_no_rx() -> (DispatchCtx, mpsc::UnboundedReceiver<crate::flow_execution_event::FlowExecutionEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let ctx = DispatchCtx::new("F", "stub", "", CancellationFlag::new(), tx);
@@ -1315,6 +1410,7 @@ mod tests {
             target: "x".into(),
             value: "y".into(),
             value_kind: "literal".into(),
+            value_ast: None,
         };
         assert!(matches!(
             run_let(&binding, &mut ctx).await,
@@ -1413,6 +1509,7 @@ mod tests {
                 target: "took".into(),
                 value: "then-branch".into(),
                 value_kind: "literal".into(),
+                value_ast: None,
             })],
             else_body: Vec::new(),
             conditions: Vec::new(),
@@ -1442,6 +1539,7 @@ mod tests {
                 target: "took".into(),
                 value: "else-branch".into(),
                 value_kind: "literal".into(),
+                value_ast: None,
             })],
             conditions: Vec::new(),
             conjunctor: String::new(),
@@ -1471,6 +1569,7 @@ mod tests {
                 target: "last".into(),
                 value: "x".into(),
                 value_kind: "reference".into(),
+                value_ast: None,
             })],
         };
         run_for_in(&for_in, &mut ctx).await.unwrap();
@@ -1517,6 +1616,7 @@ mod tests {
                 target: "marker".into(),
                 value: "ran".into(),
                 value_kind: "literal".into(),
+                value_ast: None,
             })],
         };
         run_for_in(&for_in, &mut ctx).await.unwrap();
