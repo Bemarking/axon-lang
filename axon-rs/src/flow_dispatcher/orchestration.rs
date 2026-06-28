@@ -276,7 +276,13 @@ fn eval_expr(e: &crate::ir_nodes::IRExpr, ctx: &DispatchCtx) -> Option<EVal> {
             IRExprLit::Bool { value } => EVal::Bool(*value),
             IRExprLit::Str { value } => EVal::Str(value.clone()),
         }),
-        IRExpr::Ref { path } => Some(eval_coerce_str(resolve_lhs(path, ctx))),
+        // §Fase 70.d — resolve a reference walking nested JSON object fields
+        // (`s.config.level` over a JSON binding), exact-key first. Falls back to
+        // the literal path (matching `resolve_lhs`) when neither resolves.
+        IRExpr::Ref { path } => Some(eval_coerce_str(
+            crate::exec_context::resolve_dotted_var(&ctx.let_bindings, path)
+                .unwrap_or_else(|| path.clone()),
+        )),
         IRExpr::Unary { op, operand } => {
             let v = eval_expr(operand, ctx)?;
             match op.as_str() {
@@ -312,7 +318,54 @@ fn eval_expr(e: &crate::ir_nodes::IRExpr, ctx: &DispatchCtx) -> Option<EVal> {
         },
         // §Fase 70.c — closed-catalog builtin call.
         IRExpr::Call { builtin, args } => eval_builtin(builtin, args, ctx),
+        // §Fase 70.d — field access over a JSON object value.
+        IRExpr::Field { base, field } => {
+            let base_s = eval_to_str(&eval_expr(base, ctx)?);
+            eval_json_field(&base_s, field)
+        }
+        // §Fase 70.d — index access over a JSON array or string.
+        IRExpr::Index { base, index } => {
+            let base_s = eval_to_str(&eval_expr(base, ctx)?);
+            let i = eval_as_int(&eval_expr(index, ctx)?)?;
+            eval_json_index(&base_s, i)
+        }
     }
+}
+
+/// Convert a JSON value to an `EVal`. Objects/arrays become their compact JSON
+/// string so a further `.field` / `[i]` can re-parse and walk them.
+fn json_to_eval(v: &serde_json::Value) -> EVal {
+    match v {
+        serde_json::Value::String(s) => EVal::Str(s.clone()),
+        serde_json::Value::Bool(b) => EVal::Bool(*b),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(EVal::Int)
+            .unwrap_or_else(|| EVal::Float(n.as_f64().unwrap_or(0.0))),
+        serde_json::Value::Null => EVal::Str(String::new()),
+        other => EVal::Str(other.to_string()),
+    }
+}
+
+/// §Fase 70.d — `base.field` over a JSON object string. `None` (fail-closed)
+/// when the base is not a JSON object or the field is absent.
+fn eval_json_field(base_s: &str, field: &str) -> Option<EVal> {
+    let v: serde_json::Value = serde_json::from_str(base_s).ok()?;
+    v.get(field).map(json_to_eval)
+}
+
+/// §Fase 70.d — `base[i]` over a JSON array (element) or a string (character).
+fn eval_json_index(base_s: &str, i: i64) -> Option<EVal> {
+    if i < 0 {
+        return None;
+    }
+    if let Ok(serde_json::Value::Array(a)) = serde_json::from_str::<serde_json::Value>(base_s) {
+        return a.get(i as usize).map(json_to_eval);
+    }
+    base_s
+        .chars()
+        .nth(i as usize)
+        .map(|c| EVal::Str(c.to_string()))
 }
 
 /// §Fase 70.c — evaluate a pure builtin call. `args[0]` is the receiver.
@@ -1082,6 +1135,58 @@ mod tests {
             cond: Some(bin("ge", Box::new(call("length", vec![eref("recent")])), eref("limit"))),
         };
         assert!(evaluate_condition(&cond, &ctx), "8 recent >= limit 5 → then");
+    }
+
+    // ── §Fase 70.d — field / index access ────────────────────────────
+
+    #[test]
+    fn index_into_a_json_array() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("items".into(), "[10,20,30]".into());
+        let e = IRExpr::Index {
+            base: eref("items"),
+            index: lit_int(1),
+        };
+        assert!(matches!(eval_expr(&e, &ctx), Some(EVal::Int(20))));
+    }
+
+    #[test]
+    fn index_out_of_bounds_fails_closed() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("items".into(), "[10,20]".into());
+        let e = IRExpr::Index {
+            base: eref("items"),
+            index: lit_int(9),
+        };
+        assert!(eval_expr(&e, &ctx).is_none());
+    }
+
+    #[test]
+    fn field_of_an_indexed_object() {
+        // `items[0].name` over a JSON array of objects.
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings
+            .insert("items".into(), r#"[{"name":"axon"},{"name":"kivi"}]"#.into());
+        let e = IRExpr::Field {
+            base: Box::new(IRExpr::Index {
+                base: eref("items"),
+                index: lit_int(0),
+            }),
+            field: "name".into(),
+        };
+        assert!(matches!(eval_expr(&e, &ctx), Some(EVal::Str(s)) if s == "axon"));
+    }
+
+    #[test]
+    fn ref_walks_nested_json_object_fields() {
+        // §Fase 70.d — a dotted ref resolves nested JSON (rich-condition path).
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings
+            .insert("s".into(), r#"{"config":{"outbound":{"level":3}}}"#.into());
+        let e = IRExpr::Ref {
+            path: "s.config.outbound.level".into(),
+        };
+        assert!(matches!(eval_expr(&e, &ctx), Some(EVal::Int(3))));
     }
 
     fn fresh_ctx_no_rx() -> (DispatchCtx, mpsc::UnboundedReceiver<crate::flow_execution_event::FlowExecutionEvent>) {

@@ -1795,6 +1795,34 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            Expr::Field(base, field) => {
+                // §Fase 70.d — field access. The field's type is not statically
+                // known (JSON/dynamic) → `Unknown` (permissive). Accessing a
+                // field of a known scalar (number/bool) is a type error.
+                let tb = self.infer_expr(base, scope, loc);
+                if matches!(tb, T::Int | T::Float | T::Bool) {
+                    self.emit(
+                        format!(
+                            "axon-T814 cannot access field `.{field}` of a {}",
+                            tb.label()
+                        ),
+                        loc,
+                    );
+                }
+                T::Unknown
+            }
+            Expr::Index(base, index) => {
+                // §Fase 70.d — index access. Result type unknown (dynamic).
+                let tb = self.infer_expr(base, scope, loc);
+                let _ = self.infer_expr(index, scope, loc);
+                if matches!(tb, T::Int | T::Float | T::Bool) {
+                    self.emit(
+                        format!("axon-T814 cannot index a {} (need a collection or string)", tb.label()),
+                        loc,
+                    );
+                }
+                T::Unknown
+            }
             Expr::Binary(op, l, r) => {
                 let tl = self.infer_expr(l, scope, loc);
                 let tr = self.infer_expr(r, scope, loc);
