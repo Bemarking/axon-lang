@@ -47,6 +47,10 @@ tracing-appender = "0.2"
 uuid = { version = "1", features = ["v4"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "json", "chrono", "migrate", "uuid", "bigdecimal"] }
 chrono = { version = "0.4", features = ["serde"] }
+# §Fase 71.b — IANA timezone database for the `window` temporal guard. The
+# frontend format-checks a tz name (zero-dependency); the runtime does the
+# authoritative IANA resolution + DST-correct local-time math here.
+chrono-tz = "0.10"
 base64 = "0.22"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-secretsmanager = "1"

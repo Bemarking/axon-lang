@@ -343,3 +343,6 @@ pub mod tracer;
 pub mod version_diff;
 pub mod webhook_delivery;
 pub mod webhooks;
+/// §Fase 71.b — the runtime for the `window` temporal execution guard
+/// (timezone-aware `is_in_window` / `next_window_open` via chrono-tz).
+pub mod window;
