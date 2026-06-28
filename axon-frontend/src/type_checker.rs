@@ -514,6 +514,78 @@ pub struct TypeChecker<'a> {
     ext_scan_categories: std::collections::HashSet<String>,
 }
 
+// ── §Fase 70.b — static type inference for the pure expression engine ─────────
+
+/// The static type of a pure expression (§Fase 70). `Unknown` is the permissive
+/// top — a reference whose type the compiler cannot determine stays `Unknown`
+/// and never triggers a type error (no false positives). Only operands with a
+/// KNOWN, incompatible type raise `axon-T81x`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InferType {
+    Int,
+    Float,
+    Bool,
+    Str,
+    Unknown,
+}
+
+impl InferType {
+    fn is_numeric(self) -> bool {
+        matches!(self, InferType::Int | InferType::Float)
+    }
+    fn label(self) -> &'static str {
+        match self {
+            InferType::Int => "Int",
+            InferType::Float => "Float",
+            InferType::Bool => "Bool",
+            InferType::Str => "String",
+            InferType::Unknown => "unknown",
+        }
+    }
+    /// Equality-comparability class: numbers (0), booleans (1), strings (2),
+    /// unknown (3). Same class ⇒ `==`/`!=` is well-typed.
+    fn eq_class(self) -> u8 {
+        match self {
+            InferType::Int | InferType::Float => 0,
+            InferType::Bool => 1,
+            InferType::Str => 2,
+            InferType::Unknown => 3,
+        }
+    }
+}
+
+/// Map an AXON type name (the string form a param / annotation carries) to an
+/// `InferType`. Conservative: an unrecognised type name is `Unknown` (so a
+/// future or domain type never produces a spurious condition type error).
+fn infer_type_from_name(name: &str) -> InferType {
+    match name.trim_end_matches('?') {
+        "Int" | "Integer" | "BigInt" => InferType::Int,
+        "Float" | "Double" | "Number" | "Numeric" => InferType::Float,
+        "Bool" | "Boolean" => InferType::Bool,
+        "String" | "Text" => InferType::Str,
+        _ => InferType::Unknown,
+    }
+}
+
+/// The surface symbol of a binary operator (for diagnostics).
+fn bin_op_symbol(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        BinOp::Eq => "==",
+        BinOp::Ne => "!=",
+        BinOp::Lt => "<",
+        BinOp::Le => "<=",
+        BinOp::Gt => ">",
+        BinOp::Ge => ">=",
+        BinOp::And => "and",
+        BinOp::Or => "or",
+    }
+}
+
 impl<'a> TypeChecker<'a> {
     pub fn new(program: &'a Program) -> Self {
         TypeChecker {
@@ -1584,6 +1656,148 @@ impl<'a> TypeChecker<'a> {
                     ),
                     &node.loc,
                 );
+            }
+        }
+    }
+
+    /// §Fase 70.b — infer the static type of a pure expression, emitting
+    /// `axon-T81x` on a type error. `scope` maps in-scope names (flow params)
+    /// to their AXON type name; a name not in scope (or an unrecognised type)
+    /// is `Unknown` and never errors. Errors are located at the enclosing
+    /// condition (`loc`) since the `Expr` AST carries no per-node location.
+    /// Returns the inferred result type (used recursively).
+    fn infer_expr(
+        &mut self,
+        e: &Expr,
+        scope: &std::collections::BTreeMap<String, String>,
+        loc: &Loc,
+    ) -> InferType {
+        use InferType as T;
+        match e {
+            Expr::Lit(ExprLit::Int(_)) => T::Int,
+            Expr::Lit(ExprLit::Float(_)) => T::Float,
+            Expr::Lit(ExprLit::Bool(_)) => T::Bool,
+            Expr::Lit(ExprLit::Str(_)) => T::Str,
+            Expr::Ref(p) => scope
+                .get(p)
+                .map(|n| infer_type_from_name(n))
+                .unwrap_or(T::Unknown),
+            Expr::Unary(UnOp::Neg, x) => {
+                let t = self.infer_expr(x, scope, loc);
+                if t != T::Unknown && !t.is_numeric() {
+                    self.emit(
+                        format!(
+                            "axon-T810 unary `-` requires a numeric operand, got {}",
+                            t.label()
+                        ),
+                        loc,
+                    );
+                }
+                if t.is_numeric() {
+                    t
+                } else {
+                    T::Unknown
+                }
+            }
+            Expr::Unary(UnOp::Not, x) => {
+                let t = self.infer_expr(x, scope, loc);
+                if t != T::Unknown && t != T::Bool {
+                    self.emit(
+                        format!(
+                            "axon-T812 `not` requires a boolean operand, got {}",
+                            t.label()
+                        ),
+                        loc,
+                    );
+                }
+                T::Bool
+            }
+            Expr::Binary(op, l, r) => {
+                let tl = self.infer_expr(l, scope, loc);
+                let tr = self.infer_expr(r, scope, loc);
+                let sym = bin_op_symbol(*op);
+                match op {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                        if tl != T::Unknown && !tl.is_numeric() {
+                            self.emit(
+                                format!(
+                                    "axon-T810 left operand of `{sym}` must be numeric, got {}",
+                                    tl.label()
+                                ),
+                                loc,
+                            );
+                        }
+                        if tr != T::Unknown && !tr.is_numeric() {
+                            self.emit(
+                                format!(
+                                    "axon-T810 right operand of `{sym}` must be numeric, got {}",
+                                    tr.label()
+                                ),
+                                loc,
+                            );
+                        }
+                        if tl == T::Int && tr == T::Int {
+                            T::Int
+                        } else if tl.is_numeric() && tr.is_numeric() {
+                            T::Float
+                        } else {
+                            T::Unknown
+                        }
+                    }
+                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                        if tl != T::Unknown && tr != T::Unknown {
+                            let ok =
+                                (tl.is_numeric() && tr.is_numeric()) || (tl == T::Str && tr == T::Str);
+                            if !ok {
+                                self.emit(
+                                    format!(
+                                        "axon-T811 cannot order {} against {} with `{sym}` \
+                                         (ordering needs two numbers or two strings)",
+                                        tl.label(),
+                                        tr.label()
+                                    ),
+                                    loc,
+                                );
+                            }
+                        }
+                        T::Bool
+                    }
+                    BinOp::Eq | BinOp::Ne => {
+                        if tl != T::Unknown && tr != T::Unknown && tl.eq_class() != tr.eq_class() {
+                            self.emit(
+                                format!(
+                                    "axon-T811 cannot compare {} with {} using `{sym}` \
+                                     (incompatible types)",
+                                    tl.label(),
+                                    tr.label()
+                                ),
+                                loc,
+                            );
+                        }
+                        T::Bool
+                    }
+                    BinOp::And | BinOp::Or => {
+                        if tl != T::Unknown && tl != T::Bool {
+                            self.emit(
+                                format!(
+                                    "axon-T812 left operand of `{sym}` must be boolean, got {}",
+                                    tl.label()
+                                ),
+                                loc,
+                            );
+                        }
+                        if tr != T::Unknown && tr != T::Bool {
+                            self.emit(
+                                format!(
+                                    "axon-T812 right operand of `{sym}` must be boolean, got {}",
+                                    tr.label()
+                                ),
+                                loc,
+                            );
+                        }
+                        T::Bool
+                    }
+                }
             }
         }
     }
@@ -5045,6 +5259,12 @@ impl<'a> TypeChecker<'a> {
                 }
                 // Recurse into control flow bodies
                 FlowStep::If(n) => {
+                    // §Fase 70.b — static type-check a rich condition expression
+                    // (the legacy triple form, `cond = None`, is unaffected).
+                    if let Some(cond) = &n.cond {
+                        let scope = self.current_flow_params.types.clone();
+                        let _ = self.infer_expr(cond, &scope, &n.loc);
+                    }
                     self.check_flow_steps(&n.then_body, flow_name);
                     self.check_flow_steps(&n.else_body, flow_name);
                 }
