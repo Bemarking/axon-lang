@@ -59,16 +59,44 @@ pub struct GLMBackend {
 }
 
 impl GLMBackend {
-    /// Construct from env. `GLM_API_KEY` is read at construction time;
-    /// `None` is permitted (auth check fires at first call).
+    /// Construct from env. `GLM_API_KEY` is read at construction time
+    /// (`None` is permitted — the auth check fires at first call). The
+    /// `GLM_BASE_URL` / `GLM_CHAT_PATH` overrides (§Fase 24.g.2, Kivi
+    /// brief #37) are applied so an adopter on z.ai can redirect the
+    /// backend off the bigmodel.cn default without a code change.
     pub fn from_env() -> Self {
-        Self::with_api_key(env::var(API_KEY_ENV).ok())
+        let mut config = OpenAICompatConfig::glm();
+        config.apply_env_overrides();
+        let api_key = env::var(API_KEY_ENV).ok();
+        Self {
+            inner: OpenAICompatibleBackend::new(config, api_key),
+        }
     }
 
     /// Construct with an explicit API key (or `None`).
     pub fn with_api_key(api_key: Option<String>) -> Self {
         Self {
             inner: OpenAICompatibleBackend::new(OpenAICompatConfig::glm(), api_key),
+        }
+    }
+
+    /// §Fase 24.g.2 (Kivi brief #37) — construct with a per-tenant key +
+    /// optional explicit base-URL / chat-path overrides. Precedence:
+    /// **explicit (per-tenant) > `GLM_BASE_URL`/`GLM_CHAT_PATH` env >
+    /// bigmodel.cn default.** `api_key = None` falls back to `GLM_API_KEY`.
+    /// This is the server/daemon construction path that honours a tenant's
+    /// z.ai endpoint (`https://api.z.ai/api/paas/v4` + `/chat/completions`).
+    pub fn with_api_key_and_endpoint(
+        api_key: Option<String>,
+        base_url: Option<&str>,
+        chat_path: Option<&str>,
+    ) -> Self {
+        let mut config = OpenAICompatConfig::glm();
+        config.apply_env_overrides();
+        config.apply_explicit_overrides(base_url, chat_path);
+        let api_key = api_key.or_else(|| config.api_key_env.and_then(|e| env::var(e).ok()));
+        Self {
+            inner: OpenAICompatibleBackend::new(config, api_key),
         }
     }
 

@@ -57,17 +57,41 @@ pub struct OpenAIBackend {
 }
 
 impl OpenAIBackend {
-    /// Construct from env. `OPENAI_API_KEY` is read at construction time;
-    /// `None` is permitted (auth check fires at first call).
+    /// Construct from env. `OPENAI_API_KEY` is read at construction time
+    /// (`None` is permitted — auth check fires at first call). The
+    /// `OPENAI_BASE_URL` / `OPENAI_CHAT_PATH` overrides (§Fase 24.g.2)
+    /// redirect the backend at an Azure / proxy OpenAI-compatible
+    /// endpoint without a code change.
     pub fn from_env() -> Self {
+        let mut config = OpenAICompatConfig::openai();
+        config.apply_env_overrides();
         let api_key = env::var(API_KEY_ENV).ok();
-        Self::with_api_key(api_key)
+        Self {
+            inner: OpenAICompatibleBackend::new(config, api_key),
+        }
     }
 
     /// Construct with an explicit API key (or `None`).
     pub fn with_api_key(api_key: Option<String>) -> Self {
         Self {
             inner: OpenAICompatibleBackend::new(OpenAICompatConfig::openai(), api_key),
+        }
+    }
+
+    /// §Fase 24.g.2 — construct with a per-tenant key + optional explicit
+    /// base-URL / chat-path overrides (precedence: explicit > env >
+    /// default). `api_key = None` falls back to `OPENAI_API_KEY`.
+    pub fn with_api_key_and_endpoint(
+        api_key: Option<String>,
+        base_url: Option<&str>,
+        chat_path: Option<&str>,
+    ) -> Self {
+        let mut config = OpenAICompatConfig::openai();
+        config.apply_env_overrides();
+        config.apply_explicit_overrides(base_url, chat_path);
+        let api_key = api_key.or_else(|| config.api_key_env.and_then(|e| env::var(e).ok()));
+        Self {
+            inner: OpenAICompatibleBackend::new(config, api_key),
         }
     }
 

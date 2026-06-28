@@ -163,6 +163,10 @@ pub fn execute_listener_body(
                 &empty,
                 &empty,
                 None,
+                // §Fase 24.g.2 — OSS daemon: env/default LLM endpoint
+                // (per-tenant override is the enterprise supervisor's path).
+                None,
+                None,
             );
             (run.flow_name.clone(), result)
         })

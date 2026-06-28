@@ -483,6 +483,59 @@ pub fn resolve_streaming_backend_with_key(
     }
 }
 
+/// §Fase 24.g.2 (Kivi brief #37) — like [`resolve_streaming_backend_with_key`]
+/// but also threads an EXPLICIT per-tenant base-URL / chat-path override onto
+/// the OpenAI-compatible providers (openai, kimi, glm, ollama, openrouter).
+///
+/// Precedence inside each provider is **explicit (per-tenant secret) > process
+/// env (`<PROVIDER>_BASE_URL` / `_CHAT_PATH`) > preset default** — the same
+/// shape as the per-tenant `tool.base_url` override, applied to the LLM
+/// endpoint. This is what lets a tenant point the `glm` backend at z.ai's
+/// `https://api.z.ai/api/paas/v4` + `/chat/completions` instead of the
+/// bigmodel.cn default.
+///
+/// `base_url`/`chat_path = None` ⇒ identical behaviour to
+/// `resolve_streaming_backend_with_key` for the OpenAI-compat providers
+/// (env/default), so existing call sites that pass `None` are unaffected.
+/// Providers without an OpenAI-compat config (anthropic, gemini, stub) ignore
+/// the endpoint override and fall back to the key-only resolver.
+pub fn resolve_streaming_backend_with_key_and_endpoint(
+    name: &str,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    chat_path: Option<&str>,
+) -> Option<Box<dyn Backend>> {
+    let key = || api_key.map(|s| s.to_string());
+    match name {
+        "openai" => Some(Box::new(openai::OpenAIBackend::with_api_key_and_endpoint(
+            key(),
+            base_url,
+            chat_path,
+        ))),
+        "kimi" => Some(Box::new(kimi::KimiBackend::with_api_key_and_endpoint(
+            key(),
+            base_url,
+            chat_path,
+        ))),
+        "glm" => Some(Box::new(glm::GLMBackend::with_api_key_and_endpoint(
+            key(),
+            base_url,
+            chat_path,
+        ))),
+        "ollama" => Some(Box::new(ollama::OllamaBackend::with_api_key_and_endpoint(
+            key(),
+            base_url,
+            chat_path,
+        ))),
+        "openrouter" => Some(Box::new(
+            openrouter::OpenRouterBackend::with_api_key_and_endpoint(key(), base_url, chat_path),
+        )),
+        // anthropic / gemini / stub have no OpenAI-compat base; the endpoint
+        // override does not apply — defer to the key-only resolver.
+        _ => resolve_streaming_backend_with_key(name, api_key),
+    }
+}
+
 /// Names recognised by [`resolve_streaming_backend`]. Sorted.
 /// Pinned by the drift test below.
 pub const STREAMING_BACKEND_NAMES: &[&str] = &[

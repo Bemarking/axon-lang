@@ -2249,6 +2249,12 @@ fn server_execute(
         // per-process); the multi-tenant per-tenant override is the
         // enterprise executor's concern. Unset → no resolution (D5).
         std::env::var("AXON_TOOL_BASE_URL").ok().as_deref(),
+        // §Fase 24.g.2 — the OSS server has no per-tenant LLM endpoint
+        // override; the `<PROVIDER>_BASE_URL` / `_CHAT_PATH` process env
+        // is applied inside the backend factory. Per-tenant overrides are
+        // the enterprise executor's concern.
+        None,
+        None,
     )?;
 
     // Count anchors from IR

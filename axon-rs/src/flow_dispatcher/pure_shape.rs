@@ -687,9 +687,14 @@ pub async fn run_pure_shape(
     // §Fase 65.C — pin the per-tenant API key (when the caller threaded one
     // via `with_api_key`) so the LLM call uses THIS tenant's key, not the
     // process env var. `None` ⇒ the prior env-key behavior, unchanged.
-    let backend = crate::backends::resolve_streaming_backend_with_key(
+    // §Fase 24.g.2 (Kivi brief #37) — also thread the per-tenant LLM endpoint
+    // override (base URL + chat path) so e.g. `glm` hits z.ai's `/api/paas/v4`
+    // instead of the bigmodel.cn default. Both `None` ⇒ env/default, unchanged.
+    let backend = crate::backends::resolve_streaming_backend_with_key_and_endpoint(
         &ctx.backend_name,
         ctx.api_key.as_deref(),
+        ctx.llm_base_url.as_deref(),
+        ctx.llm_chat_path.as_deref(),
     )
     .ok_or_else(|| DispatchError::BackendError {
             name: ctx.backend_name.clone(),

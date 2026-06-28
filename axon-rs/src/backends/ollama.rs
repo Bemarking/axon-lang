@@ -108,6 +108,27 @@ impl OllamaBackend {
         Self::with_api_key(None)
     }
 
+    /// §Fase 24.g.2 — construct with a per-tenant key + optional explicit
+    /// base-URL / chat-path overrides. Precedence: **explicit (per-tenant)
+    /// > `OLLAMA_HOST` env > localhost default.** Lets a tenant point at a
+    /// remote / containerised Ollama without a code change.
+    pub fn with_api_key_and_endpoint(
+        api_key: Option<String>,
+        base_url: Option<&str>,
+        chat_path: Option<&str>,
+    ) -> Self {
+        let mut config = OpenAICompatConfig::ollama();
+        // env tier — Ollama's own `OLLAMA_HOST` base override.
+        let host = env::var(OLLAMA_HOST_ENV).ok();
+        config.apply_explicit_overrides(host.as_deref(), None);
+        // per-tenant tier (wins over env).
+        config.apply_explicit_overrides(base_url, chat_path);
+        let api_key = api_key.or_else(|| env::var(API_KEY_ENV).ok());
+        Self {
+            inner: OpenAICompatibleBackend::new(config, api_key),
+        }
+    }
+
     /// Override the base URL (test fixtures, remote Ollama instances,
     /// containerised deployments). Returns `self` for builder chaining.
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
