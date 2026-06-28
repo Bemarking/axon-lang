@@ -1656,6 +1656,11 @@ pub struct IRDaemon {
     pub strategy: String,
     pub on_stuck: String,
     pub shield_ref: String,
+    /// §Fase 71.c — the `window:` temporal binding (a `window` primitive name).
+    /// Empty ⇒ no temporal guard; `skip_serializing_if` keeps a windowless
+    /// daemon's JSON byte-identical (D8 zero-drift).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub window_ref: String,
     pub max_tokens: Option<i64>,
     pub max_time: String,
     pub max_cost: Option<f64>,

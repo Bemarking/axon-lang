@@ -6604,6 +6604,30 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
         }
+        // §Fase 71.c — the `window:` temporal binding must name a defined
+        // `window` primitive. The supervisor evaluates it before claiming a
+        // scheduled tick (inside ⇒ fire; outside ⇒ `on_outside`).
+        if !node.window_ref.is_empty() {
+            match self.symbols.lookup(&node.window_ref) {
+                None => self.emit(
+                    format!(
+                        "axon-T825 daemon '{}' binds undefined window '{}' — \
+                         `window:` must name a declared `window` primitive.",
+                        node.name, node.window_ref
+                    ),
+                    &node.loc,
+                ),
+                Some(sym) if sym.kind != "window" => self.emit(
+                    format!(
+                        "axon-T825 daemon '{}' `window:` references '{}', which is a {}, \
+                         not a window.",
+                        node.name, node.window_ref, sym.kind
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
         for listener in &node.listeners {
             self.check_listen(listener, &node.name);
         }

@@ -1246,6 +1246,8 @@ impl IRGenerator {
             strategy: n.strategy.clone(),
             on_stuck: n.on_stuck.clone(),
             shield_ref: n.shield_ref.clone(),
+            // §Fase 71.c — the daemon's `window:` temporal binding.
+            window_ref: n.window_ref.clone(),
             max_tokens: n.max_tokens,
             max_time: n.max_time.clone(),
             max_cost: n.max_cost,

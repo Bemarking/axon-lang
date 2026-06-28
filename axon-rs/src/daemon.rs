@@ -30,7 +30,9 @@
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 
 use axon_frontend::cron::{cron_expr, CronSchedule};
-use axon_frontend::ir_nodes::{IRDaemon, IRFlowNode, IRListenStep, IRRun};
+use axon_frontend::ir_nodes::{IRDaemon, IRFlowNode, IRListenStep, IRRun, IRWindow};
+
+use crate::window::{decide, WindowAction};
 
 /// A clock — injected so the scheduler is testable with a fixed time.
 pub trait Clock: Send + Sync {
@@ -124,6 +126,21 @@ pub fn cron_listeners(daemon: &IRDaemon) -> Vec<CronListener<'_>> {
         .collect()
 }
 
+/// §Fase 71.c — the `window` primitive a daemon binds via `window:`, resolved
+/// against the program's window declarations. `None` when the daemon has no
+/// temporal guard (the common case — behaviour is byte-identical to pre-§71).
+/// A dangling `window_ref` (rejected by `axon-T825` at compile time) resolves
+/// to `None` here, so the daemon fires unguarded rather than panicking.
+pub fn bound_window<'a>(
+    ir: &'a axon_frontend::ir_nodes::IRProgram,
+    daemon: &IRDaemon,
+) -> Option<&'a IRWindow> {
+    if daemon.window_ref.is_empty() {
+        return None;
+    }
+    ir.windows.iter().find(|w| w.name == daemon.window_ref)
+}
+
 /// The `run <Flow>` invocations in a handler body, in order. v1 scheduled
 /// handlers ORCHESTRATE flows (the logic lives in the flows they run); this is
 /// the set of flows a tick dispatches.
@@ -190,16 +207,20 @@ pub async fn run_daemon(
     cancel: crate::cancel_token::CancellationFlag,
 ) {
     // Snapshot the daemon's cron schedules + bodies (owned, so the spawned
-    // per-listener tasks don't borrow `ir`'s daemon list).
-    let listeners: Vec<(CronSchedule, Vec<IRFlowNode>, String)> = {
+    // per-listener tasks don't borrow `ir`'s daemon list). §Fase 71.c also
+    // snapshots the bound `window` (cloned once — it is the same guard for every
+    // listener of the daemon).
+    let (listeners, window): (Vec<(CronSchedule, Vec<IRFlowNode>, String)>, Option<IRWindow>) = {
         let Some(daemon) = ir.daemons.iter().find(|d| d.name == daemon_name) else {
             eprintln!("§52.c.2 run_daemon: daemon '{daemon_name}' not in IR — nothing to drive");
             return;
         };
-        cron_listeners(daemon)
+        let window = bound_window(&ir, daemon).cloned();
+        let listeners = cron_listeners(daemon)
             .into_iter()
             .map(|l| (l.schedule, l.body.to_vec(), l.channel))
-            .collect()
+            .collect();
+        (listeners, window)
     };
 
     let mut tasks = Vec::new();
@@ -209,6 +230,7 @@ pub async fn run_daemon(
         let cancel = cancel.clone();
         let daemon_name = daemon_name.clone();
         let backend = backend.clone();
+        let window = window.clone();
         tasks.push(tokio::spawn(async move {
             loop {
                 let now = clock.now();
@@ -223,6 +245,43 @@ pub async fn run_daemon(
                 tokio::select! {
                     _ = cancel.cancelled() => return,
                     _ = tokio::time::sleep(wait) => {
+                        // §Fase 71.c — the temporal guard. `next` is the wall-clock
+                        // minute the tick fires at; evaluate the bound window there.
+                        if let Some(w) = &window {
+                            match decide(next, w) {
+                                WindowAction::Fire => {} // inside → fall through and fire.
+                                WindowAction::Skip => {
+                                    eprintln!(
+                                        "§71.c daemon '{daemon_name}' tick at {next} is OUTSIDE \
+                                         window '{}' (on_outside: skip) — dropped",
+                                        w.name
+                                    );
+                                    continue;
+                                }
+                                WindowAction::Warn => {
+                                    eprintln!(
+                                        "§71.c daemon '{daemon_name}' tick at {next} is OUTSIDE \
+                                         window '{}' (on_outside: warn) — firing anyway",
+                                        w.name
+                                    );
+                                    // fall through and fire.
+                                }
+                                WindowAction::Defer { open_at } => {
+                                    // The OSS single-process supervisor cannot persist a
+                                    // defer ledger; it degrades `defer` to a logged skip.
+                                    // True coalesced fire-once-when-open is the §71.d
+                                    // enterprise defer-ledger.
+                                    eprintln!(
+                                        "§71.c daemon '{daemon_name}' tick at {next} is OUTSIDE \
+                                         window '{}' (on_outside: defer) — OSS degrades defer to \
+                                         skip (next opening {open_at:?}); the enterprise \
+                                         defer-ledger fires it once when the window opens",
+                                        w.name
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
                         let results = execute_listener_body(&ir, &body, &backend, "<daemon>");
                         for (flow, res) in results {
                             if let Err(e) = res {
@@ -320,5 +379,38 @@ mod tests {
         let invs = run_invocations(crons[0].body);
         assert_eq!(invs.len(), 1);
         assert_eq!(invs[0].flow_name, "HibernateSession");
+    }
+
+    #[test]
+    fn bound_window_resolves_the_daemon_guard() {
+        let ir = ir_with_daemon(
+            "flow Send() -> Unit { step S { ask: \"x\" output: Unit } }\n\
+             window BusinessHours {\n\
+               timezone: \"America/Bogota\"\n\
+               allow: [ { days: Mon..Fri, hours: 9..18 } ]\n\
+               on_outside: skip\n\
+             }\n\
+             daemon Scheduler {\n\
+               window: BusinessHours\n\
+               requires: [flow.execute]\n\
+               listen \"cron:*/5 * * * *\" as tick { run Send() }\n\
+             }",
+        );
+        let daemon = ir.daemons.iter().find(|d| d.name == "Scheduler").unwrap();
+        assert_eq!(daemon.window_ref, "BusinessHours");
+        let w = bound_window(&ir, daemon).expect("window resolves");
+        assert_eq!(w.name, "BusinessHours");
+        assert_eq!(w.timezone, "America/Bogota");
+        assert_eq!(w.on_outside, "skip");
+
+        // A daemon with no `window:` resolves to None (unguarded — pre-§71).
+        let unguarded = ir_with_daemon(
+            "flow Send() -> Unit { step S { ask: \"x\" output: Unit } }\n\
+             daemon Plain {\n\
+               listen \"cron:*/5 * * * *\" as tick { run Send() }\n\
+             }",
+        );
+        let d2 = unguarded.daemons.iter().find(|d| d.name == "Plain").unwrap();
+        assert!(bound_window(&unguarded, d2).is_none());
     }
 }

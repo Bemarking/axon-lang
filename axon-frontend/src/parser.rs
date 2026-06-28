@@ -5427,6 +5427,7 @@ impl Parser {
             strategy: String::new(),
             on_stuck: String::new(),
             shield_ref: String::new(),
+            window_ref: String::new(),
             max_tokens: None,
             max_time: String::new(),
             max_cost: None,
@@ -5457,6 +5458,8 @@ impl Parser {
                     "strategy" => node.strategy = self.consume_any_ident_or_kw()?.value.clone(),
                     "on_stuck" => node.on_stuck = self.consume_any_ident_or_kw()?.value.clone(),
                     "shield" => node.shield_ref = self.consume_any_ident_or_kw()?.value.clone(),
+                    // §Fase 71.c — `window: <WindowName>` temporal binding.
+                    "window" => node.window_ref = self.consume_any_ident_or_kw()?.value.clone(),
                     "max_tokens" => node.max_tokens = self.parse_optional_int(),
                     "max_time" => node.max_time = self.consume_any_ident_or_kw()?.value.clone(),
                     "max_cost" => node.max_cost = self.parse_optional_float(),
