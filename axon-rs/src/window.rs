@@ -90,6 +90,47 @@ pub fn next_window_open(now: DateTime<Utc>, window: &IRWindow) -> Option<DateTim
     None
 }
 
+/// §Fase 71.c — the supervisor's decision for a single scheduled tick under a
+/// bound `window`. Computed by [`decide`]; honored by the OSS single-process
+/// daemon driver and (for `Defer`) the §71.d enterprise defer-ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowAction {
+    /// Inside the window — fire normally.
+    Fire,
+    /// Outside + `on_outside: skip` — drop the tick (fire-forward, like an
+    /// unguarded daemon that simply had nothing to do this minute). Also the
+    /// fail-closed action when the timezone cannot be resolved.
+    Skip,
+    /// Outside + `on_outside: warn` — fire anyway, but the caller audits a
+    /// `window:outside` warning so the breach is observable.
+    Warn,
+    /// Outside + `on_outside: defer` — the tick should run at the next window
+    /// opening. `open_at` is that instant (the §71.d defer-ledger input), or
+    /// `None` if no opening was found within the bound. The OSS single-process
+    /// supervisor cannot persist a ledger, so it degrades this to a logged skip;
+    /// the enterprise supervisor records a coalesced fire-once row.
+    Defer { open_at: Option<DateTime<Utc>> },
+}
+
+/// §Fase 71.c — decide what to do with a tick firing at `now` under `window`.
+/// Pure + total. An unresolvable timezone fails CLOSED to [`WindowAction::Skip`]
+/// (never fire under a guard we cannot evaluate). `on_outside` has already been
+/// catalog-checked at compile time (`axon-T824`); any non-`warn`/`defer` value
+/// (i.e. `skip`) and defensively any unknown maps to `Skip`.
+pub fn decide(now: DateTime<Utc>, window: &IRWindow) -> WindowAction {
+    match is_in_window(now, window) {
+        Some(true) => WindowAction::Fire,
+        Some(false) => match window.on_outside.as_str() {
+            "warn" => WindowAction::Warn,
+            "defer" => WindowAction::Defer {
+                open_at: next_window_open(now, window),
+            },
+            _ => WindowAction::Skip,
+        },
+        None => WindowAction::Skip,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +145,9 @@ mod tests {
         }
     }
     fn window(tz: &str, allow: Vec<IRWindowSpan>) -> IRWindow {
+        window_on(tz, allow, "defer")
+    }
+    fn window_on(tz: &str, allow: Vec<IRWindowSpan>, on_outside: &str) -> IRWindow {
         IRWindow {
             node_type: "window",
             source_line: 0,
@@ -112,7 +156,7 @@ mod tests {
             timezone: tz.into(),
             allow,
             exclude: None,
-            on_outside: "defer".into(),
+            on_outside: on_outside.into(),
         }
     }
     /// A UTC instant from an ISO-ish string `YYYY-MM-DDТHH:MM:SSZ`.
@@ -185,5 +229,43 @@ mod tests {
         // If already inside, returns the current hour.
         let inside = next_window_open(utc("2026-06-29T15:30:00Z"), &bh).unwrap();
         assert_eq!(inside, utc("2026-06-29T15:00:00Z"));
+    }
+
+    // ── decide — the supervisor's per-tick action ────────────────────────
+
+    #[test]
+    fn decide_inside_fires_regardless_of_on_outside() {
+        // Monday 14:00 UTC = 09:00 Bogota → inside. on_outside is irrelevant.
+        for oo in ["skip", "warn", "defer"] {
+            let w = window_on("America/Bogota", vec![span("Mon", "Fri", 9, 18)], oo);
+            assert_eq!(decide(utc("2026-06-29T14:00:00Z"), &w), WindowAction::Fire, "{oo}");
+        }
+    }
+
+    #[test]
+    fn decide_outside_honors_on_outside() {
+        let spans = || vec![span("Mon", "Fri", 9, 18)];
+        // 13:00 UTC = 08:00 Bogota Monday → outside (before 9).
+        let t = utc("2026-06-29T13:00:00Z");
+
+        let skip = window_on("America/Bogota", spans(), "skip");
+        assert_eq!(decide(t, &skip), WindowAction::Skip);
+
+        let warn = window_on("America/Bogota", spans(), "warn");
+        assert_eq!(decide(t, &warn), WindowAction::Warn);
+
+        let defer = window_on("America/Bogota", spans(), "defer");
+        // Defers to the next opening — 09:00 Bogota = 14:00 UTC the same day.
+        assert_eq!(
+            decide(t, &defer),
+            WindowAction::Defer { open_at: Some(utc("2026-06-29T14:00:00Z")) }
+        );
+    }
+
+    #[test]
+    fn decide_invalid_tz_fails_closed_to_skip() {
+        let w = window_on("Bogota", vec![span("Mon", "Fri", 9, 18)], "warn");
+        // Even with on_outside: warn, an unresolvable tz never fires.
+        assert_eq!(decide(utc("2026-06-29T14:00:00Z"), &w), WindowAction::Skip);
     }
 }

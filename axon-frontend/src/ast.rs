@@ -915,6 +915,11 @@ pub struct DaemonDefinition {
     pub strategy: String, // react | reflexion | plan_and_execute | custom
     pub on_stuck: String, // hibernate | escalate | retry | forge
     pub shield_ref: String,
+    /// §Fase 71.c — the `window:` temporal binding (a `window` primitive name,
+    /// §71.a). When set, the supervisor evaluates the bound window before
+    /// claiming a scheduled tick: inside ⇒ fire; outside ⇒ `skip`/`warn`/`defer`
+    /// per the window's `on_outside`. Empty for daemons with no temporal guard.
+    pub window_ref: String,
     pub max_tokens: Option<i64>,
     pub max_time: String,
     pub max_cost: Option<f64>,
