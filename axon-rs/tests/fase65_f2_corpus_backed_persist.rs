@@ -99,6 +99,8 @@ fn persist_into_a_corpus_backed_store_still_resolves_and_names_its_failure() {
         &HashMap::new(),
         &HashMap::new(),
         None,
+        None, // §Fase 24.g.2 — llm_base_url
+        None, // §Fase 24.g.2 — llm_chat_path
     )
     .expect("server runner Ok");
 

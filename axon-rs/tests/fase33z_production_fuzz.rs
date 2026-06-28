@@ -1008,6 +1008,8 @@ async fn fuzz_s4_parity_determinism_stress() {
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
             None, // §Fase 58.g — tool_base_url
+            None, // §Fase 24.g.2 — llm_base_url
+            None, // §Fase 24.g.2 — llm_chat_path
         );
         if let Ok(sync_metrics) = sync {
             if sync_metrics.success != baseline.success {
