@@ -3174,57 +3174,225 @@ impl Parser {
 
     // ── IF ────────────────────────────────────────────────────────
 
+    // ── §Fase 70.a — the pure expression engine (Pratt parser) ───────────
+
+    /// Parse a pure expression (§Fase 70). Precedence-climbing: `or` < `and` <
+    /// comparison < `+ -` < `* / %` < unary (`- not`) < atom. Total + pure; no
+    /// side effects. Field/index access + the builtin catalog land in §70.c/d.
+    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        self.parse_expr_bp(0)
+    }
+
+    fn parse_expr_bp(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
+        // Prefix: unary `-` (negation) / `not` (boolean). Binds tighter than
+        // every binary operator (bp 6).
+        let mut lhs = match self.current().ttype {
+            TokenType::Minus => {
+                self.advance();
+                Expr::Unary(UnOp::Neg, Box::new(self.parse_expr_bp(6)?))
+            }
+            TokenType::Not => {
+                self.advance();
+                Expr::Unary(UnOp::Not, Box::new(self.parse_expr_bp(6)?))
+            }
+            _ => self.parse_expr_atom()?,
+        };
+        // Infix: left-associative (right_bp = left_bp + 1).
+        while let Some((op, lbp)) = Self::binop_of(self.current().ttype.clone()) {
+            if lbp < min_bp {
+                break;
+            }
+            self.advance();
+            let rhs = self.parse_expr_bp(lbp + 1)?;
+            lhs = Expr::Binary(op, Box::new(lhs), Box::new(rhs));
+        }
+        Ok(lhs)
+    }
+
+    /// Map a token to `(BinOp, left binding power)`, or `None` if it is not an
+    /// infix operator (which stops the climb — e.g. at `->` or `{`).
+    fn binop_of(t: TokenType) -> Option<(BinOp, u8)> {
+        Some(match t {
+            TokenType::Or => (BinOp::Or, 1),
+            TokenType::And => (BinOp::And, 2),
+            TokenType::Eq => (BinOp::Eq, 3),
+            TokenType::Neq => (BinOp::Ne, 3),
+            TokenType::Lt => (BinOp::Lt, 3),
+            TokenType::Lte => (BinOp::Le, 3),
+            TokenType::Gt => (BinOp::Gt, 3),
+            TokenType::Gte => (BinOp::Ge, 3),
+            TokenType::Plus => (BinOp::Add, 4),
+            TokenType::Minus => (BinOp::Sub, 4),
+            TokenType::Star => (BinOp::Mul, 5),
+            TokenType::Slash => (BinOp::Div, 5),
+            TokenType::Percent => (BinOp::Mod, 5),
+            _ => return None,
+        })
+    }
+
+    fn parse_expr_atom(&mut self) -> Result<Expr, ParseError> {
+        let tok = self.current().clone();
+        match tok.ttype {
+            TokenType::Integer => {
+                self.advance();
+                let lit = tok
+                    .value
+                    .parse::<i64>()
+                    .map(ExprLit::Int)
+                    .or_else(|_| tok.value.parse::<f64>().map(ExprLit::Float))
+                    .map_err(|_| ParseError {
+                        message: format!("invalid integer literal '{}'", tok.value),
+                        line: tok.line,
+                        column: tok.column,
+                        ..Default::default()
+                    })?;
+                Ok(Expr::Lit(lit))
+            }
+            TokenType::Float => {
+                self.advance();
+                let f = tok.value.parse::<f64>().map_err(|_| ParseError {
+                    message: format!("invalid float literal '{}'", tok.value),
+                    line: tok.line,
+                    column: tok.column,
+                    ..Default::default()
+                })?;
+                Ok(Expr::Lit(ExprLit::Float(f)))
+            }
+            TokenType::Bool => {
+                self.advance();
+                Ok(Expr::Lit(ExprLit::Bool(tok.value == "true")))
+            }
+            TokenType::StringLit => {
+                self.advance();
+                Ok(Expr::Lit(ExprLit::Str(tok.value)))
+            }
+            TokenType::LParen => {
+                self.advance();
+                let inner = self.parse_expr_bp(0)?;
+                self.consume(TokenType::RParen)?;
+                Ok(inner)
+            }
+            _ => {
+                // Reference: an identifier (or keyword used as a name), dotted.
+                let mut parts = vec![self.consume_any_ident_or_kw()?.value];
+                while self.check(TokenType::Dot) {
+                    self.advance();
+                    parts.push(self.consume_any_ident_or_kw()?.value);
+                }
+                Ok(Expr::Ref(parts.join(".")))
+            }
+        }
+    }
+
+    /// §Fase 70.a — render a literal to its legacy surface string (for the
+    /// back-compat `(condition, op, value)` triple). Only used when an
+    /// expression fits the legacy shape; numeric round-tripping is exact for
+    /// ints and faithful-enough for floats (the legacy runtime re-parses it).
+    fn expr_lit_surface(lit: &ExprLit) -> String {
+        match lit {
+            ExprLit::Int(i) => i.to_string(),
+            ExprLit::Float(f) => f.to_string(),
+            ExprLit::Bool(b) => b.to_string(),
+            ExprLit::Str(s) => s.clone(),
+        }
+    }
+
+    fn expr_leaf_surface(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Ref(p) => Some(p.clone()),
+            Expr::Lit(l) => Some(Self::expr_lit_surface(l)),
+            _ => None,
+        }
+    }
+
+    /// A legacy "leaf" is a bare reference (truthy check) or a
+    /// `<ref> <cmp> <ref|literal>` triple — exactly what the pre-§70 `if`
+    /// grammar could express.
+    fn expr_legacy_leaf(expr: &Expr) -> Option<(String, String, String)> {
+        match expr {
+            Expr::Ref(p) => Some((p.clone(), String::new(), String::new())),
+            Expr::Binary(op, l, r) => {
+                let op_s = match op {
+                    BinOp::Eq => "==",
+                    BinOp::Ne => "!=",
+                    BinOp::Lt => "<",
+                    BinOp::Le => "<=",
+                    BinOp::Gt => ">",
+                    BinOp::Ge => ">=",
+                    _ => return None,
+                };
+                let lhs = match &**l {
+                    Expr::Ref(p) => p.clone(),
+                    _ => return None,
+                };
+                let rhs = Self::expr_leaf_surface(r)?;
+                Some((lhs, op_s.to_string(), rhs))
+            }
+            _ => None,
+        }
+    }
+
+    /// Flatten an `or`-tree of legacy leaves in left-to-right order. Returns
+    /// `false` (and leaves `out` unusable) if any node is not a legacy leaf.
+    fn collect_or_leaves(expr: &Expr, out: &mut Vec<(String, String, String)>) -> bool {
+        match expr {
+            Expr::Binary(BinOp::Or, l, r) => {
+                Self::collect_or_leaves(l, out) && Self::collect_or_leaves(r, out)
+            }
+            _ => match Self::expr_legacy_leaf(expr) {
+                Some(t) => {
+                    out.push(t);
+                    true
+                }
+                None => false,
+            },
+        }
+    }
+
+    /// §Fase 70.a — if the parsed condition fits the legacy
+    /// `(condition, op, value)` + `or`-chain shape, return the legacy fields so
+    /// the IR + runtime stay byte-identical to pre-§70 (zero drift). `None` ⇒
+    /// the condition uses richer forms (`and`, `not`, arithmetic, parentheses,
+    /// nesting) and must ride the `cond` expression evaluator.
+    #[allow(clippy::type_complexity)]
+    fn cond_as_legacy(
+        expr: &Expr,
+    ) -> Option<(String, String, String, Vec<(String, String, String)>, String)> {
+        let mut leaves = Vec::new();
+        if !Self::collect_or_leaves(expr, &mut leaves) || leaves.is_empty() {
+            return None;
+        }
+        let (c0, o0, v0) = leaves[0].clone();
+        let rest = leaves[1..].to_vec();
+        let conjunctor = if rest.is_empty() {
+            String::new()
+        } else {
+            "or".to_string()
+        };
+        Some((c0, o0, v0, rest, conjunctor))
+    }
+
     fn parse_if(&mut self) -> Result<ConditionalNode, ParseError> {
         let tok = self.consume(TokenType::If)?;
         let loc = self.loc_of(&tok);
 
-        // Parse condition
-        let mut parts = vec![self.consume_any_ident_or_kw()?.value];
-        while self.check(TokenType::Dot) {
-            self.advance();
-            parts.push(self.consume_any_ident_or_kw()?.value);
-        }
-        let condition = parts.join(".");
-
-        let mut comparison_op = String::new();
-        let mut comparison_value = String::new();
-        if self.check_comparison() {
-            comparison_op = self.advance().value.clone();
-            let val_tok = self.current().clone();
-            if val_tok.ttype == TokenType::StringLit {
-                comparison_value = val_tok.value;
-                self.advance();
-            } else {
-                comparison_value = self.advance().value.clone();
-            }
-        }
-
-        // Compound conditions (or)
-        let mut conditions = Vec::new();
-        let mut conjunctor = String::new();
-        while self.check(TokenType::Or) {
-            conjunctor = "or".to_string();
-            self.advance();
-            let mut cond_parts = vec![self.consume_any_ident_or_kw()?.value];
-            while self.check(TokenType::Dot) {
-                self.advance();
-                cond_parts.push(self.consume_any_ident_or_kw()?.value);
-            }
-            let cond_str = cond_parts.join(".");
-            let mut cond_op = String::new();
-            let mut cond_val = String::new();
-            if self.check_comparison() {
-                cond_op = self.advance().value.clone();
-                let val_tok = self.current().clone();
-                if val_tok.ttype == TokenType::StringLit {
-                    cond_val = val_tok.value;
-                    self.advance();
-                } else {
-                    cond_val = self.advance().value.clone();
-                }
-            }
-            conditions.push((cond_str, cond_op, cond_val));
-        }
+        // §Fase 70.a — parse the condition as a pure expression, then split:
+        // a legacy-expressible condition populates the legacy triple fields
+        // (cond = None → byte-identical IR + eval); a richer condition rides
+        // the `cond` expression evaluator.
+        let expr = self.parse_expr()?;
+        let (condition, comparison_op, comparison_value, conditions, conjunctor, cond) =
+            match Self::cond_as_legacy(&expr) {
+                Some((c, o, v, more, conj)) => (c, o, v, more, conj, None),
+                None => (
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    Vec::new(),
+                    String::new(),
+                    Some(expr),
+                ),
+            };
 
         let mut then_body = Vec::new();
         let mut else_body = Vec::new();
@@ -3264,6 +3432,7 @@ impl Parser {
             else_body,
             conditions,
             conjunctor,
+            cond,
             loc,
         })
     }

@@ -181,6 +181,15 @@ pub async fn run_conditional(
 /// Evaluate the closed-catalog predicate over `(condition,
 /// comparison_op, comparison_value, conditions, conjunctor)`.
 fn evaluate_condition(cond: &IRConditional, ctx: &DispatchCtx) -> bool {
+    // §Fase 70.a — a condition the legacy triple cannot express carries a
+    // lowered pure expression; evaluate it with the expression evaluator.
+    // Fail-closed on a type error (`None`) → the branch is not taken. The
+    // legacy path below is byte-identical to pre-§70 (only reached when the
+    // condition fit the legacy shape, i.e. `cond.cond == None`).
+    if let Some(expr) = &cond.cond {
+        return eval_expr(expr, ctx).map(|v| eval_truthy(&v)).unwrap_or(false);
+    }
+
     let primary = eval_triple(
         &cond.condition,
         &cond.comparison_op,
@@ -235,6 +244,199 @@ fn numeric_cmp(a: &str, b: &str) -> Option<std::cmp::Ordering> {
     let a = a.parse::<f64>().ok()?;
     let b = b.parse::<f64>().ok()?;
     a.partial_cmp(&b)
+}
+
+// ────────────────────────────────────────────────────────────────────
+//  §Fase 70.a — the pure expression evaluator
+// ────────────────────────────────────────────────────────────────────
+
+/// A runtime expression value. The existing runtime is string-typed
+/// (`let_bindings: HashMap<String,String>`); `EVal` recovers Int/Float/Bool
+/// precision for arithmetic + numeric comparison while coercing to/from strings
+/// at the boundary. Total + pure — no side effects, no I/O.
+#[derive(Debug, Clone)]
+enum EVal {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+}
+
+/// Evaluate a lowered pure expression. Returns `None` on a type error / domain
+/// error (non-numeric arithmetic, division-by-zero, integer overflow) so the
+/// caller fail-closes. This evaluator runs ONLY for `cond = Some` (rich, post-§70
+/// conditions), so it defines clean numeric-aware semantics with no obligation
+/// to reproduce the legacy `eval_triple` string quirks.
+fn eval_expr(e: &crate::ir_nodes::IRExpr, ctx: &DispatchCtx) -> Option<EVal> {
+    use crate::ir_nodes::{IRExpr, IRExprLit};
+    match e {
+        IRExpr::Lit { lit } => Some(match lit {
+            IRExprLit::Int { value } => EVal::Int(*value),
+            IRExprLit::Float { value } => EVal::Float(*value),
+            IRExprLit::Bool { value } => EVal::Bool(*value),
+            IRExprLit::Str { value } => EVal::Str(value.clone()),
+        }),
+        IRExpr::Ref { path } => Some(eval_coerce_str(resolve_lhs(path, ctx))),
+        IRExpr::Unary { op, operand } => {
+            let v = eval_expr(operand, ctx)?;
+            match op.as_str() {
+                "not" => Some(EVal::Bool(!eval_truthy(&v))),
+                "neg" => match v {
+                    EVal::Int(i) => i.checked_neg().map(EVal::Int),
+                    other => Some(EVal::Float(-eval_as_num(&other)?)),
+                },
+                _ => None,
+            }
+        }
+        IRExpr::Binary { op, lhs, rhs } => match op.as_str() {
+            // Short-circuit boolean operators.
+            "and" => {
+                let l = eval_expr(lhs, ctx)?;
+                if !eval_truthy(&l) {
+                    return Some(EVal::Bool(false));
+                }
+                Some(EVal::Bool(eval_truthy(&eval_expr(rhs, ctx)?)))
+            }
+            "or" => {
+                let l = eval_expr(lhs, ctx)?;
+                if eval_truthy(&l) {
+                    return Some(EVal::Bool(true));
+                }
+                Some(EVal::Bool(eval_truthy(&eval_expr(rhs, ctx)?)))
+            }
+            _ => {
+                let l = eval_expr(lhs, ctx)?;
+                let r = eval_expr(rhs, ctx)?;
+                eval_binop(op, &l, &r)
+            }
+        },
+    }
+}
+
+fn eval_binop(op: &str, l: &EVal, r: &EVal) -> Option<EVal> {
+    match op {
+        "add" | "sub" | "mul" | "div" | "mod" => {
+            // Exact integer path when both sides are integers; else float.
+            if let (Some(li), Some(ri)) = (eval_as_int(l), eval_as_int(r)) {
+                let res = match op {
+                    "add" => li.checked_add(ri)?,
+                    "sub" => li.checked_sub(ri)?,
+                    "mul" => li.checked_mul(ri)?,
+                    "div" => li.checked_div(ri)?, // None on /0 or overflow
+                    "mod" => li.checked_rem(ri)?,
+                    _ => unreachable!(),
+                };
+                return Some(EVal::Int(res));
+            }
+            let (lf, rf) = (eval_as_num(l)?, eval_as_num(r)?);
+            let res = match op {
+                "add" => lf + rf,
+                "sub" => lf - rf,
+                "mul" => lf * rf,
+                "div" => {
+                    if rf == 0.0 {
+                        return None;
+                    }
+                    lf / rf
+                }
+                "mod" => {
+                    if rf == 0.0 {
+                        return None;
+                    }
+                    lf % rf
+                }
+                _ => unreachable!(),
+            };
+            Some(EVal::Float(res))
+        }
+        "eq" => Some(EVal::Bool(eval_eq(l, r))),
+        "ne" => Some(EVal::Bool(!eval_eq(l, r))),
+        "lt" | "le" | "gt" | "ge" => {
+            let ord = eval_cmp(l, r)?;
+            use std::cmp::Ordering;
+            Some(EVal::Bool(match op {
+                "lt" => ord == Ordering::Less,
+                "le" => ord != Ordering::Greater,
+                "gt" => ord == Ordering::Greater,
+                "ge" => ord != Ordering::Less,
+                _ => unreachable!(),
+            }))
+        }
+        _ => None,
+    }
+}
+
+/// Coerce a resolved binding string to the most specific `EVal`.
+fn eval_coerce_str(s: String) -> EVal {
+    if let Ok(i) = s.parse::<i64>() {
+        return EVal::Int(i);
+    }
+    if let Ok(f) = s.parse::<f64>() {
+        return EVal::Float(f);
+    }
+    match s.as_str() {
+        "true" => EVal::Bool(true),
+        "false" => EVal::Bool(false),
+        _ => EVal::Str(s),
+    }
+}
+
+fn eval_as_int(v: &EVal) -> Option<i64> {
+    match v {
+        EVal::Int(i) => Some(*i),
+        _ => None,
+    }
+}
+
+fn eval_as_num(v: &EVal) -> Option<f64> {
+    match v {
+        EVal::Int(i) => Some(*i as f64),
+        EVal::Float(f) => Some(*f),
+        EVal::Str(s) => s.parse::<f64>().ok(),
+        EVal::Bool(_) => None,
+    }
+}
+
+fn eval_to_str(v: &EVal) -> String {
+    match v {
+        EVal::Int(i) => i.to_string(),
+        EVal::Float(f) => f.to_string(),
+        EVal::Bool(b) => b.to_string(),
+        EVal::Str(s) => s.clone(),
+    }
+}
+
+/// Equality: numeric when both coerce to numbers, boolean when both bools,
+/// otherwise string equality.
+fn eval_eq(l: &EVal, r: &EVal) -> bool {
+    if let (Some(a), Some(b)) = (eval_as_num(l), eval_as_num(r)) {
+        return a == b;
+    }
+    if let (EVal::Bool(a), EVal::Bool(b)) = (l, r) {
+        return a == b;
+    }
+    eval_to_str(l) == eval_to_str(r)
+}
+
+/// Ordering: numeric when both coerce to numbers, otherwise lexical (mirrors
+/// the legacy `numeric_cmp` fallback).
+fn eval_cmp(l: &EVal, r: &EVal) -> Option<std::cmp::Ordering> {
+    if let (Some(a), Some(b)) = (eval_as_num(l), eval_as_num(r)) {
+        return a.partial_cmp(&b);
+    }
+    Some(eval_to_str(l).cmp(&eval_to_str(r)))
+}
+
+/// Truthiness: bool is itself; a number is truthy iff non-zero; a string is
+/// truthy iff non-empty and not `"false"`/`"0"` (matching `eval_triple`'s bare
+/// truthy check so a bare-ref condition is consistent across both paths).
+fn eval_truthy(v: &EVal) -> bool {
+    match v {
+        EVal::Bool(b) => *b,
+        EVal::Int(i) => *i != 0,
+        EVal::Float(f) => *f != 0.0,
+        EVal::Str(s) => !s.is_empty() && s != "false" && s != "0",
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -658,6 +860,103 @@ mod tests {
         assert!(!eval_triple("empty", "", "", &ctx));
     }
 
+    // ── §Fase 70.a — the pure expression evaluator ───────────────────
+
+    fn lit_int(v: i64) -> Box<IRExpr> {
+        Box::new(IRExpr::Lit {
+            lit: IRExprLit::Int { value: v },
+        })
+    }
+    fn eref(p: &str) -> Box<IRExpr> {
+        Box::new(IRExpr::Ref { path: p.into() })
+    }
+    fn bin(op: &str, l: Box<IRExpr>, r: Box<IRExpr>) -> IRExpr {
+        IRExpr::Binary {
+            op: op.into(),
+            lhs: l,
+            rhs: r,
+        }
+    }
+
+    #[test]
+    fn eval_expr_integer_arithmetic_is_exact() {
+        let ctx = fresh_ctx_no_rx().0;
+        // 2 + 3 * 4 = 14 (the parser builds the precedence tree; here we test eval)
+        let e = bin("add", lit_int(2), Box::new(bin("mul", lit_int(3), lit_int(4))));
+        assert!(matches!(eval_expr(&e, &ctx), Some(EVal::Int(14))));
+    }
+
+    #[test]
+    fn eval_expr_division_by_zero_fails_closed() {
+        let ctx = fresh_ctx_no_rx().0;
+        let e = bin("div", lit_int(5), lit_int(0));
+        assert!(eval_expr(&e, &ctx).is_none(), "div by zero → None (fail-closed)");
+    }
+
+    #[test]
+    fn eval_expr_modulo() {
+        let ctx = fresh_ctx_no_rx().0;
+        let e = bin("mod", lit_int(17), lit_int(5));
+        assert!(matches!(eval_expr(&e, &ctx), Some(EVal::Int(2))));
+    }
+
+    #[test]
+    fn eval_expr_count_ge_limit_over_bindings() {
+        // The headline: `recent >= limit` natively, no Tool needed.
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("recent".into(), "8".into());
+        ctx.let_bindings.insert("limit".into(), "5".into());
+        let e = bin("ge", eref("recent"), eref("limit"));
+        assert!(eval_truthy(&eval_expr(&e, &ctx).unwrap()));
+        // Below the limit → false.
+        ctx.let_bindings.insert("recent".into(), "3".into());
+        assert!(!eval_truthy(&eval_expr(&e, &ctx).unwrap()));
+    }
+
+    #[test]
+    fn eval_expr_boolean_and_or_short_circuit() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("a".into(), "true".into());
+        ctx.let_bindings.insert("b".into(), "false".into());
+        let and = bin("and", eref("a"), eref("b"));
+        assert!(!eval_truthy(&eval_expr(&and, &ctx).unwrap()));
+        let or = bin("or", eref("a"), eref("b"));
+        assert!(eval_truthy(&eval_expr(&or, &ctx).unwrap()));
+    }
+
+    #[test]
+    fn eval_expr_not_negates_truthiness() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("ready".into(), "false".into());
+        let e = IRExpr::Unary {
+            op: "not".into(),
+            operand: eref("ready"),
+        };
+        assert!(eval_truthy(&eval_expr(&e, &ctx).unwrap()));
+    }
+
+    #[test]
+    fn evaluate_condition_routes_rich_cond_through_expr() {
+        // An IRConditional with a `cond` expr is evaluated by the expr engine.
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("recent".into(), "9".into());
+        ctx.let_bindings.insert("cap".into(), "10".into());
+        let cond = IRConditional {
+            node_type: "conditional",
+            source_line: 0,
+            source_column: 0,
+            condition: String::new(),
+            comparison_op: String::new(),
+            comparison_value: String::new(),
+            then_body: Vec::new(),
+            else_body: Vec::new(),
+            conditions: Vec::new(),
+            conjunctor: String::new(),
+            cond: Some(bin("lt", eref("recent"), eref("cap"))),
+        };
+        assert!(evaluate_condition(&cond, &ctx), "9 < 10 → then branch");
+    }
+
     fn fresh_ctx_no_rx() -> (DispatchCtx, mpsc::UnboundedReceiver<crate::flow_execution_event::FlowExecutionEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let ctx = DispatchCtx::new("F", "stub", "", CancellationFlag::new(), tx);
@@ -801,6 +1100,7 @@ mod tests {
             else_body: Vec::new(),
             conditions: Vec::new(),
             conjunctor: String::new(),
+            cond: None,
         };
         assert!(matches!(
             run_conditional(&cond, &mut ctx).await,
@@ -885,6 +1185,7 @@ mod tests {
             else_body: Vec::new(),
             conditions: Vec::new(),
             conjunctor: String::new(),
+            cond: None,
         };
         run_conditional(&cond, &mut ctx).await.unwrap();
         assert_eq!(ctx.let_bindings.get("took").unwrap(), "then-branch");
@@ -912,6 +1213,7 @@ mod tests {
             })],
             conditions: Vec::new(),
             conjunctor: String::new(),
+            cond: None,
         };
         run_conditional(&cond, &mut ctx).await.unwrap();
         assert_eq!(ctx.let_bindings.get("took").unwrap(), "else-branch");

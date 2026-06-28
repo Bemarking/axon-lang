@@ -997,6 +997,37 @@ pub struct IRRecallStep {
     pub memory_source: String,
 }
 
+/// §Fase 70.a — the lowered form of a pure expression (`Expr`). Carried in the
+/// IR for conditions the legacy `(condition, op, value)` triple cannot express.
+/// Operators are canonical lowercase strings so the JSON is stable + readable;
+/// the runtime evaluator (§70.f) matches on them. Externally-tagged by `kind`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IRExpr {
+    /// A typed literal.
+    Lit { lit: IRExprLit },
+    /// A reference to a binding / dotted path.
+    Ref { path: String },
+    /// Unary op — `op ∈ {neg, not}`.
+    Unary { op: String, operand: Box<IRExpr> },
+    /// Binary op — `op ∈ {add,sub,mul,div,mod,eq,ne,lt,le,gt,ge,and,or}`.
+    Binary {
+        op: String,
+        lhs: Box<IRExpr>,
+        rhs: Box<IRExpr>,
+    },
+}
+
+/// §Fase 70.a — a literal inside an [`IRExpr`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "ty", rename_all = "snake_case")]
+pub enum IRExprLit {
+    Int { value: i64 },
+    Float { value: f64 },
+    Bool { value: bool },
+    Str { value: String },
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IRConditional {
     pub node_type: &'static str,
@@ -1009,6 +1040,11 @@ pub struct IRConditional {
     pub else_body: Vec<IRFlowNode>,
     pub conditions: Vec<(String, String, String)>,
     pub conjunctor: String,
+    /// §Fase 70.a — the lowered expression form, present only for conditions
+    /// the legacy triple cannot express. `skip_serializing_if` keeps the IR
+    /// JSON (and its SHA) byte-identical for every pre-§70 program.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cond: Option<IRExpr>,
 }
 
 #[derive(Debug, Clone, Serialize)]

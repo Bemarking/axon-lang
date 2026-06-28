@@ -475,6 +475,50 @@ impl IRGenerator {
         }
     }
 
+    /// §Fase 70.a — lower a pure-expression AST node into its IR form. Pure
+    /// structural map; operators become canonical lowercase strings.
+    fn lower_expr(e: &Expr) -> IRExpr {
+        match e {
+            Expr::Lit(l) => IRExpr::Lit {
+                lit: match l {
+                    ExprLit::Int(i) => IRExprLit::Int { value: *i },
+                    ExprLit::Float(f) => IRExprLit::Float { value: *f },
+                    ExprLit::Bool(b) => IRExprLit::Bool { value: *b },
+                    ExprLit::Str(s) => IRExprLit::Str { value: s.clone() },
+                },
+            },
+            Expr::Ref(p) => IRExpr::Ref { path: p.clone() },
+            Expr::Unary(op, operand) => IRExpr::Unary {
+                op: match op {
+                    UnOp::Neg => "neg",
+                    UnOp::Not => "not",
+                }
+                .to_string(),
+                operand: Box::new(Self::lower_expr(operand)),
+            },
+            Expr::Binary(op, lhs, rhs) => IRExpr::Binary {
+                op: match op {
+                    BinOp::Add => "add",
+                    BinOp::Sub => "sub",
+                    BinOp::Mul => "mul",
+                    BinOp::Div => "div",
+                    BinOp::Mod => "mod",
+                    BinOp::Eq => "eq",
+                    BinOp::Ne => "ne",
+                    BinOp::Lt => "lt",
+                    BinOp::Le => "le",
+                    BinOp::Gt => "gt",
+                    BinOp::Ge => "ge",
+                    BinOp::And => "and",
+                    BinOp::Or => "or",
+                }
+                .to_string(),
+                lhs: Box::new(Self::lower_expr(lhs)),
+                rhs: Box::new(Self::lower_expr(rhs)),
+            },
+        }
+    }
+
     fn visit_flow_step(&self, fs: &FlowStep) -> IRFlowNode {
         match fs {
             FlowStep::Step(s) => IRFlowNode::Step(IRStep {
@@ -588,6 +632,9 @@ impl IRGenerator {
                     .collect(),
                 conditions: s.conditions.clone(),
                 conjunctor: s.conjunctor.clone(),
+                // §Fase 70.a — lower the expression form when present (rich
+                // conditions only; legacy-shaped ones keep `cond = None`).
+                cond: s.cond.as_ref().map(Self::lower_expr),
             }),
             FlowStep::ForIn(s) => IRFlowNode::ForIn(IRForIn {
                 node_type: "for_in",

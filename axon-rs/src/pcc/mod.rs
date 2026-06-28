@@ -1136,6 +1136,7 @@ mod tests {
             else_body: Vec::new(),
             conditions: Vec::new(),
             conjunctor: String::new(),
+            cond: None,
         });
         let mut f = flow_reaching(name, &[]);
         f.steps = vec![cond];
@@ -1754,6 +1755,7 @@ mod tests {
             else_body: Vec::new(),
             conditions: Vec::new(),
             conjunctor: String::new(),
+            cond: None,
         });
         ir.flows.push(flow_with_steps("Branchy", vec![cond]));
         let proofs = generate_tool_call_soundness_proofs(&ir, VERSION);

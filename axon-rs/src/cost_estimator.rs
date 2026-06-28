@@ -503,6 +503,7 @@ mod tests {
             else_body: vec![],
             conditions: vec![],
             conjunctor: "".into(),
+            cond: None,
         });
 
         let counts = count_steps(&[cond]);
