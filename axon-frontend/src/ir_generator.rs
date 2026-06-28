@@ -667,6 +667,8 @@ impl IRGenerator {
                 } else {
                     s.value_kind.clone()
                 },
+                // §Fase 70.f — lower the expression form when present.
+                value_ast: s.value_ast.as_ref().map(Self::lower_expr),
             }),
             FlowStep::Return(s) => IRFlowNode::Return(IRReturnStep {
                 node_type: "return",

@@ -3569,13 +3569,14 @@ impl Parser {
         // Fase 17.a — reset side-channel before parsing value; the
         // atom / expr helpers tag the kind as they descend.
         self.last_let_value_kind = "literal".to_string();
-        let value = self.parse_let_value_expr()?;
+        let (value, value_ast) = self.parse_let_value_expr_with_ast()?;
 
         Ok(LetStatement {
             identifier: name,
             value_expr: value,
             value_kind: self.last_let_value_kind.clone(),
             type_annotation,
+            value_ast,
             loc,
             leading_trivia: Vec::new(),
             trailing_trivia: Vec::new(),
@@ -3602,6 +3603,77 @@ impl Parser {
             return Ok(parts.join(" "));
         }
         Ok(atom)
+    }
+
+    /// §Fase 70.f — parse a `let`-binding value, additionally producing a
+    /// structured `value_ast` for the expression case. A list literal keeps the
+    /// dedicated path; everything else is parsed through the §70 expression
+    /// engine and classified: a bare literal / reference keeps its pre-§70
+    /// string form (`value_ast = None`, byte-identical), while a real expression
+    /// (`price * qty`, `recent.length`) additionally carries a `value_ast` the
+    /// runtime evaluates for real (pre-§70.f it was treated as an opaque literal
+    /// string). Used ONLY by `parse_let` — other value positions (list items,
+    /// remember/stream values) keep the string-only `parse_let_value_expr`.
+    fn parse_let_value_expr_with_ast(&mut self) -> Result<(String, Option<Expr>), ParseError> {
+        if self.check(TokenType::LBracket) {
+            self.last_let_value_kind = "literal".to_string();
+            return Ok((self.parse_let_list_literal()?, None));
+        }
+        let expr = self.parse_expr()?;
+        Ok(match expr {
+            Expr::Lit(lit) => {
+                self.last_let_value_kind = "literal".to_string();
+                (Self::expr_lit_surface(&lit), None)
+            }
+            Expr::Ref(p) => {
+                self.last_let_value_kind = "reference".to_string();
+                (p, None)
+            }
+            other => {
+                self.last_let_value_kind = "expression".to_string();
+                (Self::render_expr(&other), Some(other))
+            }
+        })
+    }
+
+    /// §Fase 70.f — a readable surface rendering of an expression for the
+    /// vestigial `value_expr` string (the runtime uses `value_ast`).
+    fn render_expr(e: &Expr) -> String {
+        match e {
+            Expr::Lit(l) => Self::expr_lit_surface(l),
+            Expr::Ref(p) => p.clone(),
+            Expr::Unary(UnOp::Neg, x) => format!("-{}", Self::render_expr(x)),
+            Expr::Unary(UnOp::Not, x) => format!("not {}", Self::render_expr(x)),
+            Expr::Binary(op, l, r) => {
+                let sym = match op {
+                    BinOp::Add => "+",
+                    BinOp::Sub => "-",
+                    BinOp::Mul => "*",
+                    BinOp::Div => "/",
+                    BinOp::Mod => "%",
+                    BinOp::Eq => "==",
+                    BinOp::Ne => "!=",
+                    BinOp::Lt => "<",
+                    BinOp::Le => "<=",
+                    BinOp::Gt => ">",
+                    BinOp::Ge => ">=",
+                    BinOp::And => "and",
+                    BinOp::Or => "or",
+                };
+                format!("({} {sym} {})", Self::render_expr(l), Self::render_expr(r))
+            }
+            Expr::Call(b, args) => {
+                let recv = args.first().map(Self::render_expr).unwrap_or_default();
+                let rest: Vec<String> = args.iter().skip(1).map(Self::render_expr).collect();
+                if rest.is_empty() {
+                    format!("{recv}.{}", b.surface())
+                } else {
+                    format!("{recv}.{}({})", b.surface(), rest.join(", "))
+                }
+            }
+            Expr::Field(b, f) => format!("{}.{f}", Self::render_expr(b)),
+            Expr::Index(b, i) => format!("{}[{}]", Self::render_expr(b), Self::render_expr(i)),
+        }
     }
 
     fn parse_let_atom(&mut self) -> Result<String, ParseError> {
