@@ -567,6 +567,127 @@ fn infer_type_from_name(name: &str) -> InferType {
     }
 }
 
+// ── §Fase 70.e — compile-time const-folding (dead-branch detection) ──────────
+
+/// A fully-constant expression value, produced by [`const_fold`]. Only an
+/// expression with NO references / fields / indices / calls folds (those are
+/// runtime-dynamic); the result is a total, side-effect-free value the compiler
+/// can decide at `axon check`.
+#[derive(Clone)]
+enum ConstVal {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+}
+
+fn const_truthy(v: &ConstVal) -> bool {
+    match v {
+        ConstVal::Bool(b) => *b,
+        ConstVal::Int(i) => *i != 0,
+        ConstVal::Float(f) => *f != 0.0,
+        ConstVal::Str(s) => !s.is_empty() && s != "false" && s != "0",
+    }
+}
+
+fn const_as_num(v: &ConstVal) -> Option<f64> {
+    match v {
+        ConstVal::Int(i) => Some(*i as f64),
+        ConstVal::Float(f) => Some(*f),
+        _ => None,
+    }
+}
+
+fn const_to_str(v: &ConstVal) -> String {
+    match v {
+        ConstVal::Int(i) => i.to_string(),
+        ConstVal::Float(f) => f.to_string(),
+        ConstVal::Bool(b) => b.to_string(),
+        ConstVal::Str(s) => s.clone(),
+    }
+}
+
+/// Fold a constant expression at compile time (mirrors the runtime evaluator).
+/// `None` when the expression is not fully constant (has a ref/field/index/call)
+/// or is ill-typed / domain-erroneous (division by zero) — those surface as
+/// `axon-T81x` type errors elsewhere, not as a dead-branch warning.
+fn const_fold(e: &Expr) -> Option<ConstVal> {
+    match e {
+        Expr::Lit(ExprLit::Int(i)) => Some(ConstVal::Int(*i)),
+        Expr::Lit(ExprLit::Float(f)) => Some(ConstVal::Float(*f)),
+        Expr::Lit(ExprLit::Bool(b)) => Some(ConstVal::Bool(*b)),
+        Expr::Lit(ExprLit::Str(s)) => Some(ConstVal::Str(s.clone())),
+        Expr::Unary(UnOp::Not, x) => Some(ConstVal::Bool(!const_truthy(&const_fold(x)?))),
+        Expr::Unary(UnOp::Neg, x) => match const_fold(x)? {
+            ConstVal::Int(i) => i.checked_neg().map(ConstVal::Int),
+            other => Some(ConstVal::Float(-const_as_num(&other)?)),
+        },
+        Expr::Binary(op, l, r) => const_binop(*op, &const_fold(l)?, &const_fold(r)?),
+        // References + structured access + calls are runtime-dynamic.
+        Expr::Ref(_) | Expr::Field(..) | Expr::Index(..) | Expr::Call(..) => None,
+    }
+}
+
+fn const_binop(op: BinOp, l: &ConstVal, r: &ConstVal) -> Option<ConstVal> {
+    use std::cmp::Ordering;
+    match op {
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+            if let (ConstVal::Int(a), ConstVal::Int(b)) = (l, r) {
+                let res = match op {
+                    BinOp::Add => a.checked_add(*b)?,
+                    BinOp::Sub => a.checked_sub(*b)?,
+                    BinOp::Mul => a.checked_mul(*b)?,
+                    BinOp::Div => a.checked_div(*b)?,
+                    BinOp::Mod => a.checked_rem(*b)?,
+                    _ => unreachable!(),
+                };
+                return Some(ConstVal::Int(res));
+            }
+            let (a, b) = (const_as_num(l)?, const_as_num(r)?);
+            let res = match op {
+                BinOp::Add => a + b,
+                BinOp::Sub => a - b,
+                BinOp::Mul => a * b,
+                BinOp::Div if b != 0.0 => a / b,
+                BinOp::Mod if b != 0.0 => a % b,
+                _ => return None,
+            };
+            Some(ConstVal::Float(res))
+        }
+        BinOp::Eq => Some(ConstVal::Bool(const_eq(l, r))),
+        BinOp::Ne => Some(ConstVal::Bool(!const_eq(l, r))),
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+            let ord = const_cmp(l, r)?;
+            Some(ConstVal::Bool(match op {
+                BinOp::Lt => ord == Ordering::Less,
+                BinOp::Le => ord != Ordering::Greater,
+                BinOp::Gt => ord == Ordering::Greater,
+                BinOp::Ge => ord != Ordering::Less,
+                _ => unreachable!(),
+            }))
+        }
+        BinOp::And => Some(ConstVal::Bool(const_truthy(l) && const_truthy(r))),
+        BinOp::Or => Some(ConstVal::Bool(const_truthy(l) || const_truthy(r))),
+    }
+}
+
+fn const_eq(l: &ConstVal, r: &ConstVal) -> bool {
+    if let (Some(a), Some(b)) = (const_as_num(l), const_as_num(r)) {
+        return a == b;
+    }
+    if let (ConstVal::Bool(a), ConstVal::Bool(b)) = (l, r) {
+        return a == b;
+    }
+    const_to_str(l) == const_to_str(r)
+}
+
+fn const_cmp(l: &ConstVal, r: &ConstVal) -> Option<std::cmp::Ordering> {
+    if let (Some(a), Some(b)) = (const_as_num(l), const_as_num(r)) {
+        return a.partial_cmp(&b);
+    }
+    Some(const_to_str(l).cmp(&const_to_str(r)))
+}
+
 /// The surface symbol of a binary operator (for diagnostics).
 fn bin_op_symbol(op: BinOp) -> &'static str {
     match op {
@@ -5375,6 +5496,19 @@ impl<'a> TypeChecker<'a> {
                     if let Some(cond) = &n.cond {
                         let scope = self.current_flow_params.types.clone();
                         let _ = self.infer_expr(cond, &scope, &n.loc);
+                        // §Fase 70.e — const-fold the condition; a fully-constant
+                        // condition statically decides the branch (dead code).
+                        if let Some(cv) = const_fold(cond) {
+                            let always = const_truthy(&cv);
+                            let dead = if always { "else" } else { "then" };
+                            self.warn(
+                                format!(
+                                    "axon-W008 condition is always {always} — the `{dead}` \
+                                     branch is unreachable (constant expression)"
+                                ),
+                                &n.loc,
+                            );
+                        }
                     }
                     self.check_flow_steps(&n.then_body, flow_name);
                     self.check_flow_steps(&n.else_body, flow_name);

@@ -1343,6 +1343,8 @@ Body prose.
             (ReferenceKind::Logic, "effect_execution_is_mode_invariant"),
             // §Fase 69.a — the Advantage Witness transversal law.
             (ReferenceKind::Logic, "no_unwitnessed_advantage"),
+            // §Fase 70.e — total/pure expression law.
+            (ReferenceKind::Logic, "total_expressions"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1386,7 +1388,7 @@ Body prose.
         );
         assert_eq!(
             cat.reference_count_of(ReferenceKind::Logic),
-            5,
+            6,
             "logic family count drift"
         );
         assert_eq!(

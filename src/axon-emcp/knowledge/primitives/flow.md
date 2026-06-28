@@ -103,6 +103,37 @@ The compiler enforces three structural rules across the body:
    `return` statement (or the last expression-step) must produce
    a `<T>`.
 
+## Conditions: the pure expression engine (§Fase 70)
+
+An `if` condition is a **pure, total, statically-typed expression**
+(`axon://logic/total_expressions`). The closed operator catalog is:
+arithmetic `+ - * / %`, comparison `== != < <= > >=`, boolean
+`and` / `or` / `not`, the collection/string builtins `.length` /
+`.count` / `.is_empty` / `.is_null` / `.contains(x)` / `.starts_with(s)` /
+`.ends_with(s)`, and field/index access `.field` / `[i]`. Precedence is
+`or` < `and` < comparison < `+ -` < `* / %` < unary < atom; parentheses
+group.
+
+So an elementary check is native — no `use Tool`, no LLM step:
+
+```axon
+flow Throttle(recent: List<Call>, limit: Int) -> String {
+    if recent.length >= limit {
+        return "throttled"
+    }
+    return "ok"
+}
+```
+
+The compiler type-checks the condition (`axon-T810`/`T811`/`T812` for a
+type-incoherent operator, `axon-T813`/`T814` for a builtin misuse) and
+**const-folds** it: a condition that is a constant (`if 2 + 2 == 4`)
+statically decides its branch and raises `axon-W008` (the other branch is
+dead code). A reference of unknown static type is permissive. Evaluation is
+deterministic and side-effect-free — overflow and division-by-zero fail
+closed (the branch is not taken). A simple `if x == "v"` (a reference
+compared to a literal) keeps its pre-§70 form unchanged.
+
 ## Streaming returns (Fase 33)
 
 A flow whose return type is `Stream<T>` participates in the
