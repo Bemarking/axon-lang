@@ -516,6 +516,10 @@ impl IRGenerator {
                 lhs: Box::new(Self::lower_expr(lhs)),
                 rhs: Box::new(Self::lower_expr(rhs)),
             },
+            Expr::Call(builtin, args) => IRExpr::Call {
+                builtin: builtin.surface().to_string(),
+                args: args.iter().map(Self::lower_expr).collect(),
+            },
         }
     }
 

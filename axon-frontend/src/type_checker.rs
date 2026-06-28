@@ -1712,6 +1712,89 @@ impl<'a> TypeChecker<'a> {
                 }
                 T::Bool
             }
+            Expr::Call(builtin, args) => {
+                // §Fase 70.c — arity (T813) + receiver/arg type (T814) + result.
+                let extra = builtin.extra_arity();
+                let got_extra = args.len().saturating_sub(1);
+                if args.is_empty() || got_extra != extra {
+                    self.emit(
+                        format!(
+                            "axon-T813 `.{}` takes {extra} argument(s), got {got_extra}",
+                            builtin.surface()
+                        ),
+                        loc,
+                    );
+                }
+                let recv = args
+                    .first()
+                    .map(|a| self.infer_expr(a, scope, loc))
+                    .unwrap_or(T::Unknown);
+                let arg_types: Vec<T> = args
+                    .iter()
+                    .skip(1)
+                    .map(|a| self.infer_expr(a, scope, loc))
+                    .collect();
+                // A known scalar (number/bool) receiver is never a collection or
+                // string. List/collection types map to `Unknown` → permissive.
+                let recv_is_scalar = matches!(recv, T::Int | T::Float | T::Bool);
+                match builtin {
+                    Builtin::Length | Builtin::Count | Builtin::IsEmpty => {
+                        if recv_is_scalar {
+                            self.emit(
+                                format!(
+                                    "axon-T814 `.{}` needs a collection or string, got {}",
+                                    builtin.surface(),
+                                    recv.label()
+                                ),
+                                loc,
+                            );
+                        }
+                        if matches!(builtin, Builtin::IsEmpty) {
+                            T::Bool
+                        } else {
+                            T::Int
+                        }
+                    }
+                    Builtin::IsNull => T::Bool,
+                    Builtin::Contains => {
+                        if recv_is_scalar {
+                            self.emit(
+                                format!(
+                                    "axon-T814 `.contains` needs a collection or string, got {}",
+                                    recv.label()
+                                ),
+                                loc,
+                            );
+                        }
+                        T::Bool
+                    }
+                    Builtin::StartsWith | Builtin::EndsWith => {
+                        if recv != T::Unknown && recv != T::Str {
+                            self.emit(
+                                format!(
+                                    "axon-T814 `.{}` needs a string receiver, got {}",
+                                    builtin.surface(),
+                                    recv.label()
+                                ),
+                                loc,
+                            );
+                        }
+                        if let Some(a) = arg_types.first() {
+                            if *a != T::Unknown && *a != T::Str {
+                                self.emit(
+                                    format!(
+                                        "axon-T814 `.{}` argument must be a string, got {}",
+                                        builtin.surface(),
+                                        a.label()
+                                    ),
+                                    loc,
+                                );
+                            }
+                        }
+                        T::Bool
+                    }
+                }
+            }
             Expr::Binary(op, l, r) => {
                 let tl = self.infer_expr(l, scope, loc);
                 let tr = self.infer_expr(r, scope, loc);

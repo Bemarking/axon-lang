@@ -310,7 +310,64 @@ fn eval_expr(e: &crate::ir_nodes::IRExpr, ctx: &DispatchCtx) -> Option<EVal> {
                 eval_binop(op, &l, &r)
             }
         },
+        // §Fase 70.c — closed-catalog builtin call.
+        IRExpr::Call { builtin, args } => eval_builtin(builtin, args, ctx),
     }
+}
+
+/// §Fase 70.c — evaluate a pure builtin call. `args[0]` is the receiver.
+fn eval_builtin(name: &str, args: &[crate::ir_nodes::IRExpr], ctx: &DispatchCtx) -> Option<EVal> {
+    let recv = eval_to_str(&eval_expr(args.first()?, ctx)?);
+    match name {
+        "length" | "count" => Some(EVal::Int(builtin_length(&recv))),
+        "is_empty" => Some(EVal::Bool(builtin_length(&recv) == 0)),
+        "is_null" => {
+            let t = recv.trim();
+            Some(EVal::Bool(t.is_empty() || t == "null"))
+        }
+        "contains" => {
+            let needle = eval_to_str(&eval_expr(args.get(1)?, ctx)?);
+            Some(EVal::Bool(builtin_contains(&recv, &needle)))
+        }
+        "starts_with" => {
+            let p = eval_to_str(&eval_expr(args.get(1)?, ctx)?);
+            Some(EVal::Bool(recv.starts_with(&p)))
+        }
+        "ends_with" => {
+            let s = eval_to_str(&eval_expr(args.get(1)?, ctx)?);
+            Some(EVal::Bool(recv.ends_with(&s)))
+        }
+        _ => None,
+    }
+}
+
+/// `.length` / `.count`: JSON array → element count; a retrieve envelope →
+/// `rows` count; any other value → character count of the string.
+fn builtin_length(s: &str) -> i64 {
+    match serde_json::from_str::<serde_json::Value>(s) {
+        Ok(serde_json::Value::Array(a)) => a.len() as i64,
+        Ok(serde_json::Value::Object(m))
+            if m.get("taint").map(|t| t.is_string()).unwrap_or(false) =>
+        {
+            match m.get("rows") {
+                Some(serde_json::Value::Array(rows)) => rows.len() as i64,
+                _ => 0,
+            }
+        }
+        _ => s.chars().count() as i64,
+    }
+}
+
+/// `.contains(x)`: JSON array → element membership (string-compared); any other
+/// value → substring containment.
+fn builtin_contains(recv: &str, needle: &str) -> bool {
+    if let Ok(serde_json::Value::Array(a)) = serde_json::from_str::<serde_json::Value>(recv) {
+        return a.iter().any(|e| match e {
+            serde_json::Value::String(s) => s == needle,
+            other => other.to_string() == needle,
+        });
+    }
+    recv.contains(needle)
 }
 
 fn eval_binop(op: &str, l: &EVal, r: &EVal) -> Option<EVal> {
@@ -538,34 +595,21 @@ fn resolve_iterable(iterable: &str, ctx: &DispatchCtx) -> Vec<String> {
     // made every `${e.field}` miss (the kivi brief #28 repro: `${e.to_id}`
     // reached Postgres verbatim).
     let raw = crate::exec_context::resolve_value_reference(iterable, &ctx.let_bindings);
+    collection_elements_of(&raw)
+}
+
+/// §Fase 66/67.g — the canonical "what does this value iterate as" rule, shared
+/// by `for … in` (above) and the §70.c collection builtins (`.length`,
+/// `.count`, `.is_empty`, `.contains`) so a collection's size/membership is
+/// exactly its iteration set. A JSON ARRAY → its elements; a retrieve EPISTEMIC
+/// ENVELOPE (`{taint, …, rows:[…]}`) → its `rows`; anything else (a plain
+/// string, a comma list) → the pre-§66 comma-split (byte-identical).
+fn collection_elements_of(raw: &str) -> Vec<String> {
     if raw.trim().is_empty() {
         return Vec::new();
     }
-    // §Fase 66 (Q1) — a `for e in List<Record>` binds each loop var `e` to a
-    // STRUCTURED element so `${e.field}` field-access can resolve it (see
-    // `exec_context::resolve_dotted_var`). When the iterable's value parses as a
-    // JSON ARRAY, iterate its elements: an object/array element is re-serialised
-    // to its compact JSON (so the dotted resolver can parse it back), a string
-    // element yields its inner text, and a scalar its compact form. Anything
-    // that is NOT a JSON array (a plain string, a comma list) falls back to the
-    // pre-§66 comma-split — byte-identical for every existing `for x in <list>`.
-    match serde_json::from_str::<serde_json::Value>(&raw) {
+    match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(serde_json::Value::Array(elems)) => iterable_elements(elems),
-        // §Fase 67.g (kivi brief #35) — `for s in <retrieve … as: X>` iterates
-        // the ROWS of a retrieve. Unlike a step's `List<T>` output (a bare JSON
-        // array), `retrieve` binds an EPISTEMIC ENVELOPE object — `{ "taint":
-        // …, "confidence_floor": …, "rows": [ {col:val,…}, … ] }` (see
-        // `store::epistemic::retrieve_envelope`). Pre-fix this object failed the
-        // array check above, fell through to the comma-split, and shredded the
-        // envelope JSON into garbage fragments — so every `${s.col}` missed and
-        // reached `persist`/`where:` verbatim (the brief #35 repro: `${s.tenant_id}`
-        // an UNRESOLVED ref the uuid column rejected). We unwrap the envelope's
-        // `rows` and iterate them EXACTLY like a step's array output, so `${s.col}`
-        // resolves identically in every position (persist value, `where:`, mutate)
-        // — the §27/§28 fix, now for store rows whose shape comes from the
-        // axonstore schema, not a declared `type`. The signature is precise (a
-        // `taint` string + a `rows` array — the retrieve-envelope contract), so an
-        // ordinary object output is NOT mistaken for an envelope.
         Ok(serde_json::Value::Object(map))
             if map.get("taint").map(|t| t.is_string()).unwrap_or(false) =>
         {
@@ -955,6 +999,89 @@ mod tests {
             cond: Some(bin("lt", eref("recent"), eref("cap"))),
         };
         assert!(evaluate_condition(&cond, &ctx), "9 < 10 → then branch");
+    }
+
+    // ── §Fase 70.c — collection / string builtins ────────────────────
+
+    fn estr(s: &str) -> Box<IRExpr> {
+        Box::new(IRExpr::Lit {
+            lit: IRExprLit::Str { value: s.into() },
+        })
+    }
+    fn call(name: &str, args: Vec<Box<IRExpr>>) -> IRExpr {
+        IRExpr::Call {
+            builtin: name.into(),
+            args: args.into_iter().map(|b| *b).collect(),
+        }
+    }
+
+    #[test]
+    fn builtin_length_counts_json_array_elements() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("xs".into(), "[1,2,3]".into());
+        let e = call("length", vec![eref("xs")]);
+        assert!(matches!(eval_expr(&e, &ctx), Some(EVal::Int(3))));
+    }
+
+    #[test]
+    fn builtin_length_of_a_string_is_char_count() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("s".into(), "hello".into());
+        let e = call("length", vec![eref("s")]);
+        assert!(matches!(eval_expr(&e, &ctx), Some(EVal::Int(5))));
+    }
+
+    #[test]
+    fn builtin_length_unwraps_a_retrieve_envelope() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert(
+            "rows".into(),
+            r#"{"taint":"trusted","rows":[{"id":1},{"id":2}]}"#.into(),
+        );
+        let e = call("length", vec![eref("rows")]);
+        assert!(matches!(eval_expr(&e, &ctx), Some(EVal::Int(2))));
+    }
+
+    #[test]
+    fn builtin_contains_array_membership_and_substring() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("xs".into(), r#"["a","b","c"]"#.into());
+        let in_arr = call("contains", vec![eref("xs"), estr("b")]);
+        assert!(eval_truthy(&eval_expr(&in_arr, &ctx).unwrap()));
+        ctx.let_bindings.insert("name".into(), "Dr. Smith".into());
+        let sub = call("contains", vec![eref("name"), estr("Smith")]);
+        assert!(eval_truthy(&eval_expr(&sub, &ctx).unwrap()));
+    }
+
+    #[test]
+    fn builtin_starts_with_and_ends_with() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("n".into(), "Dr. House".into());
+        assert!(eval_truthy(&eval_expr(&call("starts_with", vec![eref("n"), estr("Dr")]), &ctx).unwrap()));
+        assert!(eval_truthy(&eval_expr(&call("ends_with", vec![eref("n"), estr("House")]), &ctx).unwrap()));
+        assert!(!eval_truthy(&eval_expr(&call("starts_with", vec![eref("n"), estr("Mr")]), &ctx).unwrap()));
+    }
+
+    #[test]
+    fn throttle_headline_recent_length_ge_limit() {
+        // The adopter's throttle, end-to-end through evaluate_condition.
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("recent".into(), "[1,2,3,4,5,6,7,8]".into());
+        ctx.let_bindings.insert("limit".into(), "5".into());
+        let cond = IRConditional {
+            node_type: "conditional",
+            source_line: 0,
+            source_column: 0,
+            condition: String::new(),
+            comparison_op: String::new(),
+            comparison_value: String::new(),
+            then_body: Vec::new(),
+            else_body: Vec::new(),
+            conditions: Vec::new(),
+            conjunctor: String::new(),
+            cond: Some(bin("ge", Box::new(call("length", vec![eref("recent")])), eref("limit"))),
+        };
+        assert!(evaluate_condition(&cond, &ctx), "8 recent >= limit 5 → then");
     }
 
     fn fresh_ctx_no_rx() -> (DispatchCtx, mpsc::UnboundedReceiver<crate::flow_execution_event::FlowExecutionEvent>) {

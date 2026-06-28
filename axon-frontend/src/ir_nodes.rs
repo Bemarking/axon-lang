@@ -1016,6 +1016,12 @@ pub enum IRExpr {
         lhs: Box<IRExpr>,
         rhs: Box<IRExpr>,
     },
+    /// §Fase 70.c — a closed-catalog builtin call. `args[0]` is the receiver.
+    /// `builtin ∈ {length,count,is_empty,is_null,contains,starts_with,ends_with}`.
+    Call {
+        builtin: String,
+        args: Vec<IRExpr>,
+    },
 }
 
 /// §Fase 70.a — a literal inside an [`IRExpr`].

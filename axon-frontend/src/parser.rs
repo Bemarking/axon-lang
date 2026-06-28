@@ -3195,7 +3195,7 @@ impl Parser {
                 self.advance();
                 Expr::Unary(UnOp::Not, Box::new(self.parse_expr_bp(6)?))
             }
-            _ => self.parse_expr_atom()?,
+            _ => self.parse_postfix()?,
         };
         // Infix: left-associative (right_bp = left_bp + 1).
         while let Some((op, lbp)) = Self::binop_of(self.current().ttype.clone()) {
@@ -3228,6 +3228,52 @@ impl Parser {
             TokenType::Percent => (BinOp::Mod, 5),
             _ => return None,
         })
+    }
+
+    /// §Fase 70.c — parse a primary then its `.` postfix chain: a builtin call
+    /// (`.length`, `.contains(x)`) when the name is in the closed catalog, else
+    /// a dotted reference-path continuation (`a.b.c` → `Ref("a.b.c")`, the
+    /// pre-§70.c behaviour). Field access on a non-reference (`(a+b).x`) is
+    /// reserved for §70.d.
+    fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_expr_atom()?;
+        while self.check(TokenType::Dot) {
+            self.advance();
+            let name_tok = self.consume_any_ident_or_kw()?;
+            let name = name_tok.value;
+            if let Some(builtin) = Builtin::from_name(&name) {
+                let mut args = vec![expr];
+                if self.check(TokenType::LParen) {
+                    self.advance();
+                    while !self.check(TokenType::RParen) && !self.check(TokenType::Eof) {
+                        args.push(self.parse_expr_bp(0)?);
+                        if self.check(TokenType::Comma) {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                    self.consume(TokenType::RParen)?;
+                }
+                expr = Expr::Call(builtin, args);
+            } else {
+                match expr {
+                    Expr::Ref(p) => expr = Expr::Ref(format!("{p}.{name}")),
+                    _ => {
+                        return Err(ParseError {
+                            message: format!(
+                                "field access `.{name}` on a non-reference is not yet \
+                                 supported (§Fase 70.d)"
+                            ),
+                            line: name_tok.line,
+                            column: name_tok.column,
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        }
+        Ok(expr)
     }
 
     fn parse_expr_atom(&mut self) -> Result<Expr, ParseError> {
@@ -3273,13 +3319,10 @@ impl Parser {
                 Ok(inner)
             }
             _ => {
-                // Reference: an identifier (or keyword used as a name), dotted.
-                let mut parts = vec![self.consume_any_ident_or_kw()?.value];
-                while self.check(TokenType::Dot) {
-                    self.advance();
-                    parts.push(self.consume_any_ident_or_kw()?.value);
-                }
-                Ok(Expr::Ref(parts.join(".")))
+                // Reference: a single identifier (or keyword used as a name).
+                // The `.` chain (dotted path / builtin call) is handled by the
+                // postfix layer (§70.c `parse_postfix`).
+                Ok(Expr::Ref(self.consume_any_ident_or_kw()?.value))
             }
         }
     }

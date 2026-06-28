@@ -1493,6 +1493,70 @@ pub enum Expr {
     Unary(UnOp, Box<Expr>),
     /// A binary operation (`a + b`, `a >= b`, `a and b`).
     Binary(BinOp, Box<Expr>, Box<Expr>),
+    /// §Fase 70.c — a closed-catalog builtin call. `args[0]` is the receiver
+    /// (the value before the `.`); any further entries are the call arguments.
+    /// E.g. `recent.length` → `Call(Length, [Ref("recent")])`,
+    /// `name.starts_with("Dr")` → `Call(StartsWith, [Ref("name"), Lit(Str)])`.
+    Call(Builtin, Vec<Expr>),
+}
+
+/// The closed catalog of pure builtins (§Fase 70.c). All are total + pure.
+/// Collection/string predicates only; the predicate-taking folds (`any`/`all`/
+/// `none`) need lambdas and are deferred, as are `sum`/`min`/`max` and `in`/`??`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Builtin {
+    /// `.length` — collection element count, or character count of a string.
+    Length,
+    /// `.count` — alias of `length`.
+    Count,
+    /// `.is_empty` — `length == 0`.
+    IsEmpty,
+    /// `.is_null` — the value is absent / empty / `null`.
+    IsNull,
+    /// `.contains(x)` — array membership, or string substring.
+    Contains,
+    /// `.starts_with(s)` — string prefix test.
+    StartsWith,
+    /// `.ends_with(s)` — string suffix test.
+    EndsWith,
+}
+
+impl Builtin {
+    /// The number of arguments AFTER the receiver (`args[0]`).
+    pub fn extra_arity(self) -> usize {
+        match self {
+            Builtin::Length | Builtin::Count | Builtin::IsEmpty | Builtin::IsNull => 0,
+            Builtin::Contains | Builtin::StartsWith | Builtin::EndsWith => 1,
+        }
+    }
+
+    /// The surface name (after the `.`).
+    pub fn surface(self) -> &'static str {
+        match self {
+            Builtin::Length => "length",
+            Builtin::Count => "count",
+            Builtin::IsEmpty => "is_empty",
+            Builtin::IsNull => "is_null",
+            Builtin::Contains => "contains",
+            Builtin::StartsWith => "starts_with",
+            Builtin::EndsWith => "ends_with",
+        }
+    }
+
+    /// Resolve a name (after a `.`) to a builtin, or `None` if it is an ordinary
+    /// field / path segment.
+    pub fn from_name(name: &str) -> Option<Builtin> {
+        Some(match name {
+            "length" => Builtin::Length,
+            "count" => Builtin::Count,
+            "is_empty" => Builtin::IsEmpty,
+            "is_null" => Builtin::IsNull,
+            "contains" => Builtin::Contains,
+            "starts_with" => Builtin::StartsWith,
+            "ends_with" => Builtin::EndsWith,
+            _ => return None,
+        })
+    }
 }
 
 /// A literal value inside an [`Expr`]. The lexical form is preserved enough to
