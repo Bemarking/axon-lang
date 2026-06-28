@@ -20,6 +20,16 @@ pub fn parse_tz(name: &str) -> Option<Tz> {
     name.trim().parse::<Tz>().ok()
 }
 
+/// §Fase 71.d — the IANA timezone-database release this build resolves against
+/// (e.g. `"2024a"`). A window decision is a pure function of `(now, the window,
+/// THIS version)` — recording it alongside a deferred/guarded run makes the
+/// decision replayable across a tz-db upgrade (the `time_is_an_explicit_input`
+/// doctrine). An upstream extension point: the enterprise defer-ledger audits it
+/// rather than re-deriving a tz-db version of its own.
+pub fn tz_db_version() -> &'static str {
+    chrono_tz::IANA_TZDB_VERSION
+}
+
 /// Map a weekday name (`Mon`..`Sun`) to a chrono [`Weekday`].
 fn weekday_of(name: &str) -> Option<Weekday> {
     Some(match name {
@@ -174,6 +184,14 @@ mod tests {
         for bad in ["Bogota", "Mars/Olympus", "", "PST8PDT_typo"] {
             assert!(parse_tz(bad).is_none(), "{bad} should NOT resolve");
         }
+    }
+
+    #[test]
+    fn tz_db_version_is_a_nonempty_iana_release() {
+        // e.g. "2024a" — a 4-digit year + a lowercase release letter.
+        let v = tz_db_version();
+        assert!(!v.is_empty());
+        assert!(v.chars().next().unwrap().is_ascii_digit(), "starts with the year: {v}");
     }
 
     #[test]
