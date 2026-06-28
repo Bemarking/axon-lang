@@ -72,6 +72,8 @@ fn run() -> ServerRunnerMetrics {
         &HashMap::new(),
         &HashMap::new(),
         None,
+        None, // §Fase 24.g.2 — llm_base_url
+        None, // §Fase 24.g.2 — llm_chat_path
     )
     .expect("run")
 }

@@ -164,6 +164,8 @@ async fn nonstreaming_persist_commits_the_row() {
             &HashMap::new(),
             &HashMap::new(),
             None,
+            None, // §Fase 24.g.2 — llm_base_url
+            None, // §Fase 24.g.2 — llm_chat_path
         )
     })
     .await
