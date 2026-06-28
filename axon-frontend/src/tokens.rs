@@ -70,6 +70,9 @@ pub enum TokenType {
     OnStuck,
     // Shield
     Shield,
+    // §Fase 71.a — `window` temporal execution guard (a peer of shield/anchor;
+    // gates WHEN a scheduled tick runs, by timezone-aware day/hour windows).
+    Window,
     Scan,
     OnBreach,
     Severity,
@@ -408,6 +411,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "strategy" => TokenType::Strategy,
         "on_stuck" => TokenType::OnStuck,
         "shield" => TokenType::Shield,
+        // §Fase 71.a — temporal execution-window guard.
+        "window" => TokenType::Window,
         "scan" => TokenType::Scan,
         "on_breach" => TokenType::OnBreach,
         "severity" => TokenType::Severity,

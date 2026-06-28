@@ -24,6 +24,8 @@ pub struct IRProgram {
     pub imports: Vec<IRImport>,
     pub agents: Vec<IRAgent>,
     pub shields: Vec<IRShield>,
+    /// §Fase 71.a — temporal execution-window guards.
+    pub windows: Vec<IRWindow>,
     pub daemons: Vec<IRDaemon>,
     pub ots_specs: Vec<IROts>,
     pub pix_specs: Vec<IRPix>,
@@ -139,6 +141,7 @@ impl IRProgram {
             imports: Vec::new(),
             agents: Vec::new(),
             shields: Vec::new(),
+            windows: Vec::new(),
             daemons: Vec::new(),
             ots_specs: Vec::new(),
             pix_specs: Vec::new(),
@@ -1448,6 +1451,31 @@ pub struct IRAgent {
     pub max_tokens: Option<i64>,
     pub max_time: String,
     pub max_cost: Option<f64>,
+}
+
+/// §Fase 71.a — the lowered temporal execution-window guard. The runtime
+/// (§71.b) evaluates `is_in_window(now, tz, allow)`; the daemon binding +
+/// coalesced defer ledger are §71.c/d.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRWindow {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub timezone: String,
+    pub allow: Vec<IRWindowSpan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<String>,
+    pub on_outside: String,
+}
+
+/// §Fase 71.a — one allowed day/hour span.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRWindowSpan {
+    pub day_start: String,
+    pub day_end: String,
+    pub hour_start: i64,
+    pub hour_end: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

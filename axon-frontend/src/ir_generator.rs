@@ -169,6 +169,8 @@ impl IRGenerator {
             }
             Declaration::Agent(n) => ir.agents.push(self.visit_agent(n)),
             Declaration::Shield(n) => ir.shields.push(self.visit_shield(n)),
+            // §Fase 71.a — temporal execution-window guard.
+            Declaration::Window(n) => ir.windows.push(Self::visit_window(n)),
             Declaration::Pix(n) => ir.pix_specs.push(self.visit_pix(n)),
             Declaration::Ledger(n) => ir.ledger_specs.push(self.visit_ledger(n)),
             Declaration::Psyche(n) => ir.psyche_specs.push(self.visit_psyche(n)),
@@ -1030,6 +1032,35 @@ impl IRGenerator {
             max_tokens: n.max_tokens,
             max_time: n.max_time.clone(),
             max_cost: n.max_cost,
+        }
+    }
+
+    /// §Fase 71.a — lower a temporal execution-window guard.
+    fn visit_window(n: &WindowDefinition) -> IRWindow {
+        IRWindow {
+            node_type: "window",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            timezone: n.timezone.clone(),
+            allow: n
+                .allow
+                .iter()
+                .map(|s| IRWindowSpan {
+                    day_start: s.day_start.clone(),
+                    day_end: s.day_end.clone(),
+                    hour_start: s.hour_start,
+                    hour_end: s.hour_end,
+                })
+                .collect(),
+            exclude: n.exclude.clone(),
+            // §71.c default — an unset policy defers (the safe choice: never
+            // run outside the window, retry when it opens).
+            on_outside: if n.on_outside.is_empty() {
+                "defer".to_string()
+            } else {
+                n.on_outside.clone()
+            },
         }
     }
 
