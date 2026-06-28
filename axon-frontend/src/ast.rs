@@ -1476,6 +1476,63 @@ pub struct EpistemicBlock {
     pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
+// ── §Fase 70.a — the pure expression engine (`Expr`) ─────────────────────────
+
+/// A pure, total expression in AXON's closed-catalog expression sublanguage
+/// (§Fase 70). Evaluates to a value with no side effects, no I/O, no recursion
+/// and no unbounded loops — so it is decidable and const-foldable. Mounted as
+/// the condition of an `if` (and, in later sub-fases, `let` values + `where:`
+/// predicates). Field/index access and the builtin catalog land in §70.c/d.
+#[derive(Debug, Clone)]
+pub enum Expr {
+    /// A typed literal (`42`, `3.14`, `true`, `"hello"`).
+    Lit(ExprLit),
+    /// A reference to a binding or dotted path (`x`, `User.tier`).
+    Ref(String),
+    /// A unary operation (`-x`, `not x`).
+    Unary(UnOp, Box<Expr>),
+    /// A binary operation (`a + b`, `a >= b`, `a and b`).
+    Binary(BinOp, Box<Expr>, Box<Expr>),
+}
+
+/// A literal value inside an [`Expr`]. The lexical form is preserved enough to
+/// round-trip; the runtime evaluator (§70.f) coerces across these per the
+/// existing string-runtime discipline.
+#[derive(Debug, Clone)]
+pub enum ExprLit {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+}
+
+/// Unary operators (closed catalog).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnOp {
+    /// Arithmetic negation `-`.
+    Neg,
+    /// Boolean negation `not`.
+    Not,
+}
+
+/// Binary operators (closed catalog). Precedence is encoded in the Pratt parser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
+}
+
 // ── Control flow ─────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -1487,6 +1544,14 @@ pub struct ConditionalNode {
     pub else_body: Vec<FlowStep>,
     pub conditions: Vec<(String, String, String)>,
     pub conjunctor: String,
+    /// §Fase 70.a — the parsed expression form of the condition. `None` when
+    /// the condition fits the legacy `(condition, op, value)` + `or` shape
+    /// (then the legacy fields drive evaluation, byte-identical to pre-§70);
+    /// `Some` only for the richer forms the legacy triple cannot express
+    /// (`and`, `not`, arithmetic, parentheses, nesting), which the runtime
+    /// evaluates via the pure expression evaluator. Zero IR drift for existing
+    /// programs.
+    pub cond: Option<Expr>,
     pub loc: Loc,
 }
 

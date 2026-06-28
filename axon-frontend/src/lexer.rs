@@ -268,6 +268,8 @@ impl Lexer {
             '@' => self.emit(TokenType::At, "@", line, col),
             '+' => self.emit(TokenType::Plus, "+", line, col),
             '*' => self.emit(TokenType::Star, "*", line, col),
+            // §Fase 70.a — modulo operator for the pure expression engine.
+            '%' => self.emit(TokenType::Percent, "%", line, col),
 
             '.' => {
                 if self.match_char('.') {

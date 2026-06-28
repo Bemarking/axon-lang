@@ -211,6 +211,10 @@ pub enum TokenType {
     /// Fase 19.e — skip to the next iteration of the enclosing for-in body.
     Continue,
     Or,
+    /// §Fase 70.a — boolean `and` / `not` operators for the pure expression
+    /// engine (peers of the pre-existing `or`; Axon uses word-operators).
+    And,
+    Not,
     // Field keywords
     Given,
     Ask,
@@ -249,6 +253,8 @@ pub enum TokenType {
     Minus,
     Star,
     Slash,
+    /// §Fase 70.a — modulo operator for the pure expression engine.
+    Percent,
 
     // ── Special ───────────────────────────────────────────────────
     Eof,
@@ -516,6 +522,9 @@ pub fn keyword_type(word: &str) -> TokenType {
         "break" => TokenType::Break,
         "continue" => TokenType::Continue,
         "or" => TokenType::Or,
+        // §Fase 70.a — boolean operators for the pure expression engine.
+        "and" => TokenType::And,
+        "not" => TokenType::Not,
         "given" => TokenType::Given,
         "ask" => TokenType::Ask,
         "output" => TokenType::Output,
