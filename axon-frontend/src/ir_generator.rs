@@ -43,6 +43,9 @@ fn lower_column(c: &StoreColumn) -> IRStoreColumn {
         default_value: c.default_value.clone(),
         // §Fase 38.x.c (D2) — round-trip the IDENTITY marker through IR.
         identity: c.identity,
+        // §Fase 73.f (D1) — round-trip the `index` declaration so the
+        // deploy gate sees it and materializes the (GIN / b-tree) index.
+        indexed: c.indexed,
     }
 }
 
