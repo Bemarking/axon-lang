@@ -101,6 +101,7 @@ fn persist_into_a_corpus_backed_store_still_resolves_and_names_its_failure() {
         None,
         None, // §Fase 24.g.2 — llm_base_url
         None, // §Fase 24.g.2 — llm_chat_path
+            None, // §Fase 72.c — budget (test: unbudgeted)
     )
     .expect("server runner Ok");
 

@@ -3047,6 +3047,9 @@ async fn collect_via_dispatcher(
             std::collections::HashMap<String, sqlx::pool::PoolConnection<sqlx::Postgres>>,
         >,
     >,
+    // §Fase 72.c — the active `budget { … }` gate when a budgeted daemon runs
+    // this flow. `None` ⇒ unbudgeted (tool dispatch unconditional, pre-§72).
+    budget: Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>,
 ) -> CollectedRun {
     use crate::flow_dispatcher::{dispatch_node, DispatchCtx, NodeOutcome};
     use crate::flow_execution_event::FlowExecutionEvent;
@@ -3071,6 +3074,10 @@ async fn collect_via_dispatcher(
     .with_anchors(anchors)
     .with_tool_registry(registry)
     .with_pinned_conns(pinned);
+    // §Fase 72.c — attach the linear-effect budget gate (daemon path only).
+    if let Some(gate) = budget {
+        ctx = ctx.with_budget(gate);
+    }
     // §Fase 37.b — seed the request-bound flow params so `${param}` resolves.
     for (k, v) in param_bindings {
         ctx.let_bindings.insert(k.clone(), v.clone());
@@ -3268,6 +3275,11 @@ pub fn execute_server_flow(
     // per-tenant `tool_base_url` shape, applied to the LLM call.
     llm_base_url: Option<&str>,
     llm_chat_path: Option<&str>,
+    // §Fase 72.c — the active `budget { … }` linear-effect gate when a budgeted
+    // `daemon` runs this flow (built by the daemon supervisor from the daemon's
+    // compiled budget). `None` for every other caller (HTTP, CLI, tests) — tool
+    // dispatch is then unconditional, byte-identical to pre-§72.
+    budget: Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>,
 ) -> Result<ServerRunnerMetrics, String> {
     let mut target_run = None;
     for run in &ir.runs {
@@ -3544,6 +3556,7 @@ pub fn execute_server_flow(
                     registry_arc,
                     &param_bindings,
                     pinned,
+                    budget.clone(),
                 )
                 .await
             });
@@ -4561,6 +4574,7 @@ flow Recall(q: Text) -> Text {
             None,
             None,
             None,
+            None, // §Fase 72.c — budget (test: unbudgeted)
         )
         .expect("flow runs");
 
@@ -4635,6 +4649,7 @@ flow Recall(q: Text) -> Text {
             std::sync::Arc::new(ToolRegistry::new()),
             &pb,
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            None, // §Fase 72.c — budget (test: unbudgeted)
         )
         .await;
 

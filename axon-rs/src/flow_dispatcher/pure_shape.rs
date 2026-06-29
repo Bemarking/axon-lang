@@ -310,6 +310,32 @@ async fn run_step_streaming_tool(
         return Err(DispatchError::UpstreamCancelled);
     }
 
+    // §Fase 72.c — the LINEAR-EFFECT BUDGET GATE. When the flow is run by a
+    // budgeted daemon, a tool emission must consume a token from every quota on
+    // that tool (`budget { … on Tool(X) }`). An exhausted quota under the
+    // fail-closed `block` policy fails the step with a typed
+    // `EffectQuotaExhausted` — the call is NOT emitted, so over-emission is
+    // impossible by construction (the `effects_are_linear` doctrine). An
+    // unbudgeted tool (no quota, or no budget at all) is granted unconditionally,
+    // byte-identical to pre-§72. (`defer`/`shed` refine the deny path in §72.d;
+    // until then a deny fail-closes for every policy — the budget is always
+    // honoured, only the failure MODE is coarser.)
+    if let Some(budget) = &ctx.budget {
+        let now = chrono::Utc::now();
+        let decision = budget.lock().unwrap().gate(&entry.name, now);
+        if let crate::runtime::budget_kernel::GateDecision::Deny { retry_at, .. } = decision {
+            // The typed `EffectQuotaExhausted` is the `effect:denied` audit
+            // signal — it propagates to the step failure + the daemon's audit
+            // (`daemon:failed` with this diagnostic). Per-call `effect:consumed`
+            // metering events are the §72.e enterprise surface (billing).
+            return Err(DispatchError::EffectQuotaExhausted {
+                effect: entry.name.clone(),
+                retry_at_ms: retry_at.timestamp_millis(),
+            });
+        }
+        // Granted — the token(s) were consumed; the emission proceeds.
+    }
+
     // 7. Invoke tool.stream() + route through the unified handler.
     //    The handler applies the declared policy at chunk
     //    granularity (real enforcement, not just slug-capture-in-
