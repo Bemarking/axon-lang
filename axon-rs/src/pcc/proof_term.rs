@@ -116,7 +116,28 @@ pub enum PropertyClass {
     /// statically. A schema-less tool (no `parameters:`) and the legacy
     /// `use <Tool> on <arg>` form carry no contract → no proof (D5).
     ToolCallSoundness,
+    /// §72.f — every `budget { rate/max … on Tool(X) }` a daemon declares is
+    /// well-formed + ENFORCEABLE: each quota's `on Tool(X)` resolves to a
+    /// declared tool in the program; each `limit` is positive; each `period` is
+    /// in the closed catalog (`second|minute|hour|day`); and `on_exhausted` is in
+    /// the closed catalog (`block|defer|shed`). This makes a budgeted effect's
+    /// linearity (the `effects_are_linear` doctrine) an INDEPENDENTLY-VERIFIABLE
+    /// fact: the verifier re-derives, from the artifact alone, that every quota is
+    /// a sound contract the dispatch gate can enforce — never trusting the
+    /// compiler that ran the §72.a type-check (`axon-T830`–`T834`). A daemon with
+    /// no `budget` carries no contract → no proof (mirrors "no effects → no
+    /// effect-row proof").
+    EffectBudgeted,
 }
+
+/// §72.f — the closed period catalog for `budget` quotas. The checker's own
+/// statement of the spec (D51.2) — mirror of
+/// `axon_frontend::type_checker::VALID_BUDGET_PERIODS`.
+pub const VALID_BUDGET_PERIODS: &[&str] = &["second", "minute", "hour", "day"];
+
+/// §72.f — the closed exhaustion-policy catalog for `budget`. Mirror of
+/// `axon_frontend::type_checker::VALID_ON_EXHAUSTED`.
+pub const VALID_ON_EXHAUSTED: &[&str] = &["block", "defer", "shed"];
 
 /// §51.e — the closed breach-policy catalog. Mirror of
 /// `axon_frontend::type_checker::VALID_ON_BREACH_POLICIES` (private
@@ -143,6 +164,7 @@ impl PropertyClass {
             PropertyClass::ShieldHaltGuarantee => "shield_halt_guarantee",
             PropertyClass::CapabilityContainment => "capability_containment",
             PropertyClass::ToolCallSoundness => "tool_call_soundness",
+            PropertyClass::EffectBudgeted => "effect_budgeted",
         }
     }
 }
@@ -349,6 +371,39 @@ pub struct ToolCallSoundnessWitness {
     pub type_mismatches: Vec<String>,
 }
 
+/// §72.f — witness for [`PropertyClass::EffectBudgeted`].
+///
+/// The property certified: every quota in a daemon's `budget { … }` is a sound,
+/// enforceable contract — its `on Tool(X)` resolves to a declared tool, its limit
+/// is positive, its period is in the closed catalog, and the budget's
+/// `on_exhausted` is in the closed catalog. The checker RE-DERIVES every field
+/// from the artifact (the daemon's IR budget + the program's tools) and rejects
+/// the proof if the witness disagrees (D51.2 — a forged witness is caught because
+/// the checker recomputes). A verifying proof has all four defect lists empty +
+/// `on_exhausted_valid == true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectBudgetedWitness {
+    /// The daemon carrying the budget.
+    pub daemon_name: String,
+    /// The number of quotas in the budget (context + forgery surface).
+    pub quota_count: usize,
+    /// The program's declared tool names, sorted + deduped (the resolution
+    /// surface the checker re-derives `unresolved_effects` against).
+    pub declared_tools: Vec<String>,
+    /// Quota effects (`on Tool(X)`) that do NOT resolve to a declared tool,
+    /// sorted + deduped. Empty for a verifying proof.
+    pub unresolved_effects: Vec<String>,
+    /// Quotas whose limit is ≤ 0, each `effect:kind`, sorted. Empty for verifying.
+    pub nonpositive_limits: Vec<String>,
+    /// Quotas whose period is not in the closed catalog, each `effect:period`,
+    /// sorted. Empty for a verifying proof.
+    pub invalid_periods: Vec<String>,
+    /// The budget's exhaustion policy (context).
+    pub on_exhausted: String,
+    /// Whether `on_exhausted` is in the closed catalog. `false` ⇒ refuted.
+    pub on_exhausted_valid: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -356,6 +411,7 @@ pub struct ToolCallSoundnessWitness {
 pub enum Witness {
     ComplianceCoverage(ComplianceCoverageWitness),
     EffectRowSoundness(EffectRowSoundnessWitness),
+    EffectBudgeted(EffectBudgetedWitness),
     CapabilityIsolation(CapabilityIsolationWitness),
     ResourceBounds(ResourceBoundsWitness),
     ShieldHaltGuarantee(ShieldHaltGuaranteeWitness),
@@ -370,6 +426,7 @@ impl Witness {
         match self {
             Witness::ComplianceCoverage(w) => &w.endpoint_name,
             Witness::EffectRowSoundness(w) => &w.tool_name,
+            Witness::EffectBudgeted(w) => &w.daemon_name,
             Witness::CapabilityIsolation(w) => &w.store_name,
             Witness::ResourceBounds(ResourceBoundsWitness::EndpointRetry {
                 endpoint_name,

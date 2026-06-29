@@ -27,8 +27,8 @@ use crate::ir_nodes::IRProgram;
 use super::generate::{
     artifact_digest, derive_capability_containment_witness,
     derive_capability_isolation_witness, derive_compliance_coverage_witness,
-    derive_effect_row_soundness_witness, derive_endpoint_retry_witness,
-    derive_shield_halt_witness, derive_socket_credit_witness,
+    derive_effect_budgeted_witness, derive_effect_row_soundness_witness,
+    derive_endpoint_retry_witness, derive_shield_halt_witness, derive_socket_credit_witness,
     derive_tool_call_soundness_witness,
 };
 use super::proof_term::{ProofTerm, PropertyClass, ResourceBoundsWitness, Witness};
@@ -87,6 +87,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         }
         (PropertyClass::ToolCallSoundness, Witness::ToolCallSoundness(w)) => {
             check_tool_call_soundness(w, ir)
+        }
+        (PropertyClass::EffectBudgeted, Witness::EffectBudgeted(w)) => {
+            check_effect_budgeted(w, ir)
         }
         _ => CheckOutcome::UnknownProperty,
     }
@@ -633,6 +636,69 @@ fn check_tool_call_soundness(
             reason: format!(
                 "call to tool '{}' in flow '{}' has literal-argument type mismatch(es) {:?} (each `arg:expected:got`)",
                 actual.tool_name, actual.flow_name, actual.type_mismatches
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §72.f — check an [`EffectBudgetedWitness`]. Re-derive the budget facts
+/// independently from the artifact; refute on disagreement (forgery) or on any
+/// budget defect (an unresolved effect, a non-positive limit, an invalid period,
+/// or an out-of-catalog `on_exhausted`).
+fn check_effect_budgeted(
+    claimed: &super::proof_term::EffectBudgetedWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    // Re-derive — do NOT trust the witness. `None` ⟹ the daemon named by the
+    // witness is absent, or it carries no budget (forged / stale proof).
+    let actual = match derive_effect_budgeted_witness(&claimed.daemon_name, ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "daemon '{}' has no `budget {{ }}` in this artifact",
+                    claimed.daemon_name
+                ),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    // Verdict on the re-derived (trusted) facts.
+    if !actual.unresolved_effects.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "daemon '{}' budget targets undefined tool(s) {:?} — no matching `tool` declaration",
+                actual.daemon_name, actual.unresolved_effects
+            ),
+        };
+    }
+    if !actual.nonpositive_limits.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "daemon '{}' budget has non-positive quota limit(s) {:?} (each `effect:kind`)",
+                actual.daemon_name, actual.nonpositive_limits
+            ),
+        };
+    }
+    if !actual.invalid_periods.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "daemon '{}' budget has out-of-catalog period(s) {:?} (each `effect:period`; valid: {:?})",
+                actual.daemon_name, actual.invalid_periods, super::proof_term::VALID_BUDGET_PERIODS
+            ),
+        };
+    }
+    if !actual.on_exhausted_valid {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "daemon '{}' budget has an out-of-catalog `on_exhausted` policy '{}' (valid: {:?})",
+                actual.daemon_name, actual.on_exhausted, super::proof_term::VALID_ON_EXHAUSTED
             ),
         };
     }
