@@ -82,9 +82,12 @@ fn cron_listener_without_a_body_raises_e0792() {
 }
 
 #[test]
-fn non_cron_string_topic_still_warns() {
-    // Regression: the cron branch must not suppress the legacy-topic warning
-    // for an ordinary string topic.
+fn non_cron_string_topic_warns_never_fires() {
+    // §Fase 52.g — the cron branch must not suppress the honesty warning for
+    // an ordinary (non-cron) string topic: a daemon fires only on `cron:`,
+    // so a topic listener NEVER fires → `axon-W009` (replaces the pre-52.g
+    // "deprecated, migrate to typed channel" warning, which pointed at a
+    // form that also never fires).
     let src = "daemon D {\n\
                  goal: \"x\"\n\
                  listen \"ticks\" as e {\n\
@@ -93,7 +96,7 @@ fn non_cron_string_topic_still_warns() {
                }";
     let (_, warns) = check(src);
     assert!(
-        has(&warns, "deprecated"),
-        "a non-cron string topic still gets the Fase-13 deprecation warning: {warns:?}"
+        has(&warns, "axon-W009"),
+        "a non-cron string topic gets the §52.g never-fires warning: {warns:?}"
     );
 }
