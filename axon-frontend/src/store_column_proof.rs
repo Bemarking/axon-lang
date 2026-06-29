@@ -1914,6 +1914,7 @@ mod tests {
             unique: false,
             default_value: String::new(),
             identity: false,
+            json_shape: None,
             line: 0,
             column: 0,
         }
@@ -2455,6 +2456,7 @@ mod tests {
             unique: false,
             default_value: default_value.to_string(),
             identity: false,
+            json_shape: None,
             line: 0,
             column: 0,
         }

@@ -607,6 +607,13 @@ fn infer_type_from_name(name: &str) -> InferType {
         "Float" | "Double" | "Number" | "Numeric" => InferType::Float,
         "Bool" | "Boolean" => InferType::Bool,
         "String" | "Text" => InferType::Str,
+        // §Fase 73.a — a `Json` (or refined `Json<T>`) value is open,
+        // dynamically-shaped data: it is navigable but is NOT a scalar an
+        // arithmetic / ordering / equality operator can constrain at
+        // compile time. It maps to the permissive `Unknown` so navigation
+        // (`.field`/`[i]`) stays total and never raises a spurious
+        // `axon-T81x` (the lens does its checking in `check_json_lenses`).
+        "Json" => InferType::Unknown,
         _ => InferType::Unknown,
     }
 }
@@ -797,6 +804,11 @@ impl<'a> TypeChecker<'a> {
 
     pub fn check(mut self) -> Vec<TypeError> {
         self.register_declarations(&self.program.declarations);
+        // §Fase 73.a — validate every `Json<T>` shape lens AFTER
+        // registration (the symbol table must be complete to decide
+        // whether `T` is a declared struct `type`). Open `Json` (no
+        // shape) is never validated here — it is always well-formed.
+        self.check_json_lenses(&self.program.declarations);
         // §Fase 53.c — validate + collect extensions BEFORE tool/shield
         // validation so the augmented provenance catalogs are populated.
         self.collect_and_validate_extensions(&self.program.declarations);
@@ -810,6 +822,8 @@ impl<'a> TypeChecker<'a> {
     /// `(TypeChecker.check(), .warnings)` pair.
     pub fn check_with_warnings(mut self) -> (Vec<TypeError>, Vec<TypeError>) {
         self.register_declarations(&self.program.declarations);
+        // §Fase 73.a — see `check`.
+        self.check_json_lenses(&self.program.declarations);
         // §Fase 53.c — see `check`.
         self.collect_and_validate_extensions(&self.program.declarations);
         self.check_declarations(&self.program.declarations);
@@ -6615,6 +6629,93 @@ impl<'a> TypeChecker<'a> {
 
     /// Verify that a type name is either built-in or user-defined.
     /// Soft check: unknown types are silently accepted (may come from imports).
+    // ── §Fase 73.a — the `Json<T>` shape-lens well-formedness pass ──
+    //
+    // Open `Json` (no shape) is the always-total, always-honest default
+    // and is never validated here. A refined `Json<T>` lens is an
+    // EXPECTATION the compiler checks: `T` must name a declared struct
+    // `type` whose fields are the document's expected shape. A `T` that
+    // is undeclared, or names a non-`type` symbol (a flow, a tool, a
+    // builtin scalar), is `axon-T840`. This is the catalog-level
+    // well-formedness of the lens TYPE; field-level lens checking (does
+    // `doc.field` exist in `T`?) is §Fase 73.e. The runtime is unaffected
+    // either way — the lens is compile-time only (`open_data_is_total`:
+    // the compiler may help, the runtime never lies).
+    fn check_json_lenses(&mut self, decls: &[Declaration]) {
+        for decl in decls {
+            match decl {
+                Declaration::Type(t) => {
+                    for f in &t.fields {
+                        self.check_json_lens_annotation(&f.type_expr);
+                    }
+                }
+                Declaration::Flow(fl) => {
+                    for p in &fl.parameters {
+                        self.check_json_lens_annotation(&p.type_expr);
+                    }
+                    if let Some(rt) = &fl.return_type {
+                        self.check_json_lens_annotation(rt);
+                    }
+                }
+                Declaration::AxonStore(s) => {
+                    if let Some(crate::store_schema::StoreColumnSchema::Inline {
+                        columns,
+                        ..
+                    }) = &s.column_schema
+                    {
+                        for c in columns {
+                            if let Some(shape) = &c.json_shape {
+                                let loc = Loc {
+                                    line: c.line,
+                                    column: c.column,
+                                };
+                                self.validate_json_shape(shape, &loc);
+                            }
+                        }
+                    }
+                }
+                Declaration::Epistemic(eb) => self.check_json_lenses(&eb.body),
+                _ => {}
+            }
+        }
+    }
+
+    /// §Fase 73.a — validate a `Json<T>` lens written as a type
+    /// annotation (a flow param / return, a `type` field). A bare `Json`
+    /// (empty generic) is the open default and passes untouched.
+    fn check_json_lens_annotation(&mut self, ty: &TypeExpr) {
+        if ty.name == "Json" && !ty.generic_param.is_empty() {
+            self.validate_json_shape(&ty.generic_param, &ty.loc);
+        }
+    }
+
+    /// §Fase 73.a — the shared `axon-T840` check: the lens shape `T` must
+    /// resolve to a declared struct `type`.
+    fn validate_json_shape(&mut self, shape: &str, loc: &Loc) {
+        let t = shape.trim();
+        let is_declared_struct = self
+            .symbols
+            .lookup(t)
+            .map_or(false, |s| s.kind == "type");
+        if is_declared_struct {
+            return;
+        }
+        let why = match self.symbols.lookup(t) {
+            Some(sym) => format!("`{t}` is a {}, not a `type`", sym.kind),
+            None => format!("`{t}` is not declared"),
+        };
+        self.emit(
+            format!(
+                "axon-T840 the shape lens `Json<{t}>` requires `{t}` to be a \
+                 declared `type` (a struct whose fields are the document's \
+                 expected shape), but {why}. Declare `type {t} {{ … }}`, or \
+                 use open `Json` (no shape) when the document's shape is not \
+                 known — open navigation stays total either way."
+            ),
+            loc,
+        );
+    }
+
     fn check_type_reference(&self, type_name: &str, _loc: &Loc) -> bool {
         if type_name.is_empty() {
             return true;

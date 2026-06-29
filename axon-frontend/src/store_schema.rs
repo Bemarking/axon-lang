@@ -218,6 +218,18 @@ pub struct StoreColumn {
     /// matching v1.38.2 behavior for every column. A manifest written
     /// against v1.38.2 round-trips byte-identically.
     pub identity: bool,
+    /// §Fase 73.a (D1) — the OPTIONAL shape LENS on a `Json` / `Jsonb`
+    /// column: `payload: Json<UserEvent>` records `Some("UserEvent")`,
+    /// a bare `payload: Json` records `None`. The lens is a COMPILE-TIME
+    /// expectation only — the column's physical type stays `jsonb` and
+    /// the runtime navigates it totally regardless (a declared-but-absent
+    /// field degrades to null, never crashes; doctrine
+    /// `open_data_is_total`). The type-checker validates that the named
+    /// shape is a declared struct `type` (`axon-T840`); the parser
+    /// rejects a `<T>` on any non-`Json` column type (`axon-T841`). Only
+    /// ever `Some(_)` for `StoreColumnType::{Json, Jsonb}`. Defaults to
+    /// `None` — a v1.38–1.23 manifest round-trips byte-identically.
+    pub json_shape: Option<String>,
     pub line: u32,
     pub column: u32,
 }
