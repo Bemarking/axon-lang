@@ -924,6 +924,11 @@ pub struct DaemonDefinition {
     /// claiming a scheduled tick: inside ⇒ fire; outside ⇒ `skip`/`warn`/`defer`
     /// per the window's `on_outside`. Empty for daemons with no temporal guard.
     pub window_ref: String,
+    /// §Fase 72.a — the `budget { … }` linear-effect rate limit. When set, each
+    /// `on Tool(X)` quota gates that tool's dispatch on a renewable token bucket
+    /// (the §72.b `RateLease`): a call consumes a token, exhaustion applies
+    /// `on_exhausted`. `None` for daemons with no effect budget.
+    pub budget: Option<BudgetBlock>,
     pub max_tokens: Option<i64>,
     pub max_time: String,
     pub max_cost: Option<f64>,
@@ -948,6 +953,37 @@ pub struct DaemonDefinition {
     /// Fase 14.b — trailing comment trivia (same line as the
     /// declaration's last effective token). Empty by default.
     pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// §Fase 72.a — a `budget { … }` block: a set of per-effect rate quotas plus the
+/// exhaustion policy. Where `window` guards an effect's TIMING, `budget` guards
+/// its RATE — a tool call consumes one token from a renewable bucket, and
+/// over-emission is impossible by construction (the Logic pillar's linearity
+/// made real for external effects).
+#[derive(Debug)]
+pub struct BudgetBlock {
+    /// The per-effect quotas (`rate:`/`max:` lines). At least one.
+    pub quotas: Vec<BudgetQuota>,
+    /// What to do when a quota is exhausted: `block` (fail-closed, the default) |
+    /// `defer` (reschedule via the §71 defer ledger) | `shed` (skip the call).
+    pub on_exhausted: String,
+    pub loc: Loc,
+}
+
+/// §Fase 72.a — one quota line of a [`BudgetBlock`]:
+/// `<kind>: <limit> per <period> on Tool(<effect>)`.
+#[derive(Debug)]
+pub struct BudgetQuota {
+    /// `rate` (a renewable bucket that refills `limit` tokens per `period`) or
+    /// `max` (a windowed hard cap of `limit` per `period`, no intra-window refill).
+    pub kind: String,
+    /// The token allowance per period (> 0).
+    pub limit: i64,
+    /// The renewal/window period: `second` | `minute` | `hour` | `day`.
+    pub period: String,
+    /// The effect this quota governs — a declared `Tool` name (`on Tool(X)`).
+    pub effect: String,
+    pub loc: Loc,
 }
 
 // ── AxonStore ────────────────────────────────────────────────────────────────
