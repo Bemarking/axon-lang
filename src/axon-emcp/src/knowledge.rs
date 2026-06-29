@@ -1348,6 +1348,8 @@ Body prose.
             (ReferenceKind::Logic, "total_expressions"),
             // §Fase 71.e — time is an explicit, recorded input.
             (ReferenceKind::Logic, "time_is_an_explicit_input"),
+            // §Fase 72.f — an effect under a budget is a linear resource.
+            (ReferenceKind::Logic, "effects_are_linear"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1391,7 +1393,7 @@ Body prose.
         );
         assert_eq!(
             cat.reference_count_of(ReferenceKind::Logic),
-            7,
+            8,
             "logic family count drift"
         );
         assert_eq!(

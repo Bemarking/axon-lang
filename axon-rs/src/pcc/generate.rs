@@ -15,9 +15,9 @@ use crate::ir_nodes::IRProgram;
 use super::effects;
 use super::proof_term::{
     CapabilityContainmentWitness, CapabilityIsolationWitness, ComplianceCoverageWitness,
-    EffectRowSoundnessWitness, ProofTerm, PropertyClass, ResourceBoundsWitness,
-    ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness, MAX_RETRIES,
-    VALID_BREACH_POLICIES,
+    EffectBudgetedWitness, EffectRowSoundnessWitness, ProofTerm, PropertyClass,
+    ResourceBoundsWitness, ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness,
+    MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS, VALID_ON_EXHAUSTED,
 };
 
 /// Canonical SHA-256 hex digest of the IR artifact. Reuses the
@@ -836,11 +836,88 @@ pub fn generate_tool_call_soundness_proofs(ir: &IRProgram, axon_version: &str) -
     proofs
 }
 
+// ── §Fase 72.f — EffectBudgeted ──────────────────────────────────────
+
+/// §72.f — re-derive an [`EffectBudgetedWitness`] for the daemon named
+/// `daemon_name`. `None` if no such daemon exists, or it has no `budget`
+/// (nothing to certify). RE-DERIVES every fact from the artifact — the same
+/// computation the checker runs — so producer + checker agree by construction.
+pub fn derive_effect_budgeted_witness(
+    daemon_name: &str,
+    ir: &IRProgram,
+) -> Option<EffectBudgetedWitness> {
+    let daemon = ir.daemons.iter().find(|d| d.name == daemon_name)?;
+    let budget = daemon.budget.as_ref()?;
+
+    // The program's declared tools — the resolution surface.
+    let declared_tools = canonical_names(&ir.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>());
+    let declared: std::collections::HashSet<&str> =
+        declared_tools.iter().map(String::as_str).collect();
+
+    let mut unresolved_effects = Vec::new();
+    let mut nonpositive_limits = Vec::new();
+    let mut invalid_periods = Vec::new();
+    for q in &budget.quotas {
+        if !declared.contains(q.effect.as_str()) {
+            unresolved_effects.push(q.effect.clone());
+        }
+        if q.limit <= 0 {
+            nonpositive_limits.push(format!("{}:{}", q.effect, q.kind));
+        }
+        if !VALID_BUDGET_PERIODS.contains(&q.period.as_str()) {
+            invalid_periods.push(format!("{}:{}", q.effect, q.period));
+        }
+    }
+
+    Some(EffectBudgetedWitness {
+        daemon_name: daemon_name.to_string(),
+        quota_count: budget.quotas.len(),
+        declared_tools,
+        unresolved_effects: canonical_names(&unresolved_effects),
+        nonpositive_limits: {
+            let mut v = nonpositive_limits;
+            v.sort();
+            v
+        },
+        invalid_periods: {
+            let mut v = invalid_periods;
+            v.sort();
+            v
+        },
+        on_exhausted: budget.on_exhausted.clone(),
+        on_exhausted_valid: VALID_ON_EXHAUSTED.contains(&budget.on_exhausted.as_str()),
+    })
+}
+
+/// §72.f — generate effect-budgeted proofs: one per daemon that declares a
+/// `budget { … }`. A daemon with no budget carries no contract → no proof
+/// (mirrors "no effects → no effect-row proof").
+pub fn generate_effect_budgeted_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for daemon in &ir.daemons {
+        if daemon.budget.is_none() {
+            continue;
+        }
+        let Some(witness) = derive_effect_budgeted_witness(&daemon.name, ir) else {
+            continue;
+        };
+        proofs.push(ProofTerm {
+            property: PropertyClass::EffectBudgeted,
+            artifact_digest: digest.clone(),
+            witness: Witness::EffectBudgeted(witness),
+            axon_version: axon_version.to_string(),
+        });
+    }
+    proofs
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
 /// generator (compliance / effects / capability-gate / resources /
-/// shields / capability-containment / tool-call-soundness) — one bundle
-/// covering every certifiable property an apx program declares.
+/// shields / capability-containment / tool-call-soundness /
+/// effect-budgeted) — one bundle covering every certifiable property an
+/// apx program declares.
 pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
     let mut proofs = Vec::new();
     proofs.extend(generate_compliance_coverage_proofs(ir, axon_version));
@@ -850,5 +927,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_shield_halt_guarantee_proofs(ir, axon_version));
     proofs.extend(generate_capability_containment_proofs(ir, axon_version));
     proofs.extend(generate_tool_call_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_effect_budgeted_proofs(ir, axon_version));
     proofs
 }

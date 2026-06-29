@@ -1882,4 +1882,84 @@ mod tests {
             .iter()
             .any(|r| r.property == PropertyClass::ToolCallSoundness));
     }
+
+    // ── §Fase 72.f — EffectBudgeted ──────────────────────────────────────
+
+    /// Parse → IR (no type-check, so a deliberately-defective budget survives to
+    /// the checker, which is the independent verifier under test).
+    fn ir_from_source(src: &str) -> crate::ir_nodes::IRProgram {
+        let toks = axon_frontend::lexer::Lexer::new(src, "<pcc-test>").tokenize().unwrap();
+        let prog = axon_frontend::parser::Parser::new(toks).parse().unwrap();
+        axon_frontend::ir_generator::IRGenerator::new().generate(&prog)
+    }
+
+    const BUDGETED_DAEMON: &str = "tool TelnyxCall { provider: telnyx timeout: 5s }\n\
+         flow SendBatch() -> Unit { step S { ask: \"x\" output: Unit } }\n\
+         daemon OutboundScheduler {\n\
+           requires: [flow.execute]\n\
+           budget {\n\
+             rate: 8 per hour on Tool(TelnyxCall)\n\
+             max: 50 per day on Tool(TelnyxCall)\n\
+             on_exhausted: defer\n\
+           }\n\
+           listen \"cron:*/5 * * * *\" as t { run SendBatch() }\n\
+         }";
+
+    #[test]
+    fn effect_budgeted_round_trips_and_verifies() {
+        let ir = ir_from_source(BUDGETED_DAEMON);
+        let proofs = super::generate::generate_effect_budgeted_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one proof per budgeted daemon");
+        assert_eq!(proofs[0].property, PropertyClass::EffectBudgeted);
+        // The independent checker verifies a well-formed budget.
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn budgetless_daemon_carries_no_effect_budgeted_proof() {
+        let ir = ir_from_source(
+            "flow SendBatch() -> Unit { step S { ask: \"x\" output: Unit } }\n\
+             daemon Plain {\n\
+               requires: [flow.execute]\n\
+               listen \"cron:*/5 * * * *\" as t { run SendBatch() }\n\
+             }",
+        );
+        assert!(super::generate::generate_effect_budgeted_proofs(&ir, "test").is_empty());
+    }
+
+    #[test]
+    fn effect_budgeted_refutes_an_undefined_tool() {
+        // A budget targeting an undeclared tool PARSES (the type-checker would
+        // T830 it, but we skip that) — the independent PCC checker REFUTES it.
+        let ir = ir_from_source(
+            "flow SendBatch() -> Unit { step S { ask: \"x\" output: Unit } }\n\
+             daemon D {\n\
+               requires: [flow.execute]\n\
+               budget { rate: 8 per hour on Tool(NoSuchTool) }\n\
+               listen \"cron:*/5 * * * *\" as t { run SendBatch() }\n\
+             }",
+        );
+        let proofs = super::generate::generate_effect_budgeted_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("NoSuchTool"), "{reason}"),
+            other => panic!("expected Refuted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn effect_budgeted_refutes_a_forged_witness() {
+        let ir = ir_from_source(BUDGETED_DAEMON);
+        let mut proofs = super::generate::generate_effect_budgeted_proofs(&ir, "test");
+        // Forge the witness: claim a clean budget had an unresolved effect.
+        if let Witness::EffectBudgeted(ref mut w) = proofs[0].witness {
+            w.unresolved_effects = vec!["Ghost".to_string()];
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("disagrees"), "{reason}")
+            }
+            other => panic!("expected Refuted (forgery), got {other:?}"),
+        }
+    }
 }
