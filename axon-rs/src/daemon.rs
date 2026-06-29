@@ -279,6 +279,189 @@ pub fn deliver_typed_event(
     out
 }
 
+/// §Fase 74.b — the bounded retry ceiling for at-least-once delivery. A
+/// listener body that keeps failing past this many attempts is DEAD-
+/// LETTERED rather than redelivered forever (no infinite-redelivery storm
+/// — the `delivery_is_a_kept_promise` doctrine keeps delivery TOTAL).
+pub const MAX_DELIVERY_ATTEMPTS: u32 = 5;
+
+/// §Fase 74.b — the outcome of delivering one event to one listener under
+/// its channel's `qos`. Total: every delivery terminates in exactly one of
+/// these — acked, dead-lettered, or (at_most_once) dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeliveryOutcome {
+    /// The body ran to completion within the retry budget. `attempts` is
+    /// how many tries it took (1 = first try).
+    Acked { attempts: u32 },
+    /// `at_least_once`: the body failed every attempt up to the ceiling →
+    /// dead-lettered (recorded, not silently dropped).
+    DeadLettered { attempts: u32, last_error: String },
+    /// `at_most_once`: the body failed its single attempt → dropped
+    /// (fire-and-forget, no redelivery — the qos the program declared).
+    Dropped { error: String },
+}
+
+/// §Fase 74.b — at-least-once delivery of ONE event to ONE listener body,
+/// honoring `qos`. Pure policy (the body executor is injected as `run`):
+///
+/// - `at_least_once` (default + `exactly_once` + `queue` + `broadcast`):
+///   retry a failing body up to `max_attempts`, then [`DeliveryOutcome::DeadLettered`].
+/// - `at_most_once`: run once; a failure is [`DeliveryOutcome::Dropped`]
+///   (no redelivery — the program asked for best-effort).
+///
+/// `run` returns `Ok(())` on a successful body run, `Err(reason)` on
+/// failure. Side-effect-free + deterministic given `run` — the retry/
+/// dead-letter policy is unit-tested without touching the flow runtime.
+pub fn deliver_with_retry(
+    qos: &str,
+    max_attempts: u32,
+    mut run: impl FnMut() -> std::result::Result<(), String>,
+) -> DeliveryOutcome {
+    let cap = max_attempts.max(1);
+    if qos == "at_most_once" {
+        return match run() {
+            Ok(()) => DeliveryOutcome::Acked { attempts: 1 },
+            Err(e) => DeliveryOutcome::Dropped { error: e },
+        };
+    }
+    let mut last_error = String::new();
+    for attempt in 1..=cap {
+        match run() {
+            Ok(()) => return DeliveryOutcome::Acked { attempts: attempt },
+            Err(e) => last_error = e,
+        }
+    }
+    DeliveryOutcome::DeadLettered { attempts: cap, last_error }
+}
+
+/// §Fase 74.b — RELIABLE (at-least-once) delivery of one event to every
+/// daemon `listen`er on `channel`, honoring the channel's declared `qos`.
+/// Per listener, the body (all its `run <Flow>` invocations, each with the
+/// event `payload` bound as its §37.b request body) is run with
+/// [`deliver_with_retry`]; a body that exhausts its retries is dead-
+/// lettered (logged, surfaced in the outcome), never silently lost. This
+/// is the Q3 guarantee on the in-process substrate — at-least-once with
+/// bounded redelivery. (Survive-a-crash durability is the §74.c
+/// transactional outbox + §74.f per-tenant store.) Returns the
+/// per-(daemon) outcome in declaration order.
+#[allow(clippy::type_complexity)]
+pub fn deliver_typed_event_reliable(
+    ir: &axon_frontend::ir_nodes::IRProgram,
+    channel: &str,
+    payload: &serde_json::Value,
+    backend: &str,
+    source_file: &str,
+    budget: Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>,
+) -> Vec<(String, DeliveryOutcome)> {
+    // The qos the program declared on the channel (default at_least_once
+    // when the channel is not a declared `channel` — a topic string).
+    let qos = ir
+        .channels
+        .iter()
+        .find(|c| c.name == channel)
+        .map(|c| c.qos.clone())
+        .unwrap_or_else(|| "at_least_once".to_string());
+
+    let empty = std::collections::HashMap::new();
+    let mut out = Vec::new();
+    for daemon in &ir.daemons {
+        for listener in event_listeners(daemon) {
+            if listener.channel != channel {
+                continue;
+            }
+            let outcome = deliver_with_retry(&qos, MAX_DELIVERY_ATTEMPTS, || {
+                // The body runs ALL its invocations; a single failure fails
+                // the body run (→ a retry of the whole body — re-running a
+                // succeeded invocation is the at-least-once cost; idempotent
+                // dedup is §74.d `exactly_once`).
+                for run in run_invocations(listener.body) {
+                    let r = crate::runner::execute_server_flow(
+                        ir,
+                        &run.flow_name,
+                        backend,
+                        source_file,
+                        None,
+                        Some(payload),
+                        &empty,
+                        &empty,
+                        None,
+                        None,
+                        None,
+                        budget.clone(),
+                    );
+                    if let Err(e) = r {
+                        return Err(format!("flow '{}': {e}", run.flow_name));
+                    }
+                }
+                Ok(())
+            });
+            if let DeliveryOutcome::DeadLettered { attempts, last_error } = &outcome {
+                eprintln!(
+                    "§74.b daemon '{}' listener on '{channel}' DEAD-LETTERED after {attempts} \
+                     attempts: {last_error}",
+                    daemon.name
+                );
+            }
+            out.push((daemon.name.clone(), outcome));
+        }
+    }
+    out
+}
+
+/// §Fase 74.b — the single-node OSS event-delivery driver: per the
+/// program's daemon EVENT listeners, spawn a task that loops
+/// `bus.receive(channel).await` → reliable (at-least-once) delivery, until
+/// cancelled. The complement of [`run_daemon`] (cron). Single-node by
+/// construction (it delivers once PER PROCESS); the §74.f enterprise layer
+/// adds the durable per-tenant outbox + fire-once-across-replicas on top.
+/// `bus` is shared with the producer flows (their `emit` feeds it).
+pub async fn run_event_listeners(
+    ir: std::sync::Arc<axon_frontend::ir_nodes::IRProgram>,
+    bus: std::sync::Arc<crate::runtime::channels::TypedEventBus>,
+    backend: String,
+    cancel: crate::cancel_token::CancellationFlag,
+) {
+    // The distinct channels any daemon event-listens on (one receive loop
+    // per channel — the bus transport is single-consumer FIFO per channel).
+    let mut channels: Vec<String> = ir
+        .daemons
+        .iter()
+        .flat_map(|d| event_listeners(d).into_iter().map(|l| l.channel))
+        .collect();
+    channels.sort();
+    channels.dedup();
+
+    let mut tasks = Vec::new();
+    for channel in channels {
+        let ir = ir.clone();
+        let bus = bus.clone();
+        let cancel = cancel.clone();
+        let backend = backend.clone();
+        tasks.push(tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    received = bus.receive(&channel) => {
+                        let Ok(event) = received else { return }; // sender dropped → stop
+                        let payload = match event.payload {
+                            crate::runtime::channels::TypedPayload::Scalar(v) => v,
+                            // Channel mobility (handle payload) delivery is §13 §3.3,
+                            // deferred (§74 deferred scope) — skip, don't crash.
+                            crate::runtime::channels::TypedPayload::Handle(_) => continue,
+                        };
+                        let _ = deliver_typed_event_reliable(
+                            &ir, &channel, &payload, &backend, "<daemon-event>", None,
+                        );
+                    }
+                }
+            }
+        }));
+    }
+    for t in tasks {
+        let _ = t.await;
+    }
+}
+
 /// §52.c.2 — the single-node daemon driver. For each cron listener, loops:
 /// compute the next fire from the clock, sleep until then, execute the body.
 /// Returns when `cancel` is triggered. Each listener is driven on its own
@@ -554,6 +737,102 @@ mod tests {
             "the consumer flow ran to completion (err: {:?})",
             res.as_ref().err()
         );
+    }
+
+    // ── §Fase 74.b — at-least-once delivery (retry / dead-letter / qos) ──
+
+    #[test]
+    fn deliver_with_retry_acks_on_a_later_attempt() {
+        // §74.b — at_least_once retries; a body that fails twice then
+        // succeeds is Acked on the 3rd attempt.
+        let mut n = 0;
+        let outcome = deliver_with_retry("at_least_once", 5, || {
+            n += 1;
+            if n < 3 { Err(format!("transient {n}")) } else { Ok(()) }
+        });
+        assert_eq!(outcome, DeliveryOutcome::Acked { attempts: 3 });
+    }
+
+    #[test]
+    fn deliver_with_retry_dead_letters_after_the_ceiling() {
+        // §74.b — a body that always fails is dead-lettered after exactly
+        // MAX_DELIVERY_ATTEMPTS (no infinite redelivery).
+        let mut n = 0;
+        let outcome = deliver_with_retry("at_least_once", MAX_DELIVERY_ATTEMPTS, || {
+            n += 1;
+            Err(format!("perma-fail {n}"))
+        });
+        match outcome {
+            DeliveryOutcome::DeadLettered { attempts, last_error } => {
+                assert_eq!(attempts, MAX_DELIVERY_ATTEMPTS);
+                assert!(last_error.contains("perma-fail"));
+            }
+            other => panic!("expected DeadLettered, got {other:?}"),
+        }
+        assert_eq!(n, MAX_DELIVERY_ATTEMPTS, "tried exactly the ceiling, no more");
+    }
+
+    #[test]
+    fn deliver_with_retry_at_most_once_drops_without_retry() {
+        // §74.b — at_most_once runs ONCE; a failure is dropped (the
+        // best-effort qos the program declared), never retried.
+        let mut n = 0;
+        let outcome = deliver_with_retry("at_most_once", 5, || {
+            n += 1;
+            Err("boom".to_string())
+        });
+        assert!(matches!(outcome, DeliveryOutcome::Dropped { .. }));
+        assert_eq!(n, 1, "at_most_once never retries");
+    }
+
+    #[tokio::test]
+    async fn reliable_delivery_acks_a_passing_listener() {
+        let ir = ir_with_daemon(
+            "type Hib { tenant_id: String }\n\
+             channel HibCh { message: Hib  qos: at_least_once }\n\
+             flow Learn(tenant_id: String) -> String { return \"ok\" }\n\
+             daemon D { requires: [flow.execute]  listen HibCh as ev { run Learn() } }",
+        );
+        let payload = serde_json::json!({ "tenant_id": "acme" });
+        let out = deliver_typed_event_reliable(&ir, "HibCh", &payload, "stub", "<test>", None);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "D");
+        assert!(matches!(out[0].1, DeliveryOutcome::Acked { .. }), "{:?}", out[0].1);
+    }
+
+    #[tokio::test]
+    async fn reliable_delivery_dead_letters_a_failing_listener() {
+        // The body runs an UNDEFINED flow → execute_server_flow errors every
+        // attempt → dead-lettered (at_least_once), not silently lost.
+        let ir = ir_with_daemon(
+            "type Hib { tenant_id: String }\n\
+             channel HibCh { message: Hib  qos: at_least_once }\n\
+             daemon D { requires: [flow.execute]  listen HibCh as ev { run Ghost() } }",
+        );
+        let out = deliver_typed_event_reliable(
+            &ir, "HibCh", &serde_json::json!({}), "stub", "<test>", None,
+        );
+        assert_eq!(out.len(), 1);
+        match &out[0].1 {
+            DeliveryOutcome::DeadLettered { attempts, .. } => {
+                assert_eq!(*attempts, MAX_DELIVERY_ATTEMPTS)
+            }
+            other => panic!("expected DeadLettered, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn reliable_delivery_at_most_once_drops_a_failing_listener() {
+        // Same failing body, but the channel is at_most_once → one attempt,
+        // dropped (no retry storm).
+        let ir = ir_with_daemon(
+            "type T { x: String }\n\
+             channel C { message: T  qos: at_most_once }\n\
+             daemon D { requires: [flow.execute]  listen C as ev { run Ghost() } }",
+        );
+        let out = deliver_typed_event_reliable(&ir, "C", &serde_json::json!({}), "stub", "<test>", None);
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0].1, DeliveryOutcome::Dropped { .. }), "{:?}", out[0].1);
     }
 
     #[test]
