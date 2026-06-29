@@ -1353,6 +1353,8 @@ Body prose.
             (ReferenceKind::Logic, "effects_are_linear"),
             // §Fase 73.e — open data is navigated totally; a shape is a lens.
             (ReferenceKind::Logic, "open_data_is_total"),
+            // §Fase 74 — a channel's declared delivery is enforced or flagged.
+            (ReferenceKind::Logic, "delivery_is_a_kept_promise"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1396,7 +1398,7 @@ Body prose.
         );
         assert_eq!(
             cat.reference_count_of(ReferenceKind::Logic),
-            9,
+            10,
             "logic family count drift"
         );
         assert_eq!(
