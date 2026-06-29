@@ -1,0 +1,88 @@
+---
+name: open_data_is_total
+title: "Open data is navigated totally; a declared shape is a lens, never a lie (§Fase 73)"
+summary: "The law that semi-structured data — a `Json` value — is navigated TOTALLY (every `.field`/`[i]` path terminates to a typed value; an absent field, a wrong-typed base, an out-of-range index resolve to null-as-a-value, never a panic, never divergence) AND that a declared shape over it (`Json<T>`) is a CHECKABLE EXPECTATION the compiler verifies, never a guarantee the runtime enforces as a lie. The compiler may help — resolving a lens field's type, flagging an undeclared field (`axon-T842`) — but a declared-but-absent field still degrades to null at runtime; the runtime never crashes to honor a static claim. Generalises `total_expressions` from rigid types to open data, and carries `no_unwitnessed_advantage`'s honesty into the type system's relationship with messy reality."
+---
+
+# Open data is navigated totally; a declared shape is a lens, never a lie
+
+AXON's hardest honesty test is the data it does **not** control: a raw
+webhook, an evolving API payload, an LLM's structured output. This is
+semi-structured data — a [`Json`](axon://primitives/json) value — and it
+is inherently uncertain: the field may be absent, the type may differ from
+last week, the model may emit something malformed. Accessing `doc.field`
+is an epistemic **belief**, not a fact.
+
+Every other stack resolves that uncertainty dishonestly. Postgres `jsonb`
+returns `NULL` for a wrong path the same way it does for a present null —
+indistinguishable, silent. A typed language refuses the document unless
+you fully specify it. An ORM hands you a blob and lets a parse panic at
+runtime. Each either lies (silent null), refuses reality (rigid schema),
+or defers the failure to a crash.
+
+> **The law.** A semi-structured value is navigable **totally**: every
+> `.field` / `[i]` path terminates to a typed value; a miss — an absent
+> field, a wrong-typed base, a null base, an out-of-range index — is
+> **null-as-a-value**, never a panic, never divergence. And a declared
+> shape over it (`Json<T>`) is a **checkable expectation** (a lens): the
+> compiler verifies navigations against it, but it is **never a guarantee
+> the runtime enforces as a lie**. The compiler may help; the runtime
+> never lies.
+
+## Why total (the Logic pillar)
+
+`Json` is a recursive sum type; field/index access is its eliminator.
+§Fase 73 keeps that elimination **total**: navigation is a finite fold
+over the path, and the absence case is a *value* (`null`), not a failure.
+So `doc.a.b.c` keeps walking through a missing hop, `doc.items[99]` is
+`null` not a crash, and a missing field is honestly **falsy** in a guard —
+`if doc.tier == "gold"` is *decidably false*, not an error. This is
+exactly [`axon://logic/total_expressions`](axon://logic/total_expressions)
+extended from rigid types to open data: the total-expression law now
+covers the messiest values AXON touches.
+
+## Why a lens, not a lie (the Philosophy pillar)
+
+A document often *should* have a shape even when nothing can guarantee it.
+`Json<T>` records that expectation honestly. The compiler **checks** it:
+`profile.age` resolves to `Int` so `profile.age >= 18` type-checks, and
+`profile.notafield` is **`axon-T842`** — a likely typo caught early. But
+the shape is an **expectation, not an enforced runtime certainty**:
+
+- A declared-but-absent field still degrades to `null` at runtime. The
+  compiler does not insert a check that crashes; the runtime does not
+  fabricate the field. The static claim *guides*, it never *lies*.
+- The lens is removable. Drop the `<T>` and you navigate the open `Json`
+  freely — the runtime behaviour is identical; only the compile-time help
+  changes.
+
+A static type that the runtime would have to *fake* to honor is a lie. A
+static type that *checks an expectation while the runtime stays total* is
+honest help. §73 ships only the second kind.
+
+## What this forbids
+
+- **No silent wrong-path.** A miss is a *typed null* you can test
+  (`.is_null`), not an ambiguous `NULL` that could equally be a present
+  null — the program can tell "absent" from "present-and-null".
+- **No panic on shape drift.** A document that lost a field, or grew one,
+  or changed a type, never crashes a flow. It degrades to null and the
+  honest accessors fail-close.
+- **No fabricated certainty.** `Json<T>` is never compiled into a runtime
+  assertion that the document *is* `T`. The lens checks the program's
+  expectation; it does not coerce reality to match.
+
+## Relation to the other laws
+
+- Generalises [`total_expressions`](axon://logic/total_expressions): that
+  law made control-flow predicates total over rigid types; this one
+  extends totality to open, semi-structured data.
+- Carries [`no_unwitnessed_advantage`](axon://logic/no_unwitnessed_advantage)'s
+  honesty into the type system: a shape claim with no runtime backing is
+  *presented as* what it is — a checkable expectation — never overstated
+  as an enforced guarantee.
+
+The honest test: if you know the shape, declare `Json<T>` and let the
+compiler check your navigations; if you do not, use open `Json` and
+navigate totally. Either way a miss is null, never a crash — and the
+runtime never lies about what the document held.
