@@ -5,6 +5,7 @@
 //! channels runtime (`channels::typed::TypedEventBus`) — the Rust-runtime
 //! parity for the Python `axon/runtime/channels/typed.py` module.
 
+pub mod budget_kernel;
 pub mod channels;
 pub mod ensemble_aggregator;
 pub mod immune;
