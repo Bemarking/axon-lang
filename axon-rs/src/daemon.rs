@@ -450,6 +450,9 @@ pub async fn run_event_listeners(
     bus: std::sync::Arc<crate::runtime::channels::TypedEventBus>,
     backend: String,
     cancel: crate::cancel_token::CancellationFlag,
+    // §Fase 74.e — optional replay/audit-chain sink: each delivery records a
+    // `deliver:<channel>` ReplayToken. `None` → no recording (pre-§74.e).
+    replay_log: Option<std::sync::Arc<dyn crate::replay_token::ReplayLog>>,
 ) {
     // The distinct channels any daemon event-listens on (one receive loop
     // per channel — the bus transport is single-consumer FIFO per channel).
@@ -467,6 +470,7 @@ pub async fn run_event_listeners(
         let bus = bus.clone();
         let cancel = cancel.clone();
         let backend = backend.clone();
+        let replay_log = replay_log.clone();
         tasks.push(tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -479,9 +483,12 @@ pub async fn run_event_listeners(
                             // deferred (§74 deferred scope) — skip, don't crash.
                             crate::runtime::channels::TypedPayload::Handle(_) => continue,
                         };
-                        let _ = deliver_typed_event_reliable(
+                        // §74.e — reliable delivery + record the deliver token.
+                        let _ = deliver_and_record(
                             &ir, &channel, &payload, &backend, "<daemon-event>", None,
-                        );
+                            replay_log.as_deref(),
+                        )
+                        .await;
                     }
                 }
             }
@@ -490,6 +497,76 @@ pub async fn run_event_listeners(
     for t in tasks {
         let _ = t.await;
     }
+}
+
+/// §Fase 74.e — mint a `ReplayToken` for a typed-channel event (paper §5.4:
+/// "every Chan-Input reduction emits a ReplayToken" — and, symmetrically,
+/// every Chan-Output). `effect_name` is `emit:<channel>` (the producer's
+/// output prefix) or `deliver:<channel>` (the consumer's input prefix);
+/// `inputs` carries the event payload + the `flow_id` the [`ReplayLog`]
+/// indexes by; `outputs` is the delivery outcome (Null for a bare emit).
+/// The model slug is the stable deterministic `axon.builtin.channel.v1` —
+/// channel delivery is MECHANICAL (dispatch, not cognition), so it replays
+/// bit-for-bit. The receipt puts an event in the §11.c audit/replay chain.
+pub fn mint_channel_event_token(
+    effect_name: &str,
+    flow_id: &str,
+    payload: &serde_json::Value,
+    outputs: serde_json::Value,
+) -> crate::replay_token::ReplayToken {
+    crate::replay_token::ReplayTokenBuilder::new()
+        .effect_name(effect_name)
+        .inputs(serde_json::json!({ "flow_id": flow_id, "payload": payload }))
+        .outputs(outputs)
+        .model_version("axon.builtin.channel.v1")
+        .mint()
+}
+
+/// §Fase 74.e — deliver an event (reliable, at-least-once, §74.b) AND
+/// record a `deliver:<channel>` [`ReplayToken`] per listener outcome to the
+/// attached [`ReplayLog`], so each Chan-Input reduction is in the replay/
+/// audit chain. Async (the log sink may be Postgres / the audit chain).
+/// Returns the per-(daemon) outcomes. When `log` is `None`, behaves exactly
+/// like [`deliver_typed_event_reliable`] (no recording).
+pub async fn deliver_and_record(
+    ir: &axon_frontend::ir_nodes::IRProgram,
+    channel: &str,
+    payload: &serde_json::Value,
+    backend: &str,
+    source_file: &str,
+    budget: Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>,
+    log: Option<&dyn crate::replay_token::ReplayLog>,
+) -> Vec<(String, DeliveryOutcome)> {
+    let outcomes =
+        deliver_typed_event_reliable(ir, channel, payload, backend, source_file, budget);
+    if let Some(log) = log {
+        for (daemon_name, outcome) in &outcomes {
+            let summary = match outcome {
+                DeliveryOutcome::Acked { attempts } => {
+                    serde_json::json!({ "outcome": "acked", "attempts": attempts })
+                }
+                DeliveryOutcome::DeadLettered { attempts, last_error } => serde_json::json!({
+                    "outcome": "dead_lettered", "attempts": attempts, "error": last_error
+                }),
+                DeliveryOutcome::Dropped { error } => {
+                    serde_json::json!({ "outcome": "dropped", "error": error })
+                }
+            };
+            let token = mint_channel_event_token(
+                &format!("deliver:{channel}"),
+                daemon_name,
+                payload,
+                summary,
+            );
+            // A token-sink failure must not lose the delivery — log + carry on
+            // (the delivery already happened; the receipt is best-effort here,
+            // hardened in the §74.f durable audit-chain sink).
+            if let Err(e) = log.append(token).await {
+                eprintln!("§74.e deliver token append failed for '{channel}': {e}");
+            }
+        }
+    }
+    outcomes
 }
 
 /// §Fase 74.c — drain a channel's unprocessed OUTBOX and deliver each
@@ -996,6 +1073,64 @@ mod tests {
         let out =
             deliver_typed_event_reliable(&ir, "QCh", &serde_json::json!({}), "stub", "<test>", None);
         assert_eq!(out.len(), 1, "single-consumer → exactly one fired: {out:?}");
+    }
+
+    // ── §Fase 74.e — ReplayToken integration ─────────────────────────────
+
+    #[test]
+    fn channel_event_token_captures_the_causal_receipt() {
+        // §74.e — an `emit`/`deliver` mints a ReplayToken: the effect name,
+        // the payload (+ flow_id) as inputs, a deterministic channel slug.
+        let tok = mint_channel_event_token(
+            "deliver:HibCh",
+            "IntentLearner",
+            &serde_json::json!({ "tenant_id": "acme" }),
+            serde_json::json!({ "outcome": "acked", "attempts": 1 }),
+        );
+        assert_eq!(tok.effect_name, "deliver:HibCh");
+        assert_eq!(tok.model_version, "axon.builtin.channel.v1");
+        assert_eq!(tok.inputs["flow_id"], "IntentLearner");
+        assert_eq!(tok.inputs["payload"]["tenant_id"], "acme");
+        assert_eq!(tok.outputs["outcome"], "acked");
+        assert!(!tok.token_hash_hex.is_empty(), "the receipt is hashed");
+    }
+
+    #[tokio::test]
+    async fn deliver_and_record_logs_a_deliver_token_per_outcome() {
+        use crate::replay_token::{InMemoryReplayLog, ReplayLog};
+        let ir = ir_with_daemon(
+            "type Hib { tenant_id: String }\n\
+             channel HibCh { message: Hib  qos: at_least_once }\n\
+             flow Learn(tenant_id: String) -> String { return \"ok\" }\n\
+             daemon D { requires: [flow.execute]  listen HibCh as ev { run Learn() } }",
+        );
+        let log = InMemoryReplayLog::new();
+        let payload = serde_json::json!({ "tenant_id": "acme" });
+        let outcomes = deliver_and_record(
+            &ir, "HibCh", &payload, "stub", "<test>", None, Some(&log),
+        )
+        .await;
+        assert_eq!(outcomes.len(), 1);
+        // The Chan-Input reduction was recorded in the replay chain.
+        assert_eq!(log.len(), 1, "one deliver token recorded");
+        let tokens = log.tokens_for_flow("D").await.unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].effect_name, "deliver:HibCh");
+    }
+
+    #[tokio::test]
+    async fn deliver_and_record_without_a_log_is_pure_delivery() {
+        let ir = ir_with_daemon(
+            "type Hib { tenant_id: String }\n\
+             channel HibCh { message: Hib }\n\
+             flow Learn(tenant_id: String) -> String { return \"ok\" }\n\
+             daemon D { requires: [flow.execute]  listen HibCh as ev { run Learn() } }",
+        );
+        let out = deliver_and_record(
+            &ir, "HibCh", &serde_json::json!({ "tenant_id": "x" }), "stub", "<test>", None, None,
+        )
+        .await;
+        assert_eq!(out.len(), 1, "delivery still happens with no replay sink");
     }
 
     #[test]

@@ -455,6 +455,11 @@ pub struct DispatchCtx {
     /// supervisor path attaches it via [`DispatchCtx::with_event_outbox`]),
     /// a `persistent_axonstore` channel's `emit` is appended to the outbox.
     pub event_outbox: Option<std::sync::Arc<dyn crate::event_outbox::EventOutbox>>,
+    /// §Fase 74.e — optional replay/audit-chain sink. When attached, a
+    /// flow's `emit` records an `emit:<channel>` `ReplayToken` (the
+    /// producer's Chan-Output reduction in the §11.c chain). `None` (the
+    /// `DispatchCtx::new` default) ⇒ no recording (pre-§74.e).
+    pub replay_log: Option<std::sync::Arc<dyn crate::replay_token::ReplayLog>>,
 }
 
 impl DispatchCtx {
@@ -522,6 +527,8 @@ impl DispatchCtx {
             event_bus: None,
             // §Fase 74.c — no durable outbox by default.
             event_outbox: None,
+            // §Fase 74.e — no replay sink by default.
+            replay_log: None,
         }
     }
 
@@ -547,6 +554,17 @@ impl DispatchCtx {
         outbox: std::sync::Arc<dyn crate::event_outbox::EventOutbox>,
     ) -> Self {
         self.event_outbox = Some(outbox);
+        self
+    }
+
+    /// §Fase 74.e — Builder: attach the replay/audit-chain sink so a flow's
+    /// `emit` records an `emit:<channel>` ReplayToken (and the daemon
+    /// receive-loop records `deliver:<channel>` tokens).
+    pub fn with_replay_log(
+        mut self,
+        log: std::sync::Arc<dyn crate::replay_token::ReplayLog>,
+    ) -> Self {
+        self.replay_log = Some(log);
         self
     }
 
