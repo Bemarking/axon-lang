@@ -146,6 +146,21 @@ pub(crate) fn resolve_dotted_var(vars: &HashMap<String, String>, key: &str) -> O
     let base_val = vars.get(base)?;
     let mut cur: serde_json::Value = serde_json::from_str(base_val).ok()?;
     for field in rest.split('.') {
+        // §Fase 73.d — a `jsonb` column surfaces two ways depending on the
+        // backend: the Postgres decode yields a LIVE nested object, but the
+        // in_memory KV path (and any double-encoded payload) carries it as a
+        // JSON-STRING. Re-parse a string intermediate so `${alias.col.field}`
+        // navigates INTO a jsonb column uniformly across backends — total +
+        // honest: a string that is not a JSON object is left as-is (the next
+        // match falls through to a literal miss). Mirrors the eval engine's
+        // `as_json` (§73.b), keeping interpolation and `eval_expr` in parity.
+        if let serde_json::Value::String(s) = &cur {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
+                if parsed.is_object() {
+                    cur = parsed;
+                }
+            }
+        }
         cur = match cur {
             serde_json::Value::Object(mut m) => m.remove(field)?,
             _ => return None,
@@ -474,6 +489,48 @@ mod tests {
             interpolate_vars("row ${tid}/${e.to_id}", &vars),
             "row T1/abc-123"
         );
+    }
+
+    // ── §Fase 73.d — `${alias.col.field}` navigation into a jsonb column ─
+
+    #[test]
+    fn interpolate_navigates_into_a_string_encoded_jsonb_column() {
+        // The in_memory / double-encoded representation: the retrieve row `s`
+        // carries its `payload` (a jsonb column) as a JSON-STRING. Navigation
+        // must re-parse it and walk in — `${s.payload.city}` resolves the
+        // inner field, not the literal.
+        let mut vars = HashMap::new();
+        vars.insert(
+            "s".to_string(),
+            r#"{"id":"r1","payload":"{\"city\":\"Bogotá\",\"zip\":\"110111\"}"}"#.to_string(),
+        );
+        assert_eq!(interpolate_vars("${s.payload.city}", &vars), "Bogotá");
+        assert_eq!(interpolate_vars("${s.payload.zip}", &vars), "110111");
+    }
+
+    #[test]
+    fn interpolate_navigates_into_a_live_nested_jsonb_column() {
+        // The Postgres decode representation: `payload` is already a LIVE
+        // nested object. The same `${s.payload.city}` must resolve it — one
+        // navigation rule across both backends.
+        let mut vars = HashMap::new();
+        vars.insert(
+            "s".to_string(),
+            r#"{"id":"r1","payload":{"city":"Medellín"}}"#.to_string(),
+        );
+        assert_eq!(interpolate_vars("${s.payload.city}", &vars), "Medellín");
+    }
+
+    #[test]
+    fn interpolate_jsonb_navigation_miss_stays_literal() {
+        // A missing nested field is a total miss — the literal is kept, never
+        // a panic, never a half-resolution (doctrine open_data_is_total).
+        let mut vars = HashMap::new();
+        vars.insert(
+            "s".to_string(),
+            r#"{"payload":"{\"city\":\"X\"}"}"#.to_string(),
+        );
+        assert_eq!(interpolate_vars("${s.payload.absent}", &vars), "${s.payload.absent}");
     }
 
     #[test]

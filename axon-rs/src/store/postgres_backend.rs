@@ -2214,6 +2214,38 @@ mod tests {
     }
 
     #[test]
+    fn insert_casts_a_document_into_a_jsonb_column() {
+        // §Fase 73.d — a `Json` document is bound as text and cast to the
+        // introspected `jsonb` column type (`$N::jsonb`), so it lands as a
+        // native jsonb value (Postgres parses + stores the binary form).
+        // This is the write half of the jsonb round-trip; the read half is
+        // `pg_value_to_json`'s `PgTypeClass::Json` decode → a live nested
+        // `JsonValue`.
+        let cols = std::collections::HashMap::from([
+            ("id".to_string(), "uuid".to_string()),
+            ("payload".to_string(), "jsonb".to_string()),
+        ]);
+        let (sql, params) = build_insert_sql(
+            "events",
+            None,
+            &[
+                ("id".into(), txt("11111111-1111-1111-1111-111111111111")),
+                ("payload".into(), txt(r#"{"city":"Bogotá"}"#)),
+            ],
+            &cols,
+        )
+        .unwrap();
+        assert_eq!(
+            sql,
+            "INSERT INTO \"events\" (\"id\", \"payload\") VALUES ($1::uuid, $2::jsonb)"
+        );
+        assert_eq!(params.len(), 2);
+        // The read half: a jsonb column classifies as the Json type class.
+        assert_eq!(classify_pg_type("JSONB"), Some(PgTypeClass::Json));
+        assert_eq!(classify_pg_type("JSON"), Some(PgTypeClass::Json));
+    }
+
+    #[test]
     fn insert_renders_null_inline_consuming_no_placeholder() {
         let (sql, params) = build_insert_sql(
             "t",
