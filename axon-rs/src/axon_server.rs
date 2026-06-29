@@ -2258,6 +2258,10 @@ fn server_execute(
         // §Fase 72.c — the HTTP path carries no daemon budget (effect budgets
         // are a `daemon` surface). Tool dispatch is unconditional here.
         None,
+        // §Fase 74.f — the OSS HTTP path carries no durable event outbox (the
+        // per-tenant Postgres outbox is the enterprise supervisor's concern);
+        // `emit` keeps its in-process behavior here.
+        None,
     )?;
 
     // Count anchors from IR
