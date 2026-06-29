@@ -69,6 +69,9 @@ pub mod db_pool;
 pub mod deployer;
 pub mod emcp;
 pub mod event_bus;
+/// §Fase 74.c — the durable event outbox (the append-only log + processed
+/// cursor that makes `emit` survive the consumer being down).
+pub mod event_outbox;
 /// §λ-L-E Fase 2 — Handler layer (Free Monad + CPS). Port of `axon/runtime/handlers/`.
 pub mod handlers;
 /// §λ-L-E Fase 3 + 5 runtime primitives. Port of `axon/runtime/` (lease kernel,
