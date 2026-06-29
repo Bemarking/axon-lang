@@ -2255,6 +2255,9 @@ fn server_execute(
         // the enterprise executor's concern.
         None,
         None,
+        // §Fase 72.c — the HTTP path carries no daemon budget (effect budgets
+        // are a `daemon` surface). Tool dispatch is unconditional here.
+        None,
     )?;
 
     // Count anchors from IR

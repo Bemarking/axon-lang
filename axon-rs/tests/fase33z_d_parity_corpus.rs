@@ -121,6 +121,7 @@ fn run_sync(source: &str, source_file: &str, flow_name: &str) -> Result<ServerRu
         None, // §Fase 58.g — tool_base_url
         None, // §Fase 24.g.2 — llm_base_url
         None, // §Fase 24.g.2 — llm_chat_path
+            None, // §Fase 72.c — budget (test: unbudgeted)
     )
 }
 

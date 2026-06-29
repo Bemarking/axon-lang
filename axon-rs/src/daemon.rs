@@ -165,6 +165,9 @@ pub fn execute_listener_body(
     body: &[IRFlowNode],
     backend: &str,
     source_file: &str,
+    // §Fase 72.c — the daemon's linear-effect budget gate (shared across ticks so
+    // bucket/window state is cumulative). `None` for a budgetless daemon.
+    budget: Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>,
 ) -> Vec<(String, Result<crate::runner::ServerRunnerMetrics, String>)> {
     let empty = std::collections::HashMap::new();
     run_invocations(body)
@@ -184,6 +187,8 @@ pub fn execute_listener_body(
                 // (per-tenant override is the enterprise supervisor's path).
                 None,
                 None,
+                // §Fase 72.c — the daemon's effect budget gate.
+                budget.clone(),
             );
             (run.flow_name.clone(), result)
         })
@@ -210,17 +215,30 @@ pub async fn run_daemon(
     // per-listener tasks don't borrow `ir`'s daemon list). §Fase 71.c also
     // snapshots the bound `window` (cloned once — it is the same guard for every
     // listener of the daemon).
-    let (listeners, window): (Vec<(CronSchedule, Vec<IRFlowNode>, String)>, Option<IRWindow>) = {
+    // §Fase 72.c also builds the daemon's `budget { … }` gate ONCE (shared
+    // `Arc<Mutex>` across every listener + tick, so the rate buckets / max windows
+    // accumulate across the daemon's whole lifetime — a daily `max` spans ticks).
+    type SharedBudget = Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>;
+    let (listeners, window, budget): (
+        Vec<(CronSchedule, Vec<IRFlowNode>, String)>,
+        Option<IRWindow>,
+        SharedBudget,
+    ) = {
         let Some(daemon) = ir.daemons.iter().find(|d| d.name == daemon_name) else {
             eprintln!("§52.c.2 run_daemon: daemon '{daemon_name}' not in IR — nothing to drive");
             return;
         };
         let window = bound_window(&ir, daemon).cloned();
+        let budget = daemon.budget.as_ref().map(|b| {
+            std::sync::Arc::new(std::sync::Mutex::new(
+                crate::runtime::budget_kernel::BudgetGate::from_ir(b, &daemon_name, clock.now()),
+            ))
+        });
         let listeners = cron_listeners(daemon)
             .into_iter()
             .map(|l| (l.schedule, l.body.to_vec(), l.channel))
             .collect();
-        (listeners, window)
+        (listeners, window, budget)
     };
 
     let mut tasks = Vec::new();
@@ -231,6 +249,7 @@ pub async fn run_daemon(
         let daemon_name = daemon_name.clone();
         let backend = backend.clone();
         let window = window.clone();
+        let budget = budget.clone();
         tasks.push(tokio::spawn(async move {
             loop {
                 let now = clock.now();
@@ -282,7 +301,8 @@ pub async fn run_daemon(
                                 }
                             }
                         }
-                        let results = execute_listener_body(&ir, &body, &backend, "<daemon>");
+                        let results =
+                            execute_listener_body(&ir, &body, &backend, "<daemon>", budget.clone());
                         for (flow, res) in results {
                             if let Err(e) = res {
                                 eprintln!(
@@ -412,5 +432,37 @@ mod tests {
         );
         let d2 = unguarded.daemons.iter().find(|d| d.name == "Plain").unwrap();
         assert!(bound_window(&unguarded, d2).is_none());
+    }
+
+    #[test]
+    fn budget_gate_builds_from_a_parsed_daemon_and_enforces() {
+        // §Fase 72.c — parse → IR → BudgetGate, end to end. A daemon whose budget
+        // allows 1 TelnyxCall/hour: the first emission is granted, the second is
+        // denied under the (default) `block` policy.
+        let ir = ir_with_daemon(
+            "tool TelnyxCall { provider: telnyx timeout: 5s }\n\
+             flow SendBatch() -> Unit { step S { ask: \"x\" output: Unit } }\n\
+             daemon OutboundScheduler {\n\
+               requires: [flow.execute]\n\
+               budget {\n\
+                 max: 1 per hour on Tool(TelnyxCall)\n\
+                 on_exhausted: block\n\
+               }\n\
+               listen \"cron:*/5 * * * *\" as t { run SendBatch() }\n\
+             }",
+        );
+        let daemon = ir.daemons.iter().find(|d| d.name == "OutboundScheduler").unwrap();
+        let budget = daemon.budget.as_ref().expect("budget lowered onto the daemon");
+        let now: chrono::DateTime<chrono::Utc> = "2026-06-29T00:00:00Z".parse().unwrap();
+        let mut gate = crate::runtime::budget_kernel::BudgetGate::from_ir(budget, &daemon.name, now);
+
+        use crate::runtime::budget_kernel::GateDecision;
+        assert_eq!(gate.gate("TelnyxCall", now), GateDecision::Allow);
+        match gate.gate("TelnyxCall", now) {
+            GateDecision::Deny { on_exhausted, .. } => assert_eq!(on_exhausted, "block"),
+            other => panic!("expected Deny, got {other:?}"),
+        }
+        // A tool with no quota is never gated.
+        assert_eq!(gate.gate("SomeOtherTool", now), GateDecision::Allow);
     }
 }

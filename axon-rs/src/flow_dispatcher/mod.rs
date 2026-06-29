@@ -426,6 +426,17 @@ pub struct DispatchCtx {
             >,
         >,
     >,
+    /// §Fase 72.c — the active `budget { … }` linear-effect gate, when the flow
+    /// is being run by a budgeted `daemon`. Before a tool effect is emitted, the
+    /// dispatcher consults this gate; an exhausted quota under `on_exhausted:
+    /// block` fails the step (`EffectQuotaExhausted`). `None` for a flow run with
+    /// no budget (every non-daemon path, and budgetless daemons) — the tool
+    /// dispatch is then unconditional, byte-identical to pre-§72. Shared
+    /// (`Arc<Mutex>`) so the cumulative bucket state spans the daemon's flows +
+    /// (cloned) par branches within a tick.
+    pub budget: Option<
+        std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>,
+    >,
 }
 
 impl DispatchCtx {
@@ -484,7 +495,21 @@ impl DispatchCtx {
             pinned_conns: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+            // §Fase 72.c — no budget by default (unbudgeted dispatch). The daemon
+            // path attaches one via `with_budget`.
+            budget: None,
         }
+    }
+
+    /// §Fase 72.c — Builder: attach the active `budget { … }` gate (the daemon
+    /// path). Shared so cumulative bucket state spans the daemon's flows + par
+    /// branches within a tick.
+    pub fn with_budget(
+        mut self,
+        budget: std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>,
+    ) -> Self {
+        self.budget = Some(budget);
+        self
     }
 
     /// §Fase 37.x.j (D2) — Builder: attach an Arc-shared pinned
@@ -808,6 +833,13 @@ pub enum DispatchError {
     /// MUST treat this as a clean exit (same posture as
     /// `UpstreamCancelled`).
     ChannelClosed,
+
+    /// §Fase 72.c — a budgeted effect (`budget { … on Tool(X) }`) was blocked
+    /// because its rate/max quota is exhausted and the daemon's `on_exhausted`
+    /// policy is `block` (fail-closed). `effect` is the tool name; `retry_at_ms`
+    /// is when a token next frees up (operator diagnostics — the call did NOT
+    /// emit). The typed `axon-E08xx EffectQuotaExhausted` surface.
+    EffectQuotaExhausted { effect: String, retry_at_ms: i64 },
 }
 
 impl std::fmt::Display for DispatchError {
@@ -821,6 +853,11 @@ impl std::fmt::Display for DispatchError {
                 write!(f, "dispatcher missing dependency: {name}")
             }
             Self::ChannelClosed => write!(f, "channel closed (consumer dropped)"),
+            Self::EffectQuotaExhausted { effect, retry_at_ms } => write!(
+                f,
+                "axon-E0810 EffectQuotaExhausted: budget for Tool({effect}) is exhausted \
+                 (on_exhausted: block); next token at {retry_at_ms}ms — the call was not emitted"
+            ),
         }
     }
 }

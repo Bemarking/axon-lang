@@ -222,6 +222,14 @@ impl RateLease {
             RateState::Window { consumed, .. } => (self.limit - consumed).max(0) as f64,
         }
     }
+
+    /// Whether a token is available at `now` WITHOUT consuming it. `Granted` if a
+    /// call would succeed; `Denied{retry_at}` otherwise. Used by the multi-quota
+    /// gate to test all-or-none before committing any consumption.
+    pub fn peek(&self, now: DateTime<Utc>) -> AcquireOutcome {
+        let mut probe = self.clone();
+        probe.try_acquire(now)
+    }
 }
 
 /// Convert fractional seconds to a chrono [`Duration`] (millisecond precision;
@@ -274,6 +282,38 @@ impl RateLeaseKernel {
         }
     }
 
+    /// Attempt to consume one token from EVERY lease in `keys`, **all-or-none**:
+    /// consumes from all only if all have a token (so a per-hour `rate` and a
+    /// per-day `max` on the same tool both gate the call without a partial
+    /// consumption when one is exhausted). Returns [`AcquireOutcome::Denied`] with
+    /// the LATEST `retry_at` among the exhausted leases (the binding constraint —
+    /// you must wait for the slowest). An empty `keys` (an unbudgeted effect) is
+    /// granted. Unknown keys are skipped (treated as unbudgeted).
+    pub fn try_acquire_all(&mut self, keys: &[String], now: DateTime<Utc>) -> AcquireOutcome {
+        // Phase 1 — peek every lease; collect the binding retry_at on any denial.
+        let mut latest_retry: Option<DateTime<Utc>> = None;
+        for key in keys {
+            if let Some(lease) = self.leases.get(key) {
+                if let AcquireOutcome::Denied { retry_at } = lease.peek(now) {
+                    latest_retry = Some(match latest_retry {
+                        Some(prev) if prev >= retry_at => prev,
+                        _ => retry_at,
+                    });
+                }
+            }
+        }
+        if let Some(retry_at) = latest_retry {
+            return AcquireOutcome::Denied { retry_at };
+        }
+        // Phase 2 — all available ⇒ consume from each (cannot deny now).
+        for key in keys {
+            if let Some(lease) = self.leases.get_mut(key) {
+                let _ = lease.try_acquire(now);
+            }
+        }
+        AcquireOutcome::Granted
+    }
+
     /// Tokens currently available at `key` (`None` if unregistered).
     pub fn available(&self, key: &str, now: DateTime<Utc>) -> Option<f64> {
         self.leases.get(key).map(|l| l.available(now))
@@ -289,12 +329,117 @@ impl RateLeaseKernel {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  BUDGET GATE — the §72.c dispatch-site decision over a daemon's budget
+// ═══════════════════════════════════════════════════════════════════
+
+/// The dispatch gate's verdict for one budgeted effect emission.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GateDecision {
+    /// A token was consumed from every quota on the effect — the call proceeds.
+    Allow,
+    /// At least one quota is exhausted. The caller applies `on_exhausted`:
+    /// `block` (fail the step), `defer` (reschedule to `retry_at`, §72.d), or
+    /// `shed` (skip the call, §72.d).
+    Deny {
+        retry_at: DateTime<Utc>,
+        on_exhausted: String,
+    },
+}
+
+/// §Fase 72.c — a daemon's compiled `budget { … }` as a runnable gate. Holds one
+/// [`RateLease`] per quota (keyed by effect + kind), the `on_exhausted` policy,
+/// and an effect→keys index so the dispatch site can gate a tool emission by
+/// name. Built once when a budgeted daemon starts running its flow; the OSS
+/// reference is single-process (the §72.e enterprise layer swaps the in-process
+/// kernel for the per-tenant Redis `RateLimiter` behind the same `gate` shape).
+pub struct BudgetGate {
+    kernel: RateLeaseKernel,
+    on_exhausted: String,
+    /// effect (tool name) → the subject keys of its quotas.
+    by_effect: HashMap<String, Vec<String>>,
+}
+
+impl BudgetGate {
+    /// Build a gate from a compiled [`crate::ir_nodes::IRBudget`]. `scope` is an
+    /// opaque prefix (e.g. the daemon name) that namespaces the subject keys.
+    /// An invalid-period quota (the type checker prevents this) is skipped.
+    pub fn from_ir(budget: &crate::ir_nodes::IRBudget, scope: &str, now: DateTime<Utc>) -> Self {
+        let mut kernel = RateLeaseKernel::new();
+        let mut by_effect: HashMap<String, Vec<String>> = HashMap::new();
+        for (i, quota) in budget.quotas.iter().enumerate() {
+            let Some(lease) = RateLease::from_quota(quota, now) else {
+                continue;
+            };
+            let key = format!("{scope}:Tool({}):{}:{i}", quota.effect, quota.kind);
+            kernel.register(key.clone(), lease);
+            by_effect.entry(quota.effect.clone()).or_default().push(key);
+        }
+        BudgetGate {
+            kernel,
+            on_exhausted: if budget.on_exhausted.is_empty() {
+                "block".to_string()
+            } else {
+                budget.on_exhausted.clone()
+            },
+            by_effect,
+        }
+    }
+
+    /// Gate one emission of `effect` (a tool name) at `now`. An effect with no
+    /// quota is [`GateDecision::Allow`] (unbudgeted). Otherwise all of its quotas
+    /// must grant (all-or-none); on exhaustion the daemon's `on_exhausted` policy
+    /// rides on the [`GateDecision::Deny`].
+    pub fn gate(&mut self, effect: &str, now: DateTime<Utc>) -> GateDecision {
+        let Some(keys) = self.by_effect.get(effect) else {
+            return GateDecision::Allow;
+        };
+        let keys = keys.clone();
+        match self.kernel.try_acquire_all(&keys, now) {
+            AcquireOutcome::Granted => GateDecision::Allow,
+            AcquireOutcome::Denied { retry_at } => GateDecision::Deny {
+                retry_at,
+                on_exhausted: self.on_exhausted.clone(),
+            },
+        }
+    }
+
+    /// The exhaustion policy (`block` | `defer` | `shed`).
+    pub fn on_exhausted(&self) -> &str {
+        &self.on_exhausted
+    }
+
+    /// Whether `effect` has any quota under this budget.
+    pub fn governs(&self, effect: &str) -> bool {
+        self.by_effect.contains_key(effect)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn t0() -> DateTime<Utc> {
         "2026-06-29T00:00:00Z".parse().unwrap()
+    }
+
+    fn quota(kind: &str, limit: i64, period: &str, effect: &str) -> IRBudgetQuota {
+        IRBudgetQuota {
+            kind: kind.into(),
+            limit,
+            period: period.into(),
+            effect: effect.into(),
+        }
+    }
+
+    fn ir_budget(quotas: Vec<IRBudgetQuota>, on_exhausted: &str) -> crate::ir_nodes::IRBudget {
+        crate::ir_nodes::IRBudget {
+            node_type: "budget",
+            source_line: 1,
+            source_column: 1,
+            quotas,
+            on_exhausted: on_exhausted.into(),
+        }
     }
 
     // ── BudgetPeriod ─────────────────────────────────────────────────────
@@ -454,5 +599,79 @@ mod tests {
         let later = now + Duration::seconds(30);
         k.tick(later);
         assert_eq!(k.available("k", later), Some(2.0));
+    }
+
+    // ── try_acquire_all — the all-or-none multi-quota gate ───────────────
+
+    #[test]
+    fn acquire_all_is_all_or_none() {
+        let now = t0();
+        let mut k = RateLeaseKernel::new();
+        // rate: 5/hour (plenty) + max: 1/day (the binding constraint).
+        k.register("r", RateLease::rate("E", 5, BudgetPeriod::Hour, now));
+        k.register("m", RateLease::max("E", 1, BudgetPeriod::Day, now));
+        let keys = vec!["r".to_string(), "m".to_string()];
+        // First call: both grant.
+        assert!(k.try_acquire_all(&keys, now).is_granted());
+        // Second: max is exhausted → DENIED, and the rate token must NOT have
+        // been consumed (all-or-none) — 4 still available on the bucket.
+        match k.try_acquire_all(&keys, now) {
+            AcquireOutcome::Denied { retry_at } => {
+                assert_eq!(retry_at, now + Duration::seconds(86400), "binding = the daily max");
+            }
+            other => panic!("expected Denied, got {other:?}"),
+        }
+        assert_eq!(k.available("r", now), Some(4.0), "rate token not consumed on denial");
+    }
+
+    #[test]
+    fn acquire_all_empty_keys_is_granted() {
+        let mut k = RateLeaseKernel::new();
+        assert!(k.try_acquire_all(&[], t0()).is_granted());
+    }
+
+    // ── BudgetGate ───────────────────────────────────────────────────────
+
+    #[test]
+    fn gate_allows_unbudgeted_effects() {
+        let now = t0();
+        let b = ir_budget(vec![quota("rate", 1, "hour", "Telnyx")], "block");
+        let mut gate = BudgetGate::from_ir(&b, "daemon:Out", now);
+        // A tool with no quota is unbudgeted → always allowed.
+        assert_eq!(gate.gate("SomeOtherTool", now), GateDecision::Allow);
+        assert!(!gate.governs("SomeOtherTool"));
+        assert!(gate.governs("Telnyx"));
+    }
+
+    #[test]
+    fn gate_enforces_then_denies_with_policy() {
+        let now = t0();
+        let b = ir_budget(
+            vec![
+                quota("rate", 2, "hour", "Telnyx"),
+                quota("max", 3, "day", "Telnyx"),
+            ],
+            "defer",
+        );
+        let mut gate = BudgetGate::from_ir(&b, "daemon:Out", now);
+        // The rate bucket (2/hour) is the tighter constraint at t0.
+        assert_eq!(gate.gate("Telnyx", now), GateDecision::Allow);
+        assert_eq!(gate.gate("Telnyx", now), GateDecision::Allow);
+        match gate.gate("Telnyx", now) {
+            GateDecision::Deny { on_exhausted, retry_at } => {
+                assert_eq!(on_exhausted, "defer");
+                // 2/hour ⇒ next token in 1800s.
+                assert_eq!(retry_at, now + Duration::seconds(1800));
+            }
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gate_omitted_policy_is_block() {
+        let now = t0();
+        let b = ir_budget(vec![quota("rate", 1, "hour", "E")], "");
+        let gate = BudgetGate::from_ir(&b, "d", now);
+        assert_eq!(gate.on_exhausted(), "block");
     }
 }
