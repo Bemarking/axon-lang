@@ -14,10 +14,11 @@ use crate::ir_nodes::IRProgram;
 
 use super::effects;
 use super::proof_term::{
-    CapabilityContainmentWitness, CapabilityIsolationWitness, ComplianceCoverageWitness,
-    EffectBudgetedWitness, EffectRowSoundnessWitness, JsonShapeSoundnessWitness, ProofTerm,
-    PropertyClass, ResourceBoundsWitness, ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness,
-    Witness, MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS, VALID_ON_EXHAUSTED,
+    CapabilityContainmentWitness, CapabilityIsolationWitness, ChannelDeliverySoundnessWitness,
+    ComplianceCoverageWitness, EffectBudgetedWitness, EffectRowSoundnessWitness,
+    JsonShapeSoundnessWitness, ProofTerm, PropertyClass, ResourceBoundsWitness,
+    ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness, MAX_RETRIES,
+    VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS, VALID_ON_EXHAUSTED,
 };
 
 /// Canonical SHA-256 hex digest of the IR artifact. Reuses the
@@ -982,6 +983,103 @@ pub fn generate_json_shape_soundness_proofs(ir: &IRProgram, axon_version: &str) 
     proofs
 }
 
+// ── §Fase 74.g — ChannelDeliverySoundness ────────────────────────────
+
+/// §74.g — every channel `emit`ted to (a PRODUCER) anywhere in the program:
+/// walk all flow bodies + every daemon listener body, recursing into nested
+/// `if` / `for` bodies. Shared by producer + checker (D51.2).
+fn collect_emitted_channels(ir: &IRProgram) -> std::collections::HashSet<String> {
+    fn walk(steps: &[crate::ir_nodes::IRFlowNode], out: &mut std::collections::HashSet<String>) {
+        use crate::ir_nodes::IRFlowNode as N;
+        for step in steps {
+            match step {
+                N::Emit(e) => {
+                    out.insert(e.channel_ref.clone());
+                }
+                N::Conditional(c) => {
+                    walk(&c.then_body, out);
+                    walk(&c.else_body, out);
+                }
+                N::ForIn(f) => walk(&f.body, out),
+                // A daemon listener body can itself `emit` (a relay).
+                N::Listen(l) => walk(&l.body, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    for flow in &ir.flows {
+        walk(&flow.steps, &mut out);
+    }
+    for daemon in &ir.daemons {
+        for listener in &daemon.listeners {
+            walk(&listener.body, &mut out);
+        }
+    }
+    out
+}
+
+/// §74.g — every channel a `daemon` `listen`s on (a non-cron event
+/// listener — the consumers). Cron listeners are timer-driven, not channel
+/// consumers.
+fn collect_listened_channels(ir: &IRProgram) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for daemon in &ir.daemons {
+        for l in &daemon.listeners {
+            if axon_frontend::cron::cron_expr(&l.channel).is_none() {
+                out.insert(l.channel.clone());
+            }
+        }
+    }
+    out
+}
+
+/// §74.g — derive a [`ChannelDeliverySoundnessWitness`] for one channel.
+/// Pure + total. `None` when the channel is absent OR has NO consumer (a
+/// daemon `listen`er) — a channel with no listener carries no delivery
+/// contract, so no proof is generated (mirrors "no effects → no
+/// effect-row proof").
+pub fn derive_channel_delivery_soundness_witness(
+    channel_name: &str,
+    ir: &IRProgram,
+) -> Option<ChannelDeliverySoundnessWitness> {
+    let ch = ir.channels.iter().find(|c| c.name == channel_name)?;
+    let consumers = collect_listened_channels(ir);
+    if !consumers.contains(channel_name) {
+        return None;
+    }
+    let producers = collect_emitted_channels(ir);
+    Some(ChannelDeliverySoundnessWitness {
+        channel_name: channel_name.to_string(),
+        persistence: ch.persistence.clone(),
+        qos: ch.qos.clone(),
+        has_producer: producers.contains(channel_name),
+        has_consumer: true,
+    })
+}
+
+/// §74.g — generate ChannelDeliverySoundness proofs: one per `channel`
+/// that a daemon `listen`s on.
+pub fn generate_channel_delivery_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for ch in &ir.channels {
+        let Some(witness) = derive_channel_delivery_soundness_witness(&ch.name, ir) else {
+            continue;
+        };
+        proofs.push(ProofTerm {
+            property: PropertyClass::ChannelDeliverySoundness,
+            artifact_digest: digest.clone(),
+            witness: Witness::ChannelDeliverySoundness(witness),
+            axon_version: axon_version.to_string(),
+        });
+    }
+    proofs
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
 /// generator (compliance / effects / capability-gate / resources /
@@ -999,5 +1097,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_tool_call_soundness_proofs(ir, axon_version));
     proofs.extend(generate_effect_budgeted_proofs(ir, axon_version));
     proofs.extend(generate_json_shape_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_channel_delivery_soundness_proofs(ir, axon_version));
     proofs
 }

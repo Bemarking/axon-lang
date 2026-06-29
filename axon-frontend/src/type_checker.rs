@@ -572,6 +572,15 @@ pub struct TypeChecker<'a> {
     /// drops; kept SEPARATE so the §38 store proof (which matches the bare
     /// column-type name) is unaffected. Cleared between flows.
     current_flow_param_spellings: std::collections::BTreeMap<String, String>,
+    /// §Fase 74.g — every channel/topic `emit`ted to anywhere in the
+    /// program (all flow bodies + daemon listener bodies, nested). Built
+    /// once in `check`. A daemon `listen`er on a channel NOT in this set has
+    /// no producer → it can never fire (`axon-W009`, the §52.g diagnostic
+    /// reworked: §74 delivers a listener that HAS a producer, so the
+    /// remaining defect is the unproduced channel — the Kivi brief #39
+    /// case). The compile-time mirror of the §74.g PCC
+    /// `ChannelDeliverySoundness`.
+    emitted_channels: std::collections::HashSet<String>,
 }
 
 // ── §Fase 70.b — static type inference for the pure expression engine ─────────
@@ -788,6 +797,7 @@ impl<'a> TypeChecker<'a> {
             ext_scan_categories: std::collections::HashSet::new(),
             json_lens_fields: std::collections::HashMap::new(),
             current_flow_param_spellings: std::collections::BTreeMap::new(),
+            emitted_channels: std::collections::HashSet::new(),
         }
     }
 
@@ -819,6 +829,7 @@ impl<'a> TypeChecker<'a> {
             ext_scan_categories: std::collections::HashSet::new(),
             json_lens_fields: std::collections::HashMap::new(),
             current_flow_param_spellings: std::collections::BTreeMap::new(),
+            emitted_channels: std::collections::HashSet::new(),
         }
     }
 
@@ -827,6 +838,9 @@ impl<'a> TypeChecker<'a> {
         // §Fase 73.e — index every declared struct `type`'s fields so the
         // `Json<T>` lens can field-check navigations against them.
         self.index_type_fields(&self.program.declarations);
+        // §Fase 74.g — collect the program's channel producers so a daemon
+        // `listen`er with no `emit` producer is `axon-W009` (never fires).
+        self.collect_emitted_channels(&self.program.declarations);
         // §Fase 73.a — validate every `Json<T>` shape lens AFTER
         // registration (the symbol table must be complete to decide
         // whether `T` is a declared struct `type`). Open `Json` (no
@@ -847,6 +861,8 @@ impl<'a> TypeChecker<'a> {
         self.register_declarations(&self.program.declarations);
         // §Fase 73.e — see `check`.
         self.index_type_fields(&self.program.declarations);
+        // §Fase 74.g — see `check`.
+        self.collect_emitted_channels(&self.program.declarations);
         // §Fase 73.a — see `check`.
         self.check_json_lenses(&self.program.declarations);
         // §Fase 53.c — see `check`.
@@ -6837,6 +6853,48 @@ impl<'a> TypeChecker<'a> {
     // (doctrine `open_data_is_total`: the compiler may help, the runtime
     // never lies, never crashes).
 
+    /// §Fase 74.g — collect every channel/topic `emit`ted to anywhere in
+    /// the program: all flow bodies + every daemon listener body, recursing
+    /// into nested `if` / `for` / `listen` bodies. The set of producers a
+    /// `listen`er's channel is checked against (`axon-W009`). Mirrors the
+    /// §74.g PCC `collect_emitted_channels` (same Emit/If/ForIn/Listen walk)
+    /// so the compile-time warning + the deploy-gate proof agree.
+    fn collect_emitted_channels(&mut self, decls: &[Declaration]) {
+        fn walk(steps: &[FlowStep], out: &mut std::collections::HashSet<String>) {
+            for step in steps {
+                match step {
+                    FlowStep::Emit(e) => {
+                        out.insert(e.channel_ref.clone());
+                    }
+                    FlowStep::If(c) => {
+                        walk(&c.then_body, out);
+                        walk(&c.else_body, out);
+                    }
+                    FlowStep::ForIn(f) => walk(&f.body, out),
+                    FlowStep::Listen(l) => walk(&l.body, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut out = std::collections::HashSet::new();
+        for decl in decls {
+            match decl {
+                Declaration::Flow(f) => walk(&f.body, &mut out),
+                Declaration::Daemon(d) => {
+                    for l in &d.listeners {
+                        walk(&l.body, &mut out);
+                    }
+                }
+                Declaration::Epistemic(eb) => {
+                    // Recurse into epistemic-nested flows/daemons.
+                    self.collect_emitted_channels(&eb.body);
+                }
+                _ => {}
+            }
+        }
+        self.emitted_channels.extend(out);
+    }
+
     /// Index every declared struct `type`'s fields (recursing into
     /// `epistemic` blocks) → `struct → field → (type name, generic)`.
     fn index_type_fields(&mut self, decls: &[Declaration]) {
@@ -7140,27 +7198,30 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// §Fase 52.g — the honest "this daemon listener will never fire"
-    /// redirect. A daemon fires ONLY on a `cron:` schedule today; event
-    /// delivery to daemons (a typed `channel` OR a topic string) is NOT
-    /// wired in the runtime — the daemon supervisor extracts only the
-    /// cron listeners and silently drops the rest. So a non-cron daemon
-    /// listener type-checks clean but NEVER runs. Rather than let the
-    /// program rely on an unbacked delivery guarantee (the same dishonesty
-    /// `dispatch_vs_cognition` + `no_unwitnessed_advantage` forbid), the
-    /// compiler says so and redirects to the form that IS backed — a
-    /// `cron:` poll over a durable marker, which is at-least-once +
-    /// crash-safe by construction. Mirrors `axon-W004`'s honest redirect.
+    /// §Fase 52.g (reworked §74.g) — the honest "this daemon listener will
+    /// never fire" diagnostic. §74 WIRED flow→daemon event delivery: a
+    /// non-cron `listen`er now fires when an event arrives on its channel.
+    /// So the remaining delivery defect is the UNPRODUCED channel — a
+    /// listener on a channel NOTHING `emit`s to waits for an event no
+    /// producer raises (the Kivi brief #39 case). `axon-W009` fires ONLY in
+    /// that case now (it is silent when a producer exists, since §74
+    /// delivers it). The compile-time mirror of the §74.g PCC
+    /// `ChannelDeliverySoundness`; still the `axon-W004`/`no_unwitnessed_advantage`
+    /// honesty posture — never let a program rely on an event no producer
+    /// raises.
     fn warn_daemon_listener_never_fires(&mut self, daemon_name: &str, channel: &str, loc: &Loc) {
+        // §74 delivers a listener that HAS a producer → only warn when the
+        // channel has NO `emit` anywhere in the program.
+        if self.emitted_channels.contains(channel) {
+            return;
+        }
         self.warn(
             format!(
-                "axon-W009 daemon '{daemon_name}' listens on '{channel}', but a daemon \
-                 fires ONLY on a `cron:` schedule today — event delivery to daemons (a \
-                 typed `channel` or a topic) is not yet wired in the runtime, so this \
-                 listener will NEVER fire (the supervisor extracts only cron listeners). \
-                 Until durable daemon event delivery ships, drive it with `listen \
-                 \"cron:<expr>\"` polling a durable marker (e.g. a status / processed-at \
-                 column) — at-least-once + crash-safe by construction."
+                "axon-W009 daemon '{daemon_name}' listens on '{channel}', but NOTHING \
+                 emits to it — there is no `emit {channel}(…)` anywhere in the program, so \
+                 this listener can NEVER fire (it waits for an event no producer raises). \
+                 Add a producer (`emit {channel}(payload)` in a flow), or remove the \
+                 listener. (§74 delivers a listener that HAS a producer.)"
             ),
             loc,
         );
@@ -8384,7 +8445,8 @@ mod fase13_typecheck_tests {
         assert!(errs.is_empty(), "errors: {:?}", errs);
         assert_eq!(warns.len(), 1, "the typed-channel listener warns it never fires");
         assert!(warns[0].message.contains("axon-W009"), "{:?}", warns);
-        assert!(warns[0].message.contains("NEVER fire") && warns[0].message.contains("cron:"));
+        // §74.g — the message is now about the missing producer, not cron.
+        assert!(warns[0].message.contains("NEVER fire") && warns[0].message.contains("emit"));
     }
 
     #[test]
@@ -8443,6 +8505,29 @@ mod fase13_typecheck_tests {
         assert!(errs.is_empty(), "no errors expected: {:?}", errs);
         assert_eq!(warns.len(), 2, "both non-cron listeners warn they never fire");
         assert!(warns.iter().all(|w| w.message.contains("axon-W009")));
+    }
+
+    #[test]
+    fn listen_with_a_producer_does_not_warn() {
+        // §Fase 74.g — the key change: a non-cron listener on a channel that
+        // a flow EMITS to no longer warns (§74 delivers it). W009 is now
+        // silent when a producer exists.
+        let src = r#"
+            type Order { id: String }
+            channel C { message: Order }
+            flow Produce(id: String) -> Unit { emit C(id) }
+            daemon D() {
+                requires: [flow.execute]
+                listen C as ev { probe p }
+            }
+        "#;
+        let (errs, warns) = check_with_warnings(src);
+        assert!(errs.is_empty(), "errors: {:?}", errs);
+        assert!(
+            !warns.iter().any(|w| w.message.contains("axon-W009")),
+            "a listener WITH a producer must not warn (§74 delivers it): {:?}",
+            warns
+        );
     }
 
     #[test]

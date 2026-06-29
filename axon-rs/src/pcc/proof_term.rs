@@ -142,6 +142,19 @@ pub enum PropertyClass {
     /// proof"); an open `Json` column (no shape) is unconstrained and is
     /// not a lens site.
     JsonShapeSoundness,
+    /// §74.g — every typed `channel` a `daemon` `listen`s on has a PRODUCER:
+    /// some flow (or daemon-listener body) `emit`s to it. A `listen`er on a
+    /// channel that NOTHING emits to NEVER fires — the original Kivi brief
+    /// #39 defect (a daemon waiting on an event no producer raises). §74
+    /// wired flow→daemon delivery (the listener fires when an event arrives),
+    /// so the remaining delivery defect is the unproduced channel — and this
+    /// proof makes it INDEPENDENTLY VERIFIABLE: the verifier re-derives, from
+    /// the artifact alone, that every consumed channel has a matching `emit`,
+    /// so the declared `qos`/`persistence` delivery is actually reachable
+    /// (`delivery_is_a_kept_promise`). The compile-time mirror is `axon-W009`
+    /// (§52.g, reworked in §74.g). A channel with no listener carries no
+    /// delivery contract → no proof.
+    ChannelDeliverySoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -180,6 +193,7 @@ impl PropertyClass {
             PropertyClass::ToolCallSoundness => "tool_call_soundness",
             PropertyClass::EffectBudgeted => "effect_budgeted",
             PropertyClass::JsonShapeSoundness => "json_shape_soundness",
+            PropertyClass::ChannelDeliverySoundness => "channel_delivery_soundness",
         }
     }
 }
@@ -445,6 +459,29 @@ pub struct JsonShapeSoundnessWitness {
     pub unresolved_shapes: Vec<String>,
 }
 
+/// §74.g — witness for [`PropertyClass::ChannelDeliverySoundness`].
+///
+/// The property certified: a typed `channel` a `daemon` `listen`s on has a
+/// PRODUCER (some flow / daemon-listener body `emit`s to it), so the
+/// listener can actually fire. The checker RE-DERIVES every field from the
+/// artifact (the program's `emit` sites + daemon `listen` sites) and
+/// rejects the proof if the witness disagrees (D51.2). A verifying proof
+/// has `has_consumer && has_producer` (or no consumer at all → no proof is
+/// generated).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelDeliverySoundnessWitness {
+    /// The `channel` this proof is about.
+    pub channel_name: String,
+    /// The channel's declared `persistence` (`ephemeral` / `persistent_axonstore`).
+    pub persistence: String,
+    /// The channel's declared `qos`.
+    pub qos: String,
+    /// Whether some flow (or daemon-listener body) `emit`s to this channel.
+    pub has_producer: bool,
+    /// Whether some `daemon` `listen`s on this channel (a non-cron listener).
+    pub has_consumer: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -459,6 +496,7 @@ pub enum Witness {
     CapabilityContainment(CapabilityContainmentWitness),
     ToolCallSoundness(ToolCallSoundnessWitness),
     JsonShapeSoundness(JsonShapeSoundnessWitness),
+    ChannelDeliverySoundness(ChannelDeliverySoundnessWitness),
 }
 
 impl Witness {
@@ -482,6 +520,7 @@ impl Witness {
             Witness::CapabilityContainment(w) => &w.endpoint_name,
             Witness::ToolCallSoundness(w) => &w.tool_name,
             Witness::JsonShapeSoundness(w) => &w.store_name,
+            Witness::ChannelDeliverySoundness(w) => &w.channel_name,
         }
     }
 }
