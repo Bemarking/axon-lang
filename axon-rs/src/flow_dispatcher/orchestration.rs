@@ -274,6 +274,17 @@ enum EVal {
     Float(f64),
     Bool(bool),
     Str(String),
+    /// §Fase 73.b — a live JSON value. Carries the semi-structured cases
+    /// the scalar variants cannot: a JSON `null` (the value a TOTAL
+    /// navigation miss produces — never `None`, never a panic) and the
+    /// composite carriers (`object` / `array`) that a further `.field` /
+    /// `[i]` keeps navigating WITHOUT a re-parse round-trip. JSON scalars
+    /// (string / number / bool) collapse to the matching scalar variant
+    /// (see [`json_to_eval`]) so arithmetic + comparison stay ergonomic;
+    /// only `Null` + `Array` + `Object` ever inhabit this variant.
+    /// Doctrine `open_data_is_total`: navigation always terminates to a
+    /// value, the runtime never lies.
+    Json(serde_json::Value),
 }
 
 /// Evaluate a lowered pure expression. Returns `None` on a type error / domain
@@ -332,22 +343,32 @@ fn eval_expr(e: &crate::ir_nodes::IRExpr, ctx: &DispatchCtx) -> Option<EVal> {
         },
         // §Fase 70.c — closed-catalog builtin call.
         IRExpr::Call { builtin, args } => eval_builtin(builtin, args, ctx),
-        // §Fase 70.d — field access over a JSON object value.
-        IRExpr::Field { base, field } => {
-            let base_s = eval_to_str(&eval_expr(base, ctx)?);
-            eval_json_field(&base_s, field)
-        }
-        // §Fase 70.d — index access over a JSON array or string.
+        // §Fase 70.d / §73.b — field access over a JSON value. TOTAL: a
+        // non-object base, an absent field, or a null base resolve to JSON
+        // null (null-as-a-value), so a chained `doc.a.b.c` keeps walking
+        // and only the base sub-expression evaluating to `None` (a hard
+        // domain error, e.g. division-by-zero in a sub-expr) fails closed.
+        IRExpr::Field { base, field } => Some(eval_json_field(&eval_expr(base, ctx)?, field)),
+        // §Fase 70.d / §73.b — index access over a JSON array or string.
+        // TOTAL: out-of-range / negative / non-array → JSON null. A
+        // non-integer index (a type error the frontend rejects) also
+        // degrades to null rather than diverging.
         IRExpr::Index { base, index } => {
-            let base_s = eval_to_str(&eval_expr(base, ctx)?);
-            let i = eval_as_int(&eval_expr(index, ctx)?)?;
-            eval_json_index(&base_s, i)
+            let b = eval_expr(base, ctx)?;
+            let idx = eval_expr(index, ctx)?;
+            Some(match eval_as_int(&idx) {
+                Some(i) => eval_json_index(&b, i),
+                None => EVal::Json(serde_json::Value::Null),
+            })
         }
     }
 }
 
-/// Convert a JSON value to an `EVal`. Objects/arrays become their compact JSON
-/// string so a further `.field` / `[i]` can re-parse and walk them.
+/// Convert a JSON value to an `EVal`. §Fase 73.b — a JSON scalar collapses
+/// to the matching scalar variant (so arithmetic + comparison stay
+/// ergonomic); `null` and the composite carriers (`object` / `array`) stay
+/// LIVE `EVal::Json` values — `null` is the navigable null-as-a-value, and a
+/// composite is kept navigable without a re-parse round-trip.
 fn json_to_eval(v: &serde_json::Value) -> EVal {
     match v {
         serde_json::Value::String(s) => EVal::Str(s.clone()),
@@ -356,30 +377,57 @@ fn json_to_eval(v: &serde_json::Value) -> EVal {
             .as_i64()
             .map(EVal::Int)
             .unwrap_or_else(|| EVal::Float(n.as_f64().unwrap_or(0.0))),
-        serde_json::Value::Null => EVal::Str(String::new()),
-        other => EVal::Str(other.to_string()),
+        // Null + object + array stay live JSON (`open_data_is_total`).
+        other => EVal::Json(other.clone()),
     }
 }
 
-/// §Fase 70.d — `base.field` over a JSON object string. `None` (fail-closed)
-/// when the base is not a JSON object or the field is absent.
-fn eval_json_field(base_s: &str, field: &str) -> Option<EVal> {
-    let v: serde_json::Value = serde_json::from_str(base_s).ok()?;
-    v.get(field).map(json_to_eval)
+/// §Fase 73.b — view an `EVal` as a JSON value for navigation: a live
+/// `EVal::Json` is used directly; an `EVal::Str` is parsed as JSON text
+/// (the binding-carried-document path §70.d relied on). Any other scalar
+/// is not a JSON document. Returns `None` only when there is no JSON to
+/// navigate — the callers turn that into a typed null, never a failure.
+fn as_json(v: &EVal) -> Option<serde_json::Value> {
+    match v {
+        EVal::Json(j) => Some(j.clone()),
+        EVal::Str(s) => serde_json::from_str(s).ok(),
+        _ => None,
+    }
 }
 
-/// §Fase 70.d — `base[i]` over a JSON array (element) or a string (character).
-fn eval_json_index(base_s: &str, i: i64) -> Option<EVal> {
+/// §Fase 70.d / §73.b — `base.field` over a JSON value, TOTAL. A non-object
+/// base (a null, an array, a scalar) and an absent field both resolve to
+/// JSON null — never `None`, never a panic (doctrine `open_data_is_total`).
+fn eval_json_field(base: &EVal, field: &str) -> EVal {
+    match as_json(base) {
+        Some(serde_json::Value::Object(m)) => m
+            .get(field)
+            .map(json_to_eval)
+            .unwrap_or(EVal::Json(serde_json::Value::Null)),
+        _ => EVal::Json(serde_json::Value::Null),
+    }
+}
+
+/// §Fase 70.d / §73.b — `base[i]` over a JSON array (element) or a string
+/// (character), TOTAL. Out-of-range, negative, and non-collection bases
+/// resolve to JSON null — never `None`, never a panic.
+fn eval_json_index(base: &EVal, i: i64) -> EVal {
+    let null = || EVal::Json(serde_json::Value::Null);
     if i < 0 {
-        return None;
+        return null();
     }
-    if let Ok(serde_json::Value::Array(a)) = serde_json::from_str::<serde_json::Value>(base_s) {
-        return a.get(i as usize).map(json_to_eval);
+    match as_json(base) {
+        Some(serde_json::Value::Array(a)) => {
+            a.get(i as usize).map(json_to_eval).unwrap_or_else(null)
+        }
+        // Not a JSON array — fall back to character indexing over the raw
+        // string form (preserves §70.d string `[i]`); a miss is null.
+        _ => eval_to_str(base)
+            .chars()
+            .nth(i as usize)
+            .map(|c| EVal::Str(c.to_string()))
+            .unwrap_or_else(null),
     }
-    base_s
-        .chars()
-        .nth(i as usize)
-        .map(|c| EVal::Str(c.to_string()))
 }
 
 /// §Fase 70.c — evaluate a pure builtin call. `args[0]` is the receiver.
@@ -508,6 +556,9 @@ fn eval_coerce_str(s: String) -> EVal {
 fn eval_as_int(v: &EVal) -> Option<i64> {
     match v {
         EVal::Int(i) => Some(*i),
+        // §73.b — a JSON number navigated out of a document is an int when
+        // it is integral; null + composites are not numbers.
+        EVal::Json(j) => j.as_i64(),
         _ => None,
     }
 }
@@ -518,6 +569,8 @@ fn eval_as_num(v: &EVal) -> Option<f64> {
         EVal::Float(f) => Some(*f),
         EVal::Str(s) => s.parse::<f64>().ok(),
         EVal::Bool(_) => None,
+        // §73.b — a JSON number is numeric; null + composites are not.
+        EVal::Json(j) => j.as_f64(),
     }
 }
 
@@ -527,6 +580,12 @@ fn eval_to_str(v: &EVal) -> String {
         EVal::Float(f) => f.to_string(),
         EVal::Bool(b) => b.to_string(),
         EVal::Str(s) => s.clone(),
+        // §73.b — JSON null renders as the empty string (keeps a missing
+        // field falsy + string-equal to `""`); a composite renders as its
+        // compact JSON text so the string-based builtins (`.length`,
+        // `.contains`, …) can re-parse and walk it.
+        EVal::Json(serde_json::Value::Null) => String::new(),
+        EVal::Json(j) => j.to_string(),
     }
 }
 
@@ -560,6 +619,17 @@ fn eval_truthy(v: &EVal) -> bool {
         EVal::Int(i) => *i != 0,
         EVal::Float(f) => *f != 0.0,
         EVal::Str(s) => !s.is_empty() && s != "false" && s != "0",
+        // §73.b — JSON truthiness: null + an empty composite + an empty
+        // string + zero are falsy; a populated value is truthy. A missing
+        // field (null-as-a-value) is therefore honestly falsy in a guard.
+        EVal::Json(j) => match j {
+            serde_json::Value::Null => false,
+            serde_json::Value::Bool(b) => *b,
+            serde_json::Value::Number(n) => n.as_f64().map_or(false, |f| f != 0.0),
+            serde_json::Value::String(s) => !s.is_empty(),
+            serde_json::Value::Array(a) => !a.is_empty(),
+            serde_json::Value::Object(o) => !o.is_empty(),
+        },
     }
 }
 
@@ -1169,14 +1239,133 @@ mod tests {
     }
 
     #[test]
-    fn index_out_of_bounds_fails_closed() {
+    fn index_out_of_bounds_resolves_to_null() {
+        // §Fase 73.b — an out-of-range index is now a TOTAL navigation: it
+        // resolves to JSON null (null-as-a-value), not `None`. The
+        // observable guard outcome is unchanged — null is falsy — but the
+        // value keeps navigating (`items[9].name` stays total) and `eval_expr`
+        // never returns `None` from navigation itself (doctrine
+        // `open_data_is_total`).
         let mut ctx = fresh_ctx_no_rx().0;
         ctx.let_bindings.insert("items".into(), "[10,20]".into());
         let e = IRExpr::Index {
             base: eref("items"),
             index: lit_int(9),
         };
-        assert!(eval_expr(&e, &ctx).is_none());
+        let got = eval_expr(&e, &ctx).expect("navigation is total — never None");
+        assert!(matches!(got, EVal::Json(serde_json::Value::Null)));
+        assert!(!eval_truthy(&got), "a null miss is falsy in a guard");
+    }
+
+    // ── §Fase 73.b — total JSON navigation: a miss is null-as-a-value ────
+
+    #[test]
+    fn missing_field_resolves_to_null_not_failure() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings
+            .insert("doc".into(), r#"{"name":"axon"}"#.into());
+        let e = IRExpr::Field {
+            base: eref("doc"),
+            field: "absent".into(),
+        };
+        let got = eval_expr(&e, &ctx).expect("total — never None");
+        assert!(matches!(got, EVal::Json(serde_json::Value::Null)));
+        assert!(!eval_truthy(&got));
+    }
+
+    #[test]
+    fn navigation_chains_through_a_null_totally() {
+        // `doc.missing.deeper.deepest` — every hop past the first miss stays
+        // null, never panics, never diverges.
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("doc".into(), r#"{"a":1}"#.into());
+        let e = IRExpr::Field {
+            base: Box::new(IRExpr::Field {
+                base: Box::new(IRExpr::Field {
+                    base: eref("doc"),
+                    field: "missing".into(),
+                }),
+                field: "deeper".into(),
+            }),
+            field: "deepest".into(),
+        };
+        let got = eval_expr(&e, &ctx).expect("total");
+        assert!(matches!(got, EVal::Json(serde_json::Value::Null)));
+    }
+
+    #[test]
+    fn field_on_a_scalar_is_null_not_a_panic() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("n".into(), "42".into());
+        let e = IRExpr::Field {
+            base: eref("n"),
+            field: "whatever".into(),
+        };
+        assert!(matches!(
+            eval_expr(&e, &ctx).expect("total"),
+            EVal::Json(serde_json::Value::Null)
+        ));
+    }
+
+    #[test]
+    fn nested_object_navigation_returns_a_live_value() {
+        // A composite stays a navigable live `EVal::Json` — `doc.address`
+        // is an object, then `.city` walks into it WITHOUT re-stringifying.
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert(
+            "doc".into(),
+            r#"{"address":{"city":"Bogotá","zip":"110111"}}"#.into(),
+        );
+        // intermediate object is live JSON
+        let addr = eval_expr(
+            &IRExpr::Field {
+                base: eref("doc"),
+                field: "address".into(),
+            },
+            &ctx,
+        )
+        .expect("total");
+        assert!(matches!(addr, EVal::Json(serde_json::Value::Object(_))));
+        // chained field over the live object
+        let city = IRExpr::Field {
+            base: Box::new(IRExpr::Field {
+                base: eref("doc"),
+                field: "address".into(),
+            }),
+            field: "city".into(),
+        };
+        assert!(matches!(eval_expr(&city, &ctx), Some(EVal::Str(s)) if s == "Bogotá"));
+    }
+
+    #[test]
+    fn negative_index_is_null() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("xs".into(), "[1,2,3]".into());
+        let e = IRExpr::Index {
+            base: eref("xs"),
+            index: lit_int(-1),
+        };
+        assert!(matches!(
+            eval_expr(&e, &ctx).expect("total"),
+            EVal::Json(serde_json::Value::Null)
+        ));
+    }
+
+    #[test]
+    fn null_miss_compares_equal_to_empty_and_unequal_to_a_value() {
+        // A missing field is honestly distinguishable: it is NOT equal to a
+        // present value, so a guard `doc.tier == "gold"` is decidably false.
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("doc".into(), r#"{"n":1}"#.into());
+        let guard = bin(
+            "eq",
+            Box::new(IRExpr::Field {
+                base: eref("doc"),
+                field: "tier".into(),
+            }),
+            estr("gold"),
+        );
+        assert!(!eval_truthy(&eval_expr(&guard, &ctx).expect("total")));
     }
 
     #[test]
