@@ -323,15 +323,75 @@ async fn run_step_streaming_tool(
     if let Some(budget) = &ctx.budget {
         let now = chrono::Utc::now();
         let decision = budget.lock().unwrap().gate(&entry.name, now);
-        if let crate::runtime::budget_kernel::GateDecision::Deny { retry_at, .. } = decision {
-            // The typed `EffectQuotaExhausted` is the `effect:denied` audit
-            // signal — it propagates to the step failure + the daemon's audit
-            // (`daemon:failed` with this diagnostic). Per-call `effect:consumed`
-            // metering events are the §72.e enterprise surface (billing).
-            return Err(DispatchError::EffectQuotaExhausted {
-                effect: entry.name.clone(),
-                retry_at_ms: retry_at.timestamp_millis(),
-            });
+        if let crate::runtime::budget_kernel::GateDecision::Deny {
+            retry_at,
+            on_exhausted,
+        } = decision
+        {
+            let retry_at_ms = retry_at.timestamp_millis();
+            match on_exhausted.as_str() {
+                // §Fase 72.d — `shed`: best-effort. Skip the call, but CONTINUE
+                // the flow: the step completes with no tool output (a downstream
+                // `${Step}` reference resolves to empty). The step audit row marks
+                // the shed so it is observable, not silent.
+                "shed" => {
+                    ctx.tx
+                        .send(FlowExecutionEvent::StepComplete {
+                            step_name: step_name.clone(),
+                            step_index,
+                            success: true,
+                            full_output: String::new(),
+                            tokens_input: 0,
+                            tokens_output: 0,
+                            branch_path: ctx.branch_path_string(),
+                            timestamp_ms: now_ms(),
+                        })
+                        .map_err(|_| DispatchError::ChannelClosed)?;
+                    {
+                        let mut guard = ctx.step_audit_records.lock().await;
+                        guard.push(crate::axonendpoint_replay::StepAuditRecord {
+                            step_name: step_name.clone(),
+                            step_index,
+                            success: true,
+                            tokens_emitted: 0,
+                            output_hash_hex: String::new(),
+                            effect_policy_applied: Some("budget:shed".to_string()),
+                            chunks_dropped: 0,
+                            chunks_degraded: 0,
+                            timestamp_ms: now_ms(),
+                            tool_name: Some(entry.name.clone()),
+                            tool_chunks_emitted: Some(0),
+                            tool_output_hash_hex: Some(String::new()),
+                            tool_terminator_kind: Some("shed".to_string()),
+                            anchor_breaches: Vec::new(),
+                        });
+                    }
+                    // Empty output bound under the step name (a downstream ref
+                    // gets ""), and the flow proceeds.
+                    ctx.let_bindings.insert(step_name.clone(), String::new());
+                    return Ok(NodeOutcome::Completed {
+                        output: String::new(),
+                        tokens_emitted: 0,
+                        step_index,
+                    });
+                }
+                // §Fase 72.d — `defer`: the tick should re-run when a token frees
+                // up. A DISTINCT error (vs block) so the supervisor reschedules.
+                "defer" => {
+                    return Err(DispatchError::EffectDeferred {
+                        effect: entry.name.clone(),
+                        retry_at_ms,
+                    });
+                }
+                // `block` (the default + any other) → fail-closed. The typed
+                // `EffectQuotaExhausted` propagates to the step + daemon audit.
+                _ => {
+                    return Err(DispatchError::EffectQuotaExhausted {
+                        effect: entry.name.clone(),
+                        retry_at_ms,
+                    });
+                }
+            }
         }
         // Granted — the token(s) were consumed; the emission proceeds.
     }

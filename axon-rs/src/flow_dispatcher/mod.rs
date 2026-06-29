@@ -840,6 +840,16 @@ pub enum DispatchError {
     /// is when a token next frees up (operator diagnostics — the call did NOT
     /// emit). The typed `axon-E08xx EffectQuotaExhausted` surface.
     EffectQuotaExhausted { effect: String, retry_at_ms: i64 },
+
+    /// §Fase 72.d — a budgeted effect was DEFERRED (`on_exhausted: defer`): the
+    /// quota is exhausted, so the daemon's tick should re-run when a token frees
+    /// up at `retry_at_ms`. Distinct from `EffectQuotaExhausted` so the supervisor
+    /// can DISTINGUISH "reschedule me" from "I failed": the enterprise supervisor
+    /// records a coalesced deferred tick (the §71.d defer-ledger) targeting
+    /// `retry_at_ms`; the OSS single-process driver degrades to a logged retry on
+    /// the next cron tick (the §71.c degradation). The current flow does NOT
+    /// complete this tick.
+    EffectDeferred { effect: String, retry_at_ms: i64 },
 }
 
 impl std::fmt::Display for DispatchError {
@@ -857,6 +867,12 @@ impl std::fmt::Display for DispatchError {
                 f,
                 "axon-E0810 EffectQuotaExhausted: budget for Tool({effect}) is exhausted \
                  (on_exhausted: block); next token at {retry_at_ms}ms — the call was not emitted"
+            ),
+            Self::EffectDeferred { effect, retry_at_ms } => write!(
+                f,
+                "axon-E0811 EffectDeferred: budget for Tool({effect}) is exhausted \
+                 (on_exhausted: defer); the tick reschedules to {retry_at_ms}ms — \
+                 the call was not emitted this run"
             ),
         }
     }
@@ -1047,6 +1063,29 @@ pub async fn dispatch_node(
 mod tests {
     use super::*;
     use crate::cancel_token::CancellationFlag;
+
+    #[test]
+    fn budget_dispatch_errors_carry_their_typed_codes() {
+        // §Fase 72.c/d — the two budget-exhaustion surfaces have distinct codes
+        // so an operator (and the enterprise supervisor) can tell a hard block
+        // from a reschedule.
+        let blocked = DispatchError::EffectQuotaExhausted {
+            effect: "TelnyxCall".into(),
+            retry_at_ms: 1_700_000_000_000,
+        };
+        let msg = blocked.to_string();
+        assert!(msg.contains("axon-E0810"), "{msg}");
+        assert!(msg.contains("EffectQuotaExhausted") && msg.contains("Tool(TelnyxCall)"), "{msg}");
+        assert!(msg.contains("not emitted"), "{msg}");
+
+        let deferred = DispatchError::EffectDeferred {
+            effect: "TelnyxCall".into(),
+            retry_at_ms: 1_700_000_000_000,
+        };
+        let msg = deferred.to_string();
+        assert!(msg.contains("axon-E0811"), "{msg}");
+        assert!(msg.contains("EffectDeferred") && msg.contains("reschedules"), "{msg}");
+    }
 
     /// §Fase 33.y.l drift-gate update — the historical
     /// `shim_reason_cardinality_45_variants` /
