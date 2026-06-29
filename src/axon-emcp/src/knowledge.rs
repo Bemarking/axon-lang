@@ -1236,7 +1236,8 @@ Body prose.
         // §Fase 62.0: 45 → 46 with `ledger` (audit chain) split from `pix`.
         // §Fase 51 (v2.19.0): 46 → 48 with `observable` + `quant`.
         // §Fase 71: 48 → 49 with `window` (the temporal execution guard).
-        assert_eq!(s.total, 49);
+        // §Fase 73: 49 → 50 with `json` (the open semi-structured value type).
+        assert_eq!(s.total, 50);
     }
 
     /// §Phase 5 — every MCP prompt shipped under
@@ -1350,6 +1351,8 @@ Body prose.
             (ReferenceKind::Logic, "time_is_an_explicit_input"),
             // §Fase 72.f — an effect under a budget is a linear resource.
             (ReferenceKind::Logic, "effects_are_linear"),
+            // §Fase 73.e — open data is navigated totally; a shape is a lens.
+            (ReferenceKind::Logic, "open_data_is_total"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1393,7 +1396,7 @@ Body prose.
         );
         assert_eq!(
             cat.reference_count_of(ReferenceKind::Logic),
-            8,
+            9,
             "logic family count drift"
         );
         assert_eq!(

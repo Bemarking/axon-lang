@@ -556,6 +556,22 @@ pub struct TypeChecker<'a> {
     /// confidence range) — a rejected member is never silently honored.
     ext_effect_members: std::collections::HashSet<String>,
     ext_scan_categories: std::collections::HashSet<String>,
+    /// §Fase 73.e — the `Json<T>` shape-LENS field index: a declared
+    /// struct `type`'s name → (field name → (field type name, generic
+    /// param)). Built once in `check` (after registration) from every
+    /// `type` declaration, so a lens navigation `profile.age` over a
+    /// `Json<UserEvent>` value can statically verify `age` exists in
+    /// `UserEvent` (`axon-T842` otherwise) and resolve its scalar type —
+    /// WHILE the runtime stays total (a declared-but-absent field is null,
+    /// never a crash; doctrine `open_data_is_total`).
+    json_lens_fields:
+        std::collections::HashMap<String, std::collections::HashMap<String, (String, String)>>,
+    /// §Fase 73.e — the current flow's parameter-name → FULL type spelling
+    /// (`name` plus `<generic>` when present, e.g. `Json<UserEvent>`). The
+    /// `Json<T>` lens needs the generic the bare `current_flow_params` map
+    /// drops; kept SEPARATE so the §38 store proof (which matches the bare
+    /// column-type name) is unaffected. Cleared between flows.
+    current_flow_param_spellings: std::collections::BTreeMap<String, String>,
 }
 
 // ── §Fase 70.b — static type inference for the pure expression engine ─────────
@@ -770,6 +786,8 @@ impl<'a> TypeChecker<'a> {
             manifest: None,
             ext_effect_members: std::collections::HashSet::new(),
             ext_scan_categories: std::collections::HashSet::new(),
+            json_lens_fields: std::collections::HashMap::new(),
+            current_flow_param_spellings: std::collections::BTreeMap::new(),
         }
     }
 
@@ -799,11 +817,16 @@ impl<'a> TypeChecker<'a> {
             manifest: Some(manifest),
             ext_effect_members: std::collections::HashSet::new(),
             ext_scan_categories: std::collections::HashSet::new(),
+            json_lens_fields: std::collections::HashMap::new(),
+            current_flow_param_spellings: std::collections::BTreeMap::new(),
         }
     }
 
     pub fn check(mut self) -> Vec<TypeError> {
         self.register_declarations(&self.program.declarations);
+        // §Fase 73.e — index every declared struct `type`'s fields so the
+        // `Json<T>` lens can field-check navigations against them.
+        self.index_type_fields(&self.program.declarations);
         // §Fase 73.a — validate every `Json<T>` shape lens AFTER
         // registration (the symbol table must be complete to decide
         // whether `T` is a declared struct `type`). Open `Json` (no
@@ -822,6 +845,8 @@ impl<'a> TypeChecker<'a> {
     /// `(TypeChecker.check(), .warnings)` pair.
     pub fn check_with_warnings(mut self) -> (Vec<TypeError>, Vec<TypeError>) {
         self.register_declarations(&self.program.declarations);
+        // §Fase 73.e — see `check`.
+        self.index_type_fields(&self.program.declarations);
         // §Fase 73.a — see `check`.
         self.check_json_lenses(&self.program.declarations);
         // §Fase 53.c — see `check`.
@@ -1866,10 +1891,25 @@ impl<'a> TypeChecker<'a> {
             Expr::Lit(ExprLit::Float(_)) => T::Float,
             Expr::Lit(ExprLit::Bool(_)) => T::Bool,
             Expr::Lit(ExprLit::Str(_)) => T::Str,
-            Expr::Ref(p) => scope
-                .get(p)
-                .map(|n| infer_type_from_name(n))
-                .unwrap_or(T::Unknown),
+            Expr::Ref(p) => {
+                // §Fase 73.e — per §70.d a plain dotted path stays a FLAT
+                // `Ref` (`profile.age`, not a Field node). When its ROOT is a
+                // `Json<T>` lens param, walk the segments against `T`'s shape:
+                // a known field resolves to its declared type, an undeclared
+                // field is `axon-T842`. A non-lens dotted ref is left open.
+                if let Some((root, rest)) = p.split_once('.') {
+                    if let Some(struct_name) =
+                        scope.get(root).and_then(|s| Self::parse_json_lens(s))
+                    {
+                        let segments: Vec<&str> = rest.split('.').collect();
+                        return self.lens_field_walk(struct_name, &segments, loc);
+                    }
+                }
+                scope
+                    .get(p)
+                    .map(|n| infer_type_from_name(n))
+                    .unwrap_or(T::Unknown)
+            }
             Expr::Unary(UnOp::Neg, x) => {
                 let t = self.infer_expr(x, scope, loc);
                 if t != T::Unknown && !t.is_numeric() {
@@ -2009,6 +2049,37 @@ impl<'a> TypeChecker<'a> {
                         loc,
                     );
                 }
+                // §Fase 73.e — when the base is a `Json<T>` lens, the field is
+                // checked against `T`'s declared shape: a known field resolves
+                // to its declared scalar type (so `profile.age >= 18` is a
+                // well-typed Int comparison), an undeclared field is
+                // `axon-T842`. The runtime stays total either way (a
+                // declared-but-absent field is null, never a crash).
+                if let Some(struct_name) = self.lens_shape_of(base, scope) {
+                    let field_ty = self
+                        .json_lens_fields
+                        .get(&struct_name)
+                        .and_then(|m| m.get(field))
+                        .map(|(ty, _)| ty.clone());
+                    match field_ty {
+                        Some(ty) => return infer_type_from_name(&ty),
+                        None => {
+                            self.emit(
+                                format!(
+                                    "axon-T842 the lens `Json<{struct_name}>` declares no \
+                                     field `{field}`. The shape is a checkable EXPECTATION \
+                                     — navigating an undeclared field is a likely typo \
+                                     (runtime navigation stays total → a real document's \
+                                     extra field still reads as null here). Add `{field}` \
+                                     to `type {struct_name}`, or drop the `<{struct_name}>` \
+                                     shape to navigate the open `Json` freely."
+                                ),
+                                loc,
+                            );
+                            return T::Unknown;
+                        }
+                    }
+                }
                 T::Unknown
             }
             Expr::Index(base, index) => {
@@ -2122,6 +2193,18 @@ impl<'a> TypeChecker<'a> {
         for param in &node.parameters {
             self.current_flow_params
                 .insert(param.name.clone(), param.type_expr.name.clone());
+        }
+        // §Fase 73.e — capture the FULL type spelling (incl. the generic the
+        // bare map above drops) so the `Json<T>` lens can resolve `T`.
+        self.current_flow_param_spellings.clear();
+        for param in &node.parameters {
+            let spelling = if param.type_expr.generic_param.is_empty() {
+                param.type_expr.name.clone()
+            } else {
+                format!("{}<{}>", param.type_expr.name, param.type_expr.generic_param)
+            };
+            self.current_flow_param_spellings
+                .insert(param.name.clone(), spelling);
         }
 
         // Validate parameter types
@@ -5728,7 +5811,9 @@ impl<'a> TypeChecker<'a> {
                     // §Fase 70.b — static type-check a rich condition expression
                     // (the legacy triple form, `cond = None`, is unaffected).
                     if let Some(cond) = &n.cond {
-                        let scope = self.current_flow_params.types.clone();
+                        // §Fase 73.e — the FULL-spelling scope so a `Json<T>`
+                        // param's lens shape is visible to the field checker.
+                        let scope = self.current_flow_param_spellings.clone();
                         let _ = self.infer_expr(cond, &scope, &n.loc);
                         // §Fase 70.e — const-fold the condition; a fully-constant
                         // condition statically decides the branch (dead code).
@@ -5742,6 +5827,18 @@ impl<'a> TypeChecker<'a> {
                                 ),
                                 &n.loc,
                             );
+                        }
+                    } else {
+                        // §Fase 73.e — a plain dotted-ref condition stays the
+                        // LEGACY triple (`cond = None`) and so bypasses
+                        // `infer_expr`. Still run the `Json<T>` lens field check
+                        // on its dotted-path operands so `if profile.agee >= 18`
+                        // is caught (`axon-T842`) just like the rich forms.
+                        self.check_legacy_lens_path(&n.condition, &n.loc);
+                        self.check_legacy_lens_path(&n.comparison_value, &n.loc);
+                        for (lhs, _op, val) in &n.conditions {
+                            self.check_legacy_lens_path(lhs, &n.loc);
+                            self.check_legacy_lens_path(val, &n.loc);
                         }
                     }
                     self.check_flow_steps(&n.then_body, flow_name);
@@ -6726,6 +6823,152 @@ impl<'a> TypeChecker<'a> {
             ),
             loc,
         );
+    }
+
+    // ── §Fase 73.e — the `Json<T>` shape-lens field checker ─────────────
+    //
+    // 73.a validated the lens TYPE's well-formedness (`T` is a declared
+    // struct). 73.e makes the lens DO something: a navigation `profile.age`
+    // over a `Json<UserEvent>` value statically verifies `age` exists in
+    // `UserEvent` and resolves its scalar type, so `profile.age >= 18` is a
+    // well-typed Int comparison and `profile.notafield` is `axon-T842`.
+    // The runtime is unaffected — the lens is a compile-time EXPECTATION;
+    // a declared-but-absent field still degrades to null at runtime
+    // (doctrine `open_data_is_total`: the compiler may help, the runtime
+    // never lies, never crashes).
+
+    /// Index every declared struct `type`'s fields (recursing into
+    /// `epistemic` blocks) → `struct → field → (type name, generic)`.
+    fn index_type_fields(&mut self, decls: &[Declaration]) {
+        for decl in decls {
+            match decl {
+                Declaration::Type(t) => {
+                    let mut fields = std::collections::HashMap::new();
+                    for f in &t.fields {
+                        fields.insert(
+                            f.name.clone(),
+                            (f.type_expr.name.clone(), f.type_expr.generic_param.clone()),
+                        );
+                    }
+                    self.json_lens_fields.insert(t.name.clone(), fields);
+                }
+                Declaration::Epistemic(eb) => self.index_type_fields(&eb.body),
+                _ => {}
+            }
+        }
+    }
+
+    /// If `spelling` is a `Json<T>` lens, return `T` (the declared shape
+    /// struct). A bare `Json` (or any non-Json type) is not a lens.
+    fn parse_json_lens(spelling: &str) -> Option<String> {
+        let s = spelling.trim().trim_end_matches('?').trim();
+        let inner = s.strip_prefix("Json<")?.strip_suffix('>')?.trim();
+        if inner.is_empty() {
+            None
+        } else {
+            Some(inner.to_string())
+        }
+    }
+
+    /// The shape struct a lens navigation views, or `None` if `e` is not a
+    /// statically-known `Json<T>` lens. A `Ref` to a `Json<T>` param is the
+    /// lens root; a field whose declared type is itself a struct (or an
+    /// explicit `Json<T2>`) continues the lens into the nested shape, so
+    /// `profile.address.city` checks `city` against the nested struct.
+    fn lens_shape_of(
+        &self,
+        e: &Expr,
+        scope: &std::collections::BTreeMap<String, String>,
+    ) -> Option<String> {
+        match e {
+            Expr::Ref(name) => Self::parse_json_lens(scope.get(name)?),
+            Expr::Field(base, field) => {
+                let parent = self.lens_shape_of(base, scope)?;
+                let (ty, generic) = self.json_lens_fields.get(&parent)?.get(field)?;
+                if ty == "Json" && !generic.is_empty() {
+                    Some(generic.clone())
+                } else if self.json_lens_fields.contains_key(ty) {
+                    Some(ty.clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// §Fase 73.e — walk a flat dotted lens path's field SEGMENTS against
+    /// the shape struct, emitting `axon-T842` on the first undeclared
+    /// field. Returns the final segment's declared scalar type (so
+    /// `profile.age` is Int); an intermediate scalar / unknown leaf or a
+    /// struct result is `Unknown` (permissive past what is checkable).
+    fn lens_field_walk(
+        &mut self,
+        mut struct_name: String,
+        segments: &[&str],
+        loc: &Loc,
+    ) -> InferType {
+        use InferType as T;
+        for (i, f) in segments.iter().enumerate() {
+            let entry = self
+                .json_lens_fields
+                .get(&struct_name)
+                .and_then(|m| m.get(*f))
+                .map(|(ty, g)| (ty.clone(), g.clone()));
+            let (ty, generic) = match entry {
+                Some(e) => e,
+                None => {
+                    self.emit(
+                        format!(
+                            "axon-T842 the lens `Json<{struct_name}>` declares no field \
+                             `{f}`. The shape is a checkable EXPECTATION — navigating an \
+                             undeclared field is a likely typo (runtime navigation stays \
+                             total → a real document's extra field still reads as null \
+                             here). Add `{f}` to `type {struct_name}`, or drop the shape \
+                             to navigate the open `Json` freely."
+                        ),
+                        loc,
+                    );
+                    return T::Unknown;
+                }
+            };
+            if i == segments.len() - 1 {
+                return infer_type_from_name(&ty);
+            }
+            // Continue into a nested shape, or stop (permissive) at a scalar.
+            if ty == "Json" && !generic.is_empty() {
+                struct_name = generic;
+            } else if self.json_lens_fields.contains_key(&ty) {
+                struct_name = ty;
+            } else {
+                return T::Unknown;
+            }
+        }
+        T::Unknown
+    }
+
+    /// §Fase 73.e — run the lens field check over a LEGACY-condition dotted
+    /// path string (`profile.address.city`): if its root is a `Json<T>`
+    /// lens param, walk the segments against the shape (`axon-T842` on an
+    /// undeclared field). A non-dotted path or a non-lens root is a no-op,
+    /// so a literal value (`"18"`, `"acme.com"`) is never mistaken for a
+    /// navigation.
+    fn check_legacy_lens_path(&mut self, path: &str, loc: &Loc) {
+        let p = path.trim();
+        let (root, rest) = match p.split_once('.') {
+            Some(rt) => rt,
+            None => return,
+        };
+        let struct_name = match self
+            .current_flow_param_spellings
+            .get(root)
+            .and_then(|s| Self::parse_json_lens(s))
+        {
+            Some(s) => s,
+            None => return,
+        };
+        let segments: Vec<&str> = rest.split('.').collect();
+        let _ = self.lens_field_walk(struct_name, &segments, loc);
     }
 
     fn check_type_reference(&self, type_name: &str, _loc: &Loc) -> bool {

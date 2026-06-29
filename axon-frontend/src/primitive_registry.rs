@@ -338,6 +338,14 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
+        name: "json",
+        category: "data_plane",
+        top_level: false,
+        since: "Fase 73",
+        summary: "The open, semi-structured value type — a totally-navigable JSON document, refinable by an optional `Json<T>` shape lens, total and honest always.",
+        doc_status: DocStatus::Documented,
+    },
+    PrimitiveInfo {
         name: "axonstore",
         category: "data_plane",
         top_level: true,
@@ -629,9 +637,10 @@ mod tests {
         // §Fase 51 (v2.19.0) added `observable` + `quant` (the Hilbert-space
         // cognitive primitive + its Hermitian-observable companion) → 46→48.
         // §Fase 71 added `window` (the temporal execution guard) → 48→49.
+        // §Fase 73 added `json` (the open semi-structured value type) → 49→50.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            49,
+            50,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -719,6 +728,8 @@ mod tests {
             "observable", "quant",
             // §Fase 71 — the temporal execution-window guard.
             "window",
+            // §Fase 73 — the open semi-structured value type.
+            "json",
         ]
         .into_iter()
         .collect();
@@ -734,13 +745,14 @@ mod tests {
         // §Fase 62.0: 45 → 46 with `ledger` (audit chain) split out from `pix`.
         // §Fase 51 (v2.19.0): 46 → 48 with `observable` + `quant`.
         // §Fase 71: 48 → 49 with `window` (the temporal execution guard).
-        assert_eq!(s.total, 49);
+        // §Fase 73: 49 → 50 with `json` (the open semi-structured value type).
+        assert_eq!(s.total, 50);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 49);
+        assert_eq!(s.documented, 50);
         assert_eq!(s.pending, 0);
     }
 
