@@ -441,6 +441,24 @@ pub async fn run_emit(
         emit_to_channel(&node.channel_ref, &resolved_value, ctx)
     };
 
+    // §Fase 74.e — record the producer's Chan-Output (`emit:<channel>`) in
+    // the §11.c replay/audit chain when a sink is attached. Best-effort —
+    // the emit already happened; a receipt-append failure is logged, not
+    // fatal (hardened in §74.f's durable audit-chain sink).
+    if let Some(log) = ctx.replay_log.clone() {
+        let payload = serde_json::from_str::<serde_json::Value>(&emitted)
+            .unwrap_or_else(|_| serde_json::Value::String(emitted.clone()));
+        let token = crate::daemon::mint_channel_event_token(
+            &format!("emit:{}", node.channel_ref),
+            &ctx.flow_name,
+            &payload,
+            serde_json::Value::Null,
+        );
+        if let Err(e) = log.append(token).await {
+            eprintln!("§74.e emit token append failed for '{}': {e}", node.channel_ref);
+        }
+    }
+
     emit_step_complete(ctx, &step_name, step_index, &emitted, 0)?;
 
     Ok(NodeOutcome::Completed {
@@ -1693,6 +1711,37 @@ mod tests {
         assert!(!ctx.let_bindings.contains_key("__channel_HibCh"));
         let tail = outbox.unprocessed("HibCh");
         assert_eq!(tail[0].payload["tenant_id"], "acme");
+    }
+
+    #[tokio::test]
+    async fn run_emit_records_a_replay_token_when_a_log_is_attached() {
+        // §Fase 74.e — the producer's Chan-Output `emit` records an
+        // `emit:<channel>` ReplayToken in the attached replay chain.
+        use crate::replay_token::{InMemoryReplayLog, ReplayLog};
+        use crate::runtime::channels::{TypedChannelHandle, TypedEventBus};
+        let bus = std::sync::Arc::new(TypedEventBus::new());
+        bus.register(TypedChannelHandle::new("HibCh", "Hib"));
+        let log = std::sync::Arc::new(InMemoryReplayLog::new());
+
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx = ctx.with_event_bus(bus).with_replay_log(log.clone());
+        ctx.let_bindings
+            .insert("payload".into(), r#"{"tenant_id":"acme"}"#.into());
+        let node = IREmit {
+            node_type: "emit",
+            source_line: 0,
+            source_column: 0,
+            channel_ref: "HibCh".into(),
+            value_ref: "payload".into(),
+            value_is_channel: false,
+        };
+        run_emit(&node, &mut ctx).await.unwrap();
+
+        assert_eq!(log.len(), 1, "the emit recorded one replay token");
+        let tokens = log.tokens_for_flow(&ctx.flow_name).await.unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].effect_name, "emit:HibCh");
+        assert_eq!(tokens[0].inputs["payload"]["tenant_id"], "acme");
     }
 
     #[tokio::test]
