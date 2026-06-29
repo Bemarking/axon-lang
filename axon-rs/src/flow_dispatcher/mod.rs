@@ -447,6 +447,14 @@ pub struct DispatchCtx {
     /// shared (`Arc`) so producer flows + consumer listeners in one runtime
     /// reach the same transport.
     pub event_bus: Option<std::sync::Arc<crate::runtime::channels::TypedEventBus>>,
+    /// §Fase 74.c — the durable event outbox a flow's `emit` to a
+    /// `persistent_axonstore` channel appends to (so the event survives the
+    /// consumer being down — and, on the §74.f Postgres outbox, a crash).
+    /// `None` (the `DispatchCtx::new` default) ⇒ no durable outbox; `emit`
+    /// uses the ephemeral bus / legacy buffer (pre-§74.c). When `Some` (the
+    /// supervisor path attaches it via [`DispatchCtx::with_event_outbox`]),
+    /// a `persistent_axonstore` channel's `emit` is appended to the outbox.
+    pub event_outbox: Option<std::sync::Arc<dyn crate::event_outbox::EventOutbox>>,
 }
 
 impl DispatchCtx {
@@ -512,6 +520,8 @@ impl DispatchCtx {
             // per-flow buffer. The daemon supervisor attaches the shared bus
             // via `with_event_bus` so `emit` delivers to `listen`ers.
             event_bus: None,
+            // §Fase 74.c — no durable outbox by default.
+            event_outbox: None,
         }
     }
 
@@ -524,6 +534,19 @@ impl DispatchCtx {
         bus: std::sync::Arc<crate::runtime::channels::TypedEventBus>,
     ) -> Self {
         self.event_bus = Some(bus);
+        self
+    }
+
+    /// §Fase 74.c — Builder: attach the durable event outbox so a flow's
+    /// `emit` to a `persistent_axonstore` channel is APPENDED to it
+    /// (durable intent), instead of the ephemeral bus. Pairs with
+    /// `with_event_bus` (the bus is the channel registry that resolves a
+    /// channel's `persistence`).
+    pub fn with_event_outbox(
+        mut self,
+        outbox: std::sync::Arc<dyn crate::event_outbox::EventOutbox>,
+    ) -> Self {
+        self.event_outbox = Some(outbox);
         self
     }
 

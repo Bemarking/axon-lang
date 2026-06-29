@@ -396,15 +396,32 @@ pub async fn run_emit(
         .cloned()
         .unwrap_or_else(|| node.value_ref.clone());
 
-    // §Fase 74.a — when a shared typed event bus is attached AND the
-    // channel is a registered typed `channel`, the `emit` DELIVERS to the
-    // bus (the producer side of durable event delivery → a daemon's
-    // `listen Channel` receives it). A schema/transport error fails CLOSED
-    // (the event is not silently dropped — `delivery_is_a_kept_promise`).
-    // Without a bus, or for an untyped topic-string emit, the legacy
-    // per-flow buffer applies, byte-identical to pre-§74.
-    let emitted = match ctx.event_bus.clone() {
-        Some(bus) if bus.get_handle(&node.channel_ref).is_ok() => {
+    // §Fase 74 — `emit` routing, in precedence order:
+    //   1. §74.c — a `persistent_axonstore` channel + an attached durable
+    //      OUTBOX → APPEND (survives the consumer being down / a crash on
+    //      the durable backend). Durability is resolved from the bus's
+    //      channel handle (the registry).
+    //   2. §74.a — an attached event BUS + a registered typed channel →
+    //      EMIT (ephemeral in-process delivery). Fails CLOSED on error.
+    //   3. the legacy per-flow buffer (no bus / untyped topic) — pre-§74.
+    let bus_handle = ctx
+        .event_bus
+        .as_ref()
+        .and_then(|b| b.get_handle(&node.channel_ref).ok());
+    let is_durable = bus_handle
+        .as_ref()
+        .map_or(false, |h| h.persistence == "persistent_axonstore");
+
+    let emitted = if let (true, Some(outbox)) = (is_durable, ctx.event_outbox.clone()) {
+        // §74.c — durable: append to the outbox (the receive driver drains
+        // + delivers + acks; redeliverable until acked).
+        let payload = serde_json::from_str::<serde_json::Value>(&resolved_value)
+            .unwrap_or_else(|_| serde_json::Value::String(resolved_value.clone()));
+        outbox.append(&node.channel_ref, payload);
+        resolved_value.clone()
+    } else if let Some(bus) = ctx.event_bus.clone() {
+        if bus.get_handle(&node.channel_ref).is_ok() {
+            // §74.a — ephemeral in-process delivery via the bus.
             let payload = serde_json::from_str::<serde_json::Value>(&resolved_value)
                 .unwrap_or_else(|_| serde_json::Value::String(resolved_value.clone()));
             bus.emit(
@@ -417,8 +434,11 @@ pub async fn run_emit(
                 message: format!("emit to channel '{}' failed: {e}", node.channel_ref),
             })?;
             resolved_value.clone()
+        } else {
+            emit_to_channel(&node.channel_ref, &resolved_value, ctx)
         }
-        _ => emit_to_channel(&node.channel_ref, &resolved_value, ctx),
+    } else {
+        emit_to_channel(&node.channel_ref, &resolved_value, ctx)
     };
 
     emit_step_complete(ctx, &step_name, step_index, &emitted, 0)?;
@@ -1639,6 +1659,65 @@ mod tests {
             TypedPayload::Scalar(v) => assert_eq!(v["tenant_id"], "acme"),
             other => panic!("expected the scalar payload, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn run_emit_appends_to_the_outbox_for_a_persistent_channel() {
+        // §Fase 74.c — a `persistent_axonstore` channel + an attached outbox
+        // → `emit` APPENDS to the durable outbox (not the ephemeral bus), so
+        // the event survives the consumer being down.
+        use crate::event_outbox::{EventOutbox, InMemoryEventOutbox};
+        use crate::runtime::channels::{TypedChannelHandle, TypedEventBus};
+        let bus = std::sync::Arc::new(TypedEventBus::new());
+        let mut h = TypedChannelHandle::new("HibCh", "Hib");
+        h.persistence = "persistent_axonstore".into();
+        bus.register(h);
+        let outbox = std::sync::Arc::new(InMemoryEventOutbox::new());
+
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx = ctx.with_event_bus(bus).with_event_outbox(outbox.clone());
+        ctx.let_bindings
+            .insert("payload".into(), r#"{"tenant_id":"acme"}"#.into());
+        let node = IREmit {
+            node_type: "emit",
+            source_line: 0,
+            source_column: 0,
+            channel_ref: "HibCh".into(),
+            value_ref: "payload".into(),
+            value_is_channel: false,
+        };
+        run_emit(&node, &mut ctx).await.unwrap();
+
+        // It landed in the durable outbox (not the legacy buffer).
+        assert_eq!(outbox.pending_total(), 1, "the event is durably queued");
+        assert!(!ctx.let_bindings.contains_key("__channel_HibCh"));
+        let tail = outbox.unprocessed("HibCh");
+        assert_eq!(tail[0].payload["tenant_id"], "acme");
+    }
+
+    #[tokio::test]
+    async fn run_emit_ephemeral_channel_uses_the_bus_not_the_outbox() {
+        // §Fase 74.c — an `ephemeral` channel goes to the bus even when an
+        // outbox is attached (the outbox is only for `persistent_axonstore`).
+        use crate::event_outbox::{EventOutbox, InMemoryEventOutbox};
+        use crate::runtime::channels::{TypedChannelHandle, TypedEventBus};
+        let bus = std::sync::Arc::new(TypedEventBus::new());
+        bus.register(TypedChannelHandle::new("Tick", "T")); // default persistence = ephemeral
+        let outbox = std::sync::Arc::new(InMemoryEventOutbox::new());
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx = ctx.with_event_bus(bus.clone()).with_event_outbox(outbox.clone());
+        ctx.let_bindings.insert("payload".into(), "t".into());
+        let node = IREmit {
+            node_type: "emit",
+            source_line: 0,
+            source_column: 0,
+            channel_ref: "Tick".into(),
+            value_ref: "payload".into(),
+            value_is_channel: false,
+        };
+        run_emit(&node, &mut ctx).await.unwrap();
+        assert_eq!(outbox.pending_total(), 0, "ephemeral does not touch the outbox");
+        assert!(bus.receive("Tick").await.is_ok(), "ephemeral went to the bus");
     }
 
     #[tokio::test]

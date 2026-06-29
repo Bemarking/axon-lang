@@ -462,6 +462,45 @@ pub async fn run_event_listeners(
     }
 }
 
+/// §Fase 74.c — drain a channel's unprocessed OUTBOX and deliver each
+/// event at-least-once (§74.b), acking every entry whose delivery reaches
+/// a TERMINAL outcome (acked / dead-lettered / dropped) so it is not
+/// redelivered. An entry only stays redeliverable while NO drain has been
+/// run for it — so a supervisor that was DOWN when the event was emitted
+/// picks the backlog up on its next drain (the durable Q3 guarantee, over
+/// a persisted log rather than an ephemeral queue). An event with no
+/// listener is acked (a fan-out of zero is done — not redelivered to
+/// nobody). Returns the per-(offset, daemon) outcomes.
+#[allow(clippy::type_complexity)]
+pub fn drain_outbox(
+    ir: &axon_frontend::ir_nodes::IRProgram,
+    outbox: &dyn crate::event_outbox::EventOutbox,
+    channel: &str,
+    backend: &str,
+    source_file: &str,
+    budget: Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>,
+) -> Vec<(u64, String, DeliveryOutcome)> {
+    let mut out = Vec::new();
+    for entry in outbox.unprocessed(channel) {
+        let outcomes = deliver_typed_event_reliable(
+            ir,
+            channel,
+            &entry.payload,
+            backend,
+            source_file,
+            budget.clone(),
+        );
+        // Terminal: every attempted delivery (incl. an empty fan-out) acks
+        // the entry. Redelivery happens only ACROSS drains, for entries a
+        // drain never reached (the consumer/supervisor was down).
+        outbox.mark_processed(channel, entry.offset);
+        for (daemon, outcome) in outcomes {
+            out.push((entry.offset, daemon, outcome));
+        }
+    }
+    out
+}
+
 /// §52.c.2 — the single-node daemon driver. For each cron listener, loops:
 /// compute the next fire from the clock, sleep until then, execute the body.
 /// Returns when `cancel` is triggered. Each listener is driven on its own
@@ -833,6 +872,54 @@ mod tests {
         let out = deliver_typed_event_reliable(&ir, "C", &serde_json::json!({}), "stub", "<test>", None);
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0].1, DeliveryOutcome::Dropped { .. }), "{:?}", out[0].1);
+    }
+
+    // ── §Fase 74.c — durable outbox: drain + redelivery-after-down ───────
+
+    #[tokio::test]
+    async fn outbox_event_redelivers_after_the_consumer_was_down() {
+        // The headline §74.c guarantee: a producer appends to the durable
+        // outbox while the consumer/supervisor is DOWN (no drain runs). The
+        // event WAITS in the persisted log; when a drain runs, it delivers.
+        use crate::event_outbox::{EventOutbox, InMemoryEventOutbox};
+        let ir = ir_with_daemon(
+            "type Hib { tenant_id: String }\n\
+             channel HibCh { message: Hib  qos: at_least_once  persistence: persistent_axonstore }\n\
+             flow Learn(tenant_id: String) -> String { return \"ok\" }\n\
+             daemon D { requires: [flow.execute]  listen HibCh as ev { run Learn() } }",
+        );
+        let outbox = InMemoryEventOutbox::new();
+        // Producer emits while no drain runs (consumer down): the event is
+        // durably queued, not lost.
+        outbox.append("HibCh", serde_json::json!({ "tenant_id": "acme" }));
+        assert_eq!(outbox.unprocessed("HibCh").len(), 1, "queued, awaiting delivery");
+
+        // Consumer comes back → a drain delivers + acks.
+        let outcomes = drain_outbox(&ir, &outbox, "HibCh", "stub", "<test>", None);
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(outcomes[0].2, DeliveryOutcome::Acked { .. }), "{:?}", outcomes[0].2);
+        assert!(outbox.unprocessed("HibCh").is_empty(), "acked → not redelivered");
+
+        // A second drain is a no-op (the entry was acked — no double-fire).
+        assert!(drain_outbox(&ir, &outbox, "HibCh", "stub", "<test>", None).is_empty());
+    }
+
+    #[tokio::test]
+    async fn outbox_dead_letters_a_failing_listener_then_stops_redelivering() {
+        // A failing body (undefined flow) is retried to the ceiling, dead-
+        // lettered, AND acked — so the durable log does not redeliver it
+        // forever (delivery stays TOTAL).
+        use crate::event_outbox::{EventOutbox, InMemoryEventOutbox};
+        let ir = ir_with_daemon(
+            "type Hib { tenant_id: String }\n\
+             channel HibCh { message: Hib  qos: at_least_once  persistence: persistent_axonstore }\n\
+             daemon D { requires: [flow.execute]  listen HibCh as ev { run Ghost() } }",
+        );
+        let outbox = InMemoryEventOutbox::new();
+        outbox.append("HibCh", serde_json::json!({}));
+        let outcomes = drain_outbox(&ir, &outbox, "HibCh", "stub", "<test>", None);
+        assert!(matches!(outcomes[0].2, DeliveryOutcome::DeadLettered { .. }));
+        assert!(outbox.unprocessed("HibCh").is_empty(), "dead-lettered entries are acked");
     }
 
     #[test]
