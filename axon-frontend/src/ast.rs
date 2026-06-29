@@ -1608,13 +1608,33 @@ pub enum Builtin {
     StartsWith,
     /// `.ends_with(s)` — string suffix test.
     EndsWith,
+    /// §Fase 73.c — `.as_int` — honest coercion of a `Json` value to an
+    /// integer. Fail-closed: a value that is not a JSON integer resolves
+    /// to `null`, never a panic (doctrine `open_data_is_total`).
+    AsInt,
+    /// §Fase 73.c — `.as_float` — honest coercion to a float (an integer
+    /// widens; anything else → `null`).
+    AsFloat,
+    /// §Fase 73.c — `.as_string` — honest coercion to a string (only a
+    /// JSON string succeeds; a number / bool / null → `null`).
+    AsString,
+    /// §Fase 73.c — `.as_bool` — honest coercion to a boolean (only a
+    /// JSON bool succeeds; anything else → `null`).
+    AsBool,
 }
 
 impl Builtin {
     /// The number of arguments AFTER the receiver (`args[0]`).
     pub fn extra_arity(self) -> usize {
         match self {
-            Builtin::Length | Builtin::Count | Builtin::IsEmpty | Builtin::IsNull => 0,
+            Builtin::Length
+            | Builtin::Count
+            | Builtin::IsEmpty
+            | Builtin::IsNull
+            | Builtin::AsInt
+            | Builtin::AsFloat
+            | Builtin::AsString
+            | Builtin::AsBool => 0,
             Builtin::Contains | Builtin::StartsWith | Builtin::EndsWith => 1,
         }
     }
@@ -1629,6 +1649,10 @@ impl Builtin {
             Builtin::Contains => "contains",
             Builtin::StartsWith => "starts_with",
             Builtin::EndsWith => "ends_with",
+            Builtin::AsInt => "as_int",
+            Builtin::AsFloat => "as_float",
+            Builtin::AsString => "as_string",
+            Builtin::AsBool => "as_bool",
         }
     }
 
@@ -1643,6 +1667,10 @@ impl Builtin {
             "contains" => Builtin::Contains,
             "starts_with" => Builtin::StartsWith,
             "ends_with" => Builtin::EndsWith,
+            "as_int" => Builtin::AsInt,
+            "as_float" => Builtin::AsFloat,
+            "as_string" => Builtin::AsString,
+            "as_bool" => Builtin::AsBool,
             _ => return None,
         })
     }

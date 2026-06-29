@@ -432,11 +432,28 @@ fn eval_json_index(base: &EVal, i: i64) -> EVal {
 
 /// §Fase 70.c — evaluate a pure builtin call. `args[0]` is the receiver.
 fn eval_builtin(name: &str, args: &[crate::ir_nodes::IRExpr], ctx: &DispatchCtx) -> Option<EVal> {
-    let recv = eval_to_str(&eval_expr(args.first()?, ctx)?);
+    // Evaluate the receiver ONCE into an `EVal` — the honest coercion
+    // accessors (§73.c) need the typed value, not its string form.
+    let rv = eval_expr(args.first()?, ctx)?;
+    // §Fase 73.c — the honest coercion accessors. Each is a TOTAL coercion
+    // that fail-closes to JSON null on a type mismatch — never a panic.
+    match name {
+        "as_int" => return Some(coerce_as_int(&rv)),
+        "as_float" => return Some(coerce_as_float(&rv)),
+        "as_string" => return Some(coerce_as_string(&rv)),
+        "as_bool" => return Some(coerce_as_bool(&rv)),
+        _ => {}
+    }
+    let recv = eval_to_str(&rv);
     match name {
         "length" | "count" => Some(EVal::Int(builtin_length(&recv))),
         "is_empty" => Some(EVal::Bool(builtin_length(&recv) == 0)),
         "is_null" => {
+            // §73.c — a JSON null (a navigation miss) is honestly null;
+            // the legacy empty/`"null"` heuristic stays for plain bindings.
+            if matches!(rv, EVal::Json(serde_json::Value::Null)) {
+                return Some(EVal::Bool(true));
+            }
             let t = recv.trim();
             Some(EVal::Bool(t.is_empty() || t == "null"))
         }
@@ -456,8 +473,59 @@ fn eval_builtin(name: &str, args: &[crate::ir_nodes::IRExpr], ctx: &DispatchCtx)
     }
 }
 
+// ── §Fase 73.c — the honest coercion accessors ──────────────────────────────
+//
+// Each asserts an EXPECTED JSON type and fail-closes to JSON null on a
+// mismatch — the runtime never lies, never panics (doctrine
+// `open_data_is_total`). They operate on the typed `EVal`, so a navigated
+// JSON value carries its real type (a JSON string is not silently read as a
+// number). Widening an integer to a float is the one non-mismatch coercion.
+
+fn json_null() -> EVal {
+    EVal::Json(serde_json::Value::Null)
+}
+
+/// `.as_int` — succeeds only for an integer value; anything else → null.
+fn coerce_as_int(v: &EVal) -> EVal {
+    match v {
+        EVal::Int(i) => EVal::Int(*i),
+        EVal::Json(serde_json::Value::Number(n)) => n.as_i64().map(EVal::Int).unwrap_or_else(json_null),
+        _ => json_null(),
+    }
+}
+
+/// `.as_float` — succeeds for a float OR an integer (widening); else null.
+fn coerce_as_float(v: &EVal) -> EVal {
+    match v {
+        EVal::Float(f) => EVal::Float(*f),
+        EVal::Int(i) => EVal::Float(*i as f64),
+        EVal::Json(serde_json::Value::Number(n)) => n.as_f64().map(EVal::Float).unwrap_or_else(json_null),
+        _ => json_null(),
+    }
+}
+
+/// `.as_string` — succeeds only for a string value; a number / bool / null /
+/// composite → null (honest: the document did not hold a string).
+fn coerce_as_string(v: &EVal) -> EVal {
+    match v {
+        EVal::Str(s) => EVal::Str(s.clone()),
+        EVal::Json(serde_json::Value::String(s)) => EVal::Str(s.clone()),
+        _ => json_null(),
+    }
+}
+
+/// `.as_bool` — succeeds only for a boolean value; anything else → null.
+fn coerce_as_bool(v: &EVal) -> EVal {
+    match v {
+        EVal::Bool(b) => EVal::Bool(*b),
+        EVal::Json(serde_json::Value::Bool(b)) => EVal::Bool(*b),
+        _ => json_null(),
+    }
+}
+
 /// `.length` / `.count`: JSON array → element count; a retrieve envelope →
-/// `rows` count; any other value → character count of the string.
+/// `rows` count; §73.c — a JSON object → key count; any other value →
+/// character count of the string.
 fn builtin_length(s: &str) -> i64 {
     match serde_json::from_str::<serde_json::Value>(s) {
         Ok(serde_json::Value::Array(a)) => a.len() as i64,
@@ -469,18 +537,25 @@ fn builtin_length(s: &str) -> i64 {
                 _ => 0,
             }
         }
+        // §73.c — a plain JSON object's length is its key count.
+        Ok(serde_json::Value::Object(m)) => m.len() as i64,
         _ => s.chars().count() as i64,
     }
 }
 
-/// `.contains(x)`: JSON array → element membership (string-compared); any other
-/// value → substring containment.
+/// `.contains(x)`: JSON array → element membership (string-compared); §73.c —
+/// JSON object → key membership; any other value → substring containment.
 fn builtin_contains(recv: &str, needle: &str) -> bool {
-    if let Ok(serde_json::Value::Array(a)) = serde_json::from_str::<serde_json::Value>(recv) {
-        return a.iter().any(|e| match e {
-            serde_json::Value::String(s) => s == needle,
-            other => other.to_string() == needle,
-        });
+    match serde_json::from_str::<serde_json::Value>(recv) {
+        Ok(serde_json::Value::Array(a)) => {
+            return a.iter().any(|e| match e {
+                serde_json::Value::String(s) => s == needle,
+                other => other.to_string() == needle,
+            })
+        }
+        // §73.c — object membership tests the KEYS.
+        Ok(serde_json::Value::Object(m)) => return m.contains_key(needle),
+        _ => {}
     }
     recv.contains(needle)
 }
@@ -1349,6 +1424,98 @@ mod tests {
             eval_expr(&e, &ctx).expect("total"),
             EVal::Json(serde_json::Value::Null)
         ));
+    }
+
+    // ── §Fase 73.c — honest coercion accessors + object builtins ────────
+
+    #[test]
+    fn as_int_succeeds_on_a_json_integer() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("doc".into(), r#"{"age":42}"#.into());
+        let e = call("as_int", vec![Box::new(IRExpr::Field { base: eref("doc"), field: "age".into() })]);
+        assert!(matches!(eval_expr(&e, &ctx), Some(EVal::Int(42))));
+    }
+
+    #[test]
+    fn as_int_fail_closes_to_null_on_a_string() {
+        // `doc.age` is the JSON string "old" — `.as_int` must NOT coerce it;
+        // it fail-closes to null (honest: the document did not hold an int).
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("doc".into(), r#"{"age":"old"}"#.into());
+        let e = call("as_int", vec![Box::new(IRExpr::Field { base: eref("doc"), field: "age".into() })]);
+        assert!(matches!(eval_expr(&e, &ctx), Some(EVal::Json(serde_json::Value::Null))));
+    }
+
+    #[test]
+    fn as_int_on_a_missing_field_is_null() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("doc".into(), r#"{"name":"x"}"#.into());
+        let e = call("as_int", vec![Box::new(IRExpr::Field { base: eref("doc"), field: "age".into() })]);
+        assert!(matches!(eval_expr(&e, &ctx), Some(EVal::Json(serde_json::Value::Null))));
+    }
+
+    #[test]
+    fn as_float_widens_an_integer_but_rejects_a_string() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("doc".into(), r#"{"n":7,"s":"x"}"#.into());
+        let widen = call("as_float", vec![Box::new(IRExpr::Field { base: eref("doc"), field: "n".into() })]);
+        assert!(matches!(eval_expr(&widen, &ctx), Some(EVal::Float(f)) if (f - 7.0).abs() < 1e-9));
+        let reject = call("as_float", vec![Box::new(IRExpr::Field { base: eref("doc"), field: "s".into() })]);
+        assert!(matches!(eval_expr(&reject, &ctx), Some(EVal::Json(serde_json::Value::Null))));
+    }
+
+    #[test]
+    fn as_string_succeeds_on_a_string_and_rejects_a_number() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("doc".into(), r#"{"name":"axon","n":5}"#.into());
+        let ok = call("as_string", vec![Box::new(IRExpr::Field { base: eref("doc"), field: "name".into() })]);
+        assert!(matches!(eval_expr(&ok, &ctx), Some(EVal::Str(s)) if s == "axon"));
+        let reject = call("as_string", vec![Box::new(IRExpr::Field { base: eref("doc"), field: "n".into() })]);
+        assert!(matches!(eval_expr(&reject, &ctx), Some(EVal::Json(serde_json::Value::Null))));
+    }
+
+    #[test]
+    fn as_bool_succeeds_on_a_bool_and_rejects_otherwise() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("doc".into(), r#"{"active":true,"n":1}"#.into());
+        let ok = call("as_bool", vec![Box::new(IRExpr::Field { base: eref("doc"), field: "active".into() })]);
+        assert!(matches!(eval_expr(&ok, &ctx), Some(EVal::Bool(true))));
+        let reject = call("as_bool", vec![Box::new(IRExpr::Field { base: eref("doc"), field: "n".into() })]);
+        assert!(matches!(eval_expr(&reject, &ctx), Some(EVal::Json(serde_json::Value::Null))));
+    }
+
+    #[test]
+    fn is_null_is_true_for_a_missing_field() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("doc".into(), r#"{"a":1}"#.into());
+        let e = call("is_null", vec![Box::new(IRExpr::Field { base: eref("doc"), field: "missing".into() })]);
+        assert!(eval_truthy(&eval_expr(&e, &ctx).unwrap()));
+        // a present value is not null
+        let present = call("is_null", vec![Box::new(IRExpr::Field { base: eref("doc"), field: "a".into() })]);
+        assert!(!eval_truthy(&eval_expr(&present, &ctx).unwrap()));
+    }
+
+    #[test]
+    fn length_of_a_json_object_is_its_key_count() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("o".into(), r#"{"a":1,"b":2,"c":3}"#.into());
+        let e = call("length", vec![eref("o")]);
+        assert!(matches!(eval_expr(&e, &ctx), Some(EVal::Int(3))));
+    }
+
+    #[test]
+    fn contains_tests_object_keys() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("o".into(), r#"{"name":"x","age":1}"#.into());
+        assert!(eval_truthy(&eval_expr(&call("contains", vec![eref("o"), estr("name")]), &ctx).unwrap()));
+        assert!(!eval_truthy(&eval_expr(&call("contains", vec![eref("o"), estr("missing")]), &ctx).unwrap()));
+    }
+
+    #[test]
+    fn is_empty_of_an_empty_object_is_true() {
+        let mut ctx = fresh_ctx_no_rx().0;
+        ctx.let_bindings.insert("o".into(), "{}".into());
+        assert!(eval_truthy(&eval_expr(&call("is_empty", vec![eref("o")]), &ctx).unwrap()));
     }
 
     #[test]

@@ -1981,6 +1981,18 @@ impl<'a> TypeChecker<'a> {
                         }
                         T::Bool
                     }
+                    // §Fase 73.c — the honest coercion accessors. They are
+                    // TOTAL over any value (a type mismatch fail-closes to
+                    // null at runtime), so there is no receiver-type error
+                    // to raise: the accessor IS the boundary where the
+                    // program declares the type it expects. The STATIC type
+                    // is the asserted scalar — so `doc.age.as_int + 1`
+                    // type-checks as Int arithmetic — while the runtime
+                    // keeps the claim honest (`open_data_is_total`).
+                    Builtin::AsInt => T::Int,
+                    Builtin::AsFloat => T::Float,
+                    Builtin::AsString => T::Str,
+                    Builtin::AsBool => T::Bool,
                 }
             }
             Expr::Field(base, field) => {
