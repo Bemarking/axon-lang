@@ -135,6 +135,12 @@ const VALID_ON_OUTSIDE: &[&str] = &["skip", "defer", "warn"];
 /// §Fase 71.a — the closed weekday-name catalog for `window` day ranges.
 const VALID_WEEKDAYS: &[&str] = &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+/// §Fase 72.a — the closed period catalog for `budget` quotas.
+const VALID_BUDGET_PERIODS: &[&str] = &["second", "minute", "hour", "day"];
+
+/// §Fase 72.a — the closed exhaustion-policy catalog for `budget`.
+const VALID_ON_EXHAUSTED: &[&str] = &["block", "defer", "shed"];
+
 const VALID_SEVERITY_LEVELS: &[&str] = &["critical", "high", "low", "medium"];
 
 const VALID_OTS_HOMOTOPY: &[&str] = &["deep", "shallow", "speculative"];
@@ -2650,6 +2656,80 @@ impl<'a> TypeChecker<'a> {
                     &node.loc,
                 );
             }
+        }
+    }
+
+    /// §Fase 72.a — validate a `budget { … }` block: a non-empty set of quotas,
+    /// each over a declared tool, a positive limit, a closed-catalog period; plus
+    /// a closed-catalog exhaustion policy.
+    fn check_budget(&mut self, node: &BudgetBlock, daemon_name: &str) {
+        // axon-T834 — a budget with no quota is a no-op declaration.
+        if node.quotas.is_empty() {
+            self.emit(
+                format!(
+                    "axon-T834 daemon '{daemon_name}' has an empty `budget {{ }}` — declare at \
+                     least one `rate:`/`max:` quota"
+                ),
+                &node.loc,
+            );
+        }
+        for quota in &node.quotas {
+            // axon-T830 — the effect must resolve to a declared tool.
+            match self.symbols.lookup(&quota.effect) {
+                None => self.emit(
+                    format!(
+                        "axon-T830 daemon '{daemon_name}' budget targets undefined tool \
+                         '{}' in `on Tool({})` — must name a declared `tool`",
+                        quota.effect, quota.effect
+                    ),
+                    &quota.loc,
+                ),
+                Some(sym) if sym.kind != "tool" => self.emit(
+                    format!(
+                        "axon-T830 daemon '{daemon_name}' budget targets '{}', which is a {}, \
+                         not a tool",
+                        quota.effect, sym.kind
+                    ),
+                    &quota.loc,
+                ),
+                _ => {}
+            }
+            // axon-T831 — a quota limit must be positive.
+            if quota.limit <= 0 {
+                self.emit(
+                    format!(
+                        "axon-T831 daemon '{daemon_name}' budget quota on '{}' has a non-positive \
+                         limit {} — a `{}` allowance must be > 0",
+                        quota.effect, quota.limit, quota.kind
+                    ),
+                    &quota.loc,
+                );
+            }
+            // axon-T832 — the period is a closed catalog.
+            if !is_valid(&quota.period, VALID_BUDGET_PERIODS) {
+                self.emit(
+                    format!(
+                        "axon-T832 daemon '{daemon_name}' budget quota on '{}' has an unknown \
+                         period '{}' — valid: {}",
+                        quota.effect,
+                        quota.period,
+                        valid_list(VALID_BUDGET_PERIODS)
+                    ),
+                    &quota.loc,
+                );
+            }
+        }
+        // axon-T833 — the exhaustion policy is a closed catalog.
+        if !node.on_exhausted.is_empty() && !is_valid(&node.on_exhausted, VALID_ON_EXHAUSTED) {
+            self.emit(
+                format!(
+                    "axon-T833 daemon '{daemon_name}' has an unknown `on_exhausted` policy '{}' — \
+                     valid: {}",
+                    node.on_exhausted,
+                    valid_list(VALID_ON_EXHAUSTED)
+                ),
+                &node.loc,
+            );
         }
     }
 
@@ -6673,6 +6753,10 @@ impl<'a> TypeChecker<'a> {
                 ),
                 _ => {}
             }
+        }
+        // §Fase 72.a — the `budget { … }` linear-effect rate limit.
+        if let Some(budget) = &node.budget {
+            self.check_budget(budget, &node.name);
         }
         for listener in &node.listeners {
             self.check_listen(listener, &node.name);

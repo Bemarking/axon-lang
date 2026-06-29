@@ -1481,6 +1481,34 @@ pub struct IRWindowSpan {
     pub hour_end: i64,
 }
 
+/// §Fase 72.a — the `budget { … }` linear-effect rate limit lowered to IR. Each
+/// quota gates a declared tool's dispatch on a renewable token bucket (the §72.b
+/// `RateLease`); `on_exhausted` is the exhaustion policy.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRBudget {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub quotas: Vec<IRBudgetQuota>,
+    /// `block` (fail-closed) | `defer` (reschedule via the §71 defer ledger) |
+    /// `shed` (skip the call). An omitted policy lowers to `block` (the safe
+    /// fail-closed default).
+    pub on_exhausted: String,
+}
+
+/// §Fase 72.a — one quota: `<kind>: <limit> per <period> on Tool(<effect>)`.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRBudgetQuota {
+    /// `rate` (renewable bucket) | `max` (windowed hard cap, no intra-window refill).
+    pub kind: String,
+    /// Token allowance per period (> 0, validated by `axon-T831`).
+    pub limit: i64,
+    /// `second` | `minute` | `hour` | `day` (closed catalog, `axon-T832`).
+    pub period: String,
+    /// The declared tool this quota governs (`on Tool(X)`; resolved by `axon-T830`).
+    pub effect: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IRShield {
     pub node_type: &'static str,
@@ -1664,6 +1692,11 @@ pub struct IRDaemon {
     /// daemon's JSON byte-identical (D8 zero-drift).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub window_ref: String,
+    /// §Fase 72.a — the `budget { … }` linear-effect rate limit. `None` ⇒ no
+    /// budget; `skip_serializing_if` keeps a budgetless daemon's JSON
+    /// byte-identical (D8 zero-drift).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<IRBudget>,
     pub max_tokens: Option<i64>,
     pub max_time: String,
     pub max_cost: Option<f64>,

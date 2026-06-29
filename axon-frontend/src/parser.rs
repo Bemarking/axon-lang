@@ -5448,6 +5448,7 @@ impl Parser {
             on_stuck: String::new(),
             shield_ref: String::new(),
             window_ref: String::new(),
+            budget: None,
             max_tokens: None,
             max_time: String::new(),
             max_cost: None,
@@ -5548,12 +5549,70 @@ impl Parser {
                     body,
                     loc: listen_loc,
                 });
+            } else if field_name == "budget" && self.check(TokenType::LBrace) {
+                // §Fase 72.a — the `budget { … }` linear-effect rate-limit block.
+                node.budget = Some(self.parse_budget_block(field.line, field.column)?);
             } else if self.check(TokenType::LBrace) {
                 self.skip_braced_block()?;
             }
         }
         self.consume(TokenType::RBrace)?;
         Ok(node)
+    }
+
+    /// §Fase 72.a — `budget { <rate|max>: N per <period> on Tool(<X>) … [on_exhausted: <p>] }`.
+    fn parse_budget_block(&mut self, line: u32, column: u32) -> Result<BudgetBlock, ParseError> {
+        self.consume(TokenType::LBrace)?;
+        let mut quotas = Vec::new();
+        let mut on_exhausted = String::new();
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let field = self.current().clone();
+            let field_name = self.consume_any_ident_or_kw()?.value;
+            match field_name.as_str() {
+                "rate" | "max" => {
+                    quotas.push(self.parse_budget_quota(field_name, field.line, field.column)?);
+                }
+                "on_exhausted" => {
+                    self.consume(TokenType::Colon)?;
+                    on_exhausted = self.consume_any_ident_or_kw()?.value;
+                }
+                _ => self.skip_value(),
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(BudgetBlock {
+            quotas,
+            on_exhausted,
+            loc: Loc { line, column },
+        })
+    }
+
+    /// §Fase 72.a — one quota line: `<kind>: <limit> per <period> on Tool(<effect>)`.
+    /// `kind` (`rate`/`max`) is already consumed by the caller.
+    fn parse_budget_quota(
+        &mut self,
+        kind: String,
+        line: u32,
+        column: u32,
+    ) -> Result<BudgetQuota, ParseError> {
+        self.consume(TokenType::Colon)?;
+        let limit = self.consume_number()? as i64;
+        // `per <period>`
+        let _per = self.consume_any_ident_or_kw()?; // the `per` keyword
+        let period = self.consume_any_ident_or_kw()?.value;
+        // `on Tool(<effect>)`
+        let _on = self.consume_any_ident_or_kw()?; // the `on` keyword
+        let _tool = self.consume_any_ident_or_kw()?; // the `Tool` wrapper keyword
+        self.consume(TokenType::LParen)?;
+        let effect = self.consume_any_ident_or_kw()?.value;
+        self.consume(TokenType::RParen)?;
+        Ok(BudgetQuota {
+            kind,
+            limit,
+            period,
+            effect,
+            loc: Loc { line, column },
+        })
     }
 
     fn parse_axonstore(&mut self) -> Result<AxonStoreDefinition, ParseError> {

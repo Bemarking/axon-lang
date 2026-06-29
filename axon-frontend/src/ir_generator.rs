@@ -1064,6 +1064,31 @@ impl IRGenerator {
         }
     }
 
+    /// §Fase 72.a — lower a `budget { … }` block. An omitted `on_exhausted`
+    /// lowers to `block` (the fail-closed default: never over-emit).
+    fn visit_budget(n: &BudgetBlock) -> IRBudget {
+        IRBudget {
+            node_type: "budget",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            quotas: n
+                .quotas
+                .iter()
+                .map(|q| IRBudgetQuota {
+                    kind: q.kind.clone(),
+                    limit: q.limit,
+                    period: q.period.clone(),
+                    effect: q.effect.clone(),
+                })
+                .collect(),
+            on_exhausted: if n.on_exhausted.is_empty() {
+                "block".to_string()
+            } else {
+                n.on_exhausted.clone()
+            },
+        }
+    }
+
     fn visit_shield(&self, n: &ShieldDefinition) -> IRShield {
         // §8.2.h — Python parity: strategy defaults "pattern"; Option<T> collapses to concrete zeros.
         let strategy = if n.strategy.is_empty() {
@@ -1248,6 +1273,8 @@ impl IRGenerator {
             shield_ref: n.shield_ref.clone(),
             // §Fase 71.c — the daemon's `window:` temporal binding.
             window_ref: n.window_ref.clone(),
+            // §Fase 72.a — the daemon's `budget { … }` rate limit.
+            budget: n.budget.as_ref().map(Self::visit_budget),
             max_tokens: n.max_tokens,
             max_time: n.max_time.clone(),
             max_cost: n.max_cost,
