@@ -279,6 +279,9 @@ fn random_column_set(rng: &mut Lcg) -> ColumnSet {
                 // generator does not exercise IDENTITY columns, so the D5
                 // default (false) preserves the prior corpus exactly.
                 identity: false,
+                // §Fase 73.f — the fuzz generator does not exercise the
+                // `index` declaration; `false` preserves the prior corpus.
+                indexed: false,
                 // §Fase 73.a — the fuzz generator does not exercise the
                 // `Json<T>` shape lens; `None` preserves the prior corpus.
                 json_shape: None,

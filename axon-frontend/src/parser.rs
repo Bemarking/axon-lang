@@ -5792,6 +5792,7 @@ impl Parser {
                     auto_increment: false,
                     not_null: false,
                     unique: false,
+                    indexed: false,
                     default_value: String::new(),
                     // §Fase 38.x.d (D1) — `identity` is now a recognized
                     // inline keyword (see the constraint loop below).
@@ -5826,6 +5827,15 @@ impl Parser {
                         }
                         "unique" => {
                             col.unique = true;
+                            self.advance();
+                        }
+                        // §Fase 73.f (D1) — the `index` constraint declares
+                        // an index as a capability-honest effect (visible to
+                        // the deploy gate, not a silent DBA action). The
+                        // backend picks the method from the column type
+                        // (GIN for a Json/Jsonb column, b-tree otherwise).
+                        "index" => {
+                            col.indexed = true;
                             self.advance();
                         }
                         // §Fase 38.x.d (D1) — `identity` marks a column

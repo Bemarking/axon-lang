@@ -1805,6 +1805,15 @@ pub struct IRStoreColumn {
     /// byte-identical to v1.38.2 for any column where `identity = false`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub identity: bool,
+    /// §Fase 73.f (D1) — `true` iff the column carries the `index`
+    /// declaration. Surfaced into the IR so the deployment layer (the
+    /// enterprise deploy gate) SEES the index as a declared capability and
+    /// can materialize it (a GIN path index for a `Json`/`Jsonb` column, a
+    /// b-tree otherwise) — never a silent out-of-band DBA action.
+    /// `skip_serializing_if` keeps IR JSON byte-identical for any column
+    /// where `indexed = false`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub indexed: bool,
 }
 
 #[inline]

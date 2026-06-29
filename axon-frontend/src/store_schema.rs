@@ -218,6 +218,17 @@ pub struct StoreColumn {
     /// matching v1.38.2 behavior for every column. A manifest written
     /// against v1.38.2 round-trips byte-identically.
     pub identity: bool,
+    /// §Fase 73.f (D1) — `true` iff the column is declared with the
+    /// `index` constraint, e.g. `payload: Json index`. This is the
+    /// program-visible declaration of an index as a CAPABILITY-HONEST
+    /// EFFECT: the index is part of the source the deploy gate sees, never
+    /// a silent out-of-band DBA action (doctrine: infrastructure is
+    /// visible to the program). The index METHOD is chosen by the backend
+    /// from the column type — a `Json`/`Jsonb` column gets a Postgres GIN
+    /// path index (`USING gin (col jsonb_path_ops)`), any other column a
+    /// plain b-tree. Defaults to `false` — a pre-§73 manifest round-trips
+    /// byte-identically.
+    pub indexed: bool,
     /// §Fase 73.a (D1) — the OPTIONAL shape LENS on a `Json` / `Jsonb`
     /// column: `payload: Json<UserEvent>` records `Some("UserEvent")`,
     /// a bare `payload: Json` records `None`. The lens is a COMPILE-TIME
