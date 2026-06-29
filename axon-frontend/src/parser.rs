@@ -5747,9 +5747,47 @@ impl Parser {
                     }
                 })?;
 
+                // §Fase 73.a (D1) — the OPTIONAL `Json<T>` shape LENS on a
+                // column. `payload: Json<UserEvent>` records the expected
+                // struct shape; the lens is a compile-time expectation only
+                // (the column stays physically `jsonb`, navigated totally at
+                // runtime — doctrine `open_data_is_total`). The shape's
+                // well-formedness (T is a declared `type`) is `axon-T840`
+                // in the type-checker — it needs the symbol table. Here we
+                // only enforce the STRUCTURAL rule: a `<T>` lens may refine
+                // ONLY a `Json` / `Jsonb` column — `axon-T841` otherwise.
+                let mut json_shape: Option<String> = None;
+                if self.check(TokenType::Lt) {
+                    self.advance();
+                    let shape_tok = self.consume_any_ident_or_kw()?.clone();
+                    self.consume(TokenType::Gt)?;
+                    if matches!(col_type, StoreColumnType::Json | StoreColumnType::Jsonb) {
+                        json_shape = Some(shape_tok.value.clone());
+                    } else {
+                        return Err(ParseError {
+                            message: format!(
+                                "axon-T841 a shape lens `<{shape}>` may refine \
+                                 only a `Json` / `Jsonb` column, but column \
+                                 `{col}` in axonstore `{store}` is `{ty}`. Drop \
+                                 the `<{shape}>` (a rigid column already has a \
+                                 fixed shape), or change the column type to \
+                                 `Json<{shape}>` if it carries open documents.",
+                                shape = shape_tok.value,
+                                col = col_name,
+                                store = store_name,
+                                ty = col_type.canonical_name(),
+                            ),
+                            line: shape_tok.line,
+                            column: shape_tok.column,
+                            ..Default::default()
+                        });
+                    }
+                }
+
                 let mut col = StoreColumn {
                     name: col_name,
                     col_type,
+                    json_shape,
                     primary_key: false,
                     auto_increment: false,
                     not_null: false,
