@@ -437,6 +437,16 @@ pub struct DispatchCtx {
     pub budget: Option<
         std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>,
     >,
+    /// §Fase 74.a — the shared typed-channel event bus a flow's `emit`
+    /// routes to (the producer side of durable event delivery). `None`
+    /// (the `DispatchCtx::new` default — HTTP / CLI / test paths) ⇒ `emit`
+    /// falls back to the legacy per-flow in-memory buffer, byte-identical
+    /// to pre-§74. When `Some` (the daemon-supervisor path attaches it via
+    /// [`DispatchCtx::with_event_bus`]), `emit Channel(payload)` delivers
+    /// to the bus → a `daemon`'s `listen Channel` receives it. The bus is
+    /// shared (`Arc`) so producer flows + consumer listeners in one runtime
+    /// reach the same transport.
+    pub event_bus: Option<std::sync::Arc<crate::runtime::channels::TypedEventBus>>,
 }
 
 impl DispatchCtx {
@@ -498,7 +508,23 @@ impl DispatchCtx {
             // §Fase 72.c — no budget by default (unbudgeted dispatch). The daemon
             // path attaches one via `with_budget`.
             budget: None,
+            // §Fase 74.a — no event bus by default; `emit` uses the legacy
+            // per-flow buffer. The daemon supervisor attaches the shared bus
+            // via `with_event_bus` so `emit` delivers to `listen`ers.
+            event_bus: None,
         }
+    }
+
+    /// §Fase 74.a — Builder: attach the shared typed-channel event bus so a
+    /// flow's `emit Channel(payload)` delivers to it (the producer side of
+    /// durable event delivery). Without this, `emit` buffers locally
+    /// (pre-§74 behaviour).
+    pub fn with_event_bus(
+        mut self,
+        bus: std::sync::Arc<crate::runtime::channels::TypedEventBus>,
+    ) -> Self {
+        self.event_bus = Some(bus);
+        self
     }
 
     /// §Fase 72.c — Builder: attach the active `budget { … }` gate (the daemon
