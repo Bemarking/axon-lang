@@ -126,6 +126,38 @@ pub fn cron_listeners(daemon: &IRDaemon) -> Vec<CronListener<'_>> {
         .collect()
 }
 
+/// §Fase 74.a — one EVENT (non-cron) listener of a daemon: the channel /
+/// topic it subscribes to, its event alias, and its handler body. The
+/// complement of [`CronListener`].
+pub struct EventListener<'a> {
+    /// The channel name (a typed `channel`) or topic string it listens on.
+    pub channel: String,
+    /// The `listen … as <alias>` binding name (the event payload is bound
+    /// here for the body).
+    pub alias: String,
+    /// The handler body — flow-steps run per delivered event.
+    pub body: &'a [IRFlowNode],
+}
+
+/// §Fase 74.a — extract a daemon's EVENT listeners: every `listen` whose
+/// channel is NOT a `cron:<expr>` schedule (a typed `channel` or a topic
+/// string). The exact complement of [`cron_listeners`] — those fire on the
+/// timer, these fire on the event bus (the producer's `emit`). Before §74
+/// these were silently dropped (the §52.g `axon-W009` honesty boundary);
+/// §74 delivers to them.
+pub fn event_listeners(daemon: &IRDaemon) -> Vec<EventListener<'_>> {
+    daemon
+        .listeners
+        .iter()
+        .filter(|l: &&IRListenStep| cron_expr(&l.channel).is_none())
+        .map(|l| EventListener {
+            channel: l.channel.clone(),
+            alias: l.event_alias.clone(),
+            body: &l.body,
+        })
+        .collect()
+}
+
 /// §Fase 71.c — the `window` primitive a daemon binds via `window:`, resolved
 /// against the program's window declarations. `None` when the daemon has no
 /// temporal guard (the common case — behaviour is byte-identical to pre-§71).
@@ -193,6 +225,58 @@ pub fn execute_listener_body(
             (run.flow_name.clone(), result)
         })
         .collect()
+}
+
+/// §Fase 74.a — deliver one emitted event to every daemon `listen`er on
+/// `channel`. For each matching listener body's `run <Flow>` invocation,
+/// run the flow with the event `payload` bound as its REQUEST BODY (so the
+/// consumer flow's declared parameters bind from the event's same-named
+/// fields — the §37.b Request Binding Contract). Returns the per-(daemon,
+/// flow) results in declaration order.
+///
+/// This is the π-calculus `(Comm)` reduction made executable — the
+/// CONSUMER side of durable event delivery. §74.a establishes the contract
+/// in-process; at-least-once + the durable outbox + the running supervisor
+/// loop are §74.b/c/f. A channel with no matching listener delivers to
+/// nobody (an empty result — not an error; a fan-out of zero is valid).
+#[allow(clippy::type_complexity)]
+pub fn deliver_typed_event(
+    ir: &axon_frontend::ir_nodes::IRProgram,
+    channel: &str,
+    payload: &serde_json::Value,
+    backend: &str,
+    source_file: &str,
+    budget: Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>,
+) -> Vec<(String, String, Result<crate::runner::ServerRunnerMetrics, String>)> {
+    let empty = std::collections::HashMap::new();
+    let mut out = Vec::new();
+    for daemon in &ir.daemons {
+        for listener in event_listeners(daemon) {
+            if listener.channel != channel {
+                continue;
+            }
+            for run in run_invocations(listener.body) {
+                let result = crate::runner::execute_server_flow(
+                    ir,
+                    &run.flow_name,
+                    backend,
+                    source_file,
+                    None,
+                    // §74.a — the event payload binds to the consumer flow's
+                    // parameters (the §37.b Request Binding Contract).
+                    Some(payload),
+                    &empty,
+                    &empty,
+                    None,
+                    None,
+                    None,
+                    budget.clone(),
+                );
+                out.push((daemon.name.clone(), run.flow_name.clone(), result));
+            }
+        }
+    }
+    out
 }
 
 /// §52.c.2 — the single-node daemon driver. For each cron listener, loops:
@@ -399,6 +483,90 @@ mod tests {
         let invs = run_invocations(crons[0].body);
         assert_eq!(invs.len(), 1);
         assert_eq!(invs[0].flow_name, "HibernateSession");
+    }
+
+    // ── §Fase 74.a — event listeners + in-process delivery ───────────
+
+    #[test]
+    fn event_listeners_are_the_complement_of_cron() {
+        let ir = ir_with_daemon(
+            "type Hib { tenant_id: String }\n\
+             channel HibCh { message: Hib  qos: at_least_once  persistence: persistent_axonstore }\n\
+             flow Learn() -> Unit { probe p }\n\
+             daemon Mixed {\n\
+               requires: [flow.execute]\n\
+               listen \"cron:*/5 * * * *\" as tick { run Learn() }\n\
+               listen HibCh as ev { run Learn() }\n\
+             }",
+        );
+        let daemon = ir.daemons.iter().find(|d| d.name == "Mixed").unwrap();
+        // cron_listeners sees only the timer; event_listeners only the channel.
+        assert_eq!(cron_listeners(daemon).len(), 1);
+        let evs = event_listeners(daemon);
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].channel, "HibCh");
+        assert_eq!(evs[0].alias, "ev");
+    }
+
+    #[tokio::test]
+    async fn emit_reaches_a_daemon_listener_in_process() {
+        // §74.a — the headline: a producer emits on a typed channel, the bus
+        // carries it, and the consumer daemon's `listen Channel` body RUNS
+        // with the event payload bound to the consumer flow's parameters.
+        // This is the flow→daemon delivery the §52.g `axon-W009` said did not
+        // exist — now it does (in-process; durable at-least-once is §74.b/f).
+        let ir = ir_with_daemon(
+            "type Hib { tenant_id: String  session_id: String }\n\
+             channel HibCh { message: Hib  qos: at_least_once  persistence: persistent_axonstore }\n\
+             flow Learn(tenant_id: String, session_id: String) -> String { return \"learned\" }\n\
+             daemon IntentLearner {\n\
+               requires: [flow.execute]\n\
+               listen HibCh as ev { run Learn() }\n\
+             }",
+        );
+        // Producer side: emit onto the shared bus (built from the IR, so the
+        // channel is registered). The run_emit→bus routing is tested in
+        // wire_integrations; here we exercise bus + consumer delivery.
+        let bus = crate::runtime::channels::TypedEventBus::from_ir_program(&ir);
+        let payload = serde_json::json!({ "tenant_id": "acme", "session_id": "s1" });
+        bus.emit(
+            "HibCh",
+            crate::runtime::channels::TypedPayload::Scalar(payload.clone()),
+        )
+        .await
+        .expect("emit to a registered channel succeeds");
+
+        // Consumer side: drain the bus + deliver to the daemon listener.
+        let event = bus.receive("HibCh").await.expect("the emitted event is queued");
+        let received = match event.payload {
+            crate::runtime::channels::TypedPayload::Scalar(v) => v,
+            other => panic!("expected scalar payload, got {other:?}"),
+        };
+        assert_eq!(received["tenant_id"], "acme");
+
+        let results = deliver_typed_event(&ir, "HibCh", &received, "stub", "<test>", None);
+        assert_eq!(results.len(), 1, "exactly one listener fired");
+        let (daemon, flow, res) = &results[0];
+        assert_eq!(daemon, "IntentLearner");
+        assert_eq!(flow, "Learn");
+        assert!(
+            res.is_ok(),
+            "the consumer flow ran to completion (err: {:?})",
+            res.as_ref().err()
+        );
+    }
+
+    #[test]
+    fn deliver_to_a_channel_with_no_listener_is_an_empty_fan_out() {
+        let ir = ir_with_daemon(
+            "type Hib { tenant_id: String }\n\
+             channel HibCh { message: Hib }\n\
+             flow Learn() -> String { return \"ok\" }\n\
+             daemon D { requires: [flow.execute]  listen HibCh as ev { run Learn() } }",
+        );
+        // No listener on `OtherCh` → zero deliveries (valid, not an error).
+        let out = deliver_typed_event(&ir, "OtherCh", &serde_json::json!({}), "stub", "<test>", None);
+        assert!(out.is_empty());
     }
 
     #[test]

@@ -396,7 +396,30 @@ pub async fn run_emit(
         .cloned()
         .unwrap_or_else(|| node.value_ref.clone());
 
-    let emitted = emit_to_channel(&node.channel_ref, &resolved_value, ctx);
+    // §Fase 74.a — when a shared typed event bus is attached AND the
+    // channel is a registered typed `channel`, the `emit` DELIVERS to the
+    // bus (the producer side of durable event delivery → a daemon's
+    // `listen Channel` receives it). A schema/transport error fails CLOSED
+    // (the event is not silently dropped — `delivery_is_a_kept_promise`).
+    // Without a bus, or for an untyped topic-string emit, the legacy
+    // per-flow buffer applies, byte-identical to pre-§74.
+    let emitted = match ctx.event_bus.clone() {
+        Some(bus) if bus.get_handle(&node.channel_ref).is_ok() => {
+            let payload = serde_json::from_str::<serde_json::Value>(&resolved_value)
+                .unwrap_or_else(|_| serde_json::Value::String(resolved_value.clone()));
+            bus.emit(
+                &node.channel_ref,
+                crate::runtime::channels::TypedPayload::Scalar(payload),
+            )
+            .await
+            .map_err(|e| DispatchError::BackendError {
+                name: node.channel_ref.clone(),
+                message: format!("emit to channel '{}' failed: {e}", node.channel_ref),
+            })?;
+            resolved_value.clone()
+        }
+        _ => emit_to_channel(&node.channel_ref, &resolved_value, ctx),
+    };
 
     emit_step_complete(ctx, &step_name, step_index, &emitted, 0)?;
 
@@ -1581,6 +1604,63 @@ mod tests {
             }
             e => panic!("expected StepStart, got {e:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn run_emit_routes_to_the_event_bus_when_attached() {
+        // §Fase 74.a — with a shared typed bus attached + the channel
+        // registered, `emit` DELIVERS to the bus (the producer side of
+        // durable event delivery), NOT the legacy per-flow buffer.
+        use crate::runtime::channels::{TypedChannelHandle, TypedEventBus, TypedPayload};
+        let bus = std::sync::Arc::new(TypedEventBus::new());
+        bus.register(TypedChannelHandle::new("HibCh", "Hib"));
+
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx = ctx.with_event_bus(bus.clone());
+        ctx.let_bindings
+            .insert("payload".into(), r#"{"tenant_id":"acme"}"#.into());
+        let node = IREmit {
+            node_type: "emit",
+            source_line: 0,
+            source_column: 0,
+            channel_ref: "HibCh".into(),
+            value_ref: "payload".into(),
+            value_is_channel: false,
+        };
+        run_emit(&node, &mut ctx).await.unwrap();
+
+        // It went to the bus (receivable), NOT the legacy buffer.
+        assert!(
+            !ctx.let_bindings.contains_key("__channel_HibCh"),
+            "a bus-routed emit must not also append to the legacy buffer"
+        );
+        let event = bus.receive("HibCh").await.expect("the event is on the bus");
+        match event.payload {
+            TypedPayload::Scalar(v) => assert_eq!(v["tenant_id"], "acme"),
+            other => panic!("expected the scalar payload, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_emit_falls_back_to_buffer_for_an_unregistered_channel() {
+        // §Fase 74.a — a bus is attached but the channel is NOT a registered
+        // typed `channel` (e.g. a legacy topic string) → the legacy buffer
+        // path applies, byte-identical to pre-§74.
+        use crate::runtime::channels::TypedEventBus;
+        let bus = std::sync::Arc::new(TypedEventBus::new());
+        let (mut ctx, _rx) = fresh_ctx();
+        ctx = ctx.with_event_bus(bus);
+        ctx.let_bindings.insert("payload".into(), "hello".into());
+        let node = IREmit {
+            node_type: "emit",
+            source_line: 0,
+            source_column: 0,
+            channel_ref: "unregistered".into(),
+            value_ref: "payload".into(),
+            value_is_channel: false,
+        };
+        run_emit(&node, &mut ctx).await.unwrap();
+        assert_eq!(ctx.let_bindings.get("__channel_unregistered").unwrap(), "hello");
     }
 
     #[tokio::test]
