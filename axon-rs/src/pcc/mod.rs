@@ -369,6 +369,11 @@ mod tests {
             PropertyClass::ToolCallSoundness.slug(),
             "tool_call_soundness"
         );
+        assert_eq!(PropertyClass::EffectBudgeted.slug(), "effect_budgeted");
+        assert_eq!(
+            PropertyClass::JsonShapeSoundness.slug(),
+            "json_shape_soundness"
+        );
     }
 
     // ── §Fase 51.b — EffectRowSoundness ──────────────────────────────
@@ -1954,6 +1959,79 @@ mod tests {
         // Forge the witness: claim a clean budget had an unresolved effect.
         if let Witness::EffectBudgeted(ref mut w) = proofs[0].witness {
             w.unresolved_effects = vec!["Ghost".to_string()];
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("disagrees"), "{reason}")
+            }
+            other => panic!("expected Refuted (forgery), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 73.g — JsonShapeSoundness ──────────────────────────────────
+
+    const LENS_STORE: &str = "type UserEvent { name: String age: Int }\n\
+         axonstore Events {\n\
+           backend: postgresql\n\
+           connection: \"env:DB\"\n\
+           schema {\n\
+             id: Uuid primary_key\n\
+             profile: Json<UserEvent>\n\
+           }\n\
+         }";
+
+    #[test]
+    fn json_shape_soundness_round_trips_and_verifies() {
+        let ir = ir_from_source(LENS_STORE);
+        let proofs = super::generate::generate_json_shape_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one proof per store with a lens column");
+        assert_eq!(proofs[0].property, PropertyClass::JsonShapeSoundness);
+        // The shape `UserEvent` is a declared struct → the checker verifies.
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn open_json_store_carries_no_json_shape_proof() {
+        // A store whose only Json column is OPEN (no `<T>` lens) declares no
+        // shape contract → no proof.
+        let ir = ir_from_source(
+            "axonstore Events {\n\
+               backend: postgresql\n\
+               connection: \"env:DB\"\n\
+               schema { id: Uuid primary_key  payload: Json }\n\
+             }",
+        );
+        assert!(super::generate::generate_json_shape_soundness_proofs(&ir, "test").is_empty());
+    }
+
+    #[test]
+    fn json_shape_soundness_refutes_an_undeclared_shape() {
+        // `Json<Ghost>` with no `type Ghost` PARSES (the type-checker would
+        // axon-T840 it, but we skip that) — the independent PCC checker REFUTES.
+        let ir = ir_from_source(
+            "axonstore Events {\n\
+               backend: postgresql\n\
+               connection: \"env:DB\"\n\
+               schema { id: Uuid primary_key  profile: Json<Ghost> }\n\
+             }",
+        );
+        let proofs = super::generate::generate_json_shape_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("Ghost"), "{reason}")
+            }
+            other => panic!("expected Refuted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_shape_soundness_refutes_a_forged_witness() {
+        let ir = ir_from_source(LENS_STORE);
+        let mut proofs = super::generate::generate_json_shape_soundness_proofs(&ir, "test");
+        // Forge: claim a clean store had an unresolved shape.
+        if let Witness::JsonShapeSoundness(ref mut w) = proofs[0].witness {
+            w.unresolved_shapes = vec!["profile:Ghost".to_string()];
         }
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => {

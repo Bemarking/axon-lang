@@ -1378,6 +1378,7 @@ mod tests {
                     default_value: String::new(),
                     identity: false,
                     indexed: false,
+                    json_shape: None,
                 },
                 crate::ir_nodes::IRStoreColumn {
                     name: "tier".to_string(),
@@ -1389,6 +1390,7 @@ mod tests {
                     default_value: String::new(),
                     identity: false,
                     indexed: false,
+                    json_shape: None,
                 },
             ],
         };
@@ -1413,6 +1415,7 @@ mod tests {
                 default_value: String::new(),
                 identity: false,
                 indexed: false,
+                json_shape: None,
             }],
         };
         let result = declared_columns_for("tenants", Some(&schema), None, None);

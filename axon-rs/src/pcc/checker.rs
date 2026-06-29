@@ -28,8 +28,8 @@ use super::generate::{
     artifact_digest, derive_capability_containment_witness,
     derive_capability_isolation_witness, derive_compliance_coverage_witness,
     derive_effect_budgeted_witness, derive_effect_row_soundness_witness,
-    derive_endpoint_retry_witness, derive_shield_halt_witness, derive_socket_credit_witness,
-    derive_tool_call_soundness_witness,
+    derive_endpoint_retry_witness, derive_json_shape_soundness_witness, derive_shield_halt_witness,
+    derive_socket_credit_witness, derive_tool_call_soundness_witness,
 };
 use super::proof_term::{ProofTerm, PropertyClass, ResourceBoundsWitness, Witness};
 
@@ -90,6 +90,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         }
         (PropertyClass::EffectBudgeted, Witness::EffectBudgeted(w)) => {
             check_effect_budgeted(w, ir)
+        }
+        (PropertyClass::JsonShapeSoundness, Witness::JsonShapeSoundness(w)) => {
+            check_json_shape_soundness(w, ir)
         }
         _ => CheckOutcome::UnknownProperty,
     }
@@ -699,6 +702,49 @@ fn check_effect_budgeted(
             reason: format!(
                 "daemon '{}' budget has an out-of-catalog `on_exhausted` policy '{}' (valid: {:?})",
                 actual.daemon_name, actual.on_exhausted, super::proof_term::VALID_ON_EXHAUSTED
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §73.g — check a [`JsonShapeSoundnessWitness`]. Re-derive the store's
+/// lens shapes independently from the artifact; refute on disagreement
+/// (forgery) or on any shape that does not resolve to a declared struct
+/// `type` (the `axon-T840` invariant, now independently verified).
+fn check_json_shape_soundness(
+    claimed: &super::proof_term::JsonShapeSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    // Re-derive — do NOT trust the witness. `None` ⟹ the store named by the
+    // witness is absent, or carries no inline `Json<T>` lens column (a
+    // forged / stale proof).
+    let actual = match derive_json_shape_soundness_witness(&claimed.store_name, ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "axonstore '{}' declares no inline `Json<T>` lens column in this artifact",
+                    claimed.store_name
+                ),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    // Verdict on the re-derived (trusted) facts: every lens shape must
+    // resolve to a declared struct `type`.
+    if !actual.unresolved_shapes.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "axonstore '{}' declares `Json<T>` lens column(s) {:?} (each `column:Shape`) \
+                 whose shape is not a declared `type` — the lens cannot be field-checked, so \
+                 navigation soundness is unprovable. Declare the struct, or use open `Json`.",
+                actual.store_name, actual.unresolved_shapes
             ),
         };
     }

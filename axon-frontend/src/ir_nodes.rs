@@ -1814,6 +1814,15 @@ pub struct IRStoreColumn {
     /// where `indexed = false`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub indexed: bool,
+    /// §Fase 73.g (D1) — the OPTIONAL `Json<T>` shape-lens struct name on a
+    /// `Json`/`Jsonb` column (`payload: Json<UserEvent>` → `Some("UserEvent")`).
+    /// Surfaced into the IR so the PCC `JsonShapeSoundness` proof can
+    /// RE-DERIVE, from the artifact alone, that every lens shape resolves
+    /// to a declared struct `type` — the §73.a/§73.e lens well-formedness
+    /// made an independently-verifiable proof object. `skip_serializing_if`
+    /// keeps IR JSON byte-identical for any column with no shape lens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json_shape: Option<String>,
 }
 
 #[inline]
