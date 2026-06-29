@@ -7140,7 +7140,33 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Validate a listen block (Fase 13 D4 dual-mode).
+    /// §Fase 52.g — the honest "this daemon listener will never fire"
+    /// redirect. A daemon fires ONLY on a `cron:` schedule today; event
+    /// delivery to daemons (a typed `channel` OR a topic string) is NOT
+    /// wired in the runtime — the daemon supervisor extracts only the
+    /// cron listeners and silently drops the rest. So a non-cron daemon
+    /// listener type-checks clean but NEVER runs. Rather than let the
+    /// program rely on an unbacked delivery guarantee (the same dishonesty
+    /// `dispatch_vs_cognition` + `no_unwitnessed_advantage` forbid), the
+    /// compiler says so and redirects to the form that IS backed — a
+    /// `cron:` poll over a durable marker, which is at-least-once +
+    /// crash-safe by construction. Mirrors `axon-W004`'s honest redirect.
+    fn warn_daemon_listener_never_fires(&mut self, daemon_name: &str, channel: &str, loc: &Loc) {
+        self.warn(
+            format!(
+                "axon-W009 daemon '{daemon_name}' listens on '{channel}', but a daemon \
+                 fires ONLY on a `cron:` schedule today — event delivery to daemons (a \
+                 typed `channel` or a topic) is not yet wired in the runtime, so this \
+                 listener will NEVER fire (the supervisor extracts only cron listeners). \
+                 Until durable daemon event delivery ships, drive it with `listen \
+                 \"cron:<expr>\"` polling a durable marker (e.g. a status / processed-at \
+                 column) — at-least-once + crash-safe by construction."
+            ),
+            loc,
+        );
+    }
+
+    /// Validate a listen block (Fase 13 D4 dual-mode + §52.g delivery honesty).
     fn check_listen(&mut self, node: &ListenStep, daemon_name: &str) {
         if node.channel_is_ref {
             match self.symbols.lookup(&node.channel) {
@@ -7158,7 +7184,9 @@ impl<'a> TypeChecker<'a> {
                     ),
                     &node.loc,
                 ),
-                _ => {}
+                // §Fase 52.g — a well-formed typed-channel listener still
+                // never fires today (runtime is cron-only) → honest redirect.
+                _ => self.warn_daemon_listener_never_fires(daemon_name, &node.channel, &node.loc),
             }
         } else if let Some(expr) = crate::cron::cron_expr(&node.channel) {
             // §Fase 52.b — a time-based `listen "cron:<expr>"`. A cron channel is
@@ -7196,16 +7224,13 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         } else {
-            // Legacy string topic — D4 deprecation warning.
-            self.warn(
-                format!(
-                    "daemon '{}' uses string topic '{}' which is deprecated since \
-                     Fase 13 (v1.4.x). Migrate to a typed `channel` declaration; \
-                     string topics will be removed in v2.0 (D4).",
-                    daemon_name, node.channel
-                ),
-                &node.loc,
-            );
+            // §Fase 52.g — a non-cron string topic on a daemon never fires
+            // either (runtime is cron-only). The pre-52.g D4 warning told
+            // adopters to "migrate to a typed `channel`" — but a typed
+            // channel listener ALSO never fires, so that redirect was
+            // actively misleading. Replace it with the honest "won't fire,
+            // use cron-poll" redirect.
+            self.warn_daemon_listener_never_fires(daemon_name, &node.channel, &node.loc);
         }
         // §Fase 52.a — validate the (now-executing) handler body. Its steps get
         // the same checks as a flow body (e.g. a `run <Flow>` resolves, a
@@ -8342,7 +8367,11 @@ mod fase13_typecheck_tests {
     }
 
     #[test]
-    fn listen_typed_channel_clean() {
+    fn listen_typed_channel_warns_never_fires() {
+        // §Fase 52.g — a well-formed typed-channel daemon listener resolves
+        // cleanly (no error) but NEVER fires (the runtime is cron-only), so
+        // the honest `axon-W009` redirect surfaces. Pre-52.g this was
+        // silently clean — the exact trap an adopter falls into.
         let src = r#"
             type Order { id: String }
             channel C { message: Order }
@@ -8353,7 +8382,9 @@ mod fase13_typecheck_tests {
         "#;
         let (errs, warns) = check_with_warnings(src);
         assert!(errs.is_empty(), "errors: {:?}", errs);
-        assert!(warns.is_empty(), "no warnings expected: {:?}", warns);
+        assert_eq!(warns.len(), 1, "the typed-channel listener warns it never fires");
+        assert!(warns[0].message.contains("axon-W009"), "{:?}", warns);
+        assert!(warns[0].message.contains("NEVER fire") && warns[0].message.contains("cron:"));
     }
 
     #[test]
@@ -8373,7 +8404,11 @@ mod fase13_typecheck_tests {
     }
 
     #[test]
-    fn listen_string_topic_emits_d4_warning() {
+    fn listen_string_topic_warns_never_fires() {
+        // §Fase 52.g — a non-cron string topic on a daemon never fires
+        // either; the honest `axon-W009` redirect replaces the pre-52.g D4
+        // "migrate to a typed channel" warning (which pointed at a form that
+        // ALSO never fires — actively misleading).
         let src = r#"
             daemon D() {
                 goal: "x"
@@ -8383,12 +8418,18 @@ mod fase13_typecheck_tests {
         let (errs, warns) = check_with_warnings(src);
         assert!(errs.is_empty(), "no errors expected: {:?}", errs);
         assert_eq!(warns.len(), 1);
-        assert!(warns[0].message.contains("deprecated since Fase 13"));
+        assert!(warns[0].message.contains("axon-W009"));
         assert!(warns[0].message.contains("orders.created"));
+        assert!(warns[0].message.contains("NEVER fire"));
+        // the misleading "migrate to typed channel" redirect is gone
+        assert!(!warns[0].message.contains("deprecated since Fase 13"));
     }
 
     #[test]
-    fn listen_dual_mode_only_legacy_warns() {
+    fn listen_both_non_cron_listeners_warn_never_fires() {
+        // §Fase 52.g — BOTH a typed-channel and a topic listener never fire
+        // (cron-only runtime), so both surface the honest W009 redirect.
+        // Pre-52.g only the legacy topic warned (typed was silently clean).
         let src = r#"
             type Order { id: String }
             channel C { message: Order }
@@ -8400,8 +8441,29 @@ mod fase13_typecheck_tests {
         "#;
         let (errs, warns) = check_with_warnings(src);
         assert!(errs.is_empty(), "no errors expected: {:?}", errs);
-        assert_eq!(warns.len(), 1, "only legacy emits a warning");
-        assert!(warns[0].message.contains("legacy"));
+        assert_eq!(warns.len(), 2, "both non-cron listeners warn they never fire");
+        assert!(warns.iter().all(|w| w.message.contains("axon-W009")));
+    }
+
+    #[test]
+    fn listen_cron_schedule_does_not_warn_never_fires() {
+        // §Fase 52.g — a `cron:` listener IS backed (the supervisor fires
+        // it) → no W009 redirect. The honesty diagnostic is precisely scoped
+        // to the unbacked (non-cron) listeners.
+        let src = r#"
+            flow Tick() -> Unit { probe p }
+            daemon Sched() {
+                requires: [flow.execute]
+                listen "cron:*/5 * * * *" as t { run Tick() }
+            }
+        "#;
+        let (errs, warns) = check_with_warnings(src);
+        assert!(errs.is_empty(), "no errors: {:?}", errs);
+        assert!(
+            !warns.iter().any(|w| w.message.contains("axon-W009")),
+            "a cron listener must NOT get the never-fires warning: {:?}",
+            warns
+        );
     }
 
     // ── Fase 13.i — type checker tolerates dotted-access value_ref ──
