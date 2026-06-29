@@ -230,6 +230,66 @@ impl RateLease {
         let mut probe = self.clone();
         probe.try_acquire(now)
     }
+
+    /// §Fase 72.e — capture this lease's live STATE as a serializable snapshot
+    /// (epoch-millis, no chrono in the wire form). The enterprise daemon
+    /// supervisor persists it so a `max` window / `rate` bucket is cumulative
+    /// ACROSS ticks (a daily cap spans the day's ticks). The §52 fire-once claim
+    /// serializes a daemon's ticks, so load → run → save needs no lock.
+    pub fn snapshot(&self) -> RateLeaseSnapshot {
+        match &self.state {
+            RateState::Bucket { tokens, last_refill } => RateLeaseSnapshot {
+                kind: "rate".to_string(),
+                tokens: *tokens,
+                last_refill_ms: last_refill.timestamp_millis(),
+                window_start_ms: 0,
+                consumed: 0,
+            },
+            RateState::Window { window_start, consumed } => RateLeaseSnapshot {
+                kind: "max".to_string(),
+                tokens: 0.0,
+                last_refill_ms: 0,
+                window_start_ms: window_start.timestamp_millis(),
+                consumed: *consumed,
+            },
+        }
+    }
+
+    /// §Fase 72.e — restore this lease's STATE from a snapshot (the inverse of
+    /// [`snapshot`](Self::snapshot)). A kind mismatch (a `rate` lease restored
+    /// from a `max` snapshot — e.g. the budget grammar changed between ticks) is
+    /// IGNORED, leaving the freshly-built state (fail-safe: a re-budgeted daemon
+    /// starts clean rather than mis-restoring).
+    pub fn restore(&mut self, snap: &RateLeaseSnapshot) {
+        match (&mut self.state, snap.kind.as_str()) {
+            (RateState::Bucket { tokens, last_refill }, "rate") => {
+                *tokens = snap.tokens.min(self.limit.max(0) as f64);
+                if let Some(t) = DateTime::from_timestamp_millis(snap.last_refill_ms) {
+                    *last_refill = t;
+                }
+            }
+            (RateState::Window { window_start, consumed }, "max") => {
+                *consumed = snap.consumed.clamp(0, self.limit.max(0));
+                if let Some(t) = DateTime::from_timestamp_millis(snap.window_start_ms) {
+                    *window_start = t;
+                }
+            }
+            _ => { /* kind mismatch ⇒ keep the fresh state */ }
+        }
+    }
+}
+
+/// §Fase 72.e — a [`RateLease`]'s persistable state (epoch-millis wire form). The
+/// enterprise supervisor stores one per quota subject key so budgets are
+/// cumulative across a daemon's ticks. `kind` discriminates which fields are
+/// live (`rate` ⇒ `tokens`/`last_refill_ms`; `max` ⇒ `window_start_ms`/`consumed`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RateLeaseSnapshot {
+    pub kind: String,
+    pub tokens: f64,
+    pub last_refill_ms: i64,
+    pub window_start_ms: i64,
+    pub consumed: i64,
 }
 
 /// Convert fractional seconds to a chrono [`Duration`] (millisecond precision;
@@ -327,6 +387,25 @@ impl RateLeaseKernel {
             lease.refill(now);
         }
     }
+
+    /// §Fase 72.e — snapshot every lease's state as `(key, snapshot)` pairs for
+    /// persistence. Deterministic order (sorted by key).
+    pub fn snapshot(&self) -> Vec<(String, RateLeaseSnapshot)> {
+        let mut out: Vec<(String, RateLeaseSnapshot)> =
+            self.leases.iter().map(|(k, l)| (k.clone(), l.snapshot())).collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// §Fase 72.e — restore lease states from `(key, snapshot)` pairs. Keys with
+    /// no registered lease are skipped (a quota dropped from a re-budgeted daemon).
+    pub fn restore(&mut self, snaps: &[(String, RateLeaseSnapshot)]) {
+        for (key, snap) in snaps {
+            if let Some(lease) = self.leases.get_mut(key) {
+                lease.restore(snap);
+            }
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -412,6 +491,18 @@ impl BudgetGate {
     /// Whether `effect` has any quota under this budget.
     pub fn governs(&self, effect: &str) -> bool {
         self.by_effect.contains_key(effect)
+    }
+
+    /// §Fase 72.e — snapshot the gate's cumulative state for persistence (the
+    /// enterprise supervisor saves this after a tick + restores it before the
+    /// next, so a `max: 50 per day` spans the day's ticks).
+    pub fn snapshot(&self) -> Vec<(String, RateLeaseSnapshot)> {
+        self.kernel.snapshot()
+    }
+
+    /// §Fase 72.e — restore the gate's state from a prior [`snapshot`](Self::snapshot).
+    pub fn restore(&mut self, snaps: &[(String, RateLeaseSnapshot)]) {
+        self.kernel.restore(snaps);
     }
 }
 
@@ -673,5 +764,42 @@ mod tests {
         let b = ir_budget(vec![quota("rate", 1, "hour", "E")], "");
         let gate = BudgetGate::from_ir(&b, "d", now);
         assert_eq!(gate.on_exhausted(), "block");
+    }
+
+    // ── §Fase 72.e — snapshot / restore (cumulative across ticks) ─────────
+
+    #[test]
+    fn snapshot_restore_carries_max_window_across_ticks() {
+        let now = t0();
+        let b = ir_budget(vec![quota("max", 3, "day", "Telnyx")], "block");
+        // Tick 1: a fresh gate consumes 2 of 3.
+        let mut g1 = BudgetGate::from_ir(&b, "d", now);
+        assert_eq!(g1.gate("Telnyx", now), GateDecision::Allow);
+        assert_eq!(g1.gate("Telnyx", now), GateDecision::Allow);
+        let snap = g1.snapshot();
+
+        // Tick 2 (a later minute, possibly a different replica): a fresh gate
+        // RESTORED from the snapshot has consumed=2 → only 1 left, NOT a full 3.
+        let mut g2 = BudgetGate::from_ir(&b, "d", now + Duration::minutes(5));
+        g2.restore(&snap);
+        assert_eq!(g2.gate("Telnyx", now + Duration::minutes(5)), GateDecision::Allow);
+        // The 4th overall consumption (2 in tick 1 + 2 here) is denied — the
+        // daily cap is honoured ACROSS ticks.
+        match g2.gate("Telnyx", now + Duration::minutes(5)) {
+            GateDecision::Deny { .. } => {}
+            other => panic!("expected the daily cap to hold across ticks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snapshot_round_trips_a_bucket() {
+        let now = t0();
+        let mut l = RateLease::rate("E", 8, BudgetPeriod::Hour, now);
+        l.try_acquire(now); // tokens: 8 → 7
+        let snap = l.snapshot();
+        assert_eq!(snap.kind, "rate");
+        let mut l2 = RateLease::rate("E", 8, BudgetPeriod::Hour, now);
+        l2.restore(&snap);
+        assert_eq!(l2.available(now), 7.0, "restored bucket carries the consumed token");
     }
 }
