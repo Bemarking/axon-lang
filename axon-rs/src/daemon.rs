@@ -334,6 +334,27 @@ pub fn deliver_with_retry(
     DeliveryOutcome::DeadLettered { attempts: cap, last_error }
 }
 
+/// §Fase 74.d — the qos FAN-OUT rule for daemon delivery: how many of the
+/// `matching` listeners on a channel actually receive an event.
+///
+/// - `broadcast` → ALL of them (pub/sub fan-out: every listener gets it).
+/// - everything else (`at_least_once` / `at_most_once` / `exactly_once` /
+///   `queue`) → SINGLE-CONSUMER: at most ONE listener receives it (the §13
+///   transport spec — these modes are a single-consumer FIFO).
+///
+/// (Fair round-robin balancing across competing `queue` consumers is a
+/// refinement; the load-bearing semantic — `queue`/FIFO ⇒ one, `broadcast`
+/// ⇒ all — is what this enforces. `exactly_once`'s no-double-apply-across-a-
+/// crash guarantee needs an ATOMIC ack and is §74.f; here `exactly_once`
+/// is single-consumer + the outbox's offset-keyed `mark_processed` dedup.)
+pub fn fan_out_count(qos: &str, matching: usize) -> usize {
+    if qos == "broadcast" {
+        matching
+    } else {
+        matching.min(1)
+    }
+}
+
 /// §Fase 74.b — RELIABLE (at-least-once) delivery of one event to every
 /// daemon `listen`er on `channel`, honoring the channel's declared `qos`.
 /// Per listener, the body (all its `run <Flow>` invocations, each with the
@@ -362,13 +383,23 @@ pub fn deliver_typed_event_reliable(
         .map(|c| c.qos.clone())
         .unwrap_or_else(|| "at_least_once".to_string());
 
-    let empty = std::collections::HashMap::new();
-    let mut out = Vec::new();
+    // §74.d — collect the matching listeners, then apply the qos FAN-OUT:
+    // `broadcast` delivers to EVERY listener; every other mode is
+    // SINGLE-CONSUMER (one listener), per the §13 transport spec.
+    let mut matching: Vec<(String, EventListener)> = Vec::new();
     for daemon in &ir.daemons {
         for listener in event_listeners(daemon) {
-            if listener.channel != channel {
-                continue;
+            if listener.channel == channel {
+                matching.push((daemon.name.clone(), listener));
             }
+        }
+    }
+    let take = fan_out_count(&qos, matching.len());
+
+    let empty = std::collections::HashMap::new();
+    let mut out = Vec::new();
+    for (daemon_name, listener) in matching.into_iter().take(take) {
+        {
             let outcome = deliver_with_retry(&qos, MAX_DELIVERY_ATTEMPTS, || {
                 // The body runs ALL its invocations; a single failure fails
                 // the body run (→ a retry of the whole body — re-running a
@@ -397,12 +428,11 @@ pub fn deliver_typed_event_reliable(
             });
             if let DeliveryOutcome::DeadLettered { attempts, last_error } = &outcome {
                 eprintln!(
-                    "§74.b daemon '{}' listener on '{channel}' DEAD-LETTERED after {attempts} \
-                     attempts: {last_error}",
-                    daemon.name
+                    "§74.b daemon '{daemon_name}' listener on '{channel}' DEAD-LETTERED after \
+                     {attempts} attempts: {last_error}"
                 );
             }
-            out.push((daemon.name.clone(), outcome));
+            out.push((daemon_name, outcome));
         }
     }
     out
@@ -920,6 +950,52 @@ mod tests {
         let outcomes = drain_outbox(&ir, &outbox, "HibCh", "stub", "<test>", None);
         assert!(matches!(outcomes[0].2, DeliveryOutcome::DeadLettered { .. }));
         assert!(outbox.unprocessed("HibCh").is_empty(), "dead-lettered entries are acked");
+    }
+
+    // ── §Fase 74.d — qos fan-out (broadcast = all / else = single-consumer) ──
+
+    #[test]
+    fn fan_out_count_broadcast_is_all_else_one() {
+        assert_eq!(fan_out_count("broadcast", 3), 3, "broadcast → every listener");
+        for single in ["at_least_once", "at_most_once", "exactly_once", "queue"] {
+            assert_eq!(fan_out_count(single, 3), 1, "{single} → single-consumer");
+        }
+        // No listeners → zero either way.
+        assert_eq!(fan_out_count("broadcast", 0), 0);
+        assert_eq!(fan_out_count("at_least_once", 0), 0);
+    }
+
+    #[tokio::test]
+    async fn broadcast_fans_out_to_every_listener() {
+        let ir = ir_with_daemon(
+            "type E { x: String }\n\
+             channel BroadcastCh { message: E  qos: broadcast }\n\
+             flow A() -> String { return \"a\" }\n\
+             flow B() -> String { return \"b\" }\n\
+             daemon DA { requires: [flow.execute]  listen BroadcastCh as ev { run A() } }\n\
+             daemon DB { requires: [flow.execute]  listen BroadcastCh as ev { run B() } }",
+        );
+        let out = deliver_typed_event_reliable(
+            &ir, "BroadcastCh", &serde_json::json!({}), "stub", "<test>", None,
+        );
+        assert_eq!(out.len(), 2, "broadcast → BOTH daemons fire: {out:?}");
+        assert!(out.iter().all(|(_, o)| matches!(o, DeliveryOutcome::Acked { .. })));
+    }
+
+    #[tokio::test]
+    async fn single_consumer_qos_delivers_to_one_listener_only() {
+        // `at_least_once` is single-consumer: with two daemons listening on
+        // the same channel, exactly ONE fires (a work-queue, not a fan-out).
+        let ir = ir_with_daemon(
+            "type E { x: String }\n\
+             channel QCh { message: E  qos: at_least_once }\n\
+             flow A() -> String { return \"a\" }\n\
+             daemon DA { requires: [flow.execute]  listen QCh as ev { run A() } }\n\
+             daemon DB { requires: [flow.execute]  listen QCh as ev { run A() } }",
+        );
+        let out =
+            deliver_typed_event_reliable(&ir, "QCh", &serde_json::json!({}), "stub", "<test>", None);
+        assert_eq!(out.len(), 1, "single-consumer → exactly one fired: {out:?}");
     }
 
     #[test]
