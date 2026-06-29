@@ -1235,7 +1235,8 @@ Body prose.
         // future drop is a regression the gate catches.
         // §Fase 62.0: 45 → 46 with `ledger` (audit chain) split from `pix`.
         // §Fase 51 (v2.19.0): 46 → 48 with `observable` + `quant`.
-        assert_eq!(s.total, 48);
+        // §Fase 71: 48 → 49 with `window` (the temporal execution guard).
+        assert_eq!(s.total, 49);
     }
 
     /// §Phase 5 — every MCP prompt shipped under
@@ -1345,6 +1346,8 @@ Body prose.
             (ReferenceKind::Logic, "no_unwitnessed_advantage"),
             // §Fase 70.e — total/pure expression law.
             (ReferenceKind::Logic, "total_expressions"),
+            // §Fase 71.e — time is an explicit, recorded input.
+            (ReferenceKind::Logic, "time_is_an_explicit_input"),
             (ReferenceKind::Compliance, "hipaa"),
             (ReferenceKind::Compliance, "gdpr"),
             (ReferenceKind::Compliance, "pci_dss"),
@@ -1388,7 +1391,7 @@ Body prose.
         );
         assert_eq!(
             cat.reference_count_of(ReferenceKind::Logic),
-            6,
+            7,
             "logic family count drift"
         );
         assert_eq!(

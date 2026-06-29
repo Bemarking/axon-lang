@@ -462,6 +462,14 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         doc_status: DocStatus::Documented,
     },
     PrimitiveInfo {
+        name: "window",
+        category: "operators",
+        top_level: true,
+        since: "Fase 71",
+        summary: "A timezone-aware temporal execution guard — gates a scheduled daemon's ticks to allowed day/hour spans (minus holiday dates) with a skip/warn/defer policy.",
+        doc_status: DocStatus::Documented,
+    },
+    PrimitiveInfo {
         name: "mandate",
         category: "operators",
         top_level: true,
@@ -620,9 +628,10 @@ mod tests {
         // primitive when `pix` was reassigned to the retrieval navigator (45→46).
         // §Fase 51 (v2.19.0) added `observable` + `quant` (the Hilbert-space
         // cognitive primitive + its Hermitian-observable companion) → 46→48.
+        // §Fase 71 added `window` (the temporal execution guard) → 48→49.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            48,
+            49,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -708,12 +717,14 @@ mod tests {
             "psyche", "immune", "reflex", "heal", "transact",
             // §Fase 51 (v2.19.0)
             "observable", "quant",
+            // §Fase 71 — the temporal execution-window guard.
+            "window",
         ]
         .into_iter()
         .collect();
         assert_eq!(
             documented, expected,
-            "Documented set drift — Fase 6.d baseline + §51 quant/observable (full coverage)"
+            "Documented set drift — Fase 6.d baseline + §51 quant/observable + §71 window (full coverage)"
         );
     }
 
@@ -722,13 +733,14 @@ mod tests {
         let s = coverage_summary();
         // §Fase 62.0: 45 → 46 with `ledger` (audit chain) split out from `pix`.
         // §Fase 51 (v2.19.0): 46 → 48 with `observable` + `quant`.
-        assert_eq!(s.total, 48);
+        // §Fase 71: 48 → 49 with `window` (the temporal execution guard).
+        assert_eq!(s.total, 49);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 48);
+        assert_eq!(s.documented, 49);
         assert_eq!(s.pending, 0);
     }
 

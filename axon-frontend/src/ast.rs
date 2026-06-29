@@ -641,9 +641,13 @@ pub struct WindowDefinition {
     pub timezone: String,
     /// The allowed day/hour spans (at least one). A tick inside ANY span runs.
     pub allow: Vec<WindowSpan>,
-    /// Optional reference to an excluded-dates set (holidays, §71.e). A bare
-    /// identifier for now.
-    pub exclude: Option<String>,
+    /// §Fase 71.e — excluded dates (holidays): ISO `YYYY-MM-DD` date-string
+    /// literals (`exclude: [ "2026-12-25", "2026-01-01" ]`). A tick whose local
+    /// date (in `timezone`) is in this set is OUTSIDE the window regardless of the
+    /// hour spans. The dates are LITERAL — part of the verified program, so the
+    /// decision stays a pure, replayable function of `(now, the window, the tz-db
+    /// version)` (the `time_is_an_explicit_input` doctrine). Empty ⇒ no holidays.
+    pub exclude: Vec<String>,
     /// What to do when a tick falls OUTSIDE every allowed span:
     /// `skip` | `defer` | `warn` (closed catalog).
     pub on_outside: String,

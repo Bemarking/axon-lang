@@ -171,6 +171,37 @@ fn valid_list(set: &[&str]) -> String {
     set.join(", ")
 }
 
+/// §Fase 71.e — is `s` a real ISO `YYYY-MM-DD` calendar date? Pure + total (no
+/// chrono — the frontend is zero-dependency): exact `dddd-dd-dd` shape, month
+/// 1..12, day 1..days-in-month with a proleptic-Gregorian leap-year rule. The
+/// runtime compares `now`'s local date as the same `%Y-%m-%d` string, so a date
+/// that passes here matches there.
+fn is_valid_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    // YYYY-MM-DD is exactly 10 chars with '-' at positions 4 and 7.
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return false;
+    }
+    let digits = |lo: usize, hi: usize| b[lo..hi].iter().all(|c| c.is_ascii_digit());
+    if !digits(0, 4) || !digits(5, 7) || !digits(8, 10) {
+        return false;
+    }
+    let num = |lo: usize, hi: usize| s[lo..hi].parse::<u32>().unwrap_or(0);
+    let (year, month, day) = (num(0, 4), num(5, 7), num(8, 10));
+    if !(1..=12).contains(&month) || day < 1 {
+        return false;
+    }
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => 0,
+    };
+    day <= days_in_month
+}
+
 // ── Type error ───────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -2604,6 +2635,21 @@ impl<'a> TypeChecker<'a> {
                 ),
                 &node.loc,
             );
+        }
+        // §Fase 71.e — each `exclude:` holiday must be a real ISO `YYYY-MM-DD`
+        // calendar date. Validated at compile time (no Feb 30, leap-year aware) so
+        // the window decision is a pure, replayable function of literal inputs.
+        for date in &node.exclude {
+            if !is_valid_iso_date(date) {
+                self.emit(
+                    format!(
+                        "axon-T826 window '{}' has an invalid exclude date \"{}\" — expected a \
+                         real ISO calendar date \"YYYY-MM-DD\" (e.g. \"2026-12-25\")",
+                        node.name, date
+                    ),
+                    &node.loc,
+                );
+            }
         }
     }
 

@@ -1464,8 +1464,11 @@ pub struct IRWindow {
     pub name: String,
     pub timezone: String,
     pub allow: Vec<IRWindowSpan>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exclude: Option<String>,
+    /// §Fase 71.e — excluded dates (holidays): ISO `YYYY-MM-DD` literals. A tick
+    /// whose local date is in this set is OUTSIDE regardless of the hour spans.
+    /// `skip_serializing_if` keeps a holiday-less window's JSON byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
     pub on_outside: String,
 }
 
