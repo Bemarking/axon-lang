@@ -374,6 +374,10 @@ mod tests {
             PropertyClass::JsonShapeSoundness.slug(),
             "json_shape_soundness"
         );
+        assert_eq!(
+            PropertyClass::ChannelDeliverySoundness.slug(),
+            "channel_delivery_soundness"
+        );
     }
 
     // ── §Fase 51.b — EffectRowSoundness ──────────────────────────────
@@ -2037,6 +2041,75 @@ mod tests {
             CheckOutcome::Refuted { reason } => {
                 assert!(reason.contains("disagrees"), "{reason}")
             }
+            other => panic!("expected Refuted (forgery), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 74.g — ChannelDeliverySoundness ────────────────────────────
+
+    const PRODUCED_CHANNEL: &str = "type Hib { tenant_id: String }\n\
+         channel HibCh { message: Hib  qos: at_least_once  persistence: persistent_axonstore }\n\
+         flow Produce(tenant_id: String) -> Unit { emit HibCh(tenant_id) }\n\
+         flow Learn(tenant_id: String) -> Unit { probe p }\n\
+         daemon IntentLearner {\n\
+           requires: [flow.execute]\n\
+           listen HibCh as ev { run Learn() }\n\
+         }";
+
+    #[test]
+    fn channel_delivery_round_trips_and_verifies() {
+        let ir = ir_from_source(PRODUCED_CHANNEL);
+        let proofs = super::generate::generate_channel_delivery_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one proof per listened channel");
+        assert_eq!(proofs[0].property, PropertyClass::ChannelDeliverySoundness);
+        // The channel has a producer (`emit HibCh`) → verifies.
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn unlistened_channel_carries_no_delivery_proof() {
+        // A channel emitted to but with NO `listen`er → no delivery contract.
+        let ir = ir_from_source(
+            "type Hib { tenant_id: String }\n\
+             channel HibCh { message: Hib }\n\
+             flow Produce(tenant_id: String) -> Unit { emit HibCh(tenant_id) }",
+        );
+        assert!(super::generate::generate_channel_delivery_soundness_proofs(&ir, "test").is_empty());
+    }
+
+    #[test]
+    fn channel_delivery_refutes_a_listener_with_no_producer() {
+        // The Kivi brief #39 defect: a daemon listens on a channel NOTHING
+        // emits to → the listener can never fire → REFUTED.
+        let ir = ir_from_source(
+            "type Hib { tenant_id: String }\n\
+             channel HibCh { message: Hib  persistence: persistent_axonstore }\n\
+             flow Learn() -> Unit { probe p }\n\
+             daemon IntentLearner {\n\
+               requires: [flow.execute]\n\
+               listen HibCh as ev { run Learn() }\n\
+             }",
+        );
+        let proofs = super::generate::generate_channel_delivery_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("no producer") || reason.contains("never fire"), "{reason}")
+            }
+            other => panic!("expected Refuted (no producer), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn channel_delivery_refutes_a_forged_witness() {
+        let ir = ir_from_source(PRODUCED_CHANNEL);
+        let mut proofs = super::generate::generate_channel_delivery_soundness_proofs(&ir, "test");
+        // Forge: claim there was no producer when the artifact has one.
+        if let Witness::ChannelDeliverySoundness(ref mut w) = proofs[0].witness {
+            w.has_producer = false;
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("disagrees"), "{reason}"),
             other => panic!("expected Refuted (forgery), got {other:?}"),
         }
     }

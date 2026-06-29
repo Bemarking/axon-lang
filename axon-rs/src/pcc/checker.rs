@@ -27,9 +27,10 @@ use crate::ir_nodes::IRProgram;
 use super::generate::{
     artifact_digest, derive_capability_containment_witness,
     derive_capability_isolation_witness, derive_compliance_coverage_witness,
-    derive_effect_budgeted_witness, derive_effect_row_soundness_witness,
-    derive_endpoint_retry_witness, derive_json_shape_soundness_witness, derive_shield_halt_witness,
-    derive_socket_credit_witness, derive_tool_call_soundness_witness,
+    derive_channel_delivery_soundness_witness, derive_effect_budgeted_witness,
+    derive_effect_row_soundness_witness, derive_endpoint_retry_witness,
+    derive_json_shape_soundness_witness, derive_shield_halt_witness, derive_socket_credit_witness,
+    derive_tool_call_soundness_witness,
 };
 use super::proof_term::{ProofTerm, PropertyClass, ResourceBoundsWitness, Witness};
 
@@ -93,6 +94,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         }
         (PropertyClass::JsonShapeSoundness, Witness::JsonShapeSoundness(w)) => {
             check_json_shape_soundness(w, ir)
+        }
+        (PropertyClass::ChannelDeliverySoundness, Witness::ChannelDeliverySoundness(w)) => {
+            check_channel_delivery_soundness(w, ir)
         }
         _ => CheckOutcome::UnknownProperty,
     }
@@ -745,6 +749,46 @@ fn check_json_shape_soundness(
                  whose shape is not a declared `type` — the lens cannot be field-checked, so \
                  navigation soundness is unprovable. Declare the struct, or use open `Json`.",
                 actual.store_name, actual.unresolved_shapes
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §74.g — check a [`ChannelDeliverySoundnessWitness`]. Re-derive the
+/// channel's producer/consumer facts from the artifact; refute on
+/// disagreement (forgery) or when a consumed channel has NO producer (a
+/// `listen`er that can never fire — nothing `emit`s to it).
+fn check_channel_delivery_soundness(
+    claimed: &super::proof_term::ChannelDeliverySoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match derive_channel_delivery_soundness_witness(&claimed.channel_name, ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "channel '{}' has no `daemon` `listen`er in this artifact (no delivery \
+                     contract to certify)",
+                    claimed.channel_name
+                ),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    // Verdict: a consumed channel with no producer never fires.
+    if !actual.has_producer {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "channel '{}' has a `daemon` `listen`er but NO producer — nothing `emit`s to \
+                 it, so the listener can never fire. Add an `emit {}(…)` in a flow, or remove \
+                 the listener (the Kivi brief #39 defect, now machine-checked).",
+                actual.channel_name, actual.channel_name
             ),
         };
     }
