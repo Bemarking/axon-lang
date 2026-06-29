@@ -3050,6 +3050,17 @@ async fn collect_via_dispatcher(
     // §Fase 72.c — the active `budget { … }` gate when a budgeted daemon runs
     // this flow. `None` ⇒ unbudgeted (tool dispatch unconditional, pre-§72).
     budget: Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>,
+    // §Fase 74.f — the typed event BUS (built from the program's `channel`
+    // definitions) + the durable event OUTBOX (the §74.c `EventOutbox` seam),
+    // attached as a pair on the daemon path. The bus carries each channel's
+    // `persistence` metadata; `run_emit` consults it to route a
+    // `persistent_axonstore` emit to `outbox.append` (durable — survives the
+    // consumer being down + a process restart) vs an ephemeral emit to the bus.
+    // `Some` only when the enterprise supervisor injects its per-tenant Pg outbox;
+    // `None` for every other caller (HTTP, CLI, tests) ⇒ `emit` keeps its prior
+    // in-process buffer behavior (byte-identical to pre-§74).
+    event_bus: Option<std::sync::Arc<crate::runtime::channels::TypedEventBus>>,
+    event_outbox: Option<std::sync::Arc<dyn crate::event_outbox::EventOutbox>>,
 ) -> CollectedRun {
     use crate::flow_dispatcher::{dispatch_node, DispatchCtx, NodeOutcome};
     use crate::flow_execution_event::FlowExecutionEvent;
@@ -3077,6 +3088,18 @@ async fn collect_via_dispatcher(
     // §Fase 72.c — attach the linear-effect budget gate (daemon path only).
     if let Some(gate) = budget {
         ctx = ctx.with_budget(gate);
+    }
+    // §Fase 74.f — attach the typed event bus + durable outbox as a pair (daemon
+    // path only). The bus supplies the channel's `persistence` so `run_emit`
+    // routes a `persistent_axonstore` emit to `outbox.append` (durable); the
+    // enterprise supervisor then drains + delivers it across replicas / restarts
+    // (the §74.f Pg outbox). Without the bus, the durability metadata is unknown
+    // and the emit would fall back to the legacy in-process buffer.
+    if let Some(bus) = event_bus {
+        ctx = ctx.with_event_bus(bus);
+    }
+    if let Some(outbox) = event_outbox {
+        ctx = ctx.with_event_outbox(outbox);
     }
     // §Fase 37.b — seed the request-bound flow params so `${param}` resolves.
     for (k, v) in param_bindings {
@@ -3280,6 +3303,13 @@ pub fn execute_server_flow(
     // compiled budget). `None` for every other caller (HTTP, CLI, tests) — tool
     // dispatch is then unconditional, byte-identical to pre-§72.
     budget: Option<std::sync::Arc<std::sync::Mutex<crate::runtime::budget_kernel::BudgetGate>>>,
+    // §Fase 74.f — the durable event outbox (the §74.c `EventOutbox` seam). `Some`
+    // only when a `daemon` runs this flow AND the deployment configures a durable
+    // channel sink (the enterprise supervisor passes its per-tenant Postgres
+    // outbox); a daemon `emit` to a `persistent_axonstore` channel then APPENDS
+    // durably instead of buffering in-process. `None` for every other caller
+    // (HTTP, CLI, tests) ⇒ pre-§74 in-process `emit` behavior.
+    event_outbox: Option<std::sync::Arc<dyn crate::event_outbox::EventOutbox>>,
 ) -> Result<ServerRunnerMetrics, String> {
     let mut target_run = None;
     for run in &ir.runs {
@@ -3557,6 +3587,18 @@ pub fn execute_server_flow(
                     &param_bindings,
                     pinned,
                     budget.clone(),
+                    // §Fase 74.f — when a durable outbox is injected (the
+                    // enterprise daemon path), build the typed event bus from the
+                    // program's `channel` definitions so `run_emit` knows each
+                    // channel's `persistence` + routes a `persistent_axonstore`
+                    // emit to the outbox. Paired: no outbox ⇒ no bus ⇒ pre-§74
+                    // in-process `emit`.
+                    event_outbox.as_ref().map(|_| {
+                        std::sync::Arc::new(
+                            crate::runtime::channels::TypedEventBus::from_ir_program(ir),
+                        )
+                    }),
+                    event_outbox.clone(),
                 )
                 .await
             });
@@ -4575,6 +4617,7 @@ flow Recall(q: Text) -> Text {
             None,
             None,
             None, // §Fase 72.c — budget (test: unbudgeted)
+            None, // §Fase 74.f — event outbox (test: no durable sink)
         )
         .expect("flow runs");
 
@@ -4650,6 +4693,8 @@ flow Recall(q: Text) -> Text {
             &pb,
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             None, // §Fase 72.c — budget (test: unbudgeted)
+            None, // §Fase 74.f — event bus (test: no durable sink)
+            None, // §Fase 74.f — event outbox (test: no durable sink)
         )
         .await;
 
@@ -4660,6 +4705,67 @@ flow Recall(q: Text) -> Text {
         assert_ne!(ret, "(stub)", "`return hits` resolves the binding, not the LLM");
         // `return hits` == the navigate step's output (hits propagated).
         assert_eq!(collected.step_results.first(), collected.step_results.last());
+    }
+
+    /// §Fase 74.f — the headline of the OSS producer wiring: when a durable
+    /// `event_outbox` is injected into `execute_server_flow` (the enterprise
+    /// daemon path), a flow's `emit` to a `persistent_axonstore` channel APPENDS
+    /// to that outbox — durably — instead of buffering in-process. This proves the
+    /// runner builds the typed bus from the program's `channel` defs + attaches
+    /// the bus+outbox pair so `run_emit` routes the persistent emit to the outbox.
+    /// Without the outbox (`None`) the emit stays in-process (the pre-§74 path,
+    /// covered by the other runner tests).
+    #[test]
+    fn execute_server_flow_appends_a_persistent_emit_to_the_injected_outbox() {
+        use crate::event_outbox::{EventOutbox, InMemoryEventOutbox};
+        let source = r#"
+type Hib { tenant_id: Text }
+channel HibCh { message: Hib  qos: at_least_once  persistence: persistent_axonstore }
+flow Producer(tenant_id: Text) -> Text {
+    emit HibCh(tenant_id)
+    return "emitted"
+}
+"#;
+        let (_p, ir) =
+            crate::flow_plan::compile_source_to_ir(source, "producer.axon").expect("compile");
+        let body = serde_json::json!({ "tenant_id": "acme" });
+        // Keep a concrete handle (`probe`) to read the outbox back after the run;
+        // inject a trait-object clone of the SAME outbox into the runner.
+        let probe = std::sync::Arc::new(InMemoryEventOutbox::new());
+
+        let metrics = execute_server_flow(
+            &ir,
+            "Producer",
+            "stub",
+            "producer.axon",
+            None,
+            Some(&body),
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            None,
+            None,
+            None,
+            None, // §Fase 72.c — budget (unbudgeted)
+            // §Fase 74.f — inject the durable outbox (the enterprise daemon path).
+            Some(probe.clone() as std::sync::Arc<dyn EventOutbox>),
+        )
+        .expect("flow runs");
+
+        assert!(metrics.success, "the producer flow runs to completion");
+        // THE assertion: the persistent-channel emit landed in the durable outbox
+        // (1 unprocessed event), not the in-process buffer.
+        assert_eq!(
+            probe.pending_total(),
+            1,
+            "a `persistent_axonstore` emit must APPEND to the injected outbox"
+        );
+        let tail = probe.unprocessed("HibCh");
+        assert_eq!(tail.len(), 1, "the event is on HibCh's redelivery tail");
+        assert_eq!(
+            tail[0].payload,
+            serde_json::Value::String("acme".to_string()),
+            "the emitted payload (the bound `tenant_id`) is recorded verbatim"
+        );
     }
 
     fn empty_nav_dispatch(

@@ -221,6 +221,9 @@ pub fn execute_listener_body(
                 None,
                 // §Fase 72.c — the daemon's effect budget gate.
                 budget.clone(),
+                // §Fase 74.f — the OSS single-node daemon keeps `emit` in-process;
+                // the durable per-tenant outbox is the enterprise supervisor path.
+                None,
             );
             (run.flow_name.clone(), result)
         })
@@ -271,6 +274,8 @@ pub fn deliver_typed_event(
                     None,
                     None,
                     budget.clone(),
+                    // §Fase 74.f — OSS single-node delivery stays in-process.
+                    None,
                 );
                 out.push((daemon.name.clone(), run.flow_name.clone(), result));
             }
@@ -419,6 +424,8 @@ pub fn deliver_typed_event_reliable(
                         None,
                         None,
                         budget.clone(),
+                        // §Fase 74.f — OSS single-node delivery stays in-process.
+                        None,
                     );
                     if let Err(e) = r {
                         return Err(format!("flow '{}': {e}", run.flow_name));
