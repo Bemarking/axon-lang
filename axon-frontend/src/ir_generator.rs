@@ -46,6 +46,9 @@ fn lower_column(c: &StoreColumn) -> IRStoreColumn {
         // §Fase 73.f (D1) — round-trip the `index` declaration so the
         // deploy gate sees it and materializes the (GIN / b-tree) index.
         indexed: c.indexed,
+        // §Fase 73.g (D1) — round-trip the `Json<T>` shape-lens struct name
+        // so the PCC `JsonShapeSoundness` proof re-derives it from the IR.
+        json_shape: c.json_shape.clone(),
     }
 }
 

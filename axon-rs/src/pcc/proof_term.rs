@@ -128,6 +128,20 @@ pub enum PropertyClass {
     /// no `budget` carries no contract → no proof (mirrors "no effects → no
     /// effect-row proof").
     EffectBudgeted,
+    /// §73.g — every `Json<T>` shape LENS an `axonstore` column declares is
+    /// SOUND: its `T` resolves to a declared struct `type` in the program.
+    /// This makes the §73.a/§73.e lens well-formedness (the `axon-T840`
+    /// invariant — "the shape is a declared struct") an INDEPENDENTLY-
+    /// VERIFIABLE fact: the verifier re-derives, from the artifact alone,
+    /// that every column lens shape names a real struct whose fields are a
+    /// closed, finite catalog — so navigation over the lens is DECIDABLE by
+    /// construction (a finite fold over the struct's fields, the
+    /// `open_data_is_total` guarantee). It never trusts the compiler that
+    /// ran the §73.a type-check. A store with no `Json<T>` lens column
+    /// carries no contract → no proof (mirrors "no effects → no effect-row
+    /// proof"); an open `Json` column (no shape) is unconstrained and is
+    /// not a lens site.
+    JsonShapeSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -165,6 +179,7 @@ impl PropertyClass {
             PropertyClass::CapabilityContainment => "capability_containment",
             PropertyClass::ToolCallSoundness => "tool_call_soundness",
             PropertyClass::EffectBudgeted => "effect_budgeted",
+            PropertyClass::JsonShapeSoundness => "json_shape_soundness",
         }
     }
 }
@@ -404,6 +419,32 @@ pub struct EffectBudgetedWitness {
     pub on_exhausted_valid: bool,
 }
 
+/// §73.g — witness for [`PropertyClass::JsonShapeSoundness`].
+///
+/// The property certified: every `Json<T>` shape lens an `axonstore`
+/// declares (a column typed `Json<T>` / `Jsonb<T>`) has `T` resolving to a
+/// declared struct `type` in the program. The checker RE-DERIVES every
+/// field from the artifact (the store's IR columns + the program's
+/// `type` declarations) and rejects the proof if the witness disagrees
+/// (D51.2 — a forged witness is caught because the checker recomputes). A
+/// verifying proof has `unresolved_shapes` empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JsonShapeSoundnessWitness {
+    /// The `axonstore` this proof is about.
+    pub store_name: String,
+    /// The program's declared struct `type` names, sorted + deduped (the
+    /// resolution surface the checker re-derives `unresolved_shapes`
+    /// against).
+    pub declared_types: Vec<String>,
+    /// Each lens column as `column:Shape`, sorted (context + the forgery
+    /// surface — the set of lens sites the proof is about).
+    pub lens_columns: Vec<String>,
+    /// Lens columns whose shape `T` does NOT resolve to a declared struct
+    /// `type`, each `column:Shape`, sorted + deduped. Empty for a
+    /// verifying proof.
+    pub unresolved_shapes: Vec<String>,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -417,6 +458,7 @@ pub enum Witness {
     ShieldHaltGuarantee(ShieldHaltGuaranteeWitness),
     CapabilityContainment(CapabilityContainmentWitness),
     ToolCallSoundness(ToolCallSoundnessWitness),
+    JsonShapeSoundness(JsonShapeSoundnessWitness),
 }
 
 impl Witness {
@@ -439,6 +481,7 @@ impl Witness {
             Witness::ShieldHaltGuarantee(w) => &w.shield_name,
             Witness::CapabilityContainment(w) => &w.endpoint_name,
             Witness::ToolCallSoundness(w) => &w.tool_name,
+            Witness::JsonShapeSoundness(w) => &w.store_name,
         }
     }
 }

@@ -15,9 +15,9 @@ use crate::ir_nodes::IRProgram;
 use super::effects;
 use super::proof_term::{
     CapabilityContainmentWitness, CapabilityIsolationWitness, ComplianceCoverageWitness,
-    EffectBudgetedWitness, EffectRowSoundnessWitness, ProofTerm, PropertyClass,
-    ResourceBoundsWitness, ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness,
-    MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS, VALID_ON_EXHAUSTED,
+    EffectBudgetedWitness, EffectRowSoundnessWitness, JsonShapeSoundnessWitness, ProofTerm,
+    PropertyClass, ResourceBoundsWitness, ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness,
+    Witness, MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS, VALID_ON_EXHAUSTED,
 };
 
 /// Canonical SHA-256 hex digest of the IR artifact. Reuses the
@@ -912,6 +912,76 @@ pub fn generate_effect_budgeted_proofs(ir: &IRProgram, axon_version: &str) -> Ve
     proofs
 }
 
+// ── §Fase 73.g — JsonShapeSoundness ──────────────────────────────────
+
+/// §73.g — derive a [`JsonShapeSoundnessWitness`] for one store's column
+/// shape lenses against the program IR. Pure + total. Shared with the
+/// checker's re-derivation path so producer + verifier compute identically
+/// (D51.2). `None` when the store is absent OR declares no inline
+/// `Json<T>` lens column — no contract → no proof. (A `manifest_ref` /
+/// `env_var` schema form carries no INLINE lens shape to certify; only the
+/// inline form's declared shapes are in the artifact.)
+pub fn derive_json_shape_soundness_witness(
+    store_name: &str,
+    ir: &IRProgram,
+) -> Option<JsonShapeSoundnessWitness> {
+    let store = ir.axonstore_specs.iter().find(|s| s.name == store_name)?;
+    let columns = match store.column_schema.as_ref()? {
+        crate::ir_nodes::IRStoreColumnSchema::Inline { columns } => columns,
+        _ => return None,
+    };
+    // The lens sites: columns carrying a `Json<T>` shape, sorted by
+    // (column, shape) for a canonical witness.
+    let mut lens: Vec<(String, String)> = columns
+        .iter()
+        .filter_map(|c| c.json_shape.as_ref().map(|s| (c.name.clone(), s.clone())))
+        .collect();
+    if lens.is_empty() {
+        return None;
+    }
+    lens.sort();
+
+    let declared_types =
+        canonical_names(&ir.types.iter().map(|t| t.name.clone()).collect::<Vec<_>>());
+    let declared: std::collections::HashSet<&str> =
+        declared_types.iter().map(String::as_str).collect();
+
+    let lens_columns: Vec<String> = lens.iter().map(|(c, s)| format!("{c}:{s}")).collect();
+    // `lens` is already sorted, so the filtered subset stays sorted.
+    let unresolved_shapes: Vec<String> = lens
+        .iter()
+        .filter(|(_, s)| !declared.contains(s.as_str()))
+        .map(|(c, s)| format!("{c}:{s}"))
+        .collect();
+
+    Some(JsonShapeSoundnessWitness {
+        store_name: store_name.to_string(),
+        declared_types,
+        lens_columns,
+        unresolved_shapes,
+    })
+}
+
+/// §73.g — generate JsonShapeSoundness proofs: one per `axonstore` that
+/// declares ≥1 inline `Json<T>` lens column. A store with no shape lens
+/// carries no contract → no proof.
+pub fn generate_json_shape_soundness_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for store in &ir.axonstore_specs {
+        let Some(witness) = derive_json_shape_soundness_witness(&store.name, ir) else {
+            continue;
+        };
+        proofs.push(ProofTerm {
+            property: PropertyClass::JsonShapeSoundness,
+            artifact_digest: digest.clone(),
+            witness: Witness::JsonShapeSoundness(witness),
+            axon_version: axon_version.to_string(),
+        });
+    }
+    proofs
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
 /// generator (compliance / effects / capability-gate / resources /
@@ -928,5 +998,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_capability_containment_proofs(ir, axon_version));
     proofs.extend(generate_tool_call_soundness_proofs(ir, axon_version));
     proofs.extend(generate_effect_budgeted_proofs(ir, axon_version));
+    proofs.extend(generate_json_shape_soundness_proofs(ir, axon_version));
     proofs
 }
