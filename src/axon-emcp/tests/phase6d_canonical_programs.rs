@@ -185,6 +185,33 @@ shield PHIShield {
 }
 
 #[test]
+fn window_canonical_program_compiles() {
+    // §Fase 71 — a timezone-aware temporal window with a holiday exclusion,
+    // bound by a scheduled daemon. The §71.e compile-gated corpus example.
+    let src = r#"
+flow SendBatch() -> Unit {
+    step S { ask: "send the outbound batch" output: Unit }
+}
+
+window BusinessHours {
+    timezone:   "America/Bogota"
+    allow:      [ { days: Mon..Fri, hours: 9..18 } ]
+    exclude:    [ "2026-12-25", "2026-01-01" ]
+    on_outside: defer
+}
+
+daemon OutboundScheduler {
+    window:   BusinessHours
+    requires: [flow.execute]
+    listen "cron:*/5 * * * *" as tick {
+        run SendBatch()
+    }
+}
+"#;
+    must_compile("window/canonical", src);
+}
+
+#[test]
 fn mandate_canonical_program_compiles() {
     let src = r#"
 mandate FinancialApproval {

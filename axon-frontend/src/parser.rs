@@ -4835,8 +4835,8 @@ impl Parser {
         Ok(members)
     }
 
-    /// §Fase 71.a — `window <Name> { timezone: "…"  allow: [ {days hours} ]
-    /// exclude: <ref>  on_outside: skip|defer|warn }`.
+    /// §Fase 71.a/e — `window <Name> { timezone: "…"  allow: [ {days hours} ]
+    /// exclude: [ "YYYY-MM-DD", … ]  on_outside: skip|defer|warn }`.
     fn parse_window(&mut self) -> Result<WindowDefinition, ParseError> {
         let tok = self.consume(TokenType::Window)?;
         let name = self.consume(TokenType::Identifier)?.value;
@@ -4844,7 +4844,7 @@ impl Parser {
             name,
             timezone: String::new(),
             allow: Vec::new(),
-            exclude: None,
+            exclude: Vec::new(),
             on_outside: String::new(),
             loc: Loc {
                 line: tok.line,
@@ -4860,7 +4860,7 @@ impl Parser {
             match field_name.as_str() {
                 "timezone" => node.timezone = self.consume(TokenType::StringLit)?.value,
                 "allow" => node.allow = self.parse_window_allow()?,
-                "exclude" => node.exclude = Some(self.parse_dotted_identifier()?),
+                "exclude" => node.exclude = self.parse_window_exclude()?,
                 "on_outside" => node.on_outside = self.consume_any_ident_or_kw()?.value,
                 _ => self.skip_value(),
             }
@@ -4885,6 +4885,26 @@ impl Parser {
         }
         self.consume(TokenType::RBracket)?;
         Ok(spans)
+    }
+
+    /// §Fase 71.e — the `exclude: [ "YYYY-MM-DD", … ]` holiday list (ISO
+    /// date-string literals; validated for real-calendar-date-ness by the
+    /// `axon-T826` type check). An empty list / absent field ⇒ no holidays.
+    fn parse_window_exclude(&mut self) -> Result<Vec<String>, ParseError> {
+        self.consume(TokenType::LBracket)?;
+        let mut dates = Vec::new();
+        if !self.check(TokenType::RBracket) {
+            dates.push(self.consume(TokenType::StringLit)?.value);
+            while self.check(TokenType::Comma) {
+                self.advance();
+                if self.check(TokenType::RBracket) {
+                    break; // trailing comma
+                }
+                dates.push(self.consume(TokenType::StringLit)?.value);
+            }
+        }
+        self.consume(TokenType::RBracket)?;
+        Ok(dates)
     }
 
     /// §Fase 71.a — one span `{ days: Mon..Fri  hours: 9..18 }`.

@@ -47,11 +47,12 @@ fn multiple_spans_and_exclude_and_default_policy() {
     let src = "window Ops {\n\
         timezone: \"UTC\"\n\
         allow: [ { days: Mon..Fri, hours: 9..17 }, { days: Sat..Sat, hours: 10..14 } ]\n\
-        exclude: holidays\n\
+        exclude: [ \"2026-12-25\", \"2026-01-01\" ]\n\
       }";
     let w = first_window(src);
     assert_eq!(w.allow.len(), 2);
-    assert_eq!(w.exclude.as_deref(), Some("holidays"));
+    // §71.e — excluded holidays are ISO date literals (part of the program).
+    assert_eq!(w.exclude, vec!["2026-12-25".to_string(), "2026-01-01".to_string()]);
     // an omitted on_outside lowers to the safe default `defer`.
     assert_eq!(w.on_outside, "defer");
 }
@@ -95,4 +96,41 @@ fn out_of_range_hour_is_t823() {
 fn unknown_on_outside_is_t824() {
     let src = "window W { timezone: \"UTC\"  allow: [ { days: Mon..Fri, hours: 9..18 } ]  on_outside: maybe }";
     assert!(has(&errors(src), "axon-T824"), "{:?}", errors(src));
+}
+
+// ── §Fase 71.e — exclude holiday dates ──────────────────────────────────────
+
+#[test]
+fn valid_exclude_dates_type_check_clean() {
+    let src = "window W { timezone: \"UTC\"  allow: [ { days: Mon..Fri, hours: 9..18 } ]  \
+               exclude: [ \"2026-12-25\", \"2026-01-01\", \"2028-02-29\" ] }";
+    assert!(errors(src).is_empty(), "{:?}", errors(src));
+}
+
+#[test]
+fn malformed_exclude_date_is_t826() {
+    // Wrong shape (not YYYY-MM-DD).
+    let src = "window W { timezone: \"UTC\"  allow: [ { days: Mon..Fri, hours: 9..18 } ]  \
+               exclude: [ \"Dec 25\" ] }";
+    assert!(has(&errors(src), "axon-T826"), "{:?}", errors(src));
+}
+
+#[test]
+fn impossible_calendar_date_is_t826() {
+    // Real shape, impossible day — Feb 30 and a non-leap Feb 29.
+    for bad in ["2026-02-30", "2026-02-29", "2026-13-01", "2026-00-10", "2026-04-31"] {
+        let src = format!(
+            "window W {{ timezone: \"UTC\"  allow: [ {{ days: Mon..Fri, hours: 9..18 }} ]  \
+             exclude: [ \"{bad}\" ] }}"
+        );
+        assert!(has(&errors(&src), "axon-T826"), "{bad} should be T826: {:?}", errors(&src));
+    }
+}
+
+#[test]
+fn exclude_lowers_to_ir_dates() {
+    let src = "window W { timezone: \"UTC\"  allow: [ { days: Mon..Fri, hours: 9..18 } ]  \
+               exclude: [ \"2026-12-25\" ] }";
+    let w = first_window(src);
+    assert_eq!(w.exclude, vec!["2026-12-25".to_string()]);
 }

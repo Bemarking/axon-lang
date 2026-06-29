@@ -7,7 +7,9 @@
 //! tz-database version)` — the §71 doctrine `axon://logic/time_is_an_explicit_input`.
 //!
 //! Granularity is the hour (the `window` grammar's `hours: 9..18` are inclusive
-//! 0–23 bounds). The `exclude:` holiday set is §71.e and is ignored here.
+//! 0–23 bounds). §Fase 71.e adds holiday exclusion: a tick whose LOCAL date is
+//! in the window's `exclude` set (ISO `YYYY-MM-DD` literals) is OUTSIDE the
+//! window regardless of the hour spans.
 
 use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc, Weekday};
 use chrono_tz::Tz;
@@ -66,6 +68,15 @@ fn weekday_in_range(wd: Weekday, start: Weekday, end: Weekday) -> bool {
 pub fn is_in_window(now: DateTime<Utc>, window: &IRWindow) -> Option<bool> {
     let tz = parse_tz(&window.timezone)?;
     let local = now.with_timezone(&tz);
+    // §Fase 71.e — a holiday (an excluded LOCAL date) is OUTSIDE the window
+    // regardless of the hour spans. The dates are ISO `YYYY-MM-DD` literals
+    // (compile-validated, `axon-T826`); compare `now`'s local date the same way.
+    if !window.exclude.is_empty() {
+        let local_date = local.format("%Y-%m-%d").to_string();
+        if window.exclude.iter().any(|d| d == &local_date) {
+            return Some(false);
+        }
+    }
     let wd = local.weekday();
     let hour = local.hour() as i64;
     for span in &window.allow {
@@ -165,7 +176,7 @@ mod tests {
             name: "W".into(),
             timezone: tz.into(),
             allow,
-            exclude: None,
+            exclude: Vec::new(),
             on_outside: on_outside.into(),
         }
     }
@@ -224,6 +235,31 @@ mod tests {
         let weekend = window("UTC", vec![span("Fri", "Mon", 0, 23)]);
         assert_eq!(is_in_window(utc("2026-07-04T12:00:00Z"), &weekend), Some(true)); // Sat
         assert_eq!(is_in_window(utc("2026-07-01T12:00:00Z"), &weekend), Some(false)); // Wed
+    }
+
+    #[test]
+    fn excluded_holiday_is_outside_regardless_of_hours() {
+        // BusinessHours Bogota Mon..Fri 9..18, with 2026-06-29 (a Monday) excluded.
+        let mut bh = window("America/Bogota", vec![span("Mon", "Fri", 9, 18)]);
+        bh.exclude = vec!["2026-06-29".to_string()];
+        // 14:00 UTC = 09:00 Bogota Monday — inside the hour span, but the date is
+        // a holiday → OUTSIDE.
+        assert_eq!(is_in_window(utc("2026-06-29T14:00:00Z"), &bh), Some(false));
+        // The NEXT day (2026-06-30 Tuesday) at 09:00 Bogota is back inside.
+        assert_eq!(is_in_window(utc("2026-06-30T14:00:00Z"), &bh), Some(true));
+        // The exclusion is evaluated in the window's tz: 2026-06-30 03:00 UTC is
+        // still 2026-06-29 22:00 Bogota — the holiday — so OUTSIDE (also after 18).
+        assert_eq!(is_in_window(utc("2026-06-30T03:00:00Z"), &bh), Some(false));
+    }
+
+    #[test]
+    fn defer_skips_a_holiday_to_the_next_open_day() {
+        // With Monday excluded, the next opening from Monday 08:00 Bogota is
+        // TUESDAY 09:00 Bogota (= 2026-06-30 14:00 UTC), not Monday 09:00.
+        let mut bh = window("America/Bogota", vec![span("Mon", "Fri", 9, 18)]);
+        bh.exclude = vec!["2026-06-29".to_string()];
+        let open = next_window_open(utc("2026-06-29T13:00:00Z"), &bh).unwrap();
+        assert_eq!(open, utc("2026-06-30T14:00:00Z"));
     }
 
     #[test]
