@@ -4707,6 +4707,81 @@ flow Recall(q: Text) -> Text {
         assert_eq!(collected.step_results.first(), collected.step_results.last());
     }
 
+    /// §Fase 74.f.7 (Kivi brief #44) — DIRECT repro of the event-consumer binding:
+    /// `execute_server_flow` for a flow invoked BY NAME (no top-level `run`, the
+    /// daemon-listener path) MUST bind the flow's params from the request body and
+    /// make them resolvable as `${param}`. This is exactly what the event drain
+    /// does (`deliver_event` passes the event payload as the body). If this fails,
+    /// `${session_id_generic}` is empty in the consumer → `where … == ''` → 0 rows.
+    #[test]
+    fn execute_server_flow_binds_a_param_from_the_body_for_a_named_flow() {
+        let source = r#"
+flow Echo(p: Text) -> Text {
+    return "got ${p}"
+}
+"#;
+        let (_p, ir) =
+            crate::flow_plan::compile_source_to_ir(source, "echo.axon").expect("compile");
+        let body = serde_json::json!({ "p": "VALUE", "extra": "ignored" });
+        let metrics = execute_server_flow(
+            &ir,
+            "Echo",
+            "stub",
+            "echo.axon",
+            None,
+            Some(&body),
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            None,
+            None,
+            None,
+            None, // budget
+            None, // outbox
+        )
+        .expect("flow runs");
+        assert!(metrics.success, "the flow runs");
+        let ret = metrics.step_results.last().expect("a return value");
+        assert_eq!(
+            ret, "got VALUE",
+            "the body param `p` must bind + interpolate into the return (got: {ret:?})"
+        );
+    }
+
+    /// §Fase 74.f.7 (Kivi brief #44) — the EXACT consumer shape: TWO params, the
+    /// SECOND used downstream, fed the FULL event payload (the row `s`, with extra
+    /// fields). Mirrors `LearnFromHibernation(tenant_id, session_id_generic)` over
+    /// the `SessionHibernated` payload, to catch a param-order / extra-field /
+    /// multi-param binding bug the single-param Echo would miss.
+    #[test]
+    fn execute_server_flow_binds_the_second_param_from_a_full_event_payload() {
+        let source = r#"
+flow Learn(tenant_id: Text, session_id_generic: Text) -> Text {
+    return "sid=${session_id_generic} tid=${tenant_id}"
+}
+"#;
+        let (_p, ir) =
+            crate::flow_plan::compile_source_to_ir(source, "learn.axon").expect("compile");
+        // The full row `s` the producer emits — extra fields + the two the flow needs.
+        let payload = serde_json::json!({
+            "session_id_generic": "e2e-il-test-5",
+            "tenant_id": "0e2e51",
+            "conversation_id": "fb8659ea",
+            "status": "ACTIVE"
+        });
+        let metrics = execute_server_flow(
+            &ir, "Learn", "stub", "learn.axon", None, Some(&payload),
+            &std::collections::HashMap::new(), &std::collections::HashMap::new(),
+            None, None, None, None, None,
+        )
+        .expect("flow runs");
+        assert!(metrics.success);
+        let ret = metrics.step_results.last().expect("a return value");
+        assert_eq!(
+            ret, "sid=e2e-il-test-5 tid=0e2e51",
+            "BOTH params must bind from the full payload by name (got: {ret:?})"
+        );
+    }
+
     /// §Fase 74.f — the headline of the OSS producer wiring: when a durable
     /// `event_outbox` is injected into `execute_server_flow` (the enterprise
     /// daemon path), a flow's `emit` to a `persistent_axonstore` channel APPENDS
