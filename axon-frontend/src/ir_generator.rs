@@ -1125,6 +1125,7 @@ impl IRGenerator {
             deflect_message: n.deflect_message.clone(),
             taint: n.taint.clone(),
             compliance: n.compliance.clone(),
+            sign: n.sign.clone(),
         }
     }
 

@@ -1546,6 +1546,11 @@ pub struct IRShield {
     pub taint: String,
     /// §ESK Fase 6.1 — covered regulatory classes for this shield.
     pub compliance: Vec<String>,
+    /// §Fase 77.a — egress signing algorithm (`hmac_sha256`; empty = the
+    /// shield does not sign). Elided from JSON when empty so every pre-§77
+    /// program's IR stays byte-identical (zero IR-SHA drift).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub sign: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

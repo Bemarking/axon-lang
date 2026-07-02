@@ -6,10 +6,11 @@ top_level: true
 since: Fase 20
 grammar: |
   shield <Name> {
-      scan: [<category1>, <category2>, ...]    # required — closed-catalog threat list
+      scan: [<category1>, <category2>, ...]    # optional* — closed-catalog threat list
       strategy: <canary|classifier|dual_llm|ensemble|pattern|perplexity>  # optional
-      on_breach: <deflect|escalate|halt|quarantine|sanitize_and_retry>    # required
-      severity: <low|medium|high|critical>                                # required
+      on_breach: <deflect|escalate|halt|quarantine|sanitize_and_retry>    # optional
+      severity: <low|medium|high|critical>                                # optional
+      sign: <hmac_sha256>                       # optional — §77 egress signing (axon-T846)
       quarantine: <ident>                       # optional — quarantine sink
       max_retries: <integer>                    # optional — retry budget on sanitize
       confidence_threshold: <0.0..1.0>          # optional — classifier confidence floor
@@ -22,6 +23,10 @@ grammar: |
       taint: <ident>                            # optional — taint tag for downstream
       compliance: [<Tag1>, ...]                 # optional — compliance attestation
   }
+  # *every field is individually optional, but a shield that declares
+  # `on_breach:` with NO enforcement-bearing field (scan / sign / redact /
+  # allow_tools / deny_tools / confidence_threshold) is vacuous — the
+  # checker warns (axon-W011). An unknown field warns too (axon-W010).
 ---
 
 # `shield`
@@ -54,9 +59,20 @@ shield PHIShield {
 }
 ```
 
+An **egress shield** signs instead of scanning — `publish
+<Channel> within <Shield>` binds it to a channel so every
+external delivery carries a receiver-verifiable HMAC (§77):
+
+```axon
+shield WebhookEgress {
+    sign:      hmac_sha256
+    on_breach: halt
+}
+```
+
 ## Fields
 
-### `scan:` (required)
+### `scan:` (optional — required for scanning shields)
 
 A **bracketed list of identifiers** from the **closed scan
 catalogue**
@@ -90,7 +106,20 @@ A **single identifier** from the closed strategy catalogue
 | `dual_llm` | Two-model adversarial check. |
 | `ensemble` | Combine multiple strategies under a quorum. |
 
-### `on_breach:` (required)
+### `sign:` (optional — the egress-signing field, §Fase 77)
+
+A **single identifier** from the closed signing catalogue
+(`axon-frontend::type_checker::VALID_SIGN_ALGORITHMS`), today
+`hmac_sha256`. A shield with `sign:` is an **egress shield**:
+`publish <Channel> within <Shield>` marks the channel for
+signed external delivery — the runtime computes
+`HMAC-SHA256(secret, raw_body)` per registered subscription and
+sends it as `X-Axon-Signature: sha256=<hex>`. An algorithm
+outside the catalogue is a compile error (`axon-T846`). A
+sign-only shield needs no `scan:` — the signature IS its
+enforcement (a breach is a delivery it refuses to sign).
+
+### `on_breach:` (optional — required for a breach policy to exist)
 
 A **single identifier** from the closed on-breach catalogue
 (`axon-frontend::type_checker::VALID_ON_BREACH_POLICIES`):
@@ -103,7 +132,7 @@ A **single identifier** from the closed on-breach catalogue
 | `sanitize_and_retry` | Apply `redact:` + retry up to `max_retries:`. |
 | `escalate` | Hand off to the escalation queue. |
 
-### `severity:` (required)
+### `severity:` (optional)
 
 A **single identifier** from the closed catalogue
 (`axon-frontend::type_checker::VALID_SEVERITY_LEVELS`):
@@ -166,6 +195,8 @@ The two are orthogonal and compose freely.
 ## See also
 
 - `axon://primitives/anchor` — the predicate counterpart.
+- `axon://primitives/publish` — binds an egress (`sign:`)
+  shield to a channel for signed external delivery (§77).
 - `axon://primitives/axonendpoint` — `shield:` binding site.
 - `axon://primitives/socket` — `shield:` binding site
   (per-frame).

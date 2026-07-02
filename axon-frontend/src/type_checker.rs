@@ -143,6 +143,19 @@ const VALID_ON_EXHAUSTED: &[&str] = &["block", "defer", "shed"];
 
 const VALID_SEVERITY_LEVELS: &[&str] = &["critical", "high", "low", "medium"];
 
+/// §Fase 77.a — the closed egress-signing catalog for `shield { sign: }`
+/// (`axon-T846`). One algorithm in v1: HMAC-SHA256 over the raw delivery
+/// body (the receiver-verifiable witness of §77's `egress_is_a_kept_promise`).
+const VALID_SIGN_ALGORITHMS: &[&str] = &["hmac_sha256"];
+
+/// §Fase 77.a (`axon-W010`) — the complete `shield` field catalog, quoted in
+/// the unknown-field warning so the adopter sees what IS accepted. Kept in
+/// sync with `Parser::parse_shield`'s match arms by the
+/// `w010_catalog_matches_parser` test.
+const SHIELD_FIELD_CATALOG: &str = "scan, strategy, on_breach, severity, quarantine, \
+     max_retries, confidence_threshold, allow_tools, deny_tools, sandbox, redact, log, \
+     deflect_message, taint, compliance, sign";
+
 const VALID_OTS_HOMOTOPY: &[&str] = &["deep", "shallow", "speculative"];
 
 const VALID_MANDATE_POLICIES: &[&str] = &["coerce", "halt", "retry"];
@@ -2944,6 +2957,65 @@ impl<'a> TypeChecker<'a> {
                     &node.loc,
                 );
             }
+        }
+
+        // §Fase 77.a — `sign:` closed catalog (`axon-T846`). An egress
+        // shield signs with a receiver-verifiable algorithm; anything
+        // outside the catalog is an ERROR, not a warning — a misspelled
+        // algorithm would ship unsigned deliveries the receiver rejects.
+        if !node.sign.is_empty() && !is_valid(&node.sign, VALID_SIGN_ALGORITHMS) {
+            self.emit(
+                format!(
+                    "axon-T846 unknown sign algorithm '{}' in shield '{}'. Valid: {}",
+                    node.sign,
+                    node.name,
+                    valid_list(VALID_SIGN_ALGORITHMS)
+                ),
+                &node.loc,
+            );
+        }
+
+        // §Fase 77.a (`axon-W010`) — fields the parser did not recognize.
+        // Pre-77 these were silently discarded, so `axon check` blessed
+        // programs whose shield grammar the runtime ignores (Kivi brief
+        // #51 §B.3 caught `sign:` this way before it existed). Warning,
+        // not error: existing adopter programs must keep compiling;
+        // escalation to an error is a major-version decision (D77.5).
+        for (field, floc) in &node.unknown_fields {
+            self.warn(
+                format!(
+                    "axon-W010 unknown field '{field}' in shield '{}' — the runtime \
+                     IGNORES fields it does not know, so this line has NO effect. \
+                     Valid shield fields: {SHIELD_FIELD_CATALOG}.",
+                    node.name
+                ),
+                floc,
+            );
+        }
+
+        // §Fase 77.a (`axon-W011`) — vacuous shield: an `on_breach:` policy
+        // with NO enforcement-bearing field can never fire (nothing scans,
+        // signs, redacts, or gates — there is no breach to react to). The
+        // compile-time mirror of the PCC `shield_halt_guarantee` concern.
+        // A sign-only egress shield is NOT vacuous (D77.6): the signature
+        // is its enforcement.
+        let has_enforcement = !node.scan.is_empty()
+            || !node.sign.is_empty()
+            || !node.redact.is_empty()
+            || !node.allow_tools.is_empty()
+            || !node.deny_tools.is_empty()
+            || node.confidence_threshold.is_some();
+        if !node.on_breach.is_empty() && !has_enforcement {
+            self.warn(
+                format!(
+                    "axon-W011 shield '{}' declares `on_breach: {}` but has no \
+                     enforcement-bearing field (scan / sign / redact / allow_tools / \
+                     deny_tools / confidence_threshold) — the breach policy can never \
+                     fire. Declare what the shield enforces, or remove `on_breach:`.",
+                    node.name, node.on_breach
+                ),
+                &node.loc,
+            );
         }
     }
 

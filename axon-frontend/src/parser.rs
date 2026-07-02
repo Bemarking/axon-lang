@@ -4980,6 +4980,8 @@ impl Parser {
             deflect_message: String::new(),
             taint: String::new(),
             compliance: Vec::new(),
+            sign: String::new(),
+            unknown_fields: Vec::new(),
             loc: Loc {
                 line: tok.line,
                 column: tok.column,
@@ -4990,6 +4992,10 @@ impl Parser {
         self.consume(TokenType::LBrace)?;
         while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
             let field_name = self.current().value.clone();
+            let field_loc = Loc {
+                line: self.current().line,
+                column: self.current().column,
+            };
             self.advance();
             if self.check(TokenType::Colon) {
                 self.advance();
@@ -5018,7 +5024,16 @@ impl Parser {
                     "taint" => node.taint = self.consume_any_ident_or_kw()?.value.clone(),
                     // ESK Fase 6.1 — covered regulatory classes.
                     "compliance" => node.compliance = self.parse_bracketed_identifiers()?,
-                    _ => self.skip_value(),
+                    // §Fase 77.a — egress signing algorithm (closed catalog,
+                    // validated by the checker: `axon-T846`).
+                    "sign" => node.sign = self.consume_any_ident_or_kw()?.value.clone(),
+                    // §Fase 77.a — the value is still skipped (leniency
+                    // preserved) but the NAME is recorded so the checker
+                    // emits `axon-W010` instead of a silent drop.
+                    _ => {
+                        node.unknown_fields.push((field_name.clone(), field_loc));
+                        self.skip_value()
+                    }
                 }
             } else if self.check(TokenType::LBrace) {
                 self.skip_braced_block()?;

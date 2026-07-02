@@ -335,14 +335,20 @@ pub fn generate_resource_bounds_proofs(ir: &IRProgram, axon_version: &str) -> Ve
 
 /// §51.e — derive a [`ShieldHaltGuaranteeWitness`] for one shield's
 /// breach policy. Pure + total. Shared with the checker (D51.2).
+///
+/// §Fase 77.a (D77.6) — a shield whose enforcement is `sign:` (egress
+/// signing) is NOT vacuous: the signature is what it enforces, so
+/// `on_breach: halt` has a breach to react to (a delivery it refuses to
+/// sign). `vacuous_halt` therefore requires BOTH `scan` and `sign` empty.
 pub fn derive_shield_halt_witness(
     shield_name: &str,
     on_breach: &str,
     scan: &[String],
+    sign: &str,
 ) -> ShieldHaltGuaranteeWitness {
     let known_policy = VALID_BREACH_POLICIES.contains(&on_breach);
     let scan_count = scan.len();
-    let vacuous_halt = on_breach == "halt" && scan.is_empty();
+    let vacuous_halt = on_breach == "halt" && scan.is_empty() && sign.is_empty();
     ShieldHaltGuaranteeWitness {
         shield_name: shield_name.to_string(),
         on_breach: on_breach.to_string(),
@@ -362,7 +368,12 @@ pub fn generate_shield_halt_guarantee_proofs(ir: &IRProgram, axon_version: &str)
         if shield.on_breach.is_empty() {
             continue;
         }
-        let witness = derive_shield_halt_witness(&shield.name, &shield.on_breach, &shield.scan);
+        let witness = derive_shield_halt_witness(
+            &shield.name,
+            &shield.on_breach,
+            &shield.scan,
+            &shield.sign,
+        );
         proofs.push(ProofTerm {
             property: PropertyClass::ShieldHaltGuarantee,
             artifact_digest: digest.clone(),

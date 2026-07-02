@@ -482,9 +482,14 @@ fn check_shield_halt_guarantee(
         }
     };
 
-    // Re-derive independently — do NOT trust the witness.
-    let actual =
-        derive_shield_halt_witness(&shield.name, &shield.on_breach, &shield.scan);
+    // Re-derive independently — do NOT trust the witness. §77.a: `sign`
+    // participates (a sign-only egress shield is a non-vacuous halt, D77.6).
+    let actual = derive_shield_halt_witness(
+        &shield.name,
+        &shield.on_breach,
+        &shield.scan,
+        &shield.sign,
+    );
 
     if actual != *claimed {
         return CheckOutcome::Refuted {
@@ -504,7 +509,7 @@ fn check_shield_halt_guarantee(
     if actual.vacuous_halt {
         return CheckOutcome::Refuted {
             reason: format!(
-                "shield '{}' declares `on_breach: halt` but an empty `scan: []` — the halt can never fire (no scan ⟹ no breach ⟹ no halt): a vacuous guarantee",
+                "shield '{}' declares `on_breach: halt` but neither `scan:` nor `sign:` — the halt can never fire (nothing enforced ⟹ no breach ⟹ no halt): a vacuous guarantee",
                 actual.shield_name
             ),
         };

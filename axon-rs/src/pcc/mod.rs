@@ -109,6 +109,7 @@ mod tests {
             deflect_message: String::new(),
             taint: String::new(),
             compliance: provides.iter().map(|s| s.to_string()).collect(),
+            sign: String::new(),
         }
     }
 
@@ -1002,6 +1003,34 @@ mod tests {
         ir.shields.push(shield_breach("Soft", "deflect", &[]));
         let proofs = generate_shield_halt_guarantee_proofs(&ir, VERSION);
         assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// §Fase 77.a (D77.6) — a sign-only egress shield (`sign: hmac_sha256`,
+    /// no `scan:`) is a NON-vacuous halt: the signature is its enforcement
+    /// (a breach = a delivery it refuses to sign). The brief-#51 Q3.d case.
+    #[test]
+    fn sign_only_halt_shield_verifies() {
+        let mut ir = empty_ir();
+        let mut s = shield_breach("WebhookEgress", "halt", &[]);
+        s.sign = "hmac_sha256".to_string();
+        ir.shields.push(s);
+        let proofs = generate_shield_halt_guarantee_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    /// §Fase 77.a — with NEITHER `scan:` nor `sign:`, a halt stays vacuous
+    /// and the proof still refutes (the pre-§77 guarantee is unchanged).
+    #[test]
+    fn halt_with_neither_scan_nor_sign_still_refutes() {
+        let mut ir = empty_ir();
+        ir.shields.push(shield_breach("Hollow", "halt", &[]));
+        let proofs = generate_shield_halt_guarantee_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 1);
+        assert!(matches!(
+            check_proof(&proofs[0], &ir),
+            CheckOutcome::Refuted { .. }
+        ));
     }
 
     /// A shield with no declared `on_breach` produces no proof.

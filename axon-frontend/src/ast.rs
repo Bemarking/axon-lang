@@ -686,6 +686,18 @@ pub struct ShieldDefinition {
     pub taint: String,
     /// §ESK Fase 6.1 — regulatory coverage (HIPAA, PCI_DSS, GDPR, …).
     pub compliance: Vec<String>,
+    /// §Fase 77.a — egress signing algorithm (closed catalog: `hmac_sha256`,
+    /// `axon-T846`). Empty = the shield does not sign. A shield with `sign:`
+    /// is an EGRESS shield: `publish <Channel> within <Shield>` marks the
+    /// channel for signed external delivery (§77.b).
+    pub sign: String,
+    /// §Fase 77.a (`axon-W010`) — block fields the parser did not recognize,
+    /// with their source locations. Pre-77 the parser silently discarded
+    /// these (`_ => skip_value()`), so a typo or an unsupported field passed
+    /// `axon check` unremarked (Kivi brief #51 §B.3). The parser still skips
+    /// the VALUE (leniency preserved — existing programs keep compiling) but
+    /// records the NAME so the type checker can warn honestly.
+    pub unknown_fields: Vec<(String, Loc)>,
     pub loc: Loc,
     /// Fase 14.b — leading comment trivia attached to this declaration
     /// (comments preceding the declaration's first token, since the
