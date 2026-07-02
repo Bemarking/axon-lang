@@ -154,6 +154,51 @@ shield WebhookEgress { sign: hmac_sha256  on_breach: halt }
     assert_eq!(program.channels[0].egress_sign, "hmac_sha256");
 }
 
+/// §Fase 77.f — the COMPILE-GATED example that backs the
+/// `ADOPTER_WEBHOOKS.md` §1 snippet (the "published grammar MUST compile"
+/// discipline, Kivi brief #29). If this fails, the shipped guide's egress
+/// declaration no longer compiles — the doc and the grammar have drifted.
+#[test]
+fn adopter_webhooks_md_snippet_compiles_clean() {
+    let prog = parse(
+        r#"
+type SkillResult { task_id: String  tenant_id: String  status: String  result: String }
+
+shield WebhookEgress {
+  sign:      hmac_sha256
+  on_breach: halt
+}
+
+channel SkillCompleted {
+  message:     SkillResult
+  qos:         at_least_once
+  lifetime:    affine
+  persistence: persistent_axonstore
+  shield:      WebhookEgress
+}
+
+flow CompleteSkill(task_id: String, tenant_id: String, result: String) -> Unit {
+  step Build { ask: "Build the skill result payload."  output: SkillResult }
+  emit SkillCompleted(Build)
+  publish SkillCompleted within WebhookEgress
+}
+"#,
+    );
+    let (errs, warns) = TypeChecker::new(&prog).check_with_warnings();
+    assert!(
+        errs.is_empty(),
+        "the ADOPTER_WEBHOOKS.md egress snippet must compile clean: {errs:?}"
+    );
+    // The sign-only egress shield is legitimate — no vacuity (W011) or
+    // unknown-field (W010) warning.
+    assert!(
+        warns
+            .iter()
+            .all(|w| !w.message.contains("axon-W010") && !w.message.contains("axon-W011")),
+        "no egress-grammar warnings expected: {warns:?}"
+    );
+}
+
 #[test]
 fn non_signing_publish_leaves_ir_byte_identical() {
     // Zero IR-SHA drift: a scan-shield publish elides both new fields.
