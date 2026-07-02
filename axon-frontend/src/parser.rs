@@ -4441,6 +4441,8 @@ impl Parser {
         let mut alias = String::new();
         let mut order_by = String::new();
         let mut limit_expr = String::new();
+        let mut aggregate = String::new();
+        let mut group_by = String::new();
         if self.check(TokenType::LBrace) {
             self.advance();
             while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
@@ -4470,6 +4472,18 @@ impl Parser {
                                 _ => self.skip_value(),
                             }
                         }
+                        // §Fase 76.d — `aggregate:` is a string literal from
+                        // the CLOSED catalog (`"count"`, `"sum(tokens)"`, …);
+                        // `group_by:` is a string literal listing columns
+                        // (`"industry, status"`). Both captured raw; the
+                        // §38.d proof (axon-T843/T844/T845) + the runtime
+                        // (`filter::parse_aggregate_clause`) validate.
+                        "aggregate" => {
+                            aggregate = self.consume(TokenType::StringLit)?.value.clone()
+                        }
+                        "group_by" => {
+                            group_by = self.consume(TokenType::StringLit)?.value.clone()
+                        }
                         _ => self.skip_value(),
                     }
                 }
@@ -4484,6 +4498,8 @@ impl Parser {
             alias,
             order_by,
             limit_expr,
+            aggregate,
+            group_by,
             loc: Loc {
                 line: tok.line,
                 column: tok.column,

@@ -1011,6 +1011,7 @@ async fn fuzz_s4_parity_determinism_stress() {
             None, // §Fase 24.g.2 — llm_base_url
             None, // §Fase 24.g.2 — llm_chat_path
             None, // §Fase 72.c — budget (test: unbudgeted)
+            None, // §Fase 74.f — event_outbox (test: in-process emit)
         );
         if let Ok(sync_metrics) = sync {
             if sync_metrics.success != baseline.success {

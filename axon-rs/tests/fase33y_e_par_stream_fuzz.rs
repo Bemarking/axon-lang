@@ -123,6 +123,7 @@ fn make_let(target: &str) -> IRFlowNode {
         target: target.into(),
         value: "v".into(),
         value_kind: "literal".into(),
+        value_ast: None,
     })
 }
 
@@ -347,6 +348,7 @@ async fn fuzz_par_stream_nested_inside_orchestration() {
                 else_body: Vec::new(),
                 conditions: Vec::new(),
                 conjunctor: String::new(),
+                cond: None,
             })
         } else {
             IRFlowNode::ForIn(IRForIn {

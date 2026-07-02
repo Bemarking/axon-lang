@@ -155,6 +155,19 @@ pub enum PropertyClass {
     /// (§52.g, reworked in §74.g). A channel with no listener carries no
     /// delivery contract → no proof.
     ChannelDeliverySoundness,
+    /// §76.e — every `retrieve … { aggregate: / group_by: }` in the program
+    /// is SOUND: the aggregate resolves against the CLOSED function catalog
+    /// (`count` / `sum(col)` / `avg(col)` / `min(col)` / `max(col)`), every
+    /// referenced column satisfies the identifier discipline, the cross-rules
+    /// hold (no `group_by:` without an aggregate; no `aggregate:` with
+    /// `order_by:`/`limit:`; the aggregate column is not a group key) — so
+    /// the SQL the engines render aggregates EXACTLY the declared columns
+    /// through the closed catalog, nothing more. The verifier re-derives the
+    /// parse from the artifact alone via the SAME runtime clause parser
+    /// (`store::filter::parse_aggregate_clause`) — never trusting the
+    /// compiler that ran the §76.d type-check (`axon-T843`–`T845`). A
+    /// retrieve with no aggregate surface carries no contract → no proof.
+    AggregateSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -194,6 +207,7 @@ impl PropertyClass {
             PropertyClass::EffectBudgeted => "effect_budgeted",
             PropertyClass::JsonShapeSoundness => "json_shape_soundness",
             PropertyClass::ChannelDeliverySoundness => "channel_delivery_soundness",
+            PropertyClass::AggregateSoundness => "aggregate_soundness",
         }
     }
 }
@@ -482,6 +496,40 @@ pub struct ChannelDeliverySoundnessWitness {
     pub has_consumer: bool,
 }
 
+/// §76.e — witness for [`PropertyClass::AggregateSoundness`].
+///
+/// One aggregate-`retrieve` site. The checker RE-DERIVES every field from
+/// the artifact (re-walking the flows / daemon-listener bodies and
+/// re-parsing the clause through the SAME runtime parser) and rejects the
+/// proof if the witness disagrees (D51.2). A verifying proof has empty
+/// `violations`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AggregateSoundnessWitness {
+    /// The flow (or `daemon:<name>` listener body) containing the site.
+    pub flow_name: String,
+    /// The `axonstore` the retrieve targets.
+    pub store_name: String,
+    /// The raw `aggregate:` clause as declared.
+    pub aggregate: String,
+    /// The raw `group_by:` clause as declared.
+    pub group_by: String,
+    /// The raw `order_by:` clause (participates in the T845 combo rule).
+    pub order_by: String,
+    /// The raw `limit:` clause (participates in the T845 combo rule).
+    pub limit_expr: String,
+    /// The parsed closed-catalog function label (`count`/`sum`/`avg`/
+    /// `min`/`max`); empty when the clause failed to parse.
+    pub function: String,
+    /// The aggregate's column argument; empty for `count` or a
+    /// failed parse.
+    pub column: String,
+    /// The parsed, validated group columns (declaration order).
+    pub group_columns: Vec<String>,
+    /// The typed parse/cross-rule violations, empty for a verifying
+    /// proof (rendered from the runtime `FilterError`).
+    pub violations: Vec<String>,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -497,6 +545,7 @@ pub enum Witness {
     ToolCallSoundness(ToolCallSoundnessWitness),
     JsonShapeSoundness(JsonShapeSoundnessWitness),
     ChannelDeliverySoundness(ChannelDeliverySoundnessWitness),
+    AggregateSoundness(AggregateSoundnessWitness),
 }
 
 impl Witness {
@@ -521,6 +570,7 @@ impl Witness {
             Witness::ToolCallSoundness(w) => &w.tool_name,
             Witness::JsonShapeSoundness(w) => &w.store_name,
             Witness::ChannelDeliverySoundness(w) => &w.channel_name,
+            Witness::AggregateSoundness(w) => &w.store_name,
         }
     }
 }

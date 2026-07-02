@@ -208,7 +208,7 @@ async fn t4_pillar_i_confidence_floor_filters_real_rows() {
     }
 
     let outcome =
-        stream_retrieve(&backend, &mut sc(&backend), table, "", "", "", BackpressurePolicy::DegradeQuality, 1000, &CancellationFlag::new(), &nb())
+        stream_retrieve(&backend, &mut sc(&backend), table, "", "", "", "", "", BackpressurePolicy::DegradeQuality, 1000, &CancellationFlag::new(), &nb())
             .await
             .expect("stream_retrieve");
     assert_eq!(outcome.rows.len(), 5, "all five rows off the cursor");
@@ -245,7 +245,7 @@ async fn t5_pillar_iii_drop_oldest_bounds_a_real_cursor() {
     seed_n(&backend, table, 50).await;
 
     let outcome = stream_retrieve(
-        &backend, &mut sc(&backend), table, "", "", "", BackpressurePolicy::DropOldest, 10, &CancellationFlag::new(),
+        &backend, &mut sc(&backend), table, "", "", "", "", "", BackpressurePolicy::DropOldest, 10, &CancellationFlag::new(),
         &nb(),
     )
     .await
@@ -264,7 +264,7 @@ async fn t6_pillar_iii_pause_upstream_truncates_a_real_cursor() {
     seed_n(&backend, table, 50).await;
 
     let outcome = stream_retrieve(
-        &backend, &mut sc(&backend), table, "", "", "", BackpressurePolicy::PauseUpstream, 10, &CancellationFlag::new(),
+        &backend, &mut sc(&backend), table, "", "", "", "", "", BackpressurePolicy::PauseUpstream, 10, &CancellationFlag::new(),
         &nb(),
     )
     .await
@@ -282,7 +282,7 @@ async fn t7_pillar_iii_fail_errors_past_the_bound() {
     seed_n(&backend, table, 50).await;
 
     let result = stream_retrieve(
-        &backend, &mut sc(&backend), table, "", "", "", BackpressurePolicy::Fail, 10, &CancellationFlag::new(),
+        &backend, &mut sc(&backend), table, "", "", "", "", "", BackpressurePolicy::Fail, 10, &CancellationFlag::new(),
         &nb(),
     )
     .await;
@@ -300,7 +300,7 @@ async fn t8_pillar_iii_cancel_stops_the_real_drain() {
     let cancel = CancellationFlag::new();
     cancel.cancel(); // pre-cancelled
     let outcome = stream_retrieve(
-        &backend, &mut sc(&backend), table, "", "", "", BackpressurePolicy::DegradeQuality, 1000, &cancel,
+        &backend, &mut sc(&backend), table, "", "", "", "", "", BackpressurePolicy::DegradeQuality, 1000, &cancel,
         &nb(),
     )
     .await

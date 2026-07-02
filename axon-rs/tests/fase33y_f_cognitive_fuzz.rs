@@ -498,6 +498,7 @@ async fn fuzz_cognitive_nested_in_orchestration_never_panics() {
                 else_body: Vec::new(),
                 conditions: Vec::new(),
                 conjunctor: String::new(),
+                cond: None,
             })
         } else {
             IRFlowNode::ForIn(IRForIn {

@@ -14,11 +14,11 @@ use crate::ir_nodes::IRProgram;
 
 use super::effects;
 use super::proof_term::{
-    CapabilityContainmentWitness, CapabilityIsolationWitness, ChannelDeliverySoundnessWitness,
-    ComplianceCoverageWitness, EffectBudgetedWitness, EffectRowSoundnessWitness,
-    JsonShapeSoundnessWitness, ProofTerm, PropertyClass, ResourceBoundsWitness,
-    ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness, MAX_RETRIES,
-    VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS, VALID_ON_EXHAUSTED,
+    AggregateSoundnessWitness, CapabilityContainmentWitness, CapabilityIsolationWitness,
+    ChannelDeliverySoundnessWitness, ComplianceCoverageWitness, EffectBudgetedWitness,
+    EffectRowSoundnessWitness, JsonShapeSoundnessWitness, ProofTerm, PropertyClass,
+    ResourceBoundsWitness, ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness,
+    MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS, VALID_ON_EXHAUSTED,
 };
 
 /// Canonical SHA-256 hex digest of the IR artifact. Reuses the
@@ -1080,6 +1080,117 @@ pub fn generate_channel_delivery_soundness_proofs(
     proofs
 }
 
+// ── §Fase 76.e — AggregateSoundness ──────────────────────────────────
+
+/// §76.e — every aggregate-`retrieve` site in the program: walk all flow
+/// bodies + every daemon listener body, recursing into nested `if` /
+/// `for` bodies. A site is any retrieve with a non-empty `aggregate:` OR
+/// `group_by:` (the latter alone is a T845 violation the witness records).
+/// Shared by producer + checker (D51.2). Sorted + deduped so the
+/// derivation is canonical.
+pub fn derive_aggregate_soundness_witnesses(
+    ir: &IRProgram,
+) -> Vec<AggregateSoundnessWitness> {
+    fn witness_for(
+        flow_name: &str,
+        s: &crate::ir_nodes::IRRetrieveStep,
+    ) -> Option<AggregateSoundnessWitness> {
+        if s.aggregate.trim().is_empty() && s.group_by.trim().is_empty() {
+            return None;
+        }
+        let mut w = AggregateSoundnessWitness {
+            flow_name: flow_name.to_string(),
+            store_name: s.store_name.clone(),
+            aggregate: s.aggregate.clone(),
+            group_by: s.group_by.clone(),
+            order_by: s.order_by.clone(),
+            limit_expr: s.limit_expr.clone(),
+            function: String::new(),
+            column: String::new(),
+            group_columns: Vec::new(),
+            violations: Vec::new(),
+        };
+        // The SAME closed-catalog parser the engines run (D51.2 — the
+        // checker re-derives through it too, so the proof certifies the
+        // exact runtime semantics, not a reimplementation).
+        match crate::store::filter::parse_aggregate_clause(
+            &s.aggregate,
+            &s.group_by,
+            &s.order_by,
+            &s.limit_expr,
+        ) {
+            Ok(Some((spec, groups))) => {
+                w.function = spec.func.label().to_string();
+                w.column = spec.column.unwrap_or_default();
+                w.group_columns = groups;
+            }
+            // Unreachable for a selected site (empty-both is filtered
+            // above) — kept total.
+            Ok(None) => {}
+            Err(e) => w.violations.push(e.to_string()),
+        }
+        Some(w)
+    }
+    fn walk(
+        flow_name: &str,
+        steps: &[crate::ir_nodes::IRFlowNode],
+        out: &mut Vec<AggregateSoundnessWitness>,
+    ) {
+        use crate::ir_nodes::IRFlowNode as N;
+        for step in steps {
+            match step {
+                N::Retrieve(s) => {
+                    if let Some(w) = witness_for(flow_name, s) {
+                        out.push(w);
+                    }
+                }
+                N::Conditional(c) => {
+                    walk(flow_name, &c.then_body, out);
+                    walk(flow_name, &c.else_body, out);
+                }
+                N::ForIn(f) => walk(flow_name, &f.body, out),
+                N::Listen(l) => walk(flow_name, &l.body, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for flow in &ir.flows {
+        walk(&flow.name, &flow.steps, &mut out);
+    }
+    for daemon in &ir.daemons {
+        let subject = format!("daemon:{}", daemon.name);
+        for listener in &daemon.listeners {
+            walk(&subject, &listener.body, &mut out);
+        }
+    }
+    out.sort_by(|a, b| {
+        (&a.flow_name, &a.store_name, &a.aggregate, &a.group_by)
+            .cmp(&(&b.flow_name, &b.store_name, &b.aggregate, &b.group_by))
+    });
+    out.dedup();
+    out
+}
+
+/// §76.e — generate AggregateSoundness proofs: one per aggregate-retrieve
+/// site. A malformed site still generates its (refutable) proof — the
+/// §52 deploy gate then rejects the bundle, fail-closed.
+pub fn generate_aggregate_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    derive_aggregate_soundness_witnesses(ir)
+        .into_iter()
+        .map(|witness| ProofTerm {
+            property: PropertyClass::AggregateSoundness,
+            artifact_digest: digest.clone(),
+            witness: Witness::AggregateSoundness(witness),
+            axon_version: axon_version.to_string(),
+        })
+        .collect()
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
 /// generator (compliance / effects / capability-gate / resources /
@@ -1098,5 +1209,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_effect_budgeted_proofs(ir, axon_version));
     proofs.extend(generate_json_shape_soundness_proofs(ir, axon_version));
     proofs.extend(generate_channel_delivery_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_aggregate_soundness_proofs(ir, axon_version));
     proofs
 }

@@ -18990,6 +18990,7 @@ fn execute_server_flow_accepts_api_key_override() {
         None, // §Fase 24.g.2 — llm_base_url
         None, // §Fase 24.g.2 — llm_chat_path
             None, // §Fase 72.c — budget (test: unbudgeted)
+        None, // §Fase 74.f — event_outbox (test: in-process emit)
     );
     assert!(result.is_err()); // flow not found, but the function accepted the args
 
@@ -19007,6 +19008,7 @@ fn execute_server_flow_accepts_api_key_override() {
         None, // §Fase 24.g.2 — llm_base_url
         None, // §Fase 24.g.2 — llm_chat_path
             None, // §Fase 72.c — budget (test: unbudgeted)
+        None, // §Fase 74.f — event_outbox (test: in-process emit)
     );
     assert!(result2.is_err()); // flow not found, but key override was accepted
 }

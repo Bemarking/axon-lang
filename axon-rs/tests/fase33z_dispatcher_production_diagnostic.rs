@@ -848,6 +848,7 @@ fn d1_catalog_totality_pin_45_variants() {
             else_body: Vec::new(),
             conditions: Vec::new(),
             conjunctor: String::new(),
+            cond: None,
         }),
         IRFlowNode::ForIn(IRForIn {
             node_type: "for_in",
@@ -864,6 +865,7 @@ fn d1_catalog_totality_pin_45_variants() {
             target: String::new(),
             value: String::new(),
             value_kind: String::new(),
+            value_ast: None,
         }),
         IRFlowNode::Return(IRReturnStep {
             node_type: "return",
@@ -1078,6 +1080,8 @@ fn d1_catalog_totality_pin_45_variants() {
             alias: String::new(),
             order_by: String::new(),
             limit_expr: String::new(),
+            aggregate: String::new(),
+            group_by: String::new(),
         }),
         IRFlowNode::Mutate(IRMutateStep {
             node_type: "mutate",

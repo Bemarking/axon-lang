@@ -2109,6 +2109,16 @@ pub struct RetrieveStep {
     /// Raw string (`"100"` or `"${max}"`), validated at `axon check`
     /// (§38.d `axon-T808`).
     pub limit_expr: String,
+    /// §Fase 76.d — optional `aggregate:` clause: a member of the CLOSED
+    /// catalog `count` | `sum(<col>)` | `avg(<col>)` | `min(<col>)` |
+    /// `max(<col>)`. Empty = a plain `SELECT *` retrieve. Raw string,
+    /// parsed + validated by the runtime (`filter::parse_aggregate_clause`)
+    /// and at `axon check` (§76.d `axon-T843`/`T844`/`T845`).
+    pub aggregate: String,
+    /// §Fase 76.d — optional `group_by:` clause: a comma-separated list
+    /// of column identifiers (same discipline as `order_by:` columns).
+    /// Requires an `aggregate:`. Empty = no grouping.
+    pub group_by: String,
     pub loc: Loc,
 }
 #[derive(Debug)]

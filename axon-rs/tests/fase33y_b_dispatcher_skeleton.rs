@@ -165,6 +165,7 @@ fn conditional_node() -> IRFlowNode {
         else_body: Vec::new(),
         conditions: Vec::new(),
         conjunctor: String::new(),
+        cond: None,
     })
 }
 
@@ -187,6 +188,7 @@ fn let_node() -> IRFlowNode {
         target: String::new(),
         value: String::new(),
         value_kind: String::new(),
+        value_ast: None,
     })
 }
 
@@ -490,6 +492,8 @@ fn retrieve_node() -> IRFlowNode {
         alias: String::new(),
         order_by: String::new(),
         limit_expr: String::new(),
+        aggregate: String::new(),
+        group_by: String::new(),
     })
 }
 

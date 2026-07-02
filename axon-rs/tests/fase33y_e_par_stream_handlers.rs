@@ -74,6 +74,7 @@ fn let_branch(target: &str, value: &str) -> Vec<IRFlowNode> {
         target: target.into(),
         value: value.into(),
         value_kind: "literal".into(),
+        value_ast: None,
     })]
 }
 

@@ -128,6 +128,7 @@ async fn fuzz_let_handler_never_panics() {
             target: target.clone(),
             value,
             value_kind: kind.into(),
+            value_ast: None,
         };
         let (mut ctx, _rx) = fresh_ctx();
         let outcome = run_let(&binding, &mut ctx).await;
@@ -156,6 +157,7 @@ async fn fuzz_let_reference_to_missing_binding_returns_empty() {
             target: target.clone(),
             value: ref_name,
             value_kind: "reference".into(),
+            value_ast: None,
         };
         let (mut ctx, _rx) = fresh_ctx();
         let outcome = run_let(&binding, &mut ctx).await.unwrap();
@@ -200,6 +202,7 @@ async fn fuzz_conditional_never_panics_random_predicates() {
             else_body: Vec::new(),
             conditions: Vec::new(),
             conjunctor: String::new(),
+            cond: None,
         };
         let outcome = run_conditional(&cond, &mut ctx).await;
         assert_no_panic_outcome(&format!("cond iter={iter}"), &outcome);
@@ -335,6 +338,7 @@ async fn fuzz_nested_orchestration_3_deep_never_panics() {
                 target: format!("inner_{iter}"),
                 value: "v".into(),
                 value_kind: "literal".into(),
+                value_ast: None,
             }),
         };
 
@@ -356,6 +360,7 @@ async fn fuzz_nested_orchestration_3_deep_never_panics() {
             else_body: Vec::new(),
             conditions: Vec::new(),
             conjunctor: String::new(),
+            cond: None,
         });
 
         let outcome = dispatch_node(&outer, &mut ctx).await;
@@ -388,6 +393,7 @@ async fn fuzz_cancel_propagation_random_handler_and_timing() {
                 target: "k".into(),
                 value: "v".into(),
                 value_kind: "literal".into(),
+                value_ast: None,
             }),
             1 => IRFlowNode::Conditional(IRConditional {
                 node_type: "conditional",
@@ -400,6 +406,7 @@ async fn fuzz_cancel_propagation_random_handler_and_timing() {
                 else_body: Vec::new(),
                 conditions: Vec::new(),
                 conjunctor: String::new(),
+                cond: None,
             }),
             2 => IRFlowNode::ForIn(IRForIn {
                 node_type: "for_in",
@@ -476,6 +483,7 @@ async fn fuzz_all_predicate_operators_with_random_values() {
                 target: "took".into(),
                 value: "then".into(),
                 value_kind: "literal".into(),
+                value_ast: None,
             })],
             else_body: vec![IRFlowNode::Let(IRLetBinding {
                 node_type: "let",
@@ -484,9 +492,11 @@ async fn fuzz_all_predicate_operators_with_random_values() {
                 target: "took".into(),
                 value: "else".into(),
                 value_kind: "literal".into(),
+                value_ast: None,
             })],
             conditions: Vec::new(),
             conjunctor: String::new(),
+            cond: None,
         };
         let outcome = run_conditional(&cond, &mut ctx).await;
         assert_no_panic_outcome(&format!("pred iter={iter} op={op:?}"), &outcome);

@@ -108,6 +108,25 @@ pub enum ProofErrorCode {
     /// flow-parameter type is not integer-compatible. Mirror of the
     /// runtime `FilterError::BadLimit`.
     T808BadLimit,
+    /// `axon-T843` — §Fase 76.d — a malformed `aggregate:`/`group_by:`
+    /// clause: a function outside the CLOSED catalog (`count` /
+    /// `sum(col)` / `avg(col)` / `min(col)` / `max(col)`), a bad column
+    /// identifier, a `count` with a column, a column-less `sum`/`avg`/
+    /// `min`/`max`, or a malformed group term. Mirror of the runtime
+    /// `FilterError::BadAggregate`/`BadGroupBy` grammar rules.
+    T843BadAggregate,
+    /// `axon-T844` — §Fase 76.d — an aggregate/group column proven
+    /// against the declared schema: the column does not exist, or
+    /// `sum`/`avg` targets a non-numeric column. Only fires when an
+    /// inline schema is declared (the `run_38d_where_proof` scope rule).
+    T844AggregateColumn,
+    /// `axon-T845` — §Fase 76.d — a structurally invalid aggregate
+    /// combination: `group_by:` without an `aggregate:`, an `aggregate:`
+    /// combined with `order_by:`/`limit:` (v1 closed scope — ordering
+    /// grouped rows is named deferred scope), or an aggregate column
+    /// that is also a group key. Mirror of the runtime
+    /// `parse_aggregate_clause` cross-rules.
+    T845AggregateCombo,
 }
 
 impl ProofErrorCode {
@@ -123,6 +142,9 @@ impl ProofErrorCode {
             Self::T806BadTimeValue => "axon-T806",
             Self::T807BadOrderBy => "axon-T807",
             Self::T808BadLimit => "axon-T808",
+            Self::T843BadAggregate => "axon-T843",
+            Self::T844AggregateColumn => "axon-T844",
+            Self::T845AggregateCombo => "axon-T845",
         }
     }
 }
@@ -1353,6 +1375,262 @@ pub fn check_bounds(
     let mut out: Vec<ProofError> = Vec::new();
     check_order_by(order_by, columns, loc, &mut out);
     check_limit(limit_expr, flow_params, loc, &mut out);
+    out
+}
+
+/// §Fase 76.d — the compile-time aggregate proof: the `aggregate:` /
+/// `group_by:` clauses proven BEFORE the daemon tick / request ever runs.
+/// The exact mirror of the runtime `filter::parse_aggregate_clause`
+/// grammar + cross-rules (axon-T843 / axon-T845), plus the schema-backed
+/// column proof (axon-T844) the runtime cannot do (it has no declared
+/// schema) — the same shift-left split as `check_bounds` (T807/T808).
+///
+/// Grammar / structural checks run for ANY store form; column existence
+/// + numeric-family checks only when an inline schema is declared.
+pub fn check_aggregate(
+    aggregate: &str,
+    group_by: &str,
+    order_by: &str,
+    limit_expr: &str,
+    columns: Option<&ColumnSet>,
+    loc: (u32, u32),
+) -> Vec<ProofError> {
+    let mut out: Vec<ProofError> = Vec::new();
+    let agg_raw = aggregate.trim();
+    let has_group = !group_by.trim().is_empty();
+    if agg_raw.is_empty() {
+        // — group_by without aggregate (T845) —
+        if has_group {
+            out.push(ProofError::new(
+                ProofErrorCode::T845AggregateCombo,
+                loc.0,
+                loc.1,
+                "axon-T845 `group_by:` requires an `aggregate:` — grouping \
+                 without an aggregate has no result shape."
+                    .to_string(),
+            ));
+        }
+        return out;
+    }
+
+    // — the closed function catalog + column-argument shape (T843) —
+    // Mirrors the runtime `parse_aggregate` byte-for-byte in its rules.
+    let (func_name, agg_column): (&str, Option<&str>) = match agg_raw.find('(') {
+        None => (agg_raw, None),
+        Some(open) => {
+            if !agg_raw.ends_with(')') {
+                out.push(ProofError::new(
+                    ProofErrorCode::T843BadAggregate,
+                    loc.0,
+                    loc.1,
+                    format!("axon-T843 `aggregate: \"{agg_raw}\"` is missing the closing `)`."),
+                ));
+                return out;
+            }
+            let col = agg_raw[open + 1..agg_raw.len() - 1].trim();
+            if col.is_empty() {
+                out.push(ProofError::new(
+                    ProofErrorCode::T843BadAggregate,
+                    loc.0,
+                    loc.1,
+                    format!(
+                        "axon-T843 `{}(…)` needs a column argument.",
+                        agg_raw[..open].trim()
+                    ),
+                ));
+                return out;
+            }
+            (agg_raw[..open].trim(), Some(col))
+        }
+    };
+    let func = func_name.to_ascii_lowercase();
+    let is_known = matches!(func.as_str(), "count" | "sum" | "avg" | "min" | "max");
+    if !is_known {
+        out.push(ProofError::new(
+            ProofErrorCode::T843BadAggregate,
+            loc.0,
+            loc.1,
+            format!(
+                "axon-T843 `{func_name}` is not an aggregate function. The \
+                 closed catalog is `count`, `sum(<col>)`, `avg(<col>)`, \
+                 `min(<col>)`, `max(<col>)`."
+            ),
+        ));
+        return out;
+    }
+    match (func.as_str(), agg_column) {
+        ("count", Some(col)) => {
+            out.push(ProofError::new(
+                ProofErrorCode::T843BadAggregate,
+                loc.0,
+                loc.1,
+                format!(
+                    "axon-T843 `count` takes no column (found `{col}`) — it \
+                     counts rows; to bound WHICH rows, use `where:`."
+                ),
+            ));
+            return out;
+        }
+        ("count", None) => {}
+        (_, None) => {
+            out.push(ProofError::new(
+                ProofErrorCode::T843BadAggregate,
+                loc.0,
+                loc.1,
+                format!("axon-T843 `{func}` needs a column argument."),
+            ));
+            return out;
+        }
+        (_, Some(col)) => {
+            if !is_safe_sql_identifier(col) {
+                out.push(ProofError::new(
+                    ProofErrorCode::T843BadAggregate,
+                    loc.0,
+                    loc.1,
+                    format!(
+                        "axon-T843 aggregate column `{col}` is not a valid \
+                         identifier ([A-Za-z_][A-Za-z0-9_]*, ≤ 63 bytes)."
+                    ),
+                ));
+                return out;
+            }
+        }
+    }
+
+    // — the v1 bounds combination (T845) —
+    if !order_by.trim().is_empty() || !limit_expr.trim().is_empty() {
+        out.push(ProofError::new(
+            ProofErrorCode::T845AggregateCombo,
+            loc.0,
+            loc.1,
+            "axon-T845 `aggregate:` cannot combine with `order_by:` / \
+             `limit:` yet (ordering grouped results is deferred scope) — \
+             drop the bounds or the aggregate."
+                .to_string(),
+        ));
+    }
+
+    // — group_by terms: identifier grammar (T843), duplicates (T843),
+    //   aggregate-column-as-group-key (T845), existence (T844) —
+    let mut groups: Vec<&str> = Vec::new();
+    if has_group {
+        for term in group_by.split(',') {
+            let column = term.trim();
+            if column.is_empty() {
+                out.push(ProofError::new(
+                    ProofErrorCode::T843BadAggregate,
+                    loc.0,
+                    loc.1,
+                    "axon-T843 empty group term in `group_by:` (a stray comma?)."
+                        .to_string(),
+                ));
+                continue;
+            }
+            if !is_safe_sql_identifier(column) {
+                out.push(ProofError::new(
+                    ProofErrorCode::T843BadAggregate,
+                    loc.0,
+                    loc.1,
+                    format!(
+                        "axon-T843 `group_by:` column `{column}` is not a valid \
+                         identifier ([A-Za-z_][A-Za-z0-9_]*, ≤ 63 bytes)."
+                    ),
+                ));
+                continue;
+            }
+            if groups.contains(&column) {
+                out.push(ProofError::new(
+                    ProofErrorCode::T843BadAggregate,
+                    loc.0,
+                    loc.1,
+                    format!("axon-T843 `group_by:` column `{column}` appears twice."),
+                ));
+                continue;
+            }
+            groups.push(column);
+        }
+    }
+    if let Some(col) = agg_column {
+        if groups.contains(&col) {
+            out.push(ProofError::new(
+                ProofErrorCode::T845AggregateCombo,
+                loc.0,
+                loc.1,
+                format!(
+                    "axon-T845 column `{col}` is both the aggregate argument \
+                     and a group key — aggregate a different column or drop \
+                     it from `group_by:`."
+                ),
+            ));
+        }
+    }
+
+    // — schema-backed column proof (T844; inline schema only) —
+    if let Some(cols) = columns {
+        if let Some(col) = agg_column {
+            match cols.get(col) {
+                None => {
+                    let suggestion = suggest_columns_composite(col, cols);
+                    let suggest_suffix = if suggestion.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {suggestion}")
+                    };
+                    out.push(ProofError::new(
+                        ProofErrorCode::T844AggregateColumn,
+                        loc.0,
+                        loc.1,
+                        format!(
+                            "axon-T844 unknown column `{col}` in `aggregate:`. \
+                             The declared schema has columns: {{{}}}.{suggest_suffix}",
+                            format_column_list(cols),
+                        ),
+                    ));
+                }
+                Some(decl) if matches!(func.as_str(), "sum" | "avg") => {
+                    use crate::store_schema::StoreColumnType as C;
+                    let numeric = matches!(
+                        decl.col_type,
+                        C::Int | C::BigInt | C::Float | C::Double | C::Numeric
+                    );
+                    if !numeric {
+                        out.push(ProofError::new(
+                            ProofErrorCode::T844AggregateColumn,
+                            loc.0,
+                            loc.1,
+                            format!(
+                                "axon-T844 `{func}(\"{col}\")` needs a numeric \
+                                 column (Int/BigInt/Float/Double/Numeric); \
+                                 `{col}` is declared `{:?}`.",
+                                decl.col_type
+                            ),
+                        ));
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        for col in &groups {
+            if cols.get(col).is_none() {
+                let suggestion = suggest_columns_composite(col, cols);
+                let suggest_suffix = if suggestion.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {suggestion}")
+                };
+                out.push(ProofError::new(
+                    ProofErrorCode::T844AggregateColumn,
+                    loc.0,
+                    loc.1,
+                    format!(
+                        "axon-T844 unknown column `{col}` in `group_by:`. \
+                         The declared schema has columns: {{{}}}.{suggest_suffix}",
+                        format_column_list(cols),
+                    ),
+                ));
+            }
+        }
+    }
     out
 }
 
@@ -3455,5 +3733,87 @@ mod tests {
         assert_eq!(errs.len(), 2);
         assert!(errs.iter().any(|e| e.code == ProofErrorCode::T807BadOrderBy));
         assert!(errs.iter().any(|e| e.code == ProofErrorCode::T808BadLimit));
+    }
+
+    // ── §Fase 76.d — check_aggregate (axon-T843/T844/T845) ────────────
+
+    #[test]
+    fn aggregate_happy_paths_yield_no_errors() {
+        let cs = columns_for(&[
+            ("tokens", StoreColumnType::Int, false),
+            ("industry", StoreColumnType::Text, false),
+        ]);
+        // count, no schema needed.
+        assert!(check_aggregate("count", "", "", "", None, (1, 1)).is_empty());
+        // sum over a numeric column, grouped by an existing column.
+        assert!(
+            check_aggregate("sum(tokens)", "industry", "", "", Some(&cs), (1, 1)).is_empty()
+        );
+        // empty aggregate + empty group_by = no proof to run.
+        assert!(check_aggregate("", "", "id asc", "10", Some(&cs), (1, 1)).is_empty());
+    }
+
+    #[test]
+    fn t843_malformed_aggregate_shapes() {
+        for bad in ["median(x)", "sum", "sum()", "count(id)", "sum(1id)", "sum(x"] {
+            let errs = check_aggregate(bad, "", "", "", None, (1, 1));
+            assert!(
+                errs.iter().any(|e| e.code == ProofErrorCode::T843BadAggregate),
+                "`{bad}` must surface axon-T843; got {errs:?}"
+            );
+        }
+        // Bad group terms are T843 too (grammar level).
+        let errs = check_aggregate("count", "a,,b", "", "", None, (1, 1));
+        assert!(errs.iter().any(|e| e.code == ProofErrorCode::T843BadAggregate));
+    }
+
+    #[test]
+    fn t844_schema_backed_column_proofs() {
+        let cs = columns_for(&[
+            ("tokens", StoreColumnType::Int, false),
+            ("name", StoreColumnType::Text, false),
+        ]);
+        // Unknown aggregate column.
+        let errs = check_aggregate("sum(tokns)", "", "", "", Some(&cs), (1, 1));
+        assert!(
+            errs.iter().any(|e| e.code == ProofErrorCode::T844AggregateColumn
+                && e.message.contains("tokns")),
+            "unknown column must surface axon-T844; got {errs:?}"
+        );
+        // sum over a Text column.
+        let errs = check_aggregate("sum(name)", "", "", "", Some(&cs), (1, 1));
+        assert!(
+            errs.iter().any(|e| e.code == ProofErrorCode::T844AggregateColumn),
+            "sum over Text must surface axon-T844; got {errs:?}"
+        );
+        // min/max over Text is fine (orderable).
+        assert!(check_aggregate("max(name)", "", "", "", Some(&cs), (1, 1)).is_empty());
+        // Unknown group column.
+        let errs = check_aggregate("count", "industri", "", "", Some(&cs), (1, 1));
+        assert!(errs.iter().any(|e| e.code == ProofErrorCode::T844AggregateColumn));
+        // Schema-less: column proofs silently skipped (grammar still runs).
+        assert!(check_aggregate("sum(anything)", "", "", "", None, (1, 1)).is_empty());
+    }
+
+    #[test]
+    fn t845_structural_combinations() {
+        // group_by without aggregate.
+        let errs = check_aggregate("", "industry", "", "", None, (1, 1));
+        assert!(errs.iter().any(|e| e.code == ProofErrorCode::T845AggregateCombo));
+        // aggregate with order_by / limit.
+        let errs = check_aggregate("count", "", "id asc", "", None, (1, 1));
+        assert!(errs.iter().any(|e| e.code == ProofErrorCode::T845AggregateCombo));
+        let errs = check_aggregate("count", "", "", "10", None, (1, 1));
+        assert!(errs.iter().any(|e| e.code == ProofErrorCode::T845AggregateCombo));
+        // aggregate column as group key.
+        let errs = check_aggregate("sum(tokens)", "tokens", "", "", None, (1, 1));
+        assert!(errs.iter().any(|e| e.code == ProofErrorCode::T845AggregateCombo));
+    }
+
+    #[test]
+    fn t843_t845_slugs_are_pinned() {
+        assert_eq!(ProofErrorCode::T843BadAggregate.slug(), "axon-T843");
+        assert_eq!(ProofErrorCode::T844AggregateColumn.slug(), "axon-T844");
+        assert_eq!(ProofErrorCode::T845AggregateCombo.slug(), "axon-T845");
     }
 }

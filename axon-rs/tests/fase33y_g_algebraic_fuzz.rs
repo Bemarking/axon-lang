@@ -345,6 +345,7 @@ async fn fuzz_algebraic_nested_inside_orchestration() {
                 else_body: Vec::new(),
                 conditions: Vec::new(),
                 conjunctor: String::new(),
+                cond: None,
             })
         } else {
             IRFlowNode::ForIn(IRForIn {

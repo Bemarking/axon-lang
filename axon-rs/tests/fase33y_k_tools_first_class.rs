@@ -396,6 +396,7 @@ async fn step_with_apply_inside_conditional_branch() {
         else_body: Vec::new(),
         conditions: Vec::new(),
         conjunctor: String::new(),
+        cond: None,
     });
     dispatch_node(&cond, &mut ctx).await.unwrap();
     let audit = ctx.step_audit_records.lock().await;

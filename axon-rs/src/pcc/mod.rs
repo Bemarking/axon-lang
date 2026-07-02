@@ -378,6 +378,10 @@ mod tests {
             PropertyClass::ChannelDeliverySoundness.slug(),
             "channel_delivery_soundness"
         );
+        assert_eq!(
+            PropertyClass::AggregateSoundness.slug(),
+            "aggregate_soundness"
+        );
     }
 
     // ── §Fase 51.b — EffectRowSoundness ──────────────────────────────
@@ -1111,6 +1115,8 @@ mod tests {
             alias: String::new(),
             order_by: String::new(),
             limit_expr: String::new(),
+            aggregate: String::new(),
+            group_by: String::new(),
         })
     }
 
@@ -2110,6 +2116,92 @@ mod tests {
         }
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("disagrees"), "{reason}"),
+            other => panic!("expected Refuted (forgery), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 76.e — AggregateSoundness ──────────────────────────────────
+
+    const AGGREGATE_RETRIEVE: &str = "axonstore Tenants {\n\
+           backend: postgresql\n\
+           connection: \"env:DB\"\n\
+         }\n\
+         flow PlatformStats() -> Unit {\n\
+           retrieve Tenants {\n\
+             where: \"tokens > 0\"\n\
+             aggregate: \"sum(tokens)\"\n\
+             group_by: \"industry\"\n\
+             as: stats\n\
+           }\n\
+         }";
+
+    #[test]
+    fn aggregate_soundness_round_trips_and_verifies() {
+        let ir = ir_from_source(AGGREGATE_RETRIEVE);
+        let proofs = super::generate::generate_aggregate_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one proof per aggregate-retrieve site");
+        assert_eq!(proofs[0].property, PropertyClass::AggregateSoundness);
+        if let Witness::AggregateSoundness(ref w) = proofs[0].witness {
+            assert_eq!(w.function, "sum");
+            assert_eq!(w.column, "tokens");
+            assert_eq!(w.group_columns, vec!["industry".to_string()]);
+            assert!(w.violations.is_empty());
+        } else {
+            panic!("expected an AggregateSoundness witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn plain_retrieve_carries_no_aggregate_proof() {
+        let ir = ir_from_source(
+            "axonstore Tenants {\n\
+               backend: postgresql\n\
+               connection: \"env:DB\"\n\
+             }\n\
+             flow List() -> Unit {\n\
+               retrieve Tenants { where: \"tokens > 0\"  as: rows }\n\
+             }",
+        );
+        assert!(super::generate::generate_aggregate_soundness_proofs(&ir, "test").is_empty());
+    }
+
+    #[test]
+    fn aggregate_soundness_refutes_an_unsound_clause() {
+        // group_by without an aggregate — a T845-class violation the
+        // runtime parser records; the proof generates but REFUTES, so the
+        // §52 deploy gate rejects the bundle fail-closed.
+        let ir = ir_from_source(
+            "axonstore Tenants {\n\
+               backend: postgresql\n\
+               connection: \"env:DB\"\n\
+             }\n\
+             flow Bad() -> Unit {\n\
+               retrieve Tenants { group_by: \"industry\"  as: rows }\n\
+             }",
+        );
+        let proofs = super::generate::generate_aggregate_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("UNSOUND"), "{reason}")
+            }
+            other => panic!("expected Refuted (unsound clause), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn aggregate_soundness_refutes_a_forged_witness() {
+        let ir = ir_from_source(AGGREGATE_RETRIEVE);
+        let mut proofs = super::generate::generate_aggregate_soundness_proofs(&ir, "test");
+        // Forge: claim the aggregate was a different clause than declared.
+        if let Witness::AggregateSoundness(ref mut w) = proofs[0].witness {
+            w.aggregate = "count".to_string();
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("forged") || reason.contains("no aggregate-retrieve"), "{reason}")
+            }
             other => panic!("expected Refuted (forgery), got {other:?}"),
         }
     }

@@ -1367,6 +1367,16 @@ pub struct IRRetrieveStep {
     /// §Fase 67.b — `limit:` clause (raw `"100"` or `"${max}"`).
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub limit_expr: String,
+    /// §Fase 76.d — `aggregate:` clause (raw, closed catalog: `count` /
+    /// `sum(col)` / `avg(col)` / `min(col)` / `max(col)`).
+    /// `skip_serializing_if` empty so a non-aggregating retrieve never
+    /// perturbs the serialized IR bytes (the same §67.b no-drift
+    /// discipline — zero IR-SHA drift for existing programs).
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub aggregate: String,
+    /// §Fase 76.d — `group_by:` clause (raw `"col, col2"`).
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub group_by: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -719,6 +719,10 @@ pub async fn run_retrieve(
                     // dispatcher path — the daemon runs through here).
                     &node.order_by,
                     &node.limit_expr,
+                    // §Fase 76.d — the adopter `aggregate:` / `group_by:`
+                    // clauses (closed catalog; structural SQL).
+                    &node.aggregate,
+                    &node.group_by,
                     row_stream::DEFAULT_RETRIEVE_POLICY,
                     row_stream::DEFAULT_MAX_ROWS,
                     &ctx.cancel,
@@ -827,6 +831,9 @@ pub async fn read_all_store_rows(
                     // against `let_bindings` (§37.d) — injection-safe.
                     where_expr,
                     // §Fase 67.b — navigate corpus scan has no adopter ORDER BY/LIMIT.
+                    "",
+                    "",
+                    // §Fase 76.d — nor an aggregate.
                     "",
                     "",
                     row_stream::DEFAULT_RETRIEVE_POLICY,
@@ -1864,6 +1871,8 @@ mod tests {
             alias: "retrieved_id".into(),
             order_by: String::new(),
             limit_expr: String::new(),
+            aggregate: String::new(),
+            group_by: String::new(),
         };
         run_retrieve(&retrieve, &mut ctx).await.unwrap();
         assert_eq!(ctx.let_bindings.get("retrieved_id").unwrap(), "42");
@@ -2183,6 +2192,8 @@ mod tests {
             alias: "a".into(),
             order_by: String::new(),
             limit_expr: String::new(),
+            aggregate: String::new(),
+            group_by: String::new(),
         };
         assert!(matches!(run_retrieve(&retrieve, &mut ctx).await, Err(DispatchError::UpstreamCancelled)));
 
@@ -2305,6 +2316,8 @@ mod tests {
             alias: "found".into(),
             order_by: String::new(),
             limit_expr: String::new(),
+            aggregate: String::new(),
+            group_by: String::new(),
         };
         assert!(matches!(
             run_retrieve(&node, &mut ctx).await,
@@ -2407,6 +2420,8 @@ mod tests {
             alias: "v".to_string(),
             order_by: String::new(),
             limit_expr: String::new(),
+            aggregate: String::new(),
+            group_by: String::new(),
         }
     }
 

@@ -192,6 +192,15 @@ pub async fn stream_retrieve(
     // `u32`). Empty strings = no ordering / no limit (the pre-67.b form).
     order_by: &str,
     limit_expr: &str,
+    // §Fase 76.d — the closed aggregate surface. `aggregate` is `count` /
+    // `sum(col)` / `avg(col)` / `min(col)` / `max(col)` (or empty = plain
+    // `SELECT *`); `group_by` is a comma-separated validated column list
+    // (requires an aggregate). Both render STRUCTURALLY
+    // ([`filter::render_aggregate_select`] + [`filter::render_group_by_suffix`])
+    // — the same injection-free-by-construction discipline as `order_by`.
+    // v1 rejects `aggregate` combined with `order_by`/`limit` (typed error).
+    aggregate: &str,
+    group_by: &str,
     policy: BackpressurePolicy,
     max_rows: usize,
     cancel: &CancellationFlag,
@@ -199,24 +208,53 @@ pub async fn stream_retrieve(
     // bind parameters (the Request Binding Contract on the filter path).
     bindings: &std::collections::HashMap<String, String>,
 ) -> Result<RowStreamOutcome, StoreError> {
+    // §Fase 76.d — parse + cross-validate the aggregate surface ONCE.
+    // `None` = the plain retrieve (pre-76.d, byte-identical). A malformed
+    // clause is a typed `FilterError` surfaced as a `StoreError` here (and
+    // caught earlier at `axon check` by the §38.d proof — axon-T843/T844/T845).
+    let agg = crate::store::filter::parse_aggregate_clause(
+        aggregate, group_by, order_by, limit_expr,
+    )?;
     // §Fase 67.b — the structural `ORDER BY … LIMIT …` suffix (or empty),
     // computed once + appended to the SELECT on both the cache-HIT and
     // cache-MISS paths. A malformed clause is a typed `FilterError`
     // surfaced as a `StoreError` here (and caught earlier at `axon check`
-    // by the §38.d proof — axon-T807/T808).
+    // by the §38.d proof — axon-T807/T808). (Empty by construction when an
+    // aggregate is present — the clause parser rejects the combination.)
     let bounds = crate::store::filter::render_bounds(order_by, limit_expr, bindings)?;
     // §Fase 37.x.d (D3) — a cache HIT: the cursor drains on the conn,
     // no transaction (the cached resolution is correct and the SELECT
     // is schema-qualified, so it resolves on any session).
     if let Some(resolved) = backend.cached_schema(table) {
-        let (mut sql, params): (String, Vec<SqlValue>) = build_select_sql(
-            table,
-            Some(resolved.schema.as_str()),
-            where_expr,
-            bindings,
-            &resolved.column_types,
-        )?;
-        sql.push_str(&bounds); // §Fase 67.b — ORDER BY … LIMIT …
+        // §Fase 76.d — an aggregate retrieve swaps the SELECT list
+        // (group columns + labeled aggregate) and appends GROUP BY;
+        // everything else (cursor, pooler discipline, schema cache,
+        // drift retry) is the same machinery.
+        let (mut sql, params): (String, Vec<SqlValue>) = match &agg {
+            None => build_select_sql(
+                table,
+                Some(resolved.schema.as_str()),
+                where_expr,
+                bindings,
+                &resolved.column_types,
+            )?,
+            Some((spec, groups)) => {
+                crate::store::postgres_backend::build_aggregate_select_sql(
+                    table,
+                    Some(resolved.schema.as_str()),
+                    &crate::store::filter::render_aggregate_select(spec, groups),
+                    where_expr,
+                    bindings,
+                    &resolved.column_types,
+                )?
+            }
+        };
+        match &agg {
+            None => sql.push_str(&bounds), // §Fase 67.b — ORDER BY … LIMIT …
+            Some((_, groups)) => {
+                sql.push_str(&crate::store::filter::render_group_by_suffix(groups))
+            }
+        }
         // §Fase 38.x.a (D1) — see `postgres_backend::introspect_conn` for
         // the full rationale on `.persistent(false)`. The unnamed PARSE
         // protocol is structurally collision-free behind transaction-mode
@@ -302,15 +340,33 @@ pub async fn stream_retrieve(
             return Err(introspect_err);
         }
     };
-    let (mut sql, params): (String, Vec<SqlValue>) =
-        build_select_sql(
+    // §Fase 76.d — same SELECT-list / GROUP BY branch as the cache-HIT
+    // path above.
+    let (mut sql, params): (String, Vec<SqlValue>) = match &agg {
+        None => build_select_sql(
             table,
             Some(resolved.schema.as_str()),
             where_expr,
             bindings,
             &resolved.column_types,
-        )?;
-    sql.push_str(&bounds); // §Fase 67.b — ORDER BY … LIMIT …
+        )?,
+        Some((spec, groups)) => {
+            crate::store::postgres_backend::build_aggregate_select_sql(
+                table,
+                Some(resolved.schema.as_str()),
+                &crate::store::filter::render_aggregate_select(spec, groups),
+                where_expr,
+                bindings,
+                &resolved.column_types,
+            )?
+        }
+    };
+    match &agg {
+        None => sql.push_str(&bounds), // §Fase 67.b — ORDER BY … LIMIT …
+        Some((_, groups)) => {
+            sql.push_str(&crate::store::filter::render_group_by_suffix(groups))
+        }
+    }
     // §Fase 38.x.a (D1) — mandatory inside the `pool.begin()` tx.
     let mut query = sqlx::query(&sql).persistent(false);
     for value in &params {

@@ -236,6 +236,7 @@ fn random_conditional(lcg: &mut Lcg) -> IRFlowNode {
         else_body: Vec::new(),
         conditions: Vec::new(),
         conjunctor: String::new(),
+        cond: None,
     })
 }
 
@@ -258,6 +259,7 @@ fn random_let(lcg: &mut Lcg) -> IRFlowNode {
         target: lcg.ascii_with_random_len(8),
         value: lcg.ascii_with_random_len(20),
         value_kind: "literal".to_string(),
+        value_ast: None,
     })
 }
 
@@ -562,6 +564,8 @@ fn random_retrieve(lcg: &mut Lcg) -> IRFlowNode {
         alias: lcg.ascii_with_random_len(8),
         order_by: String::new(),
         limit_expr: String::new(),
+        aggregate: String::new(),
+        group_by: String::new(),
     })
 }
 
@@ -807,6 +811,7 @@ async fn fase33y_n_orchestration_deep_nest_composition() {
             else_body: Vec::new(),
             conditions: Vec::new(),
             conjunctor: String::new(),
+            cond: None,
         });
 
         let for_in = IRFlowNode::ForIn(IRForIn {

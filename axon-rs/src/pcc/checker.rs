@@ -25,12 +25,12 @@
 use crate::ir_nodes::IRProgram;
 
 use super::generate::{
-    artifact_digest, derive_capability_containment_witness,
-    derive_capability_isolation_witness, derive_compliance_coverage_witness,
-    derive_channel_delivery_soundness_witness, derive_effect_budgeted_witness,
-    derive_effect_row_soundness_witness, derive_endpoint_retry_witness,
-    derive_json_shape_soundness_witness, derive_shield_halt_witness, derive_socket_credit_witness,
-    derive_tool_call_soundness_witness,
+    artifact_digest, derive_aggregate_soundness_witnesses,
+    derive_capability_containment_witness, derive_capability_isolation_witness,
+    derive_compliance_coverage_witness, derive_channel_delivery_soundness_witness,
+    derive_effect_budgeted_witness, derive_effect_row_soundness_witness,
+    derive_endpoint_retry_witness, derive_json_shape_soundness_witness,
+    derive_shield_halt_witness, derive_socket_credit_witness, derive_tool_call_soundness_witness,
 };
 use super::proof_term::{ProofTerm, PropertyClass, ResourceBoundsWitness, Witness};
 
@@ -97,6 +97,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         }
         (PropertyClass::ChannelDeliverySoundness, Witness::ChannelDeliverySoundness(w)) => {
             check_channel_delivery_soundness(w, ir)
+        }
+        (PropertyClass::AggregateSoundness, Witness::AggregateSoundness(w)) => {
+            check_aggregate_soundness(w, ir)
         }
         _ => CheckOutcome::UnknownProperty,
     }
@@ -789,6 +792,40 @@ fn check_channel_delivery_soundness(
                  it, so the listener can never fire. Add an `emit {}(…)` in a flow, or remove \
                  the listener (the Kivi brief #39 defect, now machine-checked).",
                 actual.channel_name, actual.channel_name
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §76.e — check an [`AggregateSoundnessWitness`]. Re-derive ALL aggregate
+/// sites from the artifact (through the SAME runtime clause parser the
+/// engines execute) and require the claimed witness to be one of them —
+/// a witness about a site the artifact does not contain is a forgery.
+/// Then the verdict: any recorded violation refutes (the rendered SQL
+/// would not aggregate exactly the declared columns through the closed
+/// catalog).
+fn check_aggregate_soundness(
+    claimed: &super::proof_term::AggregateSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let derived = derive_aggregate_soundness_witnesses(ir);
+    if !derived.iter().any(|w| w == claimed) {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "no aggregate-retrieve site in this artifact matches the witness \
+                 (flow '{}', store '{}', aggregate '{}') — forged or stale proof",
+                claimed.flow_name, claimed.store_name, claimed.aggregate
+            ),
+        };
+    }
+    if !claimed.violations.is_empty() {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "aggregate-retrieve on store '{}' in flow '{}' is UNSOUND: {}",
+                claimed.store_name,
+                claimed.flow_name,
+                claimed.violations.join("; ")
             ),
         };
     }

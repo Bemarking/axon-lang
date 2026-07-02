@@ -139,6 +139,14 @@ struct CompiledStep {
     retrieve_order_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     retrieve_limit: Option<String>,
+    /// §Fase 76.d — for a `retrieve` step: the raw `aggregate:` /
+    /// `group_by:` clauses (closed catalog: `count` / `sum(col)` /
+    /// `avg(col)` / `min(col)` / `max(col)`; comma-separated group
+    /// columns). `None` = absent (the plain `SELECT *` retrieve).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retrieve_aggregate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retrieve_group_by: Option<String>,
     /// §Fase 58.e — for a `use Tool(k = v, …)` dispatch: the bound keyword
     /// args `(name, raw value)`. Non-empty ⇒ the runtime assembles a STRUCTURED
     /// JSON request body (`{"query":"…","max_results":5}`) instead of the flat
@@ -422,13 +430,17 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
         // §Fase 67.b — carry a `retrieve` step's `order_by:` / `limit:`
         // clauses so the executor renders the `ORDER BY … LIMIT …` suffix.
         // Empty source strings stay `None` (no clause written).
-        let (retrieve_order_by, retrieve_limit) = match node {
-            IRFlowNode::Retrieve(s) => (
-                Some(s.order_by.clone()).filter(|v| !v.is_empty()),
-                Some(s.limit_expr.clone()).filter(|v| !v.is_empty()),
-            ),
-            _ => (None, None),
-        };
+        // §Fase 76.d — same carriage for `aggregate:` / `group_by:`.
+        let (retrieve_order_by, retrieve_limit, retrieve_aggregate, retrieve_group_by) =
+            match node {
+                IRFlowNode::Retrieve(s) => (
+                    Some(s.order_by.clone()).filter(|v| !v.is_empty()),
+                    Some(s.limit_expr.clone()).filter(|v| !v.is_empty()),
+                    Some(s.aggregate.clone()).filter(|v| !v.is_empty()),
+                    Some(s.group_by.clone()).filter(|v| !v.is_empty()),
+                ),
+                _ => (None, None, None, None),
+            };
 
         // §Fase 65.A/B — carry the IR node for the structural verbs the executor
         // routes through the dispatcher (real handler, not the LLM fallthrough).
@@ -457,6 +469,8 @@ fn build_compiled_steps(run: &IRRun, ir: &IRProgram) -> Vec<CompiledStep> {
             store_fields,
             retrieve_order_by,
             retrieve_limit,
+            retrieve_aggregate,
+            retrieve_group_by,
             tool_named_args,
             tool_param_types,
             structural_node,
@@ -1025,6 +1039,11 @@ async fn execute_sql_store_step_async(
     // …` suffix by `stream_retrieve`. Ignored by persist/mutate/purge.
     order_by: &str,
     limit_expr: &str,
+    // §Fase 76.d — a `retrieve` step's `aggregate:` / `group_by:` clauses
+    // (empty when absent). Closed catalog; rendered structurally by
+    // `stream_retrieve`. Ignored by persist/mutate/purge.
+    aggregate: &str,
+    group_by: &str,
     ctx: &ExecContext,
 ) -> Result<String, StoreError> {
     // The connection + confidence_floor live on the `IRAxonStore` the
@@ -1153,6 +1172,9 @@ async fn execute_sql_store_step_async(
                     // §Fase 67.b — the ORDER BY / LIMIT clauses.
                     order_by,
                     limit_expr,
+                    // §Fase 76.d — the aggregate / GROUP BY clauses.
+                    aggregate,
+                    group_by,
                     row_stream::DEFAULT_RETRIEVE_POLICY,
                     row_stream::DEFAULT_MAX_ROWS,
                     &cancel,
@@ -1262,6 +1284,9 @@ fn execute_sql_store_step(
         store_fields,
         // §Fase 67.b — the sync wrapper (CLI tests / pre-async callers)
         // does not carry retrieve bounds; default to none.
+        "",
+        "",
+        // §Fase 76.d — nor an aggregate.
         "",
         "",
         ctx,
@@ -1924,6 +1949,9 @@ async fn execute_real_async(
                         // §Fase 67.b — the retrieve `order_by:` / `limit:`.
                         step.retrieve_order_by.as_deref().unwrap_or(""),
                         step.retrieve_limit.as_deref().unwrap_or(""),
+                        // §Fase 76.d — the retrieve `aggregate:` / `group_by:`.
+                        step.retrieve_aggregate.as_deref().unwrap_or(""),
+                        step.retrieve_group_by.as_deref().unwrap_or(""),
                         &ctx,
                     ).await {
                         Ok(summary) => (summary, true),

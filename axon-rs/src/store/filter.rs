@@ -390,6 +390,14 @@ pub enum FilterError {
     /// §Fase 67.b — a malformed `limit:`: not a non-negative integer that
     /// fits `u32` (after `${binding}` resolution).
     BadLimit { detail: String },
+    /// §Fase 76.d — a malformed `aggregate:`: not a member of the closed
+    /// catalog (`count` | `sum(col)` | `avg(col)` | `min(col)` | `max(col)`),
+    /// a bad column identifier, or an unsupported combination (v1 rejects
+    /// `aggregate:` together with `order_by:`/`limit:`).
+    BadAggregate { detail: String },
+    /// §Fase 76.d — a malformed `group_by:`: an invalid column identifier,
+    /// an empty term, or a `group_by:` without an `aggregate:`.
+    BadGroupBy { detail: String },
 }
 
 impl fmt::Display for FilterError {
@@ -491,6 +499,18 @@ impl fmt::Display for FilterError {
                 "malformed `limit:` — {detail}. The form is a non-negative \
                  integer literal (`limit: 100`) or a `${{binding}}` that \
                  resolves to one (`limit: \"${{max}}\"`)"
+            ),
+            FilterError::BadAggregate { detail } => write!(
+                f,
+                "malformed `aggregate:` — {detail}. The closed catalog is \
+                 `count`, `sum(<col>)`, `avg(<col>)`, `min(<col>)`, \
+                 `max(<col>)` (e.g. `aggregate: \"count\"`)"
+            ),
+            FilterError::BadGroupBy { detail } => write!(
+                f,
+                "malformed `group_by:` — {detail}. The form is a \
+                 comma-separated list of column identifiers, and it \
+                 requires an `aggregate:` (e.g. `group_by: \"industry\"`)"
             ),
         }
     }
@@ -1173,6 +1193,284 @@ pub fn render_bounds(
         suffix.push_str(&format!(" LIMIT {n}"));
     }
     Ok(suffix)
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  §Fase 76.d — the closed aggregate catalog (`aggregate:` + `group_by:`)
+// ════════════════════════════════════════════════════════════════════
+
+/// §Fase 76.d — the CLOSED aggregate-function catalog. The enum IS the
+/// whitelist: no path exists by which an un-listed function name reaches
+/// rendered SQL (the same D4 discipline as [`Operator`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateFn {
+    /// `count` — row count. The only member that takes NO column.
+    Count,
+    /// `sum(<col>)` — rendered with a `::float8` cast so the wire value
+    /// is always a JSON number (Postgres `sum(int)` yields `numeric`,
+    /// which the row decoder does not carry).
+    Sum,
+    /// `avg(<col>)` — `::float8` cast, same rationale as `Sum`.
+    Avg,
+    /// `min(<col>)` — keeps the column's native type.
+    Min,
+    /// `max(<col>)` — keeps the column's native type.
+    Max,
+}
+
+impl AggregateFn {
+    /// The surface spelling — doubles as the result-column label
+    /// (`count(*) AS "count"`), so the aggregate value's JSON key is
+    /// deterministic and closed.
+    pub fn label(self) -> &'static str {
+        match self {
+            AggregateFn::Count => "count",
+            AggregateFn::Sum => "sum",
+            AggregateFn::Avg => "avg",
+            AggregateFn::Min => "min",
+            AggregateFn::Max => "max",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<AggregateFn> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "count" => AggregateFn::Count,
+            "sum" => AggregateFn::Sum,
+            "avg" => AggregateFn::Avg,
+            "min" => AggregateFn::Min,
+            "max" => AggregateFn::Max,
+            _ => return None,
+        })
+    }
+
+    /// `true` for the aggregates that only make sense over a numeric
+    /// column (`sum`/`avg`). Consumed by the §38.d compile-time proof
+    /// (axon-T844) when a typed store schema is declared.
+    pub fn requires_numeric(self) -> bool {
+        matches!(self, AggregateFn::Sum | AggregateFn::Avg)
+    }
+}
+
+/// §Fase 76.d — one parsed `aggregate:` clause: the closed function +
+/// its column (`None` only for `count`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregateSpec {
+    pub func: AggregateFn,
+    pub column: Option<String>,
+}
+
+/// Parse a closed `aggregate:` expression — `count` (bare) or
+/// `sum(<col>)`/`avg(<col>)`/`min(<col>)`/`max(<col>)` — into a typed
+/// [`AggregateSpec`]. Total: every input yields `Ok(Some(spec))`,
+/// `Ok(None)` (empty/whitespace = no aggregation, the pre-76.d form) or
+/// a typed [`FilterError::BadAggregate`].
+///
+/// D4 — the function name resolves against the CLOSED [`AggregateFn`]
+/// catalog and the column must satisfy [`is_safe_identifier`]; both are
+/// re-emitted structurally by [`render_aggregate_select`]. No adopter
+/// string reaches SQL text.
+pub fn parse_aggregate(expr: &str) -> Result<Option<AggregateSpec>, FilterError> {
+    let raw = expr.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let (name, column) = match raw.find('(') {
+        None => (raw, None),
+        Some(open) => {
+            if !raw.ends_with(')') {
+                return Err(FilterError::BadAggregate {
+                    detail: format!("`{raw}` is missing the closing `)`"),
+                });
+            }
+            let name = raw[..open].trim();
+            let col = raw[open + 1..raw.len() - 1].trim();
+            if col.is_empty() {
+                return Err(FilterError::BadAggregate {
+                    detail: format!("`{name}(…)` needs a column argument"),
+                });
+            }
+            (name, Some(col.to_string()))
+        }
+    };
+    let func = AggregateFn::from_name(name).ok_or_else(|| FilterError::BadAggregate {
+        detail: format!("`{name}` is not an aggregate function"),
+    })?;
+    match (func, &column) {
+        (AggregateFn::Count, Some(col)) => {
+            return Err(FilterError::BadAggregate {
+                detail: format!(
+                    "`count` takes no column (found `{col}`) — it counts rows; \
+                     to bound WHICH rows, use `where:`"
+                ),
+            });
+        }
+        (AggregateFn::Count, None) => {}
+        (_, None) => {
+            return Err(FilterError::BadAggregate {
+                detail: format!("`{}` needs a column argument", func.label()),
+            });
+        }
+        (_, Some(col)) => {
+            if !is_safe_identifier(col) {
+                return Err(FilterError::BadAggregate {
+                    detail: format!(
+                        "`{col}` is not a valid column identifier \
+                         ([A-Za-z_][A-Za-z0-9_]*, ≤ {MAX_COLUMN_LEN} bytes)"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(Some(AggregateSpec { func, column }))
+}
+
+/// Parse a closed `group_by:` expression — a comma-separated list of
+/// column identifiers — into validated column names. Total: every input
+/// yields the list (empty input = empty list) or a typed
+/// [`FilterError::BadGroupBy`]. The identifier discipline is exactly
+/// [`parse_order_by`]'s.
+pub fn parse_group_by(expr: &str) -> Result<Vec<String>, FilterError> {
+    let mut cols = Vec::new();
+    if expr.trim().is_empty() {
+        return Ok(cols);
+    }
+    for term in expr.split(',') {
+        let column = term.trim();
+        if column.is_empty() {
+            return Err(FilterError::BadGroupBy {
+                detail: "an empty group term (a stray comma?)".to_string(),
+            });
+        }
+        if !is_safe_identifier(column) {
+            return Err(FilterError::BadGroupBy {
+                detail: format!(
+                    "`{column}` is not a valid column identifier \
+                     ([A-Za-z_][A-Za-z0-9_]*, ≤ {MAX_COLUMN_LEN} bytes)"
+                ),
+            });
+        }
+        if cols.iter().any(|c| c == column) {
+            return Err(FilterError::BadGroupBy {
+                detail: format!("column `{column}` appears twice"),
+            });
+        }
+        cols.push(column.to_string());
+    }
+    Ok(cols)
+}
+
+/// §Fase 76.d — the single validation entry the engines call: parse +
+/// cross-validate the whole aggregate surface of one `retrieve`.
+///
+/// Rules (all total, all typed errors):
+/// - empty `aggregate:` + empty `group_by:` → `Ok(None)` (a plain
+///   `SELECT *` retrieve — the pre-76.d form, byte-identical behavior).
+/// - `group_by:` without `aggregate:` → [`FilterError::BadGroupBy`]
+///   (grouping without an aggregate has no result shape).
+/// - `aggregate:` combined with `order_by:`/`limit:` →
+///   [`FilterError::BadAggregate`] (v1 closed scope: ordering grouped
+///   rows / top-N groups is named deferred scope, rejected loudly
+///   rather than silently ignored).
+/// - a `group_by:` column equal to the aggregate's column →
+///   [`FilterError::BadGroupBy`] (aggregating a grouping key is a
+///   tautology; naming it loudly beats a confusing result).
+pub fn parse_aggregate_clause(
+    aggregate: &str,
+    group_by: &str,
+    order_by: &str,
+    limit_expr: &str,
+) -> Result<Option<(AggregateSpec, Vec<String>)>, FilterError> {
+    let spec = parse_aggregate(aggregate)?;
+    let groups = parse_group_by(group_by)?;
+    match spec {
+        None => {
+            if !groups.is_empty() {
+                return Err(FilterError::BadGroupBy {
+                    detail: "`group_by:` requires an `aggregate:` \
+                             (grouping without an aggregate has no result \
+                             shape)"
+                        .to_string(),
+                });
+            }
+            Ok(None)
+        }
+        Some(spec) => {
+            if !order_by.trim().is_empty() || !limit_expr.trim().is_empty() {
+                return Err(FilterError::BadAggregate {
+                    detail: "`aggregate:` cannot combine with `order_by:` / \
+                             `limit:` yet (ordering grouped results is \
+                             deferred scope) — drop the bounds or the \
+                             aggregate"
+                        .to_string(),
+                });
+            }
+            if let Some(col) = &spec.column {
+                if groups.iter().any(|g| g == col) {
+                    return Err(FilterError::BadGroupBy {
+                        detail: format!(
+                            "column `{col}` is both the aggregate argument \
+                             and a group key — aggregate a different column \
+                             or drop it from `group_by:`"
+                        ),
+                    });
+                }
+            }
+            Ok(Some((spec, groups)))
+        }
+    }
+}
+
+/// §Fase 76.d — render the structural SELECT list for an aggregate
+/// retrieve: the group columns (quoted, declaration order) followed by
+/// the aggregate expression labeled with its closed function name.
+///
+/// ```text
+///   count, []                    →  count(*) AS "count"
+///   sum(tokens), [industry]      →  "industry", sum("tokens")::float8 AS "sum"
+/// ```
+///
+/// Injection-free by construction: every identifier passed
+/// [`is_safe_identifier`] in the parse step; the function spelling and
+/// the cast come from the closed enum.
+pub fn render_aggregate_select(spec: &AggregateSpec, group_by: &[String]) -> String {
+    let mut list = String::new();
+    for col in group_by {
+        list.push_str(&format!("\"{col}\", "));
+    }
+    match (spec.func, &spec.column) {
+        (AggregateFn::Count, _) => {
+            list.push_str("count(*) AS \"count\"");
+        }
+        (f @ (AggregateFn::Sum | AggregateFn::Avg), Some(col)) => {
+            list.push_str(&format!("{0}(\"{col}\")::float8 AS \"{0}\"", f.label()));
+        }
+        (f, Some(col)) => {
+            list.push_str(&format!("{0}(\"{col}\") AS \"{0}\"", f.label()));
+        }
+        // Unreachable by construction (parse_aggregate rejects a
+        // column-less sum/avg/min/max) — kept total anyway.
+        (f, None) => {
+            list.push_str(&format!("{0}(*) AS \"{0}\"", f.label()));
+        }
+    }
+    list
+}
+
+/// §Fase 76.d — render the structural ` GROUP BY "a", "b"` suffix (with
+/// a single leading space), or the empty string when there are no group
+/// columns. Identifiers were validated at parse; re-emitted structurally.
+pub fn render_group_by_suffix(group_by: &[String]) -> String {
+    if group_by.is_empty() {
+        return String::new();
+    }
+    let mut suffix = String::from(" GROUP BY ");
+    for (i, col) in group_by.iter().enumerate() {
+        if i > 0 {
+            suffix.push_str(", ");
+        }
+        suffix.push_str(&format!("\"{col}\""));
+    }
+    suffix
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1979,5 +2277,129 @@ mod tests {
         assert!(render_bounds("id; DROP TABLE x", "", &nb()).is_err());
         // A limit carrying SQL is rejected at the u32 parse.
         assert!(render_bounds("", "1; DROP TABLE x", &nb()).is_err());
+    }
+
+    // ── §Fase 76.d — the closed aggregate catalog ────────────────────
+
+    #[test]
+    fn aggregate_count_parses_bare_and_rejects_column() {
+        let spec = parse_aggregate("count").unwrap().unwrap();
+        assert_eq!(spec.func, AggregateFn::Count);
+        assert_eq!(spec.column, None);
+        // Case-insensitive + whitespace-tolerant.
+        assert!(parse_aggregate("  COUNT  ").unwrap().is_some());
+        // count(col) is a typed error, not a silent accept.
+        assert!(matches!(
+            parse_aggregate("count(id)"),
+            Err(FilterError::BadAggregate { .. })
+        ));
+    }
+
+    #[test]
+    fn aggregate_column_functions_parse_and_validate_identifier() {
+        for (expr, func) in [
+            ("sum(tokens)", AggregateFn::Sum),
+            ("avg(latency_ms)", AggregateFn::Avg),
+            ("min(created_at)", AggregateFn::Min),
+            ("max(created_at)", AggregateFn::Max),
+        ] {
+            let spec = parse_aggregate(expr).unwrap().unwrap();
+            assert_eq!(spec.func, func);
+            assert!(spec.column.is_some());
+        }
+        // A column-less sum, an unknown fn, a bad identifier, a missing
+        // paren — all typed errors.
+        for bad in ["sum", "sum()", "median(x)", "sum(1id)", "sum(x"] {
+            assert!(
+                matches!(parse_aggregate(bad), Err(FilterError::BadAggregate { .. })),
+                "`{bad}` must be a BadAggregate"
+            );
+        }
+        // Empty = no aggregation (the pre-76.d form).
+        assert_eq!(parse_aggregate("").unwrap(), None);
+        assert_eq!(parse_aggregate("   ").unwrap(), None);
+    }
+
+    #[test]
+    fn group_by_parses_and_rejects_bad_terms() {
+        assert_eq!(
+            parse_group_by("industry, status").unwrap(),
+            vec!["industry".to_string(), "status".to_string()]
+        );
+        assert!(parse_group_by("").unwrap().is_empty());
+        for bad in ["a,,b", "1bad", "col; DROP TABLE x", "a, a"] {
+            assert!(
+                matches!(parse_group_by(bad), Err(FilterError::BadGroupBy { .. })),
+                "`{bad}` must be a BadGroupBy"
+            );
+        }
+    }
+
+    #[test]
+    fn aggregate_clause_cross_rules() {
+        // group_by without aggregate.
+        assert!(matches!(
+            parse_aggregate_clause("", "industry", "", ""),
+            Err(FilterError::BadGroupBy { .. })
+        ));
+        // aggregate with order_by / limit (v1 closed scope).
+        assert!(matches!(
+            parse_aggregate_clause("count", "", "id asc", ""),
+            Err(FilterError::BadAggregate { .. })
+        ));
+        assert!(matches!(
+            parse_aggregate_clause("count", "", "", "10"),
+            Err(FilterError::BadAggregate { .. })
+        ));
+        // aggregate column as group key.
+        assert!(matches!(
+            parse_aggregate_clause("sum(tokens)", "tokens", "", ""),
+            Err(FilterError::BadGroupBy { .. })
+        ));
+        // The happy paths.
+        assert!(parse_aggregate_clause("", "", "id asc", "10").unwrap().is_none());
+        let (spec, groups) = parse_aggregate_clause("count", "industry", "", "")
+            .unwrap()
+            .unwrap();
+        assert_eq!(spec.func, AggregateFn::Count);
+        assert_eq!(groups, vec!["industry".to_string()]);
+    }
+
+    #[test]
+    fn aggregate_select_renders_structurally() {
+        let count = AggregateSpec { func: AggregateFn::Count, column: None };
+        assert_eq!(render_aggregate_select(&count, &[]), "count(*) AS \"count\"");
+        let sum = AggregateSpec {
+            func: AggregateFn::Sum,
+            column: Some("tokens".to_string()),
+        };
+        assert_eq!(
+            render_aggregate_select(&sum, &["industry".to_string()]),
+            "\"industry\", sum(\"tokens\")::float8 AS \"sum\"",
+            "sum/avg carry the ::float8 cast (numeric → JSON number)"
+        );
+        let max = AggregateSpec {
+            func: AggregateFn::Max,
+            column: Some("created_at".to_string()),
+        };
+        assert_eq!(
+            render_aggregate_select(&max, &[]),
+            "max(\"created_at\") AS \"max\"",
+            "min/max keep the column's native type (no cast)"
+        );
+        assert_eq!(render_group_by_suffix(&[]), "");
+        assert_eq!(
+            render_group_by_suffix(&["a".to_string(), "b".to_string()]),
+            " GROUP BY \"a\", \"b\""
+        );
+    }
+
+    #[test]
+    fn aggregate_surface_is_injection_free() {
+        // Every adopter-varying part is rejected before rendering: the
+        // renderers only ever see enum members + validated identifiers.
+        assert!(parse_aggregate("sum(x); DROP TABLE t").is_err());
+        assert!(parse_aggregate("sum(\"x\")").is_err()); // quotes are not identifier chars
+        assert!(parse_group_by("x\"; DROP TABLE t; --").is_err());
     }
 }

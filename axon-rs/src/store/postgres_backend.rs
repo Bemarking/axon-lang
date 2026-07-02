@@ -469,6 +469,30 @@ pub fn build_select_sql(
     Ok((format!("SELECT * FROM {relation} WHERE {clause}"), params))
 }
 
+/// §Fase 76.d — [`build_select_sql`] with a caller-supplied STRUCTURAL
+/// select list (the aggregate SELECT: quoted group columns + the
+/// labeled aggregate expression). The list MUST come from
+/// [`crate::store::filter::render_aggregate_select`] — a closed-catalog
+/// renderer over identifiers that passed `is_safe_identifier` at parse —
+/// never adopter text, so the D4 injection invariant holds on this
+/// surface exactly as on the `WHERE` clause.
+pub fn build_aggregate_select_sql(
+    table: &str,
+    schema: Option<&str>,
+    select_list: &str,
+    where_expr: &str,
+    bindings: &std::collections::HashMap<String, String>,
+    column_types: &std::collections::HashMap<String, String>,
+) -> Result<(String, Vec<SqlValue>), StoreError> {
+    check_identifier(table, "table")?;
+    let (clause, params) = build_pg_where(where_expr, 0, bindings, column_types)?;
+    let relation = qualified_relation(schema, table);
+    Ok((
+        format!("SELECT {select_list} FROM {relation} WHERE {clause}"),
+        params,
+    ))
+}
+
 /// Build a parameterized `DELETE FROM "schema"."table" WHERE …`
 /// statement.
 ///

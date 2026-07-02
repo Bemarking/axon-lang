@@ -168,6 +168,8 @@ async fn fuzz_retrieve_never_panics() {
             alias: lcg.ascii_with_random_len(10),
             order_by: String::new(),
             limit_expr: String::new(),
+            aggregate: String::new(),
+            group_by: String::new(),
         });
         let outcome = dispatch_node(&node, &mut ctx).await;
         assert_no_panic(&format!("retrieve iter={iter}"), &outcome);
@@ -302,6 +304,8 @@ async fn fuzz_cancel_propagation_across_wire_handlers() {
                 alias: "a".into(),
                 order_by: String::new(),
                 limit_expr: String::new(),
+                aggregate: String::new(),
+                group_by: String::new(),
             }),
             5 => IRFlowNode::Mutate(IRMutateStep {
                 node_type: "mutate",
@@ -394,6 +398,8 @@ async fn fuzz_wire_handlers_nested_inside_orchestration() {
                 alias: format!("a_{iter}"),
                 order_by: String::new(),
                 limit_expr: String::new(),
+                aggregate: String::new(),
+                group_by: String::new(),
             }),
             5 => IRFlowNode::Mutate(IRMutateStep {
                 node_type: "mutate",
@@ -439,6 +445,7 @@ async fn fuzz_wire_handlers_nested_inside_orchestration() {
                 else_body: Vec::new(),
                 conditions: Vec::new(),
                 conjunctor: String::new(),
+                cond: None,
             })
         } else {
             IRFlowNode::ForIn(IRForIn {

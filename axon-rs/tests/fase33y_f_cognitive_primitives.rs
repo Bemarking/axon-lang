@@ -472,6 +472,7 @@ async fn conditional_with_recall_resolves_via_let_bindings() {
         else_body: Vec::new(),
         conditions: Vec::new(),
         conjunctor: String::new(),
+        cond: None,
     });
     dispatch_node(&cond, &mut ctx).await.unwrap();
     assert_eq!(ctx.let_bindings.get("perms").unwrap(), "admin");

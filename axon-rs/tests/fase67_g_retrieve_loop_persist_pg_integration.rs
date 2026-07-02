@@ -93,6 +93,8 @@ fn retrieve_active() -> IRRetrieveStep {
         alias: "to_hibernate".to_string(),
         order_by: "tenant_id asc".to_string(),
         limit_expr: String::new(),
+        aggregate: String::new(),
+        group_by: String::new(),
     }
 }
 

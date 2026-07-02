@@ -893,6 +893,9 @@ impl IRGenerator {
                 alias: s.alias.clone(),
                 order_by: s.order_by.clone(),
                 limit_expr: s.limit_expr.clone(),
+                // §Fase 76.d — the aggregate surface (raw; elided when empty).
+                aggregate: s.aggregate.clone(),
+                group_by: s.group_by.clone(),
             }),
             FlowStep::Mutate(s) => IRFlowNode::Mutate(IRMutateStep {
                 node_type: "mutate",

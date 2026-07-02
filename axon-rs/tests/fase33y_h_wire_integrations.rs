@@ -91,6 +91,8 @@ fn retrieve_node(store: &str, where_expr: &str, alias: &str) -> IRFlowNode {
         alias: alias.into(),
         order_by: String::new(),
         limit_expr: String::new(),
+        aggregate: String::new(),
+        group_by: String::new(),
     })
 }
 

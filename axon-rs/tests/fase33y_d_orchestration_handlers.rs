@@ -61,6 +61,7 @@ fn let_node(target: &str, value: &str, kind: &str) -> IRFlowNode {
         target: target.into(),
         value: value.into(),
         value_kind: kind.into(),
+        value_ast: None,
     })
 }
 
@@ -107,6 +108,7 @@ fn conditional_node(
         else_body,
         conditions: Vec::new(),
         conjunctor: String::new(),
+        cond: None,
     })
 }
 
@@ -230,6 +232,7 @@ async fn conditional_with_or_conjunctor_short_circuits_on_first_true() {
         else_body: vec![let_node("took", "else", "literal")],
         conditions: vec![("b".into(), "==".into(), "1".into())],
         conjunctor: "or".into(),
+        cond: None,
     };
     cond.conjunctor = "or".into();
     run_conditional(&cond, &mut ctx).await.unwrap();
@@ -253,6 +256,7 @@ async fn conditional_with_or_conjunctor_takes_second_branch_when_first_false() {
         else_body: vec![let_node("took", "else", "literal")],
         conditions: vec![("b".into(), "==".into(), "1".into())],
         conjunctor: "or".into(),
+        cond: None,
     };
     run_conditional(&cond, &mut ctx).await.unwrap();
     assert_eq!(ctx.let_bindings.get("took").unwrap(), "either-true");
@@ -453,6 +457,7 @@ async fn let_chain_then_conditional_then_for_in() {
             target: "region".into(),
             value: "us".into(),
             value_kind: "literal".into(),
+            value_ast: None,
         },
         &mut ctx,
     )
@@ -468,6 +473,7 @@ async fn let_chain_then_conditional_then_for_in() {
             target: "xs".into(),
             value: "a,b,c".into(),
             value_kind: "literal".into(),
+            value_ast: None,
         },
         &mut ctx,
     )

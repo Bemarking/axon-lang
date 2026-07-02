@@ -75,6 +75,7 @@ fn run() -> ServerRunnerMetrics {
         None, // §Fase 24.g.2 — llm_base_url
         None, // §Fase 24.g.2 — llm_chat_path
             None, // §Fase 72.c — budget (test: unbudgeted)
+        None, // §Fase 74.f — event_outbox (test: in-process emit)
     )
     .expect("run")
 }

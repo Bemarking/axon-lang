@@ -5789,6 +5789,16 @@ impl<'a> TypeChecker<'a> {
                         &n.limit_expr,
                         &n.loc,
                     );
+                    // §Fase 76.d — prove the `aggregate:` / `group_by:`
+                    // clauses (axon-T843 / axon-T844 / axon-T845).
+                    self.run_76d_aggregate_proof(
+                        &n.store_name,
+                        &n.aggregate,
+                        &n.group_by,
+                        &n.order_by,
+                        &n.limit_expr,
+                        &n.loc,
+                    );
                 }
                 FlowStep::Mutate(n) => {
                     self.check_store_ref(&n.store_name, flow_name, &n.loc);
@@ -6686,6 +6696,40 @@ impl<'a> TypeChecker<'a> {
             limit_expr,
             cs.as_ref(),
             &self.current_flow_params,
+            (loc.line, loc.column),
+        );
+        for err in errors {
+            self.emit(err.message, loc);
+        }
+    }
+
+    /// §Fase 76.d — run the aggregate `retrieve` proof: the `aggregate:`
+    /// closed catalog + `group_by:` grammar (axon-T843), the schema-backed
+    /// column/numeric proof (axon-T844, inline schema only), and the
+    /// structural combination rules (axon-T845 — group_by-without-aggregate,
+    /// aggregate×bounds, aggregate-column-as-group-key). The compile-time
+    /// mirror of the runtime `filter::parse_aggregate_clause`.
+    fn run_76d_aggregate_proof(
+        &mut self,
+        store_name: &str,
+        aggregate: &str,
+        group_by: &str,
+        order_by: &str,
+        limit_expr: &str,
+        loc: &Loc,
+    ) {
+        if store_name.is_empty()
+            || (aggregate.trim().is_empty() && group_by.trim().is_empty())
+        {
+            return;
+        }
+        let cs = self.store_inline_column_sets.get(store_name).cloned();
+        let errors = crate::store_column_proof::check_aggregate(
+            aggregate,
+            group_by,
+            order_by,
+            limit_expr,
+            cs.as_ref(),
             (loc.line, loc.column),
         );
         for err in errors {
