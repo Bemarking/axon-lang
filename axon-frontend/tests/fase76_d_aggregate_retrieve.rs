@@ -140,6 +140,50 @@ fn structural_combinations_are_t845() {
     );
 }
 
+/// §Fase 76.g — the COMPILE-GATED corpus example that backs the
+/// `ADOPTER_PLATFORM.md` platform-admin snippet ([[feedback-published-
+/// grammar-must-compile]]): a platform-owner `axonendpoint` that DECLARES
+/// the cross-tenant capability (`requires: [store.platform_read]`, §76.a)
+/// and runs a global AGGREGATE (`count` grouped by a column, §76.d). If
+/// this test ever fails, the published guide's snippet no longer compiles
+/// — the doc and the grammar have drifted.
+#[test]
+fn adopter_platform_md_snippet_compiles_clean() {
+    let src = r#"
+        axonstore Tenants {
+            backend: postgresql
+            connection: "env:DB"
+            schema {
+                id:       Uuid primary_key
+                status:   Text
+                industry: Text
+            }
+        }
+
+        flow TenantsByIndustry() -> Unit {
+            retrieve Tenants {
+                where: "status = 'active'"
+                aggregate: "count"
+                group_by: "industry"
+                as: by_industry
+            }
+        }
+
+        axonendpoint PlatformTenantStats {
+            method: GET
+            path: "/admin/analytics/by-industry"
+            execute: TenantsByIndustry
+            output_type: Text
+            requires: [store.platform_read]
+        }
+    "#;
+    let (_, errs) = compile(src);
+    assert!(
+        errs.iter().all(|m| !m.contains("axon-T") && !m.contains("axon-E")),
+        "the ADOPTER_PLATFORM.md platform-admin snippet must compile clean: {errs:?}"
+    );
+}
+
 /// D5 sagrado — a program with NO aggregate surface serializes an IR with
 /// NO `aggregate`/`group_by` keys: byte-identical to the pre-§76.d IR, so
 /// every existing deployment's `ir_sha256` is untouched.
