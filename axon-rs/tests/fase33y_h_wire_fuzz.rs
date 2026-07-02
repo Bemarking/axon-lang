@@ -108,6 +108,7 @@ async fn fuzz_publish_never_panics() {
             source_column: 0,
             channel_ref: lcg.ascii_with_random_len(15),
             shield_ref: lcg.ascii_with_random_len(15),
+            sign: String::new(),
         });
         let outcome = dispatch_node(&node, &mut ctx).await;
         assert_no_panic(&format!("publish iter={iter}"), &outcome);
@@ -280,6 +281,7 @@ async fn fuzz_cancel_propagation_across_wire_handlers() {
                 source_column: 0,
                 channel_ref: "c".into(),
                 shield_ref: "s".into(),
+                sign: String::new(),
             }),
             2 => IRFlowNode::Discover(IRDiscover {
                 node_type: "discover",
@@ -374,6 +376,7 @@ async fn fuzz_wire_handlers_nested_inside_orchestration() {
                 source_column: 0,
                 channel_ref: format!("c_{iter}"),
                 shield_ref: "s".into(),
+                sign: String::new(),
             }),
             2 => IRFlowNode::Discover(IRDiscover {
                 node_type: "discover",

@@ -1910,6 +1910,14 @@ pub struct IRChannel {
     pub lifetime: String,
     pub persistence: String,
     pub shield_ref: String,
+    /// §Fase 77.b — non-empty ⇒ some `publish <this> within <Shield>` site
+    /// referenced a SIGNING shield: the channel is an EGRESS channel and
+    /// its durable events are signed-deliverable to registered external
+    /// subscribers under this algorithm (first publish site wins;
+    /// deterministic — the catalog has one algorithm in v1). Elided from
+    /// JSON when empty (zero IR-SHA drift for pre-§77 programs).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub egress_sign: String,
 }
 
 /// §Fase 41.b — compiled typed WebSocket transport. `protocol` names the
@@ -1951,6 +1959,13 @@ pub struct IRPublish {
     pub source_column: u32,
     pub channel_ref: String,
     pub shield_ref: String,
+    /// §Fase 77.b — the referenced shield's `sign:` algorithm, RESOLVED at
+    /// lowering (order-independent pre-pass over every declared shield).
+    /// Non-empty ⇒ this publish is an EGRESS declaration: the channel's
+    /// events are signed-deliverable to registered external subscribers.
+    /// Elided from JSON when empty (zero IR-SHA drift for pre-§77 programs).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub sign: String,
 }
 
 /// Compiled discover step — dual of publish.

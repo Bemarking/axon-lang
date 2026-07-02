@@ -27,12 +27,15 @@ use crate::ir_nodes::IRProgram;
 use super::generate::{
     artifact_digest, derive_aggregate_soundness_witnesses,
     derive_capability_containment_witness, derive_capability_isolation_witness,
-    derive_compliance_coverage_witness, derive_channel_delivery_soundness_witness,
+    derive_channel_egress_witness, derive_compliance_coverage_witness,
+    derive_channel_delivery_soundness_witness,
     derive_effect_budgeted_witness, derive_effect_row_soundness_witness,
     derive_endpoint_retry_witness, derive_json_shape_soundness_witness,
     derive_shield_halt_witness, derive_socket_credit_witness, derive_tool_call_soundness_witness,
 };
-use super::proof_term::{ProofTerm, PropertyClass, ResourceBoundsWitness, Witness};
+use super::proof_term::{
+    ProofTerm, PropertyClass, ResourceBoundsWitness, Witness, VALID_SIGN_ALGORITHMS,
+};
 
 /// The closed verdict catalog. Total over every proof shape — no
 /// default / panic path.
@@ -100,6 +103,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         }
         (PropertyClass::AggregateSoundness, Witness::AggregateSoundness(w)) => {
             check_aggregate_soundness(w, ir)
+        }
+        (PropertyClass::ChannelEgressSoundness, Witness::ChannelEgressSoundness(w)) => {
+            check_channel_egress_soundness(w, ir)
         }
         _ => CheckOutcome::UnknownProperty,
     }
@@ -831,6 +837,73 @@ fn check_aggregate_soundness(
                 claimed.store_name,
                 claimed.flow_name,
                 claimed.violations.join("; ")
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §77.b — check a [`ChannelEgressSoundnessWitness`]. Re-derive the
+/// channel's egress facts from the artifact (publish sites resolved
+/// against the DECLARED shields — never the IR's pre-resolved stamps);
+/// refute on disagreement (a forged `egress_sign` handle), an algorithm
+/// outside the closed signing catalog, or a non-durable egress channel
+/// (D77.6 — a webhook promise backed by an ephemeral buffer dies
+/// unwitnessed with the process).
+fn check_channel_egress_soundness(
+    claimed: &super::proof_term::ChannelEgressSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match derive_channel_egress_witness(&claimed.channel_name, ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "channel '{}' carries no egress contract in this artifact (no declared \
+                     `egress_sign`, no signing publish site) — forged or stale proof",
+                    claimed.channel_name
+                ),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    // Verdict 1: the handle's marking must be exactly what the program
+    // derives — a stamp with no deriving publish site (or a site the
+    // stamp hides) is a forged egress surface.
+    if actual.declared_egress_sign != actual.derived_sign {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "channel '{}' egress marking '{}' disagrees with the program's publish \
+                 sites (derived '{}') — the egress surface is not derivable from the \
+                 source (forged handle or stale lowering)",
+                actual.channel_name, actual.declared_egress_sign, actual.derived_sign
+            ),
+        };
+    }
+    // Verdict 2: closed signing catalog.
+    if !VALID_SIGN_ALGORITHMS.contains(&actual.derived_sign.as_str()) {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "channel '{}' declares egress signing '{}' — not in the closed signing \
+                 catalog {:?}",
+                actual.channel_name, actual.derived_sign, VALID_SIGN_ALGORITHMS
+            ),
+        };
+    }
+    // Verdict 3: durable egress (D77.6) — signed external delivery must
+    // inherit the §74 outbox's at-least-once.
+    if !actual.durable {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "channel '{}' is egress-published under shield '{}' (`sign: {}`) but its \
+                 persistence is '{}' — signed egress requires `persistence: \
+                 persistent_axonstore` (axon-T848)",
+                actual.channel_name, actual.shield_ref, actual.derived_sign, actual.persistence
             ),
         };
     }

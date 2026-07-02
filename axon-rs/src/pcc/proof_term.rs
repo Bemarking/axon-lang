@@ -168,6 +168,19 @@ pub enum PropertyClass {
     /// compiler that ran the §76.d type-check (`axon-T843`–`T845`). A
     /// retrieve with no aggregate surface carries no contract → no proof.
     AggregateSoundness,
+    /// §77.b — every EGRESS-marked `channel` in the artifact is derivable
+    /// from the program and sound: the channel handle's `egress_sign` equals
+    /// what re-walking the publish sites derives (a `publish C within S`
+    /// where shield S declares `sign:`), the algorithm is in the closed
+    /// signing catalog, and the channel is DURABLE
+    /// (`persistence: persistent_axonstore`) so signed external delivery
+    /// inherits the §74 outbox's at-least-once (`egress_is_a_kept_promise`).
+    /// A forged handle (egress marking with no deriving publish site), a
+    /// bogus algorithm, or an ephemeral egress channel refutes — and the
+    /// §52 deploy gate rejects the bundle fail-closed. The compile-time
+    /// mirror is `axon-T846`/`T848`. A channel with neither a declared nor
+    /// a derivable egress marking carries no contract → no proof.
+    ChannelEgressSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -208,6 +221,7 @@ impl PropertyClass {
             PropertyClass::JsonShapeSoundness => "json_shape_soundness",
             PropertyClass::ChannelDeliverySoundness => "channel_delivery_soundness",
             PropertyClass::AggregateSoundness => "aggregate_soundness",
+            PropertyClass::ChannelEgressSoundness => "channel_egress_soundness",
         }
     }
 }
@@ -530,6 +544,39 @@ pub struct AggregateSoundnessWitness {
     pub violations: Vec<String>,
 }
 
+/// §77.b — the closed egress-signing catalog. The checker's own statement
+/// of the spec (D51.2) — mirror of
+/// `axon_frontend::type_checker::VALID_SIGN_ALGORITHMS`.
+pub const VALID_SIGN_ALGORITHMS: &[&str] = &["hmac_sha256"];
+
+/// §77.b — witness for [`PropertyClass::ChannelEgressSoundness`].
+///
+/// One egress-marked channel. The checker RE-DERIVES every field from the
+/// artifact (re-walking the publish sites against the declared shields —
+/// never trusting the IR's pre-resolved `sign` stamps) and rejects the
+/// proof if the witness disagrees (D51.2). A verifying proof has
+/// `declared_egress_sign == derived_sign`, a catalog algorithm, and
+/// `durable == true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelEgressSoundnessWitness {
+    /// The `channel` this proof is about.
+    pub channel_name: String,
+    /// The `egress_sign` the artifact's channel handle CLAIMS (what the
+    /// enterprise egress worker would read).
+    pub declared_egress_sign: String,
+    /// The algorithm RE-DERIVED from the program: the first publish site
+    /// (flows in order, then daemon listeners) whose shield declares
+    /// `sign:`. Empty when no signing publish site exists.
+    pub derived_sign: String,
+    /// The shield the deriving publish site named (empty when none).
+    pub shield_ref: String,
+    /// The channel's declared `persistence`.
+    pub persistence: String,
+    /// `persistence == "persistent_axonstore"` — the §77 durable-egress
+    /// requirement (D77.6).
+    pub durable: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -546,6 +593,7 @@ pub enum Witness {
     JsonShapeSoundness(JsonShapeSoundnessWitness),
     ChannelDeliverySoundness(ChannelDeliverySoundnessWitness),
     AggregateSoundness(AggregateSoundnessWitness),
+    ChannelEgressSoundness(ChannelEgressSoundnessWitness),
 }
 
 impl Witness {
@@ -571,6 +619,7 @@ impl Witness {
             Witness::JsonShapeSoundness(w) => &w.store_name,
             Witness::ChannelDeliverySoundness(w) => &w.channel_name,
             Witness::AggregateSoundness(w) => &w.store_name,
+            Witness::ChannelEgressSoundness(w) => &w.channel_name,
         }
     }
 }

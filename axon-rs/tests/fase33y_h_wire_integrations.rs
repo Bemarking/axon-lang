@@ -58,6 +58,7 @@ fn publish_node(channel: &str, shield: &str) -> IRFlowNode {
         source_column: 0,
         channel_ref: channel.into(),
         shield_ref: shield.into(),
+        sign: String::new(),
     })
 }
 

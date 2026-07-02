@@ -531,6 +531,7 @@ fn random_publish(lcg: &mut Lcg) -> IRFlowNode {
         source_column: 0,
         channel_ref: lcg.ascii_with_random_len(8),
         shield_ref: lcg.ascii_with_random_len(8),
+        sign: String::new(),
     })
 }
 

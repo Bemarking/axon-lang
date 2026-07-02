@@ -1237,7 +1237,9 @@ Body prose.
         // §Fase 51 (v2.19.0): 46 → 48 with `observable` + `quant`.
         // §Fase 71: 48 → 49 with `window` (the temporal execution guard).
         // §Fase 73: 49 → 50 with `json` (the open semi-structured value type).
-        assert_eq!(s.total, 50);
+        // §Fase 77: 50 → 54 with the π-calc channel quartet
+        // (`channel` / `emit` / `publish` / `discover`, Kivi brief #51 §B.2).
+        assert_eq!(s.total, 54);
     }
 
     /// §Phase 5 — every MCP prompt shipped under

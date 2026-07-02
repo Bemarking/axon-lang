@@ -39,19 +39,22 @@ pub mod proof_term;
 pub use checker::{check_bundle, check_proof, BundleReport, CheckOutcome, ProofCheck};
 pub use generate::{
     artifact_digest, derive_capability_containment_witness, derive_capability_isolation_witness,
-    derive_compliance_coverage_witness, derive_effect_row_soundness_witness,
+    derive_channel_egress_witness, derive_compliance_coverage_witness,
+    derive_effect_row_soundness_witness,
     derive_endpoint_retry_witness, derive_shield_halt_witness, derive_socket_credit_witness,
     derive_tool_call_soundness_witness, generate_all_proofs,
     generate_capability_containment_proofs, generate_capability_isolation_proofs,
-    generate_compliance_coverage_proofs, generate_effect_row_soundness_proofs,
+    generate_channel_egress_soundness_proofs, generate_compliance_coverage_proofs,
+    generate_effect_row_soundness_proofs,
     generate_resource_bounds_proofs, generate_shield_halt_guarantee_proofs,
     generate_tool_call_soundness_proofs,
 };
 pub use proof_term::{
-    CapabilityContainmentWitness, CapabilityIsolationWitness, ComplianceCoverageWitness,
+    CapabilityContainmentWitness, CapabilityIsolationWitness, ChannelEgressSoundnessWitness,
+    ComplianceCoverageWitness,
     EffectRowSoundnessWitness, ProofBundle, ProofTerm, PropertyClass, ResourceBoundsWitness,
     ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness, MAX_RETRIES,
-    VALID_BREACH_POLICIES,
+    VALID_BREACH_POLICIES, VALID_SIGN_ALGORITHMS,
 };
 
 #[cfg(test)]
@@ -382,6 +385,10 @@ mod tests {
         assert_eq!(
             PropertyClass::AggregateSoundness.slug(),
             "aggregate_soundness"
+        );
+        assert_eq!(
+            PropertyClass::ChannelEgressSoundness.slug(),
+            "channel_egress_soundness"
         );
     }
 
@@ -2231,6 +2238,114 @@ mod tests {
             CheckOutcome::Refuted { reason } => {
                 assert!(reason.contains("forged") || reason.contains("no aggregate-retrieve"), "{reason}")
             }
+            other => panic!("expected Refuted (forgery), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 77.b — ChannelEgressSoundness ──────────────────────────────
+
+    /// The brief-#51 target program: a durable channel egress-published
+    /// under a sign-only shield.
+    const EGRESS_CHANNEL: &str = "type SkillResult { task_id: String }\n\
+         shield WebhookEgress { sign: hmac_sha256  on_breach: halt }\n\
+         channel SkillCompleted { message: SkillResult  qos: at_least_once  \
+           lifetime: affine  persistence: persistent_axonstore  shield: WebhookEgress }\n\
+         flow CompleteSkill(task_id: String) -> Unit {\n\
+           emit SkillCompleted(task_id)\n\
+           publish SkillCompleted within WebhookEgress\n\
+         }";
+
+    #[test]
+    fn channel_egress_round_trips_and_verifies() {
+        let ir = ir_from_source(EGRESS_CHANNEL);
+        // The lowering stamped the handle (§77.b Phase 1.5)…
+        assert_eq!(ir.channels[0].egress_sign, "hmac_sha256");
+        // …and the proof re-derives + verifies it.
+        let proofs = super::generate::generate_channel_egress_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "one proof per egress channel");
+        assert_eq!(proofs[0].property, PropertyClass::ChannelEgressSoundness);
+        if let Witness::ChannelEgressSoundness(ref w) = proofs[0].witness {
+            assert_eq!(w.declared_egress_sign, "hmac_sha256");
+            assert_eq!(w.derived_sign, "hmac_sha256");
+            assert_eq!(w.shield_ref, "WebhookEgress");
+            assert!(w.durable);
+        } else {
+            panic!("expected a ChannelEgressSoundness witness");
+        }
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+    }
+
+    #[test]
+    fn non_signing_publish_carries_no_egress_proof() {
+        // A publish under a SCANNING shield is pure π-calc capability
+        // extrusion — no egress contract, no proof (pre-§77 semantics).
+        let ir = ir_from_source(
+            "type T { id: String }\n\
+             shield Gate { scan: [pii_leak]  on_breach: halt }\n\
+             channel C { message: T  shield: Gate }\n\
+             flow F(id: String) -> Unit { publish C within Gate }",
+        );
+        assert!(ir.channels[0].egress_sign.is_empty());
+        assert!(
+            super::generate::generate_channel_egress_soundness_proofs(&ir, "test").is_empty()
+        );
+    }
+
+    #[test]
+    fn channel_egress_refutes_an_ephemeral_channel() {
+        // Signed egress on a non-durable channel — the promise dies with
+        // the process (D77.6). The compile-time mirror is axon-T848; the
+        // proof REFUTES independently so a handcrafted IR cannot sneak by.
+        let ir = ir_from_source(
+            "type T { id: String }\n\
+             shield WebhookEgress { sign: hmac_sha256  on_breach: halt }\n\
+             channel C { message: T  shield: WebhookEgress }\n\
+             flow F(id: String) -> Unit { publish C within WebhookEgress }",
+        );
+        let proofs = super::generate::generate_channel_egress_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("persistent_axonstore"), "{reason}")
+            }
+            other => panic!("expected Refuted (ephemeral egress), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn channel_egress_refutes_a_forged_handle() {
+        // Forge the CHANNEL HANDLE (what the enterprise egress worker
+        // reads): stamp an egress marking the program's publish sites do
+        // not derive. The checker recomputes from the shields — refuted.
+        let mut ir = ir_from_source(
+            "type T { id: String }\n\
+             shield Gate { scan: [pii_leak]  on_breach: halt }\n\
+             channel C { message: T  persistence: persistent_axonstore  shield: Gate }\n\
+             flow F(id: String) -> Unit { publish C within Gate }",
+        );
+        ir.channels[0].egress_sign = "hmac_sha256".to_string();
+        let proofs = super::generate::generate_channel_egress_soundness_proofs(&ir, "test");
+        assert_eq!(proofs.len(), 1, "the forged handle now carries a contract");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("disagrees") || reason.contains("derivable"), "{reason}")
+            }
+            other => panic!("expected Refuted (forged handle), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn channel_egress_refutes_a_forged_witness() {
+        let ir = ir_from_source(EGRESS_CHANNEL);
+        let mut proofs = super::generate::generate_channel_egress_soundness_proofs(&ir, "test");
+        // Forge: claim the egress was ephemeral-safe by lying about
+        // persistence.
+        if let Witness::ChannelEgressSoundness(ref mut w) = proofs[0].witness {
+            w.persistence = "ephemeral".to_string();
+            w.durable = false;
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("disagrees"), "{reason}"),
             other => panic!("expected Refuted (forgery), got {other:?}"),
         }
     }

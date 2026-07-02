@@ -7549,7 +7549,7 @@ impl<'a> TypeChecker<'a> {
             None => {
                 self.emit(
                     format!(
-                        "publish '{}' references undefined shield '{}'",
+                        "axon-T847 publish '{}' references undefined shield '{}'",
                         node.channel_ref, node.shield_ref
                     ),
                     &node.loc,
@@ -7561,11 +7561,47 @@ impl<'a> TypeChecker<'a> {
         if sh_kind != "shield" {
             self.emit(
                 format!(
-                    "publish gate '{}' is a {}, not a shield",
+                    "axon-T847 publish gate '{}' is a {}, not a shield",
                     node.shield_ref, sh_kind
                 ),
                 &node.loc,
             );
+            return;
+        }
+        // §Fase 77.b (`axon-T848`, D77.6) — the egress rule: a publish under
+        // a SIGNING shield declares the channel for signed EXTERNAL delivery,
+        // and the promise must be durable — a webhook backed by an ephemeral
+        // in-process buffer dies unwitnessed with the process. v1 requires
+        // `persistence: persistent_axonstore` so egress inherits the §74
+        // outbox's at-least-once. A sign-less shield keeps the pure π-calc
+        // publish semantics untouched (back-compat absolute).
+        if let Some(shield) = find_shield_by_name(self.program, &node.shield_ref) {
+            if !shield.sign.is_empty() {
+                let persistence = self
+                    .find_channel_persistence(&node.channel_ref)
+                    .unwrap_or_default();
+                if persistence != "persistent_axonstore" {
+                    self.emit(
+                        format!(
+                            "axon-T848 publish '{}' within '{}' declares SIGNED egress \
+                             (`sign: {}`), but the channel's persistence is '{}' — signed \
+                             egress requires `persistence: persistent_axonstore` so the \
+                             delivery promise survives a restart (it inherits the durable \
+                             outbox's at-least-once). Declare the channel durable, or \
+                             publish within a non-signing shield.",
+                            node.channel_ref,
+                            node.shield_ref,
+                            shield.sign,
+                            if persistence.is_empty() {
+                                "ephemeral (default)"
+                            } else {
+                                persistence.as_str()
+                            },
+                        ),
+                        &node.loc,
+                    );
+                }
+            }
         }
         // κ-coverage compliance enforcement is deferred to a follow-up
         // pass that walks TypeDefinition.compliance — the Rust checker
@@ -7645,6 +7681,19 @@ impl<'a> TypeChecker<'a> {
             if let Declaration::Channel(c) = decl {
                 if c.name == name {
                     return Some(c.shield_ref.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// §Fase 77.b — find the `persistence:` field of a registered channel
+    /// by name (the `axon-T848` durable-egress rule reads it).
+    fn find_channel_persistence(&self, name: &str) -> Option<String> {
+        for decl in &self.program.declarations {
+            if let Declaration::Channel(c) = decl {
+                if c.name == name {
+                    return Some(c.persistence.clone());
                 }
             }
         }

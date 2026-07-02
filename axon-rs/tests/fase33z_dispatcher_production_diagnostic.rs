@@ -1056,6 +1056,7 @@ fn d1_catalog_totality_pin_45_variants() {
             source_column: 0,
             channel_ref: String::new(),
             shield_ref: String::new(),
+            sign: String::new(),
         }),
         IRFlowNode::Discover(IRDiscover {
             node_type: "discover",

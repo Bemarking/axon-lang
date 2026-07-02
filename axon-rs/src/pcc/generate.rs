@@ -15,6 +15,7 @@ use crate::ir_nodes::IRProgram;
 use super::effects;
 use super::proof_term::{
     AggregateSoundnessWitness, CapabilityContainmentWitness, CapabilityIsolationWitness,
+    ChannelEgressSoundnessWitness,
     ChannelDeliverySoundnessWitness, ComplianceCoverageWitness, EffectBudgetedWitness,
     EffectRowSoundnessWitness, JsonShapeSoundnessWitness, ProofTerm, PropertyClass,
     ResourceBoundsWitness, ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness,
@@ -1202,6 +1203,125 @@ pub fn generate_aggregate_soundness_proofs(
         .collect()
 }
 
+// ── §Fase 77.b — ChannelEgressSoundness ──────────────────────────────
+
+/// §77.b — the first publish site (flows in declaration order, then daemon
+/// listeners) targeting `channel_name` whose shield declares `sign:`.
+/// Returns `(sign, shield_ref)`. The derivation NEVER trusts the IR's
+/// pre-resolved `IRPublish.sign` stamp — it re-resolves the named shield
+/// against the artifact's shield list (D51.2: a forged stamp is caught
+/// because the checker recomputes). Mirrors the walk order of the
+/// frontend's `mark_egress_channels` (first site wins) so producer and
+/// lowering agree.
+fn derive_first_signing_publish(
+    channel_name: &str,
+    ir: &IRProgram,
+) -> Option<(String, String)> {
+    fn walk(
+        steps: &[crate::ir_nodes::IRFlowNode],
+        channel_name: &str,
+        ir: &IRProgram,
+        found: &mut Option<(String, String)>,
+    ) {
+        use crate::ir_nodes::IRFlowNode as N;
+        for step in steps {
+            if found.is_some() {
+                return;
+            }
+            match step {
+                N::Publish(p) if p.channel_ref == channel_name => {
+                    let sign = ir
+                        .shields
+                        .iter()
+                        .find(|s| s.name == p.shield_ref)
+                        .map(|s| s.sign.clone())
+                        .unwrap_or_default();
+                    if !sign.is_empty() {
+                        *found = Some((sign, p.shield_ref.clone()));
+                    }
+                }
+                N::Conditional(c) => {
+                    walk(&c.then_body, channel_name, ir, found);
+                    walk(&c.else_body, channel_name, ir, found);
+                }
+                N::ForIn(f) => walk(&f.body, channel_name, ir, found),
+                N::Par(p) => {
+                    for branch in &p.branches {
+                        walk(branch, channel_name, ir, found);
+                    }
+                }
+                N::Listen(l) => walk(&l.body, channel_name, ir, found),
+                N::Quant(q) => walk(&q.body, channel_name, ir, found),
+                _ => {}
+            }
+        }
+    }
+    let mut found = None;
+    for flow in &ir.flows {
+        walk(&flow.steps, channel_name, ir, &mut found);
+        if found.is_some() {
+            return found;
+        }
+    }
+    for daemon in &ir.daemons {
+        for listener in &daemon.listeners {
+            walk(&listener.body, channel_name, ir, &mut found);
+            if found.is_some() {
+                return found;
+            }
+        }
+    }
+    found
+}
+
+/// §77.b — derive a [`ChannelEgressSoundnessWitness`] for one channel.
+/// Pure + total. `None` when the channel carries NO egress contract:
+/// neither a declared `egress_sign` on its handle nor a derivable signing
+/// publish site (mirrors "no effects → no effect-row proof").
+pub fn derive_channel_egress_witness(
+    channel_name: &str,
+    ir: &IRProgram,
+) -> Option<ChannelEgressSoundnessWitness> {
+    let ch = ir.channels.iter().find(|c| c.name == channel_name)?;
+    let (derived_sign, shield_ref) =
+        derive_first_signing_publish(channel_name, ir).unwrap_or_default();
+    if ch.egress_sign.is_empty() && derived_sign.is_empty() {
+        return None;
+    }
+    Some(ChannelEgressSoundnessWitness {
+        channel_name: channel_name.to_string(),
+        declared_egress_sign: ch.egress_sign.clone(),
+        derived_sign,
+        shield_ref,
+        persistence: ch.persistence.clone(),
+        durable: ch.persistence == "persistent_axonstore",
+    })
+}
+
+/// §77.b — generate ChannelEgressSoundness proofs: one per channel with an
+/// egress contract (declared or derivable). An unsound site still generates
+/// its (refutable) proof — the §52 deploy gate then rejects the bundle,
+/// fail-closed.
+pub fn generate_channel_egress_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for ch in &ir.channels {
+        let Some(witness) = derive_channel_egress_witness(&ch.name, ir) else {
+            continue;
+        };
+        proofs.push(ProofTerm {
+            property: PropertyClass::ChannelEgressSoundness,
+            artifact_digest: digest.clone(),
+            witness: Witness::ChannelEgressSoundness(witness),
+            axon_version: axon_version.to_string(),
+        });
+    }
+    proofs
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
 /// generator (compliance / effects / capability-gate / resources /
@@ -1221,5 +1341,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_json_shape_soundness_proofs(ir, axon_version));
     proofs.extend(generate_channel_delivery_soundness_proofs(ir, axon_version));
     proofs.extend(generate_aggregate_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_channel_egress_soundness_proofs(ir, axon_version));
     proofs
 }

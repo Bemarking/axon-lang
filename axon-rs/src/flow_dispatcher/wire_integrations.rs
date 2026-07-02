@@ -492,6 +492,16 @@ pub async fn run_publish(
 
     let output = publish_capability(&node.channel_ref, &node.shield_ref, ctx);
 
+    // §Fase 77.b — a publish under a SIGNING shield (the IR pre-resolved
+    // `sign`, §77.a) additionally records the EGRESS intent: the single
+    // in-context fact the enterprise egress driver reads to know this
+    // channel's durable events are signed-deliverable externally. Empty
+    // `sign` ⇒ pure π-calc capability extrusion, byte-identical to pre-§77.
+    if !node.sign.is_empty() {
+        ctx.let_bindings
+            .insert(format!("__egress_{}", node.channel_ref), node.sign.clone());
+    }
+
     emit_step_complete(ctx, &step_name, step_index, &output, 0)?;
 
     Ok(NodeOutcome::Completed {
@@ -1807,12 +1817,16 @@ mod tests {
             source_column: 0,
             channel_ref: "secure_chan".into(),
             shield_ref: "hipaa".into(),
+            sign: String::new(),
         };
         run_publish(&node, &mut ctx).await.unwrap();
         assert_eq!(
             ctx.let_bindings.get("__pub_secure_chan").unwrap(),
             "hipaa"
         );
+        // §77.b — a NON-signing publish records no egress intent
+        // (pre-§77 semantics byte-identical).
+        assert!(!ctx.let_bindings.contains_key("__egress_secure_chan"));
         let first = rx.try_recv().unwrap();
         match first {
             FlowExecutionEvent::StepStart { step_type, .. } => {
@@ -1820,6 +1834,30 @@ mod tests {
             }
             e => panic!("expected StepStart, got {e:?}"),
         }
+    }
+
+    /// §Fase 77.b — a publish whose IR carries a resolved `sign` (a signing
+    /// shield) records the egress intent the enterprise driver reads.
+    #[tokio::test]
+    async fn run_publish_records_egress_intent_for_signing_shield() {
+        let (mut ctx, _rx) = fresh_ctx();
+        let node = IRPublish {
+            node_type: "publish",
+            source_line: 0,
+            source_column: 0,
+            channel_ref: "SkillCompleted".into(),
+            shield_ref: "WebhookEgress".into(),
+            sign: "hmac_sha256".into(),
+        };
+        run_publish(&node, &mut ctx).await.unwrap();
+        assert_eq!(
+            ctx.let_bindings.get("__pub_SkillCompleted").unwrap(),
+            "WebhookEgress"
+        );
+        assert_eq!(
+            ctx.let_bindings.get("__egress_SkillCompleted").unwrap(),
+            "hmac_sha256"
+        );
     }
 
     #[tokio::test]
@@ -2162,6 +2200,7 @@ mod tests {
             source_column: 0,
             channel_ref: "c".into(),
             shield_ref: "s".into(),
+            sign: String::new(),
         };
         assert!(matches!(run_publish(&publish, &mut ctx).await, Err(DispatchError::UpstreamCancelled)));
 

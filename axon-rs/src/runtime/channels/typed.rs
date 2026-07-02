@@ -777,6 +777,7 @@ mod tests {
             lifetime: lifetime.to_string(),
             persistence: persistence.to_string(),
             shield_ref: shield.to_string(),
+            egress_sign: String::new(),
         }
     }
 

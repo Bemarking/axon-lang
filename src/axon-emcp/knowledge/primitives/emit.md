@@ -1,0 +1,70 @@
+---
+name: emit
+summary: The π-calculus output prefix — emits a typed value onto a channel; durable channels append to the at-least-once outbox.
+category: wire
+top_level: false
+since: Fase 13
+grammar: |
+  # Flow-body / daemon-body form:
+  emit <ChannelRef>(<value_ref>)
+---
+
+# `emit`
+
+`emit` is **the output prefix**: it places a typed value onto a
+declared `channel`. It is the producer half of the delivery
+contract a daemon `listen`er consumes (`delivery_is_a_kept_promise`,
+§74).
+
+## Surface
+
+`emit` is **nested** — it appears in flow bodies and daemon
+listener bodies.
+
+```axon
+flow CompleteSkill(task_id: String) -> Unit {
+    step Build { ask: "Build the result."  output: SkillResult }
+    emit SkillCompleted(Build)
+}
+```
+
+## Routing (what the runtime actually does)
+
+In precedence order (§74):
+
+1. **Durable channel** (`persistence: persistent_axonstore`) —
+   the event is APPENDED to the durable event outbox: claimed
+   with SKIP-LOCKED by the receive driver, delivered to every
+   daemon `listen`er, redelivered until acked (**at-least-once**),
+   survives restart, replayable through the §11.c replay log.
+2. **Ephemeral registered channel** — in-process delivery via
+   the typed event bus, honouring the channel's declared `qos`
+   (`at_least_once` / `at_most_once` / `exactly_once` dedup /
+   `broadcast` / `queue`). Fails CLOSED on a bus error.
+3. **Unregistered topic** — the legacy per-flow buffer (pre-§74
+   compatibility).
+
+The value reference resolves against the flow's bindings (a step
+output, a `let`, a parameter); an unresolvable reference emits
+the literal.
+
+## Honesty diagnostics
+
+- A daemon `listen`ing on a channel NOTHING emits to warns
+  `axon-W009` at compile time and the PCC
+  `ChannelDeliverySoundness` proof refutes at deploy — a
+  listener that can never fire is a defect, not a config choice.
+
+## What this primitive is NOT
+
+- **Not a webhook send.** `emit` never leaves the runtime; the
+  external leg is declared by `publish … within <signing shield>`
+  (§77) and configured by the tenant's webhook registry.
+- **Not a return value.** A flow's result is its `return`; an
+  emit is a side-band event.
+
+## See also
+
+- `axon://primitives/channel` — the conduit + its attributes.
+- `axon://primitives/listen` — the consumer.
+- `axon://primitives/publish` — capability extrusion + egress.

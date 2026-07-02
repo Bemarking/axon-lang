@@ -69,6 +69,12 @@ pub struct IRGenerator {
     /// `visit_emit` can pre-resolve `value_is_channel` without re-scanning
     /// the AST (parity with the Python `IREmit.value_is_channel` flag).
     channel_names: std::collections::HashSet<String>,
+    /// §Fase 77.b — shield name → its `sign:` algorithm, pre-resolved in
+    /// Phase 0 (order-independent, unlike `channel_names`) so a `publish`
+    /// lowers with its egress algorithm regardless of declaration order.
+    /// Only SIGNING shields are recorded (empty `sign:` shields are not
+    /// egress-relevant).
+    shield_signs: HashMap<String, String>,
 }
 
 impl IRGenerator {
@@ -83,6 +89,67 @@ impl IRGenerator {
             program_line: 1,
             program_column: 1,
             channel_names: std::collections::HashSet::new(),
+            shield_signs: HashMap::new(),
+        }
+    }
+
+    /// §Fase 77.b (Phase 0) — record every declared shield's non-empty
+    /// `sign:` algorithm, recursing into `epistemic` blocks (the same
+    /// nesting `collect_emitted_channels` honours in the type checker).
+    fn collect_shield_signs(&mut self, decls: &[Declaration]) {
+        for decl in decls {
+            match decl {
+                Declaration::Shield(s) if !s.sign.is_empty() => {
+                    self.shield_signs.insert(s.name.clone(), s.sign.clone());
+                }
+                Declaration::Epistemic(eb) => self.collect_shield_signs(&eb.body),
+                _ => {}
+            }
+        }
+    }
+
+    /// §Fase 77.b (Phase 1.5) — walk every lowered body (flows + daemon
+    /// listeners, recursing into conditionals / loops / par branches /
+    /// nested listen + quant bodies) for `publish` sites carrying a
+    /// resolved `sign`, and stamp the algorithm onto the matching
+    /// channel's IR handle. First site wins (deterministic).
+    fn mark_egress_channels(ir: &mut IRProgram) {
+        fn walk(nodes: &[IRFlowNode], out: &mut HashMap<String, String>) {
+            for node in nodes {
+                match node {
+                    IRFlowNode::Publish(p) if !p.sign.is_empty() => {
+                        out.entry(p.channel_ref.clone())
+                            .or_insert_with(|| p.sign.clone());
+                    }
+                    IRFlowNode::Conditional(c) => {
+                        walk(&c.then_body, out);
+                        walk(&c.else_body, out);
+                    }
+                    IRFlowNode::ForIn(f) => walk(&f.body, out),
+                    IRFlowNode::Par(p) => {
+                        for branch in &p.branches {
+                            walk(branch, out);
+                        }
+                    }
+                    IRFlowNode::Listen(l) => walk(&l.body, out),
+                    IRFlowNode::Quant(q) => walk(&q.body, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut egress: HashMap<String, String> = HashMap::new();
+        for flow in &ir.flows {
+            walk(&flow.steps, &mut egress);
+        }
+        for daemon in &ir.daemons {
+            for listener in &daemon.listeners {
+                walk(&listener.body, &mut egress);
+            }
+        }
+        for channel in &mut ir.channels {
+            if let Some(sign) = egress.get(&channel.name) {
+                channel.egress_sign = sign.clone();
+            }
         }
     }
 
@@ -91,10 +158,24 @@ impl IRGenerator {
         self.program_line = program.loc.line;
         self.program_column = program.loc.column;
 
+        // Phase 0 (§Fase 77.b): pre-resolve every declared shield's `sign:`
+        // BEFORE lowering, so a `publish C within S` resolves its egress
+        // algorithm regardless of declaration order (a flow may precede the
+        // shield in source; the incremental `channel_names` pattern would
+        // miss it).
+        self.collect_shield_signs(&program.declarations);
+
         // Phase 1: visit all declarations
         for decl in &program.declarations {
             self.visit_declaration(decl, &mut ir);
         }
+
+        // Phase 1.5 (§Fase 77.b): mark egress channels — a channel some
+        // `publish` site declared under a SIGNING shield carries the
+        // resolved algorithm on its IR handle (`egress_sign`), the single
+        // fact the enterprise egress worker reads. First site wins
+        // (deterministic; the v1 catalog has one algorithm).
+        Self::mark_egress_channels(&mut ir);
 
         // Phase 2: resolve run cross-references
         for run in &mut ir.runs {
@@ -863,6 +944,13 @@ impl IRGenerator {
                 source_column: s.loc.column,
                 channel_ref: s.channel_ref.clone(),
                 shield_ref: s.shield_ref.clone(),
+                // §Fase 77.b — resolve the shield's egress algorithm at
+                // lowering (Phase 0 pre-pass; empty ⇒ pure π-calc publish).
+                sign: self
+                    .shield_signs
+                    .get(&s.shield_ref)
+                    .cloned()
+                    .unwrap_or_default(),
             }),
             FlowStep::Discover(s) => IRFlowNode::Discover(IRDiscover {
                 node_type: "discover",
@@ -1745,6 +1833,9 @@ impl IRGenerator {
             lifetime: n.lifetime.clone(),
             persistence: n.persistence.clone(),
             shield_ref: n.shield_ref.clone(),
+            // §Fase 77.b — stamped by `mark_egress_channels` (Phase 1.5)
+            // once every publish site is lowered.
+            egress_sign: String::new(),
         }
     }
 

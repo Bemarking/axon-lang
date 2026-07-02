@@ -109,7 +109,7 @@ impl DocStatus {
     }
 }
 
-/// The closed catalogue — **48 primitives**, ordered by category
+/// The closed catalogue — **54 primitives**, ordered by category
 /// for readability. Consumers must not depend on declaration order;
 /// they iterate and filter.
 ///
@@ -460,6 +460,42 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         summary: "A flow/daemon-body listener — binds to an event source and dispatches typed messages downstream.",
         doc_status: DocStatus::Documented,
     },
+    // §Fase 77 — the π-calc channel quartet, undocumented since Fase 13
+    // (Kivi brief #51 §B.2: `axon.primitive_doc` answered *unknown
+    // primitive* for constructs the parser accepts). Registered +
+    // documented together, per the atomicity discipline above.
+    PrimitiveInfo {
+        name: "channel",
+        category: "wire",
+        top_level: true,
+        since: "Fase 13",
+        summary: "A typed π-calculus channel — message type, qos, lifetime, persistence, and shield gate for in-process delivery and signed external egress.",
+        doc_status: DocStatus::Documented,
+    },
+    PrimitiveInfo {
+        name: "emit",
+        category: "wire",
+        top_level: false,
+        since: "Fase 13",
+        summary: "The π-calculus output prefix — emits a typed value onto a channel; durable channels append to the at-least-once outbox.",
+        doc_status: DocStatus::Documented,
+    },
+    PrimitiveInfo {
+        name: "publish",
+        category: "wire",
+        top_level: false,
+        since: "Fase 13",
+        summary: "Capability extrusion — publishes a shield-gated channel for discovery; under a signing shield it declares the channel for signed webhook egress.",
+        doc_status: DocStatus::Documented,
+    },
+    PrimitiveInfo {
+        name: "discover",
+        category: "wire",
+        top_level: false,
+        since: "Fase 13",
+        summary: "The dual of publish — imports a previously published channel capability under a local alias.",
+        doc_status: DocStatus::Documented,
+    },
     // ── Operators ─────────────────────────────────────────────────────
     PrimitiveInfo {
         name: "shield",
@@ -552,7 +588,7 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
     // that Fase's `since:` tag.
 ];
 
-/// Lookup one primitive by canonical name. O(n) over the 47-entry
+/// Lookup one primitive by canonical name. O(n) over the 54-entry
 /// table — n is small, the linear scan beats any hash overhead.
 /// Returns `None` for unknown names; callers surface a structured
 /// "unknown primitive" diagnostic.
@@ -638,9 +674,12 @@ mod tests {
         // cognitive primitive + its Hermitian-observable companion) → 46→48.
         // §Fase 71 added `window` (the temporal execution guard) → 48→49.
         // §Fase 73 added `json` (the open semi-structured value type) → 49→50.
+        // §Fase 77 added the π-calc channel quartet `channel` / `emit` /
+        // `publish` / `discover` (parsed since Fase 13, undocumented until
+        // Kivi brief #51 §B.2 caught the gap) → 50→54.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            50,
+            54,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -730,6 +769,8 @@ mod tests {
             "window",
             // §Fase 73 — the open semi-structured value type.
             "json",
+            // §Fase 77 — the π-calc channel quartet (Kivi brief #51 §B.2).
+            "channel", "emit", "publish", "discover",
         ]
         .into_iter()
         .collect();
@@ -746,13 +787,15 @@ mod tests {
         // §Fase 51 (v2.19.0): 46 → 48 with `observable` + `quant`.
         // §Fase 71: 48 → 49 with `window` (the temporal execution guard).
         // §Fase 73: 49 → 50 with `json` (the open semi-structured value type).
-        assert_eq!(s.total, 50);
+        // §Fase 77: 50 → 54 with the π-calc channel quartet
+        // (`channel` / `emit` / `publish` / `discover`).
+        assert_eq!(s.total, 54);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 50);
+        assert_eq!(s.documented, 54);
         assert_eq!(s.pending, 0);
     }
 
@@ -778,7 +821,9 @@ mod tests {
         // checks against `axon://grammar/top_level` which is the
         // human-readable mirror of this same polarity.
         for nested in ["step", "reason", "probe", "validate", "refine", "weave",
-                       "listen", "forge", "transact", "quant"] {
+                       "listen", "forge", "transact", "quant",
+                       // §Fase 77 — the channel quartet's nested members.
+                       "emit", "publish", "discover"] {
             let info = find(nested).expect("must be in registry");
             assert!(
                 !info.top_level,

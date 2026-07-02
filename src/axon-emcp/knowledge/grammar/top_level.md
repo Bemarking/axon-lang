@@ -82,6 +82,10 @@ follows from one row.
 | `daemon`         | ✓ | — | Fase 16 |
 | `mcp`            | ✓ | — | Fase 33+ |
 | `listen`         | ✗ | `flow`, `daemon` body | Fase 16 |
+| `channel`        | ✓ | — | Fase 13 |
+| `emit`           | ✗ | `flow`, `daemon` body | Fase 13 |
+| `publish`        | ✗ | `flow`, `daemon` body | Fase 13 |
+| `discover`       | ✗ | `flow`, `daemon` body | Fase 13 |
 
 > The `taint` keyword is a reserved word in the lexer but has no
 > parser production today (it appears in the epistemic-uncertainty

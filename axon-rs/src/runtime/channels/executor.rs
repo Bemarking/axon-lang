@@ -459,6 +459,7 @@ mod tests {
             lifetime: "affine".to_string(),
             persistence: "ephemeral".to_string(),
             shield_ref: shield.to_string(),
+            egress_sign: String::new(),
         }
     }
 
@@ -579,6 +580,7 @@ mod tests {
             node_type: "IRPublish", source_line: 0, source_column: 0,
             channel_ref: "Topic".to_string(),
             shield_ref: "Gate".to_string(),
+            sign: String::new(),
         };
         let cap = block_on(dispatch_publish(&pub_ir, &ctx)).unwrap();
         assert_eq!(cap.channel_name, "Topic");
@@ -613,6 +615,7 @@ mod tests {
             node_type: "IRPublish", source_line: 0, source_column: 0,
             channel_ref: "Topic".to_string(),
             shield_ref: "Gate".to_string(),
+            sign: String::new(),
         };
         let err = block_on(dispatch_publish(&ir, &ctx)).unwrap_err();
         assert!(matches!(err, DispatchError::PublishFailure(_)));
