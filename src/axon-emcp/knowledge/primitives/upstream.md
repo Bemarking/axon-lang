@@ -1,0 +1,129 @@
+---
+name: upstream
+summary: Outbound vendor connection (the client dual of socket): config-resolved dial, declared auth, and a compile-time-total wire↔session projection — a new vendor is a declaration, not new code.
+category: session_types
+top_level: true
+since: Fase 80.b (v2.37.0)
+grammar: |
+  upstream <Name> [from <Preset>@v<N>] {
+      transport: websocket
+      protocol: <SessionName>
+      role: <RoleName>
+      resolve: <config.key>            # per-tenant URL key — never a literal
+      secret: <config.key>             # per-tenant credential key — never a literal
+      auth: header("<Name>"[, "<Prefix>"]) | query("<param>") | signed_url
+      map: [
+          send <Type> as json [tag "<Tag>"] | send <Type> as binary,
+          receive <Type> as json [when "<field>" = "<value>"] | receive <Type> as binary,
+          ...
+      ]
+      reconnect: { backoff_ms: <int>, max_attempts: <int>, on_exhausted: fail }
+      overflow: drop_oldest | degrade_quality | pause_upstream | fail
+      backpressure: credit(<n>)
+  }
+---
+
+# `upstream`
+
+`upstream` declares a **persistent, config-resolved, outbound**
+connection to a third-party service — a streaming STT vendor, a
+TTS vendor, or a fused speech-to-speech API. It is the dual
+transport role of `socket`: a `socket` is axon acting as
+*server* (the carrier or browser dials in), an `upstream` is
+axon acting as *client* (axon dials out). Both bind the same
+§41 session algebra — one algebra, two transport roles.
+
+The doctrine is `voice_integration_is_a_declaration_not_a_rewrite`:
+every competing stack ties orchestration code to one vendor's
+SDK, so swapping Deepgram for AssemblyAI — or a cascaded
+STT→LLM→TTS pipeline for a fused realtime API — means rewriting
+integration code. In axon the vendor is a **declaration**: the
+`.axon` source names a session, a role, and a wire projection;
+the runtime does the plumbing. Changing vendors is a config
+edit, the same property `tool { provider: http }` gave REST
+(§58.g), extended to persistent bidirectional streams.
+
+## Surface
+
+`upstream` is a **top-level declaration**. Its `protocol:`
+references a declared `session` (exactly like `socket`); `role:`
+names which side of that dialogue axon plays. The peer role is
+the vendor's — realised by the `map:` transcoding, never by
+axon code.
+
+```axon
+session SttDialogue {
+    axon:   [ send AudioChunk, loop, receive Transcript, end ]
+    vendor: [ receive AudioChunk, loop, send Transcript, end ]
+}
+
+upstream DeepgramSTT {
+    transport: websocket
+    protocol: SttDialogue
+    role: axon
+    resolve: upstream.deepgram.url
+    secret: upstream.deepgram.api_key
+    auth: header("Authorization", "Token ")
+    map: [
+        send AudioChunk as binary,
+        receive Transcript as json when "type" = "Results",
+    ]
+    reconnect: { backoff_ms: 500, max_attempts: 5, on_exhausted: fail }
+    overflow: drop_oldest
+}
+```
+
+## The laws the compiler enforces
+
+- **axon-T849 — projection totality.** Every message the bound
+  role sends or receives (including inside `select`/`branch`
+  arms and §79 `interrupt` bodies/handlers) must have exactly
+  one `map:` rule of the right direction; inbound JSON rules
+  must have distinct discriminators; at most one
+  `receive … as binary` rule. A message that would silently
+  fall through untranscoded is a compile error, not a runtime
+  surprise.
+- **axon-T850 — config, not code.** `resolve:` and `secret:`
+  are per-tenant config keys (lowercase, dot-separated — the
+  compile-time mirror of the enterprise secret-key policy). A
+  URL or credential literal in source cannot compile.
+- **axon-T851 — session/role binding.** `protocol:` must be a
+  declared `session` and `role:` one of its two roles. With
+  `backpressure: credit(n)`, the §41.c Presburger discharge
+  runs on the bound role.
+
+## Inbound payloads are `Json`
+
+The projection deliberately does **not** ship a structural
+field-mapping language. An inbound vendor frame lands as the
+session message's payload typed `Json` (§73) with total
+navigation — `Transcript.payload.channel.alternatives[0].transcript`
+— miss ⇒ null, never a crash. The session message name is the
+routing and duality skeleton; the open `Json` type absorbs
+vendor-shape variance without a rewrite.
+
+## Presets
+
+Blessed vendors ship as versioned stdlib presets instantiated
+with `from`:
+
+```axon
+upstream MySTT from DeepgramSTT@v1 {
+    secret: upstream.deepgram.api_key
+}
+```
+
+A preset is an ordinary `upstream` under the hood — `axon
+desugar` prints the exact expanded declaration, and forking it
+into a local hand-written `upstream` is always available.
+
+## The honest limit
+
+Duality, credit discipline, and projection totality are
+compiler-proved **up to the wire**. Axon does not — cannot —
+prove the vendor's own flow-control sound (code axon does not
+own). The runtime defends (`overflow:` policy, fail-closed
+`reconnect:`) and the enterprise layer witnesses every
+lifecycle transition (`upstream:connected` / `:reconnected` /
+`:exhausted`, fail-closed audit); neither claims a proof across
+the trust boundary.

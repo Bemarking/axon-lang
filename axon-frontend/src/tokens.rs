@@ -172,6 +172,12 @@ pub enum TokenType {
     // WebSocket as a cognitive primitive (§Fase 41.b) — the typed-WS
     // transport binding around a `session` protocol.
     Socket,
+    // `upstream` (§Fase 80.b) — the dual transport role of `socket`: a
+    // persistent, config-resolved, OUTBOUND connection to a third-party
+    // service (STT/TTS/realtime vendors), typed by the same §41.a session
+    // algebra on the axon-facing side and transcoded to the vendor's wire
+    // frames by a declared, compile-time-total projection (`map:`).
+    Upstream,
     // `quant` as a cognitive primitive (§Fase 51.a) — a flow-body block that
     // projects an MEK semantic tensor into a complex Hilbert space, evolves it
     // under a variational / kernel-feature map, and collapses back to classical
@@ -498,6 +504,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "channel" => TokenType::Channel,
         // WebSocket as a cognitive primitive (§Fase 41.b)
         "socket" => TokenType::Socket,
+        // `upstream` (§Fase 80.b) — outbound vendor connection.
+        "upstream" => TokenType::Upstream,
         // `quant` as a cognitive primitive (§Fase 51.a) — flow-body block.
         "quant" => TokenType::Quant,
         // `observable` (§Fase 51.c.2) — top-level Pauli-sum declaration.
@@ -590,6 +598,8 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             | TokenType::Channel
             // §Fase 41.b — typed WebSocket transport
             | TokenType::Socket
+            // §Fase 80.b — outbound vendor connection (the client dual of socket)
+            | TokenType::Upstream
             // §Fase 51.c.2 — Pauli-sum observable declaration
             | TokenType::Observable
             // §Fase 69.a — Advantage-Witness declaration

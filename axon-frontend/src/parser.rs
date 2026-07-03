@@ -226,6 +226,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Upstream(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Observable(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -2008,6 +2012,9 @@ impl Parser {
 
             // ── §Fase 41.b — typed WebSocket transport ─────────
             TokenType::Socket => self.parse_socket().map(Declaration::Socket),
+
+            // ── §Fase 80.b — outbound vendor connection ─────────
+            TokenType::Upstream => self.parse_upstream().map(Declaration::Upstream),
 
             // ── §Fase 51.c.2 — Pauli-sum observable ────────────
             TokenType::Observable => self.parse_observable().map(Declaration::Observable),
@@ -6667,6 +6674,176 @@ impl Parser {
         }
         self.consume(TokenType::RBrace)?;
         Ok(node)
+    }
+
+    /// §Fase 80.b — parse `upstream Name [from Preset@vN] { fields }`.
+    ///
+    /// Field grammar per `docs/fase/fase_80_upstream_design.md` §1–2. The
+    /// parser fixes the *shape* only; catalog membership (`transport:`,
+    /// `auth:`, `overflow:`, `on_exhausted:`), key charsets and projection
+    /// totality are §80.c type-checker laws (T849–T851), mirroring how
+    /// `socket` splits parse vs. check.
+    fn parse_upstream(&mut self) -> Result<UpstreamDefinition, ParseError> {
+        let tok = self.consume(TokenType::Upstream)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = UpstreamDefinition {
+            name,
+            loc: Loc { line: tok.line, column: tok.column },
+            ..Default::default()
+        };
+        // §80.f — preset instantiation: `upstream X from DeepgramSTT@v1 {…}`.
+        if self.check(TokenType::From) {
+            self.advance();
+            let base = self.consume(TokenType::Identifier)?.value;
+            self.consume(TokenType::At)?;
+            let version = self.consume_any_ident_or_kw()?.value;
+            node.preset = Some(format!("{base}@{version}"));
+        }
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match key.as_str() {
+                "transport" => node.transport = self.consume_any_ident_or_kw()?.value,
+                "protocol" => node.protocol = self.consume_any_ident_or_kw()?.value,
+                "role" => node.role = self.consume_any_ident_or_kw()?.value,
+                "resolve" => node.resolve = self.parse_dotted_identifier()?,
+                "secret" => node.secret = self.parse_dotted_identifier()?,
+                "auth" => {
+                    // `header("Name")` | `header("Name", "Prefix ")` |
+                    // `query("param")` | `signed_url`.
+                    node.auth_kind = self.consume_any_ident_or_kw()?.value;
+                    if self.check(TokenType::LParen) {
+                        self.consume(TokenType::LParen)?;
+                        node.auth_name = Some(self.consume(TokenType::StringLit)?.value);
+                        if self.check(TokenType::Comma) {
+                            self.consume(TokenType::Comma)?;
+                            node.auth_prefix = Some(self.consume(TokenType::StringLit)?.value);
+                        }
+                        self.consume(TokenType::RParen)?;
+                    }
+                }
+                "map" => node.map = self.parse_upstream_map()?,
+                "reconnect" => node.reconnect = Some(self.parse_upstream_reconnect()?),
+                "overflow" => node.overflow = Some(self.consume_any_ident_or_kw()?.value),
+                "backpressure" => {
+                    // `credit(n)` — same typed-resource window as `socket`.
+                    let kind = self.consume_any_ident_or_kw()?.value;
+                    if kind != "credit" {
+                        return Err(self.error(&format!("expected `credit(n)` for backpressure, got `{kind}`")));
+                    }
+                    self.consume(TokenType::LParen)?;
+                    let n = self
+                        .consume(TokenType::Integer)?
+                        .value
+                        .parse::<i64>()
+                        .map_err(|_| self.error("backpressure credit must be an integer"))?;
+                    self.consume(TokenType::RParen)?;
+                    node.backpressure_credit = Some(n);
+                }
+                other => return Err(self.error(&format!("unknown upstream field `{other}`"))),
+            }
+            // Optional comma between fields.
+            if self.check(TokenType::Comma) {
+                self.consume(TokenType::Comma)?;
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 80.b — parse the `map: [ rule, … ]` projection list.
+    ///
+    /// rule := (`send` | `receive`) <MessageType> `as` (`json` | `binary`)
+    ///         [ `tag` <string> ]                 — send-json only
+    ///         [ `when` <string> `=` <string> ]   — receive-json only
+    fn parse_upstream_map(&mut self) -> Result<Vec<UpstreamMapRule>, ParseError> {
+        self.consume(TokenType::LBracket)?;
+        let mut rules = Vec::new();
+        while !self.check(TokenType::RBracket) && !self.check(TokenType::Eof) {
+            let dir_tok = self.current().clone();
+            let direction = match dir_tok.ttype {
+                TokenType::Send => "send",
+                TokenType::Receive => "receive",
+                _ => {
+                    return Err(self.error(&format!(
+                        "upstream map rule must start with `send` or `receive`, got `{}`",
+                        dir_tok.value
+                    )))
+                }
+            };
+            self.advance();
+            let message = self.consume(TokenType::Identifier)?.value;
+            self.consume(TokenType::As)?;
+            let framing = self.consume_any_ident_or_kw()?.value;
+            let mut rule = UpstreamMapRule {
+                direction: direction.to_string(),
+                message,
+                framing,
+                loc: Loc { line: dir_tok.line, column: dir_tok.column },
+                ..Default::default()
+            };
+            // Optional selectors — contextual identifiers, not keywords.
+            if self.current().value == "tag" {
+                self.advance();
+                rule.tag = Some(self.consume(TokenType::StringLit)?.value);
+            } else if self.current().value == "when" {
+                self.advance();
+                rule.when_field = Some(self.consume(TokenType::StringLit)?.value);
+                self.consume(TokenType::Assign)?;
+                rule.when_value = Some(self.consume(TokenType::StringLit)?.value);
+            }
+            rules.push(rule);
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBracket)?;
+        Ok(rules)
+    }
+
+    /// §Fase 80.b — parse `reconnect: { backoff_ms: <int>, max_attempts:
+    /// <int>, on_exhausted: <ident> }` (order-free, all three required —
+    /// a reconnection policy with a hole is not a policy).
+    fn parse_upstream_reconnect(&mut self) -> Result<UpstreamReconnect, ParseError> {
+        self.consume(TokenType::LBrace)?;
+        let mut backoff_ms: Option<i64> = None;
+        let mut max_attempts: Option<i64> = None;
+        let mut on_exhausted: Option<String> = None;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match key.as_str() {
+                "backoff_ms" => {
+                    backoff_ms = Some(
+                        self.consume(TokenType::Integer)?
+                            .value
+                            .parse::<i64>()
+                            .map_err(|_| self.error("backoff_ms must be an integer"))?,
+                    )
+                }
+                "max_attempts" => {
+                    max_attempts = Some(
+                        self.consume(TokenType::Integer)?
+                            .value
+                            .parse::<i64>()
+                            .map_err(|_| self.error("max_attempts must be an integer"))?,
+                    )
+                }
+                "on_exhausted" => on_exhausted = Some(self.consume_any_ident_or_kw()?.value),
+                other => return Err(self.error(&format!("unknown reconnect field `{other}`"))),
+            }
+            if self.check(TokenType::Comma) {
+                self.consume(TokenType::Comma)?;
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        match (backoff_ms, max_attempts, on_exhausted) {
+            (Some(b), Some(m), Some(o)) => Ok(UpstreamReconnect { backoff_ms: b, max_attempts: m, on_exhausted: o }),
+            _ => Err(self.error(
+                "reconnect requires all of `backoff_ms:`, `max_attempts:`, `on_exhausted:` — a reconnection policy with a hole is not a policy",
+            )),
+        }
     }
 
     /// Parse: `[send T, receive U, loop, end]`.

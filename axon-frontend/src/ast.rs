@@ -129,6 +129,12 @@ pub enum Declaration {
     /// §Fase 41.b — typed WebSocket transport binding a `session` protocol
     /// (paper_websocket_cognitive_primitive.md).
     Socket(SocketDefinition),
+    /// §Fase 80.b — the dual transport role of `socket`: a persistent,
+    /// config-resolved OUTBOUND connection to a third-party vendor, typed by
+    /// the same §41.a session algebra on the axon-facing side and transcoded
+    /// to the vendor's wire frames by a declared total projection
+    /// (docs/fase/fase_80_upstream_design.md).
+    Upstream(UpstreamDefinition),
     /// §Fase 51.c.2 — a Pauli-sum observable `M = Σ cₖ Pₖ` that a `quant`
     /// block measures against (paper §3.2; plan D5).
     Observable(ObservableDefinition),
@@ -400,6 +406,91 @@ pub struct SocketDefinition {
     pub leading_trivia: Vec<crate::tokens::Trivia>,
     /// Fase 14.b — trailing comment trivia.
     pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// `upstream Name { transport:, protocol:, role:, resolve:, secret:, auth:,
+/// map: [...], reconnect: {...}, overflow:, backpressure: credit(n) }`
+///
+/// §Fase 80.b — the client dual of `socket`: axon dials OUT to a third-party
+/// vendor (STT/TTS/realtime speech APIs). The axon-facing interface is a
+/// declared `session` (referenced by `protocol:`, same field meaning as
+/// `socket`) of which axon plays `role:`; the vendor side is realised by the
+/// `map:` projection rules — a compile-time-total transcoding contract
+/// (§80.c, axon-T849). `resolve:`/`secret:` name per-tenant config keys,
+/// never URL/credential literals (axon-T850) — the same "config, not code"
+/// property §58.g gave `tool`, extended to persistent duplex streams.
+#[derive(Debug, Default)]
+pub struct UpstreamDefinition {
+    pub name: String,
+    /// Wire transport axon dials. Closed catalog; v1 sole member `websocket`.
+    pub transport: String,
+    /// The referenced `session` declaration's name — the axon-facing protocol.
+    pub protocol: String,
+    /// Which of the session's two roles axon plays; the peer role is the
+    /// vendor's, realised by the `map:` transcoding, never by axon code.
+    pub role: String,
+    /// Per-tenant config key holding the vendor URL (dot-separated,
+    /// `SecretKeyPolicy`-shaped — never a URL literal).
+    pub resolve: String,
+    /// Per-tenant secret binding for the vendor credential (same charset).
+    pub secret: String,
+    /// Auth handshake kind: `header` | `query` | `signed_url`.
+    pub auth_kind: String,
+    /// Header/query-param name (`header("Authorization")` / `query("token")`).
+    pub auth_name: Option<String>,
+    /// Optional header value prefix (`header("Authorization", "Token ")`).
+    pub auth_prefix: Option<String>,
+    /// The wire↔session transcoding contract; totality checked at §80.c.
+    pub map: Vec<UpstreamMapRule>,
+    /// `reconnect: { backoff_ms:, max_attempts:, on_exhausted: }`.
+    pub reconnect: Option<UpstreamReconnect>,
+    /// Outbound-queue policy when the VENDOR is the slow side — a member of
+    /// the existing `BackpressurePolicy` catalog. `None` ⇒ `fail` (honest
+    /// default: no silently-lossy audio unless the adopter opts in).
+    pub overflow: Option<String>,
+    /// Axon-facing credit window, identical semantics to `socket`.
+    pub backpressure_credit: Option<i64>,
+    /// §Fase 80.f — set when declared via `upstream X from Preset@vN {…}`;
+    /// carries the `Preset@vN` reference the desugar pass expanded.
+    pub preset: Option<String>,
+    pub loc: Loc,
+    /// Fase 14.b — leading comment trivia.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
+}
+
+/// One `map:` projection rule: `send M as json [tag "X"]` /
+/// `send M as binary` / `receive M as json [when "f" = "v"]` /
+/// `receive M as binary`. Inbound `json` payloads land as §73 `Json` (total
+/// navigation); the session message name is the routing + duality skeleton.
+#[derive(Debug, Default)]
+pub struct UpstreamMapRule {
+    /// `send` (axon → vendor) or `receive` (vendor → axon).
+    pub direction: String,
+    /// The session message type this rule transcodes.
+    pub message: String,
+    /// `json` (envelope frame) or `binary` (raw passthrough).
+    pub framing: String,
+    /// send-json only: overrides the `"type"` tag string in the envelope.
+    pub tag: Option<String>,
+    /// receive-json only: discriminator field (default `"type"`).
+    pub when_field: Option<String>,
+    /// receive-json only: discriminator value (default: the message name).
+    pub when_value: Option<String>,
+    pub loc: Loc,
+}
+
+/// `reconnect: { backoff_ms: 500, max_attempts: 5, on_exhausted: fail }` —
+/// exponential backoff (doubling from `backoff_ms`, jittered at runtime), at
+/// most `max_attempts` redials; `on_exhausted` is a closed catalog mirroring
+/// `budget`'s style (v1 sole member `fail` — fail-closed, the flow sees the
+/// exhaustion; `degrade`/`park` are named deferred scope).
+#[derive(Debug, Default)]
+pub struct UpstreamReconnect {
+    pub backoff_ms: i64,
+    pub max_attempts: i64,
+    pub on_exhausted: String,
 }
 
 /// `source -> target : Session` — one directed edge of a topology.

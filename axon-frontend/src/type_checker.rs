@@ -148,6 +148,19 @@ const VALID_SEVERITY_LEVELS: &[&str] = &["critical", "high", "low", "medium"];
 /// body (the receiver-verifiable witness of §77's `egress_is_a_kept_promise`).
 const VALID_SIGN_ALGORITHMS: &[&str] = &["hmac_sha256"];
 
+/// §Fase 80.c — closed catalogs for `upstream` (fase_80_upstream_design.md §1).
+/// `transport:` is v1-single-member by design: every surveyed 2026 STT/TTS/
+/// realtime vendor dials WebSocket; a catalog member the runtime cannot
+/// honestly drive (gRPC) is named deferred scope, not grammar.
+const VALID_UPSTREAM_TRANSPORTS: &[&str] = &["websocket"];
+/// The three auth-handshake shapes every surveyed vendor uses.
+const VALID_UPSTREAM_AUTH_KINDS: &[&str] = &["header", "query", "signed_url"];
+/// `reconnect.on_exhausted:` — v1 sole member `fail` (fail-closed); `degrade`
+/// / `park` are named deferred scope in the design doc.
+const VALID_UPSTREAM_ON_EXHAUSTED: &[&str] = &["fail"];
+/// `map:` rule framings.
+const VALID_UPSTREAM_FRAMINGS: &[&str] = &["binary", "json"];
+
 /// §Fase 77.a (`axon-W010`) — the complete `shield` field catalog, quoted in
 /// the unknown-field warning so the adopter sees what IS accepted. Kept in
 /// sync with `Parser::parse_shield`'s match arms by the
@@ -1262,6 +1275,11 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Socket(n) => {
                     registrations.push((n.name.clone(), "socket".into(), n.loc.line, n.loc.clone()));
                 }
+                // §Fase 80.b — register the outbound vendor connection so
+                // `voice`/flow references resolve to it.
+                Declaration::Upstream(n) => {
+                    registrations.push((n.name.clone(), "upstream".into(), n.loc.line, n.loc.clone()));
+                }
                 // §Fase 51.c.2 — register the Pauli-sum observable so a
                 // `quant(observable: <Name>)` reference resolves to it.
                 Declaration::Observable(n) => {
@@ -1455,6 +1473,7 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Session(n) => self.check_session(n),
                 Declaration::Topology(n) => self.check_topology(n),
                 Declaration::Socket(n) => self.check_socket(n),
+                Declaration::Upstream(n) => self.check_upstream(n),
                 Declaration::Observable(n) => self.check_observable(n),
                 Declaration::Witness(n) => self.check_witness(n),
                 Declaration::Immune(n) => self.check_immune(n),
@@ -4233,6 +4252,358 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
             }
+        }
+    }
+
+    /// §Fase 80.c — `upstream` validation (the outbound vendor connection).
+    /// Enforces, in order:
+    ///   (a) closed catalogs — `transport:` / `auth:` / `overflow:` /
+    ///       `reconnect.on_exhausted:` membership + auth-shape coherence
+    ///       (`header`/`query` need a name; `signed_url` must not carry one);
+    ///   (b) **axon-T851** — `protocol:` resolves to a declared `session` and
+    ///       `role:` is one of its two roles (duality of the session itself is
+    ///       already §41.a's law on the declaration); when a credit window is
+    ///       given, the §41.c Presburger discharge runs on the bound role;
+    ///   (c) **axon-T850** — `resolve:`/`secret:` are config KEYS
+    ///       (lowercase dot-separated, the compile-time mirror of the
+    ///       enterprise `SecretKeyPolicy` charset) — a URL or credential
+    ///       literal in source is unrepresentable, the §58.g "config, not
+    ///       code" property made a law;
+    ///   (d) **axon-T849** — the `map:` projection is a TOTAL, unambiguous
+    ///       cover of the bound role's message set: every send/receive has
+    ///       exactly one rule of the right direction, no rule names a message
+    ///       the role never exchanges, no two receive-json rules share a
+    ///       discriminator, at most one receive-binary rule. Partial
+    ///       transcoding is a compile error, never a runtime surprise.
+    fn check_upstream(&mut self, node: &UpstreamDefinition) {
+        // (a) closed catalogs.
+        if node.transport.is_empty() {
+            self.emit(
+                format!("Upstream '{}' has no `transport:` — v1 catalog: {}", node.name, valid_list(VALID_UPSTREAM_TRANSPORTS)),
+                &node.loc,
+            );
+        } else if !is_valid(&node.transport, VALID_UPSTREAM_TRANSPORTS) {
+            self.emit(
+                format!(
+                    "Upstream '{}' transport '{}' is not in the v1 catalog: {} (gRPC/raw-TCP are named deferred scope — fase_80_upstream_design.md §5)",
+                    node.name, node.transport, valid_list(VALID_UPSTREAM_TRANSPORTS)
+                ),
+                &node.loc,
+            );
+        }
+        if node.auth_kind.is_empty() {
+            self.emit(
+                format!(
+                    "Upstream '{}' has no `auth:` — every vendor handshake must be declared. Valid: {}",
+                    node.name,
+                    valid_list(VALID_UPSTREAM_AUTH_KINDS)
+                ),
+                &node.loc,
+            );
+        } else if !is_valid(&node.auth_kind, VALID_UPSTREAM_AUTH_KINDS) {
+            self.emit(
+                format!(
+                    "Upstream '{}' auth kind '{}' is not in the catalog: {}",
+                    node.name,
+                    node.auth_kind,
+                    valid_list(VALID_UPSTREAM_AUTH_KINDS)
+                ),
+                &node.loc,
+            );
+        } else {
+            match node.auth_kind.as_str() {
+                "header" | "query" if node.auth_name.is_none() => self.emit(
+                    format!(
+                        "Upstream '{}' auth `{}` requires a name — `{}(\"<name>\")`",
+                        node.name, node.auth_kind, node.auth_kind
+                    ),
+                    &node.loc,
+                ),
+                "signed_url" if node.auth_name.is_some() => self.emit(
+                    format!(
+                        "Upstream '{}' auth `signed_url` takes no arguments — the resolved URL already carries its signature",
+                        node.name
+                    ),
+                    &node.loc,
+                ),
+                _ => {}
+            }
+        }
+        if let Some(overflow) = &node.overflow {
+            if crate::stream_effect::BackpressurePolicy::from_slug(overflow).is_none() {
+                let all: Vec<&str> = crate::stream_effect::BackpressurePolicy::ALL
+                    .iter()
+                    .map(|p| p.slug())
+                    .collect();
+                self.emit(
+                    format!(
+                        "Upstream '{}' overflow '{}' is not a backpressure policy. Valid: {}",
+                        node.name,
+                        overflow,
+                        all.join(", ")
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+        if let Some(rc) = &node.reconnect {
+            if rc.backoff_ms < 1 {
+                self.emit(
+                    format!("Upstream '{}' reconnect backoff_ms must be ≥ 1 (got {})", node.name, rc.backoff_ms),
+                    &node.loc,
+                );
+            }
+            if rc.max_attempts < 0 {
+                self.emit(
+                    format!("Upstream '{}' reconnect max_attempts must be ≥ 0 (got {})", node.name, rc.max_attempts),
+                    &node.loc,
+                );
+            }
+            if !is_valid(&rc.on_exhausted, VALID_UPSTREAM_ON_EXHAUSTED) {
+                self.emit(
+                    format!(
+                        "Upstream '{}' reconnect on_exhausted '{}' is not in the v1 catalog: {} (`degrade`/`park` are named deferred scope)",
+                        node.name,
+                        rc.on_exhausted,
+                        valid_list(VALID_UPSTREAM_ON_EXHAUSTED)
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+
+        // (b) axon-T851 — session + role binding.
+        let bound_role: Option<&SessionRole> = if node.protocol.is_empty() {
+            self.emit(
+                format!("axon-T851 Upstream '{}' has no `protocol:` — it must reference a declared session", node.name),
+                &node.loc,
+            );
+            None
+        } else {
+            match find_session_by_name(self.program, &node.protocol) {
+                None => {
+                    self.emit(
+                        format!(
+                            "axon-T851 Upstream '{}' protocol '{}' is not a declared session",
+                            node.name, node.protocol
+                        ),
+                        &node.loc,
+                    );
+                    None
+                }
+                Some(session) => {
+                    if node.role.is_empty() {
+                        self.emit(
+                            format!(
+                                "axon-T851 Upstream '{}' has no `role:` — declare which side of session '{}' axon plays ({})",
+                                node.name,
+                                node.protocol,
+                                session.roles.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
+                            ),
+                            &node.loc,
+                        );
+                        None
+                    } else {
+                        match session.roles.iter().find(|r| r.name == node.role) {
+                            Some(role) => Some(role),
+                            None => {
+                                self.emit(
+                                    format!(
+                                        "axon-T851 Upstream '{}' role '{}' is not a role of session '{}' (roles: {})",
+                                        node.name,
+                                        node.role,
+                                        node.protocol,
+                                        session.roles.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
+                                    ),
+                                    &node.loc,
+                                );
+                                None
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        // §41.c Presburger discharge on the bound role, same law as `socket`.
+        if let Some(role) = bound_role {
+            match node.backpressure_credit {
+                Some(n) if n >= 1 => {
+                    let lowered = lower_session_role(role).with_credit(n as u64);
+                    if let Err(e) = lowered.credit_analyse(n as u64) {
+                        self.emit(
+                            format!(
+                                "Upstream '{}' violates the credit-refined backpressure type of session '{}' role '{}': {} (D2)",
+                                node.name, node.protocol, node.role, e
+                            ),
+                            &node.loc,
+                        );
+                    }
+                }
+                Some(n) => self.emit(
+                    format!(
+                        "Upstream '{}' backpressure credit must be ≥ 1 (got {n}); a 0-credit window cannot type a send (§Fase 41 §4.2)",
+                        node.name
+                    ),
+                    &node.loc,
+                ),
+                None => {}
+            }
+        }
+
+        // (c) axon-T850 — config-key shape (compile-time SecretKeyPolicy mirror).
+        self.check_upstream_config_key(&node.name, "resolve", &node.resolve, &node.loc);
+        self.check_upstream_config_key(&node.name, "secret", &node.secret, &node.loc);
+
+        // (d) axon-T849 — projection totality over the bound role.
+        for rule in &node.map {
+            if !is_valid(&rule.framing, VALID_UPSTREAM_FRAMINGS) {
+                self.emit(
+                    format!(
+                        "Upstream '{}' map rule for '{}' has framing '{}' — valid: {}",
+                        node.name,
+                        rule.message,
+                        rule.framing,
+                        valid_list(VALID_UPSTREAM_FRAMINGS)
+                    ),
+                    &rule.loc,
+                );
+            }
+            if rule.tag.is_some() && (rule.direction != "send" || rule.framing != "json") {
+                self.emit(
+                    format!(
+                        "Upstream '{}' map rule for '{}': `tag` applies only to `send … as json`",
+                        node.name, rule.message
+                    ),
+                    &rule.loc,
+                );
+            }
+            if rule.when_field.is_some() && (rule.direction != "receive" || rule.framing != "json") {
+                self.emit(
+                    format!(
+                        "Upstream '{}' map rule for '{}': `when` applies only to `receive … as json`",
+                        node.name, rule.message
+                    ),
+                    &rule.loc,
+                );
+            }
+        }
+        if let Some(role) = bound_role {
+            let mut sends: Vec<String> = Vec::new();
+            let mut receives: Vec<String> = Vec::new();
+            collect_role_messages(&role.steps, &mut sends, &mut receives);
+            // Every role message needs exactly one rule of the right direction.
+            for (dir, msgs) in [("send", &sends), ("receive", &receives)] {
+                for msg in msgs.iter() {
+                    let n = node
+                        .map
+                        .iter()
+                        .filter(|r| r.direction == dir && &r.message == msg)
+                        .count();
+                    if n == 0 {
+                        self.emit(
+                            format!(
+                                "axon-T849 Upstream '{}': session '{}' role '{}' {}s '{}' but `map:` has no `{}` rule for it — a message with no projection would fall through untranscoded",
+                                node.name, node.protocol, node.role, dir, msg, dir
+                            ),
+                            &node.loc,
+                        );
+                    } else if n > 1 {
+                        self.emit(
+                            format!(
+                                "axon-T849 Upstream '{}': duplicate `{}` map rules for '{}' — the projection must be unambiguous",
+                                node.name, dir, msg
+                            ),
+                            &node.loc,
+                        );
+                    }
+                }
+            }
+            // No rule may name a message the role never exchanges (drift guard).
+            for rule in &node.map {
+                let known = match rule.direction.as_str() {
+                    "send" => sends.contains(&rule.message),
+                    _ => receives.contains(&rule.message),
+                };
+                if !known {
+                    self.emit(
+                        format!(
+                            "axon-T849 Upstream '{}': map rule `{} {}` names a message session '{}' role '{}' never {}s",
+                            node.name, rule.direction, rule.message, node.protocol, node.role, rule.direction
+                        ),
+                        &rule.loc,
+                    );
+                }
+            }
+            // Inbound dispatch must be deterministic.
+            let receive_json: Vec<(&str, String, String)> = node
+                .map
+                .iter()
+                .filter(|r| r.direction == "receive" && r.framing == "json")
+                .map(|r| {
+                    (
+                        r.message.as_str(),
+                        r.when_field.clone().unwrap_or_else(|| "type".to_string()),
+                        r.when_value.clone().unwrap_or_else(|| r.message.clone()),
+                    )
+                })
+                .collect();
+            for (i, a) in receive_json.iter().enumerate() {
+                for b in receive_json.iter().skip(i + 1) {
+                    if a.1 == b.1 && a.2 == b.2 {
+                        self.emit(
+                            format!(
+                                "axon-T849 Upstream '{}': receive rules for '{}' and '{}' share the discriminator (\"{}\" = \"{}\") — inbound dispatch would be ambiguous",
+                                node.name, a.0, b.0, a.1, a.2
+                            ),
+                            &node.loc,
+                        );
+                    }
+                }
+            }
+            let binary_receives = node
+                .map
+                .iter()
+                .filter(|r| r.direction == "receive" && r.framing == "binary")
+                .count();
+            if binary_receives > 1 {
+                self.emit(
+                    format!(
+                        "axon-T849 Upstream '{}': {} `receive … as binary` rules — binary frames carry no discriminator, so at most one is dispatchable",
+                        node.name, binary_receives
+                    ),
+                    &node.loc,
+                );
+            }
+        }
+    }
+
+    /// §Fase 80.c (`axon-T850`) — `resolve:`/`secret:` must be per-tenant
+    /// config KEYS, never endpoint/credential literals. The charset is the
+    /// compile-time mirror of the enterprise `SecretKeyPolicy`
+    /// (`saas-secrets/src/policy.rs`): first char `[a-z0-9]`, rest
+    /// `[a-z0-9_.-]` — notably NO `/` (the §77.g production-custody lesson)
+    /// and no `:` (a URL cannot pass). Keeping the mirror here makes the
+    /// "key valid in the mock, rejected by production custody" bug class
+    /// unrepresentable in a compiled program.
+    fn check_upstream_config_key(&mut self, upstream: &str, field: &str, key: &str, loc: &Loc) {
+        if key.is_empty() {
+            self.emit(
+                format!("axon-T850 Upstream '{upstream}' has no `{field}:` — declare a per-tenant config key (e.g. `upstream.vendor.{}`)",
+                    if field == "secret" { "api_key" } else { "url" }),
+                loc,
+            );
+            return;
+        }
+        let mut chars = key.chars();
+        let head_ok = chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+        let rest_ok = chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '.' | '-'));
+        if !head_ok || !rest_ok {
+            self.emit(
+                format!(
+                    "axon-T850 Upstream '{upstream}' `{field}:` value '{key}' is not a config key — keys are lowercase dot-separated (`[a-z0-9][a-z0-9_.-]*`, no `/`, no `:`); URLs and credentials never appear in source (the same config-not-code property as `tool`, §58.g)"
+                ),
+                loc,
+            );
         }
     }
 
@@ -7906,6 +8277,36 @@ fn cycle_to_edges<'a>(cycle: &[String], edges: &'a [TopologyEdge]) -> Vec<&'a To
 }
 
 /// Locate a session by name in the program's declarations (flat scan).
+/// §Fase 80.c — collect the distinct message types a role sends/receives,
+/// walking every construct that can carry a message: plain `send`/`receive`
+/// steps, `select`/`branch` labelled arms, and §79 `interrupt` body+handler
+/// (both exits — a message only exchanged inside a handler still crosses the
+/// wire, so the T849 totality law must see it). `loop`/`end`/`resume` carry
+/// no payload. Order-preserving first-occurrence dedup keeps diagnostics
+/// deterministic.
+fn collect_role_messages(steps: &[SessionStep], sends: &mut Vec<String>, receives: &mut Vec<String>) {
+    for step in steps {
+        match step.op.as_str() {
+            "send" => {
+                if !sends.contains(&step.message_type) {
+                    sends.push(step.message_type.clone());
+                }
+            }
+            "receive" => {
+                if !receives.contains(&step.message_type) {
+                    receives.push(step.message_type.clone());
+                }
+            }
+            "select" | "branch" | "interrupt" => {
+                for b in &step.branches {
+                    collect_role_messages(&b.steps, sends, receives);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn find_session_by_name<'a>(program: &'a Program, name: &str) -> Option<&'a SessionDefinition> {
     for decl in &program.declarations {
         if let Declaration::Session(s) = decl {

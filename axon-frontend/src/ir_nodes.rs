@@ -106,6 +106,15 @@ pub struct IRProgram {
     /// deploy/runtime evaluator (§69.b+).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub witnesses: Vec<IRWitness>,
+    /// §Fase 80.b — outbound vendor connections (compiled). Each carries its
+    /// axon-facing session binding (`protocol`/`role`), the per-tenant config
+    /// keys (`resolve`/`secret`), the auth handshake, the total wire↔session
+    /// projection (`map`) and the reconnect/overflow policies, so axon-rs can
+    /// dial + transcode without vendor-specific code. `skip_serializing_if =
+    /// empty` keeps an upstream-less program's IR JSON byte-identical (zero
+    /// IR-SHA drift — the standing §76.d discipline).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upstreams: Vec<IRUpstream>,
     /// §Fase 23 — algebraic effect declarations (compiled).
     /// Each declared effect persists into IR so axon-rs can build the
     /// per-effect operation table at startup. The CPS state graph for
@@ -174,6 +183,7 @@ impl IRProgram {
             sockets: Vec::new(),
             observables: Vec::new(),
             witnesses: Vec::new(),
+            upstreams: Vec::new(),
             effects: Vec::new(),
         }
     }
@@ -1944,6 +1954,64 @@ pub struct IRSocket {
     pub backpressure_credit: Option<i64>,
     pub reconnect: bool,
     pub legal_basis: Option<String>,
+}
+
+/// §Fase 80.b — compiled outbound vendor connection (the client dual of
+/// [`IRSocket`]). `protocol`/`role` bind the axon-facing session interface;
+/// `resolve`/`secret` are per-tenant config keys (never literals — T850);
+/// `map` is the compile-time-total wire↔session projection (T849). Optional
+/// fields elide when absent so the IR shape is purely additive.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRUpstream {
+    pub node_type: &'static str,
+    pub source_line: u32,
+    pub source_column: u32,
+    pub name: String,
+    pub transport: String,
+    pub protocol: String,
+    pub role: String,
+    pub resolve: String,
+    pub secret: String,
+    pub auth_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_prefix: Option<String>,
+    pub map: Vec<IRUpstreamMapRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconnect: Option<IRUpstreamReconnect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backpressure_credit: Option<i64>,
+    /// §80.f — the `Preset@vN` reference this declaration was expanded from
+    /// (provenance for the compliance reviewer); absent for hand-written ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+}
+
+/// §Fase 80.b — one compiled `map:` projection rule.
+#[derive(Debug, Clone, Serialize)]
+pub struct IRUpstreamMapRule {
+    pub node_type: &'static str,
+    pub direction: String,
+    pub message: String,
+    pub framing: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when_field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when_value: Option<String>,
+}
+
+/// §Fase 80.b — compiled reconnect policy (all three fields required by the
+/// parser — a reconnection policy with a hole is not a policy).
+#[derive(Debug, Clone, Serialize)]
+pub struct IRUpstreamReconnect {
+    pub backoff_ms: i64,
+    pub max_attempts: i64,
+    pub on_exhausted: String,
 }
 
 /// Compiled emit step — `c⟨v⟩.P` (Chan-Output / Chan-Mobility).

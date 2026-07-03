@@ -296,6 +296,7 @@ impl IRGenerator {
             Declaration::Session(n) => ir.sessions.push(self.visit_session(n)),
             Declaration::Topology(n) => ir.topologies.push(self.visit_topology(n)),
             Declaration::Socket(n) => ir.sockets.push(self.visit_socket(n)),
+            Declaration::Upstream(n) => ir.upstreams.push(self.visit_upstream(n)),
             Declaration::Observable(n) => ir.observables.push(self.visit_observable(n)),
             Declaration::Witness(n) => ir.witnesses.push(self.visit_witness(n)),
             Declaration::Immune(n) => ir.immunes.push(self.visit_immune(n)),
@@ -1855,6 +1856,47 @@ impl IRGenerator {
             backpressure_credit: n.backpressure_credit,
             reconnect: n.reconnect,
             legal_basis: n.legal_basis.clone(),
+        }
+    }
+
+    /// §Fase 80.b — compile an `upstream` to its IR (the outbound vendor
+    /// connection; axon-rs dials + transcodes from this alone — a new vendor
+    /// is a new declaration, never new Rust code).
+    fn visit_upstream(&self, n: &UpstreamDefinition) -> IRUpstream {
+        IRUpstream {
+            node_type: "upstream",
+            source_line: n.loc.line,
+            source_column: n.loc.column,
+            name: n.name.clone(),
+            transport: n.transport.clone(),
+            protocol: n.protocol.clone(),
+            role: n.role.clone(),
+            resolve: n.resolve.clone(),
+            secret: n.secret.clone(),
+            auth_kind: n.auth_kind.clone(),
+            auth_name: n.auth_name.clone(),
+            auth_prefix: n.auth_prefix.clone(),
+            map: n
+                .map
+                .iter()
+                .map(|r| IRUpstreamMapRule {
+                    node_type: "upstream_map_rule",
+                    direction: r.direction.clone(),
+                    message: r.message.clone(),
+                    framing: r.framing.clone(),
+                    tag: r.tag.clone(),
+                    when_field: r.when_field.clone(),
+                    when_value: r.when_value.clone(),
+                })
+                .collect(),
+            reconnect: n.reconnect.as_ref().map(|r| IRUpstreamReconnect {
+                backoff_ms: r.backoff_ms,
+                max_attempts: r.max_attempts,
+                on_exhausted: r.on_exhausted.clone(),
+            }),
+            overflow: n.overflow.clone(),
+            backpressure_credit: n.backpressure_credit,
+            preset: n.preset.clone(),
         }
     }
 
