@@ -50,6 +50,21 @@ pub enum ProtocolError {
     /// The transport (WebSocket) returned an I/O error or was closed
     /// abruptly mid-dialogue.
     Transport(String),
+    /// §Fase 79.d — a `signal` fired but no interruptible region is armed
+    /// (the cursor is not inside an `interrupt { … }` body).
+    NoInterruptArmed,
+    /// §Fase 79.d — the fired signal's cause does not match the armed
+    /// region's declared `on <Signal>`.
+    SignalMismatch { expected: Payload, got: Payload },
+    /// §Fase 79.d — the fail-closed WCET watchdog (D79.5): the reaction path
+    /// (signal → cancellation-acknowledged) took more transitions than the
+    /// statically-declared bound. A breach never silently degrades — it trips
+    /// this fault, which the carrier audits.
+    WatchdogBreach { bound: u32, actual: u32 },
+    /// §Fase 79.d — `resume` invoked on an already-consumed (or never
+    /// captured) one-shot continuation — the linear-type violation of D79.1,
+    /// caught at runtime even if it somehow slipped the static check.
+    DoubleResume,
 }
 
 impl fmt::Display for ProtocolError {
@@ -81,6 +96,25 @@ impl fmt::Display for ProtocolError {
             ),
             ProtocolError::MalformedFrame(detail) => write!(f, "malformed frame: {detail}"),
             ProtocolError::Transport(detail) => write!(f, "transport error: {detail}"),
+            ProtocolError::NoInterruptArmed => write!(
+                f,
+                "signal fired but no interruptible region is armed (cursor not inside \
+                 an `interrupt` body, §Fase 79.d)"
+            ),
+            ProtocolError::SignalMismatch { expected, got } => write!(
+                f,
+                "interrupt signal mismatch: region declares `on {expected}`, got `{got}`"
+            ),
+            ProtocolError::WatchdogBreach { bound, actual } => write!(
+                f,
+                "WCET watchdog breach: reaction path took {actual} transitions, declared \
+                 bound is {bound} (fail-closed, §Fase 79.d / D79.5)"
+            ),
+            ProtocolError::DoubleResume => write!(
+                f,
+                "`resume` on an already-consumed one-shot continuation \
+                 (linear-type violation, §Fase 79 D79.1)"
+            ),
         }
     }
 }
@@ -100,6 +134,10 @@ impl ProtocolError {
             ProtocolError::AlreadyComplete { .. } => "already_complete",
             ProtocolError::MalformedFrame(_) => "malformed_frame",
             ProtocolError::Transport(_) => "transport",
+            ProtocolError::NoInterruptArmed => "no_interrupt_armed",
+            ProtocolError::SignalMismatch { .. } => "signal_mismatch",
+            ProtocolError::WatchdogBreach { .. } => "watchdog_breach",
+            ProtocolError::DoubleResume => "double_resume",
         }
     }
 }

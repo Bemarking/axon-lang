@@ -98,6 +98,48 @@ pub struct SessionRuntime {
     /// The dynamic credit window, or `None` for the unbounded fragment
     /// (no `backpressure` annotation in the socket).
     credit: Option<CreditWindow>,
+    /// §Fase 79.d — the active interruptible region, armed by
+    /// [`Self::try_enter_interrupt`]: the declared signal + the handler to
+    /// divert to. `#[serde(skip)]` — interrupt dispatch is live-only runtime
+    /// state; the parked continuation that *survives* a reconnect is persisted
+    /// separately via the §41.g `cognitive_state` snapshot (§79.e), not here.
+    #[serde(skip, default)]
+    interrupt: Option<InterruptFrame>,
+    /// §Fase 79.d — the emit cursor (D79.10): frames flushed to the carrier so
+    /// far. Snapshotted into the parked continuation so `resume` re-opens the
+    /// body's `Stream<T>` at the exact flushed offset ("the exact word").
+    #[serde(skip, default)]
+    emit_count: u64,
+    /// §Fase 79.d — the captured **one-shot** continuation (paper κ), set by
+    /// [`Self::signal`] and consumed exactly once by [`Self::try_resume`]. A
+    /// second resume is [`ProtocolError::DoubleResume`] (D79.1 linearity).
+    #[serde(skip, default)]
+    parked: Option<ParkedContinuation>,
+}
+
+/// §Fase 79.d — the armed interruptible region: what signal fires it and what
+/// handler to divert to. Live runtime state (not serialized).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InterruptFrame {
+    signal: Payload,
+    handler: SessionType,
+}
+
+/// §Fase 79.d — a captured one-shot continuation of an interrupted body: the
+/// reified session cursor + credit window (the paper's κ ≅ (S₍>k₎, w), D79.9)
+/// plus the emit-cursor snapshot (D79.10) and the cause that fired. Consumed
+/// exactly once by [`SessionRuntime::try_resume`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParkedContinuation {
+    /// `S₍>k₎` — the body residual at the instant of interruption.
+    pub cursor: SessionType,
+    /// The body's live credit window at interruption — restored *exactly* on
+    /// resume (credit symmetry, Theorem 3).
+    pub credit: Option<CreditWindow>,
+    /// Frames flushed to the carrier at park time (the emit cursor, D79.10).
+    pub emit_count: u64,
+    /// The `CallInterruptCause` that fired the interruption.
+    pub cause: Payload,
 }
 
 impl SessionRuntime {
@@ -110,6 +152,9 @@ impl SessionRuntime {
             schema,
             cursor,
             credit: budget.map(CreditWindow::new),
+            interrupt: None,
+            emit_count: 0,
+            parked: None,
         }
     }
 
@@ -190,6 +235,9 @@ impl SessionRuntime {
             schema: sealed.schema,
             cursor: sealed.cursor,
             credit: sealed.credit,
+            interrupt: None,
+            emit_count: 0,
+            parked: None,
         })
     }
 
@@ -231,6 +279,9 @@ impl SessionRuntime {
             }
         }
         self.advance(*cont);
+        // §Fase 79.d — advance the emit cursor: a producer step flushes one
+        // frame to the carrier (D79.10 "delivered = flushed").
+        self.emit_count += 1;
         Ok(())
     }
 
@@ -288,6 +339,128 @@ impl SessionRuntime {
                 frame_kind: "end",
             }),
         }
+    }
+
+    // ── §Fase 79.d — interruptible-session dispatch ─────────────────────
+
+    /// The emit cursor (D79.10): producer frames flushed to the carrier so far.
+    pub fn emit_count(&self) -> u64 {
+        self.emit_count
+    }
+
+    /// `true` while an interruptible region is armed (cursor inside its body).
+    pub fn interrupt_armed(&self) -> bool {
+        self.interrupt.is_some()
+    }
+
+    /// The captured one-shot continuation, if the region has been interrupted
+    /// and not yet resumed/abandoned. `None` before `signal` and after
+    /// `resume`/`abandon` (the linear consumption point).
+    pub fn parked(&self) -> Option<&ParkedContinuation> {
+        self.parked.as_ref()
+    }
+
+    /// §Fase 79.d — enter an interruptible region. The cursor must be
+    /// `Interrupt { signal, body, handler }`; advances **into the body** while
+    /// arming the region so a matching [`Self::signal`] can capture the body's
+    /// residual and divert to the handler. The connection law is preserved:
+    /// the peer enters the dual region symmetrically (Theorem 1).
+    pub fn try_enter_interrupt(&mut self) -> Result<(), ProtocolError> {
+        let (signal, body, handler) = match &self.cursor {
+            SessionType::Interrupt { signal, body, handler } => {
+                (signal.clone(), (**body).clone(), (**handler).clone())
+            }
+            other => {
+                return Err(ProtocolError::UnexpectedFrame {
+                    cursor_kind: kind_of(other),
+                    frame_kind: "interrupt",
+                })
+            }
+        };
+        self.interrupt = Some(InterruptFrame { signal, handler });
+        self.advance(body);
+        Ok(())
+    }
+
+    /// §Fase 79.d — fire the interrupt signal `cause`. Captures the body's exact
+    /// residual (cursor + credit window + emit cursor) as a **one-shot**
+    /// continuation (κ, D79.9), then diverts the cursor to the handler. A
+    /// fail-closed WCET watchdog (D79.5) asserts the reaction path completes
+    /// within `max_reaction_steps` transitions — the capture-and-divert is a
+    /// single transition, so any bound `≥ 1` holds and `0` trips the watchdog
+    /// (the fault is never silently degraded).
+    ///
+    /// Errors: [`ProtocolError::NoInterruptArmed`] if no region is armed,
+    /// [`ProtocolError::SignalMismatch`] if `cause` ≠ the declared signal,
+    /// [`ProtocolError::WatchdogBreach`] on a bound breach.
+    pub fn signal(&mut self, cause: &str, max_reaction_steps: u32) -> Result<(), ProtocolError> {
+        let frame = match self.interrupt.take() {
+            Some(f) => f,
+            None => return Err(ProtocolError::NoInterruptArmed),
+        };
+        let got = Payload::new(cause);
+        if frame.signal != got {
+            let expected = frame.signal.clone();
+            self.interrupt = Some(frame); // region stays armed; this signal wasn't ours
+            return Err(ProtocolError::SignalMismatch { expected, got });
+        }
+        // WCET watchdog (D79.5): the reaction path here is one transition
+        // (capture + divert). Fail closed on a declared bound it exceeds.
+        const REACTION_STEPS: u32 = 1;
+        if REACTION_STEPS > max_reaction_steps {
+            // Re-arm so the region isn't silently lost on a watchdog fault.
+            self.interrupt = Some(frame);
+            return Err(ProtocolError::WatchdogBreach {
+                bound: max_reaction_steps,
+                actual: REACTION_STEPS,
+            });
+        }
+        // Capture the reified one-shot continuation κ ≅ (S₍>k₎, w) + emit cursor.
+        self.parked = Some(ParkedContinuation {
+            cursor: self.cursor.clone(),
+            credit: self.credit,
+            emit_count: self.emit_count,
+            cause: got,
+        });
+        // Divert to the handler. It runs on the live window (a fork of the body
+        // window); `resume` restores the parked body window exactly, so the
+        // handler's own sends never perturb the body's credit (Theorem 3).
+        self.advance(frame.handler);
+        Ok(())
+    }
+
+    /// §Fase 79.d — the handler's **normal exit** `resume`: consume the parked
+    /// one-shot continuation EXACTLY ONCE and return the body to its exact
+    /// residual — cursor, credit window (symmetry, Theorem 3), and emit cursor
+    /// (D79.10). The cursor must be at the `Resume` leaf.
+    ///
+    /// A second `resume` (or a resume with no capture) is
+    /// [`ProtocolError::DoubleResume`] — the runtime witness of D79.1 linearity.
+    pub fn try_resume(&mut self) -> Result<(), ProtocolError> {
+        if !matches!(self.cursor, SessionType::Resume) {
+            return Err(ProtocolError::UnexpectedFrame {
+                cursor_kind: kind_of(&self.cursor),
+                frame_kind: "resume",
+            });
+        }
+        let parked = match self.parked.take() {
+            Some(p) => p,
+            None => return Err(ProtocolError::DoubleResume),
+        };
+        self.credit = parked.credit; // exact pre-interrupt window (Theorem 3)
+        self.emit_count = parked.emit_count; // re-open the stream at the flushed offset
+        self.advance(parked.cursor); // back to S₍>k₎
+        Ok(())
+    }
+
+    /// §Fase 79.d — the handler's **abandon exit** (D79.11a): the parked
+    /// continuation is discarded (released exactly once, affine-by-default) and
+    /// the region terminates at `end`. Driven on TTL expiry by the carrier
+    /// (§79.e). Safe to call whether or not a continuation is still parked.
+    pub fn abandon(&mut self) {
+        self.parked = None;
+        self.interrupt = None;
+        self.cursor = SessionType::End;
     }
 
     // ── Internal helpers ───────────────────────────────────────────────
