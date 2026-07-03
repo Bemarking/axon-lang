@@ -4054,6 +4054,56 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 "loop" | "end" => {}
+                // §Fase 79.c — `resume` is a bare terminal step (the handler's
+                // normal exit). Its well-formedness (only inside an interrupt
+                // handler) is enforced by the enclosing `interrupt` check below;
+                // a stray top-level `resume` reaching here is harmless as a step
+                // but never lowers to a reachable exit outside a handler.
+                "resume" => {}
+                // §Fase 79.c — interrupt region.
+                "interrupt" => {
+                    // (a) closed-catalog signal (D79.2).
+                    if !CALL_INTERRUPT_CAUSES.contains(&step.message_type.as_str()) {
+                        self.emit(
+                            format!(
+                                "Session '{session_name}' role '{role_name}' step #{idx}: \
+                                 interrupt signal '{}' is not a CallInterruptCause \
+                                 (expected one of: {})",
+                                step.message_type,
+                                CALL_INTERRUPT_CAUSES.join(", ")
+                            ),
+                            &step.loc,
+                        );
+                    }
+                    // (b) both a body and a resumable handler arm.
+                    let has = |l: &str| step.branches.iter().any(|b| b.label == l);
+                    if !has("body") || !has("handler") {
+                        self.emit(
+                            format!(
+                                "Session '{session_name}' role '{role_name}' step #{idx}: \
+                                 interrupt requires both a body and a resumable handler"
+                            ),
+                            &step.loc,
+                        );
+                    }
+                    for b in &step.branches {
+                        self.check_session_steps(session_name, role_name, &b.steps);
+                    }
+                    // (c) two-exit well-formedness (D79.11a): the handler must
+                    // reach either `resume` (normal exit) or `end` (abandon exit).
+                    if let Some(h) = step.branches.iter().find(|b| b.label == "handler") {
+                        if !handler_reaches_exit(&h.steps) {
+                            self.emit(
+                                format!(
+                                    "Session '{session_name}' role '{role_name}' step #{idx}: \
+                                     interrupt handler must reach `resume` or `end` \
+                                     (a two-exit construct, paper §3.5)"
+                                ),
+                                &step.loc,
+                            );
+                        }
+                    }
+                }
                 "select" | "branch" => {
                     if step.branches.is_empty() {
                         self.emit(
@@ -7737,6 +7787,25 @@ fn lower_session_steps(steps: &[SessionStep]) -> SessionType {
         "end" => SessionType::End,
         "select" => SessionType::select(branch_types(&first.branches)),
         "branch" => SessionType::branch(branch_types(&first.branches)),
+        // §Fase 79 — `interrupt { body } on Sig as sig resumable { handler }`
+        // lowers to `Intr(sig; B, H)`. Terminal like select/branch (the region's
+        // continuation lives inside its body). `resume` ↦ the self-dual leaf.
+        "interrupt" => {
+            let find = |label: &str| {
+                first
+                    .branches
+                    .iter()
+                    .find(|b| b.label == label)
+                    .map(|b| lower_session_steps(&b.steps))
+                    .unwrap_or(SessionType::End)
+            };
+            SessionType::Interrupt {
+                signal: crate::session::Payload::new(first.message_type.clone()),
+                body: Box::new(find("body")),
+                handler: Box::new(find("handler")),
+            }
+        }
+        "resume" => SessionType::Resume,
         // Malformed mid-sequence op; `check_session_role` flags it. Skip so
         // duality diagnostics stay focused on the real shape.
         _ => lower_session_steps(rest),
@@ -7747,12 +7816,37 @@ fn branch_types(branches: &[SessionBranch]) -> impl Iterator<Item = (String, Ses
     branches.iter().map(|b| (b.label.clone(), lower_session_steps(&b.steps)))
 }
 
+/// §Fase 79 — the closed `CallInterruptCause` catalog (D79.2). Mirrors every
+/// other closed catalog in the language (`qos`, `on_stuck`, `sign`): the
+/// type-checker needs a finite exhaustiveness surface and the PCC a finite
+/// proof obligation. Also consumed by the `InterruptibleSessionSoundness`
+/// witness re-derivation (§79.c PCC).
+pub const CALL_INTERRUPT_CAUSES: &[&str] =
+    &["CallerSpeech", "Dtmf", "SilenceTimeout", "AgentFault"];
+
+/// §Fase 79.c — a `resumable` handler is a **two-exit** construct (D79.11a):
+/// its normal exit is `resume` (back to the parked body) and its abandon exit
+/// is `end` (TTL expiry). A well-formed handler must reach one of them on every
+/// path — the last step is `resume`/`end`, or a terminal choice all of whose
+/// arms reach an exit. A handler that "falls off the end" would leave a linear
+/// continuation capability un-released.
+fn handler_reaches_exit(steps: &[SessionStep]) -> bool {
+    match steps.last() {
+        Some(s) if s.op == "resume" || s.op == "end" => true,
+        Some(s) if matches!(s.op.as_str(), "select" | "branch") => {
+            !s.branches.is_empty() && s.branches.iter().all(|b| handler_reaches_exit(&b.steps))
+        }
+        _ => false,
+    }
+}
+
 /// True if any step (top-level or inside a `select`/`branch`) is a `loop` — the
 /// role then carries a single `μX` whose `X` every `loop` recurses to.
 fn steps_contain_loop(steps: &[SessionStep]) -> bool {
     steps.iter().any(|s| {
         s.op == "loop"
-            || (matches!(s.op.as_str(), "select" | "branch") && s.branches.iter().any(|b| steps_contain_loop(&b.steps)))
+            || (matches!(s.op.as_str(), "select" | "branch" | "interrupt")
+                && s.branches.iter().any(|b| steps_contain_loop(&b.steps)))
     })
 }
 

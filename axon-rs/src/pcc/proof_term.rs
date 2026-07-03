@@ -181,6 +181,15 @@ pub enum PropertyClass {
     /// mirror is `axon-T846`/`T848`. A channel with neither a declared nor
     /// a derivable egress marking carries no contract → no proof.
     ChannelEgressSoundness,
+    /// §Fase 79.c — an **interruptible session region** (`interrupt … on
+    /// <Signal> as <sig> resumable …`) is sound: the signal is in the closed
+    /// `CallInterruptCause` catalog (D79.2), the region declares both a body and
+    /// a resumable handler, and the handler reaches a **two-exit** terminal
+    /// (`resume` or `end`, D79.11a). Re-derived from the IR session steps; a
+    /// forged witness (e.g. `signal_in_catalog: true` for a bogus cause) is
+    /// caught by recomputation. Compile-time mirror: the §79.c type-checker's
+    /// interrupt validation.
+    InterruptibleSessionSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -222,9 +231,17 @@ impl PropertyClass {
             PropertyClass::ChannelDeliverySoundness => "channel_delivery_soundness",
             PropertyClass::AggregateSoundness => "aggregate_soundness",
             PropertyClass::ChannelEgressSoundness => "channel_egress_soundness",
+            PropertyClass::InterruptibleSessionSoundness => "interruptible_session_soundness",
         }
     }
 }
+
+/// §79.c — the closed `CallInterruptCause` catalog. The checker's own statement
+/// of the spec (D51.2) — mirror of
+/// `axon_frontend::type_checker::CALL_INTERRUPT_CAUSES`. Cross-crate drift is
+/// gated the same way the other mirrored catalogs are.
+pub const CALL_INTERRUPT_CAUSES: &[&str] =
+    &["CallerSpeech", "Dtmf", "SilenceTimeout", "AgentFault"];
 
 /// §51.a — witness for [`PropertyClass::ComplianceCoverage`].
 ///
@@ -577,6 +594,33 @@ pub struct ChannelEgressSoundnessWitness {
     pub durable: bool,
 }
 
+/// §79.c — witness for [`PropertyClass::InterruptibleSessionSoundness`].
+///
+/// One interruptible region, located by `(session_name, role_name, signal)`.
+/// The checker RE-DERIVES every field from the IR session steps and rejects the
+/// proof if the witness disagrees (D51.2). A verifying proof has
+/// `signal_in_catalog && has_body && has_handler && handler_reaches_exit`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterruptibleSessionSoundnessWitness {
+    /// The `session` this region lives in.
+    pub session_name: String,
+    /// The role whose protocol contains the interrupt region.
+    pub role_name: String,
+    /// The `on <Signal>` cause, verbatim from the IR step.
+    pub signal: String,
+    /// `signal ∈ CallInterruptCause` — a pure function of `signal`, so a forged
+    /// `true` here is caught (the checker recomputes it from `signal`).
+    pub signal_in_catalog: bool,
+    /// The region declares a `body` arm.
+    pub has_body: bool,
+    /// The region declares a resumable `handler` arm.
+    pub has_handler: bool,
+    /// The handler reaches a two-exit terminal (`resume` or `end`) on every
+    /// path (D79.11a — a handler that falls off the end would leak a linear
+    /// continuation capability).
+    pub handler_reaches_exit: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -594,6 +638,7 @@ pub enum Witness {
     ChannelDeliverySoundness(ChannelDeliverySoundnessWitness),
     AggregateSoundness(AggregateSoundnessWitness),
     ChannelEgressSoundness(ChannelEgressSoundnessWitness),
+    InterruptibleSessionSoundness(InterruptibleSessionSoundnessWitness),
 }
 
 impl Witness {
@@ -620,6 +665,7 @@ impl Witness {
             Witness::ChannelDeliverySoundness(w) => &w.channel_name,
             Witness::AggregateSoundness(w) => &w.store_name,
             Witness::ChannelEgressSoundness(w) => &w.channel_name,
+            Witness::InterruptibleSessionSoundness(w) => &w.session_name,
         }
     }
 }

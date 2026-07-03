@@ -94,6 +94,24 @@ pub enum SessionType {
     Rec(String, Box<SessionType>),
     /// `X` — a recursion variable (bound by an enclosing `Rec`).
     Var(String),
+    /// §Fase 79 — `Intr(sig; B, H)` — an **interruptible region** (paper
+    /// *Interruptible Sessions* §3.3). `body` (`B`) is the interruptible
+    /// protocol; on the `signal` (a closed `CallInterruptCause` cause) the
+    /// `handler` (`H`) runs. `H` is a **two-exit** construct: its normal exit is
+    /// [`SessionType::Resume`] (control returns to `B`'s residual), its
+    /// abandon exit is `End`. Duality is `Intr(sig; B, H)⊥ = Intr(sig; B⊥, H⊥)`
+    /// (Theorem 1: the connection law is preserved across both exits).
+    Interrupt {
+        signal: Payload,
+        body: Box<SessionType>,
+        handler: Box<SessionType>,
+    },
+    /// §Fase 79 — the interrupt handler's **normal exit**: hand control back to
+    /// the parked body's residual (`resume`). A self-dual leaf, like `End`
+    /// (resumption is symmetric — the peer receives control back). Only
+    /// well-formed inside an [`SessionType::Interrupt`] handler (checked at
+    /// §79.c); the abandon exit is the ordinary `End`.
+    Resume,
 }
 
 impl SessionType {
@@ -171,6 +189,14 @@ impl SessionType {
             SessionType::Branch(m) => SessionType::Select(dual_map(m)),
             SessionType::Rec(x, b) => SessionType::Rec(x.clone(), Box::new(b.dual())),
             SessionType::Var(x) => SessionType::Var(x.clone()),
+            // §Fase 79 — Intr(sig; B, H)⊥ = Intr(sig; B⊥, H⊥); Resume self-dual
+            // (Theorem 1: connection law preserved across both handler exits).
+            SessionType::Interrupt { signal, body, handler } => SessionType::Interrupt {
+                signal: signal.clone(),
+                body: Box::new(body.dual()),
+                handler: Box::new(handler.dual()),
+            },
+            SessionType::Resume => SessionType::Resume,
         }
     }
 
@@ -207,6 +233,14 @@ impl SessionType {
                     self.clone()
                 }
             }
+            // §Fase 79 — substitution descends into both interrupt sub-protocols;
+            // Resume is a leaf (no free vars of its own).
+            SessionType::Interrupt { signal, body, handler } => SessionType::Interrupt {
+                signal: signal.clone(),
+                body: Box::new(body.subst(var, repl)),
+                handler: Box::new(handler.subst(var, repl)),
+            },
+            SessionType::Resume => SessionType::Resume,
         }
     }
 
@@ -274,6 +308,14 @@ impl SessionType {
             ),
             SessionType::Rec(x, b) => SessionType::Rec(x.clone(), Box::new(b.with_credit(n))),
             SessionType::Var(x) => SessionType::Var(x.clone()),
+            // §Fase 79 — stamp both sub-protocols; the handler's disjoint-budget
+            // symmetry (Thm 3) is enforced structurally by the checker, not here.
+            SessionType::Interrupt { signal, body, handler } => SessionType::Interrupt {
+                signal: signal.clone(),
+                body: Box::new(body.with_credit(n)),
+                handler: Box::new(handler.with_credit(n)),
+            },
+            SessionType::Resume => SessionType::Resume,
         }
     }
 
@@ -293,6 +335,11 @@ impl SessionType {
             }
             SessionType::Rec(_, b) => b.has_send_at_zero(),
             SessionType::Var(_) => None,
+            // §Fase 79 — an explicit `!⁰A.S` anywhere in either sub-protocol.
+            SessionType::Interrupt { body, handler, .. } => {
+                body.has_send_at_zero().or_else(|| handler.has_send_at_zero())
+            }
+            SessionType::Resume => None,
         }
     }
 
@@ -525,6 +572,12 @@ fn credit_walk(t: &SessionType, available: i64, budget: i64) -> Result<i64, Cred
             // the fixpoint check above already vetted sustainability.
             Ok(available)
         }
+        // §Fase 79 — the body runs on the socket window; the handler runs on a
+        // separate declared budget (Thm 3 / D79.11b) and does not debit this
+        // window. On `resume` the window returns to its pre-interrupt state, so
+        // the region's post-state is exactly the body's normal completion.
+        SessionType::Interrupt { body, .. } => credit_walk(body, available, budget),
+        SessionType::Resume => Ok(available),
     }
 }
 
@@ -547,6 +600,11 @@ fn recurring_paths_into(t: &SessionType, x: &str, s: u64, r: u64, out: &mut Vec<
         }
         SessionType::Rec(y, body) if y != x => recurring_paths_into(body, x, s, r, out),
         SessionType::Rec(_, _) => {} // shadows x — its inner Var refers to itself
+        // §Fase 79 — descend into the body (its sends/recvs count toward the loop
+        // Δ); the handler's disjoint budget is analysed separately, and Resume is
+        // a return-to-body marker, not a fresh recurring path.
+        SessionType::Interrupt { body, .. } => recurring_paths_into(body, x, s, r, out),
+        SessionType::Resume => {}
     }
 }
 
@@ -580,6 +638,14 @@ fn equiv_inner(s: &SessionType, t: &SessionType, assumed: &mut Vec<(SessionType,
         // A bare `Var` survives unfolding only if it is free (open type); compare
         // nominally. Closed, contractive types never reach this with a head Var.
         (SessionType::Var(x), SessionType::Var(y)) => x == y,
+        // §Fase 79 — two interrupt regions are equivalent iff same signal cause
+        // and equivalent body + handler. Required so `is_dual_to` recognizes the
+        // Intr(sig;B,H) / Intr(sig;B⊥,H⊥) pair.
+        (
+            SessionType::Interrupt { signal: a, body: b1, handler: h1 },
+            SessionType::Interrupt { signal: b, body: b2, handler: h2 },
+        ) => a == b && equiv_inner(&b1, &b2, assumed) && equiv_inner(&h1, &h2, assumed),
+        (SessionType::Resume, SessionType::Resume) => true,
         _ => false,
     }
 }
@@ -612,6 +678,10 @@ impl fmt::Display for SessionType {
             SessionType::Branch(m) => write_choice(f, "&", m),
             SessionType::Rec(x, b) => write!(f, "rec {x}.{b}"),
             SessionType::Var(x) => f.write_str(x),
+            SessionType::Interrupt { signal, body, handler } => {
+                write!(f, "intr[{signal}]({body} ; {handler})")
+            }
+            SessionType::Resume => f.write_str("resume"),
         }
     }
 }

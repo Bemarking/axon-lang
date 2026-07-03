@@ -10,16 +10,18 @@
 //! shield) still gets a proof term; the checker renders `Refuted` so
 //! the defect is surfaced, not hidden.
 
-use crate::ir_nodes::IRProgram;
+use crate::ir_nodes::{IRProgram, IRSessionStep};
 
 use super::effects;
 use super::proof_term::{
     AggregateSoundnessWitness, CapabilityContainmentWitness, CapabilityIsolationWitness,
     ChannelEgressSoundnessWitness,
     ChannelDeliverySoundnessWitness, ComplianceCoverageWitness, EffectBudgetedWitness,
-    EffectRowSoundnessWitness, JsonShapeSoundnessWitness, ProofTerm, PropertyClass,
+    EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, JsonShapeSoundnessWitness,
+    ProofTerm, PropertyClass,
     ResourceBoundsWitness, ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness,
-    MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS, VALID_ON_EXHAUSTED,
+    CALL_INTERRUPT_CAUSES, MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS,
+    VALID_ON_EXHAUSTED,
 };
 
 /// Canonical SHA-256 hex digest of the IR artifact. Reuses the
@@ -1322,6 +1324,116 @@ pub fn generate_channel_egress_soundness_proofs(
     proofs
 }
 
+// ── §Fase 79.c — InterruptibleSessionSoundness ───────────────────────────────
+
+/// §79.c — does an IR handler step-sequence reach a two-exit terminal (`resume`
+/// or `end`) on every path (D79.11a)? The checker's own re-derivation of the
+/// §79.c type-checker's `handler_reaches_exit` (D51.2 — PCC states the spec
+/// independently). A terminal choice is well-formed iff every arm reaches one.
+fn ir_handler_reaches_exit(steps: &[IRSessionStep]) -> bool {
+    match steps.last() {
+        Some(s) if s.op == "resume" || s.op == "end" => true,
+        Some(s) if s.op == "select" || s.op == "branch" => {
+            !s.branches.is_empty() && s.branches.iter().all(|b| ir_handler_reaches_exit(&b.steps))
+        }
+        _ => false,
+    }
+}
+
+/// §79.c — the first `interrupt` step (by pre-order walk) in `steps` whose
+/// `on <Signal>` matches `signal`. Descends into nested arms (v1 forbids nested
+/// interrupts, but the walk is total either way).
+fn find_interrupt_step<'a>(steps: &'a [IRSessionStep], signal: &str) -> Option<&'a IRSessionStep> {
+    for s in steps {
+        if s.op == "interrupt" && s.message_type == signal {
+            return Some(s);
+        }
+        for b in &s.branches {
+            if let Some(found) = find_interrupt_step(&b.steps, signal) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// §79.c — every distinct interrupt signal declared in `steps` (canonical:
+/// sorted + deduped), so one region ↦ one proof even if the same cause recurs.
+fn interrupt_signals(steps: &[IRSessionStep]) -> Vec<String> {
+    let mut out = Vec::new();
+    fn walk(steps: &[IRSessionStep], out: &mut Vec<String>) {
+        for s in steps {
+            if s.op == "interrupt" {
+                out.push(s.message_type.clone());
+            }
+            for b in &s.branches {
+                walk(&b.steps, out);
+            }
+        }
+    }
+    walk(steps, &mut out);
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// §79.c — re-derive the InterruptibleSessionSoundness witness for the interrupt
+/// region located by `(session, role, signal)`. `None` if no such region exists
+/// in the artifact (a forged / stale proof then refutes).
+pub fn derive_interruptible_session_witness(
+    session_name: &str,
+    role_name: &str,
+    signal: &str,
+    ir: &IRProgram,
+) -> Option<InterruptibleSessionSoundnessWitness> {
+    let session = ir.sessions.iter().find(|s| s.name == session_name)?;
+    let role = session.roles.iter().find(|r| r.name == role_name)?;
+    let step = find_interrupt_step(&role.steps, signal)?;
+    let has_body = step.branches.iter().any(|b| b.label == "body");
+    let handler = step.branches.iter().find(|b| b.label == "handler");
+    Some(InterruptibleSessionSoundnessWitness {
+        session_name: session_name.to_string(),
+        role_name: role_name.to_string(),
+        signal: step.message_type.clone(),
+        signal_in_catalog: CALL_INTERRUPT_CAUSES.contains(&step.message_type.as_str()),
+        has_body,
+        has_handler: handler.is_some(),
+        handler_reaches_exit: handler
+            .map(|h| ir_handler_reaches_exit(&h.steps))
+            .unwrap_or(false),
+    })
+}
+
+/// §79.c — generate InterruptibleSessionSoundness proofs: one per interrupt
+/// region declared in any session role. An unsound region (bogus signal,
+/// missing arm, handler with no exit) still gets its refutable proof — the §52
+/// deploy gate then rejects the bundle fail-closed.
+pub fn generate_interruptible_session_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for session in &ir.sessions {
+        for role in &session.roles {
+            for signal in interrupt_signals(&role.steps) {
+                let Some(witness) =
+                    derive_interruptible_session_witness(&session.name, &role.name, &signal, ir)
+                else {
+                    continue;
+                };
+                proofs.push(ProofTerm {
+                    property: PropertyClass::InterruptibleSessionSoundness,
+                    artifact_digest: digest.clone(),
+                    witness: Witness::InterruptibleSessionSoundness(witness),
+                    axon_version: axon_version.to_string(),
+                });
+            }
+        }
+    }
+    proofs
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
 /// generator (compliance / effects / capability-gate / resources /
@@ -1342,5 +1454,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_channel_delivery_soundness_proofs(ir, axon_version));
     proofs.extend(generate_aggregate_soundness_proofs(ir, axon_version));
     proofs.extend(generate_channel_egress_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_interruptible_session_soundness_proofs(ir, axon_version));
     proofs
 }

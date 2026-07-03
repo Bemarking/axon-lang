@@ -400,6 +400,11 @@ fn contains_var(t: &SessionType, var: &str) -> bool {
         SessionType::Rec(y, b) if y == var => false, // shadowed
         SessionType::Rec(_, b) => contains_var(b, var),
         SessionType::Var(x) => x == var,
+        // §Fase 79 — a free var may occur in either interrupt sub-protocol.
+        SessionType::Interrupt { body, handler, .. } => {
+            contains_var(body, var) || contains_var(handler, var)
+        }
+        SessionType::Resume => false,
     }
 }
 

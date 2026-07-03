@@ -30,11 +30,13 @@ use super::generate::{
     derive_channel_egress_witness, derive_compliance_coverage_witness,
     derive_channel_delivery_soundness_witness,
     derive_effect_budgeted_witness, derive_effect_row_soundness_witness,
-    derive_endpoint_retry_witness, derive_json_shape_soundness_witness,
+    derive_endpoint_retry_witness, derive_interruptible_session_witness,
+    derive_json_shape_soundness_witness,
     derive_shield_halt_witness, derive_socket_credit_witness, derive_tool_call_soundness_witness,
 };
 use super::proof_term::{
-    ProofTerm, PropertyClass, ResourceBoundsWitness, Witness, VALID_SIGN_ALGORITHMS,
+    ProofTerm, PropertyClass, ResourceBoundsWitness, Witness, CALL_INTERRUPT_CAUSES,
+    VALID_SIGN_ALGORITHMS,
 };
 
 /// The closed verdict catalog. Total over every proof shape — no
@@ -107,6 +109,10 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         (PropertyClass::ChannelEgressSoundness, Witness::ChannelEgressSoundness(w)) => {
             check_channel_egress_soundness(w, ir)
         }
+        (
+            PropertyClass::InterruptibleSessionSoundness,
+            Witness::InterruptibleSessionSoundness(w),
+        ) => check_interruptible_session_soundness(w, ir),
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -904,6 +910,70 @@ fn check_channel_egress_soundness(
                  persistence is '{}' — signed egress requires `persistence: \
                  persistent_axonstore` (axon-T848)",
                 actual.channel_name, actual.shield_ref, actual.derived_sign, actual.persistence
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §79.c — verify an [`InterruptibleSessionSoundnessWitness`]. The checker
+/// re-derives every fact from the IR session steps (D51.2) and then applies the
+/// four soundness verdicts of the 79.a paper §6.2: closed-catalog signal, both
+/// arms present, and a two-exit handler.
+fn check_interruptible_session_soundness(
+    claimed: &super::proof_term::InterruptibleSessionSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match derive_interruptible_session_witness(
+        &claimed.session_name,
+        &claimed.role_name,
+        &claimed.signal,
+        ir,
+    ) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "no interrupt region with signal '{}' in session '{}' role '{}' — \
+                     forged or stale proof",
+                    claimed.signal, claimed.session_name, claimed.role_name
+                ),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    // Verdict 1: closed CallInterruptCause catalog (D79.2).
+    if !actual.signal_in_catalog {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "interrupt signal '{}' is not a CallInterruptCause {:?}",
+                actual.signal, CALL_INTERRUPT_CAUSES
+            ),
+        };
+    }
+    // Verdict 2: both a body and a resumable handler.
+    if !actual.has_body || !actual.has_handler {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "interrupt region in session '{}' role '{}' is missing its {} arm",
+                actual.session_name,
+                actual.role_name,
+                if !actual.has_body { "body" } else { "resumable handler" }
+            ),
+        };
+    }
+    // Verdict 3: two-exit handler (D79.11a).
+    if !actual.handler_reaches_exit {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "interrupt handler in session '{}' role '{}' does not reach a two-exit \
+                 terminal (`resume` or `end`, D79.11a)",
+                actual.session_name, actual.role_name
             ),
         };
     }

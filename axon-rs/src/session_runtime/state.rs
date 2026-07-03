@@ -341,6 +341,8 @@ fn kind_of(t: &SessionType) -> &'static str {
         SessionType::Branch(_) => "branch",
         SessionType::Rec(_, _) => "rec", // never reached on a head-unfolded cursor
         SessionType::Var(_) => "var",    // ditto, on closed types
+        SessionType::Interrupt { .. } => "interrupt", // §Fase 79 — dispatch lands in 79.d
+        SessionType::Resume => "resume",
     }
 }
 
