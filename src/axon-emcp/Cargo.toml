@@ -1,6 +1,6 @@
 [package]
 name = "axon-emcp"
-version = "0.20.0"
+version = "0.21.0"
 authors = ["AXON Project", "Bemarking AI S.A.S."]
 edition = "2021"
 rust-version = "1.95"
@@ -20,7 +20,7 @@ path = "src/main.rs"
 # returns the same diagnostics `axon check` would print. We consume by
 # path (in-tree development) + a version constraint (so cargo-publish
 # resolves a registry version too, matching the §Fase 40 D1 discipline).
-axon-frontend = { path = "../../axon-frontend", version = "=1.27.0" }
+axon-frontend = { path = "../../axon-frontend", version = "=1.28.0" }
 
 # Serde JSON for the MCP wire protocol (JSON-RPC 2.0 over stdio).
 serde = { version = "1", features = ["derive"] }
