@@ -129,10 +129,48 @@ Carrier closure codes:
 | `1002` | `credit_exhausted` | `send` attempted at credit n=0. |
 | `1002` | `already_complete` | Peer sent more after `end`. |
 | `1002` | `malformed_frame` | Envelope failed JSON / version parsing. |
+| `1002` | `no_interrupt_armed` | `signal` fired outside an `interrupt` body (§79). |
+| `1002` | `signal_mismatch` | Signal cause ≠ the region's `on <Signal>` (§79). |
+| `1002` | `watchdog_breach` | WCET reaction bound exceeded — fail-closed (§79). |
+| `1002` | `double_resume` | `resume` on an already-consumed continuation (§79). |
 
 Resume rejection codes (HTTP 410 Gone): `resume_not_found`,
 `resume_expired`, `resume_aad_mismatch`, `resume_malformed`,
 `resume_schema_drift`.
+
+## Interruptible sessions (§79)
+
+A session step may declare an **interruptible region** — a barge-in the agent
+can resume, not a killed turn:
+
+```axon
+interrupt {
+    <body>                       # the interruptible protocol (e.g. an utterance)
+} on <Signal> as <sig> resumable {
+    <handler>                    # runs on the signal; ends in `resume` or `end`
+}
+```
+
+`<Signal>` is the **closed** `CallInterruptCause` catalog —
+`CallerSpeech | Dtmf | SilenceTimeout | AgentFault` (no free-form causes). The
+handler is a **two-exit** construct: its normal exit `resume` hands control back
+to the exact point in `<body>` where the signal fired (consuming a **one-shot**
+captured continuation); its abandon exit is `end`, taken on TTL expiry.
+
+Carrier states (distinct from closure — the connection stays open):
+
+| State | Meaning |
+|---|---|
+| `interrupted_by_peer` | The signal fired; the body's residual is **parked** (a one-shot continuation), the handler is running. |
+| `resumed` | The handler called `resume`; control is back in the body at its exact residual, with the **pre-interrupt credit window restored exactly** and the stream re-opened at the flushed offset. |
+| `interrupt_abandoned` | The parked continuation's TTL expired; it is released (once) and the region terminates at `end`. |
+
+The parked continuation survives a reconnect by riding the same §41.g
+`cognitive_state` AAD-bound snapshot as an ordinary residual cursor — no new
+state store. **Honest scope:** the WCET reaction bound is *soft-real-time*
+(statically-derived + runtime-verified by the fail-closed watchdog, not hard
+RTOS), and "delivered" means *flushed to the carrier*, not rendered on the
+caller's device. v1 is binary (2-role), single-level, single-signal.
 
 ## SSE-as-fragment unification (§41.e)
 

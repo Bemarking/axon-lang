@@ -129,7 +129,11 @@ struct InterruptFrame {
 /// reified session cursor + credit window (the paper's κ ≅ (S₍>k₎, w), D79.9)
 /// plus the emit-cursor snapshot (D79.10) and the cause that fired. Consumed
 /// exactly once by [`SessionRuntime::try_resume`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize` + `Deserialize` — §Fase 79.e: a parked κ survives a reconnect by
+/// riding the §41.g `cognitive_state` sealed snapshot (no new state store). The
+/// wire shape is exactly the reified cursor + window the snapshot already seals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParkedContinuation {
     /// `S₍>k₎` — the body residual at the instant of interruption.
     pub cursor: SessionType,
@@ -205,6 +209,10 @@ impl SessionRuntime {
             schema: self.schema.clone(),
             cursor: self.cursor.clone(),
             credit: self.credit,
+            // §Fase 79.e — carry the parked one-shot continuation across the
+            // reconnect, so an interrupted-but-unresumed dialogue can still
+            // `resume` into its body after the client comes back.
+            parked: self.parked.clone(),
         })
     }
 
@@ -237,7 +245,9 @@ impl SessionRuntime {
             credit: sealed.credit,
             interrupt: None,
             emit_count: 0,
-            parked: None,
+            // §Fase 79.e — restore the parked κ so `resume` still works post-
+            // reconnect (the `interrupted_by_peer` carrier state survives).
+            parked: sealed.parked,
         })
     }
 
@@ -547,6 +557,14 @@ pub struct SealedRuntime {
     /// The live credit window snapshot — `None` if the bound socket is
     /// in the unbounded fragment (no `backpressure` annotation).
     pub credit: Option<CreditWindow>,
+    /// §Fase 79.e — the parked one-shot continuation, present iff the runtime
+    /// was interrupted-and-not-yet-resumed at seal time. `skip_serializing_if`
+    /// keeps every non-interrupt snapshot byte-identical to the pre-§79 wire
+    /// form (no version bump; back-compat by construction — the boot-hydrate
+    /// self-heal discipline). On resume the `interrupted_by_peer` carrier state
+    /// is restored so the handler can still `resume` into the body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked: Option<ParkedContinuation>,
 }
 
 impl SealedRuntime {
