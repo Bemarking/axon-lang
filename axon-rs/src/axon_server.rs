@@ -20379,7 +20379,15 @@ pub struct DynamicEndpointRoute {
 /// without placeholders reduce to byte-equality check, so the helper
 /// is also a drop-in replacement for the legacy exact-string lookup
 /// when `path_params` is empty.
-pub(crate) fn match_path_template(
+///
+/// §Fase 78 (Kivi brief #54) — promoted `pub(crate)` → `pub` so the
+/// enterprise `flow_dispatch::DispatchTable` reuses THIS matcher rather
+/// than forking a parallel `{param}` implementation. The enterprise
+/// catch-all `/api/v1/flows/{*path}` dispatcher was exact-string-match
+/// only, leaving every `{param}` endpoint mounted-but-unreachable; it
+/// now calls this function so the OSS server and the premium
+/// distribution channel share one, drift-free segment matcher.
+pub fn match_path_template(
     template: &str,
     actual: &str,
 ) -> Option<HashMap<String, String>> {
@@ -20438,7 +20446,13 @@ pub(crate) fn match_path_template(
 /// encodings keep the raw bytes (never panics).
 ///
 /// Returns an empty map when `query` is `None` or empty.
-pub(crate) fn parse_query_string(query: Option<&str>) -> HashMap<String, String> {
+///
+/// §Fase 78 (Kivi brief #54) — promoted `pub(crate)` → `pub` alongside
+/// [`match_path_template`] so the enterprise dispatcher populates the
+/// `request_query` binding source (previously a hardcoded empty map)
+/// from `request.uri().query()` with identical `x-www-form-urlencoded`
+/// + first-value semantics to the OSS server.
+pub fn parse_query_string(query: Option<&str>) -> HashMap<String, String> {
     let mut out: HashMap<String, String> = HashMap::new();
     let Some(q) = query else {
         return out;
