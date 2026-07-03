@@ -4330,17 +4330,19 @@ impl<'a> TypeChecker<'a> {
             }
         }
         if let Some(overflow) = &node.overflow {
-            if crate::stream_effect::BackpressurePolicy::from_slug(overflow).is_none() {
-                let all: Vec<&str> = crate::stream_effect::BackpressurePolicy::ALL
-                    .iter()
-                    .map(|p| p.slug())
-                    .collect();
+            // `degrade_quality` is deliberately NOT in the upstream v1
+            // catalog: on a `Stream<T>` it requires a declared degrader
+            // (`degrade_quality(resample_to=…)`), which `upstream` v1 does
+            // not parse — accepting the bare word would promise a behaviour
+            // the runtime cannot honestly deliver (named deferred scope).
+            const VALID_UPSTREAM_OVERFLOW: &[&str] = &["drop_oldest", "fail", "pause_upstream"];
+            if !is_valid(overflow, VALID_UPSTREAM_OVERFLOW) {
                 self.emit(
                     format!(
-                        "Upstream '{}' overflow '{}' is not a backpressure policy. Valid: {}",
+                        "Upstream '{}' overflow '{}' is not in the v1 catalog: {} (`degrade_quality` needs a declared degrader — named deferred scope, fase_80_upstream_design.md §5)",
                         node.name,
                         overflow,
-                        all.join(", ")
+                        valid_list(VALID_UPSTREAM_OVERFLOW)
                     ),
                     &node.loc,
                 );

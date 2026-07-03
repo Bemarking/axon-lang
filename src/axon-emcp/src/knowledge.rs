@@ -1239,7 +1239,8 @@ Body prose.
         // §Fase 73: 49 → 50 with `json` (the open semi-structured value type).
         // §Fase 77: 50 → 54 with the π-calc channel quartet
         // (`channel` / `emit` / `publish` / `discover`, Kivi brief #51 §B.2).
-        assert_eq!(s.total, 54);
+        // §Fase 80.b: 54 → 55 with `upstream` (the outbound vendor connection).
+        assert_eq!(s.total, 55);
     }
 
     /// §Phase 5 — every MCP prompt shipped under

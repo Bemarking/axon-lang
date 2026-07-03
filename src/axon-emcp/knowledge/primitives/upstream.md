@@ -1,6 +1,6 @@
 ---
 name: upstream
-summary: Outbound vendor connection (the client dual of socket): config-resolved dial, declared auth, and a compile-time-total wire↔session projection — a new vendor is a declaration, not new code.
+summary: "Outbound vendor connection (the client dual of socket): config-resolved dial, declared auth, and a compile-time-total wire↔session projection — a new vendor is a declaration, not new code."
 category: session_types
 top_level: true
 since: Fase 80.b (v2.37.0)
