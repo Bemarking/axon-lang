@@ -92,3 +92,8 @@ pub use primitive_registry::{
     by_category, coverage_summary, find as find_primitive, with_status, CoverageSummary,
     DocStatus, PrimitiveInfo, PRIMITIVE_REGISTRY,
 };
+
+// §Fase 80.f — the blessed upstream preset catalog (versioned, forkable,
+// ordinary `.axon` source per D80.5) + the `from Preset@vN` expansion the
+// parser runs before type-check. Pure const data + a pure AST pass.
+pub mod upstream_presets;

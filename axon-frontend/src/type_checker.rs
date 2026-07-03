@@ -4276,6 +4276,22 @@ impl<'a> TypeChecker<'a> {
     ///       discriminator, at most one receive-binary rule. Partial
     ///       transcoding is a compile error, never a runtime surprise.
     fn check_upstream(&mut self, node: &UpstreamDefinition) {
+        // §80.f — an unexpanded preset reference (the `from Preset@vN`
+        // expansion left every structural field empty because the preset
+        // is not in the catalog) gets ONE precise diagnostic naming the
+        // catalog, not a cascade of missing-field errors.
+        if node.preset.is_some() && node.transport.is_empty() && node.protocol.is_empty() {
+            self.emit(
+                format!(
+                    "Upstream '{}' references unknown preset '{}'. Available: {} (or fork: write the full `upstream` by hand — a preset is ordinary source, D80.5)",
+                    node.name,
+                    node.preset.as_deref().unwrap_or(""),
+                    crate::upstream_presets::available()
+                ),
+                &node.loc,
+            );
+            return;
+        }
         // (a) closed catalogs.
         if node.transport.is_empty() {
             self.emit(

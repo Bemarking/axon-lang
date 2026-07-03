@@ -1515,6 +1515,12 @@ impl Parser {
                 .declaration_trivia
                 .push(DeclarationTrivia { leading, trailing });
         }
+        // §Fase 80.f — expand `upstream X from Preset@vN { … }` references
+        // from the blessed catalog BEFORE type-check, so the §80.c laws see
+        // the expanded declaration (and `axon desugar` can print it).
+        // Unknown presets stay unexpanded — the checker reports them with
+        // the catalog list (accumulating diagnostics beat a parse abort).
+        crate::upstream_presets::expand(&mut program);
         Ok(program)
     }
 

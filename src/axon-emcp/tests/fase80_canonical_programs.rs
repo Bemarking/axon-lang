@@ -53,8 +53,15 @@ upstream DeepgramSTT {
     must_compile("upstream/canonical", src);
 }
 
-// NOTE: the §80.f preset-instantiation surface (`upstream X from
-// DeepgramSTT@v1 { secret: … }`) gets its own compile gate when the preset
-// catalog + desugar expansion land (80.f) — an unexpanded preset reference
-// is deliberately NOT a compilable program (the checker demands the full
-// structural surface the expansion provides).
+/// The §80.f preset-instantiation surface: the form every blessed-vendor
+/// adopter actually writes — expansion fills the declaration from the
+/// catalog and injects the preset's session before type-check.
+#[test]
+fn upstream_preset_form_compiles() {
+    let src = r#"
+upstream MySTT from DeepgramSTT@v1 {
+    secret: upstream.mystt.api_key
+}
+"#;
+    must_compile("upstream/preset-form", src);
+}
