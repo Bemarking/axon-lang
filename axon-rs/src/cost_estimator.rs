@@ -547,6 +547,7 @@ mod tests {
             sockets: vec![],
             observables: vec![],
             witnesses: vec![],
+            upstreams: vec![],
             effects: vec![],
         };
 
@@ -617,6 +618,7 @@ mod tests {
             sockets: vec![],
             observables: vec![],
             witnesses: vec![],
+            upstreams: vec![],
             effects: vec![],
         };
 
@@ -689,6 +691,7 @@ mod tests {
             sockets: vec![],
             observables: vec![],
             witnesses: vec![],
+            upstreams: vec![],
             effects: vec![],
         };
 

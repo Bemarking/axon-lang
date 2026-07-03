@@ -85,6 +85,14 @@ pub mod runtime;
 /// RFC 6455 WebSocket carrier (`ws::drive`) that runs a session type
 /// against a peer. Carrier-agnostic core; the WS layer is one binding.
 pub mod session_runtime;
+/// §Fase 80.d — the `upstream` runtime: the CLIENT dual of the §41.d
+/// carrier. Dials OUT to a third-party vendor (STT/TTS/realtime speech)
+/// over RFC 6455 + TLS, applies the declared auth handshake, transcodes
+/// wire↔session per the compiled `map:` projection (T849-total), applies
+/// the declared `overflow:` policy when the vendor is the slow side, and
+/// reconnects with witnessed, fail-closed exponential backoff. A new
+/// vendor is a new DECLARATION, never new Rust code.
+pub mod upstream_runtime;
 /// §Fase 51.e — the `quant` cognitive primitive's RUNTIME: the
 /// [`quant::QuantBackend`] port + a usable dense-statevector reference
 /// simulator capped at n ≤ 10 (the OSS half; enterprise mounts the QuIDD /

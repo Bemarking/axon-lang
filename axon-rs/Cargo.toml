@@ -38,6 +38,13 @@ tokio = { version = "1", features = ["full"] }
 # dialogue runtime — its operational rules (send/recv/select/branch/credit)
 # live in `src/session_runtime/` over the typed channel, transport-agnostic.
 axum = { version = "0.8", features = ["ws"] }
+# §Fase 80.d — the CLIENT half of RFC 6455: `upstream` dials OUT to a
+# third-party vendor (STT/TTS/realtime speech). Same library axum's `ws`
+# feature already pulls in server-side, promoted to a direct dependency so
+# `src/upstream_runtime.rs` can `connect_async`; `rustls-tls-webpki-roots`
+# unlocks `wss://` (vendor endpoints are TLS-only) with the same rustls
+# stack reqwest/sqlx already use — no OpenSSL surface added.
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
 http-body-util = "0.1"
@@ -96,10 +103,6 @@ bytes = "1"
 axon-csys = { path = "../axon-csys", version = "=0.2.0" }
 
 [dev-dependencies]
-# §Fase 41.d — client-side WebSocket for the session-typed runtime's E2E
-# tests. `tokio-tungstenite` is the same library axum's `ws` feature pulls in
-# server-side, so both peers share the RFC 6455 implementation exactly. Pinned
-# to the version axum 0.8 carries transitively to keep one common WS dep.
-# `rustls-tls-webpki-roots` would unlock `wss://`; the in-process tests use
-# plain TCP so the default features are sufficient.
-tokio-tungstenite = "0.24"
+# (§Fase 41.d's dev-only `tokio-tungstenite` moved to [dependencies] in
+# §Fase 80.d — the `upstream` runtime needs the RFC 6455 CLIENT half in
+# production; tests keep using the same dep.)
