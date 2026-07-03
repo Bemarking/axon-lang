@@ -1728,6 +1728,10 @@ impl IRGenerator {
                         .collect(),
                 })
                 .collect(),
+            // §Fase 79.b — interrupt-only fields; empty/false (and thus skipped
+            // in the serialized IR) for every other op.
+            binder: s.binder.clone(),
+            resumable: s.resumable,
         }
     }
 

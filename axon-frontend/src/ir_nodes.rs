@@ -448,9 +448,19 @@ pub struct IRSessionStep {
     pub source_column: u32,
     pub op: String,
     pub message_type: String,
-    /// §Fase 41.b — labelled branches (only for `op == "select" | "branch"`).
+    /// §Fase 41.b — labelled branches (only for `op == "select" | "branch"`;
+    /// §Fase 79.b reuses them for `op == "interrupt"`: `body` + `handler` arms).
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub branches: Vec<IRSessionBranch>,
+    /// §Fase 79.b — `op == "interrupt"` only: the handler's signal binder
+    /// (`... as <sig> ...`). Skip-if-empty ⇒ zero IR-SHA drift for every
+    /// non-interrupt step (the §76.d/§77.a additive-only discipline).
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub binder: String,
+    /// §Fase 79.b — `op == "interrupt"` only: the block declares a `resumable`
+    /// handler. Skip-if-false ⇒ byte-identical IR for every other op.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub resumable: bool,
 }
 
 /// §Fase 41.b — one labelled arm of a compiled `select`/`branch` choice.

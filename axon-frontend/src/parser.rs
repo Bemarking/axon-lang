@@ -6683,6 +6683,22 @@ impl Parser {
         Ok(steps)
     }
 
+    /// §Fase 79.b — a **brace**-delimited session step block: `{ step, step, … }`.
+    /// Used by the `interrupt`/`resumable` regions (the paper's block surface),
+    /// as opposed to the `[ … ]` step-lists used by roles and choice arms.
+    fn parse_session_step_block(&mut self) -> Result<Vec<SessionStep>, ParseError> {
+        self.consume(TokenType::LBrace)?;
+        let mut steps = Vec::new();
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            steps.push(self.parse_session_step()?);
+            if self.check(TokenType::Comma) {
+                self.advance();
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(steps)
+    }
+
     fn parse_session_step(&mut self) -> Result<SessionStep, ParseError> {
         let tok = self.current().clone();
         let loc = Loc { line: tok.line, column: tok.column };
@@ -6710,9 +6726,21 @@ impl Parser {
             TokenType::Identifier if tok.value == "select" || tok.value == "branch" => {
                 self.parse_session_choice(&tok.value, loc)
             }
+            // §Fase 79.b — `interrupt { <body> } on <Signal> as <sig> resumable { <handler> }`.
+            // Contextual keyword (identifier), like `select`/`branch`.
+            TokenType::Identifier if tok.value == "interrupt" => {
+                self.parse_session_interrupt(loc)
+            }
+            // §Fase 79.b — `resume`: the handler's normal exit (hand control back to
+            // the parked body). A bare step, no payload; only meaningful inside an
+            // `interrupt` handler (enforced at type-check, §79.c).
+            TokenType::Identifier if tok.value == "resume" => {
+                self.advance();
+                Ok(SessionStep { op: "resume".into(), loc, ..Default::default() })
+            }
             _ => Err(ParseError {
                 message: format!(
-                    "Invalid session step '{}' — expected send | receive | loop | end | select | branch",
+                    "Invalid session step '{}' — expected send | receive | loop | end | select | branch | interrupt | resume",
                     tok.value
                 ),
                 line: tok.line,
@@ -6720,6 +6748,58 @@ impl Parser {
                 ..Default::default()
             }),
         }
+    }
+
+    /// §Fase 79.b — consume a **contextual keyword** (`on` / `as` / `resumable`):
+    /// a token whose *value* must equal `kw`, regardless of whether the lexer
+    /// classified it as a keyword or a bare identifier. Keeps the `interrupt`
+    /// surface readable without minting three reserved words.
+    fn consume_contextual(&mut self, kw: &str) -> Result<(), ParseError> {
+        let t = self.current().clone();
+        if t.value != kw {
+            return Err(ParseError {
+                message: format!("expected `{kw}` in interrupt step, got `{}`", t.value),
+                line: t.line,
+                column: t.column,
+                ..Default::default()
+            });
+        }
+        self.advance();
+        Ok(())
+    }
+
+    /// §Fase 79.b — Parse an interruptible region:
+    /// `interrupt { <body-steps> } on <Signal> as <sig> resumable { <handler-steps> }`.
+    ///
+    /// Encoded into the string-tagged `SessionStep` (mirroring the §41.b choice
+    /// shape): `op = "interrupt"`, `message_type = <Signal>` (validated against the
+    /// closed `CallInterruptCause` catalog at type-check, §79.c), two labelled
+    /// `branches` (`body`, `handler`), `binder = <sig>`, `resumable = true`.
+    fn parse_session_interrupt(&mut self, loc: Loc) -> Result<SessionStep, ParseError> {
+        self.advance(); // consume `interrupt`
+        // Body region — a brace-delimited step block (the paper's `interrupt { … }`
+        // surface; distinct from the `[ … ]` step-lists of roles/choice arms).
+        let body = self.parse_session_step_block()?;
+        // `on <Signal>`
+        self.consume_contextual("on")?;
+        let signal = self.consume_any_ident_or_kw()?;
+        // `as <sig>`
+        self.consume_contextual("as")?;
+        let binder = self.consume_any_ident_or_kw()?;
+        // `resumable { <handler> }`
+        self.consume_contextual("resumable")?;
+        let handler = self.parse_session_step_block()?;
+        Ok(SessionStep {
+            op: "interrupt".into(),
+            message_type: signal.value,
+            branches: vec![
+                SessionBranch { label: "body".into(), steps: body, loc: loc.clone() },
+                SessionBranch { label: "handler".into(), steps: handler, loc: loc.clone() },
+            ],
+            binder: binder.value,
+            resumable: true,
+            loc,
+        })
     }
 
     /// §Fase 41.b — Parse a choice step: `select { ask: [..], cancel: [..] }`

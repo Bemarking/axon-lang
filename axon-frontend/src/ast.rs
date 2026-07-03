@@ -317,11 +317,24 @@ pub struct EnsembleDefinition {
 /// [`SessionStep::branches`] (a nested sub-protocol per label).
 #[derive(Debug, Clone, Default)]
 pub struct SessionStep {
-    pub op: String,           // send | receive | loop | end | select | branch
-    pub message_type: String, // only meaningful for send / receive
+    pub op: String,           // send | receive | loop | end | select | branch | interrupt
+    pub message_type: String, // send/receive: payload type · interrupt: the `on <Signal>` cause
     /// §Fase 41.b — populated only for `op == "select" | "branch"`: the labelled
     /// branches, each a nested step sequence (its own sub-protocol).
+    ///
+    /// §Fase 79.b — reused for `op == "interrupt"`: exactly two labelled arms,
+    /// `body` (the interruptible region) and `handler` (runs on the signal). The
+    /// handler may end in a `resume` step (back to `body`) or reach `end` (the
+    /// abandon exit) — see the paper §3.5 two-exit construct.
     pub branches: Vec<SessionBranch>,
+    /// §Fase 79.b — `op == "interrupt"` only: the handler's signal binder from
+    /// `... as <sig> ...`. Empty for every other op. The handler references the
+    /// received `CallInterruptCause` value under this name.
+    pub binder: String,
+    /// §Fase 79.b — `op == "interrupt"` only: `true` when the block declares a
+    /// `resumable { … }` handler (the v1 surface always does). Default `false`
+    /// keeps every non-interrupt step byte-identical in the IR (skip-if-false).
+    pub resumable: bool,
     pub loc: Loc,
 }
 
