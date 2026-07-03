@@ -39,8 +39,8 @@
 //! **The honest line (D80.4):** duality, credit discipline, and projection
 //! totality are compiler-proved up to the wire. This module DEFENDS across
 //! the trust boundary (overflow policy, fail-closed reconnect, witnessed
-//! lifecycle) and surfaces every vendor-side protocol violation as an
-//! explicit event — it does not claim to prove the vendor's side sound.
+//! lifecycle) and surfaces every frame outside the declared projection as
+//! an explicit event — it does not claim to prove the vendor's side sound.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -205,16 +205,19 @@ pub enum InboundPayload {
     Bytes(Vec<u8>),
 }
 
-/// What the consumer receives from the handle. Vendor-side protocol
-/// violations are EXPLICIT events, never silently dropped (D80.4: we defend
+/// What the consumer receives from the handle. Frames outside the declared
+/// projection are EXPLICIT events, never silently dropped (D80.4: we defend
 /// and witness; we do not pretend the vendor is proved sound).
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpstreamEvent {
     /// A classified inbound message.
     Message { message: String, payload: InboundPayload },
-    /// An inbound frame no `receive` rule classifies — the vendor broke the
-    /// declared wire contract (or the declaration is stale).
-    VendorViolation { detail: String },
+    /// An inbound frame no `receive` rule classifies — outside the declared
+    /// projection. Narrowing the projection to only what you consume is
+    /// legitimate (vendor housekeeping frames land here by choice); a
+    /// malformed vendor stream or a stale declaration also lands here —
+    /// either way it is explicit and countable, never silent.
+    Unmapped { detail: String },
     /// The connection dropped and was re-established (attempt = redial count).
     Reconnected { attempt: u32 },
     /// Terminal: the reconnect budget is exhausted (`on_exhausted: fail`).
@@ -226,7 +229,13 @@ pub enum UpstreamEvent {
 /// - `as binary` → one binary frame (raw passthrough; a JSON payload handed
 ///   to a binary rule is serialized to its UTF-8 bytes — the declaration
 ///   said "bytes on the wire", so bytes it is).
-/// - `as json` → the §80.a envelope `{"type": <tag-or-message>, "payload": …}`.
+/// - `as json` (no tag) → the payload JSON VERBATIM — the flow builds the
+///   vendor's exact wire shape (ElevenLabs `{"text": …}`, Gemini
+///   `{"realtimeInput": …}`); the projection adds nothing.
+/// - `as json tag "X"` → the payload object with `"type": "X"` injected
+///   (the Deepgram-control / OpenAI-Realtime envelope family). A non-object
+///   payload is wrapped as `{"type": "X", "payload": <value>}` — the tag
+///   must ride SOMEWHERE, and a bare scalar has no keys to merge into.
 pub fn project_outbound(rule: &IRUpstreamMapRule, payload: &OutboundPayload) -> Message {
     match rule.framing.as_str() {
         "binary" => match payload {
@@ -234,13 +243,21 @@ pub fn project_outbound(rule: &IRUpstreamMapRule, payload: &OutboundPayload) -> 
             OutboundPayload::Json(v) => Message::Binary(v.to_string().into_bytes()),
         },
         _ => {
-            let tag = rule.tag.as_deref().unwrap_or(&rule.message);
             let body = match payload {
                 OutboundPayload::Json(v) => v.clone(),
                 OutboundPayload::Bytes(b) => serde_json::Value::String(String::from_utf8_lossy(b).into_owned()),
             };
-            let envelope = serde_json::json!({ "type": tag, "payload": body });
-            Message::Text(envelope.to_string())
+            let out = match &rule.tag {
+                None => body,
+                Some(tag) => match body {
+                    serde_json::Value::Object(mut m) => {
+                        m.insert("type".to_string(), serde_json::Value::String(tag.clone()));
+                        serde_json::Value::Object(m)
+                    }
+                    other => serde_json::json!({ "type": tag, "payload": other }),
+                },
+            };
+            Message::Text(out.to_string())
         }
     }
 }
@@ -249,13 +266,18 @@ pub fn project_outbound(rule: &IRUpstreamMapRule, payload: &OutboundPayload) -> 
 ///
 /// - A binary frame matches the (unique, §80.c-enforced) `receive … as
 ///   binary` rule.
-/// - A text frame is parsed as JSON and matched on each json rule's
-///   discriminator (`when "<field>" = "<value>"`, defaulting to
-///   `"type" = <MessageName>`). The WHOLE vendor body is the payload — the
-///   flow navigates it as §73 `Json`, totally.
+/// - A text frame is parsed as JSON and matched in TWO passes: equality
+///   discriminators first (`when "f" = "v"`, defaulting to `"type" =
+///   <MessageName>` when no `when` was written), then field-PRESENCE
+///   discriminators (`when "f"` — vendors like Gemini Live mark frame
+///   kinds by which key exists). Specific-before-broad keeps dispatch
+///   deterministic when both shapes target the same field. The WHOLE
+///   vendor body is the payload — the flow navigates it as §73 `Json`.
 ///
-/// `None` ⇒ no rule matches (a vendor-side contract violation the driver
-/// surfaces as [`UpstreamEvent::VendorViolation`]).
+/// `None` ⇒ no rule matches — a frame OUTSIDE the declared projection,
+/// surfaced by the driver as [`UpstreamEvent::Unmapped`] (narrowing the
+/// projection to only what you consume is legitimate; a malformed vendor
+/// stream also lands here — either way it is explicit, never silent).
 pub fn classify_inbound(rules: &[IRUpstreamMapRule], frame: &Message) -> Option<(String, InboundPayload)> {
     match frame {
         Message::Binary(b) => rules
@@ -264,11 +286,24 @@ pub fn classify_inbound(rules: &[IRUpstreamMapRule], frame: &Message) -> Option<
             .map(|r| (r.message.clone(), InboundPayload::Bytes(b.clone()))),
         Message::Text(t) => {
             let body: serde_json::Value = serde_json::from_str(t).ok()?;
-            for r in rules.iter().filter(|r| r.direction == "receive" && r.framing == "json") {
-                let field = r.when_field.as_deref().unwrap_or("type");
-                let expected = r.when_value.as_deref().unwrap_or(&r.message);
+            let json_rules = || rules.iter().filter(|r| r.direction == "receive" && r.framing == "json");
+            // Pass 1 — equality discriminators (specific).
+            for r in json_rules() {
+                let (field, expected) = match (&r.when_field, &r.when_value) {
+                    (None, _) => ("type", r.message.as_str()),
+                    (Some(f), Some(v)) => (f.as_str(), v.as_str()),
+                    (Some(_), None) => continue, // presence rule — pass 2
+                };
                 if body.get(field).and_then(|v| v.as_str()) == Some(expected) {
                     return Some((r.message.clone(), InboundPayload::Json(body)));
+                }
+            }
+            // Pass 2 — presence discriminators (broad).
+            for r in json_rules() {
+                if let (Some(f), None) = (&r.when_field, &r.when_value) {
+                    if body.get(f).is_some() {
+                        return Some((r.message.clone(), InboundPayload::Json(body)));
+                    }
                 }
             }
             None
@@ -430,7 +465,7 @@ const DEFAULT_QUEUE_CAPACITY: usize = 64;
 
 /// A live (or reconnecting) upstream connection. `send` projects + enqueues
 /// per the overflow policy; `events` yields classified inbound messages,
-/// vendor violations, reconnections, and the terminal exhaustion.
+/// unmapped-frame events, reconnections, and the terminal exhaustion.
 pub struct UpstreamHandle {
     name: String,
     rules: Arc<Vec<IRUpstreamMapRule>>,
@@ -682,7 +717,7 @@ async fn pump_connection(
                                     Message::Text(t) => format!("unclassifiable text frame: {}", &t[..t.len().min(200)]),
                                     _ => "unclassifiable binary frame (no `receive … as binary` rule)".to_string(),
                                 };
-                                let _ = events.send(UpstreamEvent::VendorViolation { detail }).await;
+                                let _ = events.send(UpstreamEvent::Unmapped { detail }).await;
                             }
                         }
                     }
@@ -730,14 +765,47 @@ mod tests {
     }
 
     #[test]
-    fn outbound_json_wraps_the_envelope_with_tag_override() {
+    fn outbound_json_without_tag_is_verbatim() {
+        // The ElevenLabs family: the flow builds the vendor's exact shape.
+        let r = rule("send", "TextChunk", "json");
+        let m = project_outbound(&r, &OutboundPayload::Json(serde_json::json!({"text": "hola "})));
+        let Message::Text(t) = m else { panic!("expected text frame") };
+        assert_eq!(t, r#"{"text":"hola "}"#, "no envelope, no injected keys");
+    }
+
+    #[test]
+    fn outbound_json_with_tag_injects_type_into_the_object() {
+        // The Deepgram-control / OpenAI-Realtime family.
         let mut r = rule("send", "Configure", "json");
         r.tag = Some("Settings".into());
         let m = project_outbound(&r, &OutboundPayload::Json(serde_json::json!({"model": "nova-3"})));
         let Message::Text(t) = m else { panic!("expected text frame") };
         let v: serde_json::Value = serde_json::from_str(&t).unwrap();
-        assert_eq!(v["type"], "Settings", "tag overrides the message name");
-        assert_eq!(v["payload"]["model"], "nova-3");
+        assert_eq!(v["type"], "Settings", "tag injected at top level");
+        assert_eq!(v["model"], "nova-3", "payload keys merged, not nested");
+        // A non-object payload still carries the tag, wrapped.
+        let m2 = project_outbound(&r, &OutboundPayload::Json(serde_json::json!("scalar")));
+        let Message::Text(t2) = m2 else { panic!() };
+        let v2: serde_json::Value = serde_json::from_str(&t2).unwrap();
+        assert_eq!((v2["type"].as_str(), v2["payload"].as_str()), (Some("Settings"), Some("scalar")));
+    }
+
+    #[test]
+    fn inbound_presence_discriminator_classifies_after_equality() {
+        // The Gemini-Live family: frame kind = which key exists. An eq rule
+        // and a presence rule coexist; specific (eq) wins over broad.
+        let mut server_content = rule("receive", "ServerContent", "json");
+        server_content.when_field = Some("serverContent".into());
+        server_content.when_value = None; // presence
+        let mut setup_done = rule("receive", "SetupComplete", "json");
+        setup_done.when_field = Some("setupComplete".into());
+        setup_done.when_value = None; // presence
+        let rules = vec![server_content, setup_done];
+
+        let frame = Message::Text(r#"{"serverContent":{"modelTurn":{}}}"#.into());
+        assert_eq!(classify_inbound(&rules, &frame).unwrap().0, "ServerContent");
+        let frame2 = Message::Text(r#"{"setupComplete":{}}"#.into());
+        assert_eq!(classify_inbound(&rules, &frame2).unwrap().0, "SetupComplete");
     }
 
     #[test]
@@ -758,7 +826,7 @@ mod tests {
         assert_eq!(classify_inbound(&rules, &frame2).unwrap().0, "SpeechStarted", "default discriminator");
 
         let unknown = Message::Text(r#"{"type":"Metadata"}"#.into());
-        assert!(classify_inbound(&rules, &unknown).is_none(), "unmatched frame is a vendor violation upstream");
+        assert!(classify_inbound(&rules, &unknown).is_none(), "unmatched frame surfaces as Unmapped upstream");
     }
 
     #[test]

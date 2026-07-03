@@ -1587,15 +1587,18 @@ pub fn derive_upstream_projection_witness(
             total = false;
         }
     }
-    let receive_json: Vec<(String, String)> = up
+    // Discriminator keys mirror the §80.c checker exactly: no `when` ⇒
+    // equality ("type", Some(<MessageName>)); `when "f" = "v"` ⇒ equality
+    // (f, Some(v)); `when "f"` ⇒ PRESENCE (f, None). Equality dispatches
+    // before presence at runtime, so only identical keys are ambiguous.
+    let receive_json: Vec<(String, Option<String>)> = up
         .map
         .iter()
         .filter(|r| r.direction == "receive" && r.framing == "json")
-        .map(|r| {
-            (
-                r.when_field.clone().unwrap_or_else(|| "type".to_string()),
-                r.when_value.clone().unwrap_or_else(|| r.message.clone()),
-            )
+        .map(|r| match (&r.when_field, &r.when_value) {
+            (None, _) => ("type".to_string(), Some(r.message.clone())),
+            (Some(f), Some(v)) => (f.clone(), Some(v.clone())),
+            (Some(f), None) => (f.clone(), None),
         })
         .collect();
     for (i, a) in receive_json.iter().enumerate() {

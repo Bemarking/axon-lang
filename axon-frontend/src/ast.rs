@@ -461,7 +461,7 @@ pub struct UpstreamDefinition {
 }
 
 /// One `map:` projection rule: `send M as json [tag "X"]` /
-/// `send M as binary` / `receive M as json [when "f" = "v"]` /
+/// `send M as binary` / `receive M as json [when "f" [= "v"]]` /
 /// `receive M as binary`. Inbound `json` payloads land as §73 `Json` (total
 /// navigation); the session message name is the routing + duality skeleton.
 #[derive(Debug, Default)]
@@ -470,13 +470,20 @@ pub struct UpstreamMapRule {
     pub direction: String,
     /// The session message type this rule transcodes.
     pub message: String,
-    /// `json` (envelope frame) or `binary` (raw passthrough).
+    /// `json` or `binary` (raw passthrough).
     pub framing: String,
-    /// send-json only: overrides the `"type"` tag string in the envelope.
+    /// send-json only. Absent ⇒ the payload is sent VERBATIM (the vendor's
+    /// exact wire shape, e.g. ElevenLabs `{"text": …}`); present ⇒ the tag
+    /// is injected as `"type": "<tag>"` into the payload object (the
+    /// Deepgram/OpenAI-Realtime envelope family).
     pub tag: Option<String>,
-    /// receive-json only: discriminator field (default `"type"`).
+    /// receive-json only: discriminator field. Absent ⇒ the default
+    /// equality discriminator `"type" = "<MessageName>"`.
     pub when_field: Option<String>,
-    /// receive-json only: discriminator value (default: the message name).
+    /// receive-json only. `Some(v)` ⇒ equality match on `when_field`;
+    /// `None` with `when_field` present ⇒ field-PRESENCE match (vendors
+    /// like Gemini Live mark frame kinds by which key exists). Equality
+    /// rules dispatch before presence rules.
     pub when_value: Option<String>,
     pub loc: Loc,
 }

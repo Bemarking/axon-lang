@@ -211,7 +211,7 @@ async fn dials_with_header_auth_prefix() {
 }
 
 #[tokio::test]
-async fn unclassifiable_vendor_frame_is_an_explicit_violation_event() {
+async fn unclassifiable_vendor_frame_is_an_explicit_unmapped_event() {
     let (addr, _, _) = spawn_vendor(None).await;
     let mut spec = stt_spec("signed_url", None, None, 0);
     // Add a send-json rule so we can poke the vendor into violating.
@@ -227,10 +227,10 @@ async fn unclassifiable_vendor_frame_is_an_explicit_violation_event() {
     handle.send("Violate", OutboundPayload::Json(serde_json::json!({}))).await.expect("send");
     let ev = handle.recv().await.expect("event");
     match ev {
-        UpstreamEvent::VendorViolation { detail } => {
+        UpstreamEvent::Unmapped { detail } => {
             assert!(detail.contains("unclassifiable"), "detail: {detail}");
         }
-        other => panic!("expected VendorViolation, got {other:?}"),
+        other => panic!("expected Unmapped, got {other:?}"),
     }
     handle.close();
 }

@@ -4536,26 +4536,34 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
             }
-            // Inbound dispatch must be deterministic.
-            let receive_json: Vec<(&str, String, String)> = node
+            // Inbound dispatch must be deterministic. The discriminator key
+            // is (field, Some(value)) for equality rules — a rule with no
+            // `when` defaults to ("type", Some(<MessageName>)) — and
+            // (field, None) for PRESENCE rules (`when "f"` with no `=`).
+            // Equality rules are tried before presence rules at runtime, so
+            // an eq and a presence rule on the same field can coexist; two
+            // identical keys cannot.
+            let receive_json: Vec<(&str, String, Option<String>)> = node
                 .map
                 .iter()
                 .filter(|r| r.direction == "receive" && r.framing == "json")
-                .map(|r| {
-                    (
-                        r.message.as_str(),
-                        r.when_field.clone().unwrap_or_else(|| "type".to_string()),
-                        r.when_value.clone().unwrap_or_else(|| r.message.clone()),
-                    )
+                .map(|r| match (&r.when_field, &r.when_value) {
+                    (None, _) => (r.message.as_str(), "type".to_string(), Some(r.message.clone())),
+                    (Some(f), Some(v)) => (r.message.as_str(), f.clone(), Some(v.clone())),
+                    (Some(f), None) => (r.message.as_str(), f.clone(), None),
                 })
                 .collect();
             for (i, a) in receive_json.iter().enumerate() {
                 for b in receive_json.iter().skip(i + 1) {
                     if a.1 == b.1 && a.2 == b.2 {
+                        let shape = match &a.2 {
+                            Some(v) => format!("(\"{}\" = \"{}\")", a.1, v),
+                            None => format!("(has \"{}\")", a.1),
+                        };
                         self.emit(
                             format!(
-                                "axon-T849 Upstream '{}': receive rules for '{}' and '{}' share the discriminator (\"{}\" = \"{}\") — inbound dispatch would be ambiguous",
-                                node.name, a.0, b.0, a.1, a.2
+                                "axon-T849 Upstream '{}': receive rules for '{}' and '{}' share the discriminator {} — inbound dispatch would be ambiguous",
+                                node.name, a.0, b.0, shape
                             ),
                             &node.loc,
                         );

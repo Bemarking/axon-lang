@@ -6788,10 +6788,16 @@ impl Parser {
                 self.advance();
                 rule.tag = Some(self.consume(TokenType::StringLit)?.value);
             } else if self.current().value == "when" {
+                // `when "f" = "v"` — equality discriminator; `when "f"` —
+                // field-PRESENCE discriminator (vendors like Gemini Live /
+                // ElevenLabs mark frame kinds by which key exists, not by a
+                // type value).
                 self.advance();
                 rule.when_field = Some(self.consume(TokenType::StringLit)?.value);
-                self.consume(TokenType::Assign)?;
-                rule.when_value = Some(self.consume(TokenType::StringLit)?.value);
+                if self.check(TokenType::Assign) {
+                    self.advance();
+                    rule.when_value = Some(self.consume(TokenType::StringLit)?.value);
+                }
             }
             rules.push(rule);
             if self.check(TokenType::Comma) {

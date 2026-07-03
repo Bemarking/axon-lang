@@ -14,7 +14,7 @@ grammar: |
       auth: header("<Name>"[, "<Prefix>"]) | query("<param>") | signed_url
       map: [
           send <Type> as json [tag "<Tag>"] | send <Type> as binary,
-          receive <Type> as json [when "<field>" = "<value>"] | receive <Type> as binary,
+          receive <Type> as json [when "<field>" [= "<value>"]] | receive <Type> as binary,
           ...
       ]
       reconnect: { backoff_ms: <int>, max_attempts: <int>, on_exhausted: fail }
@@ -91,6 +91,21 @@ upstream DeepgramSTT {
   declared `session` and `role:` one of its two roles. With
   `backpressure: credit(n)`, the §41.c Presburger discharge
   runs on the bound role.
+
+## Projection semantics (the two shapes every 2026 vendor uses)
+
+- `send M as json` — the payload JSON **verbatim**: the flow builds the
+  vendor's exact wire shape (ElevenLabs `{"text": …}`).
+- `send M as json tag "X"` — the payload object with `"type": "X"`
+  injected (the Deepgram-control / OpenAI-Realtime family).
+- `receive M as json when "f" = "v"` — equality discriminator (default:
+  `"type" = "M"`).
+- `receive M as json when "f"` — **presence** discriminator: the frame
+  HAS key `f` (Gemini Live marks frame kinds by which key exists).
+  Equality rules dispatch before presence rules.
+- A frame matching no rule surfaces as an explicit `Unmapped` event —
+  narrowing the projection to what you consume is legitimate; silence
+  is not.
 
 ## Inbound payloads are `Json`
 
