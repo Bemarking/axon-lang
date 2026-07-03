@@ -36,25 +36,32 @@ pub mod effects;
 pub mod generate;
 pub mod proof_term;
 
-pub use checker::{check_bundle, check_proof, BundleReport, CheckOutcome, ProofCheck};
+pub use checker::{
+    check_bundle, check_call_soundness_certificate, check_proof, BundleReport, CheckOutcome,
+    ProofCheck,
+};
 pub use generate::{
     artifact_digest, derive_capability_containment_witness, derive_capability_isolation_witness,
     derive_channel_egress_witness, derive_compliance_coverage_witness,
     derive_effect_row_soundness_witness,
     derive_endpoint_retry_witness, derive_interruptible_session_witness,
+    derive_parked_residual_witness,
     derive_shield_halt_witness, derive_socket_credit_witness,
-    derive_tool_call_soundness_witness, generate_all_proofs,
+    derive_tool_call_soundness_witness, generate_all_proofs, generate_call_soundness_certificate,
     generate_capability_containment_proofs, generate_capability_isolation_proofs,
     generate_channel_egress_soundness_proofs, generate_compliance_coverage_proofs,
     generate_effect_row_soundness_proofs,
     generate_interruptible_session_soundness_proofs,
+    generate_parked_residual_soundness_proofs,
     generate_resource_bounds_proofs, generate_shield_halt_guarantee_proofs,
     generate_tool_call_soundness_proofs,
 };
 pub use proof_term::{
-    CapabilityContainmentWitness, CapabilityIsolationWitness, ChannelEgressSoundnessWitness,
+    CallSoundnessCertificate, CapabilityContainmentWitness, CapabilityIsolationWitness,
+    ChannelEgressSoundnessWitness,
     ComplianceCoverageWitness,
-    EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, ProofBundle, ProofTerm,
+    EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, ParkedResidualSoundnessWitness,
+    ProofBundle, ProofTerm,
     PropertyClass, ResourceBoundsWitness,
     ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness, CALL_INTERRUPT_CAUSES,
     MAX_RETRIES, VALID_BREACH_POLICIES, VALID_SIGN_ALGORITHMS,

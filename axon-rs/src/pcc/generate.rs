@@ -14,11 +14,12 @@ use crate::ir_nodes::{IRProgram, IRSessionStep};
 
 use super::effects;
 use super::proof_term::{
-    AggregateSoundnessWitness, CapabilityContainmentWitness, CapabilityIsolationWitness,
+    AggregateSoundnessWitness, CallSoundnessCertificate, CapabilityContainmentWitness,
+    CapabilityIsolationWitness,
     ChannelEgressSoundnessWitness,
     ChannelDeliverySoundnessWitness, ComplianceCoverageWitness, EffectBudgetedWitness,
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, JsonShapeSoundnessWitness,
-    ProofTerm, PropertyClass,
+    ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
     ResourceBoundsWitness, ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness,
     CALL_INTERRUPT_CAUSES, MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS,
     VALID_ON_EXHAUSTED,
@@ -1434,6 +1435,117 @@ pub fn generate_interruptible_session_soundness_proofs(
     proofs
 }
 
+// ── §Fase 79.f — ParkedResidualSoundness + CallSoundnessCertificate ──────────
+
+/// §79.f — re-derive the ParkedResidualSoundness witness for `socket_name`.
+/// `None` if the socket does not carry an interruptible session (no residual is
+/// ever parked at rest → no obligation → no proof).
+pub fn derive_parked_residual_witness(
+    socket_name: &str,
+    ir: &IRProgram,
+) -> Option<ParkedResidualSoundnessWitness> {
+    let socket = ir.sockets.iter().find(|s| s.name == socket_name)?;
+    let session = ir.sessions.iter().find(|s| s.name == socket.protocol);
+    let session_has_interrupt = session
+        .map(|s| {
+            s.roles
+                .iter()
+                .any(|r| !interrupt_signals(&r.steps).is_empty())
+        })
+        .unwrap_or(false);
+    if !session_has_interrupt {
+        return None;
+    }
+    Some(ParkedResidualSoundnessWitness {
+        socket_name: socket_name.to_string(),
+        session_name: socket.protocol.clone(),
+        session_has_interrupt,
+        reconnect_cognitive_state: socket.reconnect,
+        legal_basis_declared: socket
+            .legal_basis
+            .as_ref()
+            .map(|b| !b.is_empty())
+            .unwrap_or(false),
+    })
+}
+
+/// §79.f — one ParkedResidualSoundness proof per socket carrying an
+/// interruptible session. A socket that parks a residual without `reconnect:
+/// cognitive_state` or without a `legal_basis` still gets its refutable proof.
+pub fn generate_parked_residual_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for socket in &ir.sockets {
+        let Some(witness) = derive_parked_residual_witness(&socket.name, ir) else {
+            continue;
+        };
+        proofs.push(ProofTerm {
+            property: PropertyClass::ParkedResidualSoundness,
+            artifact_digest: digest.clone(),
+            witness: Witness::ParkedResidualSoundness(witness),
+            axon_version: axon_version.to_string(),
+        });
+    }
+    proofs
+}
+
+/// §79.f — the unified **`CallSoundnessCertificate`**: for one socket bundle,
+/// compose the interruptible-session soundness of its session, the parked-
+/// residual soundness of the socket, and the socket's resource (credit) bound
+/// into ONE deploy-time artifact — the "can this call ever misbehave" question
+/// asked once, before a single call happens. Composition is NOT a mere
+/// conjunction (D79.8): `ParkedResidualSoundness` is the genuinely-new member
+/// interruption introduces (the data-at-rest surface, paper §7).
+///
+/// The enterprise serving layer (§79.f ENT) extends the bundle with the
+/// flow-scoped shield + budget proofs it can resolve; this OSS core composes
+/// the socket-derivable members. `None` if the socket does not exist.
+pub fn generate_call_soundness_certificate(
+    socket_name: &str,
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Option<CallSoundnessCertificate> {
+    let socket = ir.sockets.iter().find(|s| s.name == socket_name)?;
+    let session_name = socket.protocol.clone();
+    let mut proofs = Vec::new();
+
+    // (1) InterruptibleSessionSoundness — the socket's session.
+    proofs.extend(
+        generate_interruptible_session_soundness_proofs(ir, axon_version)
+            .into_iter()
+            .filter(|p| {
+                matches!(&p.witness,
+                    Witness::InterruptibleSessionSoundness(w) if w.session_name == session_name)
+            }),
+    );
+    // (2) ParkedResidualSoundness — the socket's data-at-rest surface (new).
+    proofs.extend(
+        generate_parked_residual_soundness_proofs(ir, axon_version)
+            .into_iter()
+            .filter(|p| {
+                matches!(&p.witness,
+                    Witness::ParkedResidualSoundness(w) if w.socket_name == socket_name)
+            }),
+    );
+    // (3) ResourceBounds — the socket's credit-window bound.
+    proofs.extend(
+        generate_resource_bounds_proofs(ir, axon_version)
+            .into_iter()
+            .filter(|p| p.witness.subject_name() == socket_name),
+    );
+
+    Some(CallSoundnessCertificate {
+        socket_name: socket_name.to_string(),
+        session_name,
+        artifact_digest: artifact_digest(ir),
+        axon_version: axon_version.to_string(),
+        proofs,
+    })
+}
+
 /// §51.f — generate proofs across ALL property classes for `ir`. The
 /// `axon pcc prove` entry point. Concatenates every per-class
 /// generator (compliance / effects / capability-gate / resources /
@@ -1455,5 +1567,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_aggregate_soundness_proofs(ir, axon_version));
     proofs.extend(generate_channel_egress_soundness_proofs(ir, axon_version));
     proofs.extend(generate_interruptible_session_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_parked_residual_soundness_proofs(ir, axon_version));
     proofs
 }

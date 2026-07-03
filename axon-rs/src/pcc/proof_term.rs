@@ -190,6 +190,17 @@ pub enum PropertyClass {
     /// caught by recomputation. Compile-time mirror: the §79.c type-checker's
     /// interrupt validation.
     InterruptibleSessionSoundness,
+    /// §Fase 79.f — `ParkedResidualSoundness`: the data-at-rest surface that
+    /// interruption opens. A socket whose protocol contains an interrupt region
+    /// parks the body's residual (a possibly PII-bearing κ) into the §41.g
+    /// `cognitive_state` snapshot for the TTL window — a surface the §77 shield
+    /// (which reasons about *channel egress*, not snapshot-at-rest) never sees.
+    /// The obligation (paper §7): the socket must declare `reconnect:
+    /// cognitive_state` (so the park is AAD-bound + recoverable) AND a
+    /// `legal_basis` (so the at-rest retention is governed). This is the
+    /// genuinely-new fourth member of the `CallSoundnessCertificate` — not an
+    /// emergent conjunction of the other three (D79.8).
+    ParkedResidualSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -232,6 +243,7 @@ impl PropertyClass {
             PropertyClass::AggregateSoundness => "aggregate_soundness",
             PropertyClass::ChannelEgressSoundness => "channel_egress_soundness",
             PropertyClass::InterruptibleSessionSoundness => "interruptible_session_soundness",
+            PropertyClass::ParkedResidualSoundness => "parked_residual_soundness",
         }
     }
 }
@@ -621,6 +633,29 @@ pub struct InterruptibleSessionSoundnessWitness {
     pub handler_reaches_exit: bool,
 }
 
+/// §79.f — witness for [`PropertyClass::ParkedResidualSoundness`].
+///
+/// One socket that carries an interruptible session (so its body residual may
+/// be parked at rest). The checker re-derives every field from the IR and
+/// rejects a disagreement (D51.2). A verifying proof has `session_has_interrupt
+/// → (reconnect_cognitive_state && legal_basis_declared)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParkedResidualSoundnessWitness {
+    /// The socket binding the interruptible session.
+    pub socket_name: String,
+    /// The session the socket's `protocol` references.
+    pub session_name: String,
+    /// The referenced session contains at least one `interrupt` region (so a
+    /// residual can be parked at rest).
+    pub session_has_interrupt: bool,
+    /// The socket declares `reconnect: cognitive_state` — the park is AAD-bound
+    /// and recoverable (§41.g), not a second, unsealed store.
+    pub reconnect_cognitive_state: bool,
+    /// The socket declares a `legal_basis` — the at-rest retention of the
+    /// parked κ is governed (its TTL has a legal ceiling).
+    pub legal_basis_declared: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -639,6 +674,7 @@ pub enum Witness {
     AggregateSoundness(AggregateSoundnessWitness),
     ChannelEgressSoundness(ChannelEgressSoundnessWitness),
     InterruptibleSessionSoundness(InterruptibleSessionSoundnessWitness),
+    ParkedResidualSoundness(ParkedResidualSoundnessWitness),
 }
 
 impl Witness {
@@ -666,6 +702,7 @@ impl Witness {
             Witness::AggregateSoundness(w) => &w.store_name,
             Witness::ChannelEgressSoundness(w) => &w.channel_name,
             Witness::InterruptibleSessionSoundness(w) => &w.session_name,
+            Witness::ParkedResidualSoundness(w) => &w.socket_name,
         }
     }
 }
@@ -697,5 +734,28 @@ pub struct ProofBundle {
     /// SHA-256 hex digest of the artifact all proofs bind to.
     pub artifact_digest: String,
     /// Every generated proof (across all property classes).
+    pub proofs: Vec<ProofTerm>,
+}
+
+/// §79.f — the unified **`CallSoundnessCertificate`** for one socket bundle:
+/// the composed proofs (interruptible-session soundness of the session +
+/// parked-residual soundness of the socket + the socket's resource bound) plus
+/// the bundle identity. Served by the enterprise `GET
+/// /admin/calls/certificate/{bundle_id}` (§79.f ENT). The overall verdict —
+/// "can this call ever misbehave" — is computed by the independent checker
+/// ([`crate::pcc::checker::check_call_soundness_certificate`]): EVERY member
+/// must verify, and the composition adds the genuinely-new parked-residual
+/// obligation, not a mere conjunction of pre-existing classes (D79.8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallSoundnessCertificate {
+    /// The socket that binds the interruptible session (the bundle id).
+    pub socket_name: String,
+    /// The session the socket's `protocol` references.
+    pub session_name: String,
+    /// SHA-256 hex digest of the artifact the composed proofs bind to.
+    pub artifact_digest: String,
+    /// Producer version.
+    pub axon_version: String,
+    /// The composed member proofs.
     pub proofs: Vec<ProofTerm>,
 }

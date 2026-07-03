@@ -31,12 +31,12 @@ use super::generate::{
     derive_channel_delivery_soundness_witness,
     derive_effect_budgeted_witness, derive_effect_row_soundness_witness,
     derive_endpoint_retry_witness, derive_interruptible_session_witness,
-    derive_json_shape_soundness_witness,
+    derive_json_shape_soundness_witness, derive_parked_residual_witness,
     derive_shield_halt_witness, derive_socket_credit_witness, derive_tool_call_soundness_witness,
 };
 use super::proof_term::{
-    ProofTerm, PropertyClass, ResourceBoundsWitness, Witness, CALL_INTERRUPT_CAUSES,
-    VALID_SIGN_ALGORITHMS,
+    CallSoundnessCertificate, ProofTerm, PropertyClass, ResourceBoundsWitness, Witness,
+    CALL_INTERRUPT_CAUSES, VALID_SIGN_ALGORITHMS,
 };
 
 /// The closed verdict catalog. Total over every proof shape — no
@@ -113,6 +113,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
             PropertyClass::InterruptibleSessionSoundness,
             Witness::InterruptibleSessionSoundness(w),
         ) => check_interruptible_session_soundness(w, ir),
+        (PropertyClass::ParkedResidualSoundness, Witness::ParkedResidualSoundness(w)) => {
+            check_parked_residual_soundness(w, ir)
+        }
         _ => CheckOutcome::UnknownProperty,
     }
 }
@@ -976,6 +979,73 @@ fn check_interruptible_session_soundness(
                 actual.session_name, actual.role_name
             ),
         };
+    }
+    CheckOutcome::Verified
+}
+
+/// §79.f — verify a [`ParkedResidualSoundnessWitness`]: the socket's parked κ is
+/// AAD-bound + recoverable (`reconnect: cognitive_state`) and its at-rest
+/// retention is governed (`legal_basis`). Re-derived from the IR (D51.2).
+fn check_parked_residual_soundness(
+    claimed: &super::proof_term::ParkedResidualSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match derive_parked_residual_witness(&claimed.socket_name, ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "socket '{}' carries no interruptible session in this artifact (no parked-\
+                     residual obligation) — forged or stale proof",
+                    claimed.socket_name
+                ),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    // Verdict 1: the park must be AAD-bound + recoverable (§41.g).
+    if !actual.reconnect_cognitive_state {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "socket '{}' parks an interruptible residual but does not declare `reconnect: \
+                 cognitive_state` — the at-rest κ would be an unsealed second store (paper §7)",
+                actual.socket_name
+            ),
+        };
+    }
+    // Verdict 2: the at-rest retention must be governed.
+    if !actual.legal_basis_declared {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "socket '{}' parks a possibly-PII-bearing residual but declares no `legal_basis` \
+                 — the at-rest retention TTL has no legal ceiling (paper §7)",
+                actual.socket_name
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §79.f — the overall verdict for a [`CallSoundnessCertificate`]: EVERY
+/// composed member must independently verify against `ir`. Returns the first
+/// non-`Verified` member's outcome (so the caller sees *why* a call is not
+/// certified sound), or `Verified` when all hold. An empty certificate (a
+/// socket with no interruptible session) is vacuously `Verified` — there is no
+/// call-soundness obligation to discharge.
+pub fn check_call_soundness_certificate(
+    cert: &CallSoundnessCertificate,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    for proof in &cert.proofs {
+        let outcome = check_proof(proof, ir);
+        if outcome != CheckOutcome::Verified {
+            return outcome;
+        }
     }
     CheckOutcome::Verified
 }
