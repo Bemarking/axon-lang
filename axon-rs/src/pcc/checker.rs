@@ -33,6 +33,7 @@ use super::generate::{
     derive_endpoint_retry_witness, derive_interruptible_session_witness,
     derive_json_shape_soundness_witness, derive_parked_residual_witness,
     derive_shield_halt_witness, derive_socket_credit_witness, derive_tool_call_soundness_witness,
+    derive_upstream_projection_witness,
 };
 use super::proof_term::{
     CallSoundnessCertificate, ProofTerm, PropertyClass, ResourceBoundsWitness, Witness,
@@ -115,6 +116,9 @@ pub fn check_proof(proof: &ProofTerm, ir: &IRProgram) -> CheckOutcome {
         ) => check_interruptible_session_soundness(w, ir),
         (PropertyClass::ParkedResidualSoundness, Witness::ParkedResidualSoundness(w)) => {
             check_parked_residual_soundness(w, ir)
+        }
+        (PropertyClass::UpstreamProjectionSoundness, Witness::UpstreamProjectionSoundness(w)) => {
+            check_upstream_projection_soundness(w, ir)
         }
         _ => CheckOutcome::UnknownProperty,
     }
@@ -1025,6 +1029,55 @@ fn check_parked_residual_soundness(
                 "socket '{}' parks a possibly-PII-bearing residual but declares no `legal_basis` \
                  — the at-rest retention TTL has no legal ceiling (paper §7)",
                 actual.socket_name
+            ),
+        };
+    }
+    CheckOutcome::Verified
+}
+
+/// §80 — verify an [`UpstreamProjectionSoundnessWitness`]: the upstream's
+/// `map:` projection is a total, unambiguous cover of the bound role's
+/// message set (T849 re-derived) and its `resolve:`/`secret:` values are
+/// policy-shaped config keys (T850 re-derived). Everything is recomputed
+/// from the IR (D51.2); a forged `projection_total: true` cannot survive.
+fn check_upstream_projection_soundness(
+    claimed: &super::proof_term::UpstreamProjectionSoundnessWitness,
+    ir: &IRProgram,
+) -> CheckOutcome {
+    let actual = match derive_upstream_projection_witness(&claimed.upstream_name, ir) {
+        Some(w) => w,
+        None => {
+            return CheckOutcome::Refuted {
+                reason: format!(
+                    "upstream '{}' does not exist in this artifact — forged or stale proof",
+                    claimed.upstream_name
+                ),
+            }
+        }
+    };
+    if actual != *claimed {
+        return CheckOutcome::Refuted {
+            reason: "witness disagrees with artifact re-derivation (forged or stale proof)"
+                .to_string(),
+        };
+    }
+    // Verdict 1: no message may fall through untranscoded (§80's core claim).
+    if !actual.projection_total {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "upstream '{}': the `map:` projection is not a total, unambiguous cover of \
+                 session '{}' role '{}' — a message would cross the boundary untranscoded (T849)",
+                actual.upstream_name, actual.session_name, actual.role_name
+            ),
+        };
+    }
+    // Verdict 2: no vendor coordinate may live in source (config, not code).
+    if !actual.config_keys_valid {
+        return CheckOutcome::Refuted {
+            reason: format!(
+                "upstream '{}': `resolve:`/`secret:` are not policy-shaped config keys — an \
+                 endpoint or credential literal is in the artifact (T850)",
+                actual.upstream_name
             ),
         };
     }

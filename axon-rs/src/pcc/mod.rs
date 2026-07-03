@@ -55,6 +55,8 @@ pub use generate::{
     generate_parked_residual_soundness_proofs,
     generate_resource_bounds_proofs, generate_shield_halt_guarantee_proofs,
     generate_tool_call_soundness_proofs,
+    // §Fase 80 — the outbound-vendor projection obligation.
+    derive_upstream_projection_witness, generate_upstream_projection_soundness_proofs,
 };
 pub use proof_term::{
     CallSoundnessCertificate, CapabilityContainmentWitness, CapabilityIsolationWitness,
@@ -63,7 +65,8 @@ pub use proof_term::{
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, ParkedResidualSoundnessWitness,
     ProofBundle, ProofTerm,
     PropertyClass, ResourceBoundsWitness,
-    ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness, CALL_INTERRUPT_CAUSES,
+    ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, UpstreamProjectionSoundnessWitness,
+    Witness, CALL_INTERRUPT_CAUSES,
     MAX_RETRIES, VALID_BREACH_POLICIES, VALID_SIGN_ALGORITHMS,
 };
 
@@ -2353,6 +2356,91 @@ mod tests {
         if let Witness::ChannelEgressSoundness(ref mut w) = proofs[0].witness {
             w.persistence = "ephemeral".to_string();
             w.durable = false;
+        }
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("disagrees"), "{reason}"),
+            other => panic!("expected Refuted (forgery), got {other:?}"),
+        }
+    }
+
+    // ── §Fase 80 — UpstreamProjectionSoundness ───────────────────────────
+
+    const STT_UPSTREAM: &str = "session SttDialogue {\n\
+             axon:   [ send AudioChunk, loop, receive Transcript, end ]\n\
+             vendor: [ receive AudioChunk, loop, send Transcript, end ]\n\
+         }\n\
+         upstream DeepgramSTT {\n\
+             transport: websocket\n\
+             protocol: SttDialogue\n\
+             role: axon\n\
+             resolve: upstream.deepgram.url\n\
+             secret: upstream.deepgram.api_key\n\
+             auth: header(\"Authorization\", \"Token \")\n\
+             map: [\n\
+                 send AudioChunk as binary,\n\
+                 receive Transcript as json when \"type\" = \"Results\",\n\
+             ]\n\
+             reconnect: { backoff_ms: 500, max_attempts: 5, on_exhausted: fail }\n\
+             overflow: drop_oldest\n\
+         }";
+
+    #[test]
+    fn upstream_projection_soundness_verifies_a_total_projection() {
+        let ir = ir_from_source(STT_UPSTREAM);
+        let proofs = super::generate::generate_upstream_projection_soundness_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 1, "one proof per upstream");
+        assert_eq!(proofs[0].property.slug(), "upstream_projection_soundness");
+        assert_eq!(check_proof(&proofs[0], &ir), CheckOutcome::Verified);
+        // …and it rides the all-proofs bundle (`axon pcc prove`).
+        assert!(generate_all_proofs(&ir, VERSION)
+            .iter()
+            .any(|p| p.property == PropertyClass::UpstreamProjectionSoundness));
+    }
+
+    #[test]
+    fn upstream_projection_refutes_a_partial_projection() {
+        // No receive rule for Transcript — a message would cross the
+        // boundary untranscoded. (No type-check ran, so the defect
+        // survives to the independent checker — which is the point.)
+        let ir = ir_from_source(&STT_UPSTREAM.replace(
+            "receive Transcript as json when \"type\" = \"Results\",\n",
+            "",
+        ));
+        let proofs = super::generate::generate_upstream_projection_soundness_proofs(&ir, VERSION);
+        assert_eq!(proofs.len(), 1, "the defective upstream still gets its refutable proof");
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => {
+                assert!(reason.contains("untranscoded") && reason.contains("T849"), "{reason}")
+            }
+            other => panic!("expected Refuted (partial projection), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn upstream_projection_refutes_a_literal_shaped_secret() {
+        // An uppercase dotted path parses, but production custody would
+        // reject it — the T850 law re-derived by the checker.
+        let ir = ir_from_source(&STT_UPSTREAM.replace(
+            "secret: upstream.deepgram.api_key",
+            "secret: Upstream.Deepgram.ApiKey",
+        ));
+        let proofs = super::generate::generate_upstream_projection_soundness_proofs(&ir, VERSION);
+        match check_proof(&proofs[0], &ir) {
+            CheckOutcome::Refuted { reason } => assert!(reason.contains("T850"), "{reason}"),
+            other => panic!("expected Refuted (literal-shaped key), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn upstream_projection_refutes_a_forged_witness() {
+        let ir = ir_from_source(&STT_UPSTREAM.replace(
+            "receive Transcript as json when \"type\" = \"Results\",\n",
+            "",
+        ));
+        let mut proofs = super::generate::generate_upstream_projection_soundness_proofs(&ir, VERSION);
+        // Forge: claim totality for the partial projection.
+        if let Witness::UpstreamProjectionSoundness(ref mut w) = proofs[0].witness {
+            w.projection_total = true;
         }
         match check_proof(&proofs[0], &ir) {
             CheckOutcome::Refuted { reason } => assert!(reason.contains("disagrees"), "{reason}"),

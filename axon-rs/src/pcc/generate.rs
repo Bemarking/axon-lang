@@ -20,7 +20,8 @@ use super::proof_term::{
     ChannelDeliverySoundnessWitness, ComplianceCoverageWitness, EffectBudgetedWitness,
     EffectRowSoundnessWitness, InterruptibleSessionSoundnessWitness, JsonShapeSoundnessWitness,
     ParkedResidualSoundnessWitness, ProofTerm, PropertyClass,
-    ResourceBoundsWitness, ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness, Witness,
+    ResourceBoundsWitness, ShieldHaltGuaranteeWitness, ToolCallSoundnessWitness,
+    UpstreamProjectionSoundnessWitness, Witness,
     CALL_INTERRUPT_CAUSES, MAX_RETRIES, VALID_BREACH_POLICIES, VALID_BUDGET_PERIODS,
     VALID_ON_EXHAUSTED,
 };
@@ -1492,6 +1493,156 @@ pub fn generate_parked_residual_soundness_proofs(
     proofs
 }
 
+/// §80 — collect the distinct message types a compiled session role
+/// sends/receives, walking select/branch arms and §79 interrupt body+handler
+/// (a message only exchanged inside a handler still crosses the wire).
+/// Order-preserving first-occurrence dedup — the checker compares these
+/// vectors verbatim, so derivation order must be deterministic.
+fn collect_ir_role_messages(
+    steps: &[axon_frontend::ir_nodes::IRSessionStep],
+    sends: &mut Vec<String>,
+    receives: &mut Vec<String>,
+) {
+    for step in steps {
+        match step.op.as_str() {
+            "send" => {
+                if !sends.contains(&step.message_type) {
+                    sends.push(step.message_type.clone());
+                }
+            }
+            "receive" => {
+                if !receives.contains(&step.message_type) {
+                    receives.push(step.message_type.clone());
+                }
+            }
+            "select" | "branch" | "interrupt" => {
+                for b in &step.branches {
+                    collect_ir_role_messages(&b.steps, sends, receives);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// §80 — the T850 charset law, re-derived: a config key is lowercase
+/// `[a-z0-9][a-z0-9_.-]*` (the compile-time mirror of the enterprise
+/// `SecretKeyPolicy`). A URL (`:`/`/`) or a typical credential literal
+/// (uppercase) cannot satisfy it.
+fn is_policy_shaped_config_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let head_ok = chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    head_ok && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '.' | '-'))
+}
+
+/// §80 — derive the [`UpstreamProjectionSoundnessWitness`] for one upstream
+/// from the IR alone (pure; shared by the generator and, by re-derivation,
+/// the checker — D51.2). `None` if the upstream does not exist.
+pub fn derive_upstream_projection_witness(
+    upstream_name: &str,
+    ir: &IRProgram,
+) -> Option<UpstreamProjectionSoundnessWitness> {
+    let up = ir.upstreams.iter().find(|u| u.name == upstream_name)?;
+
+    // Required sets — from the bound role (empty if the binding is broken;
+    // a broken binding also fails totality below, so the proof refutes).
+    let mut required_sends = Vec::new();
+    let mut required_receives = Vec::new();
+    let bound_role = ir
+        .sessions
+        .iter()
+        .find(|s| s.name == up.protocol)
+        .and_then(|s| s.roles.iter().find(|r| r.name == up.role));
+    if let Some(role) = bound_role {
+        collect_ir_role_messages(&role.steps, &mut required_sends, &mut required_receives);
+    }
+
+    // Covered sets — from the map rules (dedup, source order).
+    let mut covered_sends = Vec::new();
+    let mut covered_receives = Vec::new();
+    for r in &up.map {
+        let bucket = if r.direction == "send" { &mut covered_sends } else { &mut covered_receives };
+        if !bucket.contains(&r.message) {
+            bucket.push(r.message.clone());
+        }
+    }
+
+    // Totality + unambiguity — the T849 law re-derived from the artifact.
+    let mut total = bound_role.is_some();
+    for (dir, required) in [("send", &required_sends), ("receive", &required_receives)] {
+        for msg in required.iter() {
+            let n = up.map.iter().filter(|r| r.direction == dir && &r.message == msg).count();
+            if n != 1 {
+                total = false;
+            }
+        }
+    }
+    for r in &up.map {
+        let known = if r.direction == "send" {
+            required_sends.contains(&r.message)
+        } else {
+            required_receives.contains(&r.message)
+        };
+        if !known {
+            total = false;
+        }
+    }
+    let receive_json: Vec<(String, String)> = up
+        .map
+        .iter()
+        .filter(|r| r.direction == "receive" && r.framing == "json")
+        .map(|r| {
+            (
+                r.when_field.clone().unwrap_or_else(|| "type".to_string()),
+                r.when_value.clone().unwrap_or_else(|| r.message.clone()),
+            )
+        })
+        .collect();
+    for (i, a) in receive_json.iter().enumerate() {
+        if receive_json.iter().skip(i + 1).any(|b| a == b) {
+            total = false;
+        }
+    }
+    if up.map.iter().filter(|r| r.direction == "receive" && r.framing == "binary").count() > 1 {
+        total = false;
+    }
+
+    Some(UpstreamProjectionSoundnessWitness {
+        upstream_name: up.name.clone(),
+        session_name: up.protocol.clone(),
+        role_name: up.role.clone(),
+        required_sends,
+        required_receives,
+        covered_sends,
+        covered_receives,
+        projection_total: total,
+        config_keys_valid: is_policy_shaped_config_key(&up.resolve) && is_policy_shaped_config_key(&up.secret),
+    })
+}
+
+/// §80 — one UpstreamProjectionSoundness proof per `upstream`. An upstream
+/// with a partial projection or literal-shaped config still gets its
+/// refutable proof — the checker refutes it, the deploy gate blocks it.
+pub fn generate_upstream_projection_soundness_proofs(
+    ir: &IRProgram,
+    axon_version: &str,
+) -> Vec<ProofTerm> {
+    let digest = artifact_digest(ir);
+    let mut proofs = Vec::new();
+    for up in &ir.upstreams {
+        let Some(witness) = derive_upstream_projection_witness(&up.name, ir) else {
+            continue;
+        };
+        proofs.push(ProofTerm {
+            property: PropertyClass::UpstreamProjectionSoundness,
+            artifact_digest: digest.clone(),
+            witness: Witness::UpstreamProjectionSoundness(witness),
+            axon_version: axon_version.to_string(),
+        });
+    }
+    proofs
+}
+
 /// §79.f — the unified **`CallSoundnessCertificate`**: for one socket bundle,
 /// compose the interruptible-session soundness of its session, the parked-
 /// residual soundness of the socket, and the socket's resource (credit) bound
@@ -1568,5 +1719,6 @@ pub fn generate_all_proofs(ir: &IRProgram, axon_version: &str) -> Vec<ProofTerm>
     proofs.extend(generate_channel_egress_soundness_proofs(ir, axon_version));
     proofs.extend(generate_interruptible_session_soundness_proofs(ir, axon_version));
     proofs.extend(generate_parked_residual_soundness_proofs(ir, axon_version));
+    proofs.extend(generate_upstream_projection_soundness_proofs(ir, axon_version));
     proofs
 }

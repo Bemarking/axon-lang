@@ -201,6 +201,17 @@ pub enum PropertyClass {
     /// genuinely-new fourth member of the `CallSoundnessCertificate` — not an
     /// emergent conjunction of the other three (D79.8).
     ParkedResidualSoundness,
+    /// §Fase 80 — `UpstreamProjectionSoundness`: an `upstream`'s declared
+    /// wire↔session projection (`map:`) is a TOTAL, unambiguous cover of the
+    /// bound role's message set, and its `resolve:`/`secret:` values are
+    /// config KEYS (never endpoint/credential literals). This is §80's core
+    /// claim — "no message falls through untranscoded, no vendor coordinate
+    /// in source" — as a machine-checkable obligation re-derived from the IR
+    /// alone (the `no_unwitnessed_advantage` discipline applied to the trust
+    /// boundary D80.4 stops at: everything up to the wire is proved, the
+    /// vendor's side is defended + witnessed, never claimed). Compile-time
+    /// mirror: the §80.c type-checker (T849/T850/T851).
+    UpstreamProjectionSoundness,
 }
 
 /// §72.f — the closed period catalog for `budget` quotas. The checker's own
@@ -244,6 +255,7 @@ impl PropertyClass {
             PropertyClass::ChannelEgressSoundness => "channel_egress_soundness",
             PropertyClass::InterruptibleSessionSoundness => "interruptible_session_soundness",
             PropertyClass::ParkedResidualSoundness => "parked_residual_soundness",
+            PropertyClass::UpstreamProjectionSoundness => "upstream_projection_soundness",
         }
     }
 }
@@ -656,6 +668,42 @@ pub struct ParkedResidualSoundnessWitness {
     pub legal_basis_declared: bool,
 }
 
+/// §80 — witness for [`PropertyClass::UpstreamProjectionSoundness`].
+///
+/// One `upstream`, located by name. The checker RE-DERIVES the required
+/// message sets from the referenced session's bound role, the covered sets
+/// from the `map:` rules, and the key-shape verdicts from the strings
+/// themselves — a forged `projection_total: true` is caught by
+/// recomputation (D51.2). A verifying proof has `projection_total &&
+/// config_keys_valid`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpstreamProjectionSoundnessWitness {
+    /// The `upstream` this proof is about.
+    pub upstream_name: String,
+    /// The session its `protocol:` references.
+    pub session_name: String,
+    /// The role axon plays (`role:`).
+    pub role_name: String,
+    /// Messages the bound role SENDS (dedup, source order) — re-derived
+    /// from the IR session steps, through select/branch/interrupt arms.
+    pub required_sends: Vec<String>,
+    /// Messages the bound role RECEIVES — same derivation.
+    pub required_receives: Vec<String>,
+    /// Messages with a `send` map rule (dedup, source order).
+    pub covered_sends: Vec<String>,
+    /// Messages with a `receive` map rule.
+    pub covered_receives: Vec<String>,
+    /// The projection is total + unambiguous: every required message covered
+    /// exactly once in its direction, no rule for a message the role never
+    /// exchanges, distinct inbound-json discriminators, ≤ 1 inbound-binary
+    /// rule (the T849 law, re-derived).
+    pub projection_total: bool,
+    /// `resolve:`/`secret:` are policy-shaped config keys (the T850 law:
+    /// lowercase `[a-z0-9][a-z0-9_.-]*` — a URL or credential literal
+    /// cannot satisfy this).
+    pub config_keys_valid: bool,
+}
+
 /// The property-specific witness. Tagged so the JSON is self-describing
 /// + a future class adds a variant without ambiguity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -675,6 +723,7 @@ pub enum Witness {
     ChannelEgressSoundness(ChannelEgressSoundnessWitness),
     InterruptibleSessionSoundness(InterruptibleSessionSoundnessWitness),
     ParkedResidualSoundness(ParkedResidualSoundnessWitness),
+    UpstreamProjectionSoundness(UpstreamProjectionSoundnessWitness),
 }
 
 impl Witness {
@@ -703,6 +752,7 @@ impl Witness {
             Witness::ChannelEgressSoundness(w) => &w.channel_name,
             Witness::InterruptibleSessionSoundness(w) => &w.session_name,
             Witness::ParkedResidualSoundness(w) => &w.socket_name,
+            Witness::UpstreamProjectionSoundness(w) => &w.upstream_name,
         }
     }
 }
