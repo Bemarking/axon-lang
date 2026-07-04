@@ -165,6 +165,12 @@ pub enum UpstreamLifecycle {
     Exhausted { attempts: u32 },
 }
 
+/// One boxed witness future — the §76.c fail-closed pattern is inherently
+/// asynchronous for a real audit backend (the durable append must SUCCEED
+/// before the lifecycle transition proceeds), so the trait speaks futures
+/// without forcing an `async-trait` dependency on implementors.
+pub type WitnessFuture<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+
 /// The witness seam enterprise binds to its audit chain (§80.e): a `Connected`
 /// / `Reconnected` refusal ABORTS the dial (an upstream that cannot witness
 /// its own lifecycle refuses to dial); an `Exhausted` refusal cannot un-exhaust
@@ -172,7 +178,7 @@ pub enum UpstreamLifecycle {
 /// already the terminal state; suppressing it would trade one unwitnessed
 /// event for a silent hang).
 pub trait UpstreamLifecycleWitness: Send + Sync {
-    fn witness(&self, upstream: &str, event: &UpstreamLifecycle) -> Result<(), String>;
+    fn witness<'a>(&'a self, upstream: &'a str, event: &'a UpstreamLifecycle) -> WitnessFuture<'a>;
 }
 
 /// OSS default: log via `tracing`, never refuse. Enterprise replaces this
@@ -180,9 +186,11 @@ pub trait UpstreamLifecycleWitness: Send + Sync {
 pub struct TracingLifecycleWitness;
 
 impl UpstreamLifecycleWitness for TracingLifecycleWitness {
-    fn witness(&self, upstream: &str, event: &UpstreamLifecycle) -> Result<(), String> {
-        tracing::info!(upstream, ?event, "upstream lifecycle");
-        Ok(())
+    fn witness<'a>(&'a self, upstream: &'a str, event: &'a UpstreamLifecycle) -> WitnessFuture<'a> {
+        Box::pin(async move {
+            tracing::info!(upstream, ?event, "upstream lifecycle");
+            Ok(())
+        })
     }
 }
 
@@ -545,9 +553,11 @@ pub async fn dial_upstream(
         })?
     };
 
-    // Fail-closed witness BEFORE the first dial.
+    // Fail-closed witness BEFORE the first dial: the durable audit append
+    // must succeed or the connection never happens.
     witness
         .witness(&name, &UpstreamLifecycle::Connected { attempt: 0 })
+        .await
         .map_err(|detail| UpstreamError::UnwitnessedLifecycle { upstream: name.clone(), detail })?;
 
     let request = build_dial_request(
@@ -632,7 +642,7 @@ async fn drive_upstream(
                 // Budget exhausted — fail-closed. Witness refusal at this
                 // point cannot un-exhaust the budget; log + proceed.
                 let ev = UpstreamLifecycle::Exhausted { attempts: attempt };
-                if let Err(e) = witness.witness(&name, &ev) {
+                if let Err(e) = witness.witness(&name, &ev).await {
                     tracing::error!(upstream = %name, error = %e, "exhaustion could not be witnessed");
                 }
                 let _ = events.send(UpstreamEvent::Exhausted { attempts: attempt }).await;
@@ -642,7 +652,7 @@ async fn drive_upstream(
             attempt += 1;
             tokio::time::sleep(backoff_delay(params.backoff_ms, attempt)).await;
             let ev = UpstreamLifecycle::Reconnected { attempt };
-            if let Err(detail) = witness.witness(&name, &ev) {
+            if let Err(detail) = witness.witness(&name, &ev).await {
                 // Fail-closed: an unwitnessable reconnect is not attempted.
                 tracing::error!(upstream = %name, %detail, "reconnect refused by witness (fail-closed)");
                 continue;

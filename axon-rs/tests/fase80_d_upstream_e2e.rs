@@ -51,13 +51,20 @@ impl RecordingWitness {
 }
 
 impl UpstreamLifecycleWitness for RecordingWitness {
-    fn witness(&self, _upstream: &str, event: &UpstreamLifecycle) -> Result<(), String> {
+    fn witness<'a>(
+        &'a self,
+        _upstream: &'a str,
+        event: &'a UpstreamLifecycle,
+    ) -> axon::upstream_runtime::WitnessFuture<'a> {
         self.seen.lock().unwrap().push(event.clone());
-        if self.refuse {
-            Err("audit backend unavailable (test)".to_string())
-        } else {
-            Ok(())
-        }
+        let refuse = self.refuse;
+        Box::pin(async move {
+            if refuse {
+                Err("audit backend unavailable (test)".to_string())
+            } else {
+                Ok(())
+            }
+        })
     }
 }
 
