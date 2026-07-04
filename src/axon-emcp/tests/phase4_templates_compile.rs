@@ -125,6 +125,14 @@ fn template_voice_compiles() {
     assert_template_compiles("voice");
 }
 
+/// §Fase 80.g — the preset-based voice agent: the whole program is one
+/// `voice` declaration; the expansion (ots + session/socket + upstreams)
+/// must compile end-to-end through the same pipeline.
+#[test]
+fn template_voice_preset_compiles() {
+    assert_template_compiles("voice_preset");
+}
+
 #[test]
 fn template_dev_compiles() {
     assert_template_compiles("dev");

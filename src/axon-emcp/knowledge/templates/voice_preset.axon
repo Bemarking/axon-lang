@@ -1,0 +1,21 @@
+// AXON §Fase 80 voice-agent scaffold — the vendor is a DECLARATION,
+// not a dependency (voice_integration_is_a_declaration_not_a_rewrite).
+//
+// This is the whole program: a barge-in-capable phone agent over blessed
+// vendor presets. It expands (run `axon desugar` on this file to see it)
+// to the ordinary primitives: the mu-law<->PCM16 `ots` codec pair, a §79
+// interruptible carrier `session` + `socket` (residual parking governed
+// by the declared legal_basis), and one `upstream` per vendor leg.
+//
+// Swap vendors by editing ONE token (e.g. `stt: AssemblyAISTT@v1`), or
+// switch to a fused speech-to-speech architecture with a single
+// `realtime: OpenAIRealtime@v1` leg instead of the stt/tts pair. The
+// vendor URL + credential are per-tenant config (`upstream.deepgram.url`
+// / `upstream.deepgram.api_key`), never source.
+
+voice Concierge {
+    stt: DeepgramSTT@v1
+    tts: ElevenLabsTTS@v1
+    interruptible: true
+    legal_basis: legitimate_interest
+}
