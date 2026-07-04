@@ -1280,6 +1280,12 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Upstream(n) => {
                     registrations.push((n.name.clone(), "upstream".into(), n.loc.line, n.loc.clone()));
                 }
+                // §Fase 80.g — register the voice agent (its expansion's
+                // session/socket/upstreams register themselves — they are
+                // ordinary declarations in the program by check time).
+                Declaration::Voice(n) => {
+                    registrations.push((n.name.clone(), "voice".into(), n.loc.line, n.loc.clone()));
+                }
                 // §Fase 51.c.2 — register the Pauli-sum observable so a
                 // `quant(observable: <Name>)` reference resolves to it.
                 Declaration::Observable(n) => {
@@ -1474,6 +1480,7 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Topology(n) => self.check_topology(n),
                 Declaration::Socket(n) => self.check_socket(n),
                 Declaration::Upstream(n) => self.check_upstream(n),
+                Declaration::Voice(n) => self.check_voice(n),
                 Declaration::Observable(n) => self.check_observable(n),
                 Declaration::Witness(n) => self.check_witness(n),
                 Declaration::Immune(n) => self.check_immune(n),
@@ -4169,6 +4176,25 @@ impl<'a> TypeChecker<'a> {
     fn check_session_duality(&mut self, node: &SessionDefinition) {
         let t1 = lower_session_role(&node.roles[0]);
         let t2 = lower_session_role(&node.roles[1]);
+        // §80.g hardening (`axon-W012`) — a role whose FIRST step is `loop`
+        // lowers to the unguarded μX.X (everything after a `loop` in
+        // sequence is unreachable at this layer), so duality/credit hold
+        // VACUOUSLY — the checker is checking nothing. A warning (not an
+        // error: pre-§80 corpus uses the leading-loop idiom), and the
+        // coinductive analyses must never see the degenerate type — the
+        // §41.c discharge skips it rather than risk unfolding μX.X.
+        for (role, t) in [(&node.roles[0], &t1), (&node.roles[1], &t2)] {
+            if is_unguarded_recursion(t) {
+                self.warn(
+                    format!(
+                        "axon-W012 session '{}' role '{}': a leading `loop` makes the session type vacuous (μX.X) — everything after a `loop` in a sequence is unreachable, so duality and credit hold trivially, not meaningfully. Put the iteration body first and `loop` last: `[ send A, receive B, loop ]`",
+                        node.name, role.name
+                    ),
+                    &node.loc,
+                );
+                return;
+            }
+        }
         if !t1.is_dual_to(&t2) {
             self.emit(
                 format!(
@@ -4241,6 +4267,11 @@ impl<'a> TypeChecker<'a> {
         if let (Some(session), Some(budget)) = (session, budget) {
             for role in &session.roles {
                 let lowered = lower_session_role(role).with_credit(budget);
+                if is_unguarded_recursion(&lowered) {
+                    // Already diagnosed on the session declaration (§80.g
+                    // hardening); never hand μX.X to the analyses.
+                    continue;
+                }
                 if let Err(e) = lowered.credit_analyse(budget) {
                     self.emit(
                         format!(
@@ -4447,6 +4478,11 @@ impl<'a> TypeChecker<'a> {
             match node.backpressure_credit {
                 Some(n) if n >= 1 => {
                     let lowered = lower_session_role(role).with_credit(n as u64);
+                    if is_unguarded_recursion(&lowered) {
+                        // Diagnosed on the session declaration — see
+                        // `check_session_duality` (§80.g hardening).
+                        return;
+                    }
                     if let Err(e) = lowered.credit_analyse(n as u64) {
                         self.emit(
                             format!(
@@ -4599,6 +4635,113 @@ impl<'a> TypeChecker<'a> {
                     ),
                     &node.loc,
                 );
+            }
+        }
+    }
+
+    /// §Fase 80.g (`axon-T852`) — `voice` validation. The sugar's laws:
+    ///   (a) `stt:`+`tts:` XOR `realtime:` (D80.1 — cascaded needs both
+    ///       legs; fused needs exactly the one);
+    ///   (b) `interruptible: true` ⇒ `legal_basis:` — the sugar must be
+    ///       UNABLE to generate a program the §79 `ParkedResidualSoundness`
+    ///       proof refutes (the generated socket parks residuals);
+    ///   (c) every leg resolves — a `Preset@vN` must be in the §80.f
+    ///       catalog, a bare name must be a declared `upstream`;
+    ///   (d) `carrier:` in the closed catalog; `persona:`/`context:` refs
+    ///       resolve when given.
+    /// The EXPANSION's own soundness (duality, credit, projection totality)
+    /// is checked on the generated declarations by the ordinary laws — the
+    /// sugar earns no exemption.
+    fn check_voice(&mut self, node: &VoiceDefinition) {
+        // (a) architecture shape.
+        let cascaded_given = node.stt.is_some() || node.tts.is_some();
+        if node.realtime.is_some() && cascaded_given {
+            self.emit(
+                format!(
+                    "axon-T852 Voice '{}' declares `realtime:` alongside `stt:`/`tts:` — one architecture per voice: cascaded (stt+tts) XOR fused (realtime)",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+        if node.realtime.is_none() && (node.stt.is_none() || node.tts.is_none()) {
+            self.emit(
+                format!(
+                    "axon-T852 Voice '{}' is incomplete — cascaded needs BOTH `stt:` and `tts:`, or declare a single fused `realtime:` leg",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+        // (b) the §79 data-at-rest obligation, surfaced at the sugar level.
+        if node.interruptible && node.legal_basis.is_none() {
+            self.emit(
+                format!(
+                    "axon-T852 Voice '{}' declares `interruptible: true` without `legal_basis:` — a barge-in-capable call parks mid-utterance residuals at rest (§79), and that retention must be governed",
+                    node.name
+                ),
+                &node.loc,
+            );
+        }
+        // (d) carrier catalog.
+        const VALID_CARRIERS: &[&str] = &["mulaw8k", "pcm16"];
+        if !node.carrier.is_empty() && !is_valid(&node.carrier, VALID_CARRIERS) {
+            self.emit(
+                format!(
+                    "Voice '{}' carrier '{}' is not in the catalog: {}",
+                    node.name,
+                    node.carrier,
+                    valid_list(VALID_CARRIERS)
+                ),
+                &node.loc,
+            );
+        }
+        // (c) leg resolution.
+        for (field, leg) in [("stt", &node.stt), ("tts", &node.tts), ("realtime", &node.realtime)] {
+            if let Some(r) = leg {
+                if r.contains('@') {
+                    if crate::upstream_presets::find(r).is_none() {
+                        self.emit(
+                            format!(
+                                "axon-T852 Voice '{}' `{field}:` references unknown preset '{r}'. Available: {}",
+                                node.name,
+                                crate::upstream_presets::available()
+                            ),
+                            &node.loc,
+                        );
+                    }
+                } else {
+                    match self.symbols.lookup(r) {
+                        Some(sym) if sym.kind == "upstream" => {}
+                        Some(sym) => self.emit(
+                            format!(
+                                "axon-T852 Voice '{}' `{field}:` references '{r}', which is a {} — expected a declared `upstream` or a `Preset@vN`",
+                                node.name, sym.kind
+                            ),
+                            &node.loc,
+                        ),
+                        None => self.emit(
+                            format!(
+                                "axon-T852 Voice '{}' `{field}:` references '{r}' — not a declared `upstream` and not a `Preset@vN` from the catalog ({})",
+                                node.name,
+                                crate::upstream_presets::available()
+                            ),
+                            &node.loc,
+                        ),
+                    }
+                }
+            }
+        }
+        // (d) persona/context refs.
+        for (field, kind, r) in [("persona", "persona", &node.persona), ("context", "context", &node.context)] {
+            if let Some(name) = r {
+                match self.symbols.lookup(name) {
+                    Some(sym) if sym.kind == kind => {}
+                    _ => self.emit(
+                        format!("Voice '{}' `{field}:` references '{name}' — not a declared {kind}", node.name),
+                        &node.loc,
+                    ),
+                }
             }
         }
     }
@@ -8303,6 +8446,14 @@ fn cycle_to_edges<'a>(cycle: &[String], edges: &'a [TopologyEdge]) -> Vec<&'a To
 }
 
 /// Locate a session by name in the program's declarations (flat scan).
+/// §80.g hardening — `Rec("X", Var("X"))`: the unguarded μX.X a leading
+/// `loop` lowers to. The coinductive/credit analyses would unfold it without
+/// progress; every consumer of a lowered role must reject it first.
+fn is_unguarded_recursion(t: &SessionType) -> bool {
+    matches!(t, SessionType::Rec(name, body)
+        if matches!(body.as_ref(), SessionType::Var(v) if v == name))
+}
+
 /// §Fase 80.c — collect the distinct message types a role sends/receives,
 /// walking every construct that can carry a message: plain `send`/`receive`
 /// steps, `select`/`branch` labelled arms, and §79 `interrupt` body+handler

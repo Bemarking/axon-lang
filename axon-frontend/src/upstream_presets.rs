@@ -54,8 +54,8 @@ pub const UPSTREAM_PRESETS: &[UpstreamPreset] = &[
         architecture: "cascaded_stt",
         source: r#"
 session DeepgramSttDialogue {
-    axon:   [ send AudioChunk, loop, receive Transcript, end ]
-    vendor: [ receive AudioChunk, loop, send Transcript, end ]
+    axon:   [ send AudioChunk, receive Transcript, loop ]
+    vendor: [ receive AudioChunk, send Transcript, loop ]
 }
 upstream DeepgramSTT {
     transport: websocket
@@ -79,8 +79,8 @@ upstream DeepgramSTT {
         architecture: "cascaded_stt",
         source: r#"
 session AssemblyAiSttDialogue {
-    axon:   [ send AudioChunk, loop, receive Transcript, end ]
-    vendor: [ receive AudioChunk, loop, send Transcript, end ]
+    axon:   [ send AudioChunk, receive Transcript, loop ]
+    vendor: [ receive AudioChunk, send Transcript, loop ]
 }
 upstream AssemblyAISTT {
     transport: websocket
@@ -104,8 +104,8 @@ upstream AssemblyAISTT {
         architecture: "cascaded_tts",
         source: r#"
 session ElevenLabsTtsDialogue {
-    axon:   [ send TextChunk, loop, receive AudioOut, receive Final, end ]
-    vendor: [ receive TextChunk, loop, send AudioOut, send Final, end ]
+    axon:   [ send TextChunk, receive AudioOut, receive Final, loop ]
+    vendor: [ receive TextChunk, send AudioOut, send Final, loop ]
 }
 upstream ElevenLabsTTS {
     transport: websocket
@@ -130,8 +130,8 @@ upstream ElevenLabsTTS {
         architecture: "cascaded_tts",
         source: r#"
 session CartesiaTtsDialogue {
-    axon:   [ send TextChunk, loop, receive AudioOut, receive Final, end ]
-    vendor: [ receive TextChunk, loop, send AudioOut, send Final, end ]
+    axon:   [ send TextChunk, receive AudioOut, receive Final, loop ]
+    vendor: [ receive TextChunk, send AudioOut, send Final, loop ]
 }
 upstream CartesiaTTS {
     transport: websocket
@@ -156,8 +156,8 @@ upstream CartesiaTTS {
         architecture: "fused_realtime",
         source: r#"
 session OpenAiRealtimeDialogue {
-    axon:   [ send AudioAppend, send ResponseCreate, loop, receive AudioDelta, receive TranscriptDelta, end ]
-    vendor: [ receive AudioAppend, receive ResponseCreate, loop, send AudioDelta, send TranscriptDelta, end ]
+    axon:   [ send AudioAppend, send ResponseCreate, receive AudioDelta, receive TranscriptDelta, loop ]
+    vendor: [ receive AudioAppend, receive ResponseCreate, send AudioDelta, send TranscriptDelta, loop ]
 }
 upstream OpenAIRealtime {
     transport: websocket
@@ -183,8 +183,8 @@ upstream OpenAIRealtime {
         architecture: "fused_realtime",
         source: r#"
 session GeminiLiveDialogue {
-    axon:   [ send Setup, receive SetupComplete, loop, send AudioInput, receive ServerContent, end ]
-    vendor: [ receive Setup, send SetupComplete, loop, receive AudioInput, send ServerContent, end ]
+    axon:   [ send Setup, receive SetupComplete, send AudioInput, receive ServerContent, loop ]
+    vendor: [ receive Setup, send SetupComplete, receive AudioInput, send ServerContent, loop ]
 }
 upstream GeminiLive {
     transport: websocket
@@ -257,6 +257,60 @@ fn merge_preset(user: &mut UpstreamDefinition, base: UpstreamDefinition) {
     if user.backpressure_credit.is_none() {
         user.backpressure_credit = base.backpressure_credit;
     }
+}
+
+/// §80.g (`axon desugar`) — render one (possibly preset-expanded)
+/// `upstream` back to canonical source. This is the D80.6 payload: the
+/// compliance reviewer reads the exact declaration the compiler checked
+/// and the runtime dials — not the sugar that produced it.
+pub fn render_upstream(u: &UpstreamDefinition) -> String {
+    let mut s = String::new();
+    if let Some(p) = &u.preset {
+        s.push_str(&format!("// expanded from preset {p}\n"));
+    }
+    s.push_str(&format!("upstream {} {{\n", u.name));
+    s.push_str(&format!("    transport: {}\n", u.transport));
+    s.push_str(&format!("    protocol: {}\n", u.protocol));
+    s.push_str(&format!("    role: {}\n", u.role));
+    s.push_str(&format!("    resolve: {}\n", u.resolve));
+    s.push_str(&format!("    secret: {}\n", u.secret));
+    match (u.auth_kind.as_str(), &u.auth_name, &u.auth_prefix) {
+        ("signed_url", _, _) => s.push_str("    auth: signed_url\n"),
+        (kind, Some(name), Some(prefix)) => {
+            s.push_str(&format!("    auth: {kind}(\"{name}\", \"{prefix}\")\n"))
+        }
+        (kind, Some(name), None) => s.push_str(&format!("    auth: {kind}(\"{name}\")\n")),
+        (kind, None, _) => s.push_str(&format!("    auth: {kind}\n")),
+    }
+    s.push_str("    map: [\n");
+    for r in &u.map {
+        let mut line = format!("        {} {} as {}", r.direction, r.message, r.framing);
+        if let Some(tag) = &r.tag {
+            line.push_str(&format!(" tag \"{tag}\""));
+        }
+        match (&r.when_field, &r.when_value) {
+            (Some(f), Some(v)) => line.push_str(&format!(" when \"{f}\" = \"{v}\"")),
+            (Some(f), None) => line.push_str(&format!(" when \"{f}\"")),
+            _ => {}
+        }
+        line.push_str(",\n");
+        s.push_str(&line);
+    }
+    s.push_str("    ]\n");
+    if let Some(rc) = &u.reconnect {
+        s.push_str(&format!(
+            "    reconnect: {{ backoff_ms: {}, max_attempts: {}, on_exhausted: {} }}\n",
+            rc.backoff_ms, rc.max_attempts, rc.on_exhausted
+        ));
+    }
+    if let Some(o) = &u.overflow {
+        s.push_str(&format!("    overflow: {o}\n"));
+    }
+    if let Some(c) = u.backpressure_credit {
+        s.push_str(&format!("    backpressure: credit({c})\n"));
+    }
+    s.push_str("}\n");
+    s
 }
 
 /// §80.f — expand every `upstream X from Preset@vN { … }` in the program:

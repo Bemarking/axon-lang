@@ -1240,7 +1240,8 @@ Body prose.
         // §Fase 77: 50 → 54 with the π-calc channel quartet
         // (`channel` / `emit` / `publish` / `discover`, Kivi brief #51 §B.2).
         // §Fase 80.b: 54 → 55 with `upstream` (the outbound vendor connection).
-        assert_eq!(s.total, 55);
+        // §Fase 80.g: 55 → 56 with `voice` (the inspectable voice-agent sugar).
+        assert_eq!(s.total, 56);
     }
 
     /// §Phase 5 — every MCP prompt shipped under

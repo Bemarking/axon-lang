@@ -109,7 +109,7 @@ impl DocStatus {
     }
 }
 
-/// The closed catalogue — **55 primitives**, ordered by category
+/// The closed catalogue — **56 primitives**, ordered by category
 /// for readability. Consumers must not depend on declaration order;
 /// they iterate and filter.
 ///
@@ -117,7 +117,7 @@ impl DocStatus {
 /// - Cognition (15) — what an LLM does.
 /// - Cognitive I/O (10) — resources + reconciliation + self-defence.
 /// - Data plane (7) — typed persistence + provenance.
-/// - Session types (3) — §Fase 41 algebra (+ §80 upstream, the client dual).
+/// - Session types (4) — §Fase 41 algebra (+ §80 upstream/voice).
 /// - Wire (6) — actor + transport surfaces.
 /// - Operators (10) — specialised cognitive transforms (incl. §51 quant/observable).
 ///
@@ -418,6 +418,14 @@ pub const PRIMITIVE_REGISTRY: &[PrimitiveInfo] = &[
         summary: "Outbound vendor connection (the client dual of socket): config-resolved dial, declared auth, and a compile-time-total wire↔session projection — a new vendor is a declaration, not new code.",
         doc_status: DocStatus::Documented,
     },
+    PrimitiveInfo {
+        name: "voice",
+        category: "session_types",
+        top_level: true,
+        since: "Fase 80.g (v2.37.0)",
+        summary: "The voice-agent simplicity layer: macro-expands (inspectable via axon desugar) to ots codecs + a carrier session/socket + upstream vendor legs — a blessed-preset phone agent in under 20 lines.",
+        doc_status: DocStatus::Documented,
+    },
     // ── Wire ──────────────────────────────────────────────────────────
     PrimitiveInfo {
         name: "axonendpoint",
@@ -687,9 +695,10 @@ mod tests {
         // Kivi brief #51 §B.2 caught the gap) → 50→54.
         // §Fase 80.b added `upstream` (the outbound vendor connection,
         // the client dual of `socket`) → 54→55.
+        // §Fase 80.g added `voice` (the inspectable voice-agent sugar) → 55→56.
         assert_eq!(
             PRIMITIVE_REGISTRY.len(),
-            55,
+            56,
             "PRIMITIVE_REGISTRY count drift — add/remove the primitive intentionally + update this assertion"
         );
     }
@@ -781,8 +790,9 @@ mod tests {
             "json",
             // §Fase 77 — the π-calc channel quartet (Kivi brief #51 §B.2).
             "channel", "emit", "publish", "discover",
-            // §Fase 80.b — the outbound vendor connection.
-            "upstream",
+            // §Fase 80.b/80.g — the outbound vendor connection + the
+            // inspectable voice-agent sugar.
+            "upstream", "voice",
         ]
         .into_iter()
         .collect();
@@ -801,14 +811,14 @@ mod tests {
         // §Fase 73: 49 → 50 with `json` (the open semi-structured value type).
         // §Fase 77: 50 → 54 with the π-calc channel quartet
         // (`channel` / `emit` / `publish` / `discover`).
-        // §Fase 80.b: 54 → 55 with `upstream`.
-        assert_eq!(s.total, 55);
+        // §Fase 80.b: 54 → 55 with `upstream`; §80.g: 55 → 56 with `voice`.
+        assert_eq!(s.total, 56);
         assert_eq!(s.documented + s.pending, s.total);
         // §Fase 6.d achieves **100% coverage** — every entry in the
         // registry has a `.md` and a passing drift-gated canonical
         // program. Pending count is 0; any future drop is a
         // regression the gate catches.
-        assert_eq!(s.documented, 55);
+        assert_eq!(s.documented, 56);
         assert_eq!(s.pending, 0);
     }
 

@@ -36,8 +36,8 @@ fn check_errors(src: &str) -> Vec<String> {
 /// The canonical cascaded-STT shape from the design doc §1.
 const DEEPGRAM: &str = r#"
 session SttDialogue {
-    axon:   [ send AudioChunk, loop, receive Transcript, end ]
-    vendor: [ receive AudioChunk, loop, send Transcript, end ]
+    axon:   [ send AudioChunk, receive Transcript, loop ]
+    vendor: [ receive AudioChunk, send Transcript, loop ]
 }
 
 upstream DeepgramSTT {
@@ -250,6 +250,34 @@ fn t851_unknown_session_and_role_are_errors() {
     assert!(
         errors.iter().any(|m| m.contains("axon-T851") && m.contains("carrier")),
         "unknown role must be axon-T851, got: {errors:?}"
+    );
+}
+
+#[test]
+fn leading_loop_session_warns_w012_and_never_hangs() {
+    // Pre-§80 idiom: `[ loop, … ]` lowers to the unguarded μX.X — duality
+    // and credit hold VACUOUSLY, and handing μX.X to the §41.c discharge
+    // historically risked non-termination. Law: warn (axon-W012), skip the
+    // analyses, terminate. This test hanging IS the regression.
+    let src = r#"
+session P {
+    a: [ loop, send M, end ]
+    b: [ loop, receive M, end ]
+}
+socket S { protocol: P  backpressure: credit(4) }
+"#;
+    let tokens = Lexer::new(src, "<test>").tokenize().expect("lex");
+    let prog = Parser::new(tokens).parse().expect("parse");
+    let (errors, warnings) = TypeChecker::new(&prog).check_with_warnings();
+    assert!(
+        warnings.iter().any(|w| w.message.contains("axon-W012") && w.message.contains("vacuous")),
+        "leading loop must warn W012, got warnings: {:?}",
+        warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+    assert!(
+        !errors.iter().any(|e| e.message.contains("credit")),
+        "the degenerate type must be SKIPPED by the discharge, got: {:?}",
+        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
 

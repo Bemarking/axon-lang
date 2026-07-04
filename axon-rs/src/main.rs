@@ -64,6 +64,11 @@ enum Commands {
         #[arg(long, env = "AXON_SCHEMAS_DIR")]
         schemas_dir: Option<String>,
     },
+    /// §Fase 80.g — print the exact lower-level program the `voice` and
+    /// `upstream … from Preset@vN` sugar expands to (D80.6: sugar a
+    /// compliance reviewer cannot see through would break the
+    /// audit-by-construction property; this is the seeing-through).
+    Desugar { file: String },
     /// Compile an .axon file to IR JSON.
     Compile {
         file: String,
@@ -424,6 +429,7 @@ fn main() {
         Commands::Check { file, no_color, strict, schemas_dir } => {
             checker::run_check(&file, no_color, strict, schemas_dir.as_deref())
         }
+        Commands::Desugar { file } => run_desugar(&file),
         Commands::Compile {
             file,
             backend,
@@ -624,6 +630,60 @@ fn run_parse_command(
 /// §Fase 39.f — `axon fmt` subcommand dispatcher. Reads the file,
 /// runs the token-level round-trip formatter, dispatches to
 /// stdout / --check / --write mode per the Fase 14.d MVP contract.
+/// §Fase 80.g — `axon desugar <file>`: print the exact lower-level program
+/// the sugar compiled to. For each `voice`, the generated expansion source;
+/// for each preset-instantiated `upstream`, the fully-merged declaration.
+/// A file with no sugar prints a note and exits 0 (nothing was hidden).
+fn run_desugar(file: &str) -> i32 {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read {file}: {e}");
+            return 1;
+        }
+    };
+    let tokens = match axon::lexer::Lexer::new(&source, file).tokenize() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: lex failed: {e:?}");
+            return 1;
+        }
+    };
+    // Parser::parse already ran the §80.g voice + §80.f preset expansions —
+    // what we print IS what the type-checker checked and the IR carries.
+    let program = match axon::parser::Parser::new(tokens).parse() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: parse failed at {}:{}: {}", e.line, e.column, e.message);
+            return 1;
+        }
+    };
+    let mut printed_any = false;
+    for decl in &program.declarations {
+        match decl {
+            axon::ast::Declaration::Voice(v) => {
+                printed_any = true;
+                println!("// ── voice {} expands to ──────────────────────────", v.name);
+                // The ots pair prints with the first mulaw voice, exactly as
+                // the expansion injected it.
+                print!("{}", axon::voice_desugar::expansion_source(v, true));
+                println!();
+            }
+            axon::ast::Declaration::Upstream(u) if u.preset.is_some() => {
+                printed_any = true;
+                println!("// ── upstream {} (preset-expanded) ────────────────", u.name);
+                print!("{}", axon::upstream_presets::render_upstream(u));
+                println!();
+            }
+            _ => {}
+        }
+    }
+    if !printed_any {
+        println!("// no `voice` or preset-instantiated `upstream` declarations — nothing to desugar");
+    }
+    0
+}
+
 fn run_fmt_command(file: &str, check: bool, write: bool, no_color: bool) -> i32 {
     use std::fs;
     use std::path::Path;

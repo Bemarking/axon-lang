@@ -297,6 +297,13 @@ impl IRGenerator {
             Declaration::Topology(n) => ir.topologies.push(self.visit_topology(n)),
             Declaration::Socket(n) => ir.sockets.push(self.visit_socket(n)),
             Declaration::Upstream(n) => ir.upstreams.push(self.visit_upstream(n)),
+            // §Fase 80.g — `voice` never reaches the IR: the parser already
+            // expanded it into ordinary ots/session/socket/upstream
+            // declarations (in this same program), and THOSE are the
+            // deployed artifact. The declaration stays in the AST purely
+            // for provenance + T852 validation (D80.6: the reviewer audits
+            // the expansion, which is real IR, not the sugar).
+            Declaration::Voice(_) => {}
             Declaration::Observable(n) => ir.observables.push(self.visit_observable(n)),
             Declaration::Witness(n) => ir.witnesses.push(self.visit_witness(n)),
             Declaration::Immune(n) => ir.immunes.push(self.visit_immune(n)),

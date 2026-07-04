@@ -135,6 +135,12 @@ pub enum Declaration {
     /// to the vendor's wire frames by a declared total projection
     /// (docs/fase/fase_80_upstream_design.md).
     Upstream(UpstreamDefinition),
+    /// §Fase 80.g — the voice-agent simplicity layer: macro-expands
+    /// (inspectable via `axon desugar`, D80.6) to `ots` + carrier
+    /// `session`/`socket` + `upstream` legs. The declaration stays in the
+    /// AST for provenance + §80.c validation (T852); the IR carries only
+    /// the expansion — sugar the compliance reviewer can always see through.
+    Voice(VoiceDefinition),
     /// §Fase 51.c.2 — a Pauli-sum observable `M = Σ cₖ Pₖ` that a `quant`
     /// block measures against (paper §3.2; plan D5).
     Observable(ObservableDefinition),
@@ -486,6 +492,44 @@ pub struct UpstreamMapRule {
     /// rules dispatch before presence rules.
     pub when_value: Option<String>,
     pub loc: Loc,
+}
+
+/// `voice Name { stt:/tts: XOR realtime:, carrier:, interruptible:,
+/// legal_basis:, persona:, context: }`
+///
+/// §Fase 80.g — the simplicity layer over §80's `upstream`: a blessed-
+/// preset phone agent in under 20 lines. `stt:`+`tts:` (cascaded) XOR
+/// `realtime:` (fused) — D80.1: one grammar, both architectures, never a
+/// special-cased second path. Each leg is a `Preset@vN` reference or a
+/// declared `upstream` name. Expansion is pure macro-lowering to existing
+/// primitives; `axon desugar` prints it (D80.6).
+#[derive(Debug, Default)]
+pub struct VoiceDefinition {
+    pub name: String,
+    /// Cascaded STT leg (preset ref like `DeepgramSTT@v1` or upstream name).
+    pub stt: Option<String>,
+    /// Cascaded TTS leg.
+    pub tts: Option<String>,
+    /// Fused speech-to-speech leg (mutually exclusive with stt/tts — T852).
+    pub realtime: Option<String>,
+    /// Carrier codec: `mulaw8k` (default — PSTN; expansion emits the §ots
+    /// μ-law↔PCM16 pair) or `pcm16` (browser/WebRTC-style, no transcode).
+    pub carrier: String,
+    /// `true` ⇒ the carrier session is a §79 interruptible region (barge-in
+    /// capable) and the socket parks residuals — which REQUIRES
+    /// `legal_basis:` (T852; the sugar must not generate a program
+    /// `ParkedResidualSoundness` refutes).
+    pub interruptible: bool,
+    /// Rides onto the generated socket (the §79 data-at-rest obligation).
+    pub legal_basis: Option<String>,
+    /// Optional references wired for the flow layer (validated to exist).
+    pub persona: Option<String>,
+    pub context: Option<String>,
+    pub loc: Loc,
+    /// Fase 14.b — leading comment trivia.
+    pub leading_trivia: Vec<crate::tokens::Trivia>,
+    /// Fase 14.b — trailing comment trivia.
+    pub trailing_trivia: Vec<crate::tokens::Trivia>,
 }
 
 /// `reconnect: { backoff_ms: 500, max_attempts: 5, on_exhausted: fail }` —

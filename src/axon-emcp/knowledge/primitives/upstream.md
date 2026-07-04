@@ -53,8 +53,8 @@ axon code.
 
 ```axon
 session SttDialogue {
-    axon:   [ send AudioChunk, loop, receive Transcript, end ]
-    vendor: [ receive AudioChunk, loop, send Transcript, end ]
+    axon:   [ send AudioChunk, receive Transcript, loop ]
+    vendor: [ receive AudioChunk, send Transcript, loop ]
 }
 
 upstream DeepgramSTT {

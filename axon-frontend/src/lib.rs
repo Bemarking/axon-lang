@@ -97,3 +97,7 @@ pub use primitive_registry::{
 // ordinary `.axon` source per D80.5) + the `from Preset@vN` expansion the
 // parser runs before type-check. Pure const data + a pure AST pass.
 pub mod upstream_presets;
+
+// §Fase 80.g — `voice` macro-expansion to source text (the `axon desugar`
+// payload). Pure AST pass run by the parser before preset expansion.
+pub mod voice_desugar;

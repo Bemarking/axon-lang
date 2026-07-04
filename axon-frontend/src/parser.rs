@@ -230,6 +230,10 @@ fn attach_trivia_to_decl(decl: &mut Declaration, leading: Vec<Trivia>, trailing:
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
         }
+        Declaration::Voice(n) => {
+            n.leading_trivia = leading;
+            n.trailing_trivia = trailing;
+        }
         Declaration::Observable(n) => {
             n.leading_trivia = leading;
             n.trailing_trivia = trailing;
@@ -1515,11 +1519,13 @@ impl Parser {
                 .declaration_trivia
                 .push(DeclarationTrivia { leading, trailing });
         }
-        // §Fase 80.f — expand `upstream X from Preset@vN { … }` references
-        // from the blessed catalog BEFORE type-check, so the §80.c laws see
-        // the expanded declaration (and `axon desugar` can print it).
+        // §Fase 80.g — expand `voice` declarations FIRST (they may emit
+        // `from Preset@vN` upstream legs), then §80.f preset references,
+        // BEFORE type-check — so the §80.c laws and the IR see the expanded
+        // program (and `axon desugar` prints exactly this lowering).
         // Unknown presets stay unexpanded — the checker reports them with
         // the catalog list (accumulating diagnostics beat a parse abort).
+        crate::voice_desugar::expand(&mut program);
         crate::upstream_presets::expand(&mut program);
         Ok(program)
     }
@@ -2021,6 +2027,9 @@ impl Parser {
 
             // ── §Fase 80.b — outbound vendor connection ─────────
             TokenType::Upstream => self.parse_upstream().map(Declaration::Upstream),
+
+            // ── §Fase 80.g — the voice-agent simplicity layer ───
+            TokenType::Voice => self.parse_voice().map(Declaration::Voice),
 
             // ── §Fase 51.c.2 — Pauli-sum observable ────────────
             TokenType::Observable => self.parse_observable().map(Declaration::Observable),
@@ -6756,6 +6765,58 @@ impl Parser {
         }
         self.consume(TokenType::RBrace)?;
         Ok(node)
+    }
+
+    /// §Fase 80.g — parse `voice Name { fields }`. Cross-field laws
+    /// (stt/tts XOR realtime, interruptible ⇒ legal_basis, ref resolution)
+    /// are §80.c type-checker territory (T852), same parse/check split as
+    /// every primitive in this file.
+    fn parse_voice(&mut self) -> Result<VoiceDefinition, ParseError> {
+        let tok = self.consume(TokenType::Voice)?;
+        let name = self.consume(TokenType::Identifier)?.value;
+        let mut node = VoiceDefinition {
+            name,
+            loc: Loc { line: tok.line, column: tok.column },
+            ..Default::default()
+        };
+        self.consume(TokenType::LBrace)?;
+        while !self.check(TokenType::RBrace) && !self.check(TokenType::Eof) {
+            let key = self.consume_any_ident_or_kw()?.value;
+            self.consume(TokenType::Colon)?;
+            match key.as_str() {
+                // Each leg: a declared upstream name or a `Preset@vN` ref.
+                "stt" => node.stt = Some(self.parse_upstream_ref()?),
+                "tts" => node.tts = Some(self.parse_upstream_ref()?),
+                "realtime" => node.realtime = Some(self.parse_upstream_ref()?),
+                "carrier" => node.carrier = self.consume_any_ident_or_kw()?.value,
+                "interruptible" => {
+                    let v = self.consume_any_ident_or_kw()?.value;
+                    node.interruptible = v == "true";
+                }
+                "legal_basis" => node.legal_basis = Some(self.consume_any_ident_or_kw()?.value),
+                "persona" => node.persona = Some(self.consume(TokenType::Identifier)?.value),
+                "context" => node.context = Some(self.consume(TokenType::Identifier)?.value),
+                other => return Err(self.error(&format!("unknown voice field `{other}`"))),
+            }
+            if self.check(TokenType::Comma) {
+                self.consume(TokenType::Comma)?;
+            }
+        }
+        self.consume(TokenType::RBrace)?;
+        Ok(node)
+    }
+
+    /// §Fase 80.g — an upstream leg reference: `Ident` (a declared
+    /// `upstream`) or `Ident@vN` (a §80.f preset).
+    fn parse_upstream_ref(&mut self) -> Result<String, ParseError> {
+        let base = self.consume(TokenType::Identifier)?.value;
+        if self.check(TokenType::At) {
+            self.advance();
+            let version = self.consume_any_ident_or_kw()?.value;
+            Ok(format!("{base}@{version}"))
+        } else {
+            Ok(base)
+        }
     }
 
     /// §Fase 80.b — parse the `map: [ rule, … ]` projection list.

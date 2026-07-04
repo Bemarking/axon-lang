@@ -162,7 +162,7 @@ pub const TOP_LEVEL_KEYWORD_NAMES: &[&str] = &[
     "mandate", "manifest", "memory", "mutate", "observe", "ots",
     "persist", "persona", "pix", "psyche", "purge", "reconcile", "reflex",
     "resource", "retrieve", "run", "session", "shield", "speculate",
-    "tool", "topology", "transact", "type", "upstream", "view",
+    "tool", "topology", "transact", "type", "upstream", "view", "voice",
 ];
 
 /// Flow-body step keywords adopters might typo (e.g. `stepp`,

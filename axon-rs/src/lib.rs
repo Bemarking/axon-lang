@@ -44,6 +44,10 @@ pub use axon_frontend::{
     stream_effect,
     tokens,
     type_checker,
+    // §Fase 80.f/80.g — the blessed preset catalog + the voice/preset
+    // desugar surface (`axon desugar` renders from these).
+    upstream_presets,
+    voice_desugar,
 };
 
 // `ots_catalog` is the compile-time slug catalog; the runtime `ots`

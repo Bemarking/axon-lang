@@ -178,6 +178,13 @@ pub enum TokenType {
     // algebra on the axon-facing side and transcoded to the vendor's wire
     // frames by a declared, compile-time-total projection (`map:`).
     Upstream,
+    // `voice` (§Fase 80.g) — the simplicity layer: a top-level declaration
+    // that macro-expands (inspectable via `axon desugar`, D80.6) to the
+    // primitives already in the language: `ots` codec pair + carrier
+    // `session`/`socket` (§79-interruptible when declared) + `upstream`
+    // vendor legs. Under 20 lines to a working phone agent for a blessed
+    // preset; never a black box.
+    Voice,
     // `quant` as a cognitive primitive (§Fase 51.a) — a flow-body block that
     // projects an MEK semantic tensor into a complex Hilbert space, evolves it
     // under a variational / kernel-feature map, and collapses back to classical
@@ -506,6 +513,8 @@ pub fn keyword_type(word: &str) -> TokenType {
         "socket" => TokenType::Socket,
         // `upstream` (§Fase 80.b) — outbound vendor connection.
         "upstream" => TokenType::Upstream,
+        // `voice` (§Fase 80.g) — the inspectable voice-agent sugar.
+        "voice" => TokenType::Voice,
         // `quant` as a cognitive primitive (§Fase 51.a) — flow-body block.
         "quant" => TokenType::Quant,
         // `observable` (§Fase 51.c.2) — top-level Pauli-sum declaration.
@@ -600,6 +609,8 @@ pub fn is_declaration_keyword(tt: &TokenType) -> bool {
             | TokenType::Socket
             // §Fase 80.b — outbound vendor connection (the client dual of socket)
             | TokenType::Upstream
+            // §Fase 80.g — the voice-agent simplicity layer
+            | TokenType::Voice
             // §Fase 51.c.2 — Pauli-sum observable declaration
             | TokenType::Observable
             // §Fase 69.a — Advantage-Witness declaration

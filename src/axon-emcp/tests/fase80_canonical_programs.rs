@@ -31,8 +31,8 @@ fn must_compile(label: &str, source: &str) {
 fn upstream_canonical_program_compiles() {
     let src = r#"
 session SttDialogue {
-    axon:   [ send AudioChunk, loop, receive Transcript, end ]
-    vendor: [ receive AudioChunk, loop, send Transcript, end ]
+    axon:   [ send AudioChunk, receive Transcript, loop ]
+    vendor: [ receive AudioChunk, send Transcript, loop ]
 }
 
 upstream DeepgramSTT {
@@ -64,4 +64,31 @@ upstream MySTT from DeepgramSTT@v1 {
 }
 "#;
     must_compile("upstream/preset-form", src);
+}
+
+/// §80.g — the keystone claim (plan §7): a barge-in-capable phone agent
+/// in under 20 lines, expanding to ordinary checked primitives.
+#[test]
+fn voice_canonical_program_compiles() {
+    let src = r#"
+voice Concierge {
+    stt: DeepgramSTT@v1
+    tts: ElevenLabsTTS@v1
+    interruptible: true
+    legal_basis: legitimate_interest
+}
+"#;
+    must_compile("voice/canonical", src);
+}
+
+/// §80.g — the fused architecture is the SAME grammar (D80.1).
+#[test]
+fn voice_fused_realtime_compiles() {
+    let src = r#"
+voice Live {
+    realtime: OpenAIRealtime@v1
+    carrier: pcm16
+}
+"#;
+    must_compile("voice/fused", src);
 }

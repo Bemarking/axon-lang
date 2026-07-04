@@ -2366,8 +2366,8 @@ mod tests {
     // ── §Fase 80 — UpstreamProjectionSoundness ───────────────────────────
 
     const STT_UPSTREAM: &str = "session SttDialogue {\n\
-             axon:   [ send AudioChunk, loop, receive Transcript, end ]\n\
-             vendor: [ receive AudioChunk, loop, send Transcript, end ]\n\
+             axon:   [ send AudioChunk, receive Transcript, loop ]\n\
+             vendor: [ receive AudioChunk, send Transcript, loop ]\n\
          }\n\
          upstream DeepgramSTT {\n\
              transport: websocket\n\
